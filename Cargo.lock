@@ -3550,6 +3550,15 @@ name = "omaterm"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "omaterm-core",
+]
+
+[[package]]
+name = "omaterm-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]

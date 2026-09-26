@@ -2,13 +2,13 @@
 
 ## Current position
 
-Milestone 1 is complete. Next: begin
-[Milestone 2](02-milestone-2-pane-tree.md).
+Milestone 2 is complete. Next: begin
+[Milestone 3](03-milestone-3-single-terminal.md).
 
 | Milestone | Status | Verification evidence | Blockers | Next action |
 |---|---|---|---|---|
 | 1 — GPUI Boot | complete | Build, quality checks, CI workflow, and Wayland visual/close checks recorded below | X11 runtime session unavailable; build coverage passes | Begin M2 pure pane tree |
-| 2 — Pane Tree | not_started | None | Requires M1 | Implement tree invariants and tests |
+| 2 — Pane Tree | complete | 9 core tests, workspace quality gates, and Wayland manual validation recorded below | None | Begin M3 single terminal |
 | 3 — Single Terminal | not_started | None | Requires M2 | Validate PTY/parser/rendering spike |
 | 4 — Multi Terminal | not_started | None | Requires M3 | Wire registry to pane IDs |
 | 5 — Projects/Tabs | not_started | None | Requires M4 | Add hierarchy and focus lifecycle |
@@ -101,3 +101,61 @@ item rather than treating it as a passing-free warning.
 ### Next action
 
 Implement the pure, GPUI-independent pane tree defined by Milestone 2.
+
+## Milestone 2 — Pure Pane Tree — 2026-09-26
+
+Implemented `omaterm-core`, a GPUI-independent recursive pane-tree crate. It owns
+typed pane/split/session identifiers; checked tree construction; split, remove,
+resize, find, enumeration, ancestor, normalized geometry, directional-neighbor,
+and equalize operations; and nine unit tests. The desktop now renders nested,
+colored placeholder panes directly from this model. Keyboard actions call the same
+core operations: `Ctrl+Shift+R` split right, `Ctrl+Shift+D` split down,
+`Ctrl+Shift+W` close, `Ctrl+Shift+H/J/K/L` focus, `Ctrl+{`/`Ctrl+}` resize the
+innermost containing split (physically `Ctrl+Shift+[`/`Ctrl+Shift+]` on US layout;
+GPUI receives `ctrl-{`/`ctrl-}` since Shift has already been applied to the
+character), and `Ctrl+Shift+E` equalize.
+
+### Changed files
+
+- `Cargo.toml`, `Cargo.lock`, and `apps/omaterm/Cargo.toml`
+- `crates/omaterm-core/Cargo.toml` and `crates/omaterm-core/src/{lib,ids,error,pane}.rs`
+- `apps/omaterm/src/main.rs`
+- `docs/dependencies.md` and this status record
+
+### Automated checks
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm-core` | PASS: 9 pane-tree tests, 0 failures |
+| `cargo test --workspace` | PASS: 9 tests, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo build --workspace` | PASS |
+| `python3 scripts/check-docs.py` | PASS: 17 Markdown files, 33 local link targets, 66 numbered blueprint references; all 17 CLI methods mapped in IPC table |
+| `git diff --check` | PASS |
+
+Cargo continues to report the existing transitive `proc-macro-error2` 2.0.1
+future-incompatibility notice during workspace test/build commands. It does not
+fail the quality gate.
+
+### Desktop and platform validation
+
+Wayland manual validation completed 2026-09-26: split right/down, nested geometry,
+close/collapse including last pane → empty-root message, HJKL focus navigation,
+`Ctrl+{`/`Ctrl+}` resize, and `Ctrl+Shift+E` equalize all confirmed working on
+Omarchy/Hyprland. Two corrections applied during validation:
+- Fractional split-child wrappers made flex containers so panes fill their
+  full allocated rectangles.
+- Resize shortcuts: originally `Ctrl+Alt+H/L` (collided with Omarchy's
+  completion notification), then `Ctrl+Shift+[`/`Ctrl+Shift+]` (Shift combines
+  with `[`/`]` producing `{`/`}` on US layout), now bound as `ctrl-{`/`ctrl-}`
+  so GPUI resolves the physical `Ctrl+Shift+[`/`Ctrl+Shift+]` correctly.
+
+| Environment | Result |
+|---|---|
+| Omarchy Linux 7.2.5-3-omarchy, Hyprland Wayland | PASS: all M2 keyboard interactions confirmed |
+| X11 | PASS (build coverage): GPUI `x11` feature compiled; no X11 session available |
+
+### Next action
+
+Begin M3: PTY + alacritty_terminal + single terminal GPUI rendering.

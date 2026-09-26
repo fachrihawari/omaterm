@@ -11,7 +11,7 @@ with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
 | Rust toolchain | 1.98.1 (`48a229cea`, LLVM 22.1.8) | Official distribution | `rustc --version --verbose`; build/checks pass on 2026-09-26 |
 | GPUI/platform crates | `gpui` 0.2.2 from crates.io, `wayland` + `x11` features | Apache-2.0; crate manifest and crates.io metadata | Linux build and Wayland launch pass on 2026-09-26 |
 | Native Linux packages | See M1 native package record below | Arch package metadata | Present and linked during M1 build on 2026-09-26 |
-| Core ID/error dependencies | Pending M2 | Selected package metadata/license files | Not verified |
+| Core ID/error dependencies | `uuid` 1.26.1; `thiserror` 2.0.21 | Selected crate manifests | M2 core/workspace checks pass on 2026-09-26 |
 | `alacritty_terminal` | Pending M3, exact compatible release | Selected package | Not verified |
 | PTY provider | Pending M3 API/lifecycle evaluation | Selected package | Not verified |
 | Serialization/IPC/CLI dependencies | Select when their slices require them | Selected packages | Not verified |
@@ -49,7 +49,20 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
 - `cargo build --workspace`, `cargo test --workspace`, and
   `cargo clippy --workspace --all-targets -- -D warnings` complete successfully.
   Cargo reports the upstream `proc-macro-error2` 2.0.1 future-incompatibility
-  warning; it is transitive and does not produce a Clippy warning.
+   warning; it is transitive and does not produce a Clippy warning.
+
+### Milestone 2 record — 2026-09-26
+
+- `uuid` 1.26.1: direct typed-ID dependency from crates.io with only the `v4`
+  feature enabled. License `Apache-2.0 OR MIT`, verified in its selected crate
+  manifest and `LICENSE-APACHE`/`LICENSE-MIT` package files.
+- `thiserror` 2.0.21: direct library-error derive dependency from crates.io.
+  License `MIT OR Apache-2.0`, verified in its selected crate manifest and
+  package license files.
+- `cargo fmt --all --check`, `cargo test -p omaterm-core`, `cargo test
+  --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo build --workspace` pass on 2026-09-26. Interactive Wayland validation
+  remains pending and is tracked in `docs/status.md`.
 
 ## Reference provenance
 

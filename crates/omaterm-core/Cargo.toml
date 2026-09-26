@@ -1,0 +1,8 @@
+[package]
+name = "omaterm-core"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+thiserror = "=2.0.21"
+uuid = { version = "=1.26.1", features = ["v4"] }
