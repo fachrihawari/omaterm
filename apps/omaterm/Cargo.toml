@@ -8,5 +8,8 @@ name = "omaterm-desktop"
 path = "src/main.rs"
 
 [dependencies]
+async-channel = "=2.5.0"
 gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x11"] }
 omaterm-core = { path = "../../crates/omaterm-core" }
+omaterm-terminal = { path = "../../crates/omaterm-terminal" }
+tracing = "0.1"

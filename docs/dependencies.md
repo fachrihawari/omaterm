@@ -64,6 +64,56 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   `cargo build --workspace` pass on 2026-09-26. Interactive Wayland validation
   remains pending and is tracked in `docs/status.md`.
 
+### Milestone 3 record — 2026-09-26 (Phase A: headless PTY/parser)
+
+- `alacritty_terminal` =0.26.0: direct terminal-emulation dependency from
+  crates.io (published 2026-04-06, checksum
+  `bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59`).
+  License `Apache-2.0` per its crate manifest (`LICENSE-APACHE` in package).
+  MSRV 1.85.0, edition 2024; working toolchain 1.98.1, no conflict.
+  Verified API surface against the selected package source:
+  `Term::new(Config, &impl Dimensions, EventListener)`, `Term::resize`,
+  `scroll_display(Scroll::Delta/PageUp/PageDown/Top/Bottom)`,
+  `renderable_content()` (visible cells + cursor + display offset),
+  `grid()`/`colors()`/`mode()`, `EventListener::send_event(&self, Event)`,
+  `Event::{Title, ResetTitle, Bell, Wakeup, PtyWrite, ColorRequest,
+  ChildExit(ExitStatus), Exit}`, `vte::ansi::Processor::advance`,
+  `Config { scrolling_history: 10_000 (default), .. }`.
+  Breaking change vs 0.25.x: `ChildExit` carries `ExitStatus`, not `i32`.
+- PTY provider: built-in `alacritty_terminal::tty` (Unix backend via
+  `rustix-openpty` 0.2.0 + `libc`, `polling`, `signal-hook`). No extra PTY
+  crate added. Rationale: version-locked with the emulator, correct
+  controlling-terminal/session/`TIOCSWINSZ`/`SIGHUP`-on-drop semantics,
+  child-only env via `Options::env` (parent env never mutated), race-free
+  `SIGCHLD` exit pipe, non-blocking master. `portable-pty` evaluated and
+  deferred (heavier transitive tree, unneeded Windows/macOS scope for v0.1);
+  raw `nix`/`rustix` forkpty rejected for M3 (re-implements fixed bugs).
+  Transitive `vte` 0.15.0 (`Apache-2.0 OR MIT`) provides the VT parser.
+- Child env (via `Options::env`, child-only): `TERM=xterm-256color`,
+  `COLORTERM=truecolor`, `TERM_PROGRAM=OmaTerm`, `OMATERM=1`. Justification:
+  the alacritty parser genuinely handles 256 + truecolor SGR, app-cursor,
+  and bracketed paste; no further capability claims made.
+- `libc` 0.2: direct dependency for `poll()`-based PTY waiting
+  (`poll_fd_readable`), so the reader thread sleeps in the kernel instead of
+  spin-polling. License MIT/Apache-2.0 per its crate manifest.
+- `async-channel` =2.5.0 (apps/omaterm only): bounded snapshot channel
+  between the PTY reader thread and the GPUI main thread. Already in the
+  lock as a GPUI transitive dependency, so no new compiles. License
+  `Apache-2.0 OR MIT`. Event-driven `recv().await` delivery replaced a
+  16ms poll timer that cost ~3.5%/core in debug builds.
+- `tracing` 0.1 (apps/omaterm): structured warnings (e.g. non-monospace
+  font detection in debug builds). Same version/license as the existing
+  workspace use. No subscriber is installed yet, so output currently goes
+  nowhere in release; debug-assertion probe only.
+- `cargo tree -p omaterm-terminal` shows only `alacritty_terminal`, `libc`,
+  `omaterm-core`, `thiserror`, `tracing` — no `gpui` dependency.
+- Phase A checks 2026-09-26: 16 `omaterm-terminal` unit tests
+  (engine dimensions, SGR, title/bell, DSR replies, alt-screen, scroll,
+  wide chars, input encoder) + 5 PTY integration tests
+  (spawn/echo, resize, exit/reap, `/proc` CWD, combining) pass;
+  `cargo test --workspace` (9 core + 21 terminal) green;
+  `cargo clippy --workspace --all-targets -- -D warnings` clean.
+
 ## Reference provenance
 
 Kero and Zed terminal/terminal-view code are behavioral/architectural references.
