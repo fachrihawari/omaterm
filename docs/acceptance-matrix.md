@@ -9,19 +9,20 @@ Unit tests do not substitute for real desktop observations.
 |---|---|---|---|---|
 | Reliable Linux startup, close, background/text | M1 | Workspace checks, Wayland/X11 builds | Omarchy/Hyprland launch/close | M1: Wayland launch, rendered window, and Super+W clean close verified 2026-09-26; X11 build passes |
 | Verified dependencies and reproducible toolchain | M1 onward | Locked build and CI checks | Record native packages and GPU environment | M1: Rust 1.98.1, GPUI 0.2.2, `Cargo.lock`, native packages, and CI recorded 2026-09-26 |
-| Recursive splits in all four directions | M2 | Nested topology, locality, unique IDs | Placeholder and real-terminal splits | Pending |
-| Remove/collapse, last-child behavior | M2, M4–M5 | Empty-root and focus invariants | Close final pane/tab/project | Pending |
-| Focus, pane resize, equalize | M2, M5 | Neighbor ties, finite fractions, minimum geometry | Keyboard/pointer navigation and resize | Pending |
+| Recursive splits in all four directions | M2 | Nested topology, locality, unique IDs | Placeholder and real-terminal splits | M2: all four core directions PASS; M4: nested terminal panes PASS 2026-09-27 |
+| Remove/collapse, last-child behavior | M2, M4–M5 | Empty-root and focus invariants | Close final pane/tab/project | M4: final-pane empty state/new-terminal Wayland PASS 2026-09-27; tabs/projects are M5 |
+| Focus, pane resize, equalize | M2, M4–M5 | Neighbor ties, finite fractions, minimum geometry | Keyboard/pointer navigation and resize | M2 keyboard geometry PASS; M4 keyboard focus/resize and `stty size` pane grid PASS 2026-09-27; hover-to-focus confirmed by user 2026-09-27 |
 | Real shell and normal user configuration | M3 | PTY input/output/exit tests (13 integration PASS); Ctrl+C/D/Z proven | bash + starship manual PASS; zsh/fish unavailable on this machine | Complete with unavailable-tool limit |
 | Correct terminal rendering/input | M3 | ANSI, cursor, wide/combining Unicode fixtures (50 unit PASS); pixel-measured grid/cursor gate | User-approved Omarchy release validation; alternate scaling/monitor unavailable | Complete with scaling-observation limit |
 | Alternate screen and interactive TUIs | M3 | Mode transitions + content restoration tests PASS | vim PASS; htop unavailable; other available TUI tools are follow-up coverage | Complete with unavailable-tool limit |
 | Clipboard and selection | M3 | Selection normalization/extraction (11 tests), paste encoding, wrapped `cat` round-trip PASS; OSC 52 read refused by design | User-approved Wayland release validation | Complete |
 | Input method behavior | M3 | Normal direct Unicode input tested; no GPUI 0.2.2 composition path integrated | IME composition/commit/cancel intentionally not supported | Complete with explicit unsupported IME limit |
 | Bounded scrollback and resize | M3 | 10k cap test, 3k-line burst bounded, resize-mid-flood keeps tail PASS | User-approved release scroll/resize validation | Complete |
-| Long-lived independent terminals | M4 | Stable IDs/PIDs across layout/focus changes | Four or more independent panes | Pending |
-| Cleanup without leaks or zombies | M4, M5, M8 | Spawn rollback, cancellation, reap tests | Repeated 100-session cycles, FD/thread/process/memory/GPU observations | Pending |
+| Long-lived independent terminals | M4 | Stable IDs/PIDs, four-session output isolation, resize and focus-preserving coordinator tests | Four or more independent panes | M4: automated 4-session isolation and coordinator stability PASS; Wayland four-pane input isolation PASS 2026-09-27 |
+| Cleanup without leaks or zombies | M4, M5, M8 | Spawn failure rollback, close isolation/reap, 100-cycle FD test | Repeated 100-session cycles, FD/thread/process/memory/GPU observations | M4: rollback/reap PASS; 100 PTY create/close cycles no FD growth (+2 tolerance); UI cycle/thread/RSS/GPU measurements pending |
+| Shell exit closes its pane | M4 | `exit`/Ctrl+D close-by-session tests preserve sibling and final-empty state | Verify both exits in multi-pane Wayland window | M4: automated sibling-preservation/final-empty tests and Wayland `exit`/Ctrl+D pass 2026-09-27 |
 | Default/multiple projects and independent tabs | M5 | Create/select/close and fallback tests | Sidebar, tab bar, keyboard switching | Pending |
-| Hidden terminals keep processing output | M4–M5 | Hidden output progress and stable identity | Sustained output while switching projects/tabs | Pending |
+| Hidden terminals keep processing output | M4–M5 | Unfocused PTY output progress and stable identity | Sustained output while switching projects/tabs | M4 integration: unfocused session drains output; tab-hidden behavior awaits M5 |
 | Logical state returns after restart | M6 | Round-trip including names, sidebar, focus/selections | Restart with multiple projects, tabs, splits | Pending |
 | Fresh shells in remembered directories | M3, M6 | OSC 7 accept/reject/fragmented suites + session fallback tests PASS; launch CWD + procfs coverage | Live-shell OSC 7 emission is config-dependent (stock bash emits none); save/restart belongs to M6 | M3 complete: parser contract proven; live emission/persistence follow-up |
 | Recovery preserves original state | M6 | Invalid/unknown snapshots, interrupted writes, ordered saves | Recovery message and retained original | Pending |

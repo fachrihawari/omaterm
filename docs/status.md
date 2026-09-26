@@ -2,15 +2,15 @@
 
 ## Current position
 
-Milestone 2 is complete. Next: begin
-[Milestone 3](03-milestone-3-single-terminal.md).
+Milestones 1–3 are complete. Milestone 4 is implemented and verified; see the
+M4 evidence below.
 
 | Milestone | Status | Verification evidence | Blockers | Next action |
 |---|---|---|---|---|
 | 1 — GPUI Boot | complete | Build, quality checks, CI workflow, and Wayland visual/close checks recorded below | X11 runtime session unavailable; build coverage passes | Begin M2 pure pane tree |
 | 2 — Pane Tree | complete | 9 core tests, workspace quality gates, and Wayland manual validation recorded below | None | Begin M3 single terminal |
-| 3 — Single Terminal | in_progress | Core + R1 + scroll UX committed (`bf1c901`); completion slice implemented, all gates green (see M3 completion record) | Interactive validation only | User pass: selection drag/copy, paste E2E, top/less/btop spot-check, IME/scaling notes — then mark complete |
-| 4 — Multi Terminal | not_started | None | Requires M3 | Wire registry to pane IDs |
+| 3 — Single Terminal | complete | Completed `a3923d4`; release-build interaction pass approved 2026-09-26 with explicit IME/unavailable-program limits (see M3 completion record) | None | M4 regression coverage |
+| 4 — Multi Terminal | complete | 64 terminal unit + 20 PTY integration tests; workspace quality gates and Wayland four-pane pass recorded below | Thread/memory/GPU stress baselines remain for broader lifecycle work | Begin M5 Projects/Tabs |
 | 5 — Projects/Tabs | not_started | None | Requires M4 | Add hierarchy and focus lifecycle |
 | 6 — Persistence | not_started | None | Requires M5 | Implement validated snapshots |
 | 7 — Command Router | not_started | None | Requires M6 | Unify application actions |
@@ -420,3 +420,98 @@ normal interactive use were manually exercised on Omarchy/Wayland.
 
 M3 is complete with the above explicit limits. The next action is M4's
 long-lived multi-session registry and pane binding.
+
+## Milestone 4 — Multiple Pane Terminals — 2026-09-27
+
+Connected the recursive M2 `PaneTree` to long-lived registry-owned M3 sessions.
+Each terminal pane stores a `SessionId`; the GPUI-free `WorkspaceCoordinator`
+owns the tree and `TerminalRegistry`, and the desktop keeps per-session bounded
+snapshot channels and per-pane renderer state. The prior single-terminal view is
+now a recursive pane renderer. Workspace operations delegate to the coordinator
+for split, close, focus, resize, and equalize. Input, scrollback, paste, copy,
+and selection target the focused/clicked pane. All session readers pump output
+independently of focus. Closing detaches only that pane's session and performs
+bounded shutdown/reap on a background thread. Natural shell exit (`exit` or
+Ctrl+D) closes its pane by session ID, including when it is not focused; a
+sibling remains focused and alive, while exit of the final session presents
+the empty-workspace new-terminal action. Moving the pointer over a pane changes
+logical focus so subsequent keyboard input follows the hover target; a drag
+selection remains associated with the pane where the drag began.
+
+### Changed files
+
+- `crates/omaterm-core/src/pane.rs` — empty workspace constructor
+- `crates/omaterm-terminal/src/{lib,registry,workspace}.rs` — session registry
+  and GPUI-free workspace coordinator
+- `crates/omaterm-terminal/src/workspace.rs` — session-ID-driven pane close
+- `crates/omaterm-terminal/tests/pty_integration.rs` — independent sessions,
+  close isolation, per-session resize, unfocused output, auto-close on exit/
+  Ctrl+D, 100-cycle FD check
+- `apps/omaterm/src/main.rs` — M4 workspace renderer, input routing, runtime
+  readers, pane geometry-based resize
+- `docs/status.md`, `docs/acceptance-matrix.md`
+
+### Automated verification (Rust 1.98.1, Omarchy Linux/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 9 core + 64 terminal unit + 20 PTY integration, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (existing transitive `proc-macro-error2` future-incompatibility notice only) |
+| `cargo build --release --bin omaterm-desktop` | PASS |
+| `cargo tree -p omaterm-terminal` | PASS: no `gpui` dependency |
+| `python3 scripts/check-docs.py` | PASS: 17 Markdown files, 32 local links, 66 blueprint refs, 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+
+Registry/coordinator coverage verifies distinct session IDs/PIDs, four-pane
+binding, split spawn-failure rollback, close isolation, focus/layout preserving
+session IDs, final-pane empty state, and session-ID close preserving focus for
+an unaffected sibling. PTY integration verifies four shells have independent output,
+closing one preserves other PIDs and input, resizing one session leaves the
+other grid unchanged, unfocused output continues to drain, and both `exit` and
+Ctrl+D are resolved to the correct pane while the sibling remains usable. The
+final pane is also removed after Ctrl+D and leaves an empty workspace. The 100
+create/close cycles leave no FD growth beyond the test's +2 tolerance. Child
+reaping is explicitly checked for coordinator close.
+
+### Wayland desktop validation
+
+Environment: Omarchy Linux / Hyprland Wayland, GPUI release build. The app
+launched with a shell, accepted nested horizontal/vertical splits to four
+panes, and rendered four independent prompts. `stty size` in a half-width pane
+reported `30 60`, matching the actual pane geometry; after the nested split,
+the four panes rendered at their allocated sizes. Distinct `PANE3` and `PANE4`
+commands appeared only in their respective focused panes. Closing one pane
+reduced the layout to three panes while the remaining shells stayed alive;
+closing all panes showed the empty-workspace new-terminal action, and
+`Ctrl+Shift+T` created a fresh shell. The desktop was then closed and its test
+shell process disappeared. Screenshots used during the pass were kept in
+`/tmp/m4-*.png`, not the repository.
+
+Follow-up validation 2026-09-27: release Wayland checks confirmed `exit` and
+Ctrl+D each close only the exited pane while leaving its sibling usable. The
+user also confirmed hover-to-focus works and routes subsequent input to the
+hovered pane.
+
+The default-parallel `cargo test --workspace` was also attempted twice during
+this follow-up; one run stalled in a multi-PTY unit test and hit its 240s
+command timeout, and a second run stalled in another PTY coordinator unit test
+and hit 120s. The same complete workspace suite passes with `--test-threads=1`.
+Investigate PTY test concurrency as a follow-up; serial results are the verified
+gate for this change.
+
+The initial paint-based resize attempt was rejected after an interactive run
+showed incorrect early grid geometry. Final sizing derives each grid from the
+window viewport and the core tree's normalized pane rectangles, and skips
+degenerate (<2 rows) geometry offers. The release Wayland run confirmed the
+result. Mouse click-to-focus and pointer selection were implemented but not
+separately verified. Thread count, RSS, and GPU-resource
+growth were not measured in the 100-cycle test; those remain broader lifecycle
+diagnostics, not passing claims. M4 has no tabs, so tab-hidden renderer parking
+belongs to M5; background/unfocused PTY draining is covered by integration
+test.
+
+### Next action
+
+Begin M5 Projects/Tabs; carry forward thread/memory/GPU lifecycle measurements
+and actual hidden-tab rendering behavior as M5 acceptance work.

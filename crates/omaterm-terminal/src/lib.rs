@@ -4,8 +4,10 @@ pub mod events;
 pub mod input;
 pub mod osc7;
 pub mod pty;
+pub mod registry;
 pub mod selection;
 pub mod session;
+pub mod workspace;
 
 pub use alacritty::AlacrittyEngine;
 pub use engine::{
@@ -16,5 +18,7 @@ pub use events::TerminalEvent;
 pub use input::{Key, KeyEvent, KeyModifiers, encode_key, prepare_paste, wrap_bracketed_paste};
 pub use osc7::{Osc7Parser, parse_osc7_uri};
 pub use pty::{PtyError, PtyProcess, poll_fd_readable};
+pub use registry::{RegistryError, TerminalConfig, TerminalRegistry};
 pub use selection::{CellPoint, SelectionRange, extract_text};
 pub use session::{CurrentDirectory, CwdProvenance, SessionError, TerminalSession};
+pub use workspace::{ClosedPane, CoordinatorError, WorkspaceCoordinator};

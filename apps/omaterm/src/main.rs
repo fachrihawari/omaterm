@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -7,79 +8,94 @@ use gpui::{
     App, Application, AsyncApp, Bounds, ClipboardItem, Context, FocusHandle, Font, FontFallbacks,
     Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     ScrollDelta, ScrollWheelEvent, SharedString, TextRun, Timer, WeakEntity, Window, WindowBounds,
-    WindowOptions, canvas, div, font, prelude::*, px, rgb, rgba, size,
+    WindowOptions, canvas, div, font, prelude::*, px, relative, rgb, rgba, size,
 };
+use omaterm_core::{Pane, PaneContent, PaneId, PaneNode, SessionId, SplitAxis, SplitDirection};
 use omaterm_terminal::{
     CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SelectionRange, TermColor,
-    TerminalSession, TerminalViewport, encode_key, extract_text, poll_fd_readable, prepare_paste,
+    TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
+    poll_fd_readable, prepare_paste,
 };
 
-/// M3 single-terminal view.
+/// M4 workspace: a recursive pane tree whose leaves reference
+/// registry-owned `TerminalSession`s by `SessionId`.
 ///
-/// The `TerminalSession` (PTY + engine) is shared with a background reader
-/// thread through a short-lived `Mutex`. The reader pumps PTY output and
-/// sends immutable `TerminalViewport` snapshots over a bounded channel; the
-/// main thread applies them event-driven (`recv().await`) and repaints.
-/// Painting never holds the session lock.
-struct TerminalView {
+/// Sessions are durable: focus changes, resizes, and sibling split/close
+/// never recreate them. Each session has a background reader thread pumping
+/// PTY output into engine state and forwarding immutable snapshots over a
+/// bounded channel; the main thread applies snapshots event-driven and
+/// repaints. Painting never holds a session lock.
+struct WorkspaceView {
     focus_handle: FocusHandle,
-    session: Arc<Mutex<TerminalSession>>,
-    snapshot: TerminalViewport,
-    rx: async_channel::Receiver<TerminalViewport>,
-    font_size: f32,
+    coordinator: WorkspaceCoordinator,
+    snapshots: HashMap<SessionId, TerminalViewport>,
+    receivers: HashMap<SessionId, async_channel::Receiver<TerminalViewport>>,
+    selections: HashMap<SessionId, SelectionRange>,
+    selecting: Option<PaneId>,
+    scroll_indicator_until: HashMap<SessionId, Instant>,
+    grid_origins: HashMap<PaneId, Rc<Cell<gpui::Point<Pixels>>>>,
+    /// Last grid applied to each session. Compared in `render` so the PTY
+    /// follows pane geometry without locking sessions on every frame.
+    grid_sizes: HashMap<SessionId, (u16, u16)>,
     fonts: Option<ResolvedFonts>,
-    exited: bool,
-    /// Deadline until which the scroll thumb stays visible. Set on every
-    /// wheel/keyboard scroll; cleared by a one-shot timer task. `None` (and
-    /// any expired value) means the thumb is hidden, so an idle terminal
-    /// paints no scrollbar and wakes no timers.
-    scroll_indicator_until: Option<Instant>,
-    /// Active drag selection (cell coordinates in the visible grid).
-    selection: Option<SelectionRange>,
-    /// True between left-button press and release inside the grid.
-    selecting: bool,
-    /// Grid origin in window coordinates, recorded on every paint. Mouse
-    /// handlers read it to map pointer positions onto cells.
-    grid_origin: Rc<Cell<gpui::Point<Pixels>>>,
+    font_size: f32,
 }
 
 /// How long the scroll thumb lingers after the last scroll input.
 const SCROLL_INDICATOR_FADE_MS: u64 = 800;
 
-impl TerminalView {
+impl WorkspaceView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
-
         let working_directory = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-        let session = TerminalSession::new(working_directory, None, 80, 24)
-            .expect("failed to spawn shell for M3 single terminal");
-        let snapshot = session.viewport();
-        let session = Arc::new(Mutex::new(session));
-        // Bounded: snapshots are lossy by design; a full channel means a
-        // newer snapshot is already queued, so the reader drops coalescible
-        // frames instead of growing memory on output floods.
-        let (tx, rx) = async_channel::bounded::<TerminalViewport>(8);
-
-        Self::spawn_reader(Arc::clone(&session), tx);
-        Self::spawn_poller(cx);
-
-        Self {
+        let mut view = Self {
             focus_handle,
-            session,
-            snapshot,
-            rx,
-            font_size: 14.0,
+            coordinator: WorkspaceCoordinator::new(working_directory),
+            snapshots: HashMap::new(),
+            receivers: HashMap::new(),
+            selections: HashMap::new(),
+            selecting: None,
+            scroll_indicator_until: HashMap::new(),
+            grid_origins: HashMap::new(),
+            grid_sizes: HashMap::new(),
             fonts: None,
-            exited: false,
-            scroll_indicator_until: None,
-            selection: None,
-            selecting: false,
-            grid_origin: Rc::new(Cell::new(gpui::Point {
-                x: px(0.0),
-                y: px(0.0),
-            })),
+            font_size: 14.0,
+        };
+        // Initial terminal via the shared coordinator. If spawn fails (no
+        // PTY), keep the empty workspace + new-terminal action.
+        match view.coordinator.create_initial(80, 24) {
+            Ok(session_id) => {
+                view.start_runtime(cx, session_id);
+            }
+            Err(e) => {
+                tracing::error!("failed to spawn initial shell: {e}");
+            }
         }
+        view
+    }
+
+    /// Publish a coordinator-owned session's initial snapshot and start its
+    /// reader + poller. The session is already registered, so lookup never
+    /// observes a half-created terminal.
+    fn start_runtime(&mut self, cx: &mut Context<Self>, id: SessionId) {
+        let snapshot = self
+            .coordinator
+            .registry()
+            .get(id)
+            .and_then(|s| s.lock().ok().map(|s| s.viewport()))
+            .expect("coordinator-owned session must be registered");
+        self.grid_sizes.insert(id, (snapshot.cols, snapshot.lines));
+        self.snapshots.insert(id, snapshot);
+        let (tx, rx) = async_channel::bounded::<TerminalViewport>(8);
+        self.receivers.insert(id, rx.clone());
+        let session = self
+            .coordinator
+            .registry()
+            .get(id)
+            .expect("just registered");
+        Self::spawn_reader(session, tx);
+        Self::spawn_poller(cx, id, rx);
     }
 
     /// Background thread: drain PTY output, forward snapshots when changed.
@@ -94,9 +110,6 @@ impl TerminalView {
             };
             let mut last: Option<TerminalViewport> = None;
             loop {
-                // Sleep in the kernel until output arrives (or 200ms to
-                // re-check child exit). An idle shell wakes this thread a
-                // few times per second with no grid clones.
                 let readable = poll_fd_readable(master_fd, 200).unwrap_or(true);
                 let (snapshot, exited) = {
                     let mut session = match session.lock() {
@@ -126,9 +139,6 @@ impl TerminalView {
                             }
                         }
                     } else {
-                        // Timeout: only notice child exit, no output drain.
-                        // If the view is gone (receiver dropped), stop: an
-                        // idle reader must not retain the session forever.
                         if tx.is_closed() {
                             return;
                         }
@@ -144,8 +154,6 @@ impl TerminalView {
                 if let Some(viewport) = snapshot {
                     let changed = last.as_ref() != Some(&viewport);
                     if changed {
-                        // Bounded channel: on flood, drop this frame; a newer
-                        // snapshot follows. try_send never blocks the reader.
                         match tx.try_send(viewport.clone()) {
                             Ok(()) => last = Some(viewport),
                             Err(async_channel::TrySendError::Full(_)) => {}
@@ -160,54 +168,172 @@ impl TerminalView {
         });
     }
 
-    /// Main-thread receiver: apply snapshots as they arrive. Event-driven
-    /// (`recv().await` parks the task), so an idle terminal costs zero
-    /// main-thread wakeups — no polling timer.
-    fn spawn_poller(cx: &mut Context<Self>) {
+    /// Main-thread receiver for one session. Event-driven (`recv().await`
+    /// parks the task), so idle terminals cost zero main-thread wakeups.
+    /// Exits when the session is detached/closed or the view is released.
+    fn spawn_poller(
+        cx: &mut Context<Self>,
+        session_id: SessionId,
+        rx: async_channel::Receiver<TerminalViewport>,
+    ) {
         cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
-                let viewport = {
-                    let rx = match weak.update(cx, |view, _| view.rx.clone()) {
-                        Ok(rx) => rx,
-                        Err(_) => break, // view released
-                    };
-                    rx.recv().await
-                };
+                let viewport = rx.recv().await;
                 let Ok(viewport) = viewport else {
-                    // Sender dropped (reader exited): final exit check.
                     let _ = weak.update(cx, |view, cx| {
-                        if view
-                            .session
-                            .lock()
-                            .map(|session| session.exited().is_some())
-                            .unwrap_or(false)
-                        {
-                            view.exited = true;
+                        let exited = view
+                            .coordinator
+                            .registry()
+                            .get(session_id)
+                            .map(|s| s.lock().map(|s| s.exited().is_some()).unwrap_or(false))
+                            .unwrap_or(false);
+                        if exited {
+                            view.close_session(session_id, cx);
                             cx.notify();
                         }
                     });
                     break;
                 };
-                let released = weak
+                let done = weak
                     .update(cx, |view, cx| {
-                        view.snapshot = viewport;
+                        if !view.coordinator.registry().contains(session_id) {
+                            return true;
+                        }
+                        view.snapshots.insert(session_id, viewport);
                         if view
-                            .session
-                            .lock()
-                            .map(|session| session.exited().is_some())
+                            .coordinator
+                            .registry()
+                            .get(session_id)
+                            .map(|s| s.lock().map(|s| s.exited().is_some()).unwrap_or(false))
                             .unwrap_or(false)
                         {
-                            view.exited = true;
+                            // A shell exit is a pane-close event regardless
+                            // of which pane currently has focus. The session
+                            // ID is unique, so a delayed reader cannot close
+                            // a newly created/reused pane.
+                            view.close_session(session_id, cx);
+                            return true;
                         }
                         cx.notify();
+                        false
                     })
-                    .is_err();
-                if released {
+                    .unwrap_or(true);
+                if done {
                     break;
                 }
             }
         })
         .detach();
+    }
+
+    fn focused_session_id(&self) -> Option<SessionId> {
+        self.coordinator.focused_session_id()
+    }
+
+    fn session_id_for_pane(&self, pane: PaneId) -> Option<SessionId> {
+        self.coordinator.session_id_for_pane(pane)
+    }
+
+    /// Drop per-session UI state after its pane is gone. The PTY/session
+    /// handle itself is shut down by the caller off the UI thread.
+    fn forget_session_state(&mut self, session_id: SessionId, pane: PaneId) {
+        self.snapshots.remove(&session_id);
+        self.grid_sizes.remove(&session_id);
+        if let Some(rx) = self.receivers.remove(&session_id) {
+            rx.close();
+        }
+        self.selections.remove(&session_id);
+        self.scroll_indicator_until.remove(&session_id);
+        self.grid_origins.remove(&pane);
+        if self.selecting == Some(pane) {
+            self.selecting = None;
+        }
+    }
+
+    fn shutdown_session_bg(handle: Arc<Mutex<TerminalSession>>) {
+        std::thread::spawn(move || {
+            let reaped = handle
+                .lock()
+                .map(|mut session| session.shutdown())
+                .unwrap_or(false);
+            if !reaped {
+                tracing::warn!("terminal child did not reap within the bounded shutdown");
+            }
+        });
+    }
+
+    fn split_focused(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
+        if self.coordinator.focused().is_none() {
+            // Empty workspace: a split key creates the first terminal.
+            self.new_terminal_for_empty(cx);
+            return;
+        }
+        match self.coordinator.split_focused(direction, 80, 24) {
+            Ok((_pane_id, session_id)) => {
+                self.start_runtime(cx, session_id);
+                cx.notify();
+            }
+            Err(e) => {
+                tracing::error!("split aborted: {e}");
+            }
+        }
+    }
+
+    fn close_focused(&mut self, cx: &mut Context<Self>) {
+        if let Ok(closed) = self.coordinator.close_focused() {
+            self.finish_close(closed);
+            cx.notify();
+        }
+    }
+
+    fn close_session(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        if let Ok(closed) = self.coordinator.close_session(session_id) {
+            self.finish_close(closed);
+            cx.notify();
+        }
+    }
+
+    fn finish_close(&mut self, closed: omaterm_terminal::ClosedPane) {
+        if let Some(session_id) = closed.session_id {
+            self.forget_session_state(session_id, closed.pane_id);
+        }
+        if let Some(handle) = closed.handle {
+            // For a naturally exited shell, shutdown() observes the recorded
+            // exit immediately and does not send a second signal.
+            Self::shutdown_session_bg(handle);
+        }
+    }
+
+    fn focus_neighbor(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
+        if self.coordinator.focus_neighbor(direction).is_some() {
+            cx.notify();
+        }
+    }
+
+    fn resize_focused(&mut self, amount: f32, cx: &mut Context<Self>) {
+        if self.coordinator.resize_focused(amount).is_ok() {
+            cx.notify();
+        }
+    }
+
+    fn equalize(&mut self, cx: &mut Context<Self>) {
+        self.coordinator.equalize();
+        cx.notify();
+    }
+
+    fn new_terminal_for_empty(&mut self, cx: &mut Context<Self>) {
+        if !self.coordinator.is_empty() {
+            return;
+        }
+        match self.coordinator.create_initial(80, 24) {
+            Ok(session_id) => {
+                self.start_runtime(cx, session_id);
+                cx.notify();
+            }
+            Err(e) => {
+                tracing::error!("failed to spawn shell: {e}");
+            }
+        }
     }
 
     /// Resolve (once per font size) and cache the terminal font set.
@@ -223,45 +349,98 @@ impl TerminalView {
         self.fonts.clone().expect("fonts just resolved")
     }
 
-    fn resize_to_window(&mut self, window: &Window, fonts: &ResolvedFonts) {
-        let viewport = window.viewport_size();
-        let cols = ((viewport.width / fonts.cell_width).floor() as u16).clamp(2, 500);
-        let rows = ((viewport.height / fonts.line_height).floor() as u16).clamp(1, 500);
-        if let Ok(mut session) = self.session.lock() {
-            let current = session.viewport();
-            if current.cols != cols || current.lines != rows {
-                session.resize(cols, rows);
-            }
-        }
-    }
-
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        // libxkbcommon names (e.g. "Page_Up") are normalized for matching.
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
-        // Clipboard paste: Ctrl+Shift+V (reads Wayland clipboard, honors
-        // bracketed-paste mode).
+        // Clipboard paste: Ctrl+Shift+V.
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "v" {
             self.paste(cx);
             return;
         }
 
         // Explicit clipboard copy of the drag selection: Ctrl+Shift+C.
-        // (Drag-select also publishes to the Wayland primary selection.)
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "c" {
             self.copy_selection(cx);
             return;
         }
 
-        // Scrollback when not in the alternate screen: Shift+PageUp/PageDown
-        // scrolls history instead of reaching the application.
+        // Workspace commands (M2 bindings, preserved for M4). These take
+        // precedence over terminal input so layout never depends on the
+        // foreground program.
+        if event.keystroke.modifiers.control {
+            let key = event.keystroke.key.as_str();
+            if key == "{" || key == "[" {
+                self.resize_focused(-0.05, cx);
+                return;
+            }
+            if key == "}" || key == "]" {
+                self.resize_focused(0.05, cx);
+                return;
+            }
+        }
+        if event.keystroke.modifiers.control
+            && event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+        {
+            match key_name.as_str() {
+                "r" => {
+                    self.split_focused(SplitDirection::Right, cx);
+                    return;
+                }
+                "d" => {
+                    self.split_focused(SplitDirection::Down, cx);
+                    return;
+                }
+                "w" => {
+                    self.close_focused(cx);
+                    return;
+                }
+                "h" => {
+                    self.focus_neighbor(SplitDirection::Left, cx);
+                    return;
+                }
+                "j" => {
+                    self.focus_neighbor(SplitDirection::Down, cx);
+                    return;
+                }
+                "k" => {
+                    self.focus_neighbor(SplitDirection::Up, cx);
+                    return;
+                }
+                "l" => {
+                    self.focus_neighbor(SplitDirection::Right, cx);
+                    return;
+                }
+                "e" => {
+                    self.equalize(cx);
+                    return;
+                }
+                "t" => {
+                    self.new_terminal_for_empty(cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        let Some(session_id) = self.focused_session_id() else {
+            // Empty workspace: Enter/T also offers a fresh terminal.
+            if key_name == "enter" {
+                self.new_terminal_for_empty(cx);
+            }
+            return;
+        };
+        let Some(handle) = self.coordinator.registry().get(session_id) else {
+            return;
+        };
+
+        // Scrollback when not in the alternate screen: Shift+PageUp/PageDown.
         if event.keystroke.modifiers.shift
             && (key_name == "pageup" || key_name == "pagedown")
             && !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.alt
         {
-            let in_alt_screen = self
-                .session
+            let in_alt_screen = handle
                 .lock()
                 .map(|s| s.viewport().is_alt_screen)
                 .unwrap_or(false);
@@ -271,17 +450,16 @@ impl TerminalView {
                 } else {
                     ScrollCommand::PageDown
                 };
-                if let Ok(mut session) = self.session.lock() {
+                if let Ok(mut session) = handle.lock() {
                     session.scroll(command);
-                    self.snapshot = session.viewport();
+                    self.snapshots.insert(session_id, session.viewport());
                 }
-                self.flash_scroll_indicator(cx);
+                self.flash_scroll_indicator(session_id, cx);
                 return;
             }
         }
 
-        let (app_cursor, app_keypad) = self
-            .session
+        let (app_cursor, app_keypad) = handle
             .lock()
             .map(|s| (s.app_cursor(), s.app_keypad()))
             .unwrap_or((false, false));
@@ -292,7 +470,7 @@ impl TerminalView {
         if bytes.is_empty() {
             return;
         }
-        if let Ok(mut session) = self.session.lock() {
+        if let Ok(mut session) = handle.lock() {
             let _ = session.write_input(&bytes);
         }
     }
@@ -302,37 +480,45 @@ impl TerminalView {
             .read_from_clipboard()
             .and_then(|item| item.text().map(|s| s.to_string()));
         let Some(text) = text else { return };
+        let Some(session_id) = self.focused_session_id() else {
+            return;
+        };
+        let Some(handle) = self.coordinator.registry().get(session_id) else {
+            return;
+        };
         let bytes = {
-            let bracketed = self
-                .session
-                .lock()
-                .map(|s| s.bracketed_paste())
-                .unwrap_or(false);
+            let bracketed = handle.lock().map(|s| s.bracketed_paste()).unwrap_or(false);
             prepare_paste(&text, bracketed)
         };
-        if let Ok(mut session) = self.session.lock() {
+        if let Ok(mut session) = handle.lock() {
             let _ = session.write_input(&bytes);
         }
     }
 
-    /// Map a window-relative pointer position onto a grid cell. Returns
-    /// `None` outside the painted grid (no clamping: clicks on empty window
-    /// area must not start a selection).
-    fn pos_to_cell(&mut self, position: gpui::Point<Pixels>, cx: &App) -> Option<CellPoint> {
-        let origin = self.grid_origin.get();
+    /// Map a window-relative pointer position onto a grid cell for one pane.
+    /// Returns `None` outside the painted grid (no clamping).
+    fn pos_to_cell(
+        &mut self,
+        pane: PaneId,
+        position: gpui::Point<Pixels>,
+        cx: &App,
+    ) -> Option<CellPoint> {
+        let origin = self.grid_origins.get(&pane)?.get();
         let fonts = self.fonts(cx);
         let cell_width: f32 = fonts.cell_width.into();
         let line_height: f32 = fonts.line_height.into();
         if cell_width <= 0.0 || line_height <= 0.0 {
             return None;
         }
-        let rel_x = f32::from(position.x) - f32::from(origin.x);
-        let rel_y = f32::from(position.y) - f32::from(origin.y);
-        let cols = self.snapshot.cols as usize;
-        let lines = self.snapshot.lines as usize;
+        let session_id = self.session_id_for_pane(pane)?;
+        let snapshot = self.snapshots.get(&session_id)?;
+        let cols = snapshot.cols as usize;
+        let lines = snapshot.lines as usize;
         if cols == 0 || lines == 0 {
             return None;
         }
+        let rel_x = f32::from(position.x) - f32::from(origin.x);
+        let rel_y = f32::from(position.y) - f32::from(origin.y);
         let col = (rel_x / cell_width).floor() as isize;
         let row = (rel_y / line_height).floor() as isize;
         if row < 0 || col < 0 || row >= lines as isize || col >= cols as isize {
@@ -341,49 +527,94 @@ impl TerminalView {
         Some(CellPoint::new(row as usize, col as usize))
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(cell) = self.pos_to_cell(event.position, cx) else {
+    fn on_mouse_down(
+        &mut self,
+        pane: PaneId,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.coordinator.tree().find(pane).is_none() {
+            return;
+        }
+        // Click focuses first; selection starts only inside the grid.
+        if self.coordinator.focused() != Some(pane) {
+            let _ = self.coordinator.focus_pane(pane);
+            cx.notify();
+        }
+        window.focus(&self.focus_handle);
+        let Some(cell) = self.pos_to_cell(pane, event.position, cx) else {
             return;
         };
-        self.selecting = true;
-        self.selection = Some(SelectionRange::new(cell, cell));
+        let Some(session_id) = self.session_id_for_pane(pane) else {
+            return;
+        };
+        self.selecting = Some(pane);
+        self.selections
+            .insert(session_id, SelectionRange::new(cell, cell));
         cx.notify();
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting {
+    fn on_mouse_move(
+        &mut self,
+        pane: PaneId,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.coordinator.tree().find(pane).is_none() {
             return;
         }
-        let Some(cell) = self.pos_to_cell(event.position, cx) else {
+        // Hover is the pane focus model: keyboard input follows the pointer
+        // without requiring a click. During a drag, the selection continues
+        // to belong to the pane where the drag began.
+        if self.coordinator.focused() != Some(pane) && self.coordinator.focus_pane(pane).is_ok() {
+            cx.notify();
+        }
+        if self.selecting != Some(pane) {
+            return;
+        }
+        let Some(cell) = self.pos_to_cell(pane, event.position, cx) else {
             return;
         };
-        if let Some(selection) = &mut self.selection {
+        let Some(session_id) = self.session_id_for_pane(pane) else {
+            return;
+        };
+        if let Some(selection) = self.selections.get_mut(&session_id) {
             selection.active = cell;
             cx.notify();
         }
     }
 
-    fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting {
+    fn on_mouse_up(
+        &mut self,
+        pane: PaneId,
+        event: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selecting != Some(pane) {
             return;
         }
-        self.selecting = false;
-        if let Some(cell) = self.pos_to_cell(event.position, cx)
-            && let Some(selection) = &mut self.selection
+        self.selecting = None;
+        let Some(session_id) = self.session_id_for_pane(pane) else {
+            return;
+        };
+        if let Some(cell) = self.pos_to_cell(pane, event.position, cx)
+            && let Some(selection) = self.selections.get_mut(&session_id)
         {
             selection.active = cell;
         }
-        // Press without drag clears; a real drag publishes to the Wayland
-        // primary selection (conventional terminal behavior). Explicit
-        // clipboard copy stays on Ctrl+Shift+C.
-        match self.selection {
+        match self.selections.get(&session_id).copied() {
             Some(range) if range.is_empty() => {
-                self.selection = None;
+                self.selections.remove(&session_id);
             }
             Some(range) => {
-                let text = extract_text(&self.snapshot, range);
-                if !text.is_empty() {
-                    cx.write_to_primary(ClipboardItem::new_string(text));
+                if let Some(snapshot) = self.snapshots.get(&session_id) {
+                    let text = extract_text(snapshot, range);
+                    if !text.is_empty() {
+                        cx.write_to_primary(ClipboardItem::new_string(text));
+                    }
                 }
             }
             None => {}
@@ -391,15 +622,21 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Explicit clipboard copy of the active selection (Ctrl+Shift+C).
+    /// Explicit clipboard copy of the focused pane's selection (Ctrl+Shift+C).
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        let Some(range) = self.selection else {
+        let Some(session_id) = self.focused_session_id() else {
+            return;
+        };
+        let Some(range) = self.selections.get(&session_id).copied() else {
             return;
         };
         if range.is_empty() {
             return;
-        }
-        let text = extract_text(&self.snapshot, range);
+        };
+        let Some(snapshot) = self.snapshots.get(&session_id) else {
+            return;
+        };
+        let text = extract_text(snapshot, range);
         if text.is_empty() {
             return;
         }
@@ -407,21 +644,21 @@ impl TerminalView {
     }
 
     /// Flash the scroll thumb for [`SCROLL_INDICATOR_FADE_MS`], then hide it.
-    /// Each scroll input extends the deadline and spawns one short-lived
-    /// task; stale tasks see an unexpired deadline and exit quietly. Nothing
-    /// runs at idle.
-    fn flash_scroll_indicator(&mut self, cx: &mut Context<Self>) {
-        self.scroll_indicator_until =
-            Some(Instant::now() + Duration::from_millis(SCROLL_INDICATOR_FADE_MS));
+    fn flash_scroll_indicator(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        self.scroll_indicator_until.insert(
+            session_id,
+            Instant::now() + Duration::from_millis(SCROLL_INDICATOR_FADE_MS),
+        );
         cx.notify();
         cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
             Timer::after(Duration::from_millis(SCROLL_INDICATOR_FADE_MS + 50)).await;
             let _ = weak.update(cx, |view, cx| {
                 if view
                     .scroll_indicator_until
-                    .is_some_and(|deadline| Instant::now() >= deadline)
+                    .get(&session_id)
+                    .is_some_and(|deadline| Instant::now() >= *deadline)
                 {
-                    view.scroll_indicator_until = None;
+                    view.scroll_indicator_until.remove(&session_id);
                     cx.notify();
                 }
             });
@@ -431,15 +668,14 @@ impl TerminalView {
 
     fn on_scroll_wheel(
         &mut self,
+        session_id: SessionId,
         event: &ScrollWheelEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // GPUI's Wayland backend already normalizes the axis sign (its
-        // `vertical_modifier` is -1.0), so positive y means wheel-up, i.e.
-        // toward history. Pass it through untouched: the compositor applies
-        // the user's natural-scroll setting before we ever see the delta,
-        // and negating here would fight that setting.
+        let Some(handle) = self.coordinator.registry().get(session_id) else {
+            return;
+        };
         let dy_lines: f32 = match event.delta {
             ScrollDelta::Pixels(point) => {
                 let line_height: f32 = self.fonts(&*cx).line_height.into();
@@ -450,8 +686,6 @@ impl TerminalView {
             }
             ScrollDelta::Lines(point) => point.y,
         };
-        // Positive steps scroll toward history, matching `Scroll::Delta`
-        // semantics where the display offset grows upward.
         let mut steps = dy_lines.round() as i32;
         if steps == 0 && dy_lines != 0.0 {
             steps = dy_lines.signum() as i32;
@@ -460,12 +694,10 @@ impl TerminalView {
             return;
         }
 
-        let Ok(session) = self.session.lock() else {
+        let Ok(session) = handle.lock() else {
             return;
         };
         if session.viewport().is_alt_screen {
-            // Alternate screen has no scrollback: emulate the common
-            // alternate-scroll behavior by sending arrow keys.
             let app_cursor = session.app_cursor();
             drop(session);
             let key = if steps > 0 { Key::Up } else { Key::Down };
@@ -477,25 +709,294 @@ impl TerminalView {
                     app_cursor,
                     app_keypad: false,
                 });
-                if let Ok(mut session) = self.session.lock() {
+                if let Ok(mut session) = handle.lock() {
                     let _ = session.write_input(&bytes);
                 }
             }
             return;
         }
         drop(session);
-        if let Ok(mut session) = self.session.lock() {
+        if let Ok(mut session) = handle.lock() {
             session.scroll(ScrollCommand::Lines(steps));
-            self.snapshot = session.viewport();
+            self.snapshots.insert(session_id, session.viewport());
         }
-        self.flash_scroll_indicator(cx);
+        self.flash_scroll_indicator(session_id, cx);
+    }
+
+    fn render_node(
+        &mut self,
+        node: &PaneNode,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        match node.clone() {
+            PaneNode::Pane(pane) => self.render_leaf(pane, cx),
+            PaneNode::Split {
+                axis,
+                fraction,
+                first,
+                second,
+                ..
+            } => {
+                let first = self.render_node(&first, _window, cx);
+                let second = self.render_node(&second, _window, cx);
+                let first = match axis {
+                    SplitAxis::Horizontal => {
+                        div().w(relative(fraction)).h_full().flex().child(first)
+                    }
+                    SplitAxis::Vertical => div().h(relative(fraction)).w_full().flex().child(first),
+                };
+                let second = match axis {
+                    SplitAxis::Horizontal => div()
+                        .w(relative(1.0 - fraction))
+                        .h_full()
+                        .flex()
+                        .child(second),
+                    SplitAxis::Vertical => div()
+                        .h(relative(1.0 - fraction))
+                        .w_full()
+                        .flex()
+                        .child(second),
+                };
+                let container = div().flex().flex_1().size_full();
+                match axis {
+                    SplitAxis::Horizontal => container.flex_row(),
+                    SplitAxis::Vertical => container.flex_col(),
+                }
+                .child(first)
+                .child(second)
+                .into_any_element()
+            }
+        }
+    }
+
+    fn render_leaf(&mut self, pane: Pane, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let pane_id = pane.id;
+        let fonts = self.fonts(cx);
+        let origin = self
+            .grid_origins
+            .entry(pane_id)
+            .or_insert_with(|| {
+                Rc::new(Cell::new(gpui::Point {
+                    x: px(0.0),
+                    y: px(0.0),
+                }))
+            })
+            .clone();
+
+        let session_id = match pane.content {
+            PaneContent::Terminal(id) => id,
+            PaneContent::Empty => {
+                return div()
+                    .flex()
+                    .flex_1()
+                    .m_1()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgb(0x18181B))
+                    .text_color(rgb(0xA1A1AA))
+                    .child("Empty pane")
+                    .into_any_element();
+            }
+        };
+
+        if !self.coordinator.registry().contains(session_id) {
+            return div()
+                .flex()
+                .flex_1()
+                .m_1()
+                .items_center()
+                .justify_center()
+                .bg(rgb(0x18181B))
+                .text_color(rgb(0xA1A1AA))
+                .child("Terminal closed.")
+                .into_any_element();
+        }
+
+        let Some(snapshot) = self.snapshots.get(&session_id).cloned() else {
+            return div()
+                .flex()
+                .flex_1()
+                .m_1()
+                .items_center()
+                .justify_center()
+                .bg(rgb(0x18181B))
+                .text_color(rgb(0xA1A1AA))
+                .child("Starting shell…")
+                .into_any_element();
+        };
+
+        let focused = self.coordinator.focused() == Some(pane_id);
+        let cursor_color: Hsla = rgb(0xE4E4E7).into();
+        let show_scrollbar = self
+            .scroll_indicator_until
+            .get(&session_id)
+            .is_some_and(|deadline| Instant::now() < *deadline);
+        let selection = self.selections.get(&session_id).copied().and_then(|range| {
+            if range.is_empty() {
+                None
+            } else {
+                Some(range.normalized())
+            }
+        });
+
+        let border = if focused { 0xA1A1AA } else { 0x27272A };
+        div()
+            .flex()
+            .flex_1()
+            .flex_col()
+            .size_full()
+            .bg(rgb(0x18181B))
+            .border_1()
+            .border_color(rgb(border))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.on_mouse_down(pane_id, event, window, cx);
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(move |view, event: &MouseMoveEvent, window, cx| {
+                    view.on_mouse_move(pane_id, event, window, cx);
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseUpEvent, window, cx| {
+                    view.on_mouse_up(pane_id, event, window, cx);
+                }),
+            )
+            .on_scroll_wheel(
+                cx.listener(move |view, event: &ScrollWheelEvent, window, cx| {
+                    view.on_scroll_wheel(session_id, event, window, cx);
+                }),
+            )
+            .child(div().flex_1().size_full().child(canvas(
+                move |bounds, _, _| bounds,
+                move |bounds: Bounds<Pixels>,
+                      bounds_prepaint: Bounds<Pixels>,
+                      window: &mut Window,
+                      cx: &mut App| {
+                    // Grid origin for mouse-to-cell mapping. PTY sizing is
+                    // handled in `render` via window geometry x pane
+                    // fractions (deterministic); paint never resizes, so a
+                    // transient canvas offer can never collapse a live grid.
+                    origin.set(bounds_prepaint.origin);
+                    paint_terminal(
+                        bounds,
+                        bounds_prepaint,
+                        &PaintArgs {
+                            snapshot: &snapshot,
+                            fonts: &fonts,
+                            cursor_color,
+                            show_scrollbar,
+                            selection,
+                        },
+                        window,
+                        cx,
+                    );
+                },
+            )))
+            .into_any_element()
+    }
+
+    /// Match every live PTY grid to its pane's share of the window.
+    ///
+    /// Geometry comes from the window size times the core normalized pane
+    /// rects (the same fractions the layout renders), never from transient
+    /// canvas offers — so an unsettled layout pass can never collapse a
+    /// live grid. Sessions resize in place: shell, scrollback, PID, and CWD
+    /// survive. Offers below 2x2 are layout noise and are skipped (M2
+    /// fractions guarantee larger panes at sane window sizes).
+    fn resize_panes_to_window(&mut self, window: &Window, cx: &mut App) {
+        let fonts = self.fonts(cx);
+        let cell_width: f32 = fonts.cell_width.into();
+        let line_height: f32 = fonts.line_height.into();
+        if cell_width <= 0.0 || line_height <= 0.0 {
+            return;
+        }
+        let viewport = window.viewport_size();
+        let window_width: f32 = viewport.width.into();
+        let window_height: f32 = viewport.height.into();
+        for pane_rect in self.coordinator.tree().pane_rects() {
+            let Some(session_id) = self.coordinator.session_id_for_pane(pane_rect.pane) else {
+                continue;
+            };
+            let cols =
+                ((window_width * pane_rect.rect.width / cell_width).floor() as u16).clamp(2, 500);
+            let rows = ((window_height * pane_rect.rect.height / line_height).floor() as u16)
+                .clamp(1, 500);
+            if cols < 2 || rows < 2 {
+                continue;
+            }
+            if self.grid_sizes.get(&session_id) == Some(&(cols, rows)) {
+                continue;
+            }
+            if let Some(handle) = self.coordinator.registry().get(session_id)
+                && let Ok(mut session) = handle.lock()
+            {
+                session.resize(cols, rows);
+                // The engine grid changes synchronously, while PTY output
+                // may be quiet. Publish the new viewport now so rendering
+                // never draws an old-sized grid after a pane resize.
+                self.snapshots.insert(session_id, session.viewport());
+                self.grid_sizes.insert(session_id, (cols, rows));
+            }
+        }
+    }
+}
+
+impl Render for WorkspaceView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.resize_panes_to_window(window, cx);
+        let content = self
+            .coordinator
+            .tree()
+            .root()
+            .cloned()
+            .map(|root| self.render_node(&root, window, cx))
+            .unwrap_or_else(|| {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .bg(rgb(0x18181B))
+                    .text_color(rgb(0xA1A1AA))
+                    .child("No terminals. Start a fresh shell:")
+                    .child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .border_1()
+                            .border_color(rgb(0x52525B))
+                            .text_color(rgb(0xE4E4E7))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _event: &MouseDownEvent, window, cx| {
+                                    window.focus(&view.focus_handle);
+                                    view.new_terminal_for_empty(cx);
+                                }),
+                            )
+                            .child("New terminal (Ctrl+Shift+T)"),
+                    )
+                    .into_any_element()
+            });
+        div()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .size_full()
+            .flex()
+            .bg(rgb(0x18181B))
+            .child(content)
     }
 }
 
 /// Translate a GPUI key event into the GPUI-free [`KeyEvent`].
 fn translate_key(event: &KeyDownEvent, app_cursor: bool, app_keypad: bool) -> Option<KeyEvent> {
     let modifiers = &event.keystroke.modifiers;
-    // Super is reserved for desktop chrome; encode_key swallows it.
     let mods = KeyModifiers {
         ctrl: modifiers.control,
         alt: modifiers.alt,
@@ -503,7 +1004,10 @@ fn translate_key(event: &KeyDownEvent, app_cursor: bool, app_keypad: bool) -> Op
         super_key: modifiers.platform,
     };
     let key = match event.keystroke.key.to_lowercase().replace('_', "").as_str() {
-        "enter" => Key::Enter,
+        // "return" is what some Wayland virtual keyboards (e.g. wtype
+        // `-k Return`) report for the main Enter key; "kpenter" is the
+        // keypad variant. Physical keyboards report "enter".
+        "enter" | "return" | "kpenter" => Key::Enter,
         "tab" => Key::Tab,
         "backspace" => Key::Backspace,
         "escape" => Key::Escape,
@@ -536,10 +1040,7 @@ fn translate_key(event: &KeyDownEvent, app_cursor: bool, app_keypad: bool) -> Op
     })
 }
 
-/// Preferred monospace families, in order. The runtime picks the first one
-/// present on the system so prompt icons (Nerd Font glyphs) and CJK/emoji
-/// fall back sanely; `"monospace"` is the portable last resort that follows
-/// the user's fontconfig configuration.
+/// Preferred monospace families, in order.
 const MONO_PREFERENCES: &[&str] = &[
     "JetBrainsMono Nerd Font",
     "JetBrainsMono NF",
@@ -549,8 +1050,7 @@ const MONO_PREFERENCES: &[&str] = &[
     "monospace",
 ];
 
-/// Glyph fallback chain for symbols the primary font lacks (prompt icons,
-/// emoji, CJK).
+/// Glyph fallback chain for symbols the primary font lacks.
 fn symbol_fallbacks() -> FontFallbacks {
     FontFallbacks::from_fonts(
         [
@@ -576,8 +1076,7 @@ fn pick_mono_family(cx: &App) -> String {
     "monospace".to_string()
 }
 
-/// Terminal font set: base + bold/italic variants, ligatures disabled
-/// (ligatures merge columns and break the grid), symbol fallbacks attached.
+/// Terminal font set: base + bold/italic variants, ligatures disabled.
 fn terminal_fonts(cx: &App) -> [Font; 4] {
     let family = pick_mono_family(cx);
     let fallbacks = symbol_fallbacks();
@@ -617,10 +1116,7 @@ fn style_index(bold: bool, italic: bool) -> usize {
     }
 }
 
-/// Resolved font IDs plus grid metrics, cached per font size. Metrics come
-/// from the font itself (ascent + |descent| — GPUI reports descent negative
-/// on Linux), never from window UI metrics, so rows sit exactly on the grid
-/// the PTY was sized for.
+/// Resolved font IDs plus grid metrics, cached per font size.
 #[derive(Debug, Clone)]
 struct ResolvedFonts {
     fonts: [Font; 4],
@@ -632,14 +1128,9 @@ struct ResolvedFonts {
 fn resolve_terminal_fonts(cx: &App, font_size: Pixels) -> ResolvedFonts {
     let fonts = terminal_fonts(cx);
     let base_id = cx.text_system().resolve_font(&fonts[0]);
-    // Resolve the style variants eagerly so missing bold/italic faces surface
-    // at startup instead of mid-frame.
     for variant in &fonts[1..] {
         cx.text_system().resolve_font(variant);
     }
-    // Cell width is the `M` advance of the base face. A true monospace face
-    // advances every glyph identically, which is what keeps shaped runs
-    // column-aligned; probe a spread of glyphs and warn on mismatch.
     let cell_width = cx
         .text_system()
         .advance(base_id, font_size, 'M')
@@ -661,9 +1152,6 @@ fn resolve_terminal_fonts(cx: &App, font_size: Pixels) -> ResolvedFonts {
     }
     let ascent = cx.text_system().ascent(base_id, font_size);
     let descent = cx.text_system().descent(base_id, font_size);
-    // NOTE: GPUI's Linux backend reports descent as a NEGATIVE below-baseline
-    // offset (`descent: -metrics.descent` in platform/linux/text_system.rs),
-    // so the content height is ascent + |descent|, not ascent + descent.
     let line_height = {
         let a: f32 = ascent.into();
         let d: f32 = descent.into();
@@ -702,7 +1190,7 @@ fn bg_paint(cell_bg: TermColor, inverse: bool) -> Option<Hsla> {
         return Some(match cell_bg {
             TermColor::Rgb(r, g, b) => rgb(rgb_hex(r, g, b)).into(),
             TermColor::DefaultFg => rgb(0xE4E4E7).into(),
-            TermColor::DefaultBg => rgb(0x18181B).into(),
+            TermColor::DefaultBg => rgb(0xE4E4E7).into(),
         });
     }
     match cell_bg {
@@ -714,76 +1202,6 @@ fn bg_paint(cell_bg: TermColor, inverse: bool) -> Option<Hsla> {
 
 fn rgb_hex(r: u8, g: u8, b: u8) -> u32 {
     (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
-}
-
-impl Render for TerminalView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let fonts = self.fonts(cx);
-        self.resize_to_window(window, &fonts);
-
-        if self.exited {
-            return div()
-                .track_focus(&self.focus_handle)
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(rgb(0x18181B))
-                .text_color(rgb(0xA1A1AA))
-                .child("Shell exited.")
-                .into_any_element();
-        }
-
-        let snapshot = self.snapshot.clone();
-        let cursor_color: Hsla = rgb(0xE4E4E7).into();
-        // Thumb shows only briefly after scroll input, never persistently.
-        let show_scrollbar = self
-            .scroll_indicator_until
-            .is_some_and(|deadline| Instant::now() < deadline);
-        // Normalized inclusive (start, end); empty press-without-drag selects
-        // nothing and paints nothing.
-        let selection = self.selection.and_then(|range| {
-            if range.is_empty() {
-                None
-            } else {
-                Some(range.normalized())
-            }
-        });
-        let grid_origin = Rc::clone(&self.grid_origin);
-
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .size_full()
-            .bg(rgb(0x18181B))
-            .child(canvas(
-                move |bounds, _, _| bounds,
-                move |bounds: Bounds<Pixels>,
-                      bounds_prepaint: Bounds<Pixels>,
-                      window: &mut Window,
-                      cx: &mut App| {
-                    grid_origin.set(bounds_prepaint.origin);
-                    paint_terminal(
-                        bounds,
-                        bounds_prepaint,
-                        &PaintArgs {
-                            snapshot: &snapshot,
-                            fonts: &fonts,
-                            cursor_color,
-                            show_scrollbar,
-                            selection,
-                        },
-                        window,
-                        cx,
-                    );
-                },
-            ))
-            .into_any_element()
-    }
 }
 
 /// Paint parameters bundled so `paint_terminal` stays under clippy's
@@ -813,8 +1231,6 @@ fn paint_terminal(
     let line_height = fonts.line_height;
     let font_size = fonts.font_size;
 
-    // Reverse-video block cursor position. Computed once so the row pass can
-    // skip the cursor cell (it is painted below in inverted colors).
     let cursor_cell = if snapshot.cursor.visible
         && snapshot.display_offset == 0
         && snapshot.cursor.shape == omaterm_terminal::CursorShape::Block
@@ -827,7 +1243,6 @@ fn paint_terminal(
     for (row_idx, row) in snapshot.rows.iter().enumerate() {
         let y = origin.y + line_height * (row_idx as f32);
 
-        // Merged background runs (skip default/transparent cells).
         let mut run_start: Option<(usize, Hsla)> = None;
         let flush_bg = |start: usize, end: usize, color: Hsla, window: &mut Window| {
             let x = origin.x + cell_width * (start as f32);
@@ -862,8 +1277,6 @@ fn paint_terminal(
             flush_bg(start, row.cells.len(), color, window);
         }
 
-        // Selection highlight: over backgrounds, under glyphs. Inclusive
-        // end column, clamped to the row.
         if let Some((sel_start, sel_end)) = selection
             && row_idx >= sel_start.row
             && row_idx <= sel_end.row
@@ -896,11 +1309,6 @@ fn paint_terminal(
             }
         }
 
-        // Text: group consecutive cells with identical styling into runs.
-        // Wide-continuation cells are skipped (the lead cell draws the glyph).
-        // Runs are painted at the row origin; with a verified monospace face
-        // every glyph advances exactly one cell, so columns stay grid-aligned
-        // and the cursor (placed at col x cell_width) lands on its glyph.
         let mut text = String::new();
         let mut runs: Vec<TextRun> = Vec::new();
         let mut run_start_len = 0usize;
@@ -938,7 +1346,6 @@ fn paint_terminal(
             if cell.width == CellWidth::WideContinuation {
                 continue;
             }
-            // The reverse-video block cursor cell is painted below.
             if cursor_cell == Some((row_idx, col_idx)) {
                 text.push(' ');
                 continue;
@@ -988,10 +1395,6 @@ fn paint_terminal(
         }
     }
 
-    // Cursor. Hidden while viewing scrollback history, matching conventional
-    // terminal behavior (the cursor lives at the live edge). A block cursor
-    // is reverse video: cell background in the cursor color with the cell
-    // glyph drawn in the cell's own background color.
     if snapshot.cursor.visible && snapshot.display_offset == 0 {
         let x = origin.x + cell_width * f32::from(snapshot.cursor.col);
         let y = origin.y + line_height * f32::from(snapshot.cursor.row);
@@ -1018,8 +1421,6 @@ fn paint_terminal(
                     },
                     cursor_color,
                 ));
-                // Glyph in the cell's background color for contrast.
-                // NOTE: TextRun::len counts UTF-8 bytes.
                 let glyph_color: Hsla = cell_bg.unwrap_or(rgb(0x18181B).into());
                 if !cell_text.trim().is_empty() {
                     let run_len = cell_text.len();
@@ -1070,12 +1471,6 @@ fn paint_terminal(
         }
     }
 
-    // Scroll position indicator: a slim thumb on the right edge showing
-    // where the viewport sits within total (history + visible) content.
-    // Shown only briefly after scroll input, and only when scrollback
-    // history exists. `display_offset == 0` is the live bottom edge, so the
-    // thumb rests at the track bottom there and rises toward the top as the
-    // viewport moves into older history.
     let history = snapshot.history_size;
     if show_scrollbar && history > 0 {
         let track_x = origin.x + origin_bounds.size.width - px(8.0);
@@ -1119,7 +1514,7 @@ fn main() {
             },
             |window, cx| {
                 window.set_window_title("OmaTerm");
-                cx.new(|cx| TerminalView::new(window, cx))
+                cx.new(|cx| WorkspaceView::new(window, cx))
             },
         )
         .expect("failed to open OmaTerm window");

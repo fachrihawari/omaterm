@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
-use omaterm_terminal::{TerminalSession, TerminalViewport};
+use omaterm_core::SplitDirection;
+use omaterm_terminal::{
+    TerminalConfig, TerminalRegistry, TerminalSession, TerminalViewport, WorkspaceCoordinator,
+};
 
 fn pump_until(
     session: &mut TerminalSession,
@@ -306,6 +309,337 @@ fn resize_during_output_keeps_tail() {
         viewport_text(&viewport).contains("rz-1500"),
         "tail should survive resize, got:\n{}",
         viewport_text(&viewport)
+    );
+}
+
+fn registry_session(
+    registry: &mut TerminalRegistry,
+    shell: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> omaterm_core::SessionId {
+    registry
+        .create(TerminalConfig {
+            working_directory: std::env::temp_dir(),
+            shell,
+            cols,
+            rows,
+        })
+        .expect("spawn registry session")
+}
+
+fn session_text(registry: &TerminalRegistry, id: omaterm_core::SessionId) -> String {
+    let handle = registry.get(id).expect("session registered");
+    let mut session = handle.lock().unwrap();
+    let _ = session.pump();
+    viewport_text(&session.viewport())
+}
+
+fn wait_for_text(
+    registry: &TerminalRegistry,
+    id: omaterm_core::SessionId,
+    timeout: Duration,
+    needle: &str,
+) -> String {
+    let start = Instant::now();
+    loop {
+        let text = session_text(registry, id);
+        if text.contains(needle) {
+            return text;
+        }
+        if start.elapsed() > timeout {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_for_registry_prompt(
+    registry: &TerminalRegistry,
+    id: omaterm_core::SessionId,
+    timeout: Duration,
+) -> bool {
+    wait_for(timeout, || !session_text(registry, id).trim().is_empty())
+}
+
+#[test]
+fn four_registry_sessions_stay_independent() {
+    let mut registry = TerminalRegistry::new();
+    let ids: Vec<_> = (0..4)
+        .map(|_| registry_session(&mut registry, Some("/bin/sh".to_string()), 80, 24))
+        .collect();
+    // Distinct process identities.
+    let mut pids: Vec<u32> = ids
+        .iter()
+        .map(|id| registry.get(*id).unwrap().lock().unwrap().child_pid())
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    assert_eq!(pids.len(), 4, "each pane must own its shell process");
+
+    for (i, id) in ids.iter().enumerate() {
+        let handle = registry.get(*id).unwrap();
+        // Wait for the shell prompt before writing: startup bytes can be
+        // swallowed, which would lose the marker on a cold session.
+        wait_for_text(&registry, *id, Duration::from_secs(5), "$");
+        handle
+            .lock()
+            .unwrap()
+            .write_input(format!("echo MARKER-{i}\n").as_bytes())
+            .expect("write marker");
+    }
+    for (i, id) in ids.iter().enumerate() {
+        let text = wait_for_text(
+            &registry,
+            *id,
+            Duration::from_secs(5),
+            &format!("MARKER-{i}"),
+        );
+        assert!(
+            text.contains(&format!("MARKER-{i}")),
+            "pane {i} should show its own marker"
+        );
+        for (j, _) in ids.iter().enumerate() {
+            if i != j {
+                assert!(
+                    !text.contains(&format!("MARKER-{j}")),
+                    "pane {i} must not show pane {j}'s output"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn coordinator_close_kills_only_target() {
+    let mut ws = WorkspaceCoordinator::new(std::env::temp_dir());
+    ws.create_initial(80, 24).expect("initial");
+    ws.split_focused(SplitDirection::Right, 80, 24)
+        .expect("split 2");
+    ws.focus_pane(ws.tree().panes()[0].id).unwrap();
+    ws.split_focused(SplitDirection::Down, 80, 24)
+        .expect("split 3");
+    assert_eq!(ws.pane_count(), 3);
+    let survivor_pids: Vec<u32> = {
+        let panes = ws.tree().panes();
+        panes[1..]
+            .iter()
+            .map(|pane| {
+                let id = ws.session_id_for_pane(pane.id).unwrap();
+                ws.registry().get(id).unwrap().lock().unwrap().child_pid()
+            })
+            .collect()
+    };
+    // Close the first pane; survivors must keep their PIDs and input.
+    ws.focus_pane(ws.tree().panes()[0].id).unwrap();
+    let closed = ws.close_focused().expect("close");
+    let closed_pid = closed
+        .handle
+        .as_ref()
+        .map(|h| h.lock().unwrap().child_pid());
+    assert_eq!(ws.pane_count(), 2);
+    assert_eq!(ws.session_count(), 2);
+    for pane in ws.tree().panes() {
+        let id = ws.session_id_for_pane(pane.id).unwrap();
+        let handle = ws.registry().get(id).unwrap();
+        let pid = handle.lock().unwrap().child_pid();
+        assert!(
+            survivor_pids.contains(&pid),
+            "survivor PID {pid} must be stable across sibling close"
+        );
+        if let Some(closed_pid) = closed_pid {
+            assert_ne!(pid, closed_pid, "survivor must not be the closed child");
+        }
+        wait_for_text(ws.registry(), id, Duration::from_secs(5), "$");
+        handle
+            .lock()
+            .unwrap()
+            .write_input(b"echo ALIVE\n")
+            .expect("write");
+        let text = wait_for_text(ws.registry(), id, Duration::from_secs(5), "ALIVE");
+        assert!(text.contains("ALIVE"), "survivor must accept input");
+    }
+    // Reap the detached child; the PID must disappear (no zombie).
+    let handle = closed.handle.unwrap();
+    assert!(handle.lock().unwrap().shutdown());
+    let pid = closed_pid.unwrap();
+    assert!(
+        wait_for(Duration::from_secs(5), || child_gone(pid)),
+        "closed child {pid} must be reaped"
+    );
+}
+
+#[test]
+fn exited_shells_close_only_their_panes_for_exit_and_ctrl_d() {
+    for (exit_input, label) in [
+        (b"exit\n".as_slice(), "exit"),
+        (b"\x04".as_slice(), "Ctrl+D"),
+    ] {
+        let mut ws = WorkspaceCoordinator::new(std::env::temp_dir());
+        let exited_id = ws.create_initial(80, 24).expect("initial");
+        let (survivor_pane, survivor_id) = ws
+            .split_focused(SplitDirection::Right, 80, 24)
+            .expect("split");
+        // The target is deliberately unfocused to prove exit handling closes
+        // by SessionId, rather than acting on whatever pane owns focus.
+        ws.focus_pane(survivor_pane).expect("focus survivor");
+        let target = ws.registry().get(exited_id).expect("target registered");
+        assert!(wait_for_registry_prompt(
+            ws.registry(),
+            exited_id,
+            Duration::from_secs(5)
+        ));
+        target
+            .lock()
+            .unwrap()
+            .write_input(exit_input)
+            .expect("send shell exit");
+        let exited = wait_for(Duration::from_secs(5), || {
+            let Ok(mut session) = target.lock() else {
+                return false;
+            };
+            let _ = session.pump();
+            session.poll_child()
+        });
+        assert!(exited, "{label} should terminate the target shell");
+
+        let closed = ws
+            .close_session(exited_id)
+            .expect("exit should resolve to its pane");
+        assert_eq!(closed.session_id, Some(exited_id));
+        assert_eq!(ws.pane_count(), 1);
+        assert_eq!(ws.session_count(), 1);
+        assert!(ws.registry().get(exited_id).is_none());
+        assert_eq!(ws.focused(), Some(survivor_pane));
+        assert_eq!(ws.focused_session_id(), Some(survivor_id));
+
+        let survivor = ws.registry().get(survivor_id).expect("sibling remains");
+        assert!(wait_for_registry_prompt(
+            ws.registry(),
+            survivor_id,
+            Duration::from_secs(5)
+        ));
+        survivor
+            .lock()
+            .unwrap()
+            .write_input(b"echo SIBLING-ALIVE\n")
+            .expect("sibling accepts input");
+        let text = wait_for_text(
+            ws.registry(),
+            survivor_id,
+            Duration::from_secs(5),
+            "SIBLING-ALIVE",
+        );
+        assert!(text.contains("SIBLING-ALIVE"), "sibling stays usable");
+
+        if let Some(handle) = closed.handle {
+            assert!(handle.lock().unwrap().shutdown());
+        }
+    }
+}
+
+#[test]
+fn final_shell_exit_closes_last_pane_and_empties_workspace() {
+    let mut ws = WorkspaceCoordinator::new(std::env::temp_dir());
+    let session_id = ws.create_initial(80, 24).expect("initial");
+    let handle = ws.registry().get(session_id).expect("session registered");
+    let pid = handle.lock().unwrap().child_pid();
+    assert!(wait_for_registry_prompt(
+        ws.registry(),
+        session_id,
+        Duration::from_secs(5)
+    ));
+    handle
+        .lock()
+        .unwrap()
+        .write_input(b"\x04")
+        .expect("send Ctrl+D");
+    assert!(wait_for(Duration::from_secs(5), || {
+        let Ok(mut session) = handle.lock() else {
+            return false;
+        };
+        let _ = session.pump();
+        session.poll_child()
+    }));
+
+    let closed = ws.close_session(session_id).expect("close exited pane");
+    assert_eq!(closed.session_id, Some(session_id));
+    assert!(ws.is_empty());
+    assert_eq!(ws.focused(), None);
+    assert_eq!(ws.session_count(), 0);
+    assert!(closed.handle.unwrap().lock().unwrap().shutdown());
+    assert!(wait_for(Duration::from_secs(5), || child_gone(pid)));
+}
+
+#[test]
+fn resize_one_session_leaves_others_unchanged() {
+    let mut registry = TerminalRegistry::new();
+    let first = registry_session(&mut registry, Some("/bin/sh".to_string()), 80, 24);
+    let second = registry_session(&mut registry, Some("/bin/sh".to_string()), 80, 24);
+    registry.get(first).unwrap().lock().unwrap().resize(100, 30);
+    let _ = registry.get(first).unwrap().lock().unwrap().pump();
+    let _ = registry.get(second).unwrap().lock().unwrap().pump();
+    let a = registry.get(first).unwrap().lock().unwrap().viewport();
+    let b = registry.get(second).unwrap().lock().unwrap().viewport();
+    assert_eq!((a.cols, a.lines), (100, 30));
+    assert_eq!((b.cols, b.lines), (80, 24));
+}
+
+#[test]
+fn unfocused_session_drains_output() {
+    let mut registry = TerminalRegistry::new();
+    let background = registry_session(&mut registry, Some("/bin/sh".to_string()), 80, 24);
+    let foreground = registry_session(&mut registry, Some("/bin/sh".to_string()), 80, 24);
+    wait_for_text(&registry, background, Duration::from_secs(5), "$");
+    wait_for_text(&registry, foreground, Duration::from_secs(5), "$");
+    // Sustained output on the "hidden" pane while we only interact with the
+    // focused one; then drain the hidden pane and verify nothing was lost.
+    registry
+        .get(background)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .write_input(b"i=1; while [ $i -le 50 ]; do echo \"bg-$i\"; i=$((i+1)); done\n")
+        .expect("write flood");
+    registry
+        .get(foreground)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .write_input(b"echo FG\n")
+        .expect("write fg");
+    let fg_text = wait_for_text(&registry, foreground, Duration::from_secs(5), "FG");
+    assert!(fg_text.contains("FG"));
+    let bg_text = wait_for_text(&registry, background, Duration::from_secs(10), "bg-50");
+    assert!(
+        bg_text.contains("bg-50"),
+        "hidden pane must drain while unfocused, got tail:\n{}",
+        bg_text.lines().rev().take(5).collect::<Vec<_>>().join("\n")
+    );
+}
+
+fn count_fds() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .map(|entries| entries.count())
+        .unwrap_or(0)
+}
+
+#[test]
+fn repeated_create_close_shows_no_fd_growth() {
+    let mut registry = TerminalRegistry::new();
+    // Warm up one spawn so lazy init is not counted as growth.
+    let warm = registry_session(&mut registry, Some("/bin/sh".to_string()), 80, 24);
+    registry.close(warm).expect("close warmup");
+    let before = count_fds();
+    for _ in 0..100 {
+        let id = registry_session(&mut registry, Some("/bin/sh".to_string()), 80, 24);
+        registry.close(id).expect("close");
+    }
+    assert!(registry.is_empty());
+    let after = count_fds();
+    assert!(
+        after <= before + 2,
+        "100 create/close cycles leaked FDs: before={before} after={after}"
     );
 }
 

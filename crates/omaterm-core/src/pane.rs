@@ -96,6 +96,12 @@ impl PaneTree {
         }
     }
 
+    /// An empty workspace: no panes. M4 shows a new-terminal action here;
+    /// M5 defines hierarchy-aware close behavior above it.
+    pub fn empty() -> Self {
+        Self { root: None }
+    }
+
     pub fn from_root(root: PaneNode) -> Result<Self> {
         let tree = Self { root: Some(root) };
         tree.validate()?;
