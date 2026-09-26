@@ -113,6 +113,18 @@ impl PtyProcess {
         self.pty.next_child_event()
     }
 
+    /// Ask the child to hang up, mirroring what `Drop` does on close.
+    /// Closing a terminal view calls this first so shutdown is explicit and
+    /// testable rather than implicit in the drop path.
+    pub fn terminate(&self) -> std::io::Result<()> {
+        // SAFETY: `kill` with a signal number touches no memory.
+        let result = unsafe { libc::kill(self.child_pid as libc::pid_t, libc::SIGHUP) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     pub fn child_pid(&self) -> u32 {
         self.child_pid
     }

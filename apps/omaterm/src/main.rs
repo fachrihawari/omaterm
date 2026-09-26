@@ -1,14 +1,17 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, AsyncApp, Bounds, Context, FocusHandle, Font, FontFallbacks, Hsla,
-    KeyDownEvent, Pixels, ScrollDelta, ScrollWheelEvent, SharedString, TextRun, Timer, WeakEntity,
-    Window, WindowBounds, WindowOptions, canvas, div, font, prelude::*, px, rgb, size,
+    App, Application, AsyncApp, Bounds, ClipboardItem, Context, FocusHandle, Font, FontFallbacks,
+    Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    ScrollDelta, ScrollWheelEvent, SharedString, TextRun, Timer, WeakEntity, Window, WindowBounds,
+    WindowOptions, canvas, div, font, prelude::*, px, rgb, rgba, size,
 };
 use omaterm_terminal::{
-    CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, TermColor, TerminalSession,
-    TerminalViewport, encode_key, poll_fd_readable, wrap_bracketed_paste,
+    CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SelectionRange, TermColor,
+    TerminalSession, TerminalViewport, encode_key, extract_text, poll_fd_readable, prepare_paste,
 };
 
 /// M3 single-terminal view.
@@ -31,6 +34,13 @@ struct TerminalView {
     /// any expired value) means the thumb is hidden, so an idle terminal
     /// paints no scrollbar and wakes no timers.
     scroll_indicator_until: Option<Instant>,
+    /// Active drag selection (cell coordinates in the visible grid).
+    selection: Option<SelectionRange>,
+    /// True between left-button press and release inside the grid.
+    selecting: bool,
+    /// Grid origin in window coordinates, recorded on every paint. Mouse
+    /// handlers read it to map pointer positions onto cells.
+    grid_origin: Rc<Cell<gpui::Point<Pixels>>>,
 }
 
 /// How long the scroll thumb lingers after the last scroll input.
@@ -63,6 +73,12 @@ impl TerminalView {
             fonts: None,
             exited: false,
             scroll_indicator_until: None,
+            selection: None,
+            selecting: false,
+            grid_origin: Rc::new(Cell::new(gpui::Point {
+                x: px(0.0),
+                y: px(0.0),
+            })),
         }
     }
 
@@ -111,6 +127,11 @@ impl TerminalView {
                         }
                     } else {
                         // Timeout: only notice child exit, no output drain.
+                        // If the view is gone (receiver dropped), stop: an
+                        // idle reader must not retain the session forever.
+                        if tx.is_closed() {
+                            return;
+                        }
                         let exited = session.poll_child();
                         let viewport = if exited {
                             Some(session.viewport())
@@ -219,9 +240,16 @@ impl TerminalView {
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
         // Clipboard paste: Ctrl+Shift+V (reads Wayland clipboard, honors
-        // bracketed-paste mode). Selection copy arrives in Phase C.
+        // bracketed-paste mode).
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "v" {
             self.paste(cx);
+            return;
+        }
+
+        // Explicit clipboard copy of the drag selection: Ctrl+Shift+C.
+        // (Drag-select also publishes to the Wayland primary selection.)
+        if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "c" {
+            self.copy_selection(cx);
             return;
         }
 
@@ -255,7 +283,7 @@ impl TerminalView {
         let (app_cursor, app_keypad) = self
             .session
             .lock()
-            .map(|s| (s.engine().app_cursor(), s.engine().app_keypad()))
+            .map(|s| (s.app_cursor(), s.app_keypad()))
             .unwrap_or((false, false));
         let Some(key_event) = translate_key(event, app_cursor, app_keypad) else {
             return;
@@ -278,17 +306,104 @@ impl TerminalView {
             let bracketed = self
                 .session
                 .lock()
-                .map(|s| s.engine().bracketed_paste())
+                .map(|s| s.bracketed_paste())
                 .unwrap_or(false);
-            if bracketed {
-                wrap_bracketed_paste(&text)
-            } else {
-                text.into_bytes()
-            }
+            prepare_paste(&text, bracketed)
         };
         if let Ok(mut session) = self.session.lock() {
             let _ = session.write_input(&bytes);
         }
+    }
+
+    /// Map a window-relative pointer position onto a grid cell. Returns
+    /// `None` outside the painted grid (no clamping: clicks on empty window
+    /// area must not start a selection).
+    fn pos_to_cell(&mut self, position: gpui::Point<Pixels>, cx: &App) -> Option<CellPoint> {
+        let origin = self.grid_origin.get();
+        let fonts = self.fonts(cx);
+        let cell_width: f32 = fonts.cell_width.into();
+        let line_height: f32 = fonts.line_height.into();
+        if cell_width <= 0.0 || line_height <= 0.0 {
+            return None;
+        }
+        let rel_x = f32::from(position.x) - f32::from(origin.x);
+        let rel_y = f32::from(position.y) - f32::from(origin.y);
+        let cols = self.snapshot.cols as usize;
+        let lines = self.snapshot.lines as usize;
+        if cols == 0 || lines == 0 {
+            return None;
+        }
+        let col = (rel_x / cell_width).floor() as isize;
+        let row = (rel_y / line_height).floor() as isize;
+        if row < 0 || col < 0 || row >= lines as isize || col >= cols as isize {
+            return None;
+        }
+        Some(CellPoint::new(row as usize, col as usize))
+    }
+
+    fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(cell) = self.pos_to_cell(event.position, cx) else {
+            return;
+        };
+        self.selecting = true;
+        self.selection = Some(SelectionRange::new(cell, cell));
+        cx.notify();
+    }
+
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        let Some(cell) = self.pos_to_cell(event.position, cx) else {
+            return;
+        };
+        if let Some(selection) = &mut self.selection {
+            selection.active = cell;
+            cx.notify();
+        }
+    }
+
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        self.selecting = false;
+        if let Some(cell) = self.pos_to_cell(event.position, cx)
+            && let Some(selection) = &mut self.selection
+        {
+            selection.active = cell;
+        }
+        // Press without drag clears; a real drag publishes to the Wayland
+        // primary selection (conventional terminal behavior). Explicit
+        // clipboard copy stays on Ctrl+Shift+C.
+        match self.selection {
+            Some(range) if range.is_empty() => {
+                self.selection = None;
+            }
+            Some(range) => {
+                let text = extract_text(&self.snapshot, range);
+                if !text.is_empty() {
+                    cx.write_to_primary(ClipboardItem::new_string(text));
+                }
+            }
+            None => {}
+        }
+        cx.notify();
+    }
+
+    /// Explicit clipboard copy of the active selection (Ctrl+Shift+C).
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(range) = self.selection else {
+            return;
+        };
+        if range.is_empty() {
+            return;
+        }
+        let text = extract_text(&self.snapshot, range);
+        if text.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
     /// Flash the scroll thumb for [`SCROLL_INDICATOR_FADE_MS`], then hide it.
@@ -351,7 +466,7 @@ impl TerminalView {
         if session.viewport().is_alt_screen {
             // Alternate screen has no scrollback: emulate the common
             // alternate-scroll behavior by sending arrow keys.
-            let app_cursor = session.engine().app_cursor();
+            let app_cursor = session.app_cursor();
             drop(session);
             let key = if steps > 0 { Key::Up } else { Key::Down };
             let repeats = steps.unsigned_abs().min(3) as usize;
@@ -625,11 +740,24 @@ impl Render for TerminalView {
         let show_scrollbar = self
             .scroll_indicator_until
             .is_some_and(|deadline| Instant::now() < deadline);
+        // Normalized inclusive (start, end); empty press-without-drag selects
+        // nothing and paints nothing.
+        let selection = self.selection.and_then(|range| {
+            if range.is_empty() {
+                None
+            } else {
+                Some(range.normalized())
+            }
+        });
+        let grid_origin = Rc::clone(&self.grid_origin);
 
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .size_full()
             .bg(rgb(0x18181B))
             .child(canvas(
@@ -638,6 +766,7 @@ impl Render for TerminalView {
                       bounds_prepaint: Bounds<Pixels>,
                       window: &mut Window,
                       cx: &mut App| {
+                    grid_origin.set(bounds_prepaint.origin);
                     paint_terminal(
                         bounds,
                         bounds_prepaint,
@@ -646,6 +775,7 @@ impl Render for TerminalView {
                             fonts: &fonts,
                             cursor_color,
                             show_scrollbar,
+                            selection,
                         },
                         window,
                         cx,
@@ -663,6 +793,7 @@ struct PaintArgs<'a> {
     fonts: &'a ResolvedFonts,
     cursor_color: Hsla,
     show_scrollbar: bool,
+    selection: Option<(CellPoint, CellPoint)>,
 }
 
 fn paint_terminal(
@@ -676,6 +807,7 @@ fn paint_terminal(
     let fonts = args.fonts;
     let cursor_color = args.cursor_color;
     let show_scrollbar = args.show_scrollbar;
+    let selection = args.selection;
     let origin = origin_bounds.origin;
     let cell_width = fonts.cell_width;
     let line_height = fonts.line_height;
@@ -728,6 +860,40 @@ fn paint_terminal(
         }
         if let Some((start, color)) = run_start {
             flush_bg(start, row.cells.len(), color, window);
+        }
+
+        // Selection highlight: over backgrounds, under glyphs. Inclusive
+        // end column, clamped to the row.
+        if let Some((sel_start, sel_end)) = selection
+            && row_idx >= sel_start.row
+            && row_idx <= sel_end.row
+            && !row.cells.is_empty()
+        {
+            let last = row.cells.len() - 1;
+            let c0 = if row_idx == sel_start.row {
+                sel_start.col.min(last)
+            } else {
+                0
+            };
+            let c1 = if row_idx == sel_end.row {
+                sel_end.col.min(last)
+            } else {
+                last
+            };
+            if c1 >= c0 {
+                let x0 = origin.x + cell_width * (c0 as f32);
+                let x1 = origin.x + cell_width * ((c1 + 1) as f32);
+                window.paint_quad(gpui::fill(
+                    Bounds {
+                        origin: gpui::Point { x: x0, y },
+                        size: gpui::Size {
+                            width: x1 - x0,
+                            height: line_height,
+                        },
+                    },
+                    rgba(0x3B82F64D),
+                ));
+            }
         }
 
         // Text: group consecutive cells with identical styling into runs.

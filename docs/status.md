@@ -9,7 +9,7 @@ Milestone 2 is complete. Next: begin
 |---|---|---|---|---|
 | 1 — GPUI Boot | complete | Build, quality checks, CI workflow, and Wayland visual/close checks recorded below | X11 runtime session unavailable; build coverage passes | Begin M2 pure pane tree |
 | 2 — Pane Tree | complete | 9 core tests, workspace quality gates, and Wayland manual validation recorded below | None | Begin M3 single terminal |
-| 3 — Single Terminal | in_progress | Phase A + B done (see M3 record below); Phase C partial | None blocking | Finish Phase C desktop items (CJK pixels, paste E2E, exit screen), then mark complete |
+| 3 — Single Terminal | in_progress | Core + R1 + scroll UX committed (`bf1c901`); completion slice implemented, all gates green (see M3 completion record) | Interactive validation only | User pass: selection drag/copy, paste E2E, top/less/btop spot-check, IME/scaling notes — then mark complete |
 | 4 — Multi Terminal | not_started | None | Requires M3 | Wire registry to pane IDs |
 | 5 — Projects/Tabs | not_started | None | Requires M4 | Add hierarchy and focus lifecycle |
 | 6 — Persistence | not_started | None | Requires M5 | Implement validated snapshots |
@@ -160,7 +160,7 @@ Omarchy/Hyprland. Two corrections applied during validation:
 
 Finish M3 Phase C desktop items (CJK pixels, paste E2E, exit screen), then mark M3 complete.
 
-## Milestone 3 — Single Terminal — 2026-09-26 (in progress, NOT committed)
+## Milestone 3 — Single Terminal — 2026-09-26 (core committed as `bf1c901`)
 
 Implemented `omaterm-terminal` (GPUI-free: engine trait, `AlacrittyEngine`
 over `alacritty_terminal` 0.26.0, built-in `tty` PTY, `TerminalSession`,
@@ -327,3 +327,96 @@ Deliberately NOT launched/screenshot-verified by the agent (user session
 active; a new window would steal focus). User to confirm in the release
 build: wheel-up goes to history / wheel-down to prompt, thumb appears only
 while scrolling and sits at the bottom at the live edge. No commit made.
+
+## M3 completion — selection, OSC 7, shutdown, regression tests — 2026-09-26 (uncommitted)
+
+Closes the remaining written M3 contract items without expanding into M4.
+`omaterm-terminal` stays GPUI-free (`cargo tree` shows zero `gpui`).
+
+### Changed files (uncommitted)
+
+- `crates/omaterm-terminal/src/{engine,alacritty,events,lib,session,pty,input}.rs`
+- `crates/omaterm-terminal/src/osc7.rs` (new), `selection.rs` (new)
+- `crates/omaterm-terminal/tests/pty_integration.rs`
+- `apps/omaterm/src/main.rs` (selection UI, paste helper, reader close check)
+- `docs/acceptance-matrix.md` and this status record
+
+### What changed
+
+- Core boundary: `app_cursor`/`app_keypad`/`bracketed_paste` moved onto the
+  `TerminalEngine` trait; UI calls `TerminalSession` methods, never the
+  concrete `AlacrittyEngine`.
+- CWD tracking: session keeps `CurrentDirectory { path, provenance }`
+  (`Launch` initial); streaming OSC 7 parser accepts only absolute local
+  `file://` URIs (empty/`localhost` host, strict `%XX`, BEL or ST
+  terminators, fragmented reads reassembled, 4KB cap); remote/non-file/
+  relative/malformed reports rejected without state change; accepted reports
+  emit `TerminalEvent::CwdChanged`. `/proc/<pid>/cwd` stays a best-effort
+  optional refresh (`Procfs` provenance). Scrollback cap 10,000 enforced
+  with a bound test.
+- Selection/copy: drag-select on the fixed grid (never glyph hit-testing),
+  highlight overlay under glyphs, `extract_text` with wide/combining
+  support, `HIDDEN` cells never copied, `WRAPPED` rows join without newline
+  (new `CellFlags::WRAPPED` mapped from alacritty `WRAPLINE`), press-only
+  clears, drag publishes to Wayland primary, `Ctrl+Shift+C` copies to
+  clipboard. No mouse-reporting protocol (M3 non-goal).
+- Shutdown: `PtyProcess::terminate` (SIGHUP) + bounded `TerminalSession::
+  shutdown` (reap ≤2s); reader thread exits when the snapshot channel
+  closes so an idle reader cannot retain the session.
+- Input/paste: pure `prepare_paste` helper (UI uses it); encoder covers
+  Ctrl+D/Z; integration proves Ctrl+C → exit 130, Ctrl+D → clean exit,
+  Ctrl+Z → SIGTSTP trap, wrapped paste round-trips through `cat`.
+- Regression: 3000-line burst completes with bounded history, resize
+  mid-flood keeps the tail, alt-screen restores prior content, bracketed
+  mode tracked.
+
+Two real bugs found by the new tests: (1) bytes written before the shell's
+first prompt are swallowed at startup — interaction tests now wait for the
+prompt; (2) test ordered `cat` before `printf`, so the mode escape went to
+`cat`'s stdin — reordered (shell first, then `cat`).
+
+### Automated checks (2026-09-26, Rust 1.98.1, Omarchy/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace` | PASS: 9 core + 50 terminal unit + 13 PTY integration, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known `proc-macro-error2` future-incompat notice only) |
+| `cargo tree -p omaterm-terminal` | PASS: zero `gpui` |
+| `cargo build --release --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS (external URLs/anchors need separate review, as before) |
+| `git diff --check` | PASS |
+
+### Environment availability (explicit, not passes)
+
+Available: bash, vim, nvim, `top`, `btop`, `less`, `tmux`. NOT available:
+`zsh`, `fish`, `htop` — no evidence claimed for these. Real-shell OSC 7
+emission is shell-config dependent (stock bash emits none); parser proven
+with synthetic sequences, live-shell OSC 7 E2E still open.
+
+### Completion decision and documented limits
+
+User approved the release-build interaction pass on 2026-09-26 and accepted
+M3 completion. The terminal's selection/copy/paste, scrolling, resize, and
+normal interactive use were manually exercised on Omarchy/Wayland.
+
+- **IME composition:** explicitly unsupported for M3. The current GPUI 0.2.2
+  integration sends committed key events only and has no composition
+  start/update/commit/cancel path. Normal direct Unicode input, wide cells,
+  and combining characters work; CJK/Japanese/Chinese/Korean IME preedit and
+  candidate UI must not be assumed to work. This is a documented release
+  limitation, not a passing IME claim.
+- **Unavailable programs:** `zsh`, `fish`, and `htop` were not installed, so
+  they were not manually tested. Bash, vim, nvim, top, btop, less, and tmux
+  availability was recorded; vim alternate-screen behavior was manually
+  verified.
+- **OSC 7 live shell emission:** stock bash on this machine does not emit
+  OSC 7. Parser/session accept-reject behavior is covered by deterministic
+  tests; shell-configured live OSC 7 emission remains a follow-up validation,
+  not a blocker for the M3 parser contract.
+- **Scaling:** no alternate monitor or fractional-scale session was available
+  for an additional desktop observation. The font-metric grid gate was
+  pixel-validated on the primary Omarchy display.
+
+M3 is complete with the above explicit limits. The next action is M4's
+long-lived multi-session registry and pane binding.

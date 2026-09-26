@@ -40,6 +40,15 @@ pub trait TerminalEngine: Send {
 
     /// Current display offset (0 = bottom). Exposed for scroll tests.
     fn display_offset(&self) -> usize;
+
+    /// Whether application-cursor mode is active (arrow-key encoding).
+    fn app_cursor(&self) -> bool;
+
+    /// Whether application-keypad mode is active.
+    fn app_keypad(&self) -> bool;
+
+    /// Whether bracketed paste is active.
+    fn bracketed_paste(&self) -> bool;
 }
 
 /// Immutable snapshot of the visible terminal for the renderer.
@@ -100,6 +109,8 @@ impl CellFlags {
     pub const DIM: Self = Self(1 << 4);
     pub const HIDDEN: Self = Self(1 << 5);
     pub const STRIKETHROUGH: Self = Self(1 << 6);
+    /// Row wraps onto the next line (soft wrap, no newline when copying).
+    pub const WRAPPED: Self = Self(1 << 7);
 
     #[must_use]
     pub fn contains(self, other: Self) -> bool {

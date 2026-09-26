@@ -4,6 +4,7 @@ use omaterm_core::SessionId;
 
 use crate::alacritty::AlacrittyEngine;
 use crate::engine::{EngineOutput, ScrollCommand, TerminalEngine, TerminalViewport};
+use crate::osc7::Osc7Parser;
 use crate::pty::{PtyError, PtyProcess};
 
 /// Errors from session creation.
@@ -15,6 +16,25 @@ pub enum SessionError {
     InvalidSize { cols: u16, rows: u16 },
 }
 
+/// Where the session's current directory was confirmed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CwdProvenance {
+    /// Directory the child was spawned in (initial, always trusted).
+    Launch,
+    /// Validated local OSC 7 report from the shell.
+    Osc7,
+    /// Best-effort Linux `/proc/<pid>/cwd` read (diagnostic fallback).
+    Procfs,
+}
+
+/// Last confirmed shell directory plus how it was confirmed. The launch
+/// directory is retained whenever an OSC 7 report is rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentDirectory {
+    pub path: PathBuf,
+    pub provenance: CwdProvenance,
+}
+
 /// Durable terminal identity: PTY + engine + metadata.
 ///
 /// The session survives UI changes (tab switch, focus, layout). Views hold
@@ -22,6 +42,8 @@ pub enum SessionError {
 pub struct TerminalSession {
     pub id: SessionId,
     pub working_directory: PathBuf,
+    cwd: CurrentDirectory,
+    osc7: Osc7Parser,
     pty: PtyProcess,
     engine: AlacrittyEngine,
     title: Option<String>,
@@ -40,9 +62,15 @@ impl TerminalSession {
         }
         let pty = PtyProcess::spawn(shell, cols, rows, &working_directory)?;
         let engine = AlacrittyEngine::new(cols, rows);
+        let cwd = CurrentDirectory {
+            path: working_directory.clone(),
+            provenance: CwdProvenance::Launch,
+        };
         Ok(Self {
             id: SessionId::new(),
             working_directory,
+            cwd,
+            osc7: Osc7Parser::new(),
             pty,
             engine,
             title: None,
@@ -71,12 +99,14 @@ impl TerminalSession {
                 Ok(0) => break, // EOF: child closed the PTY
                 Ok(n) => {
                     bytes_read += n;
-                    let out = self.engine.advance_output(&buf[..n]);
+                    let chunk = &buf[..n];
+                    let out = self.engine.advance_output(chunk);
                     if !out.reply_bytes.is_empty() {
                         // Best effort: a failed reply write surfaces next pump.
                         let _ = self.pty.write_all(&out.reply_bytes);
                     }
                     combined.events.extend(out.events);
+                    self.observe_osc7(chunk, &mut combined);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -102,9 +132,26 @@ impl TerminalSession {
 
     /// Feed bytes without PTY I/O (tests).
     pub fn advance_output(&mut self, bytes: &[u8]) -> EngineOutput {
-        let out = self.engine.advance_output(bytes);
+        let mut out = self.engine.advance_output(bytes);
         self.after_pump_collect(&out);
+        self.observe_osc7(bytes, &mut out);
         out
+    }
+
+    /// Run the streaming OSC 7 extractor over raw PTY bytes. Accepted local
+    /// directories update the session CWD (provenance `Osc7`) and surface a
+    /// domain event; rejected reports leave state untouched.
+    fn observe_osc7(&mut self, bytes: &[u8], out: &mut EngineOutput) {
+        for path in self.osc7.feed(bytes) {
+            if self.cwd.path != path {
+                self.cwd = CurrentDirectory {
+                    path: path.clone(),
+                    provenance: CwdProvenance::Osc7,
+                };
+                out.events
+                    .push(crate::events::TerminalEvent::CwdChanged(path));
+            }
+        }
     }
 
     fn after_pump(&mut self, combined: &mut EngineOutput) {
@@ -131,8 +178,6 @@ impl TerminalSession {
                 }
             }
         }
-        // OSC-7 style title updates already handled; CWD tracking (Phase C)
-        // reads child_cwd() on demand.
     }
 
     fn after_pump_collect(&mut self, out: &EngineOutput) {
@@ -205,8 +250,65 @@ impl TerminalSession {
         false
     }
 
+    /// Explicit shutdown: SIGHUP the child, then wait bounded for exit
+    /// and reap. Returns `true` when the child is confirmed gone.
+    /// Never blocks indefinitely (2s cap); the `PtyProcess` drop path
+    /// still guarantees SIGHUP even if this is never called.
+    pub fn shutdown(&mut self) -> bool {
+        if self.exited.is_some() {
+            return true;
+        }
+        let _ = self.pty.terminate();
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(2) {
+            if self.poll_child() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        self.poll_child()
+    }
+
     pub fn child_cwd(&self) -> Option<PathBuf> {
         self.pty.child_cwd()
+    }
+
+    /// Last confirmed shell directory and its provenance. Starts as the
+    /// launch directory; validated OSC 7 reports supersede it.
+    pub fn cwd(&self) -> &CurrentDirectory {
+        &self.cwd
+    }
+
+    /// Best-effort Linux refresh from `/proc/<pid>/cwd`. Updates state only
+    /// when the link resolves to an existing directory; records `Procfs`
+    /// provenance so callers can distinguish it from shell reports.
+    pub fn refresh_cwd_from_procfs(&mut self) -> bool {
+        let Some(path) = self.pty.child_cwd() else {
+            return false;
+        };
+        if !path.exists() || self.cwd.path == path {
+            return false;
+        }
+        self.cwd = CurrentDirectory {
+            path,
+            provenance: CwdProvenance::Procfs,
+        };
+        true
+    }
+
+    /// Input-mode queries through the engine abstraction (no backend leak).
+    pub fn app_cursor(&self) -> bool {
+        self.engine.app_cursor()
+    }
+
+    /// Input-mode queries through the engine abstraction (no backend leak).
+    pub fn app_keypad(&self) -> bool {
+        self.engine.app_keypad()
+    }
+
+    /// Input-mode queries through the engine abstraction (no backend leak).
+    pub fn bracketed_paste(&self) -> bool {
+        self.engine.bracketed_paste()
     }
 
     pub fn engine(&self) -> &AlacrittyEngine {
@@ -215,5 +317,74 @@ impl TerminalSession {
 
     pub fn engine_mut(&mut self) -> &mut AlacrittyEngine {
         &mut self.engine
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::TerminalEvent;
+
+    fn test_session() -> TerminalSession {
+        TerminalSession::new(std::env::temp_dir(), Some("/bin/sh"), 80, 24).expect("spawn sh")
+    }
+
+    #[test]
+    fn cwd_starts_at_launch_directory() {
+        let session = test_session();
+        assert_eq!(session.cwd().provenance, CwdProvenance::Launch);
+        assert_eq!(session.cwd().path, std::env::temp_dir());
+    }
+
+    #[test]
+    fn valid_osc7_updates_cwd_with_event() {
+        let mut session = test_session();
+        let out = session.advance_output(b"\x1b]7;file:///tmp/omaterm-cwd\x07");
+        assert_eq!(session.cwd().path, PathBuf::from("/tmp/omaterm-cwd"));
+        assert_eq!(session.cwd().provenance, CwdProvenance::Osc7);
+        assert!(
+            out.events
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::CwdChanged(_))),
+            "expected CwdChanged event, got {:?}",
+            out.events
+        );
+    }
+
+    #[test]
+    fn invalid_osc7_keeps_launch_cwd() {
+        let mut session = test_session();
+        let launch = session.cwd().clone();
+        let out = session.advance_output(b"\x1b]7;file://evil-host/etc\x07output");
+        assert_eq!(session.cwd(), &launch);
+        assert!(
+            !out.events
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::CwdChanged(_))),
+            "rejected report must not emit CwdChanged"
+        );
+    }
+
+    #[test]
+    fn fragmented_osc7_reassembles() {
+        let mut session = test_session();
+        session.advance_output(b"prompt\x1b]7;file://");
+        assert_eq!(session.cwd().provenance, CwdProvenance::Launch);
+        session.advance_output(b"/tmp/frag\x07");
+        assert_eq!(session.cwd().path, PathBuf::from("/tmp/frag"));
+        assert_eq!(session.cwd().provenance, CwdProvenance::Osc7);
+    }
+
+    #[test]
+    fn repeated_same_cwd_emits_no_duplicate_event() {
+        let mut session = test_session();
+        session.advance_output(b"\x1b]7;file:///tmp/dup\x07");
+        let out = session.advance_output(b"\x1b]7;file:///tmp/dup\x07");
+        assert!(
+            !out.events
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::CwdChanged(_))),
+            "unchanged CWD must not re-emit"
+        );
     }
 }

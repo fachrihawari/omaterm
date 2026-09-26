@@ -195,6 +195,17 @@ pub fn wrap_bracketed_paste(text: &str) -> Vec<u8> {
     out
 }
 
+/// Prepare clipboard text for PTY delivery: UTF-8 unchanged when the child
+/// has not enabled bracketed paste, wrapped exactly once when it has.
+/// Multiline and non-ASCII content pass through byte-identical.
+pub fn prepare_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        wrap_bracketed_paste(text)
+    } else {
+        text.as_bytes().to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +287,42 @@ mod tests {
     #[test]
     fn bracketed_paste_wraps() {
         assert_eq!(wrap_bracketed_paste("a\nb"), b"\x1b[200~a\nb\x1b[201~");
+    }
+
+    #[test]
+    fn ctrl_d_z_map_to_control_codes() {
+        let mods = KeyModifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        for (ch, byte) in [('d', 0x04), ('z', 0x1a)] {
+            let ev = KeyEvent {
+                key: Key::Char(ch),
+                modifiers: mods.clone(),
+                app_cursor: false,
+                app_keypad: false,
+            };
+            assert_eq!(encode_key(&ev), vec![byte], "ctrl-{ch}");
+        }
+    }
+
+    #[test]
+    fn prepare_paste_plain_and_bracketed() {
+        assert_eq!(prepare_paste("plain", false), b"plain");
+        assert_eq!(prepare_paste("a\nb", true), b"\x1b[200~a\nb\x1b[201~");
+    }
+
+    #[test]
+    fn prepare_paste_preserves_unicode_multiline() {
+        let text = "héllo 你好\nline2\ttab";
+        assert_eq!(prepare_paste(text, false), text.as_bytes());
+        let wrapped = prepare_paste(text, true);
+        assert!(wrapped.starts_with(b"\x1b[200~"));
+        assert!(wrapped.ends_with(b"\x1b[201~"));
+        assert_eq!(
+            &wrapped[b"\x1b[200~".len()..wrapped.len() - b"\x1b[201~".len()],
+            text.as_bytes()
+        );
     }
 
     #[test]

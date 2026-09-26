@@ -90,21 +90,6 @@ impl AlacrittyEngine {
         }
     }
 
-    /// Whether application-cursor mode is active (arrow-key encoding).
-    pub fn app_cursor(&self) -> bool {
-        self.term.mode().contains(TermMode::APP_CURSOR)
-    }
-
-    /// Whether application-keypad mode is active.
-    pub fn app_keypad(&self) -> bool {
-        self.term.mode().contains(TermMode::APP_KEYPAD)
-    }
-
-    /// Whether bracketed paste is active.
-    pub fn bracketed_paste(&self) -> bool {
-        self.term.mode().contains(TermMode::BRACKETED_PASTE)
-    }
-
     fn translate(&mut self, event: Event, out: &mut EngineOutput) {
         match event {
             Event::Title(title) => {
@@ -136,6 +121,18 @@ impl AlacrittyEngine {
 }
 
 impl TerminalEngine for AlacrittyEngine {
+    fn app_cursor(&self) -> bool {
+        self.term.mode().contains(TermMode::APP_CURSOR)
+    }
+
+    fn app_keypad(&self) -> bool {
+        self.term.mode().contains(TermMode::APP_KEYPAD)
+    }
+
+    fn bracketed_paste(&self) -> bool {
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
     fn resize(&mut self, cols: u16, rows: u16) {
         let size = TermSize {
             cols: cols.max(2) as usize,
@@ -325,6 +322,9 @@ fn map_cell(
     }
     if cell.flags.contains(Flags::STRIKEOUT) {
         flags |= CellFlags::STRIKETHROUGH;
+    }
+    if cell.flags.contains(Flags::WRAPLINE) {
+        flags |= CellFlags::WRAPPED;
     }
 
     TerminalCell {
@@ -528,6 +528,56 @@ mod tests {
         assert!(engine.is_alt_screen());
         engine.advance_output(b"\x1b[?1049l");
         assert!(!engine.is_alt_screen());
+    }
+
+    #[test]
+    fn engine_restores_content_after_alt_screen() {
+        let mut engine = AlacrittyEngine::new(80, 24);
+        engine.advance_output(b"MAIN-CONTENT");
+        engine.advance_output(b"\x1b[?1049h");
+        assert!(engine.is_alt_screen());
+        engine.advance_output(b"\x1b[H");
+        engine.advance_output(b"ALT-CONTENT");
+        let alt_text = engine.read_visible_text(24, 80);
+        assert!(
+            alt_text.contains("ALT-CONTENT"),
+            "alt text was: {alt_text:?}"
+        );
+        engine.advance_output(b"\x1b[?1049l");
+        assert!(!engine.is_alt_screen());
+        let restored = engine.read_visible_text(24, 80);
+        assert!(
+            restored.contains("MAIN-CONTENT"),
+            "main content should be restored, got: {restored:?}"
+        );
+        assert!(
+            !restored.contains("ALT-CONTENT"),
+            "alt content must not leak, got: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn engine_tracks_bracketed_paste_mode() {
+        let mut engine = AlacrittyEngine::new(80, 24);
+        assert!(!engine.bracketed_paste());
+        engine.advance_output(b"\x1b[?2004h");
+        assert!(engine.bracketed_paste());
+        engine.advance_output(b"\x1b[?2004l");
+        assert!(!engine.bracketed_paste());
+    }
+
+    #[test]
+    fn scrollback_history_is_bounded() {
+        let mut engine = AlacrittyEngine::with_scrollback(20, 5, 100);
+        for i in 0..500 {
+            engine.advance_output(format!("line{i}\r\n").as_bytes());
+        }
+        let viewport = engine.viewport();
+        assert!(
+            viewport.history_size <= 100,
+            "history must stay capped, got {}",
+            viewport.history_size
+        );
     }
 
     #[test]

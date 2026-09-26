@@ -19,4 +19,6 @@ pub enum TerminalEvent {
     ChildExited(std::process::ExitStatus),
     /// Engine requested shutdown (`Event::Exit`).
     ExitRequested,
+    /// Shell reported a new local directory via validated OSC 7.
+    CwdChanged(std::path::PathBuf),
 }
