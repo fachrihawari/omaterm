@@ -2,15 +2,15 @@
 
 ## Current verification state
 
-No Cargo workspace exists. No Rust version, GPUI revision, native dependency set,
-or MSRV has been validated for this project. `rust-toolchain.toml` requests `stable`
-with `rustfmt`/`clippy` as bootstrap configuration only.
+Milestone 1 selected the published `gpui` 0.2.2 release and validated it on
+Omarchy/Hyprland. `rust-toolchain.toml` pins the working Rust 1.98.1 toolchain
+with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
 
 | Component | Selection | License evidence | Verification |
 |---|---|---|---|
-| Rust toolchain | Pending M1; pin after successful build | Official distribution | Not verified |
-| GPUI/platform crates | Pending M1, exact release or Git revision | Selected revision/package | Not verified |
-| Native Linux packages | Pending M1, record versions and purpose | Package metadata | Not verified |
+| Rust toolchain | 1.98.1 (`48a229cea`, LLVM 22.1.8) | Official distribution | `rustc --version --verbose`; build/checks pass on 2026-09-26 |
+| GPUI/platform crates | `gpui` 0.2.2 from crates.io, `wayland` + `x11` features | Apache-2.0; crate manifest and crates.io metadata | Linux build and Wayland launch pass on 2026-09-26 |
+| Native Linux packages | See M1 native package record below | Arch package metadata | Present and linked during M1 build on 2026-09-26 |
 | Core ID/error dependencies | Pending M2 | Selected package metadata/license files | Not verified |
 | `alacritty_terminal` | Pending M3, exact compatible release | Selected package | Not verified |
 | PTY provider | Pending M3 API/lifecycle evaluation | Selected package | Not verified |
@@ -28,6 +28,28 @@ M1 records GPUI initialization/feature findings and native compiler/linker packa
 M3 records Alacritty APIs and PTY provider behavior actually exercised. Add license
 inventory tooling once Cargo metadata exists, and review the transitive inventory
 before release. Unknown licenses remain unresolved, not implicitly approved.
+
+### Milestone 1 record — 2026-09-26
+
+- `gpui` 0.2.2: direct GPU UI dependency from crates.io, published 2025-10-22,
+  checksum `979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707`;
+  Apache-2.0 per its crate manifest and crates.io metadata. Both `wayland` and
+  `x11` features are explicitly enabled with default features disabled.
+- `Cargo.lock`: committed application resolution. A full transitive license
+  review remains required before release; no project license has been selected.
+- Local Arch native packages used by GPUI: `wayland` 1.26.0-1 (MIT),
+  `libxkbcommon` 1.13.2-1 (MIT), `libx11` 1.8.13-1 (MIT AND X11), `libxcb`
+  1.17.0-1 (X11), `fontconfig` 2:2.18.3-2 (HPND AND Unicode-DFS-2016),
+  `freetype2` 2.14.3-1 (FTL OR GPL-2.0-or-later), `mesa` 1:26.2.2-1
+  (MIT AND BSD-3-Clause AND SGI-B-2.0), `vulkan-icd-loader` 1.4.357.0-1
+  (Apache-2.0), and `pkgconf` 3.0.7-1 (ISC).
+- CI installs Ubuntu counterparts: `libfontconfig1-dev`, `libfreetype-dev`,
+  `libvulkan1`, `libwayland-dev`, `libx11-dev`, `libxcb1-dev`,
+  `libxkbcommon-dev`, and `pkg-config`.
+- `cargo build --workspace`, `cargo test --workspace`, and
+  `cargo clippy --workspace --all-targets -- -D warnings` complete successfully.
+  Cargo reports the upstream `proc-macro-error2` 2.0.1 future-incompatibility
+  warning; it is transitive and does not produce a Clippy warning.
 
 ## Reference provenance
 

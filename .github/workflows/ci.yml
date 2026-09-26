@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - name: Install native dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install --yes
+          libfontconfig1-dev libfreetype-dev libvulkan1 libwayland-dev
+          libx11-dev libxcb1-dev libxkbcommon-dev pkg-config
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --workspace

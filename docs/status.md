@@ -2,12 +2,12 @@
 
 ## Current position
 
-Application implementation has not started. There is no `Cargo.toml`, application
-source, or verified GPUI dependency. Next: [Milestone 1](01-milestone-1-gpui-boot.md).
+Milestone 1 is complete. Next: begin
+[Milestone 2](02-milestone-2-pane-tree.md).
 
 | Milestone | Status | Verification evidence | Blockers | Next action |
 |---|---|---|---|---|
-| 1 — GPUI Boot | not_started | None | Dependency/platform validation pending | Select GPUI revision and create minimal workspace |
+| 1 — GPUI Boot | complete | Build, quality checks, CI workflow, and Wayland visual/close checks recorded below | X11 runtime session unavailable; build coverage passes | Begin M2 pure pane tree |
 | 2 — Pane Tree | not_started | None | Requires M1 | Implement tree invariants and tests |
 | 3 — Single Terminal | not_started | None | Requires M2 | Validate PTY/parser/rendering spike |
 | 4 — Multi Terminal | not_started | None | Requires M3 | Wire registry to pane IDs |
@@ -59,3 +59,45 @@ Not applicable to this documentation/tooling change: no application/Cargo worksp
 exists. No Cargo or Wayland test results are claimed. The next implementation task
 is M1 dependency research and a minimal GPUI window; record the selected revisions,
 licenses, native packages, build checks, and actual Wayland observations there.
+
+## Milestone 1 — GPUI Boot — 2026-09-26
+
+Implemented a Cargo workspace containing only `apps/omaterm`, a GPUI 0.2.2 desktop
+binary, and CI quality checks. The `omaterm-desktop` binary opens a titled OmaTerm
+window with a dark root background and centered text. Both GPUI Linux backends are
+explicitly compiled; no domain, terminal, IPC, or configuration code was added.
+
+### Changed files
+
+- `Cargo.toml`, `Cargo.lock`, and `rust-toolchain.toml`
+- `apps/omaterm/Cargo.toml` and `apps/omaterm/src/main.rs`
+- `.github/workflows/ci.yml`
+- `docs/dependencies.md` and this status record
+
+### Automated checks
+
+| Command | Result |
+|---|---|
+| `cargo build --workspace` | PASS: completed with GPUI `wayland` and `x11` features enabled |
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace` | PASS: 0 tests, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo tree -e features -p omaterm` | PASS: reports GPUI 0.2.2 `wayland` and `x11` features |
+| `python3 scripts/check-docs.py` | PASS: 17 Markdown files, 33 local links, 66 blueprint references, 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+
+Cargo emits a future-incompatibility notice for transitive `proc-macro-error2`
+2.0.1. It does not fail the build or Clippy gate; retain it as a dependency-update
+item rather than treating it as a passing-free warning.
+
+### Desktop and platform validation
+
+| Environment | Result |
+|---|---|
+| Omarchy Linux 7.2.5-3-omarchy, Hyprland Wayland (`wayland-1`) | PASS: native Wayland client mapped with title `OmaTerm`; a window-only `grim` capture confirmed the dark surface and centered `OmaTerm` text |
+| X11 | PASS (build coverage): GPUI `x11` feature compiled in the workspace build; no X11 session was available for runtime testing |
+| Window close | PASS: manual Omarchy validation used Super+W while monitoring btop; the window closed and `omaterm-desktop` exited cleanly. |
+
+### Next action
+
+Implement the pure, GPUI-independent pane tree defined by Milestone 2.

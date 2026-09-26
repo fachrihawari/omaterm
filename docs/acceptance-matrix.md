@@ -7,8 +7,8 @@ Unit tests do not substitute for real desktop observations.
 
 | Requirement | Owner | Automated verification | Manual verification | Evidence |
 |---|---|---|---|---|
-| Reliable Linux startup, close, background/text | M1 | Workspace checks, Wayland/X11 builds | Omarchy/Hyprland launch/close | Pending |
-| Verified dependencies and reproducible toolchain | M1 onward | Locked build and CI checks | Record native packages and GPU environment | Pending |
+| Reliable Linux startup, close, background/text | M1 | Workspace checks, Wayland/X11 builds | Omarchy/Hyprland launch/close | M1: Wayland launch, rendered window, and Super+W clean close verified 2026-09-26; X11 build passes |
+| Verified dependencies and reproducible toolchain | M1 onward | Locked build and CI checks | Record native packages and GPU environment | M1: Rust 1.98.1, GPUI 0.2.2, `Cargo.lock`, native packages, and CI recorded 2026-09-26 |
 | Recursive splits in all four directions | M2 | Nested topology, locality, unique IDs | Placeholder and real-terminal splits | Pending |
 | Remove/collapse, last-child behavior | M2, M4–M5 | Empty-root and focus invariants | Close final pane/tab/project | Pending |
 | Focus, pane resize, equalize | M2, M5 | Neighbor ties, finite fractions, minimum geometry | Keyboard/pointer navigation and resize | Pending |
