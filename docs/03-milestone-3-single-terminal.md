@@ -47,7 +47,8 @@ crates/omaterm-terminal/
 // engine.rs — OmaTerm's terminal abstraction
 pub trait TerminalEngine {
     fn resize(&mut self, cols: u16, rows: u16);
-    fn write_input(&mut self, bytes: &[u8]);
+    // Parse output received from the PTY; emitted replies go back to the PTY.
+    fn advance_output(&mut self, bytes: &[u8]) -> Vec<TerminalEvent>;
     fn viewport(&self) -> TerminalViewport;
     fn read_visible_text(&self, max_lines: usize, max_columns: usize) -> String;
     fn scroll(&mut self, command: ScrollCommand);
@@ -66,7 +67,8 @@ pub struct TerminalRow {
 }
 
 pub struct TerminalCell {
-    pub character: char,
+    pub text: String, // base character plus combining sequence
+    pub width: CellWidth, // single, wide lead, or wide continuation
     pub fg: Color,
     pub bg: Color,
     pub flags: CellFlags, // bold, italic, underline, etc.
@@ -96,7 +98,7 @@ The terminal view component in `omaterm-ui` reads the `TerminalViewport` and ren
 - Monospace text grid
 - Foreground/background colors per cell
 - Cursor (block, underline, bar)
-- Selection highlighting (later)
+- Selection highlighting and coordinate mapping
 - Scrollbar or scroll indicator
 
 ```
@@ -122,6 +124,24 @@ PTY byte stream → TerminalEngine (VT parsing) → TerminalViewport → GPUI Re
 - Terminal state updates are synchronized to the render thread
 - Use channels or GPUI's task/executor patterns
 
+Select one explicit I/O owner and bounded communication mechanism after inspecting
+GPUI executors and the chosen PTY backend. Synchronization must not hold an engine
+lock during GPU painting or blocking writes. Record cancellation, EOF, child exit,
+and engine-generated reply handling. Test partial reads/writes and output bursts.
+
+Data-flow contract:
+
+```text
+PTY output → engine parser → immutable viewport/state → renderer
+UI text/key/paste → mode-aware encoder → PTY writer
+Engine replies (device queries, etc.) → same PTY writer
+```
+
+The viewport must express wide/continuation cells, combining sequences, cursor
+visibility/style, attributes, and display offset. Verify these against the chosen
+Alacritty API; the examples are not settled library interfaces. Bound scrollback
+(initial default: 10,000 lines), and render visible cells rather than full history.
+
 ### Shell Launch
 
 ```rust
@@ -129,10 +149,11 @@ PTY byte stream → TerminalEngine (VT parsing) → TerminalViewport → GPUI Re
 let shell = std::env::var("SHELL")
     .unwrap_or_else(|_| "/bin/bash".to_string());
 
-// Environment variables to inject
-env::set_var("TERM", "xterm-256color");
-env::set_var("TERM_PROGRAM", "OmaTerm");
-env::set_var("OMATERM", "1");
+// Configure only the child process via the selected PTY provider's spawn API.
+// Do not mutate the multithreaded desktop process environment.
+child_environment.insert("TERM_PROGRAM", "OmaTerm");
+child_environment.insert("OMATERM", "1");
+// Select TERM only after validating the corresponding terminal capabilities.
 ```
 
 ### Hidden Pane Behavior
@@ -143,8 +164,14 @@ Even in this milestone (single terminal), establish the pattern:
 
 ## Implementation Steps
 
+Execute three internal checkpoints: (A) PTY/parser integration tests, (B) a small
+GPUI rendering/input spike, (C) terminal correctness and real desktop validation.
+Inspect Zed's terminal/terminal-view architecture for learning only; record source
+revisions and licenses without copying GPL implementation. Do not build the full
+workspace UI before checkpoint B establishes a working renderer.
+
 1. **Create `omaterm-terminal` crate**
-2. **Implement `PtyProcess`** — fork, exec shell, manage master FD, async read/write
+2. **Select and implement a PTY provider** — validate controlling-terminal/process-group behavior, child environment, FD ownership, and safe spawn/reap APIs before choosing a library or low-level implementation
 3. **Define `TerminalEngine` trait** — OmaTerm's abstraction over terminal emulators
 4. **Implement `AlacrittyEngine`** — wrap `alacritty_terminal::Term` behind the trait
 5. **Implement `TerminalSession`** — tie PTY + engine + metadata together
@@ -155,6 +182,15 @@ Even in this milestone (single terminal), establish the pattern:
 10. **Implement scrollback** — scroll commands, viewport offset
 11. **Test with real shells** — zsh, bash, fish
 12. **Test TUI applications** — vim, htop, etc.
+13. **Selection and clipboard** — select/copy rendered text, paste through the
+    mode-aware encoder, honor bracketed paste, and verify Wayland clipboard use
+14. **CWD tracking** — remember launch directory, then accept validated local OSC 7
+    directory updates; optionally query shell CWD through a Linux adapter. Reject
+    remote/malformed reports. Record last confirmed directory and provenance; if
+    discovery is unavailable, retain the launch directory and document that limit
+15. **Input validation** — Unicode, combining/wide characters, alternate-screen
+    transitions, IME composition, modifiers, and scaling. Record unsupported IME
+    cases explicitly; never infer support from simple ASCII typing
 
 ## Acceptance Criteria
 
@@ -171,16 +207,20 @@ Even in this milestone (single terminal), establish the pattern:
 - [ ] Shell exits cleanly when `exit` is typed
 - [ ] No CPU spin when terminal is idle
 - [ ] `omaterm-terminal` does NOT depend on `gpui`
+- [ ] Selection/copy/paste works on Wayland, including bracketed multiline paste
+- [ ] Unicode/wide/combining-cell fixtures and alternate-screen restoration tested
+- [ ] CWD change and invalid/remote OSC 7 handling tested
+- [ ] PTY/parser integration tests cover input, output, resize, EOF, exit, and cleanup
+- [ ] IME/scaling observations and limitations recorded in the acceptance matrix
+- [ ] Shutdown cancels I/O, terminates/reaps child processes, and closes descriptors
 
 ## Non-Goals
 
 - No multiple terminals (just one fullscreen terminal)
-- No copy/paste
 - No search
-- No selection
-- No mouse support
+- No application mouse-reporting protocol support required for this slice (selection uses pointer input)
 - No image protocol
-- No IME (can be added later)
+- No OSC 52 clipboard read support; do not expose host clipboard implicitly
 - No pane splitting active in this milestone
 
 ## References

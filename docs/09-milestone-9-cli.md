@@ -11,7 +11,7 @@ This is the foundation for future AI-agent automation.
 ## Goals
 
 - [ ] `omaterm-cli` crate with `clap` for argument parsing
-- [ ] Core commands: `project list`, `pane list`, `pane split`, `terminal send`, `terminal read`
+- [ ] Commands in the coverage table, including `terminal run` and launch behavior
 - [ ] Human-readable default output
 - [ ] `--json` flag for machine-readable output
 - [ ] Connects to running OmaTerm via Unix socket
@@ -57,7 +57,34 @@ Global Options:
   --version           Show version
 ```
 
-### Commands
+### Required Command Coverage
+
+Each row requires a parser test, IPC mapping test, and end-to-end behavior/error
+test. This table is the minimum supported M9 surface; examples below use it.
+
+| CLI | Wire method | Domain operation | Result / acceptance assertion |
+|---|---|---|---|
+| `project list` | `project.list` | Project List | Authorized projects only |
+| `project open PATH` | `project.create` | Project Create | New project ID and root; local-user authority required |
+| `project select ID` | `project.select` | Project Select | Selection updated within scope |
+| `tab list` | `tab.list` | Tab List | Tabs in resolved project |
+| `tab new` | `tab.create` | Tab Create | Tab, pane, session IDs |
+| `tab close ID` | `tab.close` | Tab Close | Correct cleanup and focus fallback |
+| `pane list` | `pane.list` | Pane List | IDs plus project/tab/session and focus |
+| `pane split --DIRECTION` | `pane.split` | Pane Split | New pane/session IDs; four directions tested |
+| `pane focus ID` | `pane.focus` | Pane Focus | Correct semantic focus |
+| `pane close ID` | `pane.close` | Pane Close | Correct cleanup/collapse |
+| `pane resize --split ID --fraction F` | `pane.resize` | Pane Resize | Bounded fraction applied |
+| `pane equalize --tab ID` | `pane.equalize` | Pane Equalize | Each split reset to 0.5 |
+| `terminal list` | `terminal.list` | Terminal List | Authorized session metadata |
+| `terminal new` | `terminal.create` | Terminal Create | New tab with one shell in resolved project |
+| `terminal send --pane ID TEXT` | `terminal.send` | Terminal SendBytes | Exact UTF-8 bytes, no implicit newline |
+| `terminal run --pane ID -- ARGV...` | `terminal.run` | Terminal RunCommand | Shell submission acknowledgement, not exit success |
+| `terminal read --pane ID` | `terminal.read` | Terminal ReadVisible | Bounded text plus truncation indicator |
+
+`terminal new` deliberately creates a new tab, avoiding an unspecified split target.
+`project open` creates a project even if another project uses the same directory.
+Rename/delete additions are optional until included in this table and M8 mapping.
 
 #### Project Commands
 
@@ -122,7 +149,7 @@ omaterm terminal list --json
 # Send text/command to a terminal
 omaterm terminal send --pane <pane-id> "cargo test"
 
-# Run a command in a pane (send + newline)
+# Submit argv to a ready shell (see execution contract below)
 omaterm terminal run --pane <pane-id> -- cargo test
 
 # Read terminal output
@@ -130,7 +157,7 @@ omaterm terminal read --pane <pane-id> --lines 50
 omaterm terminal read --pane <pane-id> --lines 100 --columns 500
 omaterm terminal read --pane <pane-id> --json
 
-# Create a new terminal (in new pane)
+# Create a new terminal (in a new tab)
 omaterm terminal new
 ```
 
@@ -149,32 +176,43 @@ $ omaterm pane list
 
 ```json
 {
-  "panes": [
-    {
-      "id": "abc123",
-      "kind": "terminal",
-      "session_id": "sess-001",
-      "focused": true
-    },
-    {
-      "id": "def456",
-      "kind": "terminal",
-      "session_id": "sess-002",
-      "focused": false
-    }
-  ]
+  "ok": true,
+  "result": {
+    "panes": [
+      {
+        "id": "abc123",
+        "project_id": "project-001",
+        "tab_id": "tab-001",
+        "kind": "terminal",
+        "session_id": "sess-001",
+        "focused": true
+      },
+      {
+        "id": "def456",
+        "project_id": "project-001",
+        "tab_id": "tab-001",
+        "kind": "terminal",
+        "session_id": "sess-002",
+        "focused": false
+      }
+    ],
+    "truncated": false
+  }
 }
 ```
 
 ### Connection Logic
 
+Resolve socket: explicit `--socket`, then `OMATERM_SOCKET`, then the validated M8
+default. Use `OMATERM_TOKEN` for in-app callers; outside callers read the matching
+owner-only local-user credential. Never send a default instance credential to an
+unrelated override socket. Missing/stale in-app credentials fail without privilege
+fallback. Connect directly and classify OS errors; a path-existence check is not
+proof that an instance is running.
+
 ```rust
 fn connect() -> Result<IpcClient> {
     let socket = socket_path(); // $XDG_RUNTIME_DIR/omaterm.sock
-
-    if !socket.exists() {
-        return Err(anyhow!("OmaTerm is not running. Start it first."));
-    }
 
     IpcClient::connect(&socket)
 }
@@ -205,6 +243,12 @@ Printed to stdout
 
 ### Error Handling
 
+`--json` produces a stable success/error envelope for local parsing errors as well
+as server errors. Keep diagnostics on stderr and machine output on stdout. Avoid
+colors in JSON; include stable error codes. Exit status 2 is reserved for connection
+failure; normalize clap usage errors to 64, command/authorization errors to 1, and
+success to 0. Tests cover errors and global `--json` in either argument position.
+
 ```bash
 $ omaterm pane split --right
 # When OmaTerm is not running:
@@ -221,14 +265,40 @@ Error: Pane 'xyz' not found.
 
 ### CLI Binary Name
 
-The CLI and the desktop app MAY share the same binary:
+Use two binaries: `omaterm` is the thin CLI/launcher; `omaterm-desktop` owns GPUI.
+M1 starts with the desktop binary; M9 adds the public CLI without a name collision.
 
 ```bash
-omaterm              # No args → launch desktop app (or focus if running)
+omaterm              # No args → launch desktop app, or acknowledge existing instance
 omaterm pane list    # Subcommand → CLI mode via IPC
 ```
 
-Alternatively, separate binaries. Decide during implementation.
+Find the desktop binary alongside the installed CLI. No-argument launch starts it
+when absent, waits for bounded readiness, and returns a useful launch error on
+failure. An existing instance is left running; compositor focus is deferred.
+Mutating/query subcommands require an existing instance and do not auto-launch.
+Test both binaries together and document the development/install invocation.
+
+### Selection and Execution Contracts
+
+- Resolve explicit IDs first, then originating `OMATERM_*` context, then authorized
+  selected project/tab/focused pane. Server-side scope checks remain authoritative;
+  environment hints never grant access. An invalid explicit ID never falls back.
+- `send` sends literal UTF-8 bytes, without newline. Its protocol encoding is base64.
+- `run` sends structured argv, not an interpolated shell command string. The server
+  uses a tested encoder for the detected shell dialect; reject unsupported shells
+  rather than concatenate with spaces. Test spaces, quotes, empty args, Unicode,
+  and shell metacharacters across bash/zsh/fish.
+- `run` is shell input submission, not a process execution/completion API. Never
+  submit to a known foreground TUI/job. Implement readiness detection (for example
+  explicit prompt/command lifecycle shell integration) before enabling it; unknown
+  readiness returns `shell_busy` or `unsupported_operation`. Process foreground
+  identity alone does not prove a clean prompt. A fresh supported-shell prompt must
+  allow the proof flow; record any integration requirement in user documentation.
+- M7 owns readiness/encoding behavior; M8 transports argv and returns submission
+  status. No text scraping of “Done”, exit-code promises, or automatic retries.
+- `read` defaults to 50 visible lines and 500 columns, subject to M8 caps. It reads
+  the current viewport, not a command transcript; return dimensions/truncation.
 
 ## Implementation Steps
 
@@ -244,6 +314,9 @@ Alternatively, separate binaries. Decide during implementation.
 10. **Implement error handling** with proper exit codes
 11. **Test end-to-end**: launch OmaTerm desktop → run CLI commands → verify effects
 12. **Test error cases**: OmaTerm not running, invalid pane ID, etc.
+13. **Implement all remaining coverage-table rows**, especially `terminal run`
+14. **Implement the two-binary launcher contract** and test absent/running desktop
+15. **Run the final proof from an authorized shell**, checking new IDs and bounded output
 
 ## Acceptance Criteria
 
@@ -257,6 +330,10 @@ Alternatively, separate binaries. Decide during implementation.
 - [ ] Clear error when pane/project not found (exit code 1)
 - [ ] Exit code 0 on success
 - [ ] `cargo build -p omaterm-cli` produces the `omaterm` binary
+- [ ] Every coverage-table row has mapping and end-to-end success/failure tests
+- [ ] `terminal run` passes quoting/readiness tests and the final proof flow
+- [ ] No-argument `omaterm` launches the desktop or acknowledges an existing instance
+- [ ] Scoped context, denied targets, JSON errors, truncation, and exit codes tested
 
 ## The v0.1 Proof
 
@@ -287,7 +364,7 @@ This proves the architecture for future AI-agent control. 🎉
 - No `terminal wait` command (future)
 - No shell completions (future)
 - No man pages (future)
-- No launch/focus detection (future)
+- No compositor focus/activation request (basic launch/instance detection is required)
 
 ## References
 

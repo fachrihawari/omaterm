@@ -27,7 +27,7 @@ This ensures that UI actions, CLI commands, and future AI agents all use the exa
 ```
 crates/omaterm-core/src/
 ├── command.rs          # OmaCommand enum + sub-commands
-├── router.rs           # CommandRouter dispatcher
+├── validation.rs       # Pure command validation
 └── result.rs           # CommandResult type
 ```
 
@@ -71,7 +71,7 @@ pub enum PaneCommand {
 pub enum TerminalCommand {
     Create { project: ProjectId, directory: Option<PathBuf> },
     SendBytes { session: SessionId, data: Vec<u8> },
-    RunCommand { session: SessionId, command: String },
+    RunCommand { session: SessionId, argv: Vec<String> },
     ReadVisible { session: SessionId, max_lines: usize, max_columns: usize },
     Clear { session: SessionId },
     List,
@@ -79,6 +79,27 @@ pub enum TerminalCommand {
 ```
 
 ### Command Router
+
+Place the runtime dispatcher in application coordination (initially a module in
+the desktop/UI crate), not in the core crate. Keep it free of GPUI-specific APIs
+and unit-test it with fake terminal/state adapters. Core owns command types,
+validation, and domain operations; terminal depends on core IDs; state converts
+core into snapshots. Core must not import terminal/state or application crates.
+
+The arrows in the blueprint describe conceptual flow; the concrete Cargo graph is:
+
+```text
+desktop/UI coordination → core, terminal, state, IPC (when introduced)
+terminal → core
+state → core
+IPC → protocol
+CLI → protocol, IPC
+protocol → core (only if reusing pure IDs/error types)
+core → domain dependencies only
+```
+
+Protocol types must not depend on the transport crate. Map protocol requests to
+domain commands at application ingress, avoiding circular dependencies.
 
 ```rust
 // router.rs
@@ -102,13 +123,16 @@ pub enum CommandOutput {
     TabList(Vec<TabInfo>),
     PaneList(Vec<PaneInfo>),
     TerminalList(Vec<TerminalInfo>),
-    TerminalOutput(String),
+    TerminalOutput { text: String, truncated: bool },
     PaneSplit { new_pane: PaneId, new_session: SessionId },
+    ProjectCreated { project: ProjectId },
+    TabCreated { tab: TabId, pane: PaneId, session: SessionId },
 }
 
 pub struct CommandError {
     pub code: ErrorCode,
     pub message: String,
+    pub details: Option<ErrorDetails>,
 }
 
 pub enum ErrorCode {
@@ -117,7 +141,10 @@ pub enum ErrorCode {
     PaneNotFound,
     SessionExited,
     PermissionDenied,
+    CrossProjectDenied,
     InvalidRequest,
+    UnsupportedOperation,
+    ShellBusy,
     Timeout,
 }
 ```
@@ -145,13 +172,12 @@ Every consumer builds an `OmaCommand`. The router dispatches it. There is ONE im
 
 ### Migration Strategy
 
-Before this milestone, UI actions directly mutate workspace state. After:
+Before this milestone, UI actions invoke shared application/core operations. After:
 
 ```rust
-// Before (direct mutation)
+// Before (shared application operation)
 fn on_split_right(&mut self) {
-    self.workspace.current_tab_mut().root.split(focused, Right, new_pane);
-    self.terminal_registry.create(...);
+    self.coordinator.split_pane(self.focused_pane(), Right);
 }
 
 // After (command dispatch)
@@ -167,6 +193,35 @@ fn on_split_right(&mut self) {
 ### Error Codes
 
 All errors use stable `ErrorCode` variants. Agents and CLI parse these codes — never rely on error message text.
+
+### Execution Contract
+
+One application owner serializes workspace mutations. Background tasks return
+effects/results to that owner rather than mutating GPUI state or competing on a
+workspace mutex. Revalidate target/session existence after asynchronous work.
+Cancellation and failed session creation use M4 rollback rules. Dispatch must not
+block UI rendering while launching/reaping a process or writing a snapshot.
+
+Carry caller context (`LocalUser` initially; scoped credentials in M8) separately
+from command payloads. M8 resolves and authorizes targets on the server, then
+dispatches once. Queries return owned snapshots; failures leave domain invariants
+intact. Emit persistence notifications only for successful logical changes, not
+each terminal byte. Terminal CWD events use the same state-change coordination.
+
+Migrate keyboard/pointer actions, close flows, terminal input/paste, selection of
+projects/tabs, resize, and reads. Session cleanup remains an application effect;
+the core algorithms remain independently testable.
+
+Implement the `terminal.run` contract in [M9](09-milestone-9-cli.md): structured argv,
+tested shell encoding, and explicit shell readiness before submission. Introduce
+minimal optional shell lifecycle integration here if M3 lacks authoritative prompt
+state; unknown/busy shells reject submission. Do not delay this behavior until the
+CLI adds its parser. Terminal Create creates a new single-terminal tab in the
+specified project and returns tab/pane/session IDs.
+
+The type snippets above omit some metadata for brevity. Actual create/list/read
+results must meet the M9 coverage table and M8 bounded-output contracts, including
+project roots, parent IDs, viewport dimensions, and truncation indicators.
 
 ## Implementation Steps
 
@@ -190,7 +245,8 @@ All errors use stable `ErrorCode` variants. Agents and CLI parse these codes —
 - [ ] `ProjectCommand::List` returns correct project info
 - [ ] `PaneCommand::Split` creates pane + terminal through single dispatch
 - [ ] `TerminalCommand::ReadVisible` returns bounded text
-- [ ] `cargo test -p omaterm-core` covers all command dispatch paths
+- [ ] Core validation tests and application dispatcher tests cover all command paths
+- [ ] Failure injection, stale targets, scope-ready caller context, and ordered effects tested
 - [ ] Existing functionality works identically after migration
 - [ ] Persistence triggers correctly from command dispatch
 

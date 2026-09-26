@@ -28,6 +28,35 @@ The file `OMATERM_AGENT_BLUEPRINT.md` at the project root is the authoritative a
 
 When the blueprint says **MUST**, **SHOULD**, or **MUST NOT**, interpret those literally.
 
+The blueprint governs architecture; milestone documents define execution. Rust
+snippets are illustrative unless identified as settled contracts. Verify APIs
+against selected dependency versions before implementing them.
+
+## Execution Workflow
+
+1. Read `docs/status.md`, the current milestone, and its blueprint references.
+2. Inspect existing code and working-tree changes before editing.
+3. Implement the current vertical slice using shared domain operations.
+4. Run applicable checks and record commands/results in `docs/status.md`.
+5. Record manual desktop validation separately, plus blockers and next actions.
+
+Before M7, UI handlers call shared core operations through application coordination.
+M7 introduces the common dispatcher. Do not duplicate business logic in handlers.
+
+Once a Cargo workspace exists, Rust milestone completion requires:
+
+```bash
+cargo fmt --all --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Also run milestone-specific checks and actual Wayland validation for UI changes.
+For documentation-only changes, check links, consistency, and `git diff --check`;
+Cargo checks are unnecessary. Never report unavailable checks as passing.
+Track `Cargo.lock`; record verified toolchain/dependency revisions and licenses in
+`docs/dependencies.md`. Example versions do not establish a working MSRV.
+
 ---
 
 ## Architecture Overview
@@ -91,7 +120,8 @@ omaterm/
 ```
 omaterm-ui → omaterm-core → domain types (NO gpui dependency in core)
 omaterm-terminal → terminal abstraction (NO gpui)
-omaterm-cli → omaterm-protocol → omaterm-ipc
+omaterm-cli → omaterm-protocol + omaterm-ipc
+omaterm-ipc → omaterm-protocol (wire types do not depend on transport)
 ```
 
 **NEVER** let `omaterm-core` depend on `gpui`. Pane tree algorithms, command types, and domain logic must be testable without a desktop window.
@@ -246,6 +276,9 @@ Work in **vertical slices**. Each milestone builds on the previous one. See `doc
 | `OMATERM_AGENT_BLUEPRINT.md` | Authoritative 79-section specification |
 | `AGENTS.md` | This file — agent entry point |
 | `docs/00-overview.md` | Milestone index |
+| `docs/status.md` | Progress, verification evidence, next action |
+| `docs/acceptance-matrix.md` | Release requirements and verification |
+| `docs/dependencies.md` | Toolchain, dependency versions, license inventory |
 | `docs/01-*.md` through `docs/09-*.md` | Individual milestone specs |
 | `rust-toolchain.toml` | Rust stable toolchain |
 | `.editorconfig` | Editor settings |

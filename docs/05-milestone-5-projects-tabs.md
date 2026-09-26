@@ -88,6 +88,28 @@ window.rs      — Orchestrates sidebar + tabs + pane layout
 
 ## Architecture Notes
 
+### Hierarchy and Failure Contracts
+
+- First launch creates one default project rooted at a valid launch directory
+  (otherwise `$HOME`), one tab, and one shell. Surface spawn failures as an exited/
+  failed pane with retry rather than claiming a working terminal exists.
+- New tabs start in the project's pinned directory. Splits inherit the target's
+  last confirmed CWD, with project directory then home fallback. Validate paths
+  before spawn; report fallbacks. CWD tracking is established in M3.
+- Closing the final pane closes its tab; closing the final tab leaves an empty
+  project with a new-tab action. Closing the final project leaves a welcome/empty
+  workspace with a new-project action. Do not spontaneously recreate shells.
+- After close, select the next surviving sibling in list/traversal order, otherwise
+  the previous sibling. Within a nonempty tab `focused_pane` always references a
+  leaf. Empty parent selections are `None`; no input may target stale sessions.
+- Closing a tab/project schedules cleanup of all owned sessions through the same
+  M4 lifecycle coordinator, including hidden/exited sessions. Test partial cleanup
+  failures, repeated close, and focus fallback at every hierarchy level.
+- Switching hierarchy selection changes visibility and semantic focus, not session
+  ownership. Test sustained output in hidden tabs/projects and unchanged child PIDs.
+- Create/close operations remain shared application/core operations before M7.
+  Add keyboard project switching and keyboard pane resize alongside tab navigation.
+
 ### Focus Chain
 
 ```
@@ -136,6 +158,9 @@ Initially, a project's root directory is just `pinned_directory`. Auto-detection
 - [ ] Keyboard shortcuts work: new project, new tab, close tab, next/prev tab
 - [ ] `omaterm-core` still has no `gpui` dependency
 - [ ] `cargo test -p omaterm-core` passes
+- [ ] Default/empty workspace, last-child close, and spawn/cleanup failures tested
+- [ ] Hidden projects/tabs drain output with unchanged session and child identity
+- [ ] Project switching and pane resizing are keyboard-accessible on Wayland
 
 ## Non-Goals
 

@@ -1,7 +1,10 @@
 # Rust / Cargo
 /target/
 **/*.rs.bk
-Cargo.lock
+# Track Cargo.lock once the application workspace exists.
+
+# Optional machine-local code index
+/.codegraph
 
 # OmaTerm runtime state (never commit)
 *.sock

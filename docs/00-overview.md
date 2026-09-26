@@ -6,6 +6,26 @@ This directory contains the implementation plan for OmaTerm v0.1, broken into 9 
 
 OmaTerm v0.1 targets a **usable terminal workspace** whose panes can be controlled semantically through a CLI — proving the architecture required for future AI-agent control.
 
+## Execution and Completion Gates
+
+Start with [status.md](status.md), then the current milestone and its blueprint
+references. No application code exists yet; all milestone acceptance checks are
+pending. Follow the canonical workflow in [AGENTS.md](../AGENTS.md).
+
+- Complete slices in order; introduce only the crates needed by the active slice.
+- Before M7, shared core operations and application coordination own mutations;
+  M7 unifies entry points behind the dispatcher without duplicating algorithms.
+- Snippets are illustrative. Explicit behavioral contracts guide implementation;
+  verify dependency APIs before selecting exact Rust signatures.
+- Run workspace format/test/Clippy and milestone-specific checks. Record real
+  Wayland results separately. CI does not certify desktop behavior.
+- Map requirements to [acceptance-matrix.md](acceptance-matrix.md), and record
+  toolchain/dependency evidence in [dependencies.md](dependencies.md).
+- Documentation-only work requires link/consistency review and `git diff --check`.
+  Run `python3 scripts/check-docs.py` from the repository root for local link targets
+  and numbered blueprint references plus CLI/IPC table coverage; external
+  URLs/heading anchors need review.
+
 ## Milestone Index
 
 | # | Milestone | Description | Key Crates |
@@ -16,7 +36,7 @@ OmaTerm v0.1 targets a **usable terminal workspace** whose panes can be controll
 | 4 | [Multi Terminal](04-milestone-4-multi-terminal.md) | Pane leaves → sessions | `omaterm-terminal`, `omaterm-ui` |
 | 5 | [Projects & Tabs](05-milestone-5-projects-tabs.md) | Sidebar, tab bar, focus | `omaterm-core`, `omaterm-ui` |
 | 6 | [Persistence](06-milestone-6-persistence.md) | Versioned snapshots | `omaterm-state` |
-| 7 | [Command Router](07-milestone-7-command-router.md) | Semantic command bus | `omaterm-core` |
+| 7 | [Command Router](07-milestone-7-command-router.md) | Semantic commands + runtime coordination | `omaterm-core`, desktop coordination |
 | 8 | [IPC](08-milestone-8-ipc.md) | Unix socket server | `omaterm-ipc`, `omaterm-protocol` |
 | 9 | [CLI](09-milestone-9-cli.md) | `omaterm` CLI binary | `omaterm-cli` |
 
@@ -54,8 +74,8 @@ If this works, OmaTerm has proven the architecture for future agent control.
 
 ## Key References
 
-- `OMATERM_AGENT_BLUEPRINT.md` — Authoritative specification (79 sections)
-- `AGENTS.md` — AI agent instructions
+- [OMATERM_AGENT_BLUEPRINT.md](../OMATERM_AGENT_BLUEPRINT.md) — Authoritative specification (79 sections)
+- [AGENTS.md](../AGENTS.md) — AI agent instructions
 - Blueprint §22 — First-Run Product Scope
 - Blueprint §23 — Suggested Version Progression
 - Blueprint §55 — MVP Acceptance Criteria

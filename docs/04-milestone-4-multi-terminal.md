@@ -8,7 +8,7 @@ This milestone connects the pane tree (Milestone 2) with the terminal subsystem 
 
 ## Goals
 
-- [ ] Each pane leaf owns a `TerminalSession`
+- [ ] Each pane leaf references a registry-owned `TerminalSession` by ID
 - [ ] Splitting a pane creates a new terminal in the new pane
 - [ ] Closing a pane terminates its terminal correctly
 - [ ] Terminal sessions survive focus changes
@@ -34,7 +34,7 @@ pub struct TerminalRegistry {
 }
 
 impl TerminalRegistry {
-    pub fn create(&mut self, config: TerminalConfig) -> SessionId;
+    pub fn create(&mut self, config: TerminalConfig) -> Result<SessionId>;
     pub fn get(&self, id: &SessionId) -> Option<&TerminalSession>;
     pub fn get_mut(&mut self, id: &SessionId) -> Option<&mut TerminalSession>;
     pub fn close(&mut self, id: &SessionId) -> Result<()>;
@@ -68,6 +68,19 @@ PaneNode::Pane { content: Terminal(session_id) }
 
 ### Session Lifetime Rules
 
+The registry owns runtime sessions; views and core pane leaves only reference IDs.
+Coordinate operations at the application boundary, keeping core independent of
+the registry implementation. For a split: validate target/geometry, prepare a
+session, commit the new leaf, then publish state. If creation or insertion fails,
+dispose of the provisional session and leave the original tree/focus intact.
+Inject spawn/insertion failures in tests. Do not await process work on the UI thread.
+
+Close removes a leaf and updates focus through shared domain operations, then
+tears down its session exactly once. Track cleanup failures until reaped rather
+than silently dropping the last handle. Process exit retains a visible exited
+session until explicit pane close. Closing the final M4 pane shows an empty
+workspace with a new-terminal action; M5 defines hierarchy-aware close behavior.
+
 ```
 ✅ Splitting a pane    → new TerminalSession created
 ✅ Closing a pane      → TerminalSession destroyed, PTY closed, process terminated
@@ -93,6 +106,8 @@ All terminals drain PTY output. Only visible terminals pay rendering cost.
 
 When a terminal is closed, verify:
 - [ ] Child process is terminated (SIGTERM → SIGKILL after timeout)
+- [ ] Shell/job process-group policy is explicit; unrelated processes are untouched
+- [ ] Child exit is waited/reaped with bounded escalation, off the UI thread
 - [ ] PTY master FD is closed
 - [ ] Async read task is cancelled
 - [ ] Engine memory is freed
@@ -121,7 +136,9 @@ When a terminal is closed, verify:
 - [ ] Remaining terminals continue working after a pane closes
 - [ ] Terminal state is preserved when another pane is split/closed
 - [ ] PTY output drains for all terminals (including unfocused)
-- [ ] No file descriptor leaks after creating and closing 20 terminals
+- [ ] Repeated create/close cycles of 100 terminals show no growing FD/thread/process counts
+- [ ] Record memory/GPU behavior, cleanup failures, and resource baseline/tolerances
+- [ ] Spawn failure and rollback leave no orphan session, child, or dangling pane ID
 - [ ] No zombie processes after closing terminals
 - [ ] `cargo test` passes
 
@@ -130,7 +147,7 @@ When a terminal is closed, verify:
 - No project/tab model (all panes in one flat workspace)
 - No persistence
 - No IPC/CLI
-- No copy/paste between panes
+- No shared cross-pane selection (normal clipboard copy/paste remains supported)
 - No pane drag-and-drop
 
 ## References

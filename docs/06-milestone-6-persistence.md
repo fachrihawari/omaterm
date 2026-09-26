@@ -13,7 +13,7 @@ When OmaTerm restarts, the user should see their projects, tabs, and pane layout
 - [ ] Serialize: projects, tabs, pane tree, split fractions, focused pane, working directories
 - [ ] Auto-save on state changes
 - [ ] Restore on startup: rebuild workspace → fresh shells in remembered directories
-- [ ] Handle missing/corrupt snapshot gracefully (start fresh)
+- [ ] Recover from missing/corrupt/unsupported snapshots without overwriting originals
 
 ## Prerequisites
 
@@ -121,6 +121,13 @@ set focus to saved focused pane
 
 ### Schema Versioning
 
+Keep snapshot DTOs and conversion in `omaterm-state`, which depends on core types;
+core must not depend on the persistence crate. Validate before launching any shell:
+unique IDs, finite bounded fractions, valid selections/focus references, recognized
+content types, and bounded tree depth/node count/file size. Define numerical limits
+in the implementation and cover boundary cases. Empty workspaces/projects from M5
+are valid. Reject invalid snapshots rather than partially constructing live state.
+
 Every snapshot starts with `"schema_version": N`. When the format changes:
 
 ```rust
@@ -143,12 +150,34 @@ Save on meaningful state changes:
 
 Debounce saves (e.g., at most once per 2 seconds) to avoid thrashing.
 
+Include split resize/equalize, renames, selected project/tab, and sidebar state.
+Use one ordered writer with monotonically increasing snapshot revisions so an old
+save cannot replace a newer one. Perform serialization/disk I/O off the UI thread.
+Write a same-directory temporary file with owner-only permissions, flush/sync it,
+then atomically rename; define directory sync and error reporting behavior. Test
+failed writes and interrupted replacement leave the last good snapshot readable.
+
+Persist each terminal's last confirmed CWD (M3), not an assumed project directory.
+Record fallback when CWD discovery is unavailable. Never persist capability tokens,
+runtime session handles, or terminal output. Rebuild fresh session IDs and rewrite
+pane references on restore; M8 issues fresh credentials for those sessions.
+
 ### Graceful Degradation
 
 - Missing file → start with default workspace (one project, one tab, one pane)
-- Corrupt JSON → log warning, start fresh
-- Unknown schema version → log warning, start fresh
+- Corrupt JSON/invalid state → retain original, warn, open a recovery workspace
+- Unknown schema version → retain original, warn, open a recovery workspace
 - Missing working directory → fall back to `$HOME`
+
+Recovery workspaces must not autosave over the failed original, including during
+shutdown. Save recovery work under a distinct filename until explicit reset or a
+supported migration is chosen. Test original bytes remain intact across restart.
+If home is unavailable, surface a recoverable shell-start error instead of looping.
+Individual shell launch failures do not discard the restored logical layout.
+
+Shutdown before M8: stop mutations, capture latest logical state, finish the final
+save, terminate/reap sessions, close PTYs, release UI resources. M8 adds IPC ingress
+shutdown first. A save failure is reported, but must not prevent process cleanup.
 
 ## Implementation Steps
 
@@ -156,7 +185,7 @@ Debounce saves (e.g., at most once per 2 seconds) to avoid thrashing.
 2. **Define `WorkspaceSnapshot`** serializable types (serde)
 3. **Implement `SnapshotStore::save()`** — serialize to JSON, write atomically
 4. **Implement `SnapshotStore::load()`** — read, deserialize, validate version
-5. **Add `to_snapshot()` / `from_snapshot()`** methods to domain types
+5. **Add snapshot conversion functions** in `omaterm-state`, keeping core independent
 6. **Wire auto-save** — trigger on state changes with debounce
 7. **Wire restore on startup** — load snapshot → rebuild workspace → launch shells
 8. **Test: save/restore round-trip** — state matches after restart
@@ -171,10 +200,14 @@ Debounce saves (e.g., at most once per 2 seconds) to avoid thrashing.
 - [ ] Focused pane is restored
 - [ ] Selected project and tab are restored
 - [ ] Missing snapshot file → clean default workspace
-- [ ] Corrupt snapshot file → clean default workspace + warning log
+- [ ] Corrupt snapshot → recovery workspace + warning, original remains intact
 - [ ] Snapshot file is valid JSON and human-readable
 - [ ] `schema_version` field is present
 - [ ] `cargo test -p omaterm-state` passes
+- [ ] Invalid graph/focus/fractions and oversized/deep snapshots fail before spawn
+- [ ] Unknown/corrupt originals survive autosave, shutdown, and subsequent restart
+- [ ] Atomic-write failure, save ordering, missing directories, and partial spawn tested
+- [ ] Remembered CWD verified after `cd`, with fallback provenance recorded
 
 ## Non-Goals
 

@@ -10,7 +10,7 @@ This milestone validates that the GPUI toolchain works on the target platform be
 
 ## Goals
 
-- [x] Cargo workspace initialized
+- [ ] Cargo workspace initialized
 - [ ] GPUI dependency compiles on Linux
 - [ ] A window opens with a solid background color
 - [ ] Basic text renders in the window
@@ -46,7 +46,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+# Set rust-version after verifying the selected GPUI/toolchain combination.
 ```
 
 ### App `Cargo.toml`
@@ -57,11 +57,19 @@ name = "omaterm"
 version = "0.1.0"
 edition.workspace = true
 
+[[bin]]
+name = "omaterm-desktop"
+path = "src/main.rs"
+
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
+# Add the verified GPUI release or Git dependency with an explicit rev.
 ```
 
-> **Note:** The exact GPUI dependency source may need adjustment. Check if GPUI is published to crates.io or if a specific Zed commit/tag should be pinned.
+> **Dependency gate:** these snippets are illustrative. Inspect current GPUI
+> examples and platform initialization. Select an exact release or Git revision,
+> verify licensing, commit `Cargo.lock`, and record the tested Rust version and
+> native packages in [dependencies.md](dependencies.md). Once verified, pin that
+> toolchain in `rust-toolchain.toml`; `stable` is the bootstrap choice.
 
 ### `main.rs` — Minimal GPUI App
 
@@ -104,12 +112,19 @@ Or platform-specific features via `gpui_platform`.
 
 ## Acceptance Criteria
 
+Record commands, toolchain, compositor/session, and results in [status.md](status.md).
+Run the workspace quality gate from `AGENTS.md`. Enable CI for those same checks
+once the workspace builds, with native packages matching the dependency inventory.
+Headless CI does not replace the Wayland smoke test.
+
 - [ ] `cargo build` succeeds with no errors
 - [ ] `cargo run` opens a window on Wayland (Omarchy/Hyprland)
 - [ ] Window displays a background color and text
 - [ ] Window can be closed cleanly (no crash, no hang)
-- [ ] `cargo clippy` has zero warnings
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [ ] X11 feature compiles (if available, test on X11 session)
+- [ ] GPUI revision, toolchain, native dependencies, and licenses recorded
+- [ ] Application lockfile tracked and workspace checks automated in CI
 
 ## Non-Goals
 

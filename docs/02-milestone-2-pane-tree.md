@@ -99,7 +99,8 @@ impl PaneNode {
     pub fn split(&mut self, target: PaneId, direction: SplitDirection, new_pane: Pane) -> Result<()>;
 
     /// Remove a pane and collapse its parent split
-    pub fn remove(&mut self, target: PaneId) -> Result<Option<Pane>>;
+    // Illustrative: removal must be able to return an empty root.
+    pub fn remove(self, target: PaneId) -> Result<Removal>;
 
     /// Change the split fraction
     pub fn resize(&mut self, split: SplitId, fraction: f32) -> Result<()>;
@@ -122,6 +123,31 @@ impl PaneNode {
 ```
 
 ## Architecture Notes
+
+### Domain Contracts and Tests
+
+- Removal returns both the removed pane and an optional replacement root. The
+  application handles an empty root; a leaf cannot silently remain after removal.
+  A failed operation preserves the original state (choose an API that guarantees
+  this, rather than copying the illustrative consuming signature literally).
+- Pane and split IDs are unique across the workspace. Reject duplicate IDs and
+  unknown targets without partial mutation. Test insertion in deeply nested trees.
+- Horizontal means left/right; vertical means top/bottom. First children occupy
+  left/top rectangles. Geometry calculations use core-owned normalized rectangles.
+- Reject NaN/infinity; clamp finite resize requests to `[0.1, 0.9]`. Rendering also
+  enforces minimum cell dimensions; reject splits that cannot fit two panes. M3
+  supplies cell metrics. Test tiny layouts without zero-sized PTY resizes.
+- Directional focus chooses candidates in the requested direction with overlapping
+  perpendicular spans, ordered by edge distance, then center distance, then tree
+  traversal order. No candidate means focus stays unchanged. Test uneven nested
+  splits and ties. Keep this policy deterministic and independent of GPUI.
+- Equalization resets each split to `0.5`; it does not promise equal leaf areas.
+- Add ancestor traversal from blueprint §13, with root and missing-ID tests.
+- `Empty` is an M2 placeholder only; remove it when M4 connects all leaves to
+  sessions. Create IDs needed by this slice; defer unused hierarchy types to M5.
+
+Write invariant and failure-path tests before implementing operations. Before M7,
+UI handlers invoke these shared operations through application coordination.
 
 ### Split Behavior
 
@@ -198,7 +224,7 @@ The UI crate reads the tree and renders it. The core crate knows nothing about r
 - [ ] Focus navigation resolves correct neighbor
 - [ ] GPUI renders colored placeholder panes matching the tree structure
 - [ ] `omaterm-core` has zero dependencies on `gpui`
-- [ ] `cargo clippy -p omaterm-core` has zero warnings
+- [ ] Workspace format/test/Clippy quality gate passes (see `AGENTS.md`)
 
 ## Non-Goals
 

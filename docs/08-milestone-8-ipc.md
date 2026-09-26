@@ -12,7 +12,7 @@ This milestone adds a Unix domain socket server to OmaTerm's desktop process. Ex
 - [ ] `omaterm-ipc` crate — Unix socket server and client
 - [ ] Server starts automatically with the desktop app
 - [ ] JSON protocol v1 with request/response semantics
-- [ ] Capability token validation (basic)
+- [ ] Project-scoped session capabilities and explicit local-user credentials
 - [ ] Clean shutdown (stop accepting, close socket)
 
 ## Prerequisites
@@ -104,7 +104,10 @@ crates/omaterm-ipc/
 | `pane.split` | `PaneCommand::Split` |
 | `pane.close` | `PaneCommand::Close` |
 | `pane.focus` | `PaneCommand::Focus` |
+| `pane.resize` | `PaneCommand::Resize` |
+| `pane.equalize` | `PaneCommand::Equalize` |
 | `terminal.list` | `TerminalCommand::List` |
+| `terminal.create` | `TerminalCommand::Create` |
 | `terminal.send` | `TerminalCommand::SendBytes` |
 | `terminal.run` | `TerminalCommand::RunCommand` |
 | `terminal.read` | `TerminalCommand::ReadVisible` |
@@ -115,7 +118,15 @@ crates/omaterm-ipc/
 $XDG_RUNTIME_DIR/omaterm.sock
 ```
 
-Fallback: `/tmp/omaterm-$UID.sock`
+Validate ownership and permissions of `$XDG_RUNTIME_DIR`. If unavailable, use an
+owner-validated private directory such as `/tmp/omaterm-$UID/` (mode `0700`) with
+`omaterm.sock` inside it. Reject symlinks, wrong owners, and pre-existing unsafe
+directories. Never bind directly to a predictable shared `/tmp` socket path.
+
+Probe an existing socket before binding. An active instance keeps ownership;
+another instance must not unlink it. Remove stale endpoints only after verifying
+ownership/type and serializing startup with a lock. Shutdown removes only the
+endpoint owned by this server instance. Test stale, active, and raced startup.
 
 ## Architecture Notes
 
@@ -130,7 +141,7 @@ Server reads line, deserializes IpcRequest
   ↓
 Validate protocol version
   ↓
-Validate token (basic for now)
+Resolve credential and authorize method and target project
   ↓
 Map method string → OmaCommand
   ↓
@@ -146,14 +157,32 @@ Send newline-delimited JSON response
 All fields have limits enforced server-side:
 
 ```
-max request size:        64 KB
-max terminal read lines: 10000
-max terminal read cols:  10000
-max send bytes:          1 MB
-max wait timeout:        300s
+max request frame:       64 KiB (UTF-8 JSON, including newline)
+max decoded send bytes:  8 KiB (also subject to encoded frame limit)
+max read lines:          1000
+max read columns:        1000
+max response frame:      1 MiB (including JSON escaping and newline)
+max argv count:          256
+max argument bytes:      4096 (aggregate still subject to request frame limit)
+max connections:         32
+requests per connection: 1 in flight; sequential request/response
+incomplete-frame timeout: 5 seconds
+request deadline:       10 seconds
 ```
 
-Reject requests exceeding limits with `invalid_request` error.
+Reject requests exceeding limits with `invalid_request`. Enforce framing limits
+incrementally before deserializing; do not use an unbounded line reader. Bound
+response construction as well as transmission: cap text on UTF-8 boundaries and
+return `truncated: true`, accounting for JSON escaping. Apply equivalent bounds
+to list responses (explicit limit/truncation), names, and method/ID fields. Reject
+control characters in structured fields; raw terminal bytes are intentionally
+different. Test exact boundaries, multibyte text, escaping, and slow clients.
+
+Use base64 for raw `terminal.send` data; JSON carries argv arrays for `terminal.run`.
+Typed protocol DTOs and method mappings are independently round-trip tested.
+Unknown methods/fields and invalid selectors produce stable errors. Request IDs
+correlate responses; they do not promise replay deduplication. Clients must not
+automatically retry mutations after an ambiguous disconnect/timeout.
 
 ### Protocol Versioning
 
@@ -172,17 +201,42 @@ Protocol version is independent of application semver.
 
 ```
 1. Stop accepting new connections
-2. Finish in-flight requests (with timeout)
-3. Close all client connections
-4. Remove socket file
+2. Cancel queued requests; settle/cancel in-flight effects within bounded deadlines
+3. Capture/persist final workspace; report save failure without skipping cleanup
+4. Terminate/reap sessions, cancel I/O, close PTYs, revoke capabilities
+5. Close clients and remove this instance's socket/credential files
+6. Release UI/GPU resources
 ```
 
 ### Security
 
-- Socket permissions: owner-only (`0600`)
-- Token validation: each connected client provides a token
-- For v0.1: simple shared-secret token written to a file at startup
-- Future: project-scoped capability tokens
+- Socket permissions: owner-only (`0600`), within a validated private directory.
+- Validate peer UID where supported; this supplements token scope, not replaces it.
+- Issue unpredictable credentials (at least 256 random bits) per terminal session,
+  bound to its project and originating pane/session. Revoke on session close and
+  regenerate on restore. A project credential cannot create/select another project,
+  query its IDs/output, or target its tabs/panes/splits/sessions.
+- List queries filter to authorized scope; reject explicit cross-project targets
+  with `cross_project_denied`. Resolve selectors and check ownership server-side
+  immediately before effects. Global creation requires local-user authority.
+- Inject `OMATERM_SOCKET`, `OMATERM_TOKEN`, `OMATERM_PROJECT_ID`, `OMATERM_TAB_ID`,
+  `OMATERM_PANE_ID`, and `OMATERM_SESSION_ID` into child environments. Initialize
+  capability/socket coordination before spawning/restoring shells at app startup.
+- An outside CLI may use an explicit local-user credential stored owner-only in
+  the private runtime directory. This credential has application-wide authority;
+  it is never injected into terminal children. A project-scoped CLI must not
+  silently fall back to it when its own token is missing, expired, or rejected.
+- Same-UID processes can generally access each other's files/environment; these
+  capabilities enforce API scope, not OS sandbox isolation against a hostile user.
+- Never log credentials, input payloads, clipboard data, or terminal text by default.
+
+### Cancellation and UI Handoff
+
+Socket tasks submit bounded work to the M7 application owner and await responses;
+they do not mutate UI state directly. Disconnect/deadline/shutdown cancels queued
+work and releases resources. Once a mutation is committed, disconnect cannot undo
+it; a timeout may have an unknown outcome to the client. Recheck session existence
+and token validity before effects. No waiter task survives its caller or session.
 
 ## Implementation Steps
 
@@ -209,10 +263,14 @@ Protocol version is independent of application semver.
 - [ ] Socket is removed on clean shutdown
 - [ ] No data corruption from concurrent requests
 - [ ] `cargo test` covers request/response serialization round-trips
+- [ ] Two-project tests reject cross-scope targets and filter lists
+- [ ] Token expiry/revocation, wrong/missing credentials, and peer mismatch tested
+- [ ] Frame/response caps, slow clients, disconnects, deadlines, and queue limits tested
+- [ ] Stale socket, unsafe fallback directory, and active-instance races tested
 
 ## Non-Goals
 
-- No full capability token system (basic auth only)
+- No delegation hierarchy or agent orchestration (minimal project scope is required)
 - No event streaming / subscriptions
 - No multiplexed connections
 - No TLS
