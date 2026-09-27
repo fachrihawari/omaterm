@@ -79,6 +79,24 @@ impl WorkspaceCoordinator {
     pub fn window(&self) -> &WorkspaceWindow {
         &self.window
     }
+    pub fn rename_project(&mut self, id: ProjectId, name: String) -> Result<(), CoordinatorError> {
+        let project = self
+            .window
+            .project_mut(id)
+            .ok_or(CoreError::ProjectNotFound(id))?;
+        project.custom_name = Some(name);
+        Ok(())
+    }
+    pub fn rename_tab(&mut self, id: TabId, name: String) -> Result<(), CoordinatorError> {
+        let tab = self
+            .window
+            .projects
+            .iter_mut()
+            .find_map(|project| project.tab_mut(id))
+            .ok_or(CoreError::TabNotFound(id))?;
+        tab.custom_name = Some(name);
+        Ok(())
+    }
     pub fn projects(&self) -> &[Project] {
         &self.window.projects
     }
@@ -207,7 +225,7 @@ impl WorkspaceCoordinator {
             self.window
                 .add_project(Project::new(None, Some(self.launch_directory.clone())))?;
         }
-        self.create_tab_for_selected(cols, rows)
+        self.create_tab_for_selected(cols, rows, None)
             .map(|(_, session)| session)
     }
 
@@ -215,8 +233,13 @@ impl WorkspaceCoordinator {
         &mut self,
         cols: u16,
         rows: u16,
+        directory: Option<PathBuf>,
     ) -> Result<(TabId, SessionId), CoordinatorError> {
-        let id = self.registry.create(self.config(cols, rows, None))?;
+        let mut config = self.config(cols, rows, None);
+        if let Some(directory) = directory {
+            config.working_directory = directory;
+        }
+        let id = self.registry.create(config)?;
         let pane = Pane {
             id: PaneId::new(),
             content: PaneContent::Terminal(id),
@@ -247,7 +270,7 @@ impl WorkspaceCoordinator {
         let project = Project::new(None, Some(directory));
         let project_id = project.id;
         self.window.add_project(project)?;
-        match self.create_tab_for_selected(cols, rows) {
+        match self.create_tab_for_selected(cols, rows, None) {
             Ok((tab, session)) => Ok((project_id, tab, session)),
             Err(error) => {
                 let _ = self.window.remove_project(project_id);
@@ -264,7 +287,27 @@ impl WorkspaceCoordinator {
     ) -> Result<(TabId, SessionId), CoordinatorError> {
         let previously_selected = self.window.selected_project;
         self.window.select_project(project)?;
-        match self.create_tab_for_selected(cols, rows) {
+        match self.create_tab_for_selected(cols, rows, None) {
+            Ok(created) => Ok(created),
+            Err(error) => {
+                if let Some(previous) = previously_selected {
+                    let _ = self.window.select_project(previous);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub fn create_tab_in_directory(
+        &mut self,
+        project: ProjectId,
+        directory: PathBuf,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(TabId, SessionId), CoordinatorError> {
+        let previously_selected = self.window.selected_project;
+        self.window.select_project(project)?;
+        match self.create_tab_for_selected(cols, rows, Some(directory)) {
             Ok(created) => Ok(created),
             Err(error) => {
                 if let Some(previous) = previously_selected {
@@ -526,6 +569,122 @@ impl WorkspaceCoordinator {
             .and_then(Project::selected_tab_mut)
             .ok_or(CoreError::NoSelectedTab)?
             .focused_pane = pane;
+        Ok(())
+    }
+
+    /// Focus a pane anywhere in the workspace, selecting its owner first.
+    pub fn focus_pane_anywhere(&mut self, pane: PaneId) -> Result<(), CoordinatorError> {
+        let owner = self
+            .window
+            .projects
+            .iter()
+            .find_map(|project| {
+                project
+                    .tabs
+                    .iter()
+                    .find_map(|tab| tab.tree.find(pane).map(|_| (project.id, tab.id)))
+            })
+            .ok_or(CoreError::PaneNotFound(pane))?;
+        self.select_tab(owner.0, owner.1)?;
+        self.focus_pane(pane)
+    }
+
+    /// Split the requested pane and focus the newly-created pane.
+    pub fn split_pane(
+        &mut self,
+        target: PaneId,
+        direction: SplitDirection,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(PaneId, SessionId), CoordinatorError> {
+        let selected_project = self.window.selected_project;
+        let selections: Vec<_> = self
+            .window
+            .projects
+            .iter()
+            .map(|p| (p.id, p.selected_tab))
+            .collect();
+        let focus: Vec<_> = self
+            .window
+            .projects
+            .iter()
+            .flat_map(|p| p.tabs.iter().map(|t| (p.id, t.id, t.focused_pane)))
+            .collect();
+        self.focus_pane_anywhere(target)?;
+        match self.split_focused(direction, cols, rows) {
+            Ok(created) => Ok(created),
+            Err(error) => {
+                self.window.selected_project = selected_project;
+                for (project_id, selected_tab) in selections {
+                    if let Some(project) = self.window.project_mut(project_id) {
+                        project.selected_tab = selected_tab;
+                    }
+                }
+                for (project_id, tab_id, focused_pane) in focus {
+                    if let Some(tab) = self
+                        .window
+                        .project_mut(project_id)
+                        .and_then(|p| p.tab_mut(tab_id))
+                    {
+                        tab.focused_pane = focused_pane;
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Close a pane by stable ID, including a pane in a hidden project/tab.
+    pub fn close_pane_by_id(&mut self, pane: PaneId) -> Result<ClosedPane, CoordinatorError> {
+        let owner = self
+            .window
+            .projects
+            .iter()
+            .find_map(|project| {
+                project
+                    .tabs
+                    .iter()
+                    .find_map(|tab| tab.tree.find(pane).map(|_| (project.id, tab.id)))
+            })
+            .ok_or(CoreError::PaneNotFound(pane))?;
+        self.close_pane_in_tab(owner.0, owner.1, pane)
+    }
+
+    pub fn resize_split(
+        &mut self,
+        split: omaterm_core::SplitId,
+        fraction: f32,
+    ) -> Result<(), CoordinatorError> {
+        let tab_id = self
+            .window
+            .projects
+            .iter()
+            .find_map(|project| {
+                project
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tree.split_fraction(split).is_some())
+                    .map(|tab| tab.id)
+            })
+            .ok_or(CoreError::SplitNotFound(split))?;
+        let tab = self
+            .window
+            .projects
+            .iter_mut()
+            .find_map(|project| project.tab_mut(tab_id))
+            .ok_or(CoreError::TabNotFound(tab_id))?;
+        tab.tree.resize(split, fraction)?;
+        Ok(())
+    }
+
+    pub fn equalize_tab(&mut self, tab_id: TabId) -> Result<(), CoordinatorError> {
+        let tab = self
+            .window
+            .projects
+            .iter_mut()
+            .find_map(|project| project.tab_mut(tab_id))
+            .ok_or(CoreError::TabNotFound(tab_id))?;
+        tab.tree.equalize();
         Ok(())
     }
 

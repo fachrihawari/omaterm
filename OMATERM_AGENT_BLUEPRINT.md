@@ -345,7 +345,8 @@ OmaTerm should persist:
 
 OmaTerm should NOT pretend a process survived application shutdown.
 
-Optional static scrollback restoration may be added separately.
+Optional static scrollback restoration is specified separately in post-v0.1
+Milestone 10. It is opt-in and must not imply that a process survived shutdown.
 
 ## 6.7 Agent State Must Be Semantic
 
@@ -1785,7 +1786,7 @@ Configuration may eventually allow:
 scrollback-lines = 10000
 ```
 
-Do not persist unbounded terminal history.
+Do not persist unbounded terminal history. M6 persists no terminal output.
 
 If static history restore is later introduced, store it separately from workspace topology.
 
@@ -1803,7 +1804,11 @@ $XDG_STATE_HOME/omaterm/
     └── ...
 ```
 
-History restore should remain opt-in if persisted output contains sensitive data.
+History restore must remain opt-in if persisted output contains sensitive data.
+The approved M10 contract requires encrypted, bounded archives, OS-backed key
+storage, no plaintext fallback, and an OmaTerm-owned command journal rather than
+modifying shell-native history files. Shell lifecycle capture must be explicit;
+never infer commands from rendered terminal text.
 
 ---
 
@@ -3081,6 +3086,13 @@ terminal read
 ```
 
 At this point the fundamental OmaTerm architecture is proven.
+
+## Slice 10 — Encrypted History Recovery (post-v0.1)
+
+Only after Slices 1–9 are complete, add explicit opt-in encrypted static
+scrollback restoration and a separate OmaTerm command journal. Always launch
+fresh shells; never restore processes, PTYs, parser modes, active commands, or
+alternate-screen state. Follow `docs/10-milestone-10-history-recovery.md`.
 
 ---
 

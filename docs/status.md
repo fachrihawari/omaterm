@@ -13,9 +13,10 @@ M4 evidence below.
 | 4 — Multi Terminal | complete | 64 terminal unit + 20 PTY integration tests; workspace quality gates and Wayland four-pane pass recorded below | Thread/memory/GPU stress baselines remain for broader lifecycle work | Begin M5 Projects/Tabs |
 | 5 — Projects/Tabs | in_progress | Core hierarchy, coordinator lifecycle, full serial workspace suite and quality gates pass; user confirms main Wayland M5 workflows | Manually exercise startup Retry; confirm latest full-chip hit target; resource observations are qualitative only | Finish M5 manual checks before M6 completion |
 | 6 — Persistence | in_progress | State crate tests and workspace compile/clippy pass; desktop restart validation pending | M5 has two remaining manual checks; recovery/shutdown Wayland validation pending | Complete restore and autosave validation |
-| 7 — Command Router | not_started | None | Requires M6 | Unify application actions |
+| 7 — Command Router | in_progress | Core command contracts, validation, dispatcher tests, and desktop dispatch migration implemented; automated checks recorded below | M5/M6 desktop completion gates remain; shell readiness/`terminal.run`, asynchronous creation, and Wayland validation remain | Finish the missing command contracts and non-blocking lifecycle before M7 acceptance |
 | 8 — IPC | not_started | None | Requires M7 | Implement scoped bounded transport |
 | 9 — CLI | not_started | None | Requires M8 | Complete CLI/desktop proof flow |
+| 10 — Encrypted History Recovery | not_started | User selected both scrollback and an OmaTerm-owned command journal, explicit opt-in, and encrypted archives | Post-v0.1; requires M5–M9 completion, supported shell lifecycle integration, and verified Linux keyring/terminal replay dependencies | Complete M5–M9 before the M10 dependency and replay spikes |
 
 ## Handoff rules
 
@@ -616,3 +617,78 @@ and expose a Retry action.
   startup Retry and the final inactive-tab full-chip hit target were not manually
   confirmed in the prior handoff. M6 implementation is proceeding; do not mark
   M5 or M6 complete without those gates and their evidence.
+
+## Milestone 7 — Command Router — implementation in progress
+
+Added GPUI-independent semantic command payloads, pure validation, stable error
+codes, and owned result DTOs to `omaterm-core`. Added the desktop application's
+GPUI-free `CommandRouter`, which dispatches project/tab/pane/terminal operations
+through `WorkspaceCoordinator` and returns lifecycle, persistence, and redraw
+effects. UI keyboard and pointer actions for project/tab selection and lifecycle,
+pane split/close/focus/resize/equalize, terminal key input, paste, restored-pane
+retry, and exited-session close now enter through the dispatcher. Runtime readers,
+renderer state cleanup, session reaping, persistence debounce, and redraw consume
+the returned effects. Coordinator operations now include target-ID split/close/
+focus/resize/equalize, metadata rename, and directory-targeted tab creation.
+
+### Changed files
+
+- `crates/omaterm-core/src/{command,result,validation,lib}.rs`
+- `crates/omaterm-terminal/src/workspace.rs`
+- `apps/omaterm/src/{main,router}.rs`
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS (format applied before final checks) |
+| `cargo test -p omaterm-core` | PASS: 13 tests, including semantic validation boundaries |
+| `cargo test -p omaterm --bin omaterm-desktop` | PASS: 4 router tests, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 13 core + 14 state + 67 terminal unit + 21 PTY integration + 4 router, 0 failures |
+| `cargo build --release --bin omaterm-desktop` | PASS |
+| `cargo tree -p omaterm-core` | PASS: core has only domain dependencies; no GPUI/runtime dependencies |
+| `cargo tree -p omaterm-terminal` | PASS: no GPUI dependency |
+| `git diff --check` | PASS after documentation and code updates |
+
+The known transitive `proc-macro-error2` future-incompatibility notice remains;
+quality gates pass with `-D warnings`.
+
+### Remaining M7 work and validation
+
+- `terminal.run` is explicitly rejected as `unsupported_operation`; supported
+  shell dialect detection, lifecycle readiness markers, and safe argv encoding
+  are not implemented. `terminal.clear` is likewise an explicit unsupported
+  response.
+- Session creation still spawns synchronously from dispatch. Move creation to a
+  background worker with owner-serialized completion and stale-target
+  revalidation before claiming the non-blocking execution contract.
+- Router tests currently cover query snapshots, invalid input, stale pane IDs,
+  and explicit unsupported `run`; add success-path/failure-injection coverage
+  for every command, effects ordering, persistence triggers, and async rollback.
+- Wayland validation has not been run for this change. M5 startup Retry/full-chip
+  checks and M6 persistence/recovery/restart checks are also still outstanding.
+
+M7 therefore remains `in_progress`; no new desktop interaction or M5/M6
+completion evidence is claimed.
+
+## M10 History Recovery — scope approved, implementation not started
+
+User approved a post-v0.1 history feature with these decisions:
+
+- Restore both terminal scrollback and command history.
+- Persistence is opt-in and disabled by default.
+- Command history is an OmaTerm-owned journal; do not read, write, or replay
+  shell-native history files.
+- Encrypt archives at rest and use OS-backed key storage; never fall back to
+  plaintext when key storage is unavailable.
+- Always launch fresh shells. Do not restore PTYs, processes, active commands,
+  parser state, or alternate-screen applications.
+
+Added `docs/10-milestone-10-history-recovery.md`, linked M10 from the overview
+and acceptance matrix, clarified M6's unchanged non-goals, and updated blueprint
+§§6.6, 29, and 68 to record the approved post-v0.1 extension. No persistence,
+keyring, encryption, compression, shell integration, or terminal replay code has
+been added. M10 remains blocked until M5–M9 are complete; dependency/API/license
+research and the Alacritty event-replay spike are deliberately scheduled after
+those gates.

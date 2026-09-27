@@ -2,15 +2,17 @@
 
 ## Overview
 
-This directory contains the implementation plan for OmaTerm v0.1, broken into 9 vertical slices. Each milestone builds on the previous one and should be completed in order.
+This directory contains the implementation plans for OmaTerm v0.1 and approved
+post-v0.1 work. The v0.1 release consists of nine ordered vertical slices; later
+milestones may start only after those prerequisites are complete.
 
 OmaTerm v0.1 targets a **usable terminal workspace** whose panes can be controlled semantically through a CLI — proving the architecture required for future AI-agent control.
 
 ## Execution and Completion Gates
 
 Start with [status.md](status.md), then the current milestone and its blueprint
-references. No application code exists yet; all milestone acceptance checks are
-pending. Follow the canonical workflow in [AGENTS.md](../AGENTS.md).
+references. Acceptance is evidence-based: planned checks are not passes. Follow
+the canonical workflow in [AGENTS.md](../AGENTS.md).
 
 - Complete slices in order; introduce only the crates needed by the active slice.
 - Before M7, shared core operations and application coordination own mutations;
@@ -39,6 +41,10 @@ pending. Follow the canonical workflow in [AGENTS.md](../AGENTS.md).
 | 7 | [Command Router](07-milestone-7-command-router.md) | Semantic commands + runtime coordination | `omaterm-core`, desktop coordination |
 | 8 | [IPC](08-milestone-8-ipc.md) | Unix socket server | `omaterm-ipc`, `omaterm-protocol` |
 | 9 | [CLI](09-milestone-9-cli.md) | `omaterm` CLI binary | `omaterm-cli` |
+| 10 | [Encrypted History Recovery](10-milestone-10-history-recovery.md) | Opt-in encrypted scrollback and OmaTerm command journal; fresh shells | `omaterm-terminal`, `omaterm-state`, desktop, IPC, CLI |
+
+M10 is post-v0.1 and does not change M6's layout/CWD-only persistence contract.
+It is blocked until M5–M9 and its dependency/replay spikes are complete.
 
 ## Version Roadmap
 

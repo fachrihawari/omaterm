@@ -10,7 +10,10 @@ use gpui::{
     ScrollDelta, ScrollWheelEvent, SharedString, TextRun, Timer, WeakEntity, Window, WindowBounds,
     WindowOptions, canvas, div, font, prelude::*, px, relative, rgb, rgba, size,
 };
-use omaterm_core::{Pane, PaneContent, PaneId, PaneNode, SessionId, SplitAxis, SplitDirection};
+use omaterm_core::{
+    CommandContext, CommandOutput, OmaCommand, Pane, PaneCommand, PaneContent, PaneId, PaneNode,
+    ProjectCommand, SessionId, SplitAxis, SplitDirection, TabCommand, TerminalCommand,
+};
 use omaterm_state::{
     CwdProvenance as StoredCwdProvenance, LoadOutcome, PersistedCwd, SnapshotDestination,
     SnapshotStore, SnapshotWriter, WorkspaceSnapshot,
@@ -20,6 +23,7 @@ use omaterm_terminal::{
     TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
     poll_fd_readable, prepare_paste,
 };
+mod router;
 
 /// M4 workspace: a recursive pane tree whose leaves reference
 /// registry-owned `TerminalSession`s by `SessionId`.
@@ -31,7 +35,7 @@ use omaterm_terminal::{
 /// repaints. Painting never holds a session lock.
 struct WorkspaceView {
     focus_handle: FocusHandle,
-    coordinator: WorkspaceCoordinator,
+    coordinator: router::CommandRouter,
     snapshots: HashMap<SessionId, TerminalViewport>,
     receivers: HashMap<SessionId, async_channel::Receiver<TerminalViewport>>,
     selections: HashMap<SessionId, SelectionRange>,
@@ -75,7 +79,7 @@ impl WorkspaceView {
             .map(|store| SnapshotWriter::new(store.clone()));
         let mut view = Self {
             focus_handle,
-            coordinator: WorkspaceCoordinator::new(working_directory),
+            coordinator: router::CommandRouter::new(WorkspaceCoordinator::new(working_directory)),
             snapshots: HashMap::new(),
             receivers: HashMap::new(),
             selections: HashMap::new(),
@@ -214,11 +218,16 @@ impl WorkspaceView {
                 .get(&pane)
                 .map(|cwd| cwd.path.clone())
                 .unwrap_or_default();
-            match self
-                .coordinator
-                .launch_restored_pane(project, tab, pane, cwd, 80, 24)
-            {
-                Ok(session) => self.start_runtime(cx, session),
+            match self.dispatch_command(
+                OmaCommand::Terminal(TerminalCommand::RestorePane {
+                    project,
+                    tab,
+                    pane,
+                    directory: cwd,
+                }),
+                cx,
+            ) {
+                Ok(_) => {}
                 Err(error) => {
                     tracing::warn!("restored pane {pane:?} shell failed: {error}");
                     self.persistence_warning =
@@ -232,17 +241,20 @@ impl WorkspaceView {
     }
 
     fn initialize_default(&mut self, cx: &mut Context<Self>) {
-        match self.coordinator.create_initial(80, 24) {
-            Ok(session_id) => self.start_runtime(cx, session_id),
+        match self.dispatch_command(
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: std::env::current_dir().ok(),
+            }),
+            cx,
+        ) {
+            Ok(CommandOutput::ProjectCreated { .. }) => {}
+            Ok(_) => {}
             Err(error) => {
                 tracing::error!("failed to spawn initial shell: {error}");
                 self.spawn_failure = Some((
                     error.to_string(),
-                    SpawnRetry::Tab(
-                        self.coordinator
-                            .selected_project_id()
-                            .expect("initial project exists"),
-                    ),
+                    SpawnRetry::Project(std::env::current_dir().unwrap_or_default()),
                 ));
             }
         }
@@ -400,15 +412,17 @@ impl WorkspaceView {
             .get(&pane)
             .map(|cwd| cwd.path.clone())
             .unwrap_or_default();
-        match self
-            .coordinator
-            .launch_restored_pane(project, tab, pane, cwd, 80, 24)
-        {
-            Ok(session) => {
+        match self.dispatch_command(
+            OmaCommand::Terminal(TerminalCommand::RestorePane {
+                project,
+                tab,
+                pane,
+                directory: cwd,
+            }),
+            cx,
+        ) {
+            Ok(_) => {
                 self.restored_failures.remove(&pane);
-                self.start_runtime(cx, session);
-                self.mark_persistence_dirty(cx);
-                cx.notify();
             }
             Err(error) => {
                 if let Some((_, _, message)) = self.restored_failures.get_mut(&pane) {
@@ -579,6 +593,25 @@ impl WorkspaceView {
         self.coordinator.session_id_for_pane(pane)
     }
 
+    fn dispatch_command(
+        &mut self,
+        command: OmaCommand,
+        cx: &mut Context<Self>,
+    ) -> Result<CommandOutput, omaterm_core::CommandError> {
+        let outcome = self
+            .coordinator
+            .dispatch(CommandContext::LocalUser, command);
+        for effect in outcome.effects {
+            match effect {
+                router::CommandEffect::SessionStarted(session) => self.start_runtime(cx, session),
+                router::CommandEffect::SessionClosed(closed) => self.finish_close(closed),
+                router::CommandEffect::PersistenceDirty => self.mark_persistence_dirty(cx),
+                router::CommandEffect::WorkspaceChanged => cx.notify(),
+            }
+        }
+        outcome.result.output()
+    }
+
     /// Drop per-session UI state after its pane is gone. The PTY/session
     /// handle itself is shut down by the caller off the UI thread.
     fn forget_session_state(&mut self, session_id: SessionId, pane: PaneId) {
@@ -616,15 +649,12 @@ impl WorkspaceView {
             self.new_terminal_for_empty(cx);
             return;
         }
-        match self.coordinator.split_focused(direction, 80, 24) {
-            Ok((_pane_id, session_id)) => {
-                self.start_runtime(cx, session_id);
-                self.mark_persistence_dirty(cx);
-                cx.notify();
-            }
-            Err(e) => {
-                tracing::error!("split aborted: {e}");
-            }
+        let target = self.coordinator.focused().expect("checked focused pane");
+        if let Err(error) = self.dispatch_command(
+            OmaCommand::Pane(PaneCommand::Split { target, direction }),
+            cx,
+        ) {
+            tracing::error!("split aborted: {error}");
         }
     }
 
@@ -632,10 +662,11 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
-        if let Ok(closed) = self.coordinator.close_focused() {
-            self.finish_close(closed);
-            self.mark_persistence_dirty(cx);
-            cx.notify();
+        if let Some(pane) = self.coordinator.focused()
+            && let Err(error) =
+                self.dispatch_command(OmaCommand::Pane(PaneCommand::Close { pane }), cx)
+        {
+            tracing::warn!("pane close failed: {error}");
         }
     }
 
@@ -643,10 +674,20 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
-        if let Ok(closed) = self.coordinator.close_session(session_id) {
-            self.finish_close(closed);
-            self.mark_persistence_dirty(cx);
-            cx.notify();
+        let pane = self
+            .coordinator
+            .window()
+            .projects
+            .iter()
+            .flat_map(|p| p.tabs.iter())
+            .flat_map(|t| t.tree.panes())
+            .find(|pane| pane.content == PaneContent::Terminal(session_id))
+            .map(|pane| pane.id);
+        if let Some(pane) = pane
+            && let Err(error) =
+                self.dispatch_command(OmaCommand::Pane(PaneCommand::Close { pane }), cx)
+        {
+            tracing::warn!("exited pane cleanup failed: {error}");
         }
     }
 
@@ -666,19 +707,20 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
-        if self.coordinator.focus_neighbor(direction).is_some() {
-            self.mark_persistence_dirty(cx);
-            cx.notify();
-        }
+        let _ = self.dispatch_command(
+            OmaCommand::Pane(PaneCommand::FocusDirection { direction }),
+            cx,
+        );
     }
 
     fn resize_focused(&mut self, amount: f32, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
         }
-        if self.coordinator.resize_focused(amount).is_ok() {
-            self.mark_persistence_dirty(cx);
-            cx.notify();
+        if let Err(error) =
+            self.dispatch_command(OmaCommand::Pane(PaneCommand::ResizeFocused { amount }), cx)
+        {
+            tracing::debug!("pane resize ignored: {error}");
         }
     }
 
@@ -686,9 +728,7 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
-        self.coordinator.equalize();
-        self.mark_persistence_dirty(cx);
-        cx.notify();
+        let _ = self.dispatch_command(OmaCommand::Pane(PaneCommand::EqualizeSelected), cx);
     }
 
     fn new_terminal_for_empty(&mut self, cx: &mut Context<Self>) {
@@ -698,14 +738,19 @@ impl WorkspaceView {
         if !self.coordinator.is_empty() {
             return;
         }
-        match self.coordinator.create_initial(80, 24) {
-            Ok(session_id) => {
-                self.start_runtime(cx, session_id);
-                cx.notify();
-            }
-            Err(e) => {
-                tracing::error!("failed to spawn shell: {e}");
-            }
+        let command = if self.coordinator.selected_project_id().is_some() {
+            OmaCommand::Terminal(TerminalCommand::Create {
+                project: self.coordinator.selected_project_id().unwrap(),
+                directory: None,
+            })
+        } else {
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: std::env::current_dir().ok(),
+            })
+        };
+        if let Err(error) = self.dispatch_command(command, cx) {
+            tracing::error!("failed to spawn shell: {error}");
         }
     }
 
@@ -714,13 +759,17 @@ impl WorkspaceView {
             return;
         }
         let directory = std::env::current_dir().ok();
-        match self.coordinator.create_project(directory, 80, 24) {
-            Ok((_, _, session)) => {
+        match self.dispatch_command(
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: directory.clone(),
+            }),
+            cx,
+        ) {
+            Ok(CommandOutput::ProjectCreated { .. }) => {
                 self.spawn_failure = None;
-                self.start_runtime(cx, session);
-                self.mark_persistence_dirty(cx);
-                cx.notify();
             }
+            Ok(_) => {}
             Err(error) => {
                 tracing::error!("failed to create project: {error}");
                 self.spawn_failure = Some((
@@ -740,13 +789,17 @@ impl WorkspaceView {
             self.create_project(cx);
             return;
         };
-        match self.coordinator.create_tab(project, 80, 24) {
-            Ok((_, session)) => {
+        match self.dispatch_command(
+            OmaCommand::Tab(TabCommand::Create {
+                project,
+                name: None,
+            }),
+            cx,
+        ) {
+            Ok(CommandOutput::TabCreated { .. }) => {
                 self.spawn_failure = None;
-                self.start_runtime(cx, session);
-                self.mark_persistence_dirty(cx);
-                cx.notify();
             }
+            Ok(_) => {}
             Err(error) => {
                 tracing::error!("failed to create tab: {error}");
                 self.spawn_failure = Some((error.to_string(), SpawnRetry::Tab(project)));
@@ -761,13 +814,17 @@ impl WorkspaceView {
         }
         match self.spawn_failure.clone().map(|(_, retry)| retry) {
             Some(SpawnRetry::Project(directory)) => {
-                match self.coordinator.create_project(Some(directory), 80, 24) {
-                    Ok((_, _, session)) => {
+                match self.dispatch_command(
+                    OmaCommand::Project(ProjectCommand::Create {
+                        name: None,
+                        directory: Some(directory.clone()),
+                    }),
+                    cx,
+                ) {
+                    Ok(CommandOutput::ProjectCreated { .. }) => {
                         self.spawn_failure = None;
-                        self.start_runtime(cx, session);
-                        self.mark_persistence_dirty(cx);
-                        cx.notify();
                     }
+                    Ok(_) => {}
                     Err(error) => {
                         self.spawn_failure = Some((
                             error.to_string(),
@@ -786,13 +843,17 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
-        match self.coordinator.create_tab(project, 80, 24) {
-            Ok((_, session)) => {
+        match self.dispatch_command(
+            OmaCommand::Tab(TabCommand::Create {
+                project,
+                name: None,
+            }),
+            cx,
+        ) {
+            Ok(CommandOutput::TabCreated { .. }) => {
                 self.spawn_failure = None;
-                self.start_runtime(cx, session);
-                self.mark_persistence_dirty(cx);
-                cx.notify();
             }
+            Ok(_) => {}
             Err(error) => {
                 self.spawn_failure = Some((error.to_string(), SpawnRetry::Tab(project)));
                 cx.notify();
@@ -809,26 +870,15 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
-        if let Ok(closed) = self.coordinator.close_tab(project, tab) {
-            for pane in closed.0 {
-                self.finish_close(pane);
-            }
-            self.mark_persistence_dirty(cx);
-            cx.notify();
-        }
+        let _ = project;
+        let _ = self.dispatch_command(OmaCommand::Tab(TabCommand::Close { tab }), cx);
     }
 
     fn close_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
         }
-        if let Ok(closed) = self.coordinator.close_project(project) {
-            for pane in closed.0 {
-                self.finish_close(pane);
-            }
-            self.mark_persistence_dirty(cx);
-            cx.notify();
-        }
+        let _ = self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx);
     }
 
     /// Resolve (once per font size) and cache the terminal font set.
@@ -884,10 +934,10 @@ impl WorkspaceView {
                     (index + 1) % projects.len()
                 };
                 let id = projects[next].id;
-                if self.coordinator.select_project(id).is_ok() {
-                    self.mark_persistence_dirty(cx);
-                }
-                cx.notify();
+                let _ = self.dispatch_command(
+                    OmaCommand::Project(ProjectCommand::Select { project: id }),
+                    cx,
+                );
             } else if !is_project
                 && let Some(project) = self.coordinator.active_project()
                 && !project.tabs.is_empty()
@@ -902,12 +952,9 @@ impl WorkspaceView {
                 } else {
                     (index + 1) % project.tabs.len()
                 };
-                let project_id = project.id;
                 let tab_id = project.tabs[next].id;
-                if self.coordinator.select_tab(project_id, tab_id).is_ok() {
-                    self.mark_persistence_dirty(cx);
-                }
-                cx.notify();
+                let _ =
+                    self.dispatch_command(OmaCommand::Tab(TabCommand::Select { tab: tab_id }), cx);
             }
             return;
         }
@@ -1030,9 +1077,13 @@ impl WorkspaceView {
         if bytes.is_empty() {
             return;
         }
-        if let Ok(mut session) = handle.lock() {
-            let _ = session.write_input(&bytes);
-        }
+        let _ = self.dispatch_command(
+            OmaCommand::Terminal(TerminalCommand::SendBytes {
+                session: session_id,
+                data: bytes,
+            }),
+            cx,
+        );
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
@@ -1050,9 +1101,13 @@ impl WorkspaceView {
             let bracketed = handle.lock().map(|s| s.bracketed_paste()).unwrap_or(false);
             prepare_paste(&text, bracketed)
         };
-        if let Ok(mut session) = handle.lock() {
-            let _ = session.write_input(&bytes);
-        }
+        let _ = self.dispatch_command(
+            OmaCommand::Terminal(TerminalCommand::SendBytes {
+                session: session_id,
+                data: bytes,
+            }),
+            cx,
+        );
     }
 
     /// Map a window-relative pointer position onto a grid cell for one pane.
@@ -1102,10 +1157,7 @@ impl WorkspaceView {
         }
         // Click focuses first; selection starts only inside the grid.
         if self.coordinator.focused() != Some(pane) {
-            if self.coordinator.focus_pane(pane).is_ok() {
-                self.mark_persistence_dirty(cx);
-            }
-            cx.notify();
+            let _ = self.dispatch_command(OmaCommand::Pane(PaneCommand::Focus { pane }), cx);
         }
         window.focus(&self.focus_handle);
         let Some(cell) = self.pos_to_cell(pane, event.position, cx) else {
@@ -1136,9 +1188,8 @@ impl WorkspaceView {
         // Hover is the pane focus model: keyboard input follows the pointer
         // without requiring a click. During a drag, the selection continues
         // to belong to the pane where the drag began.
-        if self.coordinator.focused() != Some(pane) && self.coordinator.focus_pane(pane).is_ok() {
-            self.mark_persistence_dirty(cx);
-            cx.notify();
+        if self.coordinator.focused() != Some(pane) {
+            let _ = self.dispatch_command(OmaCommand::Pane(PaneCommand::Focus { pane }), cx);
         }
         if self.selecting != Some(pane) {
             return;
@@ -1669,10 +1720,10 @@ impl Render for WorkspaceView {
                             return;
                         }
                         window.focus(&view.focus_handle);
-                        if view.coordinator.select_project(id).is_ok() {
-                            view.mark_persistence_dirty(cx);
-                        }
-                        cx.notify();
+                        let _ = view.dispatch_command(
+                            OmaCommand::Project(ProjectCommand::Select { project: id }),
+                            cx,
+                        );
                     }),
                 )
                 .child(label);
@@ -1751,10 +1802,10 @@ impl Render for WorkspaceView {
                                 return;
                             }
                             window.focus(&view.focus_handle);
-                            if view.coordinator.select_tab(project_id, tab_id).is_ok() {
-                                view.mark_persistence_dirty(cx);
-                            }
-                            cx.notify();
+                            let _ = view.dispatch_command(
+                                OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
+                                cx,
+                            );
                         }),
                     )
                     .child(label);

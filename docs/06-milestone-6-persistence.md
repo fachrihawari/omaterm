@@ -98,6 +98,7 @@ Fallback: `~/.local/state/omaterm/workspace-v1.json`
 | Terminal working directories | Socket handles |
 | Selected project/tab | Scrollback content |
 | Sidebar state | Terminal parser state |
+| (M10 only) separate encrypted OmaTerm history archive | Shell-native history files |
 
 ### Restore Flow
 
@@ -211,7 +212,7 @@ shutdown first. A save failure is reported, but must not prevent process cleanup
 
 ## Non-Goals
 
-- No scrollback restoration
+- No scrollback restoration in M6. See [M10 — Encrypted History Recovery](10-milestone-10-history-recovery.md) for the approved, separate, opt-in post-v0.1 extension.
 - No process restoration
 - No cloud sync
 - No multi-window state (single window for now)
@@ -223,3 +224,4 @@ shutdown first. A save failure is reported, but must not prevent process cleanup
 - Blueprint §30 — Persistence
 - Blueprint §29 — Terminal Scrollback (future)
 - Blueprint §68, Slice 6 — Persistence
+- [M10 — Encrypted History Recovery](10-milestone-10-history-recovery.md) — does not alter M6 behavior

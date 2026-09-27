@@ -15,6 +15,7 @@ with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
 | `alacritty_terminal` | Pending M3, exact compatible release | Selected package | Not verified |
 | PTY provider | Pending M3 API/lifecycle evaluation | Selected package | Not verified |
 | Serialization/IPC/CLI dependencies | Select when their slices require them | Selected packages | Not verified |
+| M10 key storage/encryption/compression | Unselected; research after M5–M9 prerequisites | Must review crate and native-service licenses | No API, license, or runtime verification yet |
 
 ## Selection record
 
