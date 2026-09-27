@@ -11,6 +11,10 @@ use gpui::{
     WindowOptions, canvas, div, font, prelude::*, px, relative, rgb, rgba, size,
 };
 use omaterm_core::{Pane, PaneContent, PaneId, PaneNode, SessionId, SplitAxis, SplitDirection};
+use omaterm_state::{
+    CwdProvenance as StoredCwdProvenance, LoadOutcome, PersistedCwd, SnapshotDestination,
+    SnapshotStore, SnapshotWriter, WorkspaceSnapshot,
+};
 use omaterm_terminal::{
     CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SelectionRange, TermColor,
     TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
@@ -40,6 +44,14 @@ struct WorkspaceView {
     fonts: Option<ResolvedFonts>,
     font_size: f32,
     spawn_failure: Option<(String, SpawnRetry)>,
+    persistence_store: Option<SnapshotStore>,
+    persistence_writer: Option<SnapshotWriter>,
+    persistence_destination: SnapshotDestination,
+    persistence_warning: Option<String>,
+    save_revision: u64,
+    observed_cwds: HashMap<PaneId, PersistedCwd>,
+    restored_failures: HashMap<PaneId, (omaterm_core::ProjectId, omaterm_core::TabId, String)>,
+    shutting_down: bool,
 }
 
 #[derive(Clone)]
@@ -56,6 +68,11 @@ impl WorkspaceView {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
         let working_directory = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+        let store = omaterm_state::default_snapshot_path().map(SnapshotStore::new);
+        let persistence_available = store.is_some();
+        let persistence_writer = store
+            .as_ref()
+            .map(|store| SnapshotWriter::new(store.clone()));
         let mut view = Self {
             focus_handle,
             coordinator: WorkspaceCoordinator::new(working_directory),
@@ -69,26 +86,337 @@ impl WorkspaceView {
             fonts: None,
             font_size: 14.0,
             spawn_failure: None,
+            persistence_store: store,
+            persistence_writer,
+            persistence_destination: SnapshotDestination::Primary,
+            persistence_warning: (!persistence_available).then(|| {
+                "Persistent workspace state unavailable: no usable state directory".into()
+            }),
+            save_revision: 0,
+            observed_cwds: HashMap::new(),
+            restored_failures: HashMap::new(),
+            shutting_down: false,
         };
-        // Initial terminal via the shared coordinator. If spawn fails (no
-        // PTY), keep the empty workspace + new-terminal action.
-        match view.coordinator.create_initial(80, 24) {
-            Ok(session_id) => {
-                view.start_runtime(cx, session_id);
+        view.restore_or_initialize(cx);
+        view
+    }
+
+    fn restore_or_initialize(&mut self, cx: &mut Context<Self>) {
+        let outcome = self.persistence_store.as_ref().map(SnapshotStore::load);
+        match outcome {
+            Some(Ok(LoadOutcome::Valid(restored))) => self.restore_snapshot(restored, cx),
+            Some(Ok(LoadOutcome::Missing)) | None => self.initialize_default(cx),
+            Some(Ok(LoadOutcome::RecoveryRequired(error))) => {
+                self.restore_recovery(error.to_string(), cx)
             }
-            Err(e) => {
-                tracing::error!("failed to spawn initial shell: {e}");
-                view.spawn_failure = Some((
-                    e.to_string(),
+            Some(Ok(LoadOutcome::ValidRecovery(restored, destination))) => {
+                self.persistence_destination = destination;
+                self.restore_snapshot(restored, cx);
+            }
+            Some(Ok(LoadOutcome::RecoveryUnavailable(error, destination))) => {
+                self.persistence_destination = destination;
+                self.persistence_warning = Some(format!("Recovery snapshot unavailable: {error}"));
+                self.initialize_default(cx);
+            }
+            Some(Err(error)) => self.restore_recovery(error.to_string(), cx),
+        }
+    }
+
+    fn restore_recovery(&mut self, primary_error: String, cx: &mut Context<Self>) {
+        self.persistence_destination = SnapshotDestination::Recovery;
+        self.persistence_warning = Some(format!(
+            "Primary workspace snapshot needs recovery ({primary_error}); changes are saved separately."
+        ));
+        let recovery = self
+            .persistence_store
+            .as_ref()
+            .map(SnapshotStore::load_recovery);
+        match recovery {
+            Some(Ok(LoadOutcome::Valid(restored))) => {
+                self.persistence_destination = SnapshotDestination::Recovery;
+                self.restore_snapshot(restored, cx);
+            }
+            Some(Ok(LoadOutcome::ValidRecovery(restored, destination))) => {
+                self.persistence_destination = destination;
+                self.restore_snapshot(restored, cx);
+            }
+            Some(Ok(LoadOutcome::Missing)) | None => {
+                self.persistence_destination = SnapshotDestination::Recovery;
+                self.initialize_default(cx);
+            }
+            Some(Ok(LoadOutcome::RecoveryRequired(error))) => {
+                self.persistence_destination = self
+                    .persistence_store
+                    .as_ref()
+                    .map(|store| SnapshotDestination::RecoveryFile(store.new_recovery_path()))
+                    .unwrap_or(SnapshotDestination::Recovery);
+                self.persistence_warning = Some(format!(
+                    "Primary snapshot needs recovery ({primary_error}); recovery snapshot is also invalid ({error}). Changes remain in the recovery file."
+                ));
+                self.initialize_default(cx);
+            }
+            Some(Ok(LoadOutcome::RecoveryUnavailable(error, destination))) => {
+                self.persistence_destination = destination;
+                self.persistence_warning = Some(format!(
+                    "Primary snapshot needs recovery ({primary_error}); no valid recovery snapshot exists ({error})."
+                ));
+                self.initialize_default(cx);
+            }
+            Some(Err(error)) => {
+                self.persistence_destination = self
+                    .persistence_store
+                    .as_ref()
+                    .map(|store| SnapshotDestination::RecoveryFile(store.new_recovery_path()))
+                    .unwrap_or(SnapshotDestination::Recovery);
+                self.persistence_warning = Some(format!(
+                    "Primary snapshot needs recovery ({primary_error}); recovery snapshot could not be read ({error}). Changes remain in the recovery file."
+                ));
+                self.initialize_default(cx);
+            }
+        }
+    }
+
+    fn restore_snapshot(
+        &mut self,
+        restored: omaterm_state::ValidatedSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_cwds: HashMap<PaneId, PersistedCwd> = restored.pane_cwds.into_iter().collect();
+        self.observed_cwds = pane_cwds.clone();
+        if let Err(error) = self.coordinator.restore_window(restored.window) {
+            self.persistence_destination = self
+                .persistence_store
+                .as_ref()
+                .map(|store| SnapshotDestination::RecoveryFile(store.new_recovery_path()))
+                .unwrap_or(SnapshotDestination::Recovery);
+            self.persistence_warning = Some(format!(
+                "Validated workspace could not be installed: {error}"
+            ));
+            self.initialize_default(cx);
+            return;
+        }
+        let panes = self
+            .coordinator
+            .projects()
+            .iter()
+            .flat_map(|project| {
+                let project_id = project.id;
+                project.tabs.iter().flat_map(move |tab| {
+                    tab.tree
+                        .panes()
+                        .into_iter()
+                        .map(move |pane| (project_id, tab.id, pane.id))
+                })
+            })
+            .collect::<Vec<_>>();
+        for (project, tab, pane) in panes {
+            let cwd = pane_cwds
+                .get(&pane)
+                .map(|cwd| cwd.path.clone())
+                .unwrap_or_default();
+            match self
+                .coordinator
+                .launch_restored_pane(project, tab, pane, cwd, 80, 24)
+            {
+                Ok(session) => self.start_runtime(cx, session),
+                Err(error) => {
+                    tracing::warn!("restored pane {pane:?} shell failed: {error}");
+                    self.persistence_warning =
+                        Some(format!("Some restored terminals could not start: {error}"));
+                    self.restored_failures
+                        .insert(pane, (project, tab, error.to_string()));
+                }
+            }
+        }
+        self.observed_cwds = self.current_cwds();
+    }
+
+    fn initialize_default(&mut self, cx: &mut Context<Self>) {
+        match self.coordinator.create_initial(80, 24) {
+            Ok(session_id) => self.start_runtime(cx, session_id),
+            Err(error) => {
+                tracing::error!("failed to spawn initial shell: {error}");
+                self.spawn_failure = Some((
+                    error.to_string(),
                     SpawnRetry::Tab(
-                        view.coordinator
+                        self.coordinator
                             .selected_project_id()
                             .expect("initial project exists"),
                     ),
                 ));
             }
         }
-        view
+    }
+
+    fn snapshot(&self) -> WorkspaceSnapshot {
+        WorkspaceSnapshot::capture(self.coordinator.window(), &self.current_cwds())
+    }
+
+    fn current_cwds(&self) -> HashMap<PaneId, PersistedCwd> {
+        let mut cwds = self.observed_cwds.clone();
+        for project in self.coordinator.projects() {
+            for tab in &project.tabs {
+                for pane in tab.tree.panes() {
+                    let PaneContent::Terminal(session_id) = pane.content else {
+                        continue;
+                    };
+                    if let Some(session) = self.coordinator.registry().get(session_id)
+                        && let Ok(session) = session.lock()
+                    {
+                        let cwd = session.cwd();
+                        let provenance = if let Some(saved) = cwds.get(&pane.id)
+                            && saved.path == cwd.path
+                        {
+                            saved.provenance
+                        } else if cwds
+                            .get(&pane.id)
+                            .is_some_and(|saved| saved.path != cwd.path && !saved.path.is_dir())
+                        {
+                            StoredCwdProvenance::FallbackHome
+                        } else {
+                            match cwd.provenance {
+                                omaterm_terminal::CwdProvenance::Launch => {
+                                    StoredCwdProvenance::Launch
+                                }
+                                omaterm_terminal::CwdProvenance::Osc7 => StoredCwdProvenance::Osc7,
+                                omaterm_terminal::CwdProvenance::Procfs => {
+                                    StoredCwdProvenance::Procfs
+                                }
+                            }
+                        };
+                        cwds.insert(
+                            pane.id,
+                            PersistedCwd {
+                                path: cwd.path.clone(),
+                                provenance,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        cwds
+    }
+
+    fn detect_cwd_changes(&mut self, cx: &mut Context<Self>) {
+        let current = self.current_cwds();
+        if current != self.observed_cwds {
+            self.observed_cwds = current;
+            self.mark_persistence_dirty(cx);
+        }
+    }
+
+    fn mark_persistence_dirty(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        self.save_revision = self.save_revision.wrapping_add(1);
+        let revision = self.save_revision;
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            Timer::after(Duration::from_secs(2)).await;
+            let _ = weak.update(cx, |view, _| {
+                if view.save_revision == revision {
+                    view.queue_snapshot();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn queue_snapshot(&self) {
+        let Some(writer) = &self.persistence_writer else {
+            return;
+        };
+        if let Err(error) = writer.submit(
+            self.snapshot(),
+            self.persistence_destination.clone(),
+            self.save_revision,
+        ) {
+            tracing::error!("workspace snapshot submission failed: {error}");
+        }
+    }
+
+    fn begin_shutdown(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        self.shutting_down = true;
+        self.save_revision = self.save_revision.wrapping_add(1);
+        let revision = self.save_revision;
+        let snapshot = self.snapshot();
+        let destination = self.persistence_destination.clone();
+        let writer = self.persistence_writer.take();
+        let ids = self.coordinator.registry().list();
+        let handles = ids
+            .into_iter()
+            .filter_map(|id| self.coordinator.registry_mut().detach(id))
+            .collect::<Vec<_>>();
+        let (done_tx, done_rx) = async_channel::bounded::<Result<(), String>>(1);
+        std::thread::spawn(move || {
+            let save_result = writer.map_or(Ok(()), |writer| {
+                writer.flush(snapshot, destination, revision)
+            });
+            let workers = handles
+                .into_iter()
+                .map(|handle| {
+                    std::thread::spawn(move || {
+                        if let Ok(mut session) = handle.lock() {
+                            let _ = session.shutdown();
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            for worker in workers {
+                let _ = worker.join();
+            }
+            let _ = done_tx.send_blocking(save_result);
+        });
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = done_rx
+                .recv()
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+            if let Err(error) = result {
+                tracing::error!(
+                    "final workspace snapshot failed; terminal cleanup completed: {error}"
+                );
+                let _ = weak.update(cx, |view, cx| {
+                    view.persistence_warning =
+                        Some(format!("Final workspace save failed: {error}"));
+                    cx.notify();
+                });
+            }
+            let _ = window.update(cx, |_, window, _| window.remove_window());
+        })
+        .detach();
+    }
+
+    fn retry_restored_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        let Some((project, tab, _)) = self.restored_failures.get(&pane).cloned() else {
+            return;
+        };
+        let cwd = self
+            .observed_cwds
+            .get(&pane)
+            .map(|cwd| cwd.path.clone())
+            .unwrap_or_default();
+        match self
+            .coordinator
+            .launch_restored_pane(project, tab, pane, cwd, 80, 24)
+        {
+            Ok(session) => {
+                self.restored_failures.remove(&pane);
+                self.start_runtime(cx, session);
+                self.mark_persistence_dirty(cx);
+                cx.notify();
+            }
+            Err(error) => {
+                if let Some((_, _, message)) = self.restored_failures.get_mut(&pane) {
+                    *message = error.to_string();
+                }
+                cx.notify();
+            }
+        }
     }
 
     /// Publish a coordinator-owned session's initial snapshot and start its
@@ -216,6 +544,7 @@ impl WorkspaceView {
                             return true;
                         }
                         view.snapshots.insert(session_id, viewport);
+                        view.detect_cwd_changes(cx);
                         if view
                             .coordinator
                             .registry()
@@ -279,6 +608,9 @@ impl WorkspaceView {
     }
 
     fn split_focused(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         if self.coordinator.focused().is_none() {
             // Empty workspace: a split key creates the first terminal.
             self.new_terminal_for_empty(cx);
@@ -287,6 +619,7 @@ impl WorkspaceView {
         match self.coordinator.split_focused(direction, 80, 24) {
             Ok((_pane_id, session_id)) => {
                 self.start_runtime(cx, session_id);
+                self.mark_persistence_dirty(cx);
                 cx.notify();
             }
             Err(e) => {
@@ -296,20 +629,29 @@ impl WorkspaceView {
     }
 
     fn close_focused(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         if let Ok(closed) = self.coordinator.close_focused() {
             self.finish_close(closed);
+            self.mark_persistence_dirty(cx);
             cx.notify();
         }
     }
 
     fn close_session(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         if let Ok(closed) = self.coordinator.close_session(session_id) {
             self.finish_close(closed);
+            self.mark_persistence_dirty(cx);
             cx.notify();
         }
     }
 
     fn finish_close(&mut self, closed: omaterm_terminal::ClosedPane) {
+        self.restored_failures.remove(&closed.pane_id);
         if let Some(session_id) = closed.session_id {
             self.forget_session_state(session_id, closed.pane_id);
         }
@@ -321,23 +663,38 @@ impl WorkspaceView {
     }
 
     fn focus_neighbor(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         if self.coordinator.focus_neighbor(direction).is_some() {
+            self.mark_persistence_dirty(cx);
             cx.notify();
         }
     }
 
     fn resize_focused(&mut self, amount: f32, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         if self.coordinator.resize_focused(amount).is_ok() {
+            self.mark_persistence_dirty(cx);
             cx.notify();
         }
     }
 
     fn equalize(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         self.coordinator.equalize();
+        self.mark_persistence_dirty(cx);
         cx.notify();
     }
 
     fn new_terminal_for_empty(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         if !self.coordinator.is_empty() {
             return;
         }
@@ -353,11 +710,15 @@ impl WorkspaceView {
     }
 
     fn create_project(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         let directory = std::env::current_dir().ok();
         match self.coordinator.create_project(directory, 80, 24) {
             Ok((_, _, session)) => {
                 self.spawn_failure = None;
                 self.start_runtime(cx, session);
+                self.mark_persistence_dirty(cx);
                 cx.notify();
             }
             Err(error) => {
@@ -372,6 +733,9 @@ impl WorkspaceView {
     }
 
     fn create_tab(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         let Some(project) = self.coordinator.selected_project_id() else {
             self.create_project(cx);
             return;
@@ -380,6 +744,7 @@ impl WorkspaceView {
             Ok((_, session)) => {
                 self.spawn_failure = None;
                 self.start_runtime(cx, session);
+                self.mark_persistence_dirty(cx);
                 cx.notify();
             }
             Err(error) => {
@@ -391,12 +756,16 @@ impl WorkspaceView {
     }
 
     fn retry_spawn(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         match self.spawn_failure.clone().map(|(_, retry)| retry) {
             Some(SpawnRetry::Project(directory)) => {
                 match self.coordinator.create_project(Some(directory), 80, 24) {
                     Ok((_, _, session)) => {
                         self.spawn_failure = None;
                         self.start_runtime(cx, session);
+                        self.mark_persistence_dirty(cx);
                         cx.notify();
                     }
                     Err(error) => {
@@ -414,10 +783,14 @@ impl WorkspaceView {
     }
 
     fn create_tab_for_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         match self.coordinator.create_tab(project, 80, 24) {
             Ok((_, session)) => {
                 self.spawn_failure = None;
                 self.start_runtime(cx, session);
+                self.mark_persistence_dirty(cx);
                 cx.notify();
             }
             Err(error) => {
@@ -433,19 +806,27 @@ impl WorkspaceView {
         tab: omaterm_core::TabId,
         cx: &mut Context<Self>,
     ) {
+        if self.shutting_down {
+            return;
+        }
         if let Ok(closed) = self.coordinator.close_tab(project, tab) {
             for pane in closed.0 {
                 self.finish_close(pane);
             }
+            self.mark_persistence_dirty(cx);
             cx.notify();
         }
     }
 
     fn close_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         if let Ok(closed) = self.coordinator.close_project(project) {
             for pane in closed.0 {
                 self.finish_close(pane);
             }
+            self.mark_persistence_dirty(cx);
             cx.notify();
         }
     }
@@ -464,6 +845,9 @@ impl WorkspaceView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "p" {
@@ -500,7 +884,9 @@ impl WorkspaceView {
                     (index + 1) % projects.len()
                 };
                 let id = projects[next].id;
-                let _ = self.coordinator.select_project(id);
+                if self.coordinator.select_project(id).is_ok() {
+                    self.mark_persistence_dirty(cx);
+                }
                 cx.notify();
             } else if !is_project
                 && let Some(project) = self.coordinator.active_project()
@@ -518,7 +904,9 @@ impl WorkspaceView {
                 };
                 let project_id = project.id;
                 let tab_id = project.tabs[next].id;
-                let _ = self.coordinator.select_tab(project_id, tab_id);
+                if self.coordinator.select_tab(project_id, tab_id).is_ok() {
+                    self.mark_persistence_dirty(cx);
+                }
                 cx.notify();
             }
             return;
@@ -706,12 +1094,17 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.shutting_down {
+            return;
+        }
         if self.coordinator.tree().find(pane).is_none() {
             return;
         }
         // Click focuses first; selection starts only inside the grid.
         if self.coordinator.focused() != Some(pane) {
-            let _ = self.coordinator.focus_pane(pane);
+            if self.coordinator.focus_pane(pane).is_ok() {
+                self.mark_persistence_dirty(cx);
+            }
             cx.notify();
         }
         window.focus(&self.focus_handle);
@@ -734,6 +1127,9 @@ impl WorkspaceView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.shutting_down {
+            return;
+        }
         if self.coordinator.tree().find(pane).is_none() {
             return;
         }
@@ -741,6 +1137,7 @@ impl WorkspaceView {
         // without requiring a click. During a drag, the selection continues
         // to belong to the pane where the drag began.
         if self.coordinator.focused() != Some(pane) && self.coordinator.focus_pane(pane).is_ok() {
+            self.mark_persistence_dirty(cx);
             cx.notify();
         }
         if self.selecting != Some(pane) {
@@ -959,6 +1356,35 @@ impl WorkspaceView {
         let session_id = match pane.content {
             PaneContent::Terminal(id) => id,
             PaneContent::Empty => {
+                if let Some((_, _, message)) = self.restored_failures.get(&pane_id).cloned() {
+                    return div()
+                        .flex()
+                        .flex_1()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .bg(rgb(0x18181B))
+                        .text_color(rgb(0xFCA5A5))
+                        .child("Restored shell could not start")
+                        .child(message)
+                        .child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .border_1()
+                                .border_color(rgb(0x52525B))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        window.focus(&view.focus_handle);
+                                        view.retry_restored_pane(pane_id, cx);
+                                    }),
+                                )
+                                .child("Retry"),
+                        )
+                        .into_any_element();
+                }
                 return div()
                     .flex()
                     .flex_1()
@@ -1239,8 +1665,13 @@ impl Render for WorkspaceView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
                         window.focus(&view.focus_handle);
-                        let _ = view.coordinator.select_project(id);
+                        if view.coordinator.select_project(id).is_ok() {
+                            view.mark_persistence_dirty(cx);
+                        }
                         cx.notify();
                     }),
                 )
@@ -1255,6 +1686,9 @@ impl Render for WorkspaceView {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
                                 view.close_project(close_id, cx);
@@ -1275,6 +1709,9 @@ impl Render for WorkspaceView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
                         window.focus(&view.focus_handle);
                         view.create_project(cx);
                     }),
@@ -1310,8 +1747,13 @@ impl Render for WorkspaceView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
                             window.focus(&view.focus_handle);
-                            let _ = view.coordinator.select_tab(project_id, tab_id);
+                            if view.coordinator.select_tab(project_id, tab_id).is_ok() {
+                                view.mark_persistence_dirty(cx);
+                            }
                             cx.notify();
                         }),
                     )
@@ -1326,6 +1768,9 @@ impl Render for WorkspaceView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
                                     cx.stop_propagation();
                                     window.focus(&view.focus_handle);
                                     view.close_tab(project_id, tab_id, cx);
@@ -1362,6 +1807,16 @@ impl Render for WorkspaceView {
             );
         }
         let mut pane_area = div().flex().flex_1().flex_col().size_full();
+        if let Some(message) = self.persistence_warning.clone() {
+            pane_area = pane_area.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0x3F321D))
+                    .text_color(rgb(0xFDE68A))
+                    .child(message),
+            );
+        }
         if !self.coordinator.tree().is_empty()
             && let Some((message, _)) = self.spawn_failure.clone()
         {
@@ -1931,7 +2386,14 @@ fn main() {
             },
             |window, cx| {
                 window.set_window_title("OmaTerm");
-                cx.new(|cx| WorkspaceView::new(window, cx))
+                let view = cx.new(|cx| WorkspaceView::new(window, cx));
+                let weak = view.downgrade();
+                let window_handle = window.window_handle();
+                window.on_window_should_close(cx, move |_, cx| {
+                    let _ = weak.update(cx, |view, cx| view.begin_shutdown(window_handle, cx));
+                    false
+                });
+                view
             },
         )
         .expect("failed to open OmaTerm window");

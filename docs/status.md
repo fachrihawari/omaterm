@@ -11,8 +11,8 @@ M4 evidence below.
 | 2 — Pane Tree | complete | 9 core tests, workspace quality gates, and Wayland manual validation recorded below | None | Begin M3 single terminal |
 | 3 — Single Terminal | complete | Completed `a3923d4`; release-build interaction pass approved 2026-09-26 with explicit IME/unavailable-program limits (see M3 completion record) | None | M4 regression coverage |
 | 4 — Multi Terminal | complete | 64 terminal unit + 20 PTY integration tests; workspace quality gates and Wayland four-pane pass recorded below | Thread/memory/GPU stress baselines remain for broader lifecycle work | Begin M5 Projects/Tabs |
-| 5 — Projects/Tabs | in_progress | Core hierarchy, coordinator lifecycle, full serial workspace suite and quality gates pass; user confirms main Wayland M5 workflows | Manually exercise startup Retry; confirm latest full-chip hit target; resource observations are qualitative only | Final Wayland smoke and record edge-case limits |
-| 6 — Persistence | not_started | None | Requires M5 | Implement validated snapshots |
+| 5 — Projects/Tabs | in_progress | Core hierarchy, coordinator lifecycle, full serial workspace suite and quality gates pass; user confirms main Wayland M5 workflows | Manually exercise startup Retry; confirm latest full-chip hit target; resource observations are qualitative only | Finish M5 manual checks before M6 completion |
+| 6 — Persistence | in_progress | State crate tests and workspace compile/clippy pass; desktop restart validation pending | M5 has two remaining manual checks; recovery/shutdown Wayland validation pending | Complete restore and autosave validation |
 | 7 — Command Router | not_started | None | Requires M6 | Unify application actions |
 | 8 — IPC | not_started | None | Requires M7 | Implement scoped bounded transport |
 | 9 — CLI | not_started | None | Requires M8 | Complete CLI/desktop proof flow |
@@ -567,3 +567,52 @@ provided. This is a stable high-water observation, not evidence of cycle-over-
 cycle growth. The shell-start failure Retry state has not been manually
 exercised; keep that edge case recorded as unverified. M5 is functionally
 validated with this explicit edge-case limit.
+
+## Milestone 6 — Persistence — implementation in progress
+
+Added `omaterm-state` with human-readable schema-v1 JSON snapshots, typed-ID and
+workspace reconstruction, bounded structural validation, CWD provenance, and
+same-directory atomic replacement. Startup scans recovery snapshots newest-first;
+valid recovery is restored, while invalid recovery files remain intact and a new
+unique recovery path is selected. The desktop launches fresh sessions into
+restored pane IDs, falls back to home when a remembered directory is unavailable,
+debounces meaningful mutations, and uses a one-slot revision-ordered writer.
+Window close is deferred while background work finishes the final save and
+parallel bounded terminal shutdown. Per-pane restore failures retain the layout
+and expose a Retry action.
+
+### Changed files
+
+- `Cargo.toml`, `Cargo.lock`, `apps/omaterm/Cargo.toml`
+- `crates/omaterm-state/{Cargo.toml,src/*.rs}`
+- `crates/omaterm-terminal/src/workspace.rs`
+- `apps/omaterm/src/main.rs`
+- `docs/dependencies.md`, `docs/status.md`, `docs/acceptance-matrix.md`
+
+### Automated verification so far
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS (2026-09-27) |
+| `cargo test -p omaterm-core` | PASS: 11 tests |
+| `cargo test -p omaterm-state` | PASS: 14 tests, including empty state, nested multi-project round trip, limits, recovery-file scan, atomic failure injection, and writer revision tests |
+| `cargo test -p omaterm-terminal --lib -- --test-threads=1` | PASS: 67 tests, including restored fresh-session binding and missing-CWD home fallback |
+| `cargo test -p omaterm-terminal --test pty_integration -- --test-threads=1` | PASS: 21 PTY integration tests |
+| `cargo test -p omaterm --bin omaterm-desktop` | PASS: 0 tests, binary test target builds |
+| `cargo test --workspace -- --test-threads=1` | BLOCKED: two attempts stalled at terminal unit tests (`four_panes_have_independent_sessions` / `session::fragmented_osc7_reassembles`) until 300s timeout; every package/test target passed when run separately in sequence |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (2026-09-27; existing transitive `proc-macro-error2` notice only) |
+| `cargo build --release --bin omaterm-desktop` | PASS (2026-09-27) |
+| `cargo tree -p omaterm-state` | PASS: core/serde/serde_json only; no GPUI or terminal runtime dependency |
+| `cargo tree -p omaterm-terminal` | PASS: no GPUI dependency |
+| `python3 scripts/check-docs.py` | PASS: 17 Markdown files, 32 local links, 66 blueprint references, all 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+
+### Pending completion evidence
+
+- Exercise restart, fresh shell PIDs, saved CWD, CWD fallback, recovery warning,
+  primary/recovery-file retention, partial spawn retry, and deferred close/shutdown
+  on Wayland. No manual desktop validation is claimed yet.
+- M5 remains formally `in_progress`: the user-confirmed main workflows pass, but
+  startup Retry and the final inactive-tab full-chip hit target were not manually
+  confirmed in the prior handoff. M6 implementation is proceeding; do not mark
+  M5 or M6 complete without those gates and their evidence.

@@ -112,7 +112,20 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   wide chars, input encoder) + 5 PTY integration tests
   (spawn/echo, resize, exit/reap, `/proc` CWD, combining) pass;
   `cargo test --workspace` (9 core + 21 terminal) green;
-  `cargo clippy --workspace --all-targets -- -D warnings` clean.
+   `cargo clippy --workspace --all-targets -- -D warnings` clean.
+
+### Milestone 6 record — 2026-09-27 (implementation in progress)
+
+- `serde` =1.0.228 with derive and `serde_json` =1.0.149 are direct
+  `omaterm-state` dependencies for versioned, human-readable workspace snapshots.
+  Both use permissive dual-license expressions (MIT OR Apache-2.0) in the
+  selected package manifests. `uuid` =1.26.1 is a direct dependency for snapshot
+  ID parsing; version/license evidence is recorded in M2 above. `thiserror`
+  reuses the workspace-selected version.
+- Versions were locked by Cargo during implementation and checked on Rust
+  1.98.1. `cargo check --workspace` and Clippy passed; final tests and desktop
+  verification are still pending, so this is not yet a completed M6 selection
+  verification record.
 
 ## Reference provenance
 

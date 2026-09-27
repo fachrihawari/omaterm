@@ -18,6 +18,8 @@ pub enum CoordinatorError {
     NoFocusedPane,
     #[error("workspace is not empty")]
     WorkspaceNotEmpty,
+    #[error("home directory is unavailable for restoring the terminal")]
+    HomeUnavailable,
     #[error("session {0:?} is not bound to a pane")]
     SessionPaneNotFound(SessionId),
     #[error(transparent)]
@@ -49,15 +51,17 @@ pub struct WorkspaceCoordinator {
     window: WorkspaceWindow,
     registry: TerminalRegistry,
     home_directory: PathBuf,
+    home_directory_available: bool,
     launch_directory: PathBuf,
 }
 
 impl WorkspaceCoordinator {
     pub fn new(working_directory: PathBuf) -> Self {
-        let home_directory = std::env::var_os("HOME")
+        let home_path = std::env::var_os("HOME")
             .map(PathBuf::from)
-            .filter(|path| path.is_dir())
-            .unwrap_or_else(std::env::temp_dir);
+            .filter(|path| path.is_dir());
+        let home_directory_available = home_path.is_some();
+        let home_directory = home_path.unwrap_or_else(std::env::temp_dir);
         let launch_directory = if working_directory.is_dir() {
             working_directory
         } else {
@@ -67,6 +71,7 @@ impl WorkspaceCoordinator {
             window: WorkspaceWindow::new(),
             registry: TerminalRegistry::new(),
             home_directory,
+            home_directory_available,
             launch_directory,
         }
     }
@@ -106,6 +111,64 @@ impl WorkspaceCoordinator {
 
     pub fn registry_mut(&mut self) -> &mut TerminalRegistry {
         &mut self.registry
+    }
+
+    /// Install a previously validated logical workspace before any restored
+    /// terminal sessions are spawned. The persisted tree must not contain live
+    /// session references; each terminal pane starts empty and is rebound below.
+    pub fn restore_window(&mut self, window: WorkspaceWindow) -> Result<(), CoordinatorError> {
+        if !self.registry.is_empty() || !self.window.projects.is_empty() {
+            return Err(CoordinatorError::WorkspaceNotEmpty);
+        }
+        window.validate()?;
+        self.window = window;
+        Ok(())
+    }
+
+    /// Launch a fresh session into an existing restored pane. The logical
+    /// pane identity/layout remains intact if PTY creation fails.
+    pub fn launch_restored_pane(
+        &mut self,
+        project_id: ProjectId,
+        tab_id: TabId,
+        pane_id: PaneId,
+        working_directory: PathBuf,
+        cols: u16,
+        rows: u16,
+    ) -> Result<SessionId, CoordinatorError> {
+        let project = self
+            .window
+            .project(project_id)
+            .ok_or(CoreError::ProjectNotFound(project_id))?;
+        let tab = project.tab(tab_id).ok_or(CoreError::TabNotFound(tab_id))?;
+        let pane = tab
+            .tree
+            .find(pane_id)
+            .ok_or(CoreError::PaneNotFound(pane_id))?;
+        if !matches!(pane.content, PaneContent::Empty) {
+            return Err(CoordinatorError::WorkspaceNotEmpty);
+        }
+        let directory = if working_directory.is_dir() {
+            working_directory
+        } else if self.home_directory_available {
+            self.home_directory.clone()
+        } else {
+            return Err(CoordinatorError::HomeUnavailable);
+        };
+        let session_id = self.registry.create(TerminalConfig {
+            working_directory: directory,
+            shell: None,
+            cols,
+            rows,
+        })?;
+        let pane = self
+            .window
+            .project_mut(project_id)
+            .and_then(|project| project.tab_mut(tab_id))
+            .and_then(|tab| tab.tree.find_mut(pane_id))
+            .expect("pane was validated before session creation");
+        pane.content = PaneContent::Terminal(session_id);
+        Ok(session_id)
     }
 
     pub fn working_directory(&self) -> &PathBuf {
@@ -743,5 +806,68 @@ mod tests {
                 assert!(handle.lock().unwrap().shutdown());
             }
         }
+    }
+
+    #[test]
+    fn restored_layout_rebinds_existing_pane_to_a_fresh_session() {
+        let mut ws = coordinator();
+        let pane = Pane::empty();
+        let pane_id = pane.id;
+        let tab = Tab::new(PaneTree::new(pane), pane_id).unwrap();
+        let tab_id = tab.id;
+        let mut project = Project::new(Some("restored".into()), Some(std::env::temp_dir()));
+        project.add_tab(tab).unwrap();
+        let project_id = project.id;
+        let mut window = WorkspaceWindow::new();
+        window.add_project(project).unwrap();
+
+        ws.restore_window(window).unwrap();
+        let session = ws
+            .launch_restored_pane(project_id, tab_id, pane_id, std::env::temp_dir(), 80, 24)
+            .unwrap();
+        assert_eq!(ws.session_id_for_pane(pane_id), Some(session));
+        assert_eq!(ws.focused(), Some(pane_id));
+        assert_eq!(ws.session_count(), 1);
+        let handle = ws.registry().get(session).unwrap();
+        assert_eq!(handle.lock().unwrap().cwd().path, std::env::temp_dir());
+        ws.registry_mut()
+            .detach(session)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .shutdown();
+    }
+
+    #[test]
+    fn restored_missing_directory_falls_back_to_home() {
+        let pane = Pane::empty();
+        let pane_id = pane.id;
+        let tab = Tab::new(PaneTree::new(pane), pane_id).unwrap();
+        let tab_id = tab.id;
+        let mut project = Project::new(None, None);
+        project.add_tab(tab).unwrap();
+        let project_id = project.id;
+        let mut window = WorkspaceWindow::new();
+        window.add_project(project).unwrap();
+        let mut ws = coordinator();
+        ws.restore_window(window).unwrap();
+        let missing = std::env::temp_dir().join(format!("missing-{}", std::process::id()));
+        let id = ws
+            .launch_restored_pane(project_id, tab_id, pane_id, missing, 80, 24)
+            .unwrap();
+        let expected_home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .unwrap_or_else(std::env::temp_dir);
+        assert_eq!(
+            ws.registry().get(id).unwrap().lock().unwrap().cwd().path,
+            expected_home
+        );
+        ws.registry_mut()
+            .detach(id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .shutdown();
     }
 }
