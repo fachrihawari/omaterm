@@ -157,6 +157,23 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   release Wayland E2E on Rust 1.98.1. Transitive license review remains
   outstanding; no project license selected.
 
+### Milestone 9 record — 2026-09-27
+
+- `clap` 4.6.7 (with `clap_builder`/`clap_derive` 4.6.7) from crates.io: direct
+  `omaterm-cli` argument-parsing dependency with the `derive` feature.
+  License `MIT OR Apache-2.0` per the selected package manifests in the
+  Cargo registry. Checksum and registry source are pinned in `Cargo.lock`.
+- `libc` 0.2: direct `omaterm-cli` dependency for credential-file UID
+  validation; reuses the existing workspace `libc` 0.2 resolution
+  (MIT/Apache-2.0). `base64` =0.22.1, `serde_json` =1.0.149, and
+  `uuid` =1.26.1 (`v4`) are reused at their existing locked versions; no new
+  request-ID, encoding, or serialization dependency was introduced.
+- Verified with `cargo build -p omaterm-cli` (`target/debug/omaterm`),
+  `cargo build --release --bin omaterm --bin omaterm-desktop`,
+  `cargo test -p omaterm-cli` (24 tests), Clippy with `-D warnings`, and the
+  release Wayland CLI/desktop proof on Rust 1.98.1 (Omarchy/Hyprland).
+  Transitive license review remains outstanding; no project license selected.
+
 ## Reference provenance
 
 Kero and Zed terminal/terminal-view code are behavioral/architectural references.

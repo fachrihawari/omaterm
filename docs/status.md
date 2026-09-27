@@ -15,7 +15,7 @@ M4 evidence below.
 | 6 — Persistence | complete | State crate/workspace tests and release Wayland restart, nested split/focus, fresh PID, CWD/fallback, restored Retry, corruption/schema retention and pending-debounce close evidence recorded below | Home-unavailable desktop UI limit not exercised; automation covers error paths | Begin M7 completion |
 | 7 — Command Router | complete | Single async dispatch path, 19 router tests (variant matrix, cancel/duplicate rollback), commit guards, and release Wayland UI regression (resize/equalize/focus/close/tab) recorded below | None | Begin M8 acceptance review (done — see M8 row) |
 | 8 — IPC | complete | Typed 17-method mapping, bounds, credentials/scope/child-env, owner bridge, 11 transport tests, concurrent-load + shutdown-under-load Wayland proof recorded below | Documented limits only: cross-UID harness, fallback-dir creation path, owner-channel saturation race (see below) | Begin M9 CLI |
-| 9 — CLI | not_started | None | Requires M8 | Complete CLI/desktop proof flow |
+| 9 — CLI | complete | `omaterm-cli` thin client (17/17 rows), 24 CLI tests, workspace gates, and release Wayland CLI/desktop proof recorded below | Documented limits only: live `pane.resize` success needs a discoverable split ID (invalid-split error path proven live); scoped in-app denial covered by M8 evidence plus CLI env/deny tests | M10 dependency/replay spikes (post-v0.1) |
 | 10 — Encrypted History Recovery | not_started | User selected both scrollback and an OmaTerm-owned command journal, explicit opt-in, and encrypted archives | Post-v0.1; requires M5–M9 completion, supported shell lifecycle integration, and verified Linux keyring/terminal replay dependencies | Complete M5–M9 before the M10 dependency and replay spikes |
 
 ## Handoff rules
@@ -1133,3 +1133,109 @@ repeated-cycle and concurrent-IPC resource measurements remain open.
 - Broader M7 UI flows (resize/equalize/focus/close-during-pending) and M8
   concurrent-IPC resource measurements still need evidence before either
   milestone closes.
+
+## Milestone 9 — CLI — complete — 2026-09-27
+
+Added `crates/omaterm-cli`, a thin `omaterm` binary over the M8 socket. It
+parses arguments with clap, builds exactly one v1 `IpcRequest`, sends it via
+`omaterm-ipc`, and formats the `IpcResponse` as concise human text or the
+stable JSON envelope. No workspace logic lives in the CLI; all 17 coverage
+rows map to the typed M8 methods. With no subcommand it acknowledges a
+running instance or launches the sibling `omaterm-desktop` with bounded
+readiness; subcommands never auto-launch. Compositor focus is deferred.
+
+### Changed files
+
+- `Cargo.toml`, `Cargo.lock` (workspace member `crates/omaterm-cli`)
+- `crates/omaterm-cli/Cargo.toml` and
+  `crates/omaterm-cli/src/{main,connection,output,launcher}.rs`
+- `crates/omaterm-cli/src/commands/{mod,project,tab,pane,terminal}.rs`
+- `docs/dependencies.md`, `docs/acceptance-matrix.md`, this status record
+
+### Behavior contracts
+
+- Socket: explicit `--socket`, then `OMATERM_SOCKET`, then the validated M8
+  default. OS connect failures report `OmaTerm is not running` (exit 2)
+  without path-existence probing.
+- Credentials: `OMATERM_TOKEN` for in-app callers (invalid values fail with
+  no file fallback); otherwise the owner-only credential beside the resolved
+  socket is validated (regular file, same UID, mode `0600`) and never sent
+  to an unrelated override socket.
+- Selectors: explicit flags first, then `OMATERM_PROJECT_ID` /
+  `OMATERM_TAB_ID` / `OMATERM_PANE_ID`, then server-side selection. An
+  invalid explicit ID never falls back. `terminal send` base64-encodes exact
+  UTF-8 bytes with no implicit newline; `terminal run` forwards structured
+  argv after `--`; `terminal read` defaults to 50 lines x 500 columns.
+- Output: human text on stdout, diagnostics on stderr, no colors in JSON.
+  Exit codes are 0 success, 1 server/authorization/command failure,
+  2 connection failure, 64 usage errors. `--json` works before or after the
+  subcommand and also envelopes local failures.
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm-cli` | PASS: 24 tests (17-row parser matrix, per-command wire mapping incl. base64/argv/direction validation, global-flag positions, env-scoped selectors, fake-server success/denial/connection e2e, launcher acknowledgement) |
+| `cargo test -p omaterm-core -p omaterm-state` | PASS: 13 core + 14 state |
+| `cargo test -p omaterm-protocol -p omaterm-ipc` | PASS: 6 protocol + 11 IPC |
+| `cargo test -p omaterm-terminal --lib -- --test-threads=1` | PASS: 81 tests |
+| `cargo test -p omaterm-terminal --test pty_integration -- --test-threads=1` | PASS: 24 PTY integration tests |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 19 router tests |
+| Serial total | 192 (24 CLI + 13 core + 14 state + 81 terminal unit + 24 PTY + 19 desktop + 11 IPC + 6 protocol) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo build -p omaterm-cli` | PASS: produces `target/debug/omaterm` |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 50 local links, 72 blueprint refs, 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+
+The full serial workspace suite was verified per package/test target (the
+single unflagged `cargo test --workspace` exceeded the 120s tool timeout in
+this session); PTY concurrency still runs serially per the established gate.
+
+### Release Wayland CLI/desktop proof — 2026-09-27
+
+Environment: Omarchy/Hyprland (`wayland-1`), release binaries,
+`SHELL=/bin/bash`, real `XDG_RUNTIME_DIR=/run/user/1000`, isolated
+`XDG_STATE_HOME=/tmp/opencode/m9-proof/state`. Desktop launched via
+`systemd-run --user` as `omaterm-m9-proof`; socket and credential both mode
+`0600`. A grim capture of the split desktop is kept outside the repository
+at `/tmp/opencode/m9-proof/split.png`.
+
+| Check | Result |
+|---|---|
+| `omaterm` with instance running | PASS: `OmaTerm is already running.`, exit 0; `--json` returns `{"ok":true,"result":{"running":true,...}}` |
+| `pane list` / `--json` | PASS: 1 focused pane, then 2 panes at 0.5/0.5 widths after split; JSON envelope valid |
+| `pane split --right` | PASS: real split in the desktop app with new pane/session IDs |
+| `terminal run --pane <new> -- echo M9_PROOF_OK` | PASS: `Submitted command to shell.` (Bash prompt-ready, not `shell_busy`) |
+| `terminal read --lines 50` | PASS: bounded viewport contained `M9_PROOF_OK` (submission evidence, not completion) |
+| `terminal send` + JSON `terminal read` | PASS: sent bytes acknowledged; bounded JSON read `ok:true, truncated:false` contained the marker |
+| `project list/tab list/tab new/terminal list` | PASS: project/tab/session metadata with new tab/pane/session IDs |
+| `pane focus/terminal new/tab close` | PASS: focus moved, new tab created, closes fell back to Tab 1 selected |
+| `project open /tmp/select/ pane close` | PASS: new project ID/root, selection round-trip, pane collapse to 1 focused pane |
+| `pane equalize` | PASS: splits reset |
+| `pane resize` with unknown split | PASS: `split_not_found`, exit 1 (live success needs a CLI-discoverable split ID; see limits) |
+| 10 checked split/close cycles | PASS: pane count consistent throughout, ending at 1 pane; M7/M8 transient watch item not reproduced |
+| Bad pane ID | PASS: `invalid_request`, exit 1; `--json` envelope `ok:false` plus stderr diagnostic |
+| Missing socket (`--socket` override) | PASS: `OmaTerm is not running`, exit 2, no auto-launch |
+| `pane split` without direction | PASS: usage error, exit 64 |
+| Shutdown/stop | PASS: unit stopped, no `omaterm-desktop` process, no proof-window orphan shells, stale socket/credential removed; `omaterm.lock` remains as the normal startup lock |
+
+Launch-branch proof (separate instance, isolated
+`XDG_STATE_HOME=/tmp/opencode/m9-proof/state2`): with no desktop running,
+`omaterm` printed `Launched OmaTerm.`, exit 0, owned the default socket,
+and `pane list` succeeded after the initial async spawn settled. The
+instance was terminated and its stale socket/credential removed; no desktop
+process or proof-window shell remained.
+
+### Documented limits
+
+- Live `pane.resize` success has no Wayland evidence because `pane.list`
+  (human and JSON) exposes no split IDs to target; the CLI forwards
+  `--split/--fraction` unchanged and the invalid-split error path is proven
+  live. Split-ID discovery belongs to a future list-surface change, not M9.
+- Scoped in-app denial (`OMATERM_TOKEN` project isolation) is covered by M8
+  desktop evidence plus CLI env-precedence and fake-server denial tests; no
+  separate live in-app token denial run was performed in M9.
+- No per-process GPU/startup/idle formal metrics were added in M9; the M5
+  lifecycle observations stand.
