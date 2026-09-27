@@ -120,4 +120,5 @@ pub enum TerminalCommand {
 pub enum CommandContext {
     #[default]
     LocalUser,
+    Project(ProjectId),
 }

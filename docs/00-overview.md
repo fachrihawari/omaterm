@@ -23,6 +23,9 @@ the canonical workflow in [AGENTS.md](../AGENTS.md).
   Wayland results separately. CI does not certify desktop behavior.
 - Map requirements to [acceptance-matrix.md](acceptance-matrix.md), and record
   toolchain/dependency evidence in [dependencies.md](dependencies.md).
+- For the remaining M5–M8 gaps and carried-forward validation, follow the
+  [dependency-ordered closure plan](m5-m8-closure-plan.md); milestone specs
+  remain the acceptance contracts.
 - Documentation-only work requires link/consistency review and `git diff --check`.
   Run `python3 scripts/check-docs.py` from the repository root for local link targets
   and numbered blueprint references plus CLI/IPC table coverage; external

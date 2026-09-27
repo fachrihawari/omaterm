@@ -3593,11 +3593,16 @@ name = "omaterm"
 version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
+ "base64",
  "gpui",
  "omaterm-core",
+ "omaterm-ipc",
+ "omaterm-protocol",
  "omaterm-state",
  "omaterm-terminal",
+ "serde_json",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3606,6 +3611,24 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "uuid",
+]
+
+[[package]]
+name = "omaterm-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "omaterm-protocol",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omaterm-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

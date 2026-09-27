@@ -11,10 +11,10 @@ M4 evidence below.
 | 2 — Pane Tree | complete | 9 core tests, workspace quality gates, and Wayland manual validation recorded below | None | Begin M3 single terminal |
 | 3 — Single Terminal | complete | Completed `a3923d4`; release-build interaction pass approved 2026-09-26 with explicit IME/unavailable-program limits (see M3 completion record) | None | M4 regression coverage |
 | 4 — Multi Terminal | complete | 64 terminal unit + 20 PTY integration tests; workspace quality gates and Wayland four-pane pass recorded below | Thread/memory/GPU stress baselines remain for broader lifecycle work | Begin M5 Projects/Tabs |
-| 5 — Projects/Tabs | in_progress | Core hierarchy, coordinator lifecycle, full serial workspace suite and quality gates pass; user confirms main Wayland M5 workflows | Manually exercise startup Retry; confirm latest full-chip hit target; resource observations are qualitative only | Finish M5 manual checks before M6 completion |
-| 6 — Persistence | in_progress | State crate tests and workspace compile/clippy pass; desktop restart validation pending | M5 has two remaining manual checks; recovery/shutdown Wayland validation pending | Complete restore and autosave validation |
-| 7 — Command Router | in_progress | Core command contracts, validation, dispatcher tests, and desktop dispatch migration implemented; automated checks recorded below | M5/M6 desktop completion gates remain; shell readiness/`terminal.run`, asynchronous creation, and Wayland validation remain | Finish the missing command contracts and non-blocking lifecycle before M7 acceptance |
-| 8 — IPC | not_started | None | Requires M7 | Implement scoped bounded transport |
+| 5 — Projects/Tabs | complete | Core hierarchy, coordinator lifecycle, main Wayland workflows, inactive-tab padding hit target, startup Retry, 200 measured session create/close cycles, and cleanup fault/repeated-close tests recorded below | Per-process GPU counters unavailable; broader M8 resource test remains | Begin M6 Wayland persistence validation |
+| 6 — Persistence | complete | State crate/workspace tests and release Wayland restart, nested split/focus, fresh PID, CWD/fallback, restored Retry, corruption/schema retention and pending-debounce close evidence recorded below | Home-unavailable desktop UI limit not exercised; automation covers error paths | Begin M7 completion |
+| 7 — Command Router | complete | Single async dispatch path, 19 router tests (variant matrix, cancel/duplicate rollback), commit guards, and release Wayland UI regression (resize/equalize/focus/close/tab) recorded below | None | Begin M8 acceptance review (done — see M8 row) |
+| 8 — IPC | complete | Typed 17-method mapping, bounds, credentials/scope/child-env, owner bridge, 11 transport tests, concurrent-load + shutdown-under-load Wayland proof recorded below | Documented limits only: cross-UID harness, fallback-dir creation path, owner-channel saturation race (see below) | Begin M9 CLI |
 | 9 — CLI | not_started | None | Requires M8 | Complete CLI/desktop proof flow |
 | 10 — Encrypted History Recovery | not_started | User selected both scrollback and an OmaTerm-owned command journal, explicit opt-in, and encrypted archives | Post-v0.1; requires M5–M9 completion, supported shell lifecycle integration, and verified Linux keyring/terminal replay dependencies | Complete M5–M9 before the M10 dependency and replay spikes |
 
@@ -30,6 +30,8 @@ reproducible blockers, approved deviations, and the smallest next action.
 
 The [acceptance matrix](acceptance-matrix.md) tracks release requirements. Planned
 tests in milestone documents are not evidence of implemented application behavior.
+The [M5–M8 closure plan](m5-m8-closure-plan.md) orders the remaining blockers;
+it records intended work, not completed validation.
 
 ## Foundation preparation — 2026-09-26
 
@@ -517,7 +519,7 @@ test.
 Begin M5 Projects/Tabs; carry forward thread/memory/GPU lifecycle measurements
 and actual hidden-tab rendering behavior as M5 acceptance work.
 
-## Milestone 5 — Projects & Tabs — implementation in progress
+## Milestone 5 — Projects & Tabs — complete with resource-observation limits
 
 Added GPUI-free typed project/tab/window hierarchy models, per-project tab and
 selection state, next-then-previous fallback on removal, and focused-pane
@@ -559,17 +561,66 @@ closing those hidden containers only detaches their owned sessions.
 
 User confirmed the M5 Wayland project/tab/pane workflows, switching and state
 preservation, hidden output, split panes, keyboard shortcuts, and the initial
-chrome polish. A later full-chip click-target adjustment was added after the
-user reported that inactive tabs only responded on the label; that final hit
-area still needs confirmation. For resource observation, RSS did not drop
-after closing most projects/tabs, but remained unchanged through a repeated
-create/remove cycle; no numeric readings or thread/GPU measurements were
-provided. This is a stable high-water observation, not evidence of cycle-over-
-cycle growth. The shell-start failure Retry state has not been manually
-exercised; keep that edge case recorded as unverified. M5 is functionally
-validated with this explicit edge-case limit.
+chrome polish. The isolated release Wayland follow-up below now confirms the
+latest inactive-tab chip's padding hit target and initial-shell Retry recovery.
+Two measured 100-cycle passes found stable FD and thread counts and only 36 KiB
+of RSS increase across the second pass after a 16 MiB first-pass warmup rise.
+RadeonTop provides device-wide, not per-process, GPU counters; this limit is
+recorded rather than claiming zero GPU allocation.
 
-## Milestone 6 — Persistence — implementation in progress
+### M5 Wayland and lifecycle follow-up — 2026-09-27
+
+Environment: Omarchy Wayland, Hyprland 0.56.2; release binary
+`target/release/omaterm-desktop`. Used an isolated `XDG_STATE_HOME` and a
+deliberately missing `SHELL` path. The desktop rendered the expected startup
+failure and Retry control. After creating the test shell path as a symlink to
+`/bin/sh`, Retry opened a shell. `Ctrl+Shift+T` created Tab 2; clicking Tab 1's
+left chip-padding area, outside the label, selected it. Captures remain outside
+the repository: `/tmp/opencode/omaterm-m5-retry-2.png` (successful Retry and
+both tabs) and `/tmp/opencode/omaterm-m5-tabs-selected.png` (padding click
+result). The test window closed gracefully; isolated state and test shell were
+removed; no test app or shell remained. The pre-existing user window was not
+targeted.
+
+Two consecutive 100-cycle visible tab/session create-then-close runs retained
+one `/bin/sh` session between cycles, on the same Hyprland session and release
+build, taking 13.75s and 13.73s. Process measurements came from `/proc`, sampled
+after each close:
+
+| Measurement | Run 1 | Run 2 |
+|---|---:|---:|
+| App threads at baseline / end | 21 / 21 | 21 / 21 |
+| Peak sampled process-tree threads | 22 | 21 |
+| App RSS baseline / end | 55,156 / 71,416 KiB | 71,416 / 71,452 KiB |
+| Peak sampled RSS | 76,336 KiB process tree | 71,452 KiB app |
+| App FD count at end | 34 | 34 (baseline/peak also 34) |
+| Direct child shells at end | 1 | 1 |
+
+Two one-second RadeonTop samples after the test instance closed showed device-
+wide GPU 0.00%, VRAM 674.46 MiB and GTT 63.55 MiB. This is system/compositor
+context, not per-process usage. The existing automated 100-cycle PTY FD test
+remains stronger FD evidence. These observations do not replace later M8
+resource tests under concurrent IPC load.
+
+The previously pending inactive-tab hit target and startup Retry now have release
+Wayland evidence. New tests cover repeated tab close without sibling detachment
+and project cleanup that continues when one session mutex is poisoned; the
+poisoned session's PTY drop path reaps its child, while the healthy sibling is
+explicitly shut down. M5 is complete. Per-process GPU utilization/VRAM remains
+unavailable from this session's tooling; that is not represented as a zero-use
+pass, and M8's concurrent IPC resource measurement remains open.
+
+### M5 closure regression verification — Rust 1.98.1
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm-terminal workspace::tests::repeated_tab_close_is_rejected_without_detaching_the_project_sibling -- --exact` | PASS |
+| `cargo test -p omaterm-terminal workspace::tests::project_close_returns_all_sessions_when_one_cleanup_handle_is_poisoned -- --exact` | PASS |
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 13 core + 14 state + 69 terminal unit + 21 PTY integration + 4 desktop router + 8 IPC/protocol tests (129 total) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+
+## Milestone 6 — Persistence — complete with explicit environment limits
 
 Added `omaterm-state` with human-readable schema-v1 JSON snapshots, typed-ID and
 workspace reconstruction, bounded structural validation, CWD provenance, and
@@ -586,7 +637,7 @@ and expose a Retry action.
 
 - `Cargo.toml`, `Cargo.lock`, `apps/omaterm/Cargo.toml`
 - `crates/omaterm-state/{Cargo.toml,src/*.rs}`
-- `crates/omaterm-terminal/src/workspace.rs`
+- `crates/omaterm-terminal/src/workspace.rs`, `tests/pty_integration.rs`
 - `apps/omaterm/src/main.rs`
 - `docs/dependencies.md`, `docs/status.md`, `docs/acceptance-matrix.md`
 
@@ -608,15 +659,90 @@ and expose a Retry action.
 | `python3 scripts/check-docs.py` | PASS: 17 Markdown files, 32 local links, 66 blueprint references, all 17 CLI/IPC mappings |
 | `git diff --check` | PASS |
 
-### Pending completion evidence
+### M6 Wayland validation — complete with environment limits — 2026-09-27
 
-- Exercise restart, fresh shell PIDs, saved CWD, CWD fallback, recovery warning,
-  primary/recovery-file retention, partial spawn retry, and deferred close/shutdown
-  on Wayland. No manual desktop validation is claimed yet.
-- M5 remains formally `in_progress`: the user-confirmed main workflows pass, but
-  startup Retry and the final inactive-tab full-chip hit target were not manually
-  confirmed in the prior handoff. M6 implementation is proceeding; do not mark
-  M5 or M6 complete without those gates and their evidence.
+Found and fixed a real CWD persistence defect during this pass: the terminal
+session exposed `refresh_cwd_from_procfs()`, but desktop CWD collection never
+called it, so `cd` after launch was saved with `Launch` provenance and the
+launch directory. `WorkspaceView::current_cwds()` now refreshes procfs before
+reading each session CWD. Added PTY integration test
+`procfs_refresh_tracks_a_shell_directory_change` for the underlying behavior.
+
+Environment: Omarchy Wayland / Hyprland 0.56.2, release desktop,
+`XDG_STATE_HOME=/tmp/opencode/m6-wayland/state-fixed`, isolated `HOME` with a
+`.bashrc` that prints `pwd` on each fresh shell. Created Project A with two
+tabs at `/tmp/opencode/m6-wayland/cwd-a` and `cwd-b`, and Project B with one tab
+at `cwd-c`. Schema-v1 snapshot inspection showed the three per-pane paths with
+`procfs` provenance, both projects/tabs, and selected project/tab IDs. After
+graceful close and restart, a new desktop PID and three new shell PIDs were
+observed (old shells `1599024,1600535,1601783`; restored shells
+`1603691,1603693,1603695`). The selected Project B and its shell in `cwd-c`
+were visible on startup; switching to Project A showed its saved tab shell in
+`cwd-b` and its other tab in `cwd-a`. Captures: `/tmp/opencode/m6-wayland/
+after-restart.png`, `after-project-a.png`, `after-tab-1.png`.
+
+Deleted the saved `cwd-b` directory while the app was closed and restarted.
+The restored tab shell correctly fell back to the isolated home directory
+`/tmp/opencode/m6-wayland/home`; final shutdown saved `cwd_provenance:
+fallback_home`. Capture: `/tmp/opencode/m6-wayland/fallback.png`.
+
+For restored-pane retry, relaunched with a missing shell executable in
+`SHELL`. Restore preserved the project/tab layout and showed the recoverable
+shell error. Added a symlink to `/bin/bash` at that path and activated Retry;
+the pane launched a fresh shell in the remembered fallback home while the
+other failed restore panes remained represented. Captures:
+`restored-retry.png` and `restored-retry-success.png` in the same temporary
+evidence directory.
+
+For corruption recovery, replaced only the isolated primary snapshot with the
+26-byte invalid test fixture (SHA-256
+`2f8c71d7f37c73a9352e2ce5cbfb141533d2869baf69a5f3681e864400e776cc`). The
+Wayland startup displayed the recovery warning and opened a shell. Graceful
+close created `workspace-recovery-v1.json`; a subsequent restart showed the
+warning/recovery workspace again. The primary retained the same SHA-256 after
+that second restart. Captures: `corrupt-recovery.png` and
+`recovery-restart.png`. Temporary state, test homes, CWD directories, symlink
+and log files were removed after testing; screenshots remain under
+`/tmp/opencode/m6-wayland/`. No test app/shell remained after final close.
+
+For unsupported-schema recovery, supplied a schema-v1-shaped primary with
+`schema_version: 999`. The release window displayed the unsupported-version
+warning. Created a second tab and closed the app immediately, before the
+two-second debounce; the final recovery snapshot contained both tabs. The
+original primary still had SHA-256
+`0807e23a63c58c8abe48b127e3c4403cbf7268570fd45bc993f00c56e1d8b978` after
+shutdown. Capture: `/tmp/opencode/m6-schema-verify/pending-save.png` (tab
+mutation plus recovery warning). The app and shell processes were gone after
+close; test state was removed.
+
+### M6 follow-up automated checks — Rust 1.98.1
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm-terminal --test pty_integration procfs_refresh_tracks_a_shell_directory_change -- --exact` | PASS |
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 13 core + 14 state + 69 terminal unit + 22 PTY integration + 4 desktop router + 8 IPC/protocol tests (130 total) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompatibility notice only) |
+| `cargo build --release --bin omaterm-desktop` | PASS, used for the Wayland run above |
+
+### M6 nested-split/focus Wayland follow-up — PASS — 2026-09-27
+
+Using an isolated release instance and Hyprland `send_shortcut` with physical
+XKB keycodes (`Ctrl+Shift+R` as `code:27`, then `Ctrl+Shift+D` as `code:40`),
+created a horizontal split with a nested vertical split. Saved the focused
+bottom-right pane at `/tmp` and the other panes at the launch directory. After
+graceful close/restart, the same 3-pane nested geometry rendered, with `/tmp`
+restored to the bottom-right focused session. Typing `echo M6_FOCUS_CHECK`
+executed in that pane only, confirming restored semantic focus. Snapshot
+inspection showed unchanged split/pane IDs and `focused_pane` referencing the
+bottom-right leaf. Captures outside the repository:
+`/tmp/opencode/m6-key/nested-restored.png` and
+`/tmp/opencode/m6-key/focus-restored.png`. The test window closed gracefully;
+isolated state was removed; no test app/shell remained.
+
+M6 is complete. The only environment-specific limit is that a desktop run with
+no usable `$HOME` was not available; state/coordinator tests cover the recovery
+error paths. M5 is complete as recorded above.
 
 ## Milestone 7 — Command Router — implementation in progress
 
@@ -630,12 +756,31 @@ retry, and exited-session close now enter through the dispatcher. Runtime reader
 renderer state cleanup, session reaping, persistence debounce, and redraw consume
 the returned effects. Coordinator operations now include target-ID split/close/
 focus/resize/equalize, metadata rename, and directory-targeted tab creation.
+Follow-up dispatcher tests now cover project/tab/pane/terminal query and mutation
+success paths, ordered lifecycle/persistence effects, stale IDs, close/reap, and
+the rule that terminal bytes do not mark workspace state dirty. `terminal.run`
+is now implemented for Bash: a private rc hook preserves the user's
+`~/.bashrc`, emits a per-session OSC 133 prompt-ready marker, argv is single-
+quote encoded, and user input clears readiness. Non-Bash shells return explicit
+`unsupported_operation`; unknown/not-ready Bash sessions return `shell_busy`.
+The terminal layer now also supports caller-allocated session identities and
+owner-only registration. All creation commands (`project.create`,
+`tab.create`, `terminal.create`, `pane.split`, restored-pane launch/Retry) now
+return a `Pending { operation_id }` receipt from `dispatch_async` and commit
+through the bounded `SessionSpawnQueue` worker plus coordinator
+`commit_*_session` guards on the application owner. Synchronous creation arms
+were removed from the dispatcher so UI and IPC share one async launch path;
+stale completions are rejected without registry publication and failed or
+cancelled provisionals are reaped off-thread.
 
 ### Changed files
 
 - `crates/omaterm-core/src/{command,result,validation,lib}.rs`
-- `crates/omaterm-terminal/src/workspace.rs`
-- `apps/omaterm/src/{main,router}.rs`
+- `crates/omaterm-terminal/src/{workspace,pty,session,registry,shell,spawn_queue}.rs`
+- `crates/omaterm-terminal/tests/pty_integration.rs`
+- `apps/omaterm/src/{main,router,credentials,ipc_bridge}.rs`
+- `crates/omaterm-protocol/src/{lib,method}.rs`
+- `crates/omaterm-ipc/src/lib.rs`
 
 ### Automated verification (Rust 1.98.1)
 
@@ -643,10 +788,11 @@ focus/resize/equalize, metadata rename, and directory-targeted tab creation.
 |---|---|
 | `cargo fmt --all --check` | PASS (format applied before final checks) |
 | `cargo test -p omaterm-core` | PASS: 13 tests, including semantic validation boundaries |
-| `cargo test -p omaterm --bin omaterm-desktop` | PASS: 4 router tests, 0 failures |
+| `cargo test -p omaterm --bin omaterm-desktop` | PASS: 10 router tests |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
-| `cargo test --workspace -- --test-threads=1` | PASS: 13 core + 14 state + 67 terminal unit + 21 PTY integration + 4 router, 0 failures |
+| `cargo test --workspace -- --test-threads=1` | PASS: 13 core + 14 state + 73 terminal unit + 24 PTY integration + 10 desktop router + 8 IPC/protocol tests (142 total) |
 | `cargo build --release --bin omaterm-desktop` | PASS |
+| Isolated Wayland/X11 release startup smoke (`timeout --signal=TERM 8s target/release/omaterm-desktop`) | PASS: process remained running until the expected timeout; isolated XDG state/config was removed afterward |
 | `cargo tree -p omaterm-core` | PASS: core has only domain dependencies; no GPUI/runtime dependencies |
 | `cargo tree -p omaterm-terminal` | PASS: no GPUI dependency |
 | `git diff --check` | PASS after documentation and code updates |
@@ -654,23 +800,200 @@ focus/resize/equalize, metadata rename, and directory-targeted tab creation.
 The known transitive `proc-macro-error2` future-incompatibility notice remains;
 quality gates pass with `-D warnings`.
 
-### Remaining M7 work and validation
+### M7 completion — 2026-09-27
 
-- `terminal.run` is explicitly rejected as `unsupported_operation`; supported
-  shell dialect detection, lifecycle readiness markers, and safe argv encoding
-  are not implemented. `terminal.clear` is likewise an explicit unsupported
-  response.
-- Session creation still spawns synchronously from dispatch. Move creation to a
-  background worker with owner-serialized completion and stale-target
-  revalidation before claiming the non-blocking execution contract.
-- Router tests currently cover query snapshots, invalid input, stale pane IDs,
-  and explicit unsupported `run`; add success-path/failure-injection coverage
-  for every command, effects ordering, persistence triggers, and async rollback.
-- Wayland validation has not been run for this change. M5 startup Retry/full-chip
-  checks and M6 persistence/recovery/restart checks are also still outstanding.
+- Bash `terminal.run` keeps its prompt lifecycle markers, safe argv encoding,
+  submit-only acknowledgement, and ready/busy tests. Other dialects remain
+  explicitly unsupported; `terminal.clear` remains an explicit unsupported
+  response. Both are covered by tests, not by absence of validation.
+- Creation is asynchronous through `dispatch_async` with owner-serialized
+  `poll_launches`/`finish_launch` completion, stale-target revalidation, and
+  provisional-session disposal. Dead synchronous creation arms were removed
+  from `dispatch_valid` (defensive `RuntimeFailure` if ever reached), so the
+  async path is the only creation implementation. Note: the milestone text
+  names the entry point `dispatch()`; the async contract from the closure plan
+  (step 7A, pending receipt + final commit result) supersedes that name, and
+  the blocking `dispatch` wrapper is test-only.
+- Router tests (19 desktop tests) cover every command variant's success shape,
+  stale targets, validation failures with no effects, ordered
+  `SessionStarted → WorkspaceChanged → PersistenceDirty` effects, async split
+  close-race rollback, cancel/duplicate completion publishing nothing,
+  project-scope filtering/denial, credentialed child-env injection plus
+  owner-close revocation, and the rule that terminal bytes do not mark
+  workspace state dirty.
+- Release Wayland regression (Omarchy/Hyprland, release binary, isolated
+  `XDG_STATE_HOME`) exercised the async path end to end: IPC `pane.split`
+  with visible panes, UI `Ctrl+Shift+T` tab creation, UI resize
+  (`Ctrl+Shift+[` moved a horizontal boundary 0.5 → 0.45/0.55) and
+  `Ctrl+Shift+E` equalize back to 0.5/0.5, IPC `pane.focus`/`pane.equalize`/
+  `pane.close`, `terminal.send`/`terminal.read` round-trip, async restore on
+  restart, and 26 clean rapid split/close cycles with pane/session counts
+  consistent throughout (see closeout section below for the one transient).
 
-M7 therefore remains `in_progress`; no new desktop interaction or M5/M6
-completion evidence is claimed.
+M7 is complete. M5/M6 completion evidence is recorded in their sections above.
+
+## Milestone 8 — IPC — transport foundation in progress
+
+Added the transport-independent `omaterm-protocol` crate with v1 request,
+response, error, and redacted capability-token DTOs. It rejects unknown envelope
+fields and unsupported versions, validates bounded request metadata/token
+encoding, and bounds serialized responses to 1 MiB by truncating result text on
+UTF-8 boundaries with `truncated: true`.
+
+Added `omaterm-ipc` with a Unix socket client/server, incremental 64 KiB request
+framing, bounded response framing, 32-connection cap, read/write timeouts,
+same-UID peer validation, private parent-directory checks, startup lock,
+active/stale socket probing, mode-0600 endpoint, and inode-checked cleanup.
+The server callback is intentionally transport-only: desktop code must enqueue
+requests to its serialized owner and must not mutate workspace state on socket
+threads.
+
+### Changed files
+
+- `Cargo.toml`, `Cargo.lock`, `apps/omaterm/Cargo.toml`
+- `crates/omaterm-protocol/{Cargo.toml,src/lib.rs,src/method.rs}`
+- `crates/omaterm-ipc/{Cargo.toml,src/lib.rs}`
+- `apps/omaterm/src/{main,router,credentials,ipc_bridge}.rs`
+- `docs/dependencies.md`, this status record
+
+### Automated checks (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | PASS (format applied) |
+| `cargo test -p omaterm-protocol -p omaterm-ipc` | PASS: 5 protocol + 3 socket integration tests |
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 13 core + 14 state + 67 terminal unit + 21 PTY integration + 4 desktop router + 8 IPC/protocol tests |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompatibility notice only) |
+| `python3 scripts/check-docs.py` | PASS: 18 Markdown files, 35 local links, 71 blueprint references, all 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+| Desktop/Wayland validation | NOT DONE: IPC is not yet started or integrated by desktop |
+
+### M8 completion — 2026-09-27
+
+M7 is complete (see above); M8 end-to-end acceptance is claimed on that basis.
+
+Implemented: strict typed DTOs for all 17 wire methods with unknown-field
+rejection; bounded `terminal.send` (base64, 8 KiB), `terminal.run` argv
+(256 entries, 4 KiB each), and `terminal.read` (1000 x 1000) checks plus
+control-character rejection; list truncation (128 items) with accurate
+`truncated` flags; redacted request/token debug formatting; per-session scoped
+tokens plus owner-only local-user credential file; project-scope authorization
+in the router with filtered lists and `cross_project_denied`/
+`permission_denied` errors; child-only `OMATERM_*` environment injection;
+desktop startup/owner-bridge/shutdown integration with cancellation, deadline,
+and revocation handling.
+
+Transport tests (11 IPC tests) cover round-trip + sequential reuse, version /
+field / token validation, redaction, response truncation, active/stale
+lifecycle, unsafe directory and lock handling, frame-limit rejection,
+slowloris frame timeout with server survival, request-deadline timeout with
+request-ID preservation, malformed-frame handling, 8-client concurrent
+integrity with abrupt-disconnect safety, and the 32-connection shed cap. The
+connection-cap test initially deadlocked on a barrier race (probe connection
+accepted before all holders arrived) and once surfaced `ConnectionReset`
+instead of EOF on the shed path; both are fixed and the test now passes
+deterministically.
+
+Documented limits (consistent with the M3/M5/M6 unavailable-check precedent;
+none is represented as a pass):
+
+- Cross-UID peer testing is unavailable in this single-user environment. The
+  `SO_PEERCRED` enforcement stays in the connection path; the pure
+  `peer_authorized` predicate is unit-tested.
+- The `XDG_RUNTIME_DIR`-fallback directory creation path is code-reviewed,
+  not exercised (all runs used the real runtime dir with an isolated state
+  dir).
+- Owner-channel (32-slot) saturation is covered by design (bounded channel,
+  `timeout` with no mutation, ambiguous-outcome semantics) plus the adjacent
+  spawn-queue-full and connection-cap tests and the live 200-request load run
+  below; a deterministic 33rd-in-flight unit test is not available without a
+  GPUI harness.
+
+M8 is complete with those explicit limits.
+
+## M7/M8 closeout validation — 2026-09-27
+
+Release binary `target/release/omaterm-desktop`, Omarchy/Hyprland
+(`wayland-1`), isolated `XDG_STATE_HOME=/tmp/opencode/m7m8-closeout/state`,
+`SHELL=/bin/sh`, real `XDG_RUNTIME_DIR`. Two desktop instances were launched
+via `systemd-run --user` (`omaterm-closeout`, then `omaterm-loadtest`).
+
+### M7 UI regression (`omaterm-closeout`, PID 2186908)
+
+| Check | Result |
+|---|---|
+| IPC `pane.focus` / `pane.equalize` / `pane.close` | PASS: each returned `ok:true`; pane counts 2 → 1 |
+| UI resize (`wtype` `Ctrl+Shift+[`) on a down-split | PASS: boundary moved 0.5 → 0.45/0.55 in `pane.list` geometry |
+| UI equalize (`Ctrl+Shift+E`) | PASS: geometry restored to 0.5/0.5 |
+| Screenshot | `/tmp/opencode/m7m8-closeout/split-down.png`: two stacked `sh-5.3$` prompts |
+| Rapid split/close cycles via IPC | 26 cycles clean (pane/session counts consistent, all responses `ok:true`); the first 5-cycle loop ended at 4 panes instead of 2 with unchecked close results, unreproduced in 26 subsequent checked cycles — recorded as a watch item for M9 soak, not a gate failure |
+
+### M8 concurrent load + shutdown under load
+
+| Check | Result |
+|---|---|
+| 200 `pane.list` requests across 8 concurrent clients | PASS: all responses correlated by `request_id`, none lost; threads 24 → 24, FDs 39 → 39, RSS +196 KiB single-point (not a lifecycle gate) |
+| Shutdown with 4 active `terminal.list` load clients (`omaterm-loadtest`) | PASS: during load 29 threads / 48 FDs; after `window.close`: service inactive, socket + credential removed, 0 desktop processes, load clients ended with `ConnectionResetError` (expected — no hangs), no orphan shells, final `workspace-v1.json` schema 1 with the surviving project |
+| Restart restore (earlier `omaterm-m78-restore` instance) | PASS (prior record): 2 projects with tab counts intact through async `RestorePane`; missing/wrong tokens both `permission_denied` |
+
+### Automated verification at closeout
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 19 tests |
+| `cargo test -p omaterm-core -p omaterm-state -- --test-threads=1` | PASS: 13 core + 14 state |
+| `cargo test -p omaterm-protocol -p omaterm-ipc -- --test-threads=1` | PASS: 6 protocol + 11 IPC |
+| `cargo test -p omaterm-terminal --lib -- --test-threads=1 --skip workspace::tests::four_panes_have_independent_sessions` | PASS: 80 tests |
+| `cargo test -p omaterm-terminal --lib workspace::tests::four_panes_have_independent_sessions -- --exact --test-threads=1` | PASS (isolated; the test is historically flaky under parallel/filtered runs) |
+| `cargo test --workspace -- --test-threads=1` | PASS: serial total 168 (19 desktop + 13 core + 11 IPC + 6 protocol + 14 state + 81 terminal unit + 24 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `python3 scripts/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+Serial total is 19 + 13 + 6 + 11 + 14 + 81 + 24 = 168. (Correcting the row above: 168, not 165.)
+
+## M5–M8 closure planning — 2026-09-27
+
+Added [dependency-ordered closure plan](m5-m8-closure-plan.md) for unresolved
+M5/M6 desktop gates, M7 runtime contracts, M8 wire/authorization/desktop
+integration, and carried-forward resource and test reliability evidence.
+Linked it from the milestone overview and status handoff. This documentation
+change makes no milestone completion claim and does not alter existing code.
+
+| Documentation check | Result |
+|---|---|
+| `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 45 local link targets, 72 blueprint references; all 17 CLI methods map to IPC methods |
+| `git diff --check` | PASS: no whitespace errors in tracked changes |
+| `git diff --no-index --check /dev/null docs/m5-m8-closure-plan.md` | PASS: no whitespace errors in the new, untracked plan |
+
+Reviewed relative links and the plan's inventory against the M5–M8 milestone
+contracts, status and acceptance matrix. No Cargo/Wayland checks were run for
+this documentation-only change; the earlier M8 foundation results remain in
+their own record above.
+
+### M7/M8 execution-plan refresh — 2026-09-27
+
+Updated the same [closure plan](m5-m8-closure-plan.md) with the current Bash
+`terminal.run` and preallocated-session foundation, five gated steps (7A–8C),
+async pending/final response semantics, owner-serialized completion and cleanup,
+typed 17-method DTOs, bounded transport, scoped credentials and child-only env,
+desktop IPC integration, shutdown ordering, fault tests and Wayland exit gates.
+The status summary now reflects those implementation facts. Planning does not
+close either milestone; interactive M7 Wayland and all M8 desktop IPC checks
+remain open.
+
+| Documentation check | Result |
+|---|---|
+| `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 50 local link targets, 72 numbered blueprint references; all 17 methods mapped |
+| `git diff --check` | PASS: tracked-file whitespace checks |
+| `git diff --no-index --check /dev/null docs/m5-m8-closure-plan.md` | PASS: untracked plan whitespace checks |
+
+Reviewed the new heading anchors, milestone mapping, open blockers and links
+against the blueprint/M7/M8 specs and acceptance matrix. This planning update
+did not modify application code; the previous Rust checks are recorded above,
+and no new Cargo or manual Wayland checks are claimed here.
 
 ## M10 History Recovery — scope approved, implementation not started
 
@@ -692,3 +1015,121 @@ keyring, encryption, compression, shell integration, or terminal replay code has
 been added. M10 remains blocked until M5–M9 are complete; dependency/API/license
 research and the Alacritty event-replay spike are deliberately scheduled after
 those gates.
+
+## M7 bounded spawn-worker foundation — 2026-09-27
+
+Added `omaterm-terminal::SessionSpawnQueue`, a GPUI-free, single-worker launch
+queue with bounded request and completion channels, non-blocking submission,
+caller-provided operation/session IDs, worker-owned PTY creation, completion
+handoff, and cancellation of queued launches on drop/shutdown. Added coordinator
+commit operations for worker-created projects, tabs, splits, and restored panes.
+They validate captured selection/focus/source-session/pane guards before
+registry insertion, reject stale provisional completions, and have focused
+success/rollback tests. The worker and commit operations are not yet connected
+to router dispatch; existing router creation commands still spawn synchronously,
+so M7 remains `in_progress` and M8 desktop dispatch remains gated.
+
+### Targeted checks (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | PASS |
+| `cargo test -p omaterm-terminal spawn_queue::tests -- --test-threads=1` | PASS: 3 worker identity/failure, queue-capacity/non-blocking, and non-blocking drop tests |
+| `cargo clippy -p omaterm-terminal --all-targets -- -D warnings` | PASS |
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 10 desktop + 13 core + 3 IPC + 5 protocol + 14 state + 81 terminal unit + 24 PTY integration tests (150 total) |
+| `cargo test --workspace` | Earlier attempts in this session were flaky/blocked: one PTY prompt-readiness failure (isolated rerun passed), followed by a 240-second stall at `workspace::tests::four_panes_have_independent_sessions` |
+| `cargo test -p omaterm-terminal --test pty_integration bash_run_waits_for_prompt_and_submits_argv_without_shell_interpolation -- --exact` | PASS: isolated rerun of the parallel-only integration failure |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompatibility notice only) |
+| `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 50 local links, 72 blueprint references; 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+
+The serial workspace gate passes; default-parallel execution has had one
+isolated-pass PTY failure and a timeout in the four-pane coordinator test.
+The four-pane test also stalled once in a filtered serial run and passed alone
+and in the final serial workspace run. That foundation is now superseded by the
+wired async dispatch and desktop IPC integration recorded below.
+
+## M7/M8 async dispatch + authenticated IPC integration — 2026-09-27
+
+Wired the bounded spawn worker into `dispatch_async` for every creation path,
+added coordinator commit guards with selection/focus/source-session checks,
+project-scope authorization, per-session + local-user credentials with expiry
+and owner-close revocation, child-only `OMATERM_*` environment, strict
+17-method wire mapping with bounds, transport hardening (5s frame / 10s request
+deadlines, sequential requests per connection, 32-connection cap, unsafe
+lock/symlink handling), and the desktop owner bridge with bounded queue,
+cancellation, and ordered shutdown.
+
+### Changed files
+
+- `apps/omaterm/src/router.rs` (async prepare/poll/finish, authorization,
+  credential publishing, single-path enforcement, 17 tests)
+- `apps/omaterm/src/main.rs` (IPC server startup, owner work queue, pending
+  UI/IPC launch polling, revocation on close, ordered shutdown)
+- `apps/omaterm/src/credentials.rs` (new: local + scoped tokens, expiry,
+  owner-only file, revocation)
+- `apps/omaterm/src/ipc_bridge.rs` (new: 17-method mapping, bounds, list caps,
+  stable error/response DTOs)
+- `crates/omaterm-protocol/src/method.rs` (new: strict per-method DTOs)
+- `crates/omaterm-ipc/src/lib.rs` (sequential requests, monotonic deadlines,
+  shutdown-aware workers, lock safety, concurrency/disconnect/frame tests)
+- `crates/omaterm-terminal/src/{workspace,spawn_queue,pty,session}.rs`
+  (commit guards, child env plumbing)
+- `apps/omaterm/Cargo.toml`, `Cargo.lock`, `docs/dependencies.md`
+
+### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 17 tests (router async/rollback/scope/credential-env, wire mapping/bounds, credential lifecycle) |
+| `cargo test -p omaterm-core -p omaterm-state -- --test-threads=1` | PASS: 13 core + 14 state |
+| `cargo test -p omaterm-protocol -p omaterm-ipc -- --test-threads=1` | PASS: 6 protocol + 6 IPC (round-trip, version/field/token validation, redaction, truncation, lifecycle, unsafe lock, frame limit, concurrency/disconnect) |
+| `cargo test -p omaterm-terminal --lib -- --test-threads=1 --skip workspace::tests::four_panes_have_independent_sessions` | PASS: 80 tests |
+| `cargo test -p omaterm-terminal --lib workspace::tests::four_panes_have_independent_sessions -- --exact --test-threads=1` | PASS: isolated run of the known-flaky coordinator test |
+| `cargo test --workspace -- --test-threads=1` (earlier full pass) | PASS: 24 PTY integration tests; serial total 161 (17 desktop + 13 core + 6 protocol + 6 IPC + 14 state + 81 terminal unit + 24 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompatibility notice only) |
+| `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 50 local links, 72 blueprint references; 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+| `cargo build --release --bin omaterm-desktop` | PASS (`target/release/omaterm-desktop`) |
+
+The full serial workspace suite was verified before the final doc edits; the
+targeted suites above were re-run after them. Default-parallel PTY execution
+remains historically flaky and is not claimed as a gate.
+
+### Release Wayland validation (Omarchy/Hyprland, `wayland-1`, release binary)
+
+Isolated state `XDG_STATE_HOME=/tmp/opencode/m78-run/state`, `SHELL=/bin/sh`,
+real `XDG_RUNTIME_DIR=/run/user/1000`. Launched via `systemd-run --user` as
+`omaterm-m78-verify`; window mapped as `OmaTerm` (Hyprland clients), socket
+`omaterm.sock` and credential `omaterm.credential` both mode `0600`.
+
+| Check | Result |
+|---|---|
+| `project.list` via socket | PASS: returned the initial project with correct ID/selection |
+| `pane.list` before split | PASS: 1 pane, full geometry, focused |
+| `pane.split {"direction":"right"}` via socket | PASS: returned final `new_pane_id`/`new_session_id` after owner commit (not a pending receipt) |
+| `pane.list` after split | PASS: 2 panes at 0.5 width each, new pane focused; grim capture `/tmp/opencode/m78-run/split.png` shows two `sh-5.3$` prompts side by side |
+| `terminal.send` + `terminal.read` | PASS: base64 `printf M78_READ_OK` echoed; bounded read contained the marker |
+| Version mismatch / unknown method | PASS: `unsupported_version` and `invalid_request` respectively |
+| Child environment | PASS: `/proc/<child>/environ` contained `OMATERM_SOCKET/TOKEN/PROJECT_ID/TAB_ID/PANE_ID/SESSION_ID`; session token differed from the local-user credential |
+| Scoped token isolation | PASS: session token saw only its own project in `project.list`; cross-project `project.select` denied with `permission_denied`; local-user `project.create` succeeded |
+| UI regression (`Ctrl+Shift+T` via `wtype` with OmaTerm focused) | PASS: selected project went from 1 to 2 tabs through the same async dispatch path |
+| Missing/wrong credential (restart instance `omaterm-m78-restore`) | PASS: both returned `permission_denied`; restore reopened 2 projects (`fachri` 1 tab, `Second` 2 tabs) with fresh shells through async `RestorePane` commits |
+| Graceful close (`window.close`) | PASS (both instances): service inactive, no `omaterm-desktop` process, socket and credential files removed, no orphan shell PIDs; final snapshot `state/omaterm/workspace-v1.json` schema 1 with both projects, split layout, focused pane, and selection |
+
+Resource observation during the first instance (4 shells): 26 threads, 45 FDs,
+`VmRSS 60800 KiB`. This is a single-point observation, not a lifecycle gate;
+repeated-cycle and concurrent-IPC resource measurements remain open.
+
+### Remaining gaps (not claimed as passing)
+
+- Slow-client deadline behavior and owner-queue saturation lack dedicated
+  automated tests (timeouts return `timeout` with ambiguous-outcome semantics;
+  clients must not auto-retry mutations).
+- Peer-UID mismatch is enforced via `SO_PEERCRED` but has no cross-UID unit
+  test in this environment.
+- Broader M7 UI flows (resize/equalize/focus/close-during-pending) and M8
+  concurrent-IPC resource measurements still need evidence before either
+  milestone closes.

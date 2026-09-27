@@ -83,6 +83,10 @@ impl CommandResult {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandOutput {
     Unit,
+    /// In-process receipt; a creation only succeeds when its completion commits.
+    Pending {
+        operation_id: u64,
+    },
     ProjectList(Vec<ProjectInfo>),
     TabList(Vec<TabInfo>),
     PaneList(Vec<PaneInfo>),

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/omaterm", "crates/omaterm-core", "crates/omaterm-terminal", "crates/omaterm-state"]
+members = ["apps/omaterm", "crates/omaterm-core", "crates/omaterm-terminal", "crates/omaterm-state", "crates/omaterm-protocol", "crates/omaterm-ipc"]
 
 [workspace.package]
 edition = "2024"

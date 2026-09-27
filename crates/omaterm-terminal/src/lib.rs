@@ -7,6 +7,8 @@ pub mod pty;
 pub mod registry;
 pub mod selection;
 pub mod session;
+mod shell;
+pub mod spawn_queue;
 pub mod workspace;
 
 pub use alacritty::AlacrittyEngine;
@@ -20,5 +22,10 @@ pub use osc7::{Osc7Parser, parse_osc7_uri};
 pub use pty::{PtyError, PtyProcess, poll_fd_readable};
 pub use registry::{RegistryError, TerminalConfig, TerminalRegistry};
 pub use selection::{CellPoint, SelectionRange, extract_text};
-pub use session::{CurrentDirectory, CwdProvenance, SessionError, TerminalSession};
-pub use workspace::{ClosedPane, CoordinatorError, WorkspaceCoordinator};
+pub use session::{
+    CurrentDirectory, CwdProvenance, RunCommandError, SessionError, TerminalSession,
+};
+pub use spawn_queue::{SessionSpawnQueue, SpawnCompletion, SpawnQueueError};
+pub use workspace::{
+    ClosedPane, CoordinatorError, ProjectSessionCommit, SplitSessionCommit, WorkspaceCoordinator,
+};

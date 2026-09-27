@@ -2,7 +2,8 @@ use std::time::{Duration, Instant};
 
 use omaterm_core::SplitDirection;
 use omaterm_terminal::{
-    TerminalConfig, TerminalRegistry, TerminalSession, TerminalViewport, WorkspaceCoordinator,
+    RunCommandError, TerminalConfig, TerminalRegistry, TerminalSession, TerminalViewport,
+    WorkspaceCoordinator,
 };
 
 fn pump_until(
@@ -64,6 +65,101 @@ fn spawn_and_echo_hello() {
         viewport_text(&viewport).contains("hello"),
         "expected hello in viewport"
     );
+}
+
+#[test]
+fn bash_run_waits_for_prompt_and_submits_argv_without_shell_interpolation() {
+    let marker_path =
+        std::env::temp_dir().join(format!("omaterm-run-injected-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker_path);
+    let mut session = TerminalSession::new(std::env::temp_dir(), Some("/bin/bash"), 180, 24)
+        .expect("spawn integrated bash");
+    let bash_rcfile = std::env::temp_dir().join(format!(
+        "omaterm-bashrc-{}-{}",
+        // SAFETY: getuid has no preconditions and returns the current UID.
+        unsafe { libc::getuid() },
+        session.id().0.simple()
+    ));
+    assert!(bash_rcfile.exists(), "integrated Bash has a private rcfile");
+    assert!(
+        !session.prompt_ready(),
+        "readiness requires the shell marker"
+    );
+
+    let start = Instant::now();
+    while !session.prompt_ready() && start.elapsed() < Duration::from_secs(10) {
+        let _ = session.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        session.prompt_ready(),
+        "Bash emits the OSC prompt-ready marker"
+    );
+
+    let injected = format!("$(touch {}) ; *", marker_path.display());
+    let argv = vec![
+        "printf".into(),
+        "%s|%s|%s|%s|%s\\n".into(),
+        "two words".into(),
+        "quote'and\\slash".into(),
+        "雪☃".into(),
+        String::new(),
+        injected.clone(),
+    ];
+    session.run_argv(&argv).expect("submit argv to ready bash");
+    assert!(
+        !session.prompt_ready(),
+        "submission clears prompt readiness"
+    );
+
+    let expected = format!("two words|quote'and\\slash|雪☃||{injected}");
+    let viewport = pump_until(&mut session, Duration::from_secs(10), |viewport| {
+        viewport_text(viewport).contains(&expected)
+    });
+    assert!(
+        viewport_text(&viewport).contains(&expected),
+        "expected {expected:?} in terminal output:\n{}",
+        viewport_text(&viewport)
+    );
+    assert!(
+        !marker_path.exists(),
+        "argv text must not be evaluated by Bash"
+    );
+    assert!(
+        session.prompt_ready(),
+        "next prompt marker restores readiness"
+    );
+
+    session.write_input(b"x").expect("type partial input");
+    assert!(
+        !session.prompt_ready(),
+        "partial user input makes shell busy"
+    );
+    session
+        .write_input(b"\x03")
+        .expect("cancel the partial command line");
+    let start = Instant::now();
+    while !session.prompt_ready() && start.elapsed() < Duration::from_secs(5) {
+        let _ = session.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(session.shutdown(), "bash should shut down");
+    drop(session);
+    assert!(
+        !bash_rcfile.exists(),
+        "session drop removes its private rcfile"
+    );
+}
+
+#[test]
+fn run_is_explicitly_unsupported_for_non_bash_shells() {
+    let mut session =
+        TerminalSession::new(std::env::temp_dir(), Some("/bin/sh"), 80, 24).expect("spawn sh");
+    assert!(matches!(
+        session.run_argv(&["true".into()]),
+        Err(RunCommandError::UnsupportedShell)
+    ));
+    assert!(session.shutdown(), "sh should shut down");
 }
 
 #[test]
@@ -158,6 +254,37 @@ fn child_cwd_matches_spawn_directory() {
             "child cwd {cwd:?} should exist (spawn dir was {dir:?})"
         );
     }
+}
+
+#[test]
+fn procfs_refresh_tracks_a_shell_directory_change() {
+    let target = std::env::temp_dir().join(format!("omaterm-cwd-refresh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&target);
+    std::fs::create_dir(&target).expect("create target CWD");
+    let mut session =
+        TerminalSession::new(std::env::temp_dir(), Some("/bin/sh"), 80, 24).expect("spawn sh");
+    wait_for_prompt(&mut session);
+    let command = format!("cd {}\n", target.display());
+    session
+        .write_input(command.as_bytes())
+        .expect("change shell CWD");
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        let _ = session.pump();
+        session.refresh_cwd_from_procfs();
+        if session.cwd().path == target {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(session.cwd().path, target);
+    assert_eq!(
+        session.cwd().provenance,
+        omaterm_terminal::CwdProvenance::Procfs
+    );
+    assert!(session.shutdown(), "shell should shut down cleanly");
+    std::fs::remove_dir_all(target).expect("remove target CWD");
 }
 
 #[test]

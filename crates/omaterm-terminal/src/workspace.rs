@@ -18,6 +18,8 @@ pub enum CoordinatorError {
     NoFocusedPane,
     #[error("workspace is not empty")]
     WorkspaceNotEmpty,
+    #[error("workspace target changed while terminal launch was pending")]
+    StaleLaunch,
     #[error("home directory is unavailable for restoring the terminal")]
     HomeUnavailable,
     #[error("session {0:?} is not bound to a pane")]
@@ -40,6 +42,29 @@ pub struct ClosedPane {
 }
 
 pub struct ClosedSessions(pub Vec<ClosedPane>);
+
+pub struct ProjectSessionCommit {
+    pub expected_selected_project: Option<ProjectId>,
+    pub project_id: ProjectId,
+    pub tab_id: TabId,
+    pub pane_id: PaneId,
+    pub name: Option<String>,
+    pub directory: PathBuf,
+    pub session: TerminalSession,
+}
+
+pub struct SplitSessionCommit {
+    pub expected_selected_project: Option<ProjectId>,
+    pub expected_selected_tab: Option<TabId>,
+    pub expected_project: ProjectId,
+    pub expected_tab: TabId,
+    pub expected_focus: PaneId,
+    pub target: PaneId,
+    pub expected_source: SessionId,
+    pub direction: SplitDirection,
+    pub new_pane: PaneId,
+    pub session: TerminalSession,
+}
 
 /// GPUI-free workspace coordination: one recursive [`PaneTree`] whose
 /// terminal leaves reference registry-owned sessions by ID.
@@ -78,6 +103,12 @@ impl WorkspaceCoordinator {
 
     pub fn window(&self) -> &WorkspaceWindow {
         &self.window
+    }
+    pub fn home_directory(&self) -> &PathBuf {
+        &self.home_directory
+    }
+    pub fn home_directory_available(&self) -> bool {
+        self.home_directory_available
     }
     pub fn rename_project(&mut self, id: ProjectId, name: String) -> Result<(), CoordinatorError> {
         let project = self
@@ -141,6 +172,219 @@ impl WorkspaceCoordinator {
         window.validate()?;
         self.window = window;
         Ok(())
+    }
+
+    /// Commit a worker-created session as a new project/tab/pane. The caller
+    /// supplies identities and the selected-project guard captured at prepare
+    /// time. A selection change invalidates the operation instead of letting a
+    /// late completion steal focus.
+    pub fn commit_project_session(
+        &mut self,
+        commit: ProjectSessionCommit,
+    ) -> Result<SessionId, CoordinatorError> {
+        let ProjectSessionCommit {
+            expected_selected_project,
+            project_id,
+            tab_id,
+            pane_id,
+            name,
+            directory,
+            session,
+        } = commit;
+        if self.window.selected_project != expected_selected_project
+            || self.window.project(project_id).is_some()
+            || self.window.projects.iter().any(|project| {
+                project
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == tab_id || tab.tree.find(pane_id).is_some())
+            })
+        {
+            return Err(CoordinatorError::StaleLaunch);
+        }
+        let session_id = session.id();
+        self.registry.insert(session)?;
+        let pane = Pane {
+            id: pane_id,
+            content: PaneContent::Terminal(session_id),
+        };
+        let tab = Tab {
+            id: tab_id,
+            custom_name: None,
+            tree: PaneTree::new(pane),
+            focused_pane: pane_id,
+        };
+        let mut project = Project {
+            id: project_id,
+            custom_name: name,
+            pinned_directory: Some(directory),
+            tabs: Vec::new(),
+            selected_tab: None,
+        };
+        let result = project
+            .add_tab(tab)
+            .and_then(|()| self.window.add_project(project));
+        if let Err(error) = result {
+            let _ = self.registry.detach(session_id);
+            return Err(error.into());
+        }
+        Ok(session_id)
+    }
+
+    /// Commit a worker-created session as a new tab in an existing project.
+    pub fn commit_tab_session(
+        &mut self,
+        expected_selected_project: Option<ProjectId>,
+        project_id: ProjectId,
+        tab_id: TabId,
+        pane_id: PaneId,
+        name: Option<String>,
+        session: TerminalSession,
+    ) -> Result<SessionId, CoordinatorError> {
+        if self.window.selected_project != expected_selected_project
+            || self.window.project(project_id).is_none()
+            || self.window.projects.iter().any(|project| {
+                project
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == tab_id || tab.tree.find(pane_id).is_some())
+            })
+        {
+            return Err(CoordinatorError::StaleLaunch);
+        }
+        let session_id = session.id();
+        self.registry.insert(session)?;
+        let pane = Pane {
+            id: pane_id,
+            content: PaneContent::Terminal(session_id),
+        };
+        let tab = Tab {
+            id: tab_id,
+            custom_name: name,
+            tree: PaneTree::new(pane),
+            focused_pane: pane_id,
+        };
+        let project = self
+            .window
+            .project_mut(project_id)
+            .expect("project validated before registry insertion");
+        if let Err(error) = project.add_tab(tab) {
+            let _ = self.registry.detach(session_id);
+            return Err(error.into());
+        }
+        if let Err(error) = self.window.select_project(project_id) {
+            let _ = self.registry.detach(session_id);
+            return Err(error.into());
+        }
+        Ok(session_id)
+    }
+
+    /// Commit a worker-created session as the new child of a pane. All
+    /// selection/focus/source guards are checked before publishing the session.
+    pub fn commit_split_session(
+        &mut self,
+        commit: SplitSessionCommit,
+    ) -> Result<SessionId, CoordinatorError> {
+        let SplitSessionCommit {
+            expected_selected_project,
+            expected_selected_tab,
+            expected_project,
+            expected_tab,
+            expected_focus,
+            target,
+            expected_source,
+            direction,
+            new_pane,
+            session,
+        } = commit;
+        let valid = self.window.selected_project == expected_selected_project
+            && self
+                .window
+                .project(expected_project)
+                .and_then(|project| project.selected_tab)
+                == expected_selected_tab
+            && self
+                .window
+                .project(expected_project)
+                .and_then(|project| project.tab(expected_tab))
+                .is_some_and(|tab| {
+                    tab.focused_pane == expected_focus
+                        && matches!(
+                            tab.tree.find(target).map(|pane| &pane.content),
+                            Some(PaneContent::Terminal(id)) if *id == expected_source
+                        )
+                        && tab.tree.find(new_pane).is_none()
+                });
+        if !valid {
+            return Err(CoordinatorError::StaleLaunch);
+        }
+        let session_id = session.id();
+        self.registry.insert(session)?;
+        let result = match self
+            .window
+            .project_mut(expected_project)
+            .and_then(|project| project.tab_mut(expected_tab))
+        {
+            Some(tab) => tab.tree.split(
+                target,
+                direction,
+                Pane {
+                    id: new_pane,
+                    content: PaneContent::Terminal(session_id),
+                },
+            ),
+            None => Err(CoreError::TabNotFound(expected_tab)),
+        };
+        if let Err(error) = result {
+            let _ = self.registry.detach(session_id);
+            return Err(error.into());
+        }
+        if let Some(tab) = self
+            .window
+            .project_mut(expected_project)
+            .and_then(|project| project.tab_mut(expected_tab))
+        {
+            tab.focused_pane = new_pane;
+        }
+        self.window
+            .project_mut(expected_project)
+            .expect("validated project")
+            .select_tab(expected_tab)?;
+        self.window.select_project(expected_project)?;
+        Ok(session_id)
+    }
+
+    /// Commit a session into a restored empty pane. Unlike new-tab creation,
+    /// restore is allowed to finish while another project/tab is selected.
+    pub fn commit_restored_session(
+        &mut self,
+        project_id: ProjectId,
+        tab_id: TabId,
+        pane_id: PaneId,
+        session: TerminalSession,
+    ) -> Result<SessionId, CoordinatorError> {
+        let pane = self
+            .window
+            .project(project_id)
+            .and_then(|project| project.tab(tab_id))
+            .and_then(|tab| tab.tree.find(pane_id))
+            .ok_or(CoreError::PaneNotFound(pane_id))?;
+        if !matches!(pane.content, PaneContent::Empty) {
+            return Err(CoordinatorError::StaleLaunch);
+        }
+        let session_id = session.id();
+        self.registry.insert(session)?;
+        let pane = self
+            .window
+            .project_mut(project_id)
+            .and_then(|project| project.tab_mut(tab_id))
+            .and_then(|tab| tab.tree.find_mut(pane_id));
+        let Some(pane) = pane else {
+            let _ = self.registry.detach(session_id);
+            return Err(CoreError::PaneNotFound(pane_id).into());
+        };
+        pane.content = PaneContent::Terminal(session_id);
+        Ok(session_id)
     }
 
     /// Launch a fresh session into an existing restored pane. The logical
@@ -747,6 +991,181 @@ mod tests {
         Some("/bin/sh".to_string())
     }
 
+    fn worker_session(id: SessionId) -> TerminalSession {
+        TerminalSession::new_with_id(id, std::env::temp_dir(), Some("/bin/sh"), 80, 24)
+            .expect("spawn worker session")
+    }
+
+    fn cleanup_project(ws: &mut WorkspaceCoordinator, project: ProjectId) {
+        if let Ok(closed) = ws.close_project(project) {
+            for pane in closed.0 {
+                if let Some(handle) = pane.handle {
+                    let _ = handle.lock().map(|mut session| session.shutdown());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn worker_session_commit_creates_project_and_tab_atomically() {
+        let mut ws = coordinator();
+        let project = ProjectId::new();
+        let tab = TabId::new();
+        let pane = PaneId::new();
+        let session_id = SessionId::new();
+        assert_eq!(
+            ws.commit_project_session(ProjectSessionCommit {
+                expected_selected_project: None,
+                project_id: project,
+                tab_id: tab,
+                pane_id: pane,
+                name: Some("worker-created".into()),
+                directory: std::env::temp_dir(),
+                session: worker_session(session_id),
+            },)
+                .unwrap(),
+            session_id
+        );
+        assert_eq!(ws.selected_project_id(), Some(project));
+        assert_eq!(ws.selected_tab_id(), Some(tab));
+        assert_eq!(ws.session_id_for_pane(pane), Some(session_id));
+        assert_eq!(ws.session_count(), 1);
+        cleanup_project(&mut ws, project);
+    }
+
+    #[test]
+    fn worker_tab_commit_adds_new_session_to_requested_project() {
+        let mut ws = coordinator();
+        ws.create_initial(80, 24).unwrap();
+        let project = ws.selected_project_id().unwrap();
+        let tab = TabId::new();
+        let pane = PaneId::new();
+        let session = SessionId::new();
+        assert_eq!(
+            ws.commit_tab_session(
+                Some(project),
+                project,
+                tab,
+                pane,
+                Some("worker-tab".into()),
+                worker_session(session),
+            )
+            .unwrap(),
+            session
+        );
+        assert_eq!(ws.selected_tab_id(), Some(tab));
+        assert_eq!(ws.session_id_for_pane(pane), Some(session));
+        assert_eq!(ws.session_count(), 2);
+        cleanup_project(&mut ws, project);
+    }
+
+    #[test]
+    fn restored_worker_commit_can_finish_after_selection_changes() {
+        let directory = std::env::temp_dir();
+        let restored_pane = Pane::empty();
+        let pane_id = restored_pane.id;
+        let restored_tab = Tab {
+            id: TabId::new(),
+            custom_name: None,
+            tree: PaneTree::new(restored_pane),
+            focused_pane: pane_id,
+        };
+        let tab_id = restored_tab.id;
+        let mut restored_project = Project {
+            id: ProjectId::new(),
+            custom_name: Some("restored".into()),
+            pinned_directory: Some(directory.clone()),
+            tabs: Vec::new(),
+            selected_tab: None,
+        };
+        restored_project.add_tab(restored_tab).unwrap();
+        let project_id = restored_project.id;
+        let mut other_project = Project::new(Some("other".into()), Some(directory.clone()));
+        let other_pane = Pane::empty();
+        let other_pane_id = other_pane.id;
+        other_project
+            .add_tab(Tab::new(PaneTree::new(other_pane), other_pane_id).unwrap())
+            .unwrap();
+        let other_project_id = other_project.id;
+        let mut window = WorkspaceWindow::new();
+        window.add_project(restored_project).unwrap();
+        window.add_project(other_project).unwrap();
+        window.select_project(other_project_id).unwrap();
+        let mut ws = coordinator();
+        ws.restore_window(window).unwrap();
+
+        let session_id = SessionId::new();
+        assert_eq!(
+            ws.commit_restored_session(project_id, tab_id, pane_id, worker_session(session_id),)
+                .unwrap(),
+            session_id
+        );
+        assert_eq!(ws.selected_project_id(), Some(other_project_id));
+        assert_eq!(
+            ws.window()
+                .project(project_id)
+                .unwrap()
+                .tab(tab_id)
+                .unwrap()
+                .tree
+                .find(pane_id)
+                .unwrap()
+                .content,
+            PaneContent::Terminal(session_id)
+        );
+        cleanup_project(&mut ws, project_id);
+        cleanup_project(&mut ws, other_project_id);
+    }
+
+    #[test]
+    fn stale_project_commit_does_not_publish_provisional_session() {
+        let mut ws = coordinator();
+        let existing_session = ws.create_initial(80, 24).unwrap();
+        let existing_project = ws.selected_project_id().unwrap();
+        let pending_session = SessionId::new();
+        let result = ws.commit_project_session(ProjectSessionCommit {
+            expected_selected_project: None, // guard changed during spawn
+            project_id: ProjectId::new(),
+            tab_id: TabId::new(),
+            pane_id: PaneId::new(),
+            name: None,
+            directory: std::env::temp_dir(),
+            session: worker_session(pending_session),
+        });
+        assert!(matches!(result, Err(CoordinatorError::StaleLaunch)));
+        assert_eq!(ws.session_count(), 1);
+        assert!(!ws.registry().contains(pending_session));
+        assert!(ws.registry().contains(existing_session));
+        cleanup_project(&mut ws, existing_project);
+    }
+
+    #[test]
+    fn worker_split_commit_revalidates_focus_before_registry_insertion() {
+        let mut ws = coordinator();
+        let source = ws.create_initial(80, 24).unwrap();
+        let project = ws.selected_project_id().unwrap();
+        let tab = ws.selected_tab_id().unwrap();
+        let focus = ws.focused().unwrap();
+        let provisional = SessionId::new();
+        let result = ws.commit_split_session(SplitSessionCommit {
+            expected_selected_project: Some(project),
+            expected_selected_tab: Some(tab),
+            expected_project: project,
+            expected_tab: tab,
+            expected_focus: PaneId::new(),
+            target: focus,
+            expected_source: source,
+            direction: SplitDirection::Right,
+            new_pane: PaneId::new(),
+            session: worker_session(provisional),
+        });
+        assert!(matches!(result, Err(CoordinatorError::StaleLaunch)));
+        assert_eq!(ws.pane_count(), 1);
+        assert_eq!(ws.session_count(), 1);
+        assert!(!ws.registry().contains(provisional));
+        cleanup_project(&mut ws, project);
+    }
+
     #[test]
     fn initial_split_close_lifecycle() {
         let mut ws = coordinator();
@@ -964,6 +1383,93 @@ mod tests {
             if let Some(handle) = pane.handle {
                 assert!(handle.lock().unwrap().shutdown());
             }
+        }
+    }
+
+    #[test]
+    fn repeated_tab_close_is_rejected_without_detaching_the_project_sibling() {
+        let mut ws = coordinator();
+        let first = ws.create_initial(80, 24).expect("initial");
+        let project = ws.selected_project_id().unwrap();
+        let (tab, second) = ws.create_tab(project, 80, 24).expect("second tab");
+
+        let closed = ws.close_tab(project, tab).expect("first close");
+        assert_eq!(closed.0.len(), 1);
+        assert!(matches!(
+            ws.close_tab(project, tab),
+            Err(CoordinatorError::Core(CoreError::TabNotFound(_)))
+        ));
+        assert!(ws.registry().contains(first));
+        assert!(!ws.registry().contains(second));
+        assert_eq!(ws.window().project(project).unwrap().tabs.len(), 1);
+
+        for pane in closed.0 {
+            if let Some(handle) = pane.handle {
+                assert!(handle.lock().unwrap().shutdown());
+            }
+        }
+        ws.close_project(project)
+            .unwrap()
+            .0
+            .into_iter()
+            .filter_map(|pane| pane.handle)
+            .for_each(|handle| {
+                assert!(handle.lock().unwrap().shutdown());
+            });
+    }
+
+    #[test]
+    fn project_close_returns_all_sessions_when_one_cleanup_handle_is_poisoned() {
+        let mut ws = coordinator();
+        let first = ws.create_initial(80, 24).expect("initial");
+        let project = ws.selected_project_id().unwrap();
+        let (_, second) = ws.create_tab(project, 80, 24).expect("second tab");
+        let poisoned = ws.registry().get(second).unwrap();
+        let poisoned_pid = poisoned.lock().unwrap().child_pid();
+        let healthy_pid = ws
+            .registry()
+            .get(first)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .child_pid();
+
+        let poisoner = poisoned.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("inject one failed shutdown lock");
+        })
+        .join();
+        drop(poisoned);
+
+        let closed = ws.close_project(project).expect("close project");
+        assert_eq!(closed.0.len(), 2);
+        assert!(!ws.registry().contains(first));
+        assert!(!ws.registry().contains(second));
+        assert!(closed.0.iter().any(|pane| pane.session_id == Some(first)));
+        assert!(closed.0.iter().any(|pane| pane.session_id == Some(second)));
+
+        for pane in closed.0 {
+            let Some(handle) = pane.handle else { continue };
+            if pane.session_id == Some(first) {
+                assert!(handle.lock().unwrap().shutdown());
+            } else {
+                assert!(handle.lock().is_err(), "poisoned cleanup path is injected");
+                drop(handle);
+            }
+        }
+
+        for pid in [healthy_pid, poisoned_pid] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::path::Path::new(&format!("/proc/{pid}")).exists()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(
+                !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                "child {pid} must be reaped even if its mutex is poisoned"
+            );
         }
     }
 

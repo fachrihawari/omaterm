@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,9 +12,12 @@ use gpui::{
     WindowOptions, canvas, div, font, prelude::*, px, relative, rgb, rgba, size,
 };
 use omaterm_core::{
-    CommandContext, CommandOutput, OmaCommand, Pane, PaneCommand, PaneContent, PaneId, PaneNode,
-    ProjectCommand, SessionId, SplitAxis, SplitDirection, TabCommand, TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, OmaCommand, Pane, PaneCommand, PaneContent,
+    PaneId, PaneNode, ProjectCommand, SessionId, SplitAxis, SplitDirection, TabCommand,
+    TerminalCommand,
 };
+use omaterm_ipc::{IpcServer, RequestHandler};
+use omaterm_protocol::{IpcRequest, IpcResponse};
 use omaterm_state::{
     CwdProvenance as StoredCwdProvenance, LoadOutcome, PersistedCwd, SnapshotDestination,
     SnapshotStore, SnapshotWriter, WorkspaceSnapshot,
@@ -23,6 +27,8 @@ use omaterm_terminal::{
     TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
     poll_fd_readable, prepare_paste,
 };
+mod credentials;
+mod ipc_bridge;
 mod router;
 
 /// M4 workspace: a recursive pane tree whose leaves reference
@@ -55,7 +61,30 @@ struct WorkspaceView {
     save_revision: u64,
     observed_cwds: HashMap<PaneId, PersistedCwd>,
     restored_failures: HashMap<PaneId, (omaterm_core::ProjectId, omaterm_core::TabId, String)>,
+    pending_ui_launches: HashMap<u64, PendingUiLaunch>,
+    launch_poller_active: bool,
+    ipc_server: Option<IpcServer>,
+    ipc_receiver: Option<async_channel::Receiver<IpcWork>>,
+    ipc_pending: HashMap<u64, IpcWork>,
     shutting_down: bool,
+}
+
+struct IpcWork {
+    request: IpcRequest,
+    reply: std::sync::mpsc::SyncSender<IpcResponse>,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+}
+
+enum PendingUiLaunch {
+    Project(std::path::PathBuf),
+    Tab(omaterm_core::ProjectId),
+    Restore {
+        project: omaterm_core::ProjectId,
+        tab: omaterm_core::TabId,
+        pane: PaneId,
+    },
+    Other,
 }
 
 #[derive(Clone)]
@@ -99,10 +128,115 @@ impl WorkspaceView {
             save_revision: 0,
             observed_cwds: HashMap::new(),
             restored_failures: HashMap::new(),
+            pending_ui_launches: HashMap::new(),
+            launch_poller_active: false,
+            ipc_server: None,
+            ipc_receiver: None,
+            ipc_pending: HashMap::new(),
             shutting_down: false,
         };
+        view.start_ipc(cx);
         view.restore_or_initialize(cx);
         view
+    }
+
+    fn start_ipc(&mut self, cx: &mut Context<Self>) {
+        let path = match IpcServer::default_socket_path() {
+            Ok(path) => path,
+            Err(error) => {
+                self.persistence_warning = Some(format!("IPC unavailable: {error}"));
+                return;
+            }
+        };
+        let (sender, receiver) = async_channel::bounded::<IpcWork>(32);
+        let handler: RequestHandler = Arc::new(move |request, deadline| {
+            let request_id = request.request_id.clone();
+            let (reply, response) = std::sync::mpsc::sync_channel(1);
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let work = IpcWork {
+                request,
+                reply,
+                deadline,
+                cancelled: cancelled.clone(),
+            };
+            if sender.try_send(work).is_err() {
+                return IpcResponse::failure(
+                    request_id,
+                    "timeout",
+                    "IPC owner queue is full or closed",
+                );
+            }
+            match response.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(result) => result,
+                Err(_) => {
+                    cancelled.store(true, Ordering::Release);
+                    IpcResponse::failure(request_id, "timeout", "request outcome may be unknown")
+                }
+            }
+        });
+        let server = match IpcServer::bind(&path, handler) {
+            Ok(server) => server,
+            Err(error) => {
+                self.persistence_warning = Some(format!("IPC unavailable: {error}"));
+                return;
+            }
+        };
+        if let Err(error) = self.coordinator.enable_credentials(&path) {
+            self.persistence_warning = Some(format!("IPC credentials unavailable: {error}"));
+            std::thread::spawn(move || {
+                let mut server = server;
+                let _ = server.shutdown();
+            });
+            return;
+        }
+        self.ipc_server = Some(server);
+        self.ipc_receiver = Some(receiver.clone());
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            while let Ok(work) = receiver.recv().await {
+                if weak
+                    .update(cx, |view, cx| view.handle_ipc_work(work, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn handle_ipc_work(&mut self, work: IpcWork, cx: &mut Context<Self>) {
+        if self.shutting_down
+            || work.cancelled.load(Ordering::Acquire)
+            || Instant::now() >= work.deadline
+        {
+            return;
+        }
+        let Some(context) = self.coordinator.authenticate(work.request.token.as_ref()) else {
+            let _ = work.reply.send(IpcResponse::failure(
+                work.request.request_id.clone(),
+                "permission_denied",
+                "missing or invalid credential",
+            ));
+            return;
+        };
+        let command = match ipc_bridge::map_request(&work.request, context, &self.coordinator) {
+            Ok(command) => command,
+            Err(error) => {
+                let _ = work.reply.send(*error);
+                return;
+            }
+        };
+        let outcome = self.coordinator.dispatch_async(context, command);
+        if let CommandResult::Ok(CommandOutput::Pending { operation_id }) = &outcome.result {
+            self.ipc_pending.insert(*operation_id, work);
+            self.ensure_launch_poller(cx);
+        } else {
+            self.apply_command_effects(outcome.effects, cx);
+            let _ = work.reply.send(ipc_bridge::response(
+                work.request.request_id.clone(),
+                outcome.result,
+            ));
+        }
     }
 
     fn restore_or_initialize(&mut self, cx: &mut Context<Self>) {
@@ -273,8 +407,9 @@ impl WorkspaceView {
                         continue;
                     };
                     if let Some(session) = self.coordinator.registry().get(session_id)
-                        && let Ok(session) = session.lock()
+                        && let Ok(mut session) = session.lock()
                     {
+                        session.refresh_cwd_from_procfs();
                         let cwd = session.cwd();
                         let provenance = if let Some(saved) = cwds.get(&pane.id)
                             && saved.path == cwd.path
@@ -353,6 +488,20 @@ impl WorkspaceView {
             return;
         }
         self.shutting_down = true;
+        if let Some(receiver) = self.ipc_receiver.take() {
+            receiver.close();
+        }
+        for (id, work) in self.ipc_pending.drain() {
+            self.coordinator.cancel_launch(id);
+            let _ = work.reply.send(IpcResponse::failure(
+                work.request.request_id,
+                "timeout",
+                "desktop is shutting down",
+            ));
+        }
+        let ipc_server = self.ipc_server.take();
+        self.coordinator.cancel_launches();
+        self.pending_ui_launches.clear();
         self.save_revision = self.save_revision.wrapping_add(1);
         let revision = self.save_revision;
         let snapshot = self.snapshot();
@@ -365,6 +514,9 @@ impl WorkspaceView {
             .collect::<Vec<_>>();
         let (done_tx, done_rx) = async_channel::bounded::<Result<(), String>>(1);
         std::thread::spawn(move || {
+            if let Some(mut server) = ipc_server {
+                let _ = server.shutdown();
+            }
             let save_result = writer.map_or(Ok(()), |writer| {
                 writer.flush(snapshot, destination, revision)
             });
@@ -421,6 +573,7 @@ impl WorkspaceView {
             }),
             cx,
         ) {
+            Ok(CommandOutput::Pending { .. }) => {}
             Ok(_) => {
                 self.restored_failures.remove(&pane);
             }
@@ -598,10 +751,63 @@ impl WorkspaceView {
         command: OmaCommand,
         cx: &mut Context<Self>,
     ) -> Result<CommandOutput, omaterm_core::CommandError> {
+        let launch = match &command {
+            OmaCommand::Project(ProjectCommand::Create { directory, .. }) => {
+                PendingUiLaunch::Project(
+                    directory
+                        .clone()
+                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+                )
+            }
+            OmaCommand::Tab(TabCommand::Create { project, .. })
+            | OmaCommand::Terminal(TerminalCommand::Create { project, .. }) => {
+                PendingUiLaunch::Tab(*project)
+            }
+            OmaCommand::Terminal(TerminalCommand::RestorePane {
+                project, tab, pane, ..
+            }) => PendingUiLaunch::Restore {
+                project: *project,
+                tab: *tab,
+                pane: *pane,
+            },
+            _ => PendingUiLaunch::Other,
+        };
         let outcome = self
             .coordinator
-            .dispatch(CommandContext::LocalUser, command);
-        for effect in outcome.effects {
+            .dispatch_async(CommandContext::LocalUser, command);
+        self.apply_command_effects(outcome.effects, cx);
+        if let CommandResult::Ok(CommandOutput::Pending { operation_id }) = &outcome.result {
+            self.pending_ui_launches.insert(*operation_id, launch);
+            self.ensure_launch_poller(cx);
+        }
+        outcome.result.output()
+    }
+
+    fn ensure_launch_poller(&mut self, cx: &mut Context<Self>) {
+        if self.launch_poller_active {
+            return;
+        }
+        self.launch_poller_active = true;
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                Timer::after(Duration::from_millis(20)).await;
+                let continuing = weak
+                    .update(cx, |view, cx| view.finish_pending_launches(cx))
+                    .unwrap_or(false);
+                if !continuing {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn apply_command_effects(
+        &mut self,
+        effects: Vec<router::CommandEffect>,
+        cx: &mut Context<Self>,
+    ) {
+        for effect in effects {
             match effect {
                 router::CommandEffect::SessionStarted(session) => self.start_runtime(cx, session),
                 router::CommandEffect::SessionClosed(closed) => self.finish_close(closed),
@@ -609,7 +815,84 @@ impl WorkspaceView {
                 router::CommandEffect::WorkspaceChanged => cx.notify(),
             }
         }
-        outcome.result.output()
+    }
+
+    fn finish_pending_launches(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.shutting_down {
+            self.launch_poller_active = false;
+            return false;
+        }
+        for (id, work) in &self.ipc_pending {
+            if work.cancelled.load(Ordering::Acquire)
+                || Instant::now() >= work.deadline
+                || self
+                    .coordinator
+                    .authenticate(work.request.token.as_ref())
+                    .is_none()
+            {
+                self.coordinator.cancel_launch(*id);
+            }
+        }
+        for (operation_id, outcome) in self.coordinator.poll_launches() {
+            if let Some(work) = self.ipc_pending.remove(&operation_id) {
+                if !work.cancelled.load(Ordering::Acquire) {
+                    let result = if self
+                        .coordinator
+                        .authenticate(work.request.token.as_ref())
+                        .is_some()
+                    {
+                        ipc_bridge::response(work.request.request_id.clone(), outcome.result)
+                    } else {
+                        IpcResponse::failure(
+                            work.request.request_id.clone(),
+                            "permission_denied",
+                            "credential expired or revoked",
+                        )
+                    };
+                    let _ = work.reply.send(result);
+                }
+                self.apply_command_effects(outcome.effects, cx);
+                continue;
+            }
+            let ui = self.pending_ui_launches.remove(&operation_id);
+            match (&outcome.result, ui) {
+                (CommandResult::Ok(_), Some(PendingUiLaunch::Restore { pane, .. })) => {
+                    self.restored_failures.remove(&pane);
+                }
+                (
+                    CommandResult::Err(error),
+                    Some(PendingUiLaunch::Restore { project, tab, pane }),
+                ) => {
+                    self.restored_failures
+                        .insert(pane, (project, tab, error.to_string()));
+                    cx.notify();
+                }
+                (CommandResult::Err(error), Some(PendingUiLaunch::Project(directory))) => {
+                    self.spawn_failure = Some((error.to_string(), SpawnRetry::Project(directory)));
+                    cx.notify();
+                }
+                (CommandResult::Err(error), Some(PendingUiLaunch::Tab(project))) => {
+                    self.spawn_failure = Some((error.to_string(), SpawnRetry::Tab(project)));
+                    cx.notify();
+                }
+                (
+                    CommandResult::Ok(_),
+                    Some(PendingUiLaunch::Project(_) | PendingUiLaunch::Tab(_)),
+                ) => {
+                    self.spawn_failure = None;
+                }
+                (CommandResult::Err(error), _) => {
+                    tracing::warn!("terminal launch failed: {error}");
+                }
+                _ => {}
+            }
+            self.apply_command_effects(outcome.effects, cx);
+        }
+        let pending = self.coordinator.has_pending_launches();
+        if !pending {
+            self.launch_poller_active = false;
+        }
+        pending
     }
 
     /// Drop per-session UI state after its pane is gone. The PTY/session
@@ -694,6 +977,7 @@ impl WorkspaceView {
     fn finish_close(&mut self, closed: omaterm_terminal::ClosedPane) {
         self.restored_failures.remove(&closed.pane_id);
         if let Some(session_id) = closed.session_id {
+            self.coordinator.revoke_session(session_id);
             self.forget_session_state(session_id, closed.pane_id);
         }
         if let Some(handle) = closed.handle {

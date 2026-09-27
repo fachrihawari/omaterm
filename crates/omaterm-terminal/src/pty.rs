@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use alacritty_terminal::event::{OnResize, WindowSize};
@@ -28,6 +30,8 @@ pub enum PtyError {
 pub struct PtyProcess {
     pty: Pty,
     child_pid: u32,
+    supports_run: bool,
+    bash_rc_file: Option<PathBuf>,
 }
 
 impl PtyProcess {
@@ -37,6 +41,25 @@ impl PtyProcess {
         cols: u16,
         rows: u16,
         working_directory: &Path,
+        prompt_token: &str,
+    ) -> Result<Self, PtyError> {
+        Self::spawn_with_env(
+            shell,
+            cols,
+            rows,
+            working_directory,
+            prompt_token,
+            HashMap::new(),
+        )
+    }
+
+    pub fn spawn_with_env(
+        shell: Option<&str>,
+        cols: u16,
+        rows: u16,
+        working_directory: &Path,
+        prompt_token: &str,
+        child_env: HashMap<String, String>,
     ) -> Result<Self, PtyError> {
         let program = shell
             .map(str::to_string)
@@ -51,9 +74,21 @@ impl PtyProcess {
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("TERM_PROGRAM".to_string(), "OmaTerm".to_string());
         env.insert("OMATERM".to_string(), "1".to_string());
+        env.extend(child_env);
+
+        let supports_run = crate::shell::is_bash(&program);
+        let bash_rc_file = if supports_run {
+            Some(write_bash_rcfile(prompt_token).map_err(PtyError::Io)?)
+        } else {
+            None
+        };
+        let shell_args = bash_rc_file
+            .as_ref()
+            .map(|path| vec!["--rcfile".into(), path.to_string_lossy().into_owned()])
+            .unwrap_or_default();
 
         let options = Options {
-            shell: Some(Shell::new(program.clone(), Vec::new())),
+            shell: Some(Shell::new(program.clone(), shell_args)),
             working_directory: Some(working_directory.to_path_buf()),
             drain_on_exit: true,
             env,
@@ -65,14 +100,25 @@ impl PtyProcess {
             cell_height: 0,
         };
         // Window ID is only used for ALACRITTY_WINDOW_ID/WINDOWID env seeding.
-        let pty = alacritty_terminal::tty::new(&options, window_size, 0).map_err(|source| {
-            PtyError::Spawn {
-                shell: program,
-                source,
+        let pty = match alacritty_terminal::tty::new(&options, window_size, 0) {
+            Ok(pty) => pty,
+            Err(source) => {
+                if let Some(path) = &bash_rc_file {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(PtyError::Spawn {
+                    shell: program,
+                    source,
+                });
             }
-        })?;
+        };
         let child_pid = pty.child().id();
-        Ok(Self { pty, child_pid })
+        Ok(Self {
+            pty,
+            child_pid,
+            supports_run,
+            bash_rc_file,
+        })
     }
 
     /// Non-blocking read. Returns `WouldBlock` when no output is available.
@@ -129,6 +175,10 @@ impl PtyProcess {
         self.child_pid
     }
 
+    pub fn supports_run(&self) -> bool {
+        self.supports_run
+    }
+
     /// Best-effort Linux CWD discovery via `/proc/<pid>/cwd`.
     pub fn child_cwd(&self) -> Option<PathBuf> {
         let link = format!("/proc/{}/cwd", self.child_pid);
@@ -168,7 +218,29 @@ pub fn poll_fd_readable(fd: RawFd, timeout_ms: i32) -> std::io::Result<bool> {
 
 impl Drop for PtyProcess {
     fn drop(&mut self) {
+        if let Some(path) = self.bash_rc_file.take() {
+            let _ = std::fs::remove_file(path);
+        }
         // `Pty::drop` sends SIGHUP and reaps the child. Nothing extra needed;
         // this impl exists to document the guarantee.
     }
+}
+
+fn write_bash_rcfile(token: &str) -> std::io::Result<PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "omaterm-bashrc-{}-{token}",
+        // SAFETY: getuid has no preconditions and returns the current process UID.
+        unsafe { libc::getuid() }
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&path)?;
+    if let Err(error) = file.write_all(crate::shell::bash_rcfile(token).as_bytes()) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
 }

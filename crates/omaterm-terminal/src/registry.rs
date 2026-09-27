@@ -33,6 +33,8 @@ pub enum RegistryError {
     Spawn(#[from] SessionError),
     #[error("unknown session")]
     UnknownSession(SessionId),
+    #[error("session ID is already registered")]
+    DuplicateSession(SessionId),
 }
 
 /// Owns live terminal sessions by [`SessionId`].
@@ -66,11 +68,18 @@ impl TerminalRegistry {
             config.cols,
             config.rows,
         )?;
+        self.insert(session)
+    }
+
+    /// Register a session spawned by an application-owned launch worker.
+    ///
+    /// The owner calls this only after revalidating the logical pane target,
+    /// keeping uncommitted PTYs out of registry lookup.
+    pub fn insert(&mut self, session: TerminalSession) -> Result<SessionId, RegistryError> {
         let id = session.id();
-        debug_assert!(
-            !self.sessions.contains_key(&id),
-            "fresh SessionId must be unique"
-        );
+        if self.sessions.contains_key(&id) {
+            return Err(RegistryError::DuplicateSession(id));
+        }
         self.sessions.insert(id, Arc::new(Mutex::new(session)));
         Ok(id)
     }
@@ -175,6 +184,30 @@ mod tests {
             Err(RegistryError::Spawn(SessionError::InvalidSize { .. }))
         ));
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn inserts_a_worker_spawned_session_with_its_preallocated_id() {
+        let mut registry = TerminalRegistry::new();
+        let expected = SessionId::new();
+        let session =
+            TerminalSession::new_with_id(expected, std::env::temp_dir(), Some("/bin/sh"), 80, 24)
+                .expect("spawn sh");
+        assert_eq!(registry.insert(session).expect("register"), expected);
+        assert!(matches!(
+            registry.insert(
+                TerminalSession::new_with_id(
+                    expected,
+                    std::env::temp_dir(),
+                    Some("/bin/sh"),
+                    80,
+                    24,
+                )
+                .expect("spawn second sh")
+            ),
+            Err(RegistryError::DuplicateSession(id)) if id == expected
+        ));
+        assert!(registry.close(expected).expect("close sh"));
     }
 
     #[test]

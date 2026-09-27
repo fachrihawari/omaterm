@@ -1,0 +1,10 @@
+[package]
+name = "omaterm-ipc"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+libc = "0.2"
+omaterm-protocol = { path = "../omaterm-protocol" }
+serde_json = "=1.0.149"
+thiserror = "=2.0.21"

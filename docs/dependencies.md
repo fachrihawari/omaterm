@@ -14,7 +14,7 @@ with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
 | Core ID/error dependencies | `uuid` 1.26.1; `thiserror` 2.0.21 | Selected crate manifests | M2 core/workspace checks pass on 2026-09-26 |
 | `alacritty_terminal` | Pending M3, exact compatible release | Selected package | Not verified |
 | PTY provider | Pending M3 API/lifecycle evaluation | Selected package | Not verified |
-| Serialization/IPC/CLI dependencies | Select when their slices require them | Selected packages | Not verified |
+| `serde`, `serde_json`, `libc` for protocol/IPC | `serde` 1.0.228, `serde_json` 1.0.149, existing `libc` 0.2.189 resolution | Permissive dual licenses in selected manifests; full transitive review pending | M8 protocol/transport targeted tests and Clippy pending final M8 integration |
 | M10 key storage/encryption/compression | Unselected; research after M5–M9 prerequisites | Must review crate and native-service licenses | No API, license, or runtime verification yet |
 
 ## Selection record
@@ -127,6 +127,35 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   1.98.1. `cargo check --workspace` and Clippy passed; final tests and desktop
   verification are still pending, so this is not yet a completed M6 selection
   verification record.
+
+### Milestone 8 transport foundation — 2026-09-27 (partial)
+
+- `omaterm-protocol` uses exact locked `serde` 1.0.228 and `serde_json`
+  1.0.149 for v1 DTOs and JSON framing. Their selected crate manifests record
+  MIT OR Apache-2.0 licensing. No new protocol serialization dependency was
+  needed beyond packages already in `Cargo.lock`.
+- `omaterm-ipc` uses the existing `libc` 0.2.189 resolution for `flock`,
+  `SO_PEERCRED`, and UID validation. It uses Rust's standard Unix socket and
+  filesystem APIs for transport and endpoint handling.
+- Targeted protocol and socket tests pass on Rust 1.98.1. This is a partial
+  dependency verification; desktop integration and full workspace gates remain
+  pending. The repository-wide transitive license review remains outstanding.
+
+### Milestone 7/8 desktop IPC integration — 2026-09-27
+
+- `apps/omaterm` adds direct `base64` =0.22.1 (wire `terminal.send` decoding;
+  already in `Cargo.lock` as a transitive dependency, now also a direct one;
+  Apache-2.0 OR MIT), `serde_json` =1.0.149 (IPC response DTO construction;
+  MIT OR Apache-2.0), and `uuid` =1.26.1 (UUID selector parsing; Apache-2.0 OR
+  MIT). `uuid` was already a direct workspace dependency via `omaterm-core`;
+  no new version was introduced.
+- Session/local-user credential secrets are three concatenated UUID v4
+  `simple()` strings generated via the existing `uuid` dependency (no new RNG
+  crate). No keyring, encryption, or compression dependencies were added.
+- Verified with `cargo tree -p omaterm`, `cargo clippy --workspace
+  --all-targets -- -D warnings`, the targeted suites in `docs/status.md`, and
+  release Wayland E2E on Rust 1.98.1. Transitive license review remains
+  outstanding; no project license selected.
 
 ## Reference provenance
 

@@ -16,6 +16,18 @@ pub enum SessionError {
     InvalidSize { cols: u16, rows: u16 },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RunCommandError {
+    #[error("terminal.run is not supported for this shell")]
+    UnsupportedShell,
+    #[error("shell is not at a confirmed ready prompt")]
+    ShellBusy,
+    #[error("argv must contain at least one argument")]
+    EmptyArgv,
+    #[error("terminal input write failed: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 /// Where the session's current directory was confirmed from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CwdProvenance {
@@ -48,6 +60,9 @@ pub struct TerminalSession {
     engine: AlacrittyEngine,
     title: Option<String>,
     exited: Option<std::process::ExitStatus>,
+    prompt_marker: Option<Vec<u8>>,
+    prompt_scan: Vec<u8>,
+    prompt_ready: bool,
 }
 
 impl TerminalSession {
@@ -57,17 +72,53 @@ impl TerminalSession {
         cols: u16,
         rows: u16,
     ) -> Result<Self, SessionError> {
+        Self::new_with_id(SessionId::new(), working_directory, shell, cols, rows)
+    }
+
+    /// Spawn a session with an identity allocated by the application owner.
+    ///
+    /// Background launch workers use this so their completion can be matched
+    /// to a pending pane without mutating the registry themselves.
+    pub fn new_with_id(
+        id: SessionId,
+        working_directory: PathBuf,
+        shell: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self, SessionError> {
+        Self::new_with_id_and_env(id, working_directory, shell, cols, rows, Default::default())
+    }
+
+    pub fn new_with_id_and_env(
+        id: SessionId,
+        working_directory: PathBuf,
+        shell: Option<&str>,
+        cols: u16,
+        rows: u16,
+        child_env: std::collections::HashMap<String, String>,
+    ) -> Result<Self, SessionError> {
         if cols < 2 || rows < 1 {
             return Err(SessionError::InvalidSize { cols, rows });
         }
-        let pty = PtyProcess::spawn(shell, cols, rows, &working_directory)?;
+        let prompt_token = id.0.simple().to_string();
+        let pty = PtyProcess::spawn_with_env(
+            shell,
+            cols,
+            rows,
+            &working_directory,
+            &prompt_token,
+            child_env,
+        )?;
+        let prompt_marker = pty
+            .supports_run()
+            .then(|| format!("\x1b]133;A;{prompt_token}\x07").into_bytes());
         let engine = AlacrittyEngine::new(cols, rows);
         let cwd = CurrentDirectory {
             path: working_directory.clone(),
             provenance: CwdProvenance::Launch,
         };
         Ok(Self {
-            id: SessionId::new(),
+            id,
             working_directory,
             cwd,
             osc7: Osc7Parser::new(),
@@ -75,6 +126,9 @@ impl TerminalSession {
             engine,
             title: None,
             exited: None,
+            prompt_marker,
+            prompt_scan: Vec::new(),
+            prompt_ready: false,
         })
     }
 
@@ -107,6 +161,7 @@ impl TerminalSession {
                     }
                     combined.events.extend(out.events);
                     self.observe_osc7(chunk, &mut combined);
+                    self.observe_prompt_marker(chunk);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -135,6 +190,7 @@ impl TerminalSession {
         let mut out = self.engine.advance_output(bytes);
         self.after_pump_collect(&out);
         self.observe_osc7(bytes, &mut out);
+        self.observe_prompt_marker(bytes);
         out
     }
 
@@ -151,6 +207,25 @@ impl TerminalSession {
                 out.events
                     .push(crate::events::TerminalEvent::CwdChanged(path));
             }
+        }
+    }
+
+    fn observe_prompt_marker(&mut self, bytes: &[u8]) {
+        let Some(marker) = self.prompt_marker.as_ref() else {
+            return;
+        };
+        self.prompt_scan.extend_from_slice(bytes);
+        if self
+            .prompt_scan
+            .windows(marker.len())
+            .any(|window| window == marker)
+        {
+            self.prompt_ready = true;
+            self.prompt_scan.clear();
+        } else if self.prompt_scan.len() >= marker.len() {
+            let keep = marker.len().saturating_sub(1);
+            let remove = self.prompt_scan.len() - keep;
+            self.prompt_scan.drain(..remove);
         }
     }
 
@@ -192,7 +267,33 @@ impl TerminalSession {
         if self.engine.display_offset() != 0 {
             self.engine.scroll(ScrollCommand::Bottom);
         }
+        if !bytes.is_empty() {
+            self.prompt_ready = false;
+        }
         self.pty.write_all(bytes)
+    }
+
+    pub fn prompt_ready(&self) -> bool {
+        self.prompt_ready
+    }
+
+    /// Submit a structured argv only after the trusted Bash prompt hook has
+    /// confirmed the shell is idle. This acknowledges input submission only.
+    pub fn run_argv(&mut self, argv: &[String]) -> Result<(), RunCommandError> {
+        if !self.pty.supports_run() {
+            return Err(RunCommandError::UnsupportedShell);
+        }
+        if !self.prompt_ready {
+            return Err(RunCommandError::ShellBusy);
+        }
+        if argv.is_empty() {
+            return Err(RunCommandError::EmptyArgv);
+        }
+        let mut command = crate::shell::encode_bash_argv(argv).into_bytes();
+        command.push(b'\n');
+        self.pty.write_all(&command)?;
+        self.prompt_ready = false;
+        Ok(())
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
