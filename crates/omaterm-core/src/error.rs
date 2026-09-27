@@ -1,4 +1,4 @@
-use crate::{PaneId, SplitId};
+use crate::{PaneId, ProjectId, SplitId, TabId};
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
@@ -18,4 +18,18 @@ pub enum CoreError {
     FractionOutOfBounds,
     #[error("pane tree is empty")]
     EmptyTree,
+    #[error("project {0:?} was not found")]
+    ProjectNotFound(ProjectId),
+    #[error("tab {0:?} was not found")]
+    TabNotFound(TabId),
+    #[error("project {0:?} already exists")]
+    DuplicateProjectId(ProjectId),
+    #[error("tab {0:?} already exists")]
+    DuplicateTabId(TabId),
+    #[error("workspace has no selected project")]
+    NoSelectedProject,
+    #[error("project has no selected tab")]
+    NoSelectedTab,
+    #[error("tab focus does not reference a pane in the tab")]
+    InvalidFocusedPane,
 }

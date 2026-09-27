@@ -22,3 +22,6 @@ macro_rules! typed_id {
 typed_id!(PaneId);
 typed_id!(SplitId);
 typed_id!(SessionId);
+typed_id!(WindowId);
+typed_id!(ProjectId);
+typed_id!(TabId);

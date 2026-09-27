@@ -470,6 +470,118 @@ fn coordinator_close_kills_only_target() {
 }
 
 #[test]
+fn hidden_tabs_and_projects_keep_draining_and_close_only_owned_sessions() {
+    let mut ws = WorkspaceCoordinator::new(std::env::temp_dir());
+    let tab_session = ws.create_initial(80, 24).expect("default tab");
+    let project_a = ws.selected_project_id().unwrap();
+    assert!(wait_for_registry_prompt(
+        ws.registry(),
+        tab_session,
+        Duration::from_secs(5)
+    ));
+    let tab_handle = ws.registry().get(tab_session).unwrap();
+    let tab_pid = tab_handle.lock().unwrap().child_pid();
+    tab_handle
+        .lock()
+        .unwrap()
+        .write_input(
+            b"i=1; while [ $i -le 8 ]; do echo TAB_HIDDEN_MARK; i=$((i+1)); sleep 0.05; done\n",
+        )
+        .expect("start hidden tab output");
+
+    let (visible_tab, project_session) = ws
+        .create_tab(project_a, 80, 24)
+        .expect("create visible tab");
+    assert!(wait_for_registry_prompt(
+        ws.registry(),
+        project_session,
+        Duration::from_secs(5)
+    ));
+    let project_handle = ws.registry().get(project_session).unwrap();
+    let project_pid = project_handle.lock().unwrap().child_pid();
+    project_handle
+        .lock()
+        .unwrap()
+        .write_input(
+            b"i=1; while [ $i -le 8 ]; do echo PROJECT_HIDDEN_MARK; i=$((i+1)); sleep 0.05; done\n",
+        )
+        .expect("start hidden project output");
+
+    let (project_b, project_tab, visible_project_session) = ws
+        .create_project(Some(std::env::temp_dir()), 80, 24)
+        .expect("create visible project");
+    for (id, marker) in [
+        (tab_session, "TAB_HIDDEN_MARK"),
+        (project_session, "PROJECT_HIDDEN_MARK"),
+    ] {
+        assert!(
+            wait_for(Duration::from_secs(8), || {
+                session_text(ws.registry(), id).matches(marker).count() >= 5
+            }),
+            "hidden session {id:?} should continue producing output"
+        );
+    }
+    assert_eq!(
+        ws.registry()
+            .get(tab_session)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .child_pid(),
+        tab_pid
+    );
+    assert_eq!(
+        ws.registry()
+            .get(project_session)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .child_pid(),
+        project_pid
+    );
+
+    ws.select_tab(project_a, visible_tab).unwrap();
+    assert_eq!(ws.focused_session_id(), Some(project_session));
+    ws.select_project(project_b).unwrap();
+    ws.select_tab(project_b, project_tab).unwrap();
+    assert_eq!(ws.focused_session_id(), Some(visible_project_session));
+
+    // Closing a hidden tab/project must not detach visible or sibling sessions.
+    let closed_tab = ws
+        .close_tab(
+            project_a,
+            ws.window().project(project_a).unwrap().tabs[0].id,
+        )
+        .unwrap();
+    assert!(!ws.registry().contains(tab_session));
+    assert!(ws.registry().contains(project_session));
+    assert!(ws.registry().contains(visible_project_session));
+    for pane in closed_tab.0 {
+        if let Some(handle) = pane.handle {
+            assert!(handle.lock().unwrap().shutdown());
+        }
+    }
+    let closed_project = ws.close_project(project_a).unwrap();
+    assert!(!ws.registry().contains(project_session));
+    assert!(ws.registry().contains(visible_project_session));
+    for pane in closed_project.0 {
+        if let Some(handle) = pane.handle {
+            assert!(handle.lock().unwrap().shutdown());
+        }
+    }
+    assert!(
+        ws.close_project(project_b)
+            .unwrap()
+            .0
+            .into_iter()
+            .all(|pane| {
+                pane.handle
+                    .is_some_and(|handle| handle.lock().unwrap().shutdown())
+            })
+    );
+}
+
+#[test]
 fn exited_shells_close_only_their_panes_for_exit_and_ctrl_d() {
     for (exit_input, label) in [
         (b"exit\n".as_slice(), "exit"),

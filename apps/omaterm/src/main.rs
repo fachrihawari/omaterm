@@ -39,6 +39,13 @@ struct WorkspaceView {
     grid_sizes: HashMap<SessionId, (u16, u16)>,
     fonts: Option<ResolvedFonts>,
     font_size: f32,
+    spawn_failure: Option<(String, SpawnRetry)>,
+}
+
+#[derive(Clone)]
+enum SpawnRetry {
+    Project(std::path::PathBuf),
+    Tab(omaterm_core::ProjectId),
 }
 
 /// How long the scroll thumb lingers after the last scroll input.
@@ -61,6 +68,7 @@ impl WorkspaceView {
             grid_sizes: HashMap::new(),
             fonts: None,
             font_size: 14.0,
+            spawn_failure: None,
         };
         // Initial terminal via the shared coordinator. If spawn fails (no
         // PTY), keep the empty workspace + new-terminal action.
@@ -70,6 +78,14 @@ impl WorkspaceView {
             }
             Err(e) => {
                 tracing::error!("failed to spawn initial shell: {e}");
+                view.spawn_failure = Some((
+                    e.to_string(),
+                    SpawnRetry::Tab(
+                        view.coordinator
+                            .selected_project_id()
+                            .expect("initial project exists"),
+                    ),
+                ));
             }
         }
         view
@@ -336,6 +352,104 @@ impl WorkspaceView {
         }
     }
 
+    fn create_project(&mut self, cx: &mut Context<Self>) {
+        let directory = std::env::current_dir().ok();
+        match self.coordinator.create_project(directory, 80, 24) {
+            Ok((_, _, session)) => {
+                self.spawn_failure = None;
+                self.start_runtime(cx, session);
+                cx.notify();
+            }
+            Err(error) => {
+                tracing::error!("failed to create project: {error}");
+                self.spawn_failure = Some((
+                    error.to_string(),
+                    SpawnRetry::Project(std::env::current_dir().unwrap_or_default()),
+                ));
+                cx.notify();
+            }
+        }
+    }
+
+    fn create_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            self.create_project(cx);
+            return;
+        };
+        match self.coordinator.create_tab(project, 80, 24) {
+            Ok((_, session)) => {
+                self.spawn_failure = None;
+                self.start_runtime(cx, session);
+                cx.notify();
+            }
+            Err(error) => {
+                tracing::error!("failed to create tab: {error}");
+                self.spawn_failure = Some((error.to_string(), SpawnRetry::Tab(project)));
+                cx.notify();
+            }
+        }
+    }
+
+    fn retry_spawn(&mut self, cx: &mut Context<Self>) {
+        match self.spawn_failure.clone().map(|(_, retry)| retry) {
+            Some(SpawnRetry::Project(directory)) => {
+                match self.coordinator.create_project(Some(directory), 80, 24) {
+                    Ok((_, _, session)) => {
+                        self.spawn_failure = None;
+                        self.start_runtime(cx, session);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        self.spawn_failure = Some((
+                            error.to_string(),
+                            SpawnRetry::Project(std::env::current_dir().unwrap_or_default()),
+                        ));
+                        cx.notify();
+                    }
+                }
+            }
+            Some(SpawnRetry::Tab(project)) => self.create_tab_for_project(project, cx),
+            None => {}
+        }
+    }
+
+    fn create_tab_for_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
+        match self.coordinator.create_tab(project, 80, 24) {
+            Ok((_, session)) => {
+                self.spawn_failure = None;
+                self.start_runtime(cx, session);
+                cx.notify();
+            }
+            Err(error) => {
+                self.spawn_failure = Some((error.to_string(), SpawnRetry::Tab(project)));
+                cx.notify();
+            }
+        }
+    }
+
+    fn close_tab(
+        &mut self,
+        project: omaterm_core::ProjectId,
+        tab: omaterm_core::TabId,
+        cx: &mut Context<Self>,
+    ) {
+        if let Ok(closed) = self.coordinator.close_tab(project, tab) {
+            for pane in closed.0 {
+                self.finish_close(pane);
+            }
+            cx.notify();
+        }
+    }
+
+    fn close_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
+        if let Ok(closed) = self.coordinator.close_project(project) {
+            for pane in closed.0 {
+                self.finish_close(pane);
+            }
+            cx.notify();
+        }
+    }
+
     /// Resolve (once per font size) and cache the terminal font set.
     fn fonts(&mut self, cx: &App) -> ResolvedFonts {
         let font_size = px(self.font_size);
@@ -351,6 +465,64 @@ impl WorkspaceView {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+
+        if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "p" {
+            self.create_project(cx);
+            return;
+        }
+        if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "t" {
+            self.create_tab(cx);
+            return;
+        }
+        if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "q" {
+            if let (Some(project), Some(tab)) = (
+                self.coordinator.selected_project_id(),
+                self.coordinator.selected_tab_id(),
+            ) {
+                self.close_tab(project, tab, cx);
+            }
+            return;
+        }
+        if (event.keystroke.modifiers.control || event.keystroke.modifiers.alt)
+            && (key_name == "pageup" || key_name == "pagedown")
+        {
+            let projects = self.coordinator.projects();
+            let is_project = event.keystroke.modifiers.alt;
+            if is_project && !projects.is_empty() {
+                let current = self.coordinator.selected_project_id();
+                let index = projects
+                    .iter()
+                    .position(|p| Some(p.id) == current)
+                    .unwrap_or(0);
+                let next = if key_name == "pageup" {
+                    index.checked_sub(1).unwrap_or(projects.len() - 1)
+                } else {
+                    (index + 1) % projects.len()
+                };
+                let id = projects[next].id;
+                let _ = self.coordinator.select_project(id);
+                cx.notify();
+            } else if !is_project
+                && let Some(project) = self.coordinator.active_project()
+                && !project.tabs.is_empty()
+            {
+                let index = project
+                    .tabs
+                    .iter()
+                    .position(|tab| Some(tab.id) == project.selected_tab)
+                    .unwrap_or(0);
+                let next = if key_name == "pageup" {
+                    index.checked_sub(1).unwrap_or(project.tabs.len() - 1)
+                } else {
+                    (index + 1) % project.tabs.len()
+                };
+                let project_id = project.id;
+                let tab_id = project.tabs[next].id;
+                let _ = self.coordinator.select_tab(project_id, tab_id);
+                cx.notify();
+            }
+            return;
+        }
 
         // Clipboard paste: Ctrl+Shift+V.
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "v" {
@@ -916,8 +1088,9 @@ impl WorkspaceView {
             return;
         }
         let viewport = window.viewport_size();
-        let window_width: f32 = viewport.width.into();
-        let window_height: f32 = viewport.height.into();
+        // The pane viewport starts after the fixed project sidebar and tab strip.
+        let window_width: f32 = (viewport.width - px(180.0)).max(px(1.0)).into();
+        let window_height: f32 = (viewport.height - px(36.0)).max(px(1.0)).into();
         for pane_rect in self.coordinator.tree().pane_rects() {
             let Some(session_id) = self.coordinator.session_id_for_pane(pane_rect.pane) else {
                 continue;
@@ -956,6 +1129,41 @@ impl Render for WorkspaceView {
             .cloned()
             .map(|root| self.render_node(&root, window, cx))
             .unwrap_or_else(|| {
+                if let Some((message, _)) = self.spawn_failure.clone() {
+                    return div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_3()
+                        .bg(rgb(0x18181B))
+                        .text_color(rgb(0xE4E4E7))
+                        .child("The shell could not be started.")
+                        .child(div().text_color(rgb(0xF87171)).child(message))
+                        .child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .border_1()
+                                .border_color(rgb(0x52525B))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|view, _, window, cx| {
+                                        window.focus(&view.focus_handle);
+                                        view.retry_spawn(cx);
+                                    }),
+                                )
+                                .child("Retry"),
+                        )
+                        .into_any_element();
+                }
+                let has_project = self.coordinator.selected_project_id().is_some();
+                let (prompt, action) = if has_project {
+                    ("This project has no tabs.", "New tab (Ctrl+Shift+T)")
+                } else {
+                    ("No projects yet.", "New project (Ctrl+Shift+P)")
+                };
                 div()
                     .size_full()
                     .flex()
@@ -965,7 +1173,7 @@ impl Render for WorkspaceView {
                     .gap_2()
                     .bg(rgb(0x18181B))
                     .text_color(rgb(0xA1A1AA))
-                    .child("No terminals. Start a fresh shell:")
+                    .child(prompt)
                     .child(
                         div()
                             .px_3()
@@ -975,22 +1183,231 @@ impl Render for WorkspaceView {
                             .text_color(rgb(0xE4E4E7))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|view, _event: &MouseDownEvent, window, cx| {
+                                cx.listener(move |view, _event: &MouseDownEvent, window, cx| {
                                     window.focus(&view.focus_handle);
-                                    view.new_terminal_for_empty(cx);
+                                    if has_project {
+                                        view.create_tab(cx);
+                                    } else {
+                                        view.create_project(cx);
+                                    }
                                 }),
                             )
-                            .child("New terminal (Ctrl+Shift+T)"),
+                            .child(action),
                     )
                     .into_any_element()
             });
+        let selected_project = self.coordinator.selected_project_id();
+        let mut sidebar = div()
+            .w(px(180.0))
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .bg(rgb(0x111113));
+        sidebar = sidebar.child(
+            div()
+                .px_2()
+                .py_1()
+                .text_color(rgb(0xA1A1AA))
+                .child("PROJECTS"),
+        );
+        let mut project_label_counts = HashMap::<String, usize>::new();
+        for (index, project) in self.coordinator.projects().iter().enumerate() {
+            let id = project.id;
+            let base_name = project.display_name(index + 1);
+            let occurrence = project_label_counts.entry(base_name.clone()).or_default();
+            *occurrence += 1;
+            let name = if *occurrence == 1 {
+                base_name
+            } else {
+                format!("{base_name} {}", *occurrence)
+            };
+            let active = selected_project == Some(id);
+            let close_id = id;
+            let label = div().flex_1().child(name);
+            let row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .bg(rgb(if active { 0x27272A } else { 0x111113 }))
+                .text_color(rgb(if active { 0xFAFAFA } else { 0xA1A1AA }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        window.focus(&view.focus_handle);
+                        let _ = view.coordinator.select_project(id);
+                        cx.notify();
+                    }),
+                )
+                .child(label);
+            // Keep destructive controls inside the selected row and out of
+            // the way for inactive projects.
+            let row = if active {
+                row.child(
+                    div()
+                        .px_1()
+                        .text_color(rgb(0xA1A1AA))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.close_project(close_id, cx);
+                            }),
+                        )
+                        .child("×"),
+                )
+            } else {
+                row
+            };
+            sidebar = sidebar.child(row);
+        }
+        sidebar = sidebar.child(
+            div()
+                .px_2()
+                .py_1()
+                .text_color(rgb(0xA1A1AA))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| {
+                        window.focus(&view.focus_handle);
+                        view.create_project(cx);
+                    }),
+                )
+                .child("+ New project"),
+        );
+
+        let mut tabs_bar = div()
+            .h(px(36.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .bg(rgb(0x111113));
+        if let Some(project) = self.coordinator.active_project() {
+            for (index, tab) in project.tabs.iter().enumerate() {
+                let project_id = project.id;
+                let tab_id = tab.id;
+                let label = tab.display_name(index + 1);
+                let active = project.selected_tab == Some(tab_id);
+                let label = div().flex_1().child(label);
+                let chip = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(if active { 0x27272A } else { 0x111113 }))
+                    .text_color(rgb(if active { 0xFAFAFA } else { 0xA1A1AA }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            window.focus(&view.focus_handle);
+                            let _ = view.coordinator.select_tab(project_id, tab_id);
+                            cx.notify();
+                        }),
+                    )
+                    .child(label);
+                // The selected tab owns its close control; the add button
+                // remains the final item in the strip.
+                let chip = if active {
+                    chip.child(
+                        div()
+                            .px_1()
+                            .text_color(rgb(0xA1A1AA))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.close_tab(project_id, tab_id, cx);
+                                }),
+                            )
+                            .child("×"),
+                    )
+                } else {
+                    chip
+                };
+                tabs_bar = tabs_bar.child(chip);
+            }
+            tabs_bar = tabs_bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0xA1A1AA))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            window.focus(&view.focus_handle);
+                            view.create_tab(cx);
+                        }),
+                    )
+                    .child("+"),
+            );
+        } else {
+            tabs_bar = tabs_bar.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_color(rgb(0xA1A1AA))
+                    .child("No project selected"),
+            );
+        }
+        let mut pane_area = div().flex().flex_1().flex_col().size_full();
+        if !self.coordinator.tree().is_empty()
+            && let Some((message, _)) = self.spawn_failure.clone()
+        {
+            pane_area = pane_area.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0x3F1D1D))
+                    .text_color(rgb(0xFCA5A5))
+                    .child(message)
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_color(rgb(0xFECACA))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    window.focus(&view.focus_handle);
+                                    view.retry_spawn(cx);
+                                }),
+                            )
+                            .child("Retry"),
+                    ),
+            );
+        }
+        pane_area = pane_area.child(div().flex().flex_1().size_full().child(content));
+        let main = div()
+            .flex()
+            .flex_1()
+            .flex_col()
+            .size_full()
+            .child(tabs_bar)
+            .child(pane_area);
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
             .flex()
             .bg(rgb(0x18181B))
-            .child(content)
+            .child(sidebar)
+            .child(main)
     }
 }
 

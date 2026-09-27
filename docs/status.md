@@ -11,7 +11,7 @@ M4 evidence below.
 | 2 — Pane Tree | complete | 9 core tests, workspace quality gates, and Wayland manual validation recorded below | None | Begin M3 single terminal |
 | 3 — Single Terminal | complete | Completed `a3923d4`; release-build interaction pass approved 2026-09-26 with explicit IME/unavailable-program limits (see M3 completion record) | None | M4 regression coverage |
 | 4 — Multi Terminal | complete | 64 terminal unit + 20 PTY integration tests; workspace quality gates and Wayland four-pane pass recorded below | Thread/memory/GPU stress baselines remain for broader lifecycle work | Begin M5 Projects/Tabs |
-| 5 — Projects/Tabs | not_started | None | Requires M4 | Add hierarchy and focus lifecycle |
+| 5 — Projects/Tabs | in_progress | Core hierarchy, coordinator lifecycle, full serial workspace suite and quality gates pass; user confirms main Wayland M5 workflows | Manually exercise startup Retry; confirm latest full-chip hit target; resource observations are qualitative only | Final Wayland smoke and record edge-case limits |
 | 6 — Persistence | not_started | None | Requires M5 | Implement validated snapshots |
 | 7 — Command Router | not_started | None | Requires M6 | Unify application actions |
 | 8 — IPC | not_started | None | Requires M7 | Implement scoped bounded transport |
@@ -515,3 +515,55 @@ test.
 
 Begin M5 Projects/Tabs; carry forward thread/memory/GPU lifecycle measurements
 and actual hidden-tab rendering behavior as M5 acceptance work.
+
+## Milestone 5 — Projects & Tabs — implementation in progress
+
+Added GPUI-free typed project/tab/window hierarchy models, per-project tab and
+selection state, next-then-previous fallback on removal, and focused-pane
+validation. Refactored `WorkspaceCoordinator` to coordinate a selected project
+and tab over the existing global `TerminalRegistry`; switching selection retains
+session IDs and child processes. Project/tab closure detaches owned sessions,
+and pane/session closure removes a final tab while preserving an empty project.
+Added the compact project sidebar and tab strip, click selection, create/close
+actions, and keyboard switching (`Ctrl+PageUp/Down`, `Alt+PageUp/Down`), project
+creation (`Ctrl+Shift+P`), tab creation (`Ctrl+Shift+T`), and tab close
+(`Ctrl+Shift+Q`). Visible-pane grid sizing accounts for the sidebar and tab bar.
+Follow-up polish keeps the close control inside the selected project/tab row,
+places the add-tab control after the tab chips, and disambiguates repeated
+directory-derived project labels with a display-only ordinal. Failed shell
+creation now presents an error and Retry action. A PTY integration test proves
+output continues in hidden tabs and projects, process IDs remain stable, and
+closing those hidden containers only detaches their owned sessions.
+
+### Changed files
+
+- `crates/omaterm-core/src/{ids,error,lib,project,tab,workspace}.rs`
+- `crates/omaterm-terminal/src/workspace.rs`
+- `crates/omaterm-terminal/tests/pty_integration.rs`
+- `apps/omaterm/src/main.rs`
+- `docs/status.md`, `docs/acceptance-matrix.md`
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm-core` | PASS: 11 tests |
+| `cargo test --workspace -- --test-threads=1` | PASS: 11 core + 65 terminal unit + 21 PTY integration (97 total), 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo fmt --all --check` | PASS |
+| `cargo tree -p omaterm-terminal` | PASS: no GPUI dependency |
+| `cargo build --release --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS: 17 Markdown files, 32 local links, 66 blueprint references, all 17 CLI/IPC mappings |
+| `git diff --check` | PASS |
+
+User confirmed the M5 Wayland project/tab/pane workflows, switching and state
+preservation, hidden output, split panes, keyboard shortcuts, and the initial
+chrome polish. A later full-chip click-target adjustment was added after the
+user reported that inactive tabs only responded on the label; that final hit
+area still needs confirmation. For resource observation, RSS did not drop
+after closing most projects/tabs, but remained unchanged through a repeated
+create/remove cycle; no numeric readings or thread/GPU measurements were
+provided. This is a stable high-water observation, not evidence of cycle-over-
+cycle growth. The shell-start failure Retry state has not been manually
+exercised; keep that edge case recorded as unverified. M5 is functionally
+validated with this explicit edge-case limit.
