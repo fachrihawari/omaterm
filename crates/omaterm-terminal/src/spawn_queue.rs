@@ -56,6 +56,7 @@ impl SessionSpawnQueue {
                 config.cols,
                 config.rows,
                 env,
+                config.scrollback_lines,
             )
         })
     }
@@ -211,6 +212,7 @@ mod tests {
             shell: Some(shell.into()),
             cols: 80,
             rows: 24,
+            scrollback_lines: None,
         }
     }
 
@@ -256,6 +258,7 @@ mod tests {
                 config.cols,
                 config.rows,
                 env,
+                config.scrollback_lines,
             )
         });
         queue
@@ -293,6 +296,7 @@ mod tests {
                 config.cols,
                 config.rows,
                 env,
+                config.scrollback_lines,
             )
         });
         queue

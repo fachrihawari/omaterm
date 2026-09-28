@@ -1,7 +1,13 @@
+pub mod config;
 pub mod history;
 mod migration;
 mod snapshot;
 mod store;
+
+pub use config::{
+    AppConfig, AppearanceSettings, AutomationSettings, DEFAULT_FONT_SIZE, KNOWN_THEMES,
+    MAX_SCROLLBACK_LINES, TerminalSettings, load_app_config_toml,
+};
 
 pub use history::{
     ConfigError, HistoryConfig, HistoryError, HistoryEvent, HistoryLimits, HistoryLoad,

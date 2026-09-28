@@ -15,8 +15,9 @@ M4 evidence below.
 | 6 — Persistence | complete | State crate/workspace tests and release Wayland restart, nested split/focus, fresh PID, CWD/fallback, restored Retry, corruption/schema retention and pending-debounce close evidence recorded below | Home-unavailable desktop UI limit not exercised; automation covers error paths | Begin M7 completion |
 | 7 — Command Router | complete | Single async dispatch path, 19 router tests (variant matrix, cancel/duplicate rollback), commit guards, and release Wayland UI regression (resize/equalize/focus/close/tab) recorded below | None | Begin M8 acceptance review (done — see M8 row) |
 | 8 — IPC | complete | Typed 17-method mapping, bounds, credentials/scope/child-env, owner bridge, 11 transport tests, concurrent-load + shutdown-under-load Wayland proof recorded below | Documented limits only: cross-UID harness, fallback-dir creation path, owner-channel saturation race (see below) | Begin M9 CLI |
-| 9 — CLI | complete | `omaterm-cli` thin client (17/17 rows), 24 CLI tests, workspace gates, and release Wayland CLI/desktop proof recorded below | Documented limits only: live `pane.resize` success needs a discoverable split ID (invalid-split error path proven live); scoped in-app denial covered by M8 evidence plus CLI env/deny tests | M10 dependency/replay spikes (post-v0.1) |
-| 10 — Encrypted History Recovery | in_progress | History foundation implemented (config, key providers, encrypted archives, recorder/replay, journal types) with spikes and workspace gates recorded below; journal hooks, dispatcher/IPC/CLI, and desktop controls remain | Shell lifecycle hook reliability, `HistoryCommand` router/IPC/CLI wiring, desktop opt-in controls, and Wayland validation remain | Implement Bash lifecycle reporting, then router/IPC/CLI commands and desktop controls |
+| 9 — CLI | complete | `omaterm-cli` thin client (27-row parser/mapping matrix plus path-launch forms), 31 CLI tests, workspace gates, and release Wayland CLI/desktop proof recorded below; live `pane.resize` via discovered split IDs closed by M11 | Scoped in-app denial covered by M8 evidence plus CLI env/deny tests | M10 history (post-v0.1) |
+| 10 — Encrypted History Recovery | complete | 287-test suite green 2026-09-28 plus release Wayland proof (opt-in, styled/Unicode restore, fresh shells, journal merge, alt absence, clears + rotation, disable, key-loss memory-only); M11 closed the remaining live items (same-pane restore, corrupt-archive quarantine) — see M11 record | Documented limits only: graceful-close live, banner-visibility eyes, per-pane CWD re-verification stays on M6 plumbing | M11 closure |
+| 11 — v0.1 Closure & Hardening | complete | 313-test serial suite green; release Wayland IPC proofs (split-ID discovery + live resize/equalize, path launch + run, history restore + quarantine, invalid-config survival, targeted logging); PKGBUILD + license inventory; perf baseline recorded — see M11 record below | Documented limits only: eyes/hands items (jump keys, picker portal, paste/drop live, font-size visual), theme engine + automation-disable enforcement future, X11/second-compositor/scaling, per-process GPU | v0.2 planning |
 
 ## Handoff rules
 
@@ -1805,3 +1806,214 @@ this removes its padding blank.
 User validates live on Omarchy/Hyprland (release build): enable history,
 run a failing `ll`, Super+W close, reopen ×3 — exactly one blank row
 between the error output and the fresh prompt every time, no growth.
+
+## Project jumps, base directory, home default — 2026-09-28 (implemented)
+
+Three user-requested project behaviors, implemented as vertical slices
+through the M7 dispatcher (no duplicated logic; core stays GPUI-free).
+
+### What changed
+
+- Home-rooted projects (`apps/omaterm/src/main.rs`): `create_project`,
+  `new_terminal_for_empty`, and `initialize_default` now pass
+  `directory: None`, letting the router fall back to `home_directory()`
+  (`router.rs:483-487`). `SpawnRetry::Project` and `PendingUiLaunch::
+  Project` carry `Option<PathBuf>` so Retry preserves the home fallback.
+  CLI `project open <path>` keeps explicit directories.
+- Jump shortcut: `Ctrl+Shift+1..9` selects the n-th project in sidebar
+  order via `ProjectCommand::Select` (`on_key_down`). Shift applies to
+  the character before GPUI reports it, so `project_jump_index` maps both
+  raw digits and shifted symbols (`!@#$%^&*(`) to slots 1–9; out-of-range
+  is a no-op. Plain `Ctrl+1..9` was deliberately NOT bound (user
+  decision): it would steal `Ctrl+2..7` control codes (NUL/ESC/FS/GS/RS/US
+  per `input.rs:ctrl_byte`).
+- Modifier-gated hints: root-view `on_modifiers_changed` tracks
+  Ctrl/Shift-held in `show_project_hints`; sidebar rows prefix `"{n} · "`
+  (slots 1–9) only while held.
+- Settable base directory, full slice: `ProjectCommand::SetDirectory
+  { project, directory }` (`command.rs`), `is_dir` validation
+  (`validation.rs`), `WorkspaceCoordinator::set_project_directory`
+  (`workspace.rs`), synchronous router arm with
+  `WorkspaceChanged → PersistenceDirty` effects plus owner-scope
+  authorization alongside `Rename` (`router.rs`), wire method
+  `project.set-directory` (`method.rs`), bridge mapping
+  (`ipc_bridge.rs`), CLI `project set-directory ID PATH`
+  (`commands/project.rs`), IPC/CLI doc-table rows (`docs/08`, `docs/09`).
+  Semantics: future tabs/splits/default launches only; live sessions and
+  per-pane CWDs untouched. Desktop trigger: `change` button on the
+  selected sidebar row opens the native folder picker
+  (`cx.prompt_for_paths` with directories-only `PathPromptOptions`,
+  XDG portal on Wayland); cancel is a no-op, portal failure sets a
+  warning banner instead of failing silently.
+
+### Changed files
+
+- `apps/omaterm/src/{main,router,ipc_bridge}.rs`
+- `crates/omaterm-core/src/{command,validation}.rs`
+- `crates/omaterm-terminal/src/workspace.rs`
+- `crates/omaterm-protocol/src/method.rs`
+- `crates/omaterm-cli/src/commands/project.rs`
+- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md`, this status
+
+### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known `proc-macro-error2` future-incompat notice only) |
+| `cargo test -p omaterm-core -p omaterm-protocol -p omaterm-cli -p omaterm-state` | PASS |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 34 tests, incl. new `project_set_directory_updates_base_for_future_tabs` (effects order, stale/invalid/scoped-foreign, Delete cleanup) and `jump_index_maps_digits_and_shifted_symbols_to_slots` |
+| `cargo test -p omaterm-terminal --lib -- --test-threads=1` | PASS: 131 tests, incl. new `set_project_directory_updates_pinned_base_and_rejects_stale_ids` |
+| `cargo test -p omaterm-terminal --test pty_integration -- --test-threads=1` | PASS: 32 tests |
+| `cargo test -p omaterm-ipc` | PASS: 11 tests |
+| `cargo test --workspace -- --test-threads=1` | NOT PASSED in one shot: exceeded 600s with no summary (same PTY-suite stall class recorded in M4/M6); every package/target above passed separately in sequence |
+| `python3 scripts/check-docs.py` | PASS: 19 files, 50 links, 72 blueprint refs, 23 CLI methods mapped |
+| `git diff --check` | PASS |
+
+### Live Wayland validation (release build, isolated `XDG_STATE_HOME`/`HOME`, no test residue left)
+
+- First-launch project named `home`, rooted at the isolated `$HOME`
+  (`project list`), not the daemon CWD — home default proven.
+- `project set-directory <id> <dir>` → `{}`; `project list` shows new
+  name/directory; `tab new` shell CWD is the new base while the older
+  tab's shell stays in the previous directory — future-only semantics
+  proven over real IPC.
+- Graceful close wrote `workspace-v1.json` with the updated
+  `pinned_directory` and both per-pane CWDs — persistence proven.
+- Socket, state, and processes removed afterward; no user windows harmed.
+
+### Explicitly NOT validated (needs eyes/hands on the live desktop)
+
+- `Ctrl+Shift+1..9` actual key delivery on this layout (unit test covers
+  both digit and shifted-symbol forms, but GPUI's delivered string was
+  not observed live): open 2+ projects, hold Ctrl+Shift (hints `1 · …`
+  must appear), press a digit, selection must jump. This hyprctl build
+  (0.56.2) rejects `focuswindow` dispatches, so agent-driven focus/keys
+  were not possible; `wtype` was intentionally not fired blind into the
+  live session.
+- Native folder picker (`change` button): portal availability on this
+  Hyprland session unconfirmed; cancel and portal-missing paths are
+  handled in code but unobserved.
+- Sidebar `change` button hit target and hint styling at real DPI.
+
+### Next action
+
+User runs the three manual checks above on a dev or release build; if
+GPUI delivers an unexpected key string for `Ctrl+Shift+<n>`, extend
+`project_jump_index` accordingly. No commit made.
+
+## Milestone 11 — v0.1 Closure & Hardening — complete with documented limits (2026-09-28)
+
+Closed every remaining v0.1 gap from the blueprint audit without adding
+v0.2+ features. Working tree only; no commit made.
+
+### Changed files
+
+- `crates/omaterm-core/src/{pane,result,lib}.rs` — `SplitSummary`,
+  `split_path`, `PaneInfo.splits`
+- `apps/omaterm/src/{router,ipc_bridge}.rs` — list carries split paths,
+  bridge serializes `splits[{id,axis,fraction}]`
+- `crates/omaterm-cli/src/{main,launcher,connection,output}.rs`,
+  `commands/pane.rs` — path-launch forms, `SPLITS` column, CLI tracing
+- `crates/omaterm-state/src/{config,history,lib}.rs` — `AppConfig`
+  (`[terminal]/[appearance]/[automation]`), `ConfigError::Invalid`
+- `crates/omaterm-terminal/src/{registry,session,spawn_queue,workspace,input,platform,lib}.rs`
+  — scrollback plumbing, paste policy/drop escaping, OS boundary traits
+- `crates/omaterm-logging/{Cargo.toml,src/lib.rs}` (new) — std-only
+  subscriber, `OMATERM_LOG`/`RUST_LOG` directives, `omaterm::*` categories
+- `apps/omaterm/src/main.rs` — config load/apply/warning, font override,
+  paste two-step, file-drop target, categorized logging targets
+- `packaging/arch/PKGBUILD`, `packaging/README.md` (new)
+- `docs/11-milestone-11-v01-closure.md` (new), `docs/00-overview.md`,
+  `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md`,
+  `docs/acceptance-matrix.md`, `docs/dependencies.md`, this status record
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 313 tests, 0 failures (36 desktop + 31 CLI + 14 core + 11 IPC + 6 protocol + 3 logging + 41 state + 139 terminal unit + 32 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS (used for all Wayland runs) |
+| `python3 scripts/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+New coverage highlights: core `split_path` axis/fraction/order; router
+list-splits + resize/equalize observability; bridge splits JSON;
+CLI `SPLITS` rendering + `pane list` mapping + path-launch parser/dispatch +
+fake-server open/open-and-run/denial; config parse/validate/malformed (4);
+session scrollback cap via viewport `history_size`; coordinator scrollback
+pass-through; font-preference override; logging directives/filter/format;
+paste policy + shell escaping; platform stat/TCP/self/child inspection +
+inspector-seam CWD refresh.
+
+### Release Wayland proofs (Omarchy/Hyprland, isolated RUNTIME/STATE/CONFIG/HOME, real Secret Service, SHELL=/bin/bash)
+
+Isolation note: the first attempt overrode `XDG_RUNTIME_DIR` with a 0755
+directory, which the M8 private-directory validator correctly rejected (no
+socket, `IPC unavailable` path). Fixed with mode 0700 plus a
+`wayland-1` symlink into the isolated run dir, keeping the compositor
+reachable without touching the user's live runtime dir.
+
+- P1 (11F): `pane list` shows `SPLITS -` unsplit; after `pane split
+  --right` both panes carry the same split (`horizontal`, 0.5) in JSON;
+  `pane resize --split <discovered> --fraction 0.45` applied live
+  (widths 0.45/0.55); `pane equalize` restored 0.5/0.5. The M9
+  split-ID limit is closed.
+- P3 (11E): `omaterm <dir>` opened project `cwd-a` (new ID, selected);
+  `omaterm <dir> -- echo M11_LAUNCH_OK` opened plus `Submitted command
+  to shell`, and `terminal read` showed the submission echo plus
+  `M11_LAUNCH_OK` from a fresh shell in that directory.
+- P4 (11A): after `history enable`, two `terminal run` markers produced 3
+  journal entries and 2 archives at the 30s checkpoint; after SIGTERM kill
+  and relaunch the same pane ID returned with a new session ID, restored
+  `M11_HIST_A/B` output above a fresh prompt, and the journal merged the
+  archived prefix (original timestamps kept).
+- P5 (11C): flipping one byte of the `.omhist` archive then restarting
+  quarantined it (`.quarantined` retained, never overwritten as valid);
+  the pane started empty with a live fresh shell while layout and journal
+  survived.
+- P2 (11D): `font-size = 200` config started normally with IPC live
+  (defaults applied; banner needs eyes, see limits); valid
+  `font-size = 13` + `scrollback-lines = 5000` loads cleanly.
+- 11G: `OMATERM_LOG=debug` emits `epoch LEVEL omaterm::render: ...`
+  lines (font resolution); targeted
+  `omaterm::pane=debug,omaterm::render=info` filters correctly; no
+  credential/token secret appears in any desktop stderr log.
+
+### Perf baseline (11I)
+
+Full serial suite on 12-core/30 GiB Omarchy, debug test profile:
+313 tests green; sampled peak ~1.2 GiB RSS (cargo + test binaries + spawned
+shells under load), 37 peak threads, 12 peak watched processes. FD
+stability comes from the existing 100-cycle PTY test (tolerance-gated) and
+M5 thread/FD/RSS cycle measurements. Release idle and per-process GPU
+remain open (RadeonTop is device-wide only on this machine).
+
+### Residue cleanup verified
+
+Test desktop killed, no `omaterm-desktop` process or proof-window shells
+remain, isolated RUNTIME/STATE/CONFIG/HOME removed. The pre-existing real
+`~/.local/state/omaterm/history/` archive (19:45) and the production-named
+keyring key (created 04:02, before this run) were verified untouched: no
+keyring writes were performed, and a `--unlock` secret lookup must never be
+captured (prior M10 caution stands).
+
+### Documented limits (not passes)
+
+- Eyes/hands on the live desktop: `Ctrl+Shift+1..9` key delivery, hint
+  styling, folder-picker portal, paste-confirm/drop interaction, banner
+  visibility (config/history/paste), font-size rendering. Policy and
+  wiring are unit-tested; interaction is unobserved.
+- `appearance.theme` dark/light parse and validate but the theme engine
+  itself is future work (blueprint §58); `automation.enabled=false` is
+  recorded with a banner while IPC stays enabled in v0.1.
+- Clipboard stays on the GPUI clipboard; notification has a seam but no
+  desktop wiring until v0.3 attention indicators.
+- Graceful `window.close` live path not exercised on the shared session
+  (focus-stealing risk; SIGTERM kills without cleanup per pre-existing
+  behavior, stale socket reclaimed at startup per M8).
+- Per-pane CWD re-verification after restore stays on M6 plumbing.
+- X11 runtime, second compositor, alternate scaling/monitor, `zsh`/`fish`
+  unavailable, per-process GPU — same standing limits as M1–M5.

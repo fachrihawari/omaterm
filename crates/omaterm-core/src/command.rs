@@ -29,6 +29,12 @@ pub enum ProjectCommand {
         project: ProjectId,
         name: String,
     },
+    /// Change the project's base directory. Only future tabs, splits, and
+    /// default terminal launches use it; live sessions keep their CWD.
+    SetDirectory {
+        project: ProjectId,
+        directory: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

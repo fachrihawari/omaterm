@@ -23,6 +23,12 @@ pub struct ProjectSelector {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ProjectSetDirectory {
+    pub project_id: String,
+    pub directory: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OptionalProject {
     pub project_id: Option<String>,
 }
@@ -96,6 +102,7 @@ pub enum Method {
     ProjectList(Empty),
     ProjectCreate(ProjectCreate),
     ProjectSelect(ProjectSelector),
+    ProjectSetDirectory(ProjectSetDirectory),
     TabList(OptionalProject),
     TabCreate(TabCreate),
     TabClose(TabSelector),
@@ -139,6 +146,7 @@ impl Method {
             "project.list" => decode!(Empty, ProjectList),
             "project.create" => decode!(ProjectCreate, ProjectCreate),
             "project.select" => decode!(ProjectSelector, ProjectSelect),
+            "project.set-directory" => decode!(ProjectSetDirectory, ProjectSetDirectory),
             "tab.list" => decode!(OptionalProject, TabList),
             "tab.create" => decode!(TabCreate, TabCreate),
             "tab.close" => decode!(TabSelector, TabClose),
@@ -177,6 +185,10 @@ mod tests {
             ("project.list", serde_json::json!({})),
             ("project.create", serde_json::json!({"directory":"/tmp"})),
             ("project.select", serde_json::json!({"project_id":"id"})),
+            (
+                "project.set-directory",
+                serde_json::json!({"project_id":"id","directory":"/tmp"}),
+            ),
             ("tab.list", serde_json::json!({})),
             ("tab.create", serde_json::json!({"name":"test"})),
             ("tab.close", serde_json::json!({"tab_id":"id"})),
@@ -219,7 +231,7 @@ mod tests {
             ),
             ("history.clear-all", serde_json::json!({})),
         ];
-        assert_eq!(cases.len(), 26);
+        assert_eq!(cases.len(), 27);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

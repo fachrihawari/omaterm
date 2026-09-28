@@ -132,7 +132,15 @@ impl TerminalSession {
         cols: u16,
         rows: u16,
     ) -> Result<Self, SessionError> {
-        Self::new_with_id_and_env(id, working_directory, shell, cols, rows, Default::default())
+        Self::new_with_id_and_env(
+            id,
+            working_directory,
+            shell,
+            cols,
+            rows,
+            Default::default(),
+            None,
+        )
     }
 
     pub fn new_with_id_and_env(
@@ -142,6 +150,7 @@ impl TerminalSession {
         cols: u16,
         rows: u16,
         child_env: std::collections::HashMap<String, String>,
+        scrollback_lines: Option<usize>,
     ) -> Result<Self, SessionError> {
         if cols < 2 || rows < 1 {
             return Err(SessionError::InvalidSize { cols, rows });
@@ -161,7 +170,10 @@ impl TerminalSession {
         let lifecycle = pty
             .supports_run()
             .then(|| LifecycleParser::new(&prompt_token));
-        let engine = AlacrittyEngine::new(cols, rows);
+        let engine = match scrollback_lines {
+            Some(lines) => AlacrittyEngine::with_scrollback(cols, rows, lines.max(1)),
+            None => AlacrittyEngine::new(cols, rows),
+        };
         let cwd = CurrentDirectory {
             path: working_directory.clone(),
             provenance: CwdProvenance::Launch,
@@ -578,7 +590,13 @@ impl TerminalSession {
     /// when the link resolves to an existing directory; records `Procfs`
     /// provenance so callers can distinguish it from shell reports.
     pub fn refresh_cwd_from_procfs(&mut self) -> bool {
-        let Some(path) = self.pty.child_cwd() else {
+        self.refresh_cwd_with(&crate::platform::LinuxProcessInspector)
+    }
+
+    /// CWD refresh through the [`ProcessInspector`] seam (unit-testable with
+    /// a stub; production passes the Linux adapter).
+    pub fn refresh_cwd_with(&mut self, inspector: &dyn crate::platform::ProcessInspector) -> bool {
+        let Some(path) = inspector.cwd_of(self.pty.child_pid()) else {
             return false;
         };
         if !path.exists() || self.cwd.path == path {
@@ -622,6 +640,80 @@ mod tests {
 
     fn test_session() -> TerminalSession {
         TerminalSession::new(std::env::temp_dir(), Some("/bin/sh"), 80, 24).expect("spawn sh")
+    }
+
+    #[test]
+    fn configured_scrollback_caps_engine_history() {
+        let mut limited = TerminalSession::new_with_id_and_env(
+            SessionId::new(),
+            std::env::temp_dir(),
+            Some("/bin/sh"),
+            80,
+            24,
+            Default::default(),
+            Some(10),
+        )
+        .expect("spawn sh with scrollback cap");
+        let mut default = test_session();
+        let mut flood = Vec::new();
+        for line in 0..60 {
+            flood.extend_from_slice(format!("line {line:03}\n").as_bytes());
+        }
+        limited.advance_output(&flood);
+        default.advance_output(&flood);
+        assert!(
+            limited.viewport().history_size <= 10,
+            "capped session history must stay bounded, got {}",
+            limited.viewport().history_size
+        );
+        assert!(
+            default.viewport().history_size > limited.viewport().history_size,
+            "default session must retain more than the capped one"
+        );
+    }
+
+    #[test]
+    fn cwd_refresh_uses_the_inspector_seam() {
+        use crate::platform::{ProcessInfo, ProcessInspector};
+        use std::path::PathBuf;
+
+        struct Stub {
+            cwd: Option<PathBuf>,
+        }
+        impl ProcessInspector for Stub {
+            fn process_info(&self, _: u32) -> Option<ProcessInfo> {
+                None
+            }
+            fn descendants(&self, _: u32) -> Vec<ProcessInfo> {
+                Vec::new()
+            }
+            fn cwd_of(&self, _: u32) -> Option<PathBuf> {
+                self.cwd.clone()
+            }
+            fn listening_ports(&self, _: u32) -> Vec<crate::platform::ListeningPort> {
+                Vec::new()
+            }
+        }
+
+        let mut session = test_session();
+        assert!(!session.refresh_cwd_with(&Stub { cwd: None }));
+        assert_eq!(session.cwd().provenance, CwdProvenance::Launch);
+        // Same path is a no-op (no spurious state change).
+        let launch = session.cwd().path.clone();
+        assert!(!session.refresh_cwd_with(&Stub { cwd: Some(launch) }));
+        // A new existing directory updates state with Procfs provenance.
+        let dir = std::env::temp_dir().join(format!("omaterm-cwd-stub-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(session.refresh_cwd_with(&Stub {
+            cwd: Some(dir.clone())
+        }));
+        assert_eq!(session.cwd().path, dir);
+        assert_eq!(session.cwd().provenance, CwdProvenance::Procfs);
+        let _ = std::fs::remove_dir(&dir);
+        // Missing directories never apply.
+        assert!(!session.refresh_cwd_with(&Stub {
+            cwd: Some(PathBuf::from("/definitely/missing/omaterm-cwd")),
+        }));
     }
 
     #[test]

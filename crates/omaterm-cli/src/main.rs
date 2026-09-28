@@ -2,8 +2,10 @@
 //!
 //! No workspace logic lives here. Subcommands build one `IpcRequest`,
 //! send it to the running desktop, and format the `IpcResponse`. With no
-//! subcommand the binary launches `omaterm-desktop` (sibling binary) or
-//! acknowledges a running instance. Compositor focus is deferred (non-goal).
+//! subcommand the binary launches `omaterm-desktop` (sibling binary),
+//! acknowledges a running instance, or opens a directory as a project
+//! (`omaterm .`, `omaterm ~/path`, `omaterm <path> -- <cmd>`).
+//! Compositor focus is deferred (non-goal).
 
 mod commands;
 mod connection;
@@ -35,6 +37,14 @@ struct Cli {
     /// Override socket path (also valid after the subcommand).
     #[arg(long, global = true, value_name = "PATH")]
     socket: Option<PathBuf>,
+    /// Open a directory as a project (implies launch, never combines with
+    /// a subcommand). `omaterm .` opens the current directory.
+    #[arg(value_name = "PATH")]
+    path: Option<PathBuf>,
+    /// Command to submit after opening: `omaterm <path> -- <cmd>...`.
+    /// Requires `--`; without a path the current directory is used.
+    #[arg(last = true, value_name = "COMMAND")]
+    initial_command: Vec<String>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -69,6 +79,7 @@ enum Commands {
 }
 
 fn main() {
+    omaterm_logging::init_logging();
     std::process::exit(run());
 }
 
@@ -101,9 +112,20 @@ fn run() -> i32 {
 fn dispatch(cli: Cli) -> i32 {
     let as_json = cli.json;
     let socket_override = cli.socket.clone();
+    if cli.command.is_some() && (cli.path.is_some() || !cli.initial_command.is_empty()) {
+        return output::local_error(
+            "usage_error",
+            "a project path cannot be combined with a subcommand; use `omaterm <path> -- <command>` or a plain subcommand",
+            as_json,
+            64,
+        );
+    }
     match cli.command {
-        None => launcher::run(as_json, socket_override),
         Some(command) => run_command(&command, as_json, socket_override.as_deref()),
+        None if cli.path.is_none() && cli.initial_command.is_empty() => {
+            launcher::run(as_json, socket_override)
+        }
+        None => launcher::run_with_path(cli.path, cli.initial_command, as_json, socket_override),
     }
 }
 
@@ -143,6 +165,7 @@ fn run_command(
             return output::local_error(failure.code, &failure.message, as_json, failure.exit_code);
         }
     };
+    tracing::debug!(target: "omaterm::cli", socket = %socket.display(), method = %call.method, "sending IPC request");
     let token = match connection::load_token(&socket) {
         Ok(token) => token,
         Err(failure) => {
@@ -158,6 +181,7 @@ fn run_command(
     };
     match connection::send(&socket, &request) {
         Ok(response) => {
+            tracing::debug!(target: "omaterm::cli", method = %method, ok = response.ok, "IPC response received");
             if response.ok {
                 output::success(&method, &response, as_json)
             } else {
@@ -240,6 +264,44 @@ mod tests {
             let command = cli.command.as_ref().expect("subcommand must parse");
             assert!(build_wire_call(command).is_ok(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn path_launch_forms_parse_without_subcommand() {
+        let cli = parse(&["omaterm", "."]);
+        assert_eq!(cli.path, Some(PathBuf::from(".")));
+        assert!(cli.command.is_none());
+        assert!(cli.initial_command.is_empty());
+
+        let cli = parse(&["omaterm", "/tmp/x", "--", "echo", "hi"]);
+        assert_eq!(cli.path, Some(PathBuf::from("/tmp/x")));
+        assert_eq!(cli.initial_command, vec!["echo", "hi"]);
+        assert!(cli.command.is_none());
+
+        // Trailing command without a path targets the current directory.
+        let cli = parse(&["omaterm", "--", "cargo", "test"]);
+        assert_eq!(cli.path, None);
+        assert_eq!(cli.initial_command, vec!["cargo", "test"]);
+
+        // Plain subcommands still parse with no path attached.
+        let cli = parse(&["omaterm", "pane", "list"]);
+        assert!(cli.path.is_none());
+        assert!(cli.initial_command.is_empty());
+        assert!(cli.command.is_some());
+    }
+
+    #[test]
+    fn path_combined_with_subcommand_is_a_usage_error() {
+        let cli = Cli {
+            json: false,
+            socket: None,
+            path: Some(PathBuf::from("/tmp")),
+            initial_command: Vec::new(),
+            command: Some(Commands::Pane {
+                cmd: PaneCmd::List { tab: None },
+            }),
+        };
+        assert_eq!(dispatch(cli), 64);
     }
 
     #[test]

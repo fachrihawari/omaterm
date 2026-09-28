@@ -67,6 +67,7 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `project list` | `project.list` | Project List | Authorized projects only |
 | `project open PATH` | `project.create` | Project Create | New project ID and root; local-user authority required |
 | `project select ID` | `project.select` | Project Select | Selection updated within scope |
+| `project set-directory ID PATH` | `project.set-directory` | Project SetDirectory | Base directory updated; future tabs use it |
 | `tab list` | `tab.list` | Tab List | Tabs in resolved project |
 | `tab new` | `tab.create` | Tab Create | Tab, pane, session IDs |
 | `tab close ID` | `tab.close` | Tab Close | Correct cleanup and focus fallback |
@@ -94,6 +95,8 @@ test. This table is the minimum supported M9 surface; examples below use it.
 `terminal new` deliberately creates a new tab, avoiding an unspecified split target.
 `project open` creates a project even if another project uses the same directory.
 Rename/delete additions are optional until included in this table and M8 mapping.
+`project set-directory` is now included: it changes the project's base
+directory for future tabs while live sessions keep their CWD.
 
 #### Project Commands
 
@@ -280,6 +283,9 @@ M1 starts with the desktop binary; M9 adds the public CLI without a name collisi
 ```bash
 omaterm              # No args → launch desktop app, or acknowledge existing instance
 omaterm pane list    # Subcommand → CLI mode via IPC
+omaterm .            # Open current directory as a project (implies launch)
+omaterm ~/Code/foo   # Open a project rooted there (implies launch)
+omaterm ~/Code/foo -- cargo test  # Open, then submit argv to the new shell
 ```
 
 Find the desktop binary alongside the installed CLI. No-argument launch starts it
@@ -287,6 +293,11 @@ when absent, waits for bounded readiness, and returns a useful launch error on
 failure. An existing instance is left running; compositor focus is deferred.
 Mutating/query subcommands require an existing instance and do not auto-launch.
 Test both binaries together and document the development/install invocation.
+
+Path launches (M11) share the same readiness wait, then issue `project.create`
+for an existing directory and, when `-- <argv>` is present, one `terminal.run`
+against the returned pane. A path never combines with a subcommand (exit 64).
+Mid-sequence failures report honestly with no automatic replay or rollback.
 
 ### Selection and Execution Contracts
 

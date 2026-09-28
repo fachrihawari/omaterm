@@ -78,6 +78,9 @@ pub struct WorkspaceCoordinator {
     home_directory: PathBuf,
     home_directory_available: bool,
     launch_directory: PathBuf,
+    /// Engine scrollback cap for sessions created after this is set. `None`
+    /// keeps the engine default; `Some` comes only from validated config.
+    scrollback_lines: Option<usize>,
 }
 
 impl WorkspaceCoordinator {
@@ -98,6 +101,7 @@ impl WorkspaceCoordinator {
             home_directory,
             home_directory_available,
             launch_directory,
+            scrollback_lines: None,
         }
     }
 
@@ -110,12 +114,35 @@ impl WorkspaceCoordinator {
     pub fn home_directory_available(&self) -> bool {
         self.home_directory_available
     }
+    /// Cap engine scrollback for sessions created from here on. Applies to
+    /// new spawns only; live sessions keep their existing engine.
+    pub fn set_scrollback_lines(&mut self, lines: Option<usize>) {
+        self.scrollback_lines = lines;
+    }
+    pub fn scrollback_lines(&self) -> Option<usize> {
+        self.scrollback_lines
+    }
     pub fn rename_project(&mut self, id: ProjectId, name: String) -> Result<(), CoordinatorError> {
         let project = self
             .window
             .project_mut(id)
             .ok_or(CoreError::ProjectNotFound(id))?;
         project.custom_name = Some(name);
+        Ok(())
+    }
+    /// Change a project's base directory. Only future tabs, splits, and
+    /// default terminal launches resolve against it; live sessions and
+    /// persisted per-pane CWDs are untouched.
+    pub fn set_project_directory(
+        &mut self,
+        id: ProjectId,
+        directory: std::path::PathBuf,
+    ) -> Result<(), CoordinatorError> {
+        let project = self
+            .window
+            .project_mut(id)
+            .ok_or(CoreError::ProjectNotFound(id))?;
+        project.pinned_directory = Some(directory);
         Ok(())
     }
     pub fn rename_tab(&mut self, id: TabId, name: String) -> Result<(), CoordinatorError> {
@@ -422,6 +449,7 @@ impl WorkspaceCoordinator {
             shell: None,
             cols,
             rows,
+            scrollback_lines: self.scrollback_lines,
         })?;
         let pane = self
             .window
@@ -470,6 +498,7 @@ impl WorkspaceCoordinator {
             shell,
             cols,
             rows,
+            scrollback_lines: self.scrollback_lines,
         }
     }
 
@@ -1043,6 +1072,40 @@ mod tests {
         assert_eq!(ws.selected_tab_id(), Some(tab));
         assert_eq!(ws.session_id_for_pane(pane), Some(session_id));
         assert_eq!(ws.session_count(), 1);
+        cleanup_project(&mut ws, project);
+    }
+
+    #[test]
+    fn set_project_directory_updates_pinned_base_and_rejects_stale_ids() {
+        let mut ws = coordinator();
+        let project = ProjectId::new();
+        let tab = TabId::new();
+        let pane = PaneId::new();
+        let session_id = SessionId::new();
+        ws.commit_project_session(ProjectSessionCommit {
+            expected_selected_project: None,
+            project_id: project,
+            tab_id: tab,
+            pane_id: pane,
+            name: None,
+            directory: std::env::temp_dir(),
+            session: worker_session(session_id),
+        })
+        .unwrap();
+        let target = std::env::temp_dir().join("omaterm-set-dir-test");
+        std::fs::create_dir_all(&target).unwrap();
+        ws.set_project_directory(project, target.clone()).unwrap();
+        assert_eq!(
+            ws.window.project(project).unwrap().pinned_directory,
+            Some(target.clone())
+        );
+        // The live session binding is untouched by the base change.
+        assert_eq!(ws.session_id_for_pane(pane), Some(session_id));
+        assert!(matches!(
+            ws.set_project_directory(ProjectId::new(), target.clone()),
+            Err(CoordinatorError::Core(CoreError::ProjectNotFound(_)))
+        ));
+        std::fs::remove_dir_all(&target).ok();
         cleanup_project(&mut ws, project);
     }
 

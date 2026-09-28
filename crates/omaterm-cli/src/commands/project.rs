@@ -20,6 +20,13 @@ pub enum ProjectCmd {
         /// Project ID to select.
         project_id: String,
     },
+    /// Change a project's base directory (future tabs use it).
+    SetDirectory {
+        /// Project ID to update.
+        project_id: String,
+        /// New base directory.
+        directory: PathBuf,
+    },
 }
 
 pub fn build(cmd: &ProjectCmd) -> Result<WireCall, String> {
@@ -51,6 +58,21 @@ pub fn build(cmd: &ProjectCmd) -> Result<WireCall, String> {
                 params: json!({ "project_id": project_id }),
             })
         }
+        ProjectCmd::SetDirectory {
+            project_id,
+            directory,
+        } => {
+            if project_id.trim().is_empty() {
+                return Err("project set-directory requires a project ID".into());
+            }
+            Ok(WireCall {
+                method: "project.set-directory".into(),
+                params: json!({
+                    "project_id": project_id,
+                    "directory": directory.to_string_lossy(),
+                }),
+            })
+        }
     }
 }
 
@@ -80,6 +102,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(call.method, "project.select");
+        let call = build(&ProjectCmd::SetDirectory {
+            project_id: "p1".into(),
+            directory: PathBuf::from("/tmp/app"),
+        })
+        .unwrap();
+        assert_eq!(call.method, "project.set-directory");
+        assert_eq!(call.params["project_id"], "p1");
+        assert_eq!(call.params["directory"], "/tmp/app");
+        assert!(
+            build(&ProjectCmd::SetDirectory {
+                project_id: "  ".into(),
+                directory: PathBuf::from("/tmp"),
+            })
+            .is_err()
+        );
     }
 
     #[test]

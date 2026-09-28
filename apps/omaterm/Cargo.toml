@@ -13,6 +13,7 @@ base64 = "=0.22.1"
 gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x11"] }
 omaterm-core = { path = "../../crates/omaterm-core" }
 omaterm-ipc = { path = "../../crates/omaterm-ipc" }
+omaterm-logging = { path = "../../crates/omaterm-logging" }
 omaterm-protocol = { path = "../../crates/omaterm-protocol" }
 omaterm-state = { path = "../../crates/omaterm-state" }
 omaterm-terminal = { path = "../../crates/omaterm-terminal" }

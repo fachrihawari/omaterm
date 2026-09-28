@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, AsyncApp, Bounds, ClipboardItem, Context, FocusHandle, Font, FontFallbacks,
-    Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    ScrollDelta, ScrollWheelEvent, SharedString, TextRun, Timer, WeakEntity, Window, WindowBounds,
-    WindowOptions, canvas, div, font, prelude::*, px, relative, rgb, rgba, size,
+    App, Application, AsyncApp, Bounds, ClipboardItem, Context, ExternalPaths, FocusHandle, Font,
+    FontFallbacks, Hsla, KeyDownEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, ScrollDelta, ScrollWheelEvent,
+    SharedString, TextRun, Timer, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div,
+    font, prelude::*, px, relative, rgb, rgba, size,
 };
 use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, OmaCommand, Pane, PaneCommand, PaneContent,
@@ -25,7 +26,7 @@ use omaterm_state::{
 use omaterm_terminal::{
     CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SelectionRange, TermColor,
     TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
-    poll_fd_readable, prepare_paste,
+    format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
 };
 mod credentials;
 mod history;
@@ -54,21 +55,37 @@ struct WorkspaceView {
     grid_sizes: HashMap<SessionId, (u16, u16)>,
     fonts: Option<ResolvedFonts>,
     font_size: f32,
+    /// Configured `terminal.font-family` override. Applied when the family is
+    /// installed; otherwise the built-in preference stack wins and a warning
+    /// names the missing family once.
+    font_family: Option<String>,
     spawn_failure: Option<(String, SpawnRetry)>,
     persistence_store: Option<SnapshotStore>,
     persistence_writer: Option<SnapshotWriter>,
     persistence_destination: SnapshotDestination,
     persistence_warning: Option<String>,
+    /// General `config.toml` problem (malformed file or invalid value).
+    /// Defaults apply; the message names the offending key.
+    config_warning: Option<String>,
     save_revision: u64,
     observed_cwds: HashMap<PaneId, PersistedCwd>,
     restored_failures: HashMap<PaneId, (omaterm_core::ProjectId, omaterm_core::TabId, String)>,
     pending_ui_launches: HashMap<u64, PendingUiLaunch>,
     launch_poller_active: bool,
+    /// True while Control or Shift is held: the sidebar then shows the
+    /// `Ctrl+Shift+1..9` jump index next to each project.
+    show_project_hints: bool,
     ipc_server: Option<IpcServer>,
     ipc_receiver: Option<async_channel::Receiver<IpcWork>>,
     ipc_pending: HashMap<u64, IpcWork>,
     shutting_down: bool,
     history_arm: Option<(HistoryArm, Instant)>,
+    /// Armed risky paste: (session, bytes, armed-at). The first Ctrl+Shift+V
+    /// of a multiline/control-character paste arms with a banner; the second
+    /// identical paste within the window sends. Anything else disarms.
+    paste_arm: Option<(SessionId, Vec<u8>, Instant)>,
+    /// Transient input notice (paste confirmation prompt, drop errors).
+    input_notice: Option<String>,
 }
 
 /// Two-step destructive-or-sensitive history control: the first press arms
@@ -84,6 +101,9 @@ enum HistoryArm {
 /// Arm window for two-step history controls.
 const HISTORY_ARM_WINDOW: Duration = Duration::from_secs(8);
 
+/// Arm window for two-step risky-paste confirmation.
+const PASTE_ARM_WINDOW: Duration = Duration::from_secs(8);
+
 struct IpcWork {
     request: IpcRequest,
     reply: std::sync::mpsc::SyncSender<IpcResponse>,
@@ -92,7 +112,7 @@ struct IpcWork {
 }
 
 enum PendingUiLaunch {
-    Project(std::path::PathBuf),
+    Project(Option<std::path::PathBuf>),
     Tab(omaterm_core::ProjectId),
     Restore {
         project: omaterm_core::ProjectId,
@@ -104,7 +124,7 @@ enum PendingUiLaunch {
 
 #[derive(Clone)]
 enum SpawnRetry {
-    Project(std::path::PathBuf),
+    Project(Option<std::path::PathBuf>),
     Tab(omaterm_core::ProjectId),
 }
 
@@ -112,6 +132,26 @@ enum SpawnRetry {
 const SCROLL_INDICATOR_FADE_MS: u64 = 800;
 
 impl WorkspaceView {
+    /// Load general `config.toml` settings with explicit failure reporting.
+    /// Returns the effective config plus an optional banner warning: malformed
+    /// files and invalid values fall back to defaults (never silent), and a
+    /// recorded `automation.enabled=false` is surfaced because IPC stays
+    /// enabled in v0.1 by design.
+    fn startup_config() -> (omaterm_state::AppConfig, Option<String>) {
+        match omaterm_state::AppConfig::load() {
+            Ok(config) => {
+                let warning = (!config.automation_enabled()).then(|| {
+                    "Config: automation.enabled=false is recorded; IPC stays enabled in v0.1".into()
+                });
+                (config, warning)
+            }
+            Err(error) => (
+                omaterm_state::AppConfig::default(),
+                Some(format!("Config: {error}; using defaults")),
+            ),
+        }
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
@@ -121,9 +161,14 @@ impl WorkspaceView {
         let persistence_writer = store
             .as_ref()
             .map(|store| SnapshotWriter::new(store.clone()));
+        // General config (11D): malformed files and invalid values warn and
+        // fall back to defaults; unknown sections are never touched.
+        let (app_config, config_warning) = Self::startup_config();
+        let mut coordinator = WorkspaceCoordinator::new(working_directory);
+        coordinator.set_scrollback_lines(app_config.resolved_scrollback_lines());
         let mut view = Self {
             focus_handle,
-            coordinator: router::CommandRouter::new(WorkspaceCoordinator::new(working_directory)),
+            coordinator: router::CommandRouter::new(coordinator),
             snapshots: HashMap::new(),
             receivers: HashMap::new(),
             selections: HashMap::new(),
@@ -132,7 +177,8 @@ impl WorkspaceView {
             grid_origins: HashMap::new(),
             grid_sizes: HashMap::new(),
             fonts: None,
-            font_size: 14.0,
+            font_size: app_config.resolved_font_size(),
+            font_family: app_config.terminal.font_family.clone(),
             spawn_failure: None,
             persistence_store: store,
             persistence_writer,
@@ -140,16 +186,20 @@ impl WorkspaceView {
             persistence_warning: (!persistence_available).then(|| {
                 "Persistent workspace state unavailable: no usable state directory".into()
             }),
+            config_warning,
             save_revision: 0,
             observed_cwds: HashMap::new(),
             restored_failures: HashMap::new(),
             pending_ui_launches: HashMap::new(),
             launch_poller_active: false,
+            show_project_hints: false,
             ipc_server: None,
             ipc_receiver: None,
             ipc_pending: HashMap::new(),
             shutting_down: false,
             history_arm: None,
+            paste_arm: None,
+            input_notice: None,
         };
         view.start_ipc(cx);
         view.restore_or_initialize(cx);
@@ -398,7 +448,7 @@ impl WorkspaceView {
             ) {
                 Ok(_) => {}
                 Err(error) => {
-                    tracing::warn!("restored pane {pane:?} shell failed: {error}");
+                    tracing::warn!(target: "omaterm::terminal", "restored pane {pane:?} shell failed: {error}");
                     self.persistence_warning =
                         Some(format!("Some restored terminals could not start: {error}"));
                     self.restored_failures
@@ -413,18 +463,17 @@ impl WorkspaceView {
         match self.dispatch_command(
             OmaCommand::Project(ProjectCommand::Create {
                 name: None,
-                directory: std::env::current_dir().ok(),
+                // No explicit directory: the router falls back to the home
+                // directory so fresh projects always start from $HOME.
+                directory: None,
             }),
             cx,
         ) {
             Ok(CommandOutput::ProjectCreated { .. }) => {}
             Ok(_) => {}
             Err(error) => {
-                tracing::error!("failed to spawn initial shell: {error}");
-                self.spawn_failure = Some((
-                    error.to_string(),
-                    SpawnRetry::Project(std::env::current_dir().unwrap_or_default()),
-                ));
+                tracing::error!(target: "omaterm::terminal", "failed to spawn initial shell: {error}");
+                self.spawn_failure = Some((error.to_string(), SpawnRetry::Project(None)));
             }
         }
     }
@@ -514,7 +563,7 @@ impl WorkspaceView {
             self.persistence_destination.clone(),
             self.save_revision,
         ) {
-            tracing::error!("workspace snapshot submission failed: {error}");
+            tracing::error!(target: "omaterm::persistence", "workspace snapshot submission failed: {error}");
         }
         self.flush_history();
     }
@@ -563,7 +612,7 @@ impl WorkspaceView {
         };
         manager.flush_targets(targets);
         if let Some(warning) = manager.warning() {
-            tracing::debug!("history flush warning: {warning}");
+            tracing::debug!(target: "omaterm::persistence", "history flush warning: {warning}");
         }
     }
 
@@ -640,7 +689,7 @@ impl WorkspaceView {
             if let Some(manager) = history.as_mut()
                 && !manager.shutdown_flush_targets(history_targets, Duration::from_secs(10))
             {
-                tracing::warn!("history shutdown flush incomplete; in-memory records discarded");
+                tracing::warn!(target: "omaterm::persistence", "history shutdown flush incomplete; in-memory records discarded");
             }
             let save_result = writer.map_or(Ok(()), |writer| {
                 writer.flush(snapshot, destination, revision)
@@ -667,6 +716,7 @@ impl WorkspaceView {
                 .unwrap_or_else(|error| Err(error.to_string()));
             if let Err(error) = result {
                 tracing::error!(
+                    target: "omaterm::persistence",
                     "final workspace snapshot failed; terminal cleanup completed: {error}"
                 );
                 let _ = weak.update(cx, |view, cx| {
@@ -878,11 +928,7 @@ impl WorkspaceView {
     ) -> Result<CommandOutput, omaterm_core::CommandError> {
         let launch = match &command {
             OmaCommand::Project(ProjectCommand::Create { directory, .. }) => {
-                PendingUiLaunch::Project(
-                    directory
-                        .clone()
-                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
-                )
+                PendingUiLaunch::Project(directory.clone())
             }
             OmaCommand::Tab(TabCommand::Create { project, .. })
             | OmaCommand::Terminal(TerminalCommand::Create { project, .. }) => {
@@ -1007,7 +1053,7 @@ impl WorkspaceView {
                     self.spawn_failure = None;
                 }
                 (CommandResult::Err(error), _) => {
-                    tracing::warn!("terminal launch failed: {error}");
+                    tracing::warn!(target: "omaterm::terminal", "terminal launch failed: {error}");
                 }
                 _ => {}
             }
@@ -1043,7 +1089,7 @@ impl WorkspaceView {
                 .map(|mut session| session.shutdown())
                 .unwrap_or(false);
             if !reaped {
-                tracing::warn!("terminal child did not reap within the bounded shutdown");
+                tracing::warn!(target: "omaterm::pty", "terminal child did not reap within the bounded shutdown");
             }
         });
     }
@@ -1062,7 +1108,7 @@ impl WorkspaceView {
             OmaCommand::Pane(PaneCommand::Split { target, direction }),
             cx,
         ) {
-            tracing::error!("split aborted: {error}");
+            tracing::error!(target: "omaterm::pane", "split aborted: {error}");
         }
     }
 
@@ -1101,7 +1147,7 @@ impl WorkspaceView {
             OmaCommand::History(omaterm_core::HistoryCommand::PausePane { pane })
         };
         if let Err(error) = self.dispatch_command(command, cx) {
-            tracing::warn!("history pause toggle failed: {error}");
+            tracing::warn!(target: "omaterm::persistence", "history pause toggle failed: {error}");
         }
     }
 
@@ -1175,7 +1221,7 @@ impl WorkspaceView {
             && let Err(error) =
                 self.dispatch_command(OmaCommand::Pane(PaneCommand::Close { pane }), cx)
         {
-            tracing::warn!("pane close failed: {error}");
+            tracing::warn!(target: "omaterm::pane", "pane close failed: {error}");
         }
     }
 
@@ -1196,7 +1242,7 @@ impl WorkspaceView {
             && let Err(error) =
                 self.dispatch_command(OmaCommand::Pane(PaneCommand::Close { pane }), cx)
         {
-            tracing::warn!("exited pane cleanup failed: {error}");
+            tracing::warn!(target: "omaterm::pty", "exited pane cleanup failed: {error}");
         }
     }
 
@@ -1208,7 +1254,7 @@ impl WorkspaceView {
         if let Some(manager) = self.coordinator.history_manager_mut() {
             let opaque = history::HistoryManager::opaque_name(closed.pane_id.0.as_bytes());
             if let Err(error) = manager.clear_pane(&opaque) {
-                tracing::warn!("history cleanup for closed pane failed: {error}");
+                tracing::warn!(target: "omaterm::persistence", "history cleanup for closed pane failed: {error}");
             }
         }
         if let Some(session_id) = closed.session_id {
@@ -1239,7 +1285,7 @@ impl WorkspaceView {
         if let Err(error) =
             self.dispatch_command(OmaCommand::Pane(PaneCommand::ResizeFocused { amount }), cx)
         {
-            tracing::debug!("pane resize ignored: {error}");
+            tracing::debug!(target: "omaterm::pane", "pane resize ignored: {error}");
         }
     }
 
@@ -1263,13 +1309,14 @@ impl WorkspaceView {
                 directory: None,
             })
         } else {
+            // Fresh projects start from the home directory (router fallback).
             OmaCommand::Project(ProjectCommand::Create {
                 name: None,
-                directory: std::env::current_dir().ok(),
+                directory: None,
             })
         };
         if let Err(error) = self.dispatch_command(command, cx) {
-            tracing::error!("failed to spawn shell: {error}");
+            tracing::error!(target: "omaterm::terminal", "failed to spawn shell: {error}");
         }
     }
 
@@ -1277,11 +1324,12 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
-        let directory = std::env::current_dir().ok();
+        // Fresh projects start from the home directory: pass no directory
+        // and let the router fall back to `home_directory()`.
         match self.dispatch_command(
             OmaCommand::Project(ProjectCommand::Create {
                 name: None,
-                directory: directory.clone(),
+                directory: None,
             }),
             cx,
         ) {
@@ -1290,11 +1338,8 @@ impl WorkspaceView {
             }
             Ok(_) => {}
             Err(error) => {
-                tracing::error!("failed to create project: {error}");
-                self.spawn_failure = Some((
-                    error.to_string(),
-                    SpawnRetry::Project(std::env::current_dir().unwrap_or_default()),
-                ));
+                tracing::error!(target: "omaterm::workspace", "failed to create project: {error}");
+                self.spawn_failure = Some((error.to_string(), SpawnRetry::Project(None)));
                 cx.notify();
             }
         }
@@ -1320,7 +1365,7 @@ impl WorkspaceView {
             }
             Ok(_) => {}
             Err(error) => {
-                tracing::error!("failed to create tab: {error}");
+                tracing::error!(target: "omaterm::workspace", "failed to create tab: {error}");
                 self.spawn_failure = Some((error.to_string(), SpawnRetry::Tab(project)));
                 cx.notify();
             }
@@ -1336,7 +1381,7 @@ impl WorkspaceView {
                 match self.dispatch_command(
                     OmaCommand::Project(ProjectCommand::Create {
                         name: None,
-                        directory: Some(directory.clone()),
+                        directory: directory.clone(),
                     }),
                     cx,
                 ) {
@@ -1345,10 +1390,7 @@ impl WorkspaceView {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        self.spawn_failure = Some((
-                            error.to_string(),
-                            SpawnRetry::Project(std::env::current_dir().unwrap_or_default()),
-                        ));
+                        self.spawn_failure = Some((error.to_string(), SpawnRetry::Project(None)));
                         cx.notify();
                     }
                 }
@@ -1400,6 +1442,58 @@ impl WorkspaceView {
         let _ = self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx);
     }
 
+    /// Open the native folder picker to change a project's base directory.
+    /// Only future tabs, splits, and default launches use the new directory;
+    /// live sessions keep their CWD. Cancellation changes nothing; a missing
+    /// portal surfaces a dismissible warning instead of failing silently.
+    fn pick_project_directory(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Set project directory".into()),
+        });
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = receiver.await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.shutting_down {
+                    return;
+                }
+                match result {
+                    Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
+                        let directory = paths.remove(0);
+                        if let Err(error) = view.dispatch_command(
+                            OmaCommand::Project(ProjectCommand::SetDirectory {
+                                project,
+                                directory,
+                            }),
+                            cx,
+                        ) {
+                            tracing::warn!(target: "omaterm::workspace", "project directory not updated: {error}");
+                            view.persistence_warning =
+                                Some(format!("Project directory not updated: {error}"));
+                            cx.notify();
+                        }
+                    }
+                    // Dialog cancelled: no state change.
+                    Ok(Ok(_)) => {}
+                    // Portal missing or dialog failure: warn, keep everything.
+                    Ok(Err(error)) => {
+                        tracing::warn!(target: "omaterm::workspace", "folder picker unavailable: {error:#}");
+                        view.persistence_warning =
+                            Some(format!("Folder picker unavailable: {error:#}"));
+                        cx.notify();
+                    }
+                    Err(_) => {}
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Resolve (once per font size) and cache the terminal font set.
     fn fonts(&mut self, cx: &App) -> ResolvedFonts {
         let font_size = px(self.font_size);
@@ -1408,7 +1502,11 @@ impl WorkspaceView {
             .as_ref()
             .is_none_or(|cached| cached.font_size != font_size)
         {
-            self.fonts = Some(resolve_terminal_fonts(cx, font_size));
+            self.fonts = Some(resolve_terminal_fonts(
+                cx,
+                font_size,
+                self.font_family.clone(),
+            ));
         }
         self.fonts.clone().expect("fonts just resolved")
     }
@@ -1433,6 +1531,24 @@ impl WorkspaceView {
                 self.coordinator.selected_tab_id(),
             ) {
                 self.close_tab(project, tab, cx);
+            }
+            return;
+        }
+        // Direct project jump: Ctrl+Shift+1..9 selects the n-th project in
+        // sidebar order. Shift applies to the character before GPUI reports
+        // it (US layout: `!` for `1`, `@` for `2`, …), so both forms map.
+        if event.keystroke.modifiers.control
+            && event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && let Some(index) = project_jump_index(&key_name)
+        {
+            let projects = self.coordinator.projects();
+            if index < projects.len() {
+                let id = projects[index].id;
+                let _ = self.dispatch_command(
+                    OmaCommand::Project(ProjectCommand::Select { project: id }),
+                    cx,
+                );
             }
             return;
         }
@@ -1635,10 +1751,64 @@ impl WorkspaceView {
             let bracketed = handle.lock().map(|s| s.bracketed_paste()).unwrap_or(false);
             prepare_paste(&text, bracketed)
         };
+        // Risky pastes (multiline, control characters) need an explicit
+        // second identical paste within the arm window. Direct pastes send
+        // at once, preserving the basic copy/paste workflow.
+        if needs_paste_confirm(&text) && !self.confirm_paste(session_id, &bytes) {
+            self.paste_arm = Some((session_id, bytes, Instant::now()));
+            self.input_notice = Some(
+                "Paste: multiline or control-character content — press Ctrl+Shift+V again within 8s to send.".into(),
+            );
+            tracing::warn!(target: "omaterm::terminal", "risky paste awaiting confirmation");
+            cx.notify();
+            return;
+        }
+        self.paste_arm = None;
+        self.input_notice = None;
         let _ = self.dispatch_command(
             OmaCommand::Terminal(TerminalCommand::SendBytes {
                 session: session_id,
                 data: bytes,
+            }),
+            cx,
+        );
+    }
+
+    /// Second identical paste within the window confirms; anything else arms.
+    fn confirm_paste(&mut self, session: SessionId, bytes: &[u8]) -> bool {
+        match &self.paste_arm {
+            Some((id, armed, at))
+                if *id == session
+                    && armed.as_slice() == bytes
+                    && at.elapsed() < PASTE_ARM_WINDOW =>
+            {
+                self.paste_arm = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// File drop onto the workspace: safely escaped absolute paths go to the
+    /// focused pane's shell, space-separated, without submitting. Drops never
+    /// target a pane by screen coordinates; per-pane targeting is future work.
+    fn on_file_drop(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
+        let dropped = paths.paths();
+        if dropped.is_empty() {
+            return;
+        }
+        let Some(session_id) = self.focused_session_id() else {
+            self.input_notice = Some("Drop: no focused terminal to receive paths.".into());
+            cx.notify();
+            return;
+        };
+        let data = format_dropped_paths(dropped);
+        tracing::info!(target: "omaterm::terminal", count = dropped.len(), "file drop inserted as escaped paths");
+        self.input_notice = None;
+        let _ = self.dispatch_command(
+            OmaCommand::Terminal(TerminalCommand::SendBytes {
+                session: session_id,
+                data,
             }),
             cx,
         );
@@ -2236,7 +2406,13 @@ impl Render for WorkspaceView {
             };
             let active = selected_project == Some(id);
             let close_id = id;
-            let label = div().flex_1().child(name);
+            let pick_id = id;
+            let label = if self.show_project_hints && index < 9 {
+                format!("{} · {name}", index + 1)
+            } else {
+                name
+            };
+            let label = div().flex_1().child(label);
             let row = div()
                 .flex()
                 .flex_row()
@@ -2261,10 +2437,27 @@ impl Render for WorkspaceView {
                     }),
                 )
                 .child(label);
-            // Keep destructive controls inside the selected row and out of
+            // Keep row controls inside the selected row and out of
             // the way for inactive projects.
             let row = if active {
                 row.child(
+                    div()
+                        .px_1()
+                        .text_color(rgb(0x71717A))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.pick_project_directory(pick_id, cx);
+                            }),
+                        )
+                        .child("change"),
+                )
+                .child(
                     div()
                         .px_1()
                         .text_color(rgb(0xA1A1AA))
@@ -2438,6 +2631,26 @@ impl Render for WorkspaceView {
                     .child(message),
             );
         }
+        if let Some(message) = self.config_warning.clone() {
+            pane_area = pane_area.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0x3F321D))
+                    .text_color(rgb(0xFDE68A))
+                    .child(message),
+            );
+        }
+        if let Some(message) = self.input_notice.clone() {
+            pane_area = pane_area.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0x3F321D))
+                    .text_color(rgb(0xFDE68A))
+                    .child(message),
+            );
+        }
         if let Some(manager) = self.coordinator.history_manager()
             && let Some(message) = manager.warning()
         {
@@ -2488,15 +2701,54 @@ impl Render for WorkspaceView {
             .size_full()
             .child(tabs_bar)
             .child(pane_area);
+        // Reveal the Ctrl+Shift+1..9 jump indexes in the sidebar only while
+        // Control or Shift is held.
+        let weak = cx.entity().downgrade();
+        let drop_weak = weak.clone();
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_drop(move |paths: &ExternalPaths, _, cx| {
+                let _ = drop_weak.update(cx, |view: &mut WorkspaceView, cx| {
+                    view.on_file_drop(paths, cx);
+                });
+            })
+            .on_modifiers_changed(move |event: &ModifiersChangedEvent, _, cx| {
+                let show = event.modifiers.control || event.modifiers.shift;
+                let _ = weak.update(cx, |view: &mut WorkspaceView, cx| {
+                    if view.show_project_hints != show {
+                        view.show_project_hints = show;
+                        cx.notify();
+                    }
+                });
+            })
             .size_full()
             .flex()
             .bg(rgb(0x18181B))
             .child(sidebar)
             .child(main)
     }
+}
+
+/// Map a Ctrl+Shift+<n> key name to a 0-based project index.
+///
+/// Shift applies to the character before GPUI reports it, so on a US layout
+/// `Ctrl+Shift+1` arrives as `!`, `Ctrl+Shift+2` as `@`, and so on. Both the
+/// shifted symbol and the raw digit map to the same slot.
+fn project_jump_index(key_name: &str) -> Option<usize> {
+    let slot = match key_name {
+        "1" | "!" => 1,
+        "2" | "@" => 2,
+        "3" | "#" => 3,
+        "4" | "$" => 4,
+        "5" | "%" => 5,
+        "6" | "^" => 6,
+        "7" | "&" => 7,
+        "8" | "*" => 8,
+        "9" | "(" => 9,
+        _ => return None,
+    };
+    Some(slot - 1)
 }
 
 /// Translate a GPUI key event into the GPUI-free [`KeyEvent`].
@@ -2570,9 +2822,16 @@ fn symbol_fallbacks() -> FontFallbacks {
     )
 }
 
-/// Pick the first preferred family installed on this machine.
-fn pick_mono_family(cx: &App) -> String {
-    let installed = cx.text_system().all_font_names();
+/// Pick the first preferred family installed on this machine. A configured
+/// `terminal.font-family` wins when installed; otherwise the built-in stack
+/// applies. Pure over the installed list so the preference order is unit
+/// tested without a GPUI text system.
+fn select_mono_family(installed: &[String], configured: Option<&str>) -> String {
+    if let Some(family) = configured
+        && installed.iter().any(|name| name == family)
+    {
+        return family.to_string();
+    }
     for preferred in MONO_PREFERENCES {
         if installed.iter().any(|name| name == preferred) {
             return (*preferred).to_string();
@@ -2582,8 +2841,14 @@ fn pick_mono_family(cx: &App) -> String {
 }
 
 /// Terminal font set: base + bold/italic variants, ligatures disabled.
-fn terminal_fonts(cx: &App) -> [Font; 4] {
-    let family = pick_mono_family(cx);
+fn terminal_fonts(cx: &App, configured: Option<&str>) -> [Font; 4] {
+    let installed = cx.text_system().all_font_names();
+    if let Some(family) = configured
+        && !installed.iter().any(|name| name == family)
+    {
+        tracing::warn!(target: "omaterm::render", "terminal.font-family '{family}' is not installed; using fallback");
+    }
+    let family = select_mono_family(&installed, configured);
     let fallbacks = symbol_fallbacks();
     let base = Font {
         family: family.clone().into(),
@@ -2630,8 +2895,12 @@ struct ResolvedFonts {
     font_size: Pixels,
 }
 
-fn resolve_terminal_fonts(cx: &App, font_size: Pixels) -> ResolvedFonts {
-    let fonts = terminal_fonts(cx);
+fn resolve_terminal_fonts(
+    cx: &App,
+    font_size: Pixels,
+    configured: Option<String>,
+) -> ResolvedFonts {
+    let fonts = terminal_fonts(cx, configured.as_deref());
     let base_id = cx.text_system().resolve_font(&fonts[0]);
     for variant in &fonts[1..] {
         cx.text_system().resolve_font(variant);
@@ -2649,7 +2918,7 @@ fn resolve_terminal_fonts(cx: &App, font_size: Pixels) -> ResolvedFonts {
                 let a: f32 = cell_width.into();
                 let b: f32 = advance.width.into();
                 if (a - b).abs() > 0.5 {
-                    tracing::warn!("terminal font is not monospace: 'M'={a}px vs {probe:?}={b}px");
+                    tracing::warn!(target: "omaterm::render", "terminal font is not monospace: 'M'={a}px vs {probe:?}={b}px");
                     break;
                 }
             }
@@ -2663,6 +2932,7 @@ fn resolve_terminal_fonts(cx: &App, font_size: Pixels) -> ResolvedFonts {
         px(a + d.abs())
     };
     tracing::info!(
+        target: "omaterm::render",
         family = %cx.text_system().get_font_for_id(base_id).map(|font| font.family.to_string()).unwrap_or_else(|| "<unknown>".to_string()),
         "terminal font resolved",
     );
@@ -3003,6 +3273,7 @@ fn paint_terminal(
 }
 
 fn main() {
+    omaterm_logging::init_logging();
     Application::new().run(|cx: &mut App| {
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -3033,4 +3304,60 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{project_jump_index, select_mono_family};
+
+    #[test]
+    fn jump_index_maps_digits_and_shifted_symbols_to_slots() {
+        for (key, slot) in [
+            ("1", 0),
+            ("2", 1),
+            ("3", 2),
+            ("4", 3),
+            ("5", 4),
+            ("6", 5),
+            ("7", 6),
+            ("8", 7),
+            ("9", 8),
+            ("!", 0),
+            ("@", 1),
+            ("#", 2),
+            ("$", 3),
+            ("%", 4),
+            ("^", 5),
+            ("&", 6),
+            ("*", 7),
+            ("(", 8),
+        ] {
+            assert_eq!(project_jump_index(key), Some(slot), "key {key}");
+        }
+        for key in ["0", ")", "a", "p", "pageup", ""] {
+            assert_eq!(project_jump_index(key), None, "key {key}");
+        }
+    }
+
+    #[test]
+    fn configured_font_family_wins_when_installed() {
+        let installed = [
+            "JetBrainsMono Nerd Font".to_string(),
+            "monospace".to_string(),
+        ];
+        assert_eq!(
+            select_mono_family(&installed, Some("monospace")),
+            "monospace"
+        );
+        // Missing configured family falls back to the preference stack.
+        assert_eq!(
+            select_mono_family(&installed, Some("Absent Family")),
+            "JetBrainsMono Nerd Font"
+        );
+        assert_eq!(
+            select_mono_family(&installed, None),
+            "JetBrainsMono Nerd Font"
+        );
+        assert_eq!(select_mono_family(&[], None), "monospace");
+    }
 }

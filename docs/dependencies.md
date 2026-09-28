@@ -248,6 +248,40 @@ remove/recreate/cleanup PASS against the real daemon with isolated
   gates. `Cargo.lock` is committed with these resolutions. Transitive
   license review remains outstanding; no project license selected.
 
+### Milestone 11 record — 2026-09-28 (packaging + full transitive license inventory)
+
+New crates: `omaterm-logging` 0.1.0 (shared std-only `tracing` subscriber;
+direct dep `tracing` 0.1.44 MIT, already in `Cargo.lock` — no new external
+dependency, verified offline). `packaging/arch/PKGBUILD` builds both binaries
+with `cargo build --release --locked`; `packaging/README.md` documents the
+Arch build and the standalone tarball. `license=('custom:UNLICENSED')` in the
+PKGBUILD is a placeholder until the project license is chosen (blueprint
+§70); the tag-tarball `sha256sums` is `SKIP` until the first version tag.
+
+Full transitive inventory generated offline from
+`cargo metadata --format-version 1 --filter-platform x86_64-unknown-linux-gnu`
+against the committed `Cargo.lock` (Rust 1.98.1, 2026-09-28):
+583 third-party packages, **zero** with a missing license expression.
+Histogram (top): 248 `MIT OR Apache-2.0`, 128 `MIT`, 74 `Apache-2.0 OR MIT`,
+24 `MIT/Apache-2.0`, 20 `Apache-2.0`, 18 `Unicode-3.0` (unicode tables),
+8 `BSD-3-Clause`, plus Zlib/Unlicense/CC0/ISC/BSD-2-Clause tails.
+Two copyleft-adjacent entries need attention at license-choice time:
+`option-ext` 0.2.0 `MPL-2.0` (file-level copyleft, no binary redistribution
+trigger unmodified) and `self_cell` 1.3.0 `Apache-2.0 OR GPL-2.0-only`
+(Apache-2.0 disjunct available). No GPL-only hard dependency exists.
+
+Direct selections (locked, permissive): `async-channel` =2.5.0, `base64`
+=0.22.1, `clap` 4.6.7, `gpui` =0.2.2 (Apache-2.0), `serde` =1.0.228,
+`serde_json` =1.0.149, `tracing` 0.1.44, `uuid` =1.26.1, `zeroize` =1.9.0,
+`thiserror` 2.0.21, `libc` 0.2.189, `alacritty_terminal` =0.26.0
+(Apache-2.0), `chacha20poly1305` =0.11.0, `flate2` =1.1.10, `getrandom`
+=0.4.3, `hkdf` =0.12.4, `sha2` =0.10.9, `keyring` =4.2.0, `toml_edit`
+=0.25.15. `omaterm-logging` adds `tracing` 0.1.44 to the CLI graph (already
+locked; no new external package) and to `apps/omaterm` alongside the
+existing use. Dual lock entries (`thiserror` 1.0.69, `getrandom` 0.2/0.3,
+`hkdf` 0.13.0, `sha2` 0.11.0, `toml_edit` 0.22.27, `async-channel` 1.9.0)
+are transitive (GPUI/keyring subtrees) with the same permissive licensing.
+
 ## Reference provenance
 
 Kero and Zed terminal/terminal-view code are behavioral/architectural references.

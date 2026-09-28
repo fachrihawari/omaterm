@@ -173,6 +173,19 @@ mod tests {
     }
 
     #[test]
+    fn list_maps_with_and_without_tab_selector() {
+        let call = build(&PaneCmd::List { tab: None }).unwrap();
+        assert_eq!(call.method, "pane.list");
+        assert_eq!(call.params, serde_json::json!({}));
+        let call = build(&PaneCmd::List {
+            tab: Some("t1".into()),
+        })
+        .unwrap();
+        assert_eq!(call.method, "pane.list");
+        assert_eq!(call.params["tab_id"], "t1");
+    }
+
+    #[test]
     fn resize_equalize_focus_close_map() {
         let call = build(&PaneCmd::Resize {
             split: "s".into(),

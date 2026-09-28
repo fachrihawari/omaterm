@@ -31,6 +31,11 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
                 return invalid("name must be non-empty and contain no control characters");
             }
         }
+        OmaCommand::Project(ProjectCommand::SetDirectory { directory, .. }) => {
+            if !directory.is_dir() {
+                return invalid("project directory must exist and be a directory");
+            }
+        }
         OmaCommand::Tab(TabCommand::Create { name, .. }) => {
             if name.as_deref().is_some_and(|n| !valid_name(n)) {
                 return invalid("tab name must be non-empty and contain no control characters");
@@ -117,6 +122,13 @@ mod tests {
             .is_err()
         );
         assert!(
+            validate(&OmaCommand::Project(ProjectCommand::SetDirectory {
+                project: ProjectId::new(),
+                directory: std::env::temp_dir().join("omaterm-no-such-dir"),
+            }))
+            .is_err()
+        );
+        assert!(
             validate(&OmaCommand::Terminal(TerminalCommand::ReadVisible {
                 session: SessionId::new(),
                 max_lines: 1001,
@@ -153,6 +165,13 @@ mod tests {
             validate(&OmaCommand::Project(ProjectCommand::Create {
                 name: None,
                 directory: Some(std::env::temp_dir())
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate(&OmaCommand::Project(ProjectCommand::SetDirectory {
+                project: ProjectId::new(),
+                directory: std::env::temp_dir(),
             }))
             .is_ok()
         );

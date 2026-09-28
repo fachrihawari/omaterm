@@ -3846,6 +3846,7 @@ dependencies = [
  "gpui",
  "omaterm-core",
  "omaterm-ipc",
+ "omaterm-logging",
  "omaterm-protocol",
  "omaterm-state",
  "omaterm-terminal",
@@ -3863,8 +3864,10 @@ dependencies = [
  "clap",
  "libc",
  "omaterm-ipc",
+ "omaterm-logging",
  "omaterm-protocol",
  "serde_json",
+ "tracing",
  "uuid",
 ]
 
@@ -3884,6 +3887,13 @@ dependencies = [
  "omaterm-protocol",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omaterm-logging"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

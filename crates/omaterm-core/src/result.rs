@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{PaneId, ProjectId, SessionId, TabId};
+use crate::{PaneId, ProjectId, SessionId, SplitSummary, TabId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
@@ -159,6 +159,10 @@ pub struct PaneInfo {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Root-to-leaf split path of this pane. The last entry is the innermost
+    /// split and the one `pane.resize` should target for this pane. Empty
+    /// for an unsplit root pane.
+    pub splits: Vec<SplitSummary>,
 }
 
 /// Safe history metadata for `history status`: counts and state only, never

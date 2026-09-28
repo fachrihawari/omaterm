@@ -120,6 +120,8 @@ pub enum ConfigError {
     Serialize(#[from] serde_json::Error),
     #[error("history config file is not valid: {0}")]
     Parse(String),
+    #[error("config value is not valid: {0}")]
+    Invalid(String),
     #[error("history config I/O failed: {0}")]
     Io(#[from] std::io::Error),
 }

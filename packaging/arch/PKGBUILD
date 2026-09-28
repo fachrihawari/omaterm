@@ -1,0 +1,34 @@
+# Maintainer: OmaTerm contributors
+# M11 task 11J: first-class Arch packaging for Omarchy users.
+#
+# Project license is TBD (OMATERM_AGENT_BLUEPRINT.md §70): the `license`
+# array below MUST be updated when the project license is chosen. Dependency
+# licenses are inventoried in docs/dependencies.md.
+
+pkgname=omaterm
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Terminal-first developer workspace with semantic CLI automation'
+arch=('x86_64')
+url='https://github.com/fachrihawari/omaterm'
+license=('custom:UNLICENSED')
+depends=('gcc-libs' 'fontconfig' 'freetype2' 'libxkbcommon' 'libx11' 'libxcb' 'wayland' 'vulkan-icd-loader')
+makedepends=('cargo' 'pkgconf')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  cargo build --release --locked --bin omaterm --bin omaterm-desktop
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  cargo test --release --locked --workspace -- --test-threads=1
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/omaterm "$pkgdir/usr/bin/omaterm"
+  install -Dm755 target/release/omaterm-desktop "$pkgdir/usr/bin/omaterm-desktop"
+}

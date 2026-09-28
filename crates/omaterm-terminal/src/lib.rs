@@ -5,6 +5,7 @@ pub mod history;
 pub mod input;
 pub mod lifecycle;
 pub mod osc7;
+pub mod platform;
 pub mod pty;
 pub mod registry;
 pub mod selection;
@@ -19,9 +20,16 @@ pub use engine::{
     TerminalCell, TerminalEngine, TerminalRow, TerminalViewport,
 };
 pub use events::TerminalEvent;
-pub use input::{Key, KeyEvent, KeyModifiers, encode_key, prepare_paste, wrap_bracketed_paste};
+pub use input::{
+    Key, KeyEvent, KeyModifiers, encode_key, escape_shell_path, format_dropped_paths,
+    needs_paste_confirm, prepare_paste, wrap_bracketed_paste,
+};
 pub use lifecycle::{LifecycleEvent, LifecycleKind, LifecycleParser, decode_command, decode_exit};
 pub use osc7::{Osc7Parser, parse_osc7_uri};
+pub use platform::{
+    ClipboardProvider, LinuxProcessInspector, ListeningPort, NotificationProvider, ProcessInfo,
+    ProcessInspector,
+};
 pub use pty::{PtyError, PtyProcess, poll_fd_readable};
 pub use registry::{RegistryError, TerminalConfig, TerminalRegistry};
 pub use selection::{CellPoint, SelectionRange, extract_text};

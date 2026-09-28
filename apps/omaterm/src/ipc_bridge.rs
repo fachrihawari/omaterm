@@ -130,6 +130,10 @@ pub fn map_request(
             Method::ProjectSelect(p) => OmaCommand::Project(ProjectCommand::Select {
                 project: project(&p.project_id)?,
             }),
+            Method::ProjectSetDirectory(p) => OmaCommand::Project(ProjectCommand::SetDirectory {
+                project: project(&p.project_id)?,
+                directory: std::path::PathBuf::from(text(&p.directory)?),
+            }),
             Method::TabList(p) => OmaCommand::Tab(TabCommand::List {
                 project: resolve_project(p.project_id)?,
             }),
@@ -293,7 +297,7 @@ fn output_json(output: CommandOutput) -> Value {
         }
         CommandOutput::PaneList(items) => {
             let truncated = items.len() > LIST_LIMIT;
-            json!({"panes":items.into_iter().take(LIST_LIMIT).map(|p| json!({"id":p.id.0.to_string(),"project_id":p.project.0.to_string(),"tab_id":p.tab.0.to_string(),"session_id":p.session.map(|s| s.0.to_string()),"focused":p.focused,"x":p.x,"y":p.y,"width":p.width,"height":p.height})).collect::<Vec<_>>(),"truncated":truncated})
+            json!({"panes":items.into_iter().take(LIST_LIMIT).map(|p| json!({"id":p.id.0.to_string(),"project_id":p.project.0.to_string(),"tab_id":p.tab.0.to_string(),"session_id":p.session.map(|s| s.0.to_string()),"focused":p.focused,"x":p.x,"y":p.y,"width":p.width,"height":p.height,"splits":p.splits.into_iter().map(|s| json!({"id":s.id.0.to_string(),"axis":match s.axis { omaterm_core::SplitAxis::Horizontal => "horizontal", omaterm_core::SplitAxis::Vertical => "vertical", },"fraction":s.fraction})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"truncated":truncated})
         }
         CommandOutput::TerminalList(items) => {
             let truncated = items.len() > LIST_LIMIT;
@@ -338,6 +342,11 @@ mod tests {
             ("project.list", json!({}), true),
             ("project.create", json!({"directory":"/tmp"}), true),
             ("project.select", json!({"project_id":id}), true),
+            (
+                "project.set-directory",
+                json!({"project_id":id,"directory":"/tmp"}),
+                true,
+            ),
             ("tab.list", json!({}), false),
             ("tab.create", json!({}), false),
             ("tab.close", json!({"tab_id":id}), true),
@@ -363,7 +372,7 @@ mod tests {
             ("history.clear-project", json!({"project_id":id}), true),
             ("history.clear-all", json!({}), true),
         ];
-        assert_eq!(cases.len(), 27);
+        assert_eq!(cases.len(), 28);
         for (method, params, valid) in cases {
             let result = map_request(&request(method, params), CommandContext::LocalUser, &router);
             assert_eq!(result.is_ok(), valid, "{method}");
@@ -470,5 +479,36 @@ mod tests {
             result.result.unwrap()["projects"].as_array().unwrap().len(),
             128
         );
+    }
+
+    #[test]
+    fn pane_list_response_carries_split_discoverability() {
+        let pane = omaterm_core::PaneInfo {
+            id: PaneId::new(),
+            project: ProjectId::new(),
+            tab: omaterm_core::TabId::new(),
+            session: None,
+            focused: true,
+            x: 0.0,
+            y: 0.0,
+            width: 0.5,
+            height: 1.0,
+            splits: vec![omaterm_core::SplitSummary {
+                id: SplitId::new(),
+                axis: omaterm_core::SplitAxis::Horizontal,
+                fraction: 0.5,
+            }],
+        };
+        let result = response(
+            "id".into(),
+            CommandResult::Ok(CommandOutput::PaneList(vec![pane])),
+        );
+        let panes = result.result.unwrap()["panes"].clone();
+        let splits = panes[0]["splits"].as_array().unwrap().clone();
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0]["axis"], "horizontal");
+        assert_eq!(splits[0]["fraction"], 0.5);
+        assert!(!panes[0]["id"].as_str().unwrap().is_empty());
+        assert!(!splits[0]["id"].as_str().unwrap().is_empty());
     }
 }

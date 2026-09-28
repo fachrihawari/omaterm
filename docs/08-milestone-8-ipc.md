@@ -97,6 +97,7 @@ crates/omaterm-ipc/
 | `project.list` | `ProjectCommand::List` |
 | `project.create` | `ProjectCommand::Create` |
 | `project.select` | `ProjectCommand::Select` |
+| `project.set-directory` | `ProjectCommand::SetDirectory` |
 | `tab.list` | `TabCommand::List` |
 | `tab.create` | `TabCommand::Create` |
 | `tab.close` | `TabCommand::Close` |

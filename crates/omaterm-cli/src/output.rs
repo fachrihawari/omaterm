@@ -175,6 +175,32 @@ fn render_tabs(result: &Value) -> String {
     out.trim_end().to_owned()
 }
 
+/// Compact split path for `pane list` rows: root-to-leaf summaries as
+/// `shortid(axis,fraction)`, so a `pane.resize --split` target is discoverable
+/// without a second query. The last entry resizes the row's pane.
+fn format_splits(splits: Option<&Value>) -> String {
+    let Some(items) = splits.and_then(Value::as_array) else {
+        return "-".into();
+    };
+    if items.is_empty() {
+        return "-".into();
+    }
+    items
+        .iter()
+        .map(|split| {
+            let id = split.get("id").and_then(Value::as_str).unwrap_or("?");
+            let short: String = id.chars().take(8).collect();
+            let axis = match split.get("axis").and_then(Value::as_str) {
+                Some("vertical") => "v",
+                _ => "h",
+            };
+            let fraction = split.get("fraction").and_then(Value::as_f64).unwrap_or(0.5);
+            format!("{short}({axis},{fraction:.2})")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn render_panes(result: &Value) -> String {
     let Some(items) = result.get("panes").and_then(Value::as_array) else {
         return "No panes.".into();
@@ -182,10 +208,10 @@ fn render_panes(result: &Value) -> String {
     if items.is_empty() {
         return "No panes.".into();
     }
-    let mut out = String::from("ID\tSESSION\tFOCUSED\n");
+    let mut out = String::from("ID\tSESSION\tFOCUSED\tSPLITS\n");
     for item in items {
         out.push_str(&format!(
-            "{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\n",
             item.get("id").and_then(Value::as_str).unwrap_or("-"),
             item.get("session_id")
                 .and_then(Value::as_str)
@@ -199,6 +225,7 @@ fn render_panes(result: &Value) -> String {
             } else {
                 ""
             },
+            format_splits(item.get("splits")),
         ));
     }
     if result
@@ -355,12 +382,43 @@ mod tests {
         let text = human_success(
             "pane.list",
             &ok(serde_json::json!({
-                "panes": [{"id": "p1", "session_id": "s1", "focused": true}],
+                "panes": [{
+                    "id": "p1", "session_id": "s1", "focused": true,
+                    "splits": [{"id": "split-abcdef", "axis": "horizontal", "fraction": 0.45}],
+                }],
                 "truncated": true,
             })),
         );
         assert!(text.contains("p1"));
         assert!(text.contains("truncated"));
+        assert!(text.contains("split-ab(h,0.45)"));
+        let bare = human_success(
+            "pane.list",
+            &ok(serde_json::json!({
+                "panes": [{"id": "p1", "session_id": "s1", "focused": false}],
+                "truncated": false,
+            })),
+        );
+        assert!(bare.contains("SPLITS"));
+
+        // Unsplit root panes and pre-11F servers (no splits key) render "-".
+        for value in [serde_json::json!({"splits": []}), serde_json::json!({})] {
+            let text = human_success(
+                "pane.list",
+                &ok(
+                    serde_json::json!({"panes": [{"id": "p", "splits": value["splits"]}], "truncated": false}),
+                ),
+            );
+            assert!(text.contains("SPLITS"));
+        }
+        assert_eq!(format_splits(None), "-");
+        assert_eq!(
+            format_splits(Some(&serde_json::json!([
+                {"id": "outer-id", "axis": "vertical", "fraction": 0.6},
+                {"id": "inner-id", "axis": "horizontal", "fraction": 0.5},
+            ]))),
+            "outer-id(v,0.60),inner-id(h,0.50)"
+        );
         let text = human_success(
             "terminal.read",
             &ok(serde_json::json!({

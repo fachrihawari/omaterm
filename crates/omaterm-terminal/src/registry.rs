@@ -13,6 +13,9 @@ pub struct TerminalConfig {
     pub shell: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// Engine scrollback cap. `None` keeps the engine default (10 000 lines);
+    /// `Some` comes only from validated `terminal.scrollback-lines` config.
+    pub scrollback_lines: Option<usize>,
 }
 
 impl TerminalConfig {
@@ -22,6 +25,7 @@ impl TerminalConfig {
             shell: None,
             cols: 80,
             rows: 24,
+            scrollback_lines: None,
         }
     }
 }
@@ -62,11 +66,14 @@ impl TerminalRegistry {
 
     /// Spawn a session and register it. On spawn failure nothing is inserted.
     pub fn create(&mut self, config: TerminalConfig) -> Result<SessionId, RegistryError> {
-        let session = TerminalSession::new(
+        let session = TerminalSession::new_with_id_and_env(
+            SessionId::new(),
             config.working_directory,
             config.shell.as_deref(),
             config.cols,
             config.rows,
+            Default::default(),
+            config.scrollback_lines,
         )?;
         self.insert(session)
     }
@@ -144,6 +151,7 @@ mod tests {
             shell: Some("/bin/sh".to_string()),
             cols: 80,
             rows: 24,
+            scrollback_lines: None,
         }
     }
 
@@ -177,6 +185,7 @@ mod tests {
             shell: Some("/bin/sh".to_string()),
             cols: 1,
             rows: 24,
+            scrollback_lines: None,
         };
         let result = registry.create(bad);
         assert!(matches!(

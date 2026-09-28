@@ -3,8 +3,9 @@
 ## Overview
 
 This directory contains the implementation plans for OmaTerm v0.1 and approved
-post-v0.1 work. The v0.1 release consists of nine ordered vertical slices; later
-milestones may start only after those prerequisites are complete.
+post-v0.1 work. The v0.1 release consists of nine ordered vertical slices plus
+a closure milestone (M11); later milestones may start only after those
+prerequisites are complete.
 
 OmaTerm v0.1 targets a **usable terminal workspace** whose panes can be controlled semantically through a CLI — proving the architecture required for future AI-agent control.
 
@@ -45,9 +46,15 @@ the canonical workflow in [AGENTS.md](../AGENTS.md).
 | 8 | [IPC](08-milestone-8-ipc.md) | Unix socket server | `omaterm-ipc`, `omaterm-protocol` |
 | 9 | [CLI](09-milestone-9-cli.md) | `omaterm` CLI binary | `omaterm-cli` |
 | 10 | [Encrypted History Recovery](10-milestone-10-history-recovery.md) | Opt-in encrypted scrollback and OmaTerm command journal; fresh shells | `omaterm-terminal`, `omaterm-state`, desktop, IPC, CLI |
+| 11 | [v0.1 Closure & Hardening](11-milestone-11-v01-closure.md) | Live closeout M10, config, launch-args, resize IDs, logging, paste/drop, OS boundary, perf, packaging | `apps/omaterm`, `omaterm-cli`, `omaterm-state`, docs/packaging |
 
 M10 is post-v0.1 and does not change M6's layout/CWD-only persistence contract.
 It is blocked until M5–M9 and its dependency/replay spikes are complete.
+
+M11 closes the remaining v0.1 gaps (M10 live proof, general config, CLI
+launch-args, resize discoverability, logging, paste/drop, OS boundary, perf
+baseline, packaging/license inventory). It adds no v0.2+ features; `terminal
+wait` stays deferred to v0.4 with only an API design note.
 
 ## Version Roadmap
 

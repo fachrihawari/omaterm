@@ -326,7 +326,9 @@ impl CommandRouter {
                 ));
             }
             OmaCommand::Project(
-                ProjectCommand::Delete { project } | ProjectCommand::Rename { project, .. },
+                ProjectCommand::Delete { project }
+                | ProjectCommand::Rename { project, .. }
+                | ProjectCommand::SetDirectory { project, .. },
             )
             | OmaCommand::Tab(TabCommand::Create { project, .. } | TabCommand::List { project })
             | OmaCommand::Terminal(TerminalCommand::Create { project, .. }) => Some(*project),
@@ -867,6 +869,12 @@ impl CommandRouter {
                     Err(e) => coordinator_error(e),
                 }
             }
+            OmaCommand::Project(ProjectCommand::SetDirectory { project, directory }) => {
+                match self.coordinator.set_project_directory(project, directory) {
+                    Ok(()) => changed(effects, Out::Unit),
+                    Err(e) => coordinator_error(e),
+                }
+            }
             OmaCommand::Tab(TabCommand::List { project }) => {
                 let Some(p) = self.coordinator.window().project(project) else {
                     return err(ErrorCode::ProjectNotFound, "project does not exist");
@@ -962,6 +970,7 @@ impl CommandRouter {
                                 y: rect.rect.y,
                                 width: rect.rect.width,
                                 height: rect.rect.height,
+                                splits: t.tree.split_path(rect.pane).unwrap_or_default(),
                             });
                         }
                     }
@@ -1686,6 +1695,105 @@ mod tests {
     }
 
     #[test]
+    fn project_set_directory_updates_base_for_future_tabs() {
+        let mut router = router();
+        let mk_project = |router: &mut CommandRouter| {
+            let created = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Project(ProjectCommand::Create {
+                    name: None,
+                    directory: Some(std::env::temp_dir()),
+                }),
+            );
+            let CommandResult::Ok(CommandOutput::ProjectCreated { project, tab, .. }) =
+                created.result
+            else {
+                panic!("project creation");
+            };
+            (project, tab)
+        };
+        let (project, tab) = mk_project(&mut router);
+        let (other, _) = mk_project(&mut router);
+        // Success emits ordered effects and updates the pinned base.
+        let target = std::env::temp_dir();
+        let updated = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::SetDirectory {
+                project,
+                directory: target.clone(),
+            }),
+        );
+        assert!(matches!(
+            updated.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+        assert!(matches!(
+            updated.effects.as_slice(),
+            [
+                CommandEffect::WorkspaceChanged,
+                CommandEffect::PersistenceDirty,
+            ]
+        ));
+        assert_eq!(
+            router.window().project(project).unwrap().pinned_directory,
+            Some(target)
+        );
+        // Existing tabs still resolve after the base change.
+        assert!(router.window().project(project).unwrap().tab(tab).is_some());
+        // Stale project is rejected without effects.
+        let stale = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::SetDirectory {
+                project: omaterm_core::ProjectId::new(),
+                directory: std::env::temp_dir(),
+            }),
+        );
+        assert!(matches!(
+            stale.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::ProjectNotFound,
+                ..
+            })
+        ));
+        assert!(stale.effects.is_empty());
+        // Missing directory fails validation with no effects.
+        let missing = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::SetDirectory {
+                project,
+                directory: std::env::temp_dir().join("omaterm-no-such-dir"),
+            }),
+        );
+        assert!(matches!(
+            missing.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
+        assert!(missing.effects.is_empty());
+        // A scoped credential cannot retarget a foreign project.
+        let foreign = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Project(ProjectCommand::SetDirectory {
+                project: other,
+                directory: std::env::temp_dir(),
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+        // Tidy up the spawned shells; the binary exit would reap regardless.
+        for id in [project, other] {
+            let _ = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Project(ProjectCommand::Delete { project: id }),
+            );
+        }
+    }
+
+    #[test]
     fn command_variant_matrix_covers_remaining_selectors_and_failures() {
         let mut router = router();
         let created = router.dispatch(
@@ -2122,6 +2230,22 @@ mod tests {
             .ancestors(split_pane)
             .and_then(|ids| ids.first().copied())
             .expect("new split has an ancestor split ID");
+        // 11F: the split is discoverable from `pane list` on both panes,
+        // innermost-first for resize targeting.
+        let listed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Pane(PaneCommand::List { tab: Some(tab) }),
+        );
+        let CommandResult::Ok(CommandOutput::PaneList(ref items)) = listed.result else {
+            panic!("pane list should succeed after split");
+        };
+        assert_eq!(items.len(), 2);
+        for item in items {
+            let innermost = item.splits.last().expect("split pane carries its split");
+            assert_eq!(innermost.id, split_id);
+            assert_eq!(innermost.axis, omaterm_core::SplitAxis::Horizontal);
+            assert_eq!(innermost.fraction, 0.5);
+        }
         let resized = router.dispatch(
             CommandContext::LocalUser,
             OmaCommand::Pane(PaneCommand::Resize {
@@ -2140,6 +2264,16 @@ mod tests {
                 CommandEffect::PersistenceDirty,
             ]
         ));
+        let after_resize = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Pane(PaneCommand::List { tab: Some(tab) }),
+        );
+        let CommandResult::Ok(CommandOutput::PaneList(ref items)) = after_resize.result else {
+            panic!("pane list should succeed after resize");
+        };
+        for item in items {
+            assert_eq!(item.splits.last().map(|s| s.fraction), Some(0.6));
+        }
 
         let equalized = router.dispatch(
             CommandContext::LocalUser,
@@ -2149,6 +2283,17 @@ mod tests {
             equalized.result,
             CommandResult::Ok(CommandOutput::Unit)
         ));
+        // 11F: resize/equalize fractions are observable through the same list.
+        let relisted = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Pane(PaneCommand::List { tab: Some(tab) }),
+        );
+        let CommandResult::Ok(CommandOutput::PaneList(ref items)) = relisted.result else {
+            panic!("pane list should succeed after equalize");
+        };
+        for item in items {
+            assert_eq!(item.splits.last().map(|s| s.fraction), Some(0.5));
+        }
         assert!(matches!(
             equalized.effects.as_slice(),
             [
@@ -2330,6 +2475,7 @@ mod tests {
                 shell: Some("/bin/bash".into()),
                 cols: 80,
                 rows: 24,
+                scrollback_lines: None,
             })
             .expect("spawn integrated bash");
         let command = || {
@@ -2389,6 +2535,7 @@ mod tests {
                 shell: Some("/bin/sh".into()),
                 cols: 80,
                 rows: 24,
+                scrollback_lines: None,
             })
             .expect("spawn sh");
         let outcome = router.dispatch(

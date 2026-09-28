@@ -79,6 +79,16 @@ pub struct PaneRect {
     pub rect: NormalizedRect,
 }
 
+/// One split on the root-to-leaf path of a pane, outermost first. This is the
+/// discoverability surface for `pane.resize`: a client lists panes, picks the
+/// innermost (last) split of its target pane, and resizes by that split ID.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SplitSummary {
+    pub id: SplitId,
+    pub axis: SplitAxis,
+    pub fraction: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removal {
     pub pane: Pane,
@@ -184,6 +194,17 @@ impl PaneTree {
             .as_ref()?
             .ancestors(target, &mut ancestors)
             .then_some(ancestors)
+    }
+
+    /// Root-to-leaf split path for a pane, carrying axis and fraction per
+    /// split. Returns `None` for unknown panes and an empty vector for a
+    /// lone root pane (no splits to resize).
+    pub fn split_path(&self, target: PaneId) -> Option<Vec<SplitSummary>> {
+        let mut path = Vec::new();
+        self.root
+            .as_ref()?
+            .split_path(target, &mut path)
+            .then_some(path)
     }
 
     pub fn pane_rects(&self) -> Vec<PaneRect> {
@@ -372,6 +393,31 @@ impl PaneNode {
                     true
                 } else {
                     ancestors.pop();
+                    false
+                }
+            }
+        }
+    }
+
+    fn split_path(&self, target: PaneId, path: &mut Vec<SplitSummary>) -> bool {
+        match self {
+            Self::Pane(pane) => pane.id == target,
+            Self::Split {
+                id,
+                axis,
+                fraction,
+                first,
+                second,
+            } => {
+                path.push(SplitSummary {
+                    id: *id,
+                    axis: *axis,
+                    fraction: *fraction,
+                });
+                if first.split_path(target, path) || second.split_path(target, path) {
+                    true
+                } else {
+                    path.pop();
                     false
                 }
             }
@@ -724,6 +770,41 @@ mod tests {
         assert_eq!(tree.neighbor(a.id, SplitDirection::Right), Some(b.id));
         assert_eq!(tree.neighbor(c.id, SplitDirection::Right), Some(d.id));
         assert_eq!(tree.neighbor(a.id, SplitDirection::Left), None);
+    }
+
+    #[test]
+    fn split_path_carries_axis_and_fraction_root_to_leaf() {
+        let first = pane();
+        let second = pane();
+        let third = pane();
+        let mut tree = PaneTree::new(first.clone());
+        tree.split(first.id, SplitDirection::Down, second.clone())
+            .unwrap();
+        tree.split(second.id, SplitDirection::Right, third.clone())
+            .unwrap();
+        tree.resize(
+            match tree.root().unwrap() {
+                PaneNode::Split { id, .. } => *id,
+                _ => panic!(),
+            },
+            0.6,
+        )
+        .unwrap();
+
+        let path = tree.split_path(third.id).expect("nested pane resolves");
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].axis, SplitAxis::Vertical);
+        assert_eq!(path[0].fraction, 0.6);
+        assert_eq!(path[1].axis, SplitAxis::Horizontal);
+        assert_eq!(path[1].fraction, 0.5);
+        // Innermost entry is the `pane.resize` target for this pane.
+        assert_eq!(tree.split_fraction(path[1].id), Some(0.5));
+
+        // Lone root pane has no splits; unknown panes resolve to None.
+        assert_eq!(tree.split_path(first.id).unwrap().len(), 1);
+        assert_eq!(tree.split_path(PaneId::new()), None);
+        let solo = PaneTree::new(pane());
+        assert_eq!(solo.split_path(solo.panes()[0].id), Some(Vec::new()));
     }
 
     #[test]

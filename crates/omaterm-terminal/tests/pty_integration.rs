@@ -459,6 +459,7 @@ fn registry_session(
             shell,
             cols,
             rows,
+            scrollback_lines: None,
         })
         .expect("spawn registry session")
 }
@@ -1048,6 +1049,7 @@ fn bash_lifecycle_session_with_bashrc(bashrc: &str) -> (TerminalSession, std::pa
         80,
         24,
         env,
+        None,
     )
     .expect("spawn bash with isolated home");
     let start = Instant::now();

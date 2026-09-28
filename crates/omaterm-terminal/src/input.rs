@@ -206,6 +206,46 @@ pub fn prepare_paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// A paste is risky when it spans lines or carries control characters that
+/// could trigger shell behavior beyond plain typing (tab included in the
+/// control set would false-positive on indented code, so only line breaks
+/// and C0/C1 controls outside common whitespace count). Risky pastes go
+/// through the desktop's two-step confirmation; direct pastes send at once.
+pub fn needs_paste_confirm(text: &str) -> bool {
+    text.chars()
+        .any(|char| char == '\n' || char == '\r' || (char.is_control() && !matches!(char, '\t')))
+}
+
+/// Escape one filesystem path for POSIX shell input: single-quote with
+/// embedded quotes closed, escaped, and reopened. Never appends a newline;
+/// the user reviews and submits with Enter.
+pub fn escape_shell_path(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy();
+    let mut escaped = String::with_capacity(raw.len() + 2);
+    escaped.push('\'');
+    for chunk in raw.split('\'') {
+        // `split` yields empty edge chunks; rejoin with the close-escape-open
+        // sequence only between them.
+        if escaped.len() > 1 {
+            escaped.push_str("'\\''");
+        }
+        escaped.push_str(chunk);
+    }
+    escaped.push('\'');
+    escaped
+}
+
+/// Join dropped filesystem paths for shell input: space-separated escaped
+/// paths with a trailing space, no newline. Empty input yields empty output.
+pub fn format_dropped_paths(paths: &[std::path::PathBuf]) -> Vec<u8> {
+    let mut out = String::new();
+    for path in paths {
+        out.push_str(&escape_shell_path(path));
+        out.push(' ');
+    }
+    out.into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +378,50 @@ mod tests {
             app_keypad: false,
         };
         assert!(encode_key(&ev).is_empty());
+    }
+
+    #[test]
+    fn risky_pastes_require_confirmation() {
+        for direct in [
+            "ls -la",
+            "cargo test -- --nocapture",
+            "indented\tcode",
+            "héllo 你好",
+        ] {
+            assert!(!needs_paste_confirm(direct), "{direct:?}");
+        }
+        for risky in [
+            "line one\nline two",
+            "trailing newline\n",
+            "carriage\rreturn",
+            "bell\x07here",
+            "escape\x1b[2J",
+        ] {
+            assert!(needs_paste_confirm(risky), "{risky:?}");
+        }
+    }
+
+    #[test]
+    fn shell_paths_escape_safely() {
+        use std::path::{Path, PathBuf};
+        assert_eq!(
+            escape_shell_path(Path::new("/tmp/plain dir/f")),
+            "'/tmp/plain dir/f'"
+        );
+        assert_eq!(
+            escape_shell_path(Path::new("/tmp/o'brien/x")),
+            "'/tmp/o'\\''brien/x'"
+        );
+        assert_eq!(escape_shell_path(Path::new("")), "''");
+        assert_eq!(
+            format_dropped_paths(&[PathBuf::from("/a b"), PathBuf::from("/c'd")]),
+            b"'/a b' '/c'\\''d' ".as_slice()
+        );
+        assert!(format_dropped_paths(&[]).is_empty());
+        // Unicode survives lossy conversion byte-identical.
+        assert_eq!(
+            format_dropped_paths(&[PathBuf::from("/tmp/снег")]),
+            "'/tmp/снег' ".as_bytes()
+        );
     }
 }

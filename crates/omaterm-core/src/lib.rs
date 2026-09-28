@@ -16,7 +16,7 @@ pub use error::{CoreError, Result};
 pub use ids::{PaneId, ProjectId, SessionId, SplitId, TabId, WindowId};
 pub use pane::{
     NormalizedRect, Pane, PaneContent, PaneNode, PaneRect, PaneTree, Removal, SplitAxis,
-    SplitDirection,
+    SplitDirection, SplitSummary,
 };
 pub use project::Project;
 pub use result::{
