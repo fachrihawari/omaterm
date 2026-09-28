@@ -47,6 +47,13 @@ the canonical workflow in [AGENTS.md](../AGENTS.md).
 | 9 | [CLI](09-milestone-9-cli.md) | `omaterm` CLI binary | `omaterm-cli` |
 | 10 | [Encrypted History Recovery](10-milestone-10-history-recovery.md) | Opt-in encrypted scrollback and OmaTerm command journal; fresh shells | `omaterm-terminal`, `omaterm-state`, desktop, IPC, CLI |
 | 11 | [v0.1 Closure & Hardening](11-milestone-11-v01-closure.md) | Live closeout M10, config, launch-args, resize IDs, logging, paste/drop, OS boundary, perf, packaging | `apps/omaterm`, `omaterm-cli`, `omaterm-state`, docs/packaging |
+| 12 | [Project Context Root](12-milestone-12-project-context.md) | Project root resolution, fs boundary, `[files]/[git]` config | `omaterm-context` (new), `omaterm-core` |
+| 13 | [File Tree](13-milestone-13-file-tree.md) | Sidebar tree + fuzzy filename search, terminal-routed open | `omaterm-context`, desktop, IPC, CLI |
+| 14 | [Git Status](14-milestone-14-git-status.md) | VSCode-style status + stage/unstage/discard via system git | `omaterm-context`, desktop, IPC, CLI |
+| 15 | [Diff Viewer](15-milestone-15-diff-viewer.md) | Hunk list + per-hunk stage | desktop, IPC, CLI |
+| 16 | [Command Palette](16-milestone-16-palette.md) | Fuzzy palette over semantic commands + file index | desktop |
+| 17 | [v0.2 Closure](17-milestone-17-v02-closure.md) | Live closeout, baselines, redaction audit, acceptance rows | docs, desktop, tests |
+| 18 | [Process Panel](18-milestone-18-process-panel.md) | Kero-parity Info panel: processes + ports + scoped kill | `omaterm-terminal`, desktop, IPC, CLI |
 
 M10 is post-v0.1 and does not change M6's layout/CWD-only persistence contract.
 It is blocked until M5–M9 and its dependency/replay spikes are complete.
@@ -56,11 +63,20 @@ launch-args, resize discoverability, logging, paste/drop, OS boundary, perf
 baseline, packaging/license inventory). It adds no v0.2+ features; `terminal
 wait` stays deferred to v0.4 with only an API design note.
 
+M12–M17 deliver v0.2 Developer Context (VSCode-inspired file tree, git,
+diff, palette; Kero is the behavioral reference, no GPL code): M12 is the
+project-root/boundary foundation with the 3rd-party crate spikes, M13–M16
+are the panels (sidebar-first, editor deferred to v0.3), M17 is the v0.2
+closeout. M18 adds the Kero-parity process Info panel (per focused pane,
+ports + scoped SIGTERM kill) and may land any time after M12. Project
+license is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`).
+
 ## Version Roadmap
 
 ```
 v0.1 — Terminal Workspace        ← Milestones 1–9 (this plan)
-v0.2 — Developer Context          (file tree, git, diff, command palette)
+v0.2 — Developer Context          (file tree, git, diff, command palette) ← Milestones 12–17
+v0.2-appendix — Process Panel     (Kero-parity Info panel) ← Milestone 18
 v0.3 — Agent Awareness             (process recognition, status, notifications)
 v0.4 — Agent Automation            (spawn, prompt, wait, delegated panes)
 ```
