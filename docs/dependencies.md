@@ -37,7 +37,8 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   Apache-2.0 per its crate manifest and crates.io metadata. Both `wayland` and
   `x11` features are explicitly enabled with default features disabled.
 - `Cargo.lock`: committed application resolution. A full transitive license
-  review remains required before release; no project license has been selected.
+  review remains required before release; project license MIT OR Apache-2.0
+  (decided 2026-09-29).
 - Local Arch native packages used by GPUI: `wayland` 1.26.0-1 (MIT),
   `libxkbcommon` 1.13.2-1 (MIT), `libx11` 1.8.13-1 (MIT AND X11), `libxcb`
   1.17.0-1 (X11), `fontconfig` 2:2.18.3-2 (HPND AND Unicode-DFS-2016),
@@ -254,9 +255,9 @@ New crates: `omaterm-logging` 0.1.0 (shared std-only `tracing` subscriber;
 direct dep `tracing` 0.1.44 MIT, already in `Cargo.lock` — no new external
 dependency, verified offline). `packaging/arch/PKGBUILD` builds both binaries
 with `cargo build --release --locked`; `packaging/README.md` documents the
-Arch build and the standalone tarball. `license=('custom:UNLICENSED')` in the
-PKGBUILD is a placeholder until the project license is chosen (blueprint
-§70); the tag-tarball `sha256sums` is `SKIP` until the first version tag.
+Arch build and the standalone tarball. `license=('MIT' 'Apache-2.0')` in the
+PKGBUILD matches the decided project license (blueprint §70); the tag-tarball
+`sha256sums` is `SKIP` until the first version tag.
 
 Full transitive inventory generated offline from
 `cargo metadata --format-version 1 --filter-platform x86_64-unknown-linux-gnu`
@@ -290,5 +291,10 @@ Do not copy GPL implementation without an explicit compatible project-license
 decision. GPUI has its own licensing context: inspect its selected package rather
 than inferring its license from unrelated Zed crates.
 
-Project license: **undecided**. This document records dependencies; it does not
-choose the application's license.
+Project license: **MIT OR Apache-2.0** (decided 2026-09-29; `LICENSE-MIT`,
+`LICENSE-APACHE`, SPDX `license` fields in every crate manifest,
+`license=('MIT' 'Apache-2.0')` in `packaging/arch/PKGBUILD`). No GPL-only
+hard dependency exists, so the permissive choice covers the whole tree;
+`option-ext` (MPL-2.0, file-level) and `self_cell` (Apache-2.0 disjunct)
+remain compatible. This document records dependencies; Kero/Zed stay
+behavioral references only.

@@ -30,5 +30,6 @@ indexes may reference absolute machine-local paths.
 
 ## License
 
-The project license is undecided. Follow the blueprint's licensing requirements
-before incorporating third-party implementation code.
+MIT OR Apache-2.0 — see `LICENSE-MIT` and `LICENSE-APACHE`. Kero and Zed
+remain behavioral/architectural references only; no GPL implementation code
+is incorporated. Outside contributions are accepted under the same dual terms.

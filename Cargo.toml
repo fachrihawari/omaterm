@@ -4,3 +4,4 @@ members = ["apps/omaterm", "crates/omaterm-core", "crates/omaterm-terminal", "cr
 
 [workspace.package]
 edition = "2024"
+license = "MIT OR Apache-2.0"

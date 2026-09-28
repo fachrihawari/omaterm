@@ -1,9 +1,9 @@
 # Maintainer: OmaTerm contributors
 # M11 task 11J: first-class Arch packaging for Omarchy users.
 #
-# Project license is TBD (OMATERM_AGENT_BLUEPRINT.md §70): the `license`
-# array below MUST be updated when the project license is chosen. Dependency
-# licenses are inventoried in docs/dependencies.md.
+# Project license: MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE at the
+# repository root; SPDX `license` fields in every crate manifest).
+# Dependency licenses are inventoried in docs/dependencies.md.
 
 pkgname=omaterm
 pkgver=0.1.0
@@ -11,7 +11,7 @@ pkgrel=1
 pkgdesc='Terminal-first developer workspace with semantic CLI automation'
 arch=('x86_64')
 url='https://github.com/fachrihawari/omaterm'
-license=('custom:UNLICENSED')
+license=('MIT' 'Apache-2.0')
 depends=('gcc-libs' 'fontconfig' 'freetype2' 'libxkbcommon' 'libx11' 'libxcb' 'wayland' 'vulkan-icd-loader')
 makedepends=('cargo' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")

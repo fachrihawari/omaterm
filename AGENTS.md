@@ -331,4 +331,4 @@ Do NOT change these without a concrete blocker + evidence + alternatives:
 
 ## License
 
-**TBD** — License has not been chosen yet. Do not copy GPL code (from Kero or Zed) without explicit license decision. Use Kero and Zed as behavioral/architectural references only.
+**MIT OR Apache-2.0** — see `LICENSE-MIT` and `LICENSE-APACHE`. Do not copy GPL code (from Kero or Zed) without explicit license decision. Use Kero and Zed as behavioral/architectural references only.
