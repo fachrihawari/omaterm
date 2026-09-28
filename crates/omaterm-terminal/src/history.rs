@@ -242,6 +242,19 @@ impl Default for HistoryRecorder {
 /// never completed output, and the archive on disk retains full bytes, so
 /// nothing is lost permanently.
 ///
+/// When an idle prompt tail was dropped, exactly one trailing blank line is
+/// also dropped if the kept prefix ends with one. Prompts with normal
+/// leading-newline padding (the blank separator also seen on plain `foot`
+/// terminals) otherwise re-add their padding on every fresh shell, stacking
+/// one more empty line per restart cycle. Only one break is removed and
+/// only when the bytes between the last two newlines are zero-width
+/// (`\r` and terminal escape sequences such as the OSC 133 lifecycle
+/// markers, which carry no `\n` and render nothing); real content,
+/// including intentional blank output lines, is preserved, so the seam is
+/// idempotent across restarts. A record holding nothing visible at all
+/// collapses to resizes only: blank-only scrollback carries no information
+/// and the fresh shell re-emits its own padding.
+///
 /// Resize events are always kept (grid fidelity matters and they are tiny).
 /// A record with no newline at all restores to just its resizes: the fresh
 /// prompt then stands alone instead of doubling. Truncation always lands on
@@ -266,6 +279,22 @@ pub fn strip_trailing_partial_line(events: &[RecordedEvent]) -> Vec<RecordedEven
             .cloned()
             .collect();
     };
+    // Did an idle prompt (or torn tail) actually exist past the final
+    // newline? Padding removal below is only valid with that evidence: a
+    // record already ending at a newline has no prompt to attribute a
+    // trailing blank line to.
+    let mut tail_dropped = false;
+    if let RecordedEvent::Output(bytes) = &events[index] {
+        tail_dropped = bytes.len() > pos + 1;
+    }
+    for event in &events[index + 1..] {
+        if let RecordedEvent::Output(bytes) = event
+            && !bytes.is_empty()
+        {
+            tail_dropped = true;
+            break;
+        }
+    }
     // Everything up to and including the final newline is complete history.
     // Later output holds no newline by construction, so only later resizes
     // survive.
@@ -279,7 +308,183 @@ pub fn strip_trailing_partial_line(events: &[RecordedEvent]) -> Vec<RecordedEven
             .filter(|event| matches!(event, RecordedEvent::Resize { .. }))
             .cloned(),
     );
+    if tail_dropped {
+        strip_one_prompt_padding_blank(&mut stripped);
+        collapse_blank_only_record(&mut stripped);
+    }
     stripped
+}
+
+/// Flat index of every `Output` byte: `(event_index, byte_offset, byte)`.
+/// `Resize` events carry no bytes and keep their order separately.
+fn flat_output_bytes(events: &[RecordedEvent]) -> Vec<(usize, usize, u8)> {
+    let mut flat = Vec::new();
+    for (event_index, event) in events.iter().enumerate() {
+        if let RecordedEvent::Output(bytes) = event {
+            for (byte_offset, byte) in bytes.iter().enumerate() {
+                flat.push((event_index, byte_offset, *byte));
+            }
+        }
+    }
+    flat
+}
+
+/// Skip one terminal escape sequence starting at `start` (which must hold
+/// `ESC`). OSC (`ESC ] … BEL/ST`), CSI (`ESC [ … final`), and short
+/// two/three-byte sequences are zero-width for blank-line detection.
+/// Returns the first index past the sequence, or `None` when malformed or
+/// truncated (conservative: the span is then not blank).
+fn skip_escape_sequence(bytes: &[u8], start: usize) -> Option<usize> {
+    debug_assert_eq!(bytes.get(start), Some(&0x1b));
+    let introduced = *bytes.get(start + 1)?;
+    match introduced {
+        // OSC: ESC ] … BEL, or ESC ] … ESC \ (ST). Never spans a newline.
+        b']' => {
+            let mut i = start + 2;
+            loop {
+                match bytes.get(i) {
+                    Some(0x07) => return Some(i + 1),
+                    Some(0x1b) if bytes.get(i + 1) == Some(&b'\\') => return Some(i + 2),
+                    Some(b'\n') | None => return None,
+                    _ => i += 1,
+                }
+            }
+        }
+        // CSI: ESC [ params intermediates final.
+        b'[' => {
+            let mut i = start + 2;
+            while matches!(bytes.get(i), Some(0x30..=0x3f)) {
+                i += 1;
+            }
+            while matches!(bytes.get(i), Some(0x20..=0x2f)) {
+                i += 1;
+            }
+            match bytes.get(i) {
+                Some(0x40..=0x7e) => Some(i + 1),
+                _ => None,
+            }
+        }
+        // Character-set / single-shift introducers take one more byte.
+        b'(' | b')' | b'#' | b'%' => {
+            if bytes.get(start + 2).is_some() {
+                Some(start + 3)
+            } else {
+                None
+            }
+        }
+        // Any other ESC + single byte (e.g. `M`, `=`, `c`).
+        _ => Some(start + 2),
+    }
+}
+
+/// True when `bytes` renders nothing: only carriage returns and complete
+/// terminal escape sequences. Any printable, UTF-8 continuation, tab,
+/// lone BEL, or malformed/truncated escape means visible (or unknown)
+/// content — never treated as blank.
+fn is_zero_width_span(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => i += 1,
+            0x1b => match skip_escape_sequence(bytes, i) {
+                Some(next) => i = next,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Remove flat `Output`-byte indices `remove` from `events`, dropping
+/// `Output` events left empty. `Resize` events are untouched and keep
+/// their positions.
+fn remove_flat_output_range(events: &mut Vec<RecordedEvent>, remove: &[bool]) {
+    let mut flat_cursor = 0;
+    let mut kept: Vec<RecordedEvent> = Vec::with_capacity(events.len());
+    for event in events.drain(..) {
+        match event {
+            RecordedEvent::Output(bytes) => {
+                let mut remaining = Vec::with_capacity(bytes.len());
+                for byte in bytes {
+                    if !remove.get(flat_cursor).copied().unwrap_or(false) {
+                        remaining.push(byte);
+                    }
+                    flat_cursor += 1;
+                }
+                if !remaining.is_empty() {
+                    kept.push(RecordedEvent::Output(remaining));
+                }
+            }
+            resize @ RecordedEvent::Resize { .. } => kept.push(resize),
+        }
+    }
+    *events = kept;
+}
+
+/// Drop one trailing prompt-padding blank line: when the `Output` byte
+/// stream ends with `…\n <zero-width> \n`, the final line break (plus the
+/// zero-width span before it) is the idle prompt's leading padding, which
+/// the fresh shell re-emits. Removing the whole span keeps the record
+/// clean of stale lifecycle markers; the span provably renders nothing.
+fn strip_one_prompt_padding_blank(stripped: &mut Vec<RecordedEvent>) {
+    let flat = flat_output_bytes(stripped);
+    let mut last = None;
+    let mut previous = None;
+    for (flat_index, (_, _, byte)) in flat.iter().enumerate() {
+        if *byte == b'\n' {
+            previous = last;
+            last = Some(flat_index);
+        }
+    }
+    let (Some(second), Some(first)) = (last, previous) else {
+        return;
+    };
+    let span: Vec<u8> = flat[first + 1..second]
+        .iter()
+        .map(|(_, _, byte)| *byte)
+        .collect();
+    if !is_zero_width_span(&span) {
+        return;
+    }
+    let mut remove = vec![false; flat.len()];
+    for slot in remove.iter_mut().take(second + 1).skip(first + 1) {
+        *slot = true;
+    }
+    remove_flat_output_range(stripped, &remove);
+}
+
+/// Collapse a record whose `Output` bytes render nothing (only line breaks
+/// and escape sequences) down to resizes. Blank-only scrollback carries no
+/// information and the fresh shell supplies its own padding; without this,
+/// an empty-history restore stabilizes with one stray blank line.
+fn collapse_blank_only_record(stripped: &mut Vec<RecordedEvent>) {
+    let flat = flat_output_bytes(stripped);
+    if flat.is_empty() {
+        return;
+    }
+    let all: Vec<u8> = flat.iter().map(|(_, _, byte)| *byte).collect();
+    let visible = all.iter().any(|byte| *byte != b'\n' && *byte != b'\r');
+    if !visible {
+        // Only breaks (no escapes at all): nothing visible, drop outputs.
+        stripped.retain(|event| matches!(event, RecordedEvent::Resize { .. }));
+        return;
+    }
+    // Mixed breaks and other bytes: blank only if every non-break run is
+    // zero-width escapes. Walk line by line for a precise verdict.
+    let mut line_start = 0;
+    for (i, byte) in all.iter().enumerate() {
+        if *byte == b'\n' {
+            if !is_zero_width_span(&all[line_start..i]) {
+                return;
+            }
+            line_start = i + 1;
+        }
+    }
+    if line_start < all.len() && !is_zero_width_span(&all[line_start..]) {
+        return;
+    }
+    stripped.retain(|event| matches!(event, RecordedEvent::Resize { .. }));
 }
 
 /// Replay ordered events into a fresh engine. The caller creates the engine
@@ -612,5 +817,171 @@ mod tests {
             !text.contains('❯'),
             "no stale prompt above the fresh shell: {text:?}"
         );
+    }
+
+    #[test]
+    fn strip_drops_one_prompt_padding_blank_after_idle_prompt() {
+        // Shells with leading-newline prompt padding (the blank separator
+        // also seen on plain foot terminals): the record ends with output,
+        // one padding blank, then the idle prompt text. The padding must go
+        // with the prompt — the fresh shell re-emits exactly one — or every
+        // restart stacks another empty line.
+        let events = vec![
+            output(b"bash: command not found: ll\r\n"),
+            output(b"\r\n"),
+            output(b"omaterm main \xe2\x9d\xaf "),
+        ];
+        assert_eq!(
+            strip_trailing_partial_line(&events),
+            vec![output(b"bash: command not found: ll\r\n")],
+            "prompt padding blank dropped with the idle tail"
+        );
+    }
+
+    #[test]
+    fn strip_drops_padding_blank_with_lifecycle_marker_between() {
+        // Our own OSC 133 prompt-ready marker sits between the last output
+        // newline and the padding newline; it renders nothing and must not
+        // protect the padding blank.
+        let marker = b"\x1b]133;A;test-token-12;1\x07";
+        let mut padded = b"out\r\n".to_vec();
+        padded.extend_from_slice(marker);
+        padded.extend_from_slice(b"\r\n");
+        let events = vec![output(&padded), output(b"prompt ")];
+        assert_eq!(
+            strip_trailing_partial_line(&events),
+            vec![output(b"out\r\n")],
+            "padding break and stale marker span dropped together"
+        );
+    }
+
+    #[test]
+    fn strip_drops_fragmented_padding_blank_across_events() {
+        // PTY chunks split anywhere: the padding CRLF may straddle events.
+        let events = vec![
+            output(b"out\r"),
+            output(b"\n"),
+            output(b"\r"),
+            output(b"\n"),
+            output(b"\xe2\x9d\xaf "),
+        ];
+        assert_eq!(
+            strip_trailing_partial_line(&events),
+            vec![output(b"out\r"), output(b"\n")],
+            "fragmented padding removed, output newline kept"
+        );
+    }
+
+    #[test]
+    fn strip_keeps_intentional_content_blanks() {
+        // `printf 'a\n\n'` output plus single padding plus prompt: only the
+        // padding goes; the content blank survives.
+        let events = vec![
+            output(b"a\r\n"),
+            output(b"\r\n"),
+            output(b"\r\n"),
+            output(b"prompt "),
+        ];
+        assert_eq!(
+            strip_trailing_partial_line(&events),
+            vec![output(b"a\r\n"), output(b"\r\n")],
+            "exactly one trailing blank removed"
+        );
+    }
+
+    #[test]
+    fn strip_keeps_colored_content_before_idle_prompt() {
+        // SGR color sequences around real text are visible content: a
+        // trailing blank after them is still padding and goes, the colored
+        // line itself stays.
+        let events = vec![
+            output(b"\x1b[31mred\x1b[0m\r\n"),
+            output(b"\r\n"),
+            output(b"prompt "),
+        ];
+        assert_eq!(
+            strip_trailing_partial_line(&events),
+            vec![output(b"\x1b[31mred\x1b[0m\r\n")],
+            "colored line kept, padding dropped"
+        );
+    }
+
+    #[test]
+    fn strip_without_padding_blank_is_untouched() {
+        // No-leading-newline shells: output newline directly followed by
+        // prompt text. There is no padding to drop; the prompt tail still goes.
+        let events = vec![output(b"out\r\n"), output(b"prompt ")];
+        assert_eq!(
+            strip_trailing_partial_line(&events),
+            vec![output(b"out\r\n")]
+        );
+    }
+
+    #[test]
+    fn strip_collapses_blank_only_record_to_resizes() {
+        // Empty history: nothing but padding plus prompt. Restoring a blank
+        // would leave a stray empty row that re-pads every cycle; the fresh
+        // shell supplies its own padding on a clean grid.
+        let events = vec![
+            output(b"\r\n"),
+            output(b"\r\n"),
+            output(b"prompt "),
+            resize(80, 24),
+        ];
+        assert_eq!(
+            strip_trailing_partial_line(&events),
+            vec![resize(80, 24)],
+            "blank-only record restores to resizes only"
+        );
+    }
+
+    #[test]
+    fn strip_seam_is_idempotent_across_restarts() {
+        // Steady state: stripped seed + fresh padding + fresh idle prompt
+        // must strip back to the same seed — otherwise blanks accumulate.
+        let seed = vec![output(b"bash: command not found: ll\r\n")];
+        let mut next_cycle = seed.clone();
+        next_cycle.push(output(b"\r\n"));
+        next_cycle.push(output(b"omaterm main \xe2\x9d\xaf "));
+        assert_eq!(
+            strip_trailing_partial_line(&next_cycle),
+            seed,
+            "second strip returns the seed unchanged"
+        );
+    }
+
+    #[test]
+    fn strip_seam_replay_keeps_exactly_one_blank_separator() {
+        // End-to-end seam: replayed seed ends at a complete line, the fresh
+        // shell prints its normal padding plus prompt, and the visible grid
+        // shows exactly one blank row between output and prompt.
+        let saved = vec![
+            output(b"bash: command not found: ll\r\n"),
+            output(b"\r\n"),
+            output(b"omaterm main \xe2\x9d\xaf "),
+        ];
+        let seed = strip_trailing_partial_line(&saved);
+        let mut engine = AlacrittyEngine::new(80, 24);
+        replay_into(&mut engine, &seed);
+        engine.advance_output(b"\r\nomaterm main \xe2\x9d\xaf ");
+        let text = engine.read_visible_text(24, 80);
+        let lines: Vec<&str> = text.lines().collect();
+        let output_at = lines
+            .iter()
+            .position(|line| line.contains("command not found"))
+            .expect("output replays");
+        let prompt_at = lines
+            .iter()
+            .position(|line| line.contains("omaterm main"))
+            .expect("fresh prompt renders");
+        assert_eq!(
+            prompt_at,
+            output_at + 2,
+            "exactly one blank row separates output and prompt: {lines:?}"
+        );
+        // And the newly recorded cycle strips back to the seed.
+        let mut recorded = seed.clone();
+        recorded.push(output(b"\r\nomaterm main \xe2\x9d\xaf "));
+        assert_eq!(strip_trailing_partial_line(&recorded), seed);
     }
 }

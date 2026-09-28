@@ -1757,3 +1757,51 @@ per cycle, accumulating.
   in 0.67s with zero code changes: environmental, same signature as prior
   documented PTY flakiness). `python3 scripts/check-docs.py` and
   `git diff --check` PASS.
+
+## Milestone 10 — History restore fix: prompt-padding blank line (2026-09-28)
+
+User report: after every close/reopen, one more empty line stacks above the
+fresh `omaterm main ❯` prompt (N reopens → N blank lines). Inter-command
+blanks are normal (same on plain `foot`): the prompt carries leading-newline
+padding, so exactly one blank separator must survive — not zero, not growing.
+
+### Root cause
+
+`strip_trailing_partial_line` cut the record after the final `\n`, which is
+the idle prompt's *leading padding* newline rather than real output. The
+fresh shell re-emits its padding on launch, so each cycle persisted one
+extra blank line. The prior duplicate-prompt fix removed the prompt text;
+this removes its padding blank.
+
+### Fix (uncommitted)
+
+- `crates/omaterm-terminal/src/history.rs`: when an idle/torn tail was
+  actually dropped and the kept prefix ends with `…\n <zero-width> \n`,
+  exactly one trailing blank line goes with the tail. The span check
+  accepts only `\r` and complete terminal escape sequences (notably the
+  zero-width OSC 133 lifecycle markers, which sit between the output
+  newline and the padding newline), so real content — including
+  intentional blank output lines and colored lines — is preserved and the
+  seam is idempotent. A record holding nothing visible collapses to
+  resizes only; the fresh shell supplies its own padding.
+- No router/desktop changes: `replay_restore_history` already strips
+  before replay and seeding, so it inherits the fix.
+
+### Verification (Rust 1.98.1)
+
+- `cargo fmt --all --check` PASS; `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS (known `proc-macro-error2` notice only).
+- 9 new history tests (padding drop, OSC-interleaved padding, fragmented
+  CRLF across events, content-blank preservation, colored content,
+  no-padding shells untouched, blank-only collapse, cross-restart
+  idempotency, end-to-end seam replay with exactly one blank separator).
+- `cargo test --workspace -- --test-threads=1` PASS: 287 tests, 0 failures
+  (32 desktop + 26 CLI + 13 core + 11 IPC + 6 protocol + 37 state +
+  130 terminal unit + 32 PTY integration).
+- `python3 scripts/check-docs.py` and `git diff --check` PASS.
+
+### Next action
+
+User validates live on Omarchy/Hyprland (release build): enable history,
+run a failing `ll`, Super+W close, reopen ×3 — exactly one blank row
+between the error output and the fresh prompt every time, no growth.
