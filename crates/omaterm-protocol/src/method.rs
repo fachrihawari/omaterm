@@ -84,6 +84,12 @@ pub struct TerminalRead {
     pub lines: Option<usize>,
     pub columns: Option<usize>,
 }
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryList {
+    pub pane_id: String,
+    pub limit: Option<usize>,
+}
 
 #[derive(Clone)]
 pub enum Method {
@@ -104,6 +110,15 @@ pub enum Method {
     TerminalSend(TerminalSend),
     TerminalRun(TerminalRun),
     TerminalRead(TerminalRead),
+    HistoryEnable(Empty),
+    HistoryDisable(Empty),
+    HistoryStatus(Empty),
+    HistoryList(HistoryList),
+    HistoryPause(PaneSelector),
+    HistoryResume(PaneSelector),
+    HistoryClearPane(PaneSelector),
+    HistoryClearProject(ProjectSelector),
+    HistoryClearAll(Empty),
 }
 
 impl Method {
@@ -138,6 +153,15 @@ impl Method {
             "terminal.send" => decode!(TerminalSend, TerminalSend),
             "terminal.run" => decode!(TerminalRun, TerminalRun),
             "terminal.read" => decode!(TerminalRead, TerminalRead),
+            "history.enable" => decode!(Empty, HistoryEnable),
+            "history.disable" => decode!(Empty, HistoryDisable),
+            "history.status" => decode!(Empty, HistoryStatus),
+            "history.list" => decode!(HistoryList, HistoryList),
+            "history.pause" => decode!(PaneSelector, HistoryPause),
+            "history.resume" => decode!(PaneSelector, HistoryResume),
+            "history.clear-pane" => decode!(PaneSelector, HistoryClearPane),
+            "history.clear-project" => decode!(ProjectSelector, HistoryClearProject),
+            "history.clear-all" => decode!(Empty, HistoryClearAll),
             _ => Err(MethodError("unknown method")),
         }
     }
@@ -148,7 +172,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_seventeen_methods_decode_and_reject_unknown_parameters() {
+    fn all_methods_decode_and_reject_unknown_parameters() {
         let cases = [
             ("project.list", serde_json::json!({})),
             ("project.create", serde_json::json!({"directory":"/tmp"})),
@@ -179,8 +203,23 @@ mod tests {
                 "terminal.read",
                 serde_json::json!({"pane_id":"id","lines":20}),
             ),
+            ("history.enable", serde_json::json!({})),
+            ("history.disable", serde_json::json!({})),
+            ("history.status", serde_json::json!({})),
+            (
+                "history.list",
+                serde_json::json!({"pane_id":"id","limit":20}),
+            ),
+            ("history.pause", serde_json::json!({"pane_id":"id"})),
+            ("history.resume", serde_json::json!({"pane_id":"id"})),
+            ("history.clear-pane", serde_json::json!({"pane_id":"id"})),
+            (
+                "history.clear-project",
+                serde_json::json!({"project_id":"id"}),
+            ),
+            ("history.clear-all", serde_json::json!({})),
         ];
-        assert_eq!(cases.len(), 17);
+        assert_eq!(cases.len(), 26);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

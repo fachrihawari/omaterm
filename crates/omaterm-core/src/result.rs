@@ -18,6 +18,8 @@ pub enum ErrorCode {
     Timeout,
     NoFocusedPane,
     RuntimeFailure,
+    HistoryDisabled,
+    HistoryUnavailable,
 }
 
 impl ErrorCode {
@@ -37,6 +39,8 @@ impl ErrorCode {
             Self::Timeout => "timeout",
             Self::NoFocusedPane => "no_focused_pane",
             Self::RuntimeFailure => "runtime_failure",
+            Self::HistoryDisabled => "history_disabled",
+            Self::HistoryUnavailable => "history_unavailable",
         }
     }
 }
@@ -118,6 +122,11 @@ pub enum CommandOutput {
         session: SessionId,
     },
     RunSubmitted,
+    HistoryStatus(HistoryStatusInfo),
+    JournalEntries(Vec<JournalEntryInfo>),
+    HistoryCleared {
+        removed_files: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +159,33 @@ pub struct PaneInfo {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+/// Safe history metadata for `history status`: counts and state only, never
+/// keys, plaintext, or keyring details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryStatusInfo {
+    pub enabled: bool,
+    pub key_available: bool,
+    pub warning: Option<String>,
+    pub archive_files: usize,
+    pub archive_bytes: u64,
+    pub paused_panes: usize,
+}
+
+/// One bounded journal row for `history list`. Command text comes only from
+/// authenticated shell lifecycle events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalEntryInfo {
+    pub pane: String,
+    pub project: Option<String>,
+    pub tab: Option<String>,
+    pub command: String,
+    pub shell_dialect: String,
+    pub working_directory: String,
+    pub started_unix_secs: u64,
+    pub finished_unix_secs: Option<u64>,
+    pub exit_status: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

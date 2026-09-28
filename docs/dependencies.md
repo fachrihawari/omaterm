@@ -174,6 +174,80 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   release Wayland CLI/desktop proof on Rust 1.98.1 (Omarchy/Hyprland).
   Transitive license review remains outstanding; no project license selected.
 
+### Milestone 10 foundation record — 2026-09-27 (history crypto/keyring spike + archive/recorder implementation)
+
+Dependency selection for opt-in encrypted history. Verified on Rust 1.98.1
+(Omarchy/Hyprland) with a live Secret Service daemon (`secret-tool`
+store/lookup/clear round-trip PASS; `OsKeyProvider` create/reget/rotate/
+remove/recreate/cleanup PASS against the real daemon with isolated
+`omaterm-m10-spike` names, no entries left behind).
+
+- `chacha20poly1305` =0.11.0: direct `omaterm-state` dependency for
+  authenticated archive encryption (ChaCha20Poly1305 AEAD, compress-then-
+  encrypt, per-archive HKDF-derived keys, AAD-bound pane UUID + revision).
+  License `Apache-2.0 OR MIT` per its selected crate manifest. Pure Rust, no
+  AES hardware assumptions. API note: 0.11 exposes sealing through
+  `aead::AeadInOut::{encrypt_in_place, decrypt_in_place}` (nonce by
+  reference); `Nonce::from_slice` is deprecated in favor of `TryFrom`.
+- `hkdf` =0.12.4 + `sha2` =0.10.9: direct `omaterm-state` dependencies for
+  `HKDF-SHA256(master, per-archive salt, "omaterm-history-v1/…")` key
+  derivation (separate info strings for scrollback vs journal). Both
+  `MIT OR Apache-2.0` per selected manifests. (The `keyring` subtree also
+  resolves newer `hkdf` 0.13.0/`sha2` 0.11.0; same permissive licensing.)
+- `getrandom` =0.4.3: direct `omaterm-state` dependency for master-key, salt,
+  and nonce generation (`getrandom::fill`). `MIT OR Apache-2.0`. Chosen over
+  `rand` 0.10 because `rand` 0.10 renamed `OsRng` to `SysRng` and moved core
+  traits; `getrandom` has the smaller, stable API surface needed here.
+- `flate2` =1.1.10 (`rust_backend` only): direct `omaterm-state` dependency
+  for compress-before-encrypt (deflate). `MIT OR Apache-2.0`. Already in
+  `Cargo.lock` transitively; the `rust_backend` feature keeps it pure-Rust
+  (miniz_oxide) with no C zlib. Chosen over `zstd` (BSD-3-Clause + C
+  library) to keep the license inventory uniform and CI native-free.
+- `keyring` =4.2.0 (default `v1` feature): direct `omaterm-state` dependency
+  for the production Linux master-key provider. `MIT OR Apache-2.0`,
+  rust-version 1.88.0 (working toolchain 1.98.1, no conflict). On Linux the
+  `v1` API uses `zbus-secret-service-keyring-store` (resolves
+  `secret-service` 5.2.0 + `zbus` 5.19.0, already partially present via
+  GPUI's `oo7` subtree), with a blocking `Entry::new/get_password/
+  set_password/delete_credential` API so `omaterm-state` stays synchronous.
+  Only the random 32-byte master key (hex-encoded) is ever stored; keyring
+  errors map to `Locked`/`Denied`/`Unavailable` with no plaintext fallback.
+- `zeroize` =1.9.0: direct `omaterm-state` dependency for in-memory key
+  hygiene (cached keys zeroed on rotate/remove/drop). `Apache-2.0 OR MIT`.
+  Also a direct `omaterm-desktop` dependency for zeroing per-job key copies
+  in the background history writer.
+- `libc` 0.2 (existing 0.2.189 resolution): reused for history-file owner
+  validation (`geteuid` vs file uid) alongside symlink/type/permission
+  checks; no new version introduced.
+- `base64` =0.22.1 (Phase 1): now also a direct `omaterm-terminal`
+  dependency for strict decoding of shell-reported command payloads; same
+  locked version/license (`Apache-2.0 OR MIT`) already used by
+  `apps/omaterm`, no new version introduced. Verified with the lifecycle
+  parser/session/PTY matrix below.
+- Replay spike (no new dependency): ordered PTY byte chunks + resize events
+  replayed into a fresh `AlacrittyEngine` reproduce the main-screen visible
+  text exactly (ANSI colors, wide/combining Unicode, soft wraps, resize);
+  alt-screen bytes are excluded by policy (drop any chunk where alt is
+  active before or after the advance; pre-alt scrollback preserved). Proven
+  with a throwaway binary before durable-storage work, then encoded as
+  `omaterm-terminal::history` unit tests.
+- `toml_edit` =0.25.15 (added in the Phase 0 audit): direct `omaterm-state`
+  dependency for reading/writing the `[history]` section of the canonical
+  `~/.config/omaterm/config.toml` while preserving all other sections,
+  comments, and formatting. License `MIT OR Apache-2.0` per its selected
+  crate manifest; already present in `Cargo.lock` transitively, so no new
+  native or async dependencies.
+- Verified with `cargo test -p omaterm-state` (29 tests),
+  `cargo test -p omaterm-terminal --lib` (89 tests),
+  `cargo test --workspace -- --test-threads=1` (215 tests, 0 failures),
+  `cargo clippy --workspace --all-targets -- -D warnings` (only the known
+  transitive `proc-macro-error2` future-incompat notice),
+  `cargo tree -p omaterm-terminal` / `-p omaterm-state` (zero `gpui`),
+  and the live keyring spike above. Phase 0 re-verified with 37 state tests
+  (8 new audit tests), 223 workspace tests green, and the same Clippy/fmt
+  gates. `Cargo.lock` is committed with these resolutions. Transitive
+  license review remains outstanding; no project license selected.
+
 ## Reference provenance
 
 Kero and Zed terminal/terminal-view code are behavioral/architectural references.

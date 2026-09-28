@@ -439,11 +439,24 @@ impl WorkspaceCoordinator {
             .unwrap_or(&self.launch_directory)
     }
 
+    /// Resolve a pane to its live session across the whole window. Pane IDs
+    /// are unique workspace-wide, so every project and tab is searched —
+    /// not just the active tree. History replay, recording-flag sync, and
+    /// similar background paths must reach panes in inactive projects and
+    /// hidden tabs; restricting this to the visible tree silently dropped
+    /// those panes (notably: only the last active pane's history restored).
     pub fn session_id_for_pane(&self, pane: PaneId) -> Option<SessionId> {
-        match self.tree().find(pane)?.content {
-            PaneContent::Terminal(id) => Some(id),
-            PaneContent::Empty => None,
+        for project in &self.window.projects {
+            for tab in &project.tabs {
+                if let Some(node) = tab.tree.find(pane) {
+                    return match node.content {
+                        PaneContent::Terminal(id) => Some(id),
+                        PaneContent::Empty => None,
+                    };
+                }
+            }
         }
+        None
     }
 
     pub fn focused_session_id(&self) -> Option<SessionId> {
@@ -1534,5 +1547,69 @@ mod tests {
             .lock()
             .unwrap()
             .shutdown();
+    }
+
+    #[test]
+    fn session_id_for_pane_searches_inactive_projects_and_hidden_tabs() {
+        let mut ws = coordinator();
+        // Project A with two tabs; project B with one tab. Panes are bound
+        // by spawning real (idle) shells; cleanup reaps them at the end.
+        let pane_a1 = PaneId::new();
+        let session_a1 = SessionId::new();
+        let project_a = ProjectId::new();
+        let tab_a1 = TabId::new();
+        ws.commit_project_session(ProjectSessionCommit {
+            expected_selected_project: None,
+            project_id: project_a,
+            tab_id: tab_a1,
+            pane_id: pane_a1,
+            name: None,
+            directory: std::env::temp_dir(),
+            session: worker_session(session_a1),
+        })
+        .unwrap();
+        let pane_b1 = PaneId::new();
+        let session_b1 = SessionId::new();
+        let project_b = ProjectId::new();
+        let tab_b1 = TabId::new();
+        ws.commit_project_session(ProjectSessionCommit {
+            expected_selected_project: Some(project_a),
+            project_id: project_b,
+            tab_id: tab_b1,
+            pane_id: pane_b1,
+            name: None,
+            directory: std::env::temp_dir(),
+            session: worker_session(session_b1),
+        })
+        .unwrap();
+        let pane_a2 = PaneId::new();
+        let session_a2 = SessionId::new();
+        let tab_a2 = TabId::new();
+        ws.commit_tab_session(
+            Some(project_b),
+            project_a,
+            tab_a2,
+            pane_a2,
+            None,
+            worker_session(session_a2),
+        )
+        .unwrap();
+        // Select project A / tab A1: project B and tab A2 are both hidden.
+        ws.select_tab(project_a, tab_a1).unwrap();
+        assert_eq!(ws.selected_project_id(), Some(project_a));
+        assert_eq!(ws.session_id_for_pane(pane_a1), Some(session_a1));
+        assert_eq!(
+            ws.session_id_for_pane(pane_b1),
+            Some(session_b1),
+            "inactive project panes must resolve"
+        );
+        assert_eq!(
+            ws.session_id_for_pane(pane_a2),
+            Some(session_a2),
+            "hidden tab panes must resolve"
+        );
+        assert_eq!(ws.session_id_for_pane(PaneId::new()), None);
+        cleanup_project(&mut ws, project_a);
+        cleanup_project(&mut ws, project_b);
     }
 }

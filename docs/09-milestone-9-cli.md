@@ -81,6 +81,15 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `terminal send --pane ID TEXT` | `terminal.send` | Terminal SendBytes | Exact UTF-8 bytes, no implicit newline |
 | `terminal run --pane ID -- ARGV...` | `terminal.run` | Terminal RunCommand | Shell submission acknowledgement, not exit success |
 | `terminal read --pane ID` | `terminal.read` | Terminal ReadVisible | Bounded text plus truncation indicator |
+| `history enable` | `history.enable` | History EnablePersistence | Opt in; new archives from here, no backfill |
+| `history disable` | `history.disable` | History DisablePersistence | Opt out; deletes all history data, no key rotation |
+| `history status` | `history.status` | History Status | Safe metadata only: state, key, archives, warning |
+| `history list --pane ID` | `history.list` | History ListJournal | Bounded entries, newest last; never an unbounded dump |
+| `history pause --pane ID` | `history.pause` | History PausePane | Capture paused; record kept |
+| `history resume --pane ID` | `history.resume` | History ResumePane | Capture resumed |
+| `history clear --pane ID` | `history.clear-pane` | History ClearPane | Deletes the pane's archives and journal |
+| `history clear --project ID` | `history.clear-project` | History ClearProject | Deletes the project's archives and journals |
+| `history clear --all` | `history.clear-all` | History ClearWorkspace | Deletes everything and rotates the encryption key |
 
 `terminal new` deliberately creates a new tab, avoiding an unspecified split target.
 `project open` creates a project even if another project uses the same directory.

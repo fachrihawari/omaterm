@@ -28,6 +28,7 @@ use omaterm_terminal::{
     poll_fd_readable, prepare_paste,
 };
 mod credentials;
+mod history;
 mod ipc_bridge;
 mod router;
 
@@ -67,7 +68,21 @@ struct WorkspaceView {
     ipc_receiver: Option<async_channel::Receiver<IpcWork>>,
     ipc_pending: HashMap<u64, IpcWork>,
     shutting_down: bool,
+    history_arm: Option<(HistoryArm, Instant)>,
 }
+
+/// Two-step destructive-or-sensitive history control: the first press arms
+/// (with an explicit disclosure banner), the second press within the window
+/// executes. Anything else disarms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryArm {
+    Enable,
+    Disable,
+    ClearPane(PaneId),
+}
+
+/// Arm window for two-step history controls.
+const HISTORY_ARM_WINDOW: Duration = Duration::from_secs(8);
 
 struct IpcWork {
     request: IpcRequest,
@@ -134,9 +149,12 @@ impl WorkspaceView {
             ipc_receiver: None,
             ipc_pending: HashMap::new(),
             shutting_down: false,
+            history_arm: None,
         };
         view.start_ipc(cx);
         view.restore_or_initialize(cx);
+        view.warm_history_journals();
+        view.start_history_timer(cx);
         view
     }
 
@@ -352,6 +370,23 @@ impl WorkspaceView {
                 .get(&pane)
                 .map(|cwd| cwd.path.clone())
                 .unwrap_or_default();
+            // Stage verified scrollback before the fresh shell spawns: the
+            // router replays it into the committed engine ahead of any
+            // reader output. Any outcome other than Ready starts the pane
+            // empty (with a warning when history was expected).
+            if let Some(manager) = self.coordinator.history_manager_mut() {
+                let opaque = history::HistoryManager::opaque_name(pane.0.as_bytes());
+                match manager.restore_scrollback(&opaque) {
+                    history::RestoreOutcome::Ready(events) => {
+                        self.coordinator.stage_restore_history(pane, events);
+                    }
+                    history::RestoreOutcome::Corrupt(warning)
+                    | history::RestoreOutcome::Unavailable(warning) => {
+                        self.persistence_warning = Some(warning);
+                    }
+                    history::RestoreOutcome::Disabled | history::RestoreOutcome::Missing => {}
+                }
+            }
             match self.dispatch_command(
                 OmaCommand::Terminal(TerminalCommand::RestorePane {
                     project,
@@ -470,7 +505,7 @@ impl WorkspaceView {
         .detach();
     }
 
-    fn queue_snapshot(&self) {
+    fn queue_snapshot(&mut self) {
         let Some(writer) = &self.persistence_writer else {
             return;
         };
@@ -481,6 +516,86 @@ impl WorkspaceView {
         ) {
             tracing::error!("workspace snapshot submission failed: {error}");
         }
+        self.flush_history();
+    }
+
+    /// Owned history flush targets for every live terminal pane: workspace
+    /// identity plus a registry handle per pane.
+    fn history_flush_targets(&self) -> Vec<history::FlushTarget> {
+        let mut targets = Vec::new();
+        for project in self.coordinator.projects() {
+            for tab in &project.tabs {
+                for pane in tab.tree.panes() {
+                    let omaterm_core::PaneContent::Terminal(session_id) = pane.content else {
+                        continue;
+                    };
+                    let Some(handle) = self.coordinator.registry().get(session_id) else {
+                        continue;
+                    };
+                    targets.push(history::FlushTarget {
+                        pane_opaque: history::HistoryManager::opaque_name(pane.id.0.as_bytes()),
+                        pane_uuid: *pane.id.0.as_bytes(),
+                        project: Some(project.id.0.to_string()),
+                        tab: Some(tab.id.0.to_string()),
+                        pane_id: pane.id.0.to_string(),
+                        handle,
+                    });
+                }
+            }
+        }
+        targets
+    }
+
+    /// Drain session recorders and journals into the background history
+    /// writer. Cheap when nothing changed; sessions gate capture on the
+    /// same configuration this tick applies.
+    fn flush_history(&mut self) {
+        if !self
+            .coordinator
+            .history_manager()
+            .is_some_and(|manager| manager.config().enabled)
+        {
+            return;
+        }
+        let targets = self.history_flush_targets();
+        let Some(manager) = self.coordinator.history_manager_mut() else {
+            return;
+        };
+        manager.flush_targets(targets);
+        if let Some(warning) = manager.warning() {
+            tracing::debug!("history flush warning: {warning}");
+        }
+    }
+
+    /// Warm in-memory journals from archives at startup so the first flush
+    /// merges new records instead of discarding the persisted prefix.
+    fn warm_history_journals(&mut self) {
+        let panes: Vec<String> = self
+            .coordinator
+            .projects()
+            .iter()
+            .flat_map(|project| project.tabs.iter())
+            .flat_map(|tab| tab.tree.panes())
+            .map(|pane| history::HistoryManager::opaque_name(pane.id.0.as_bytes()))
+            .collect();
+        if let Some(manager) = self.coordinator.history_manager_mut() {
+            manager.warm_journals(&panes);
+        }
+    }
+
+    /// Periodic history persistence independent of workspace mutations, so
+    /// quiet sessions still checkpoint. Started once with the window.
+    fn start_history_timer(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                Timer::after(Duration::from_secs(30)).await;
+                let done = weak.update(cx, |view, _| view.flush_history()).is_err();
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn begin_shutdown(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
@@ -507,6 +622,8 @@ impl WorkspaceView {
         let snapshot = self.snapshot();
         let destination = self.persistence_destination.clone();
         let writer = self.persistence_writer.take();
+        let history_targets = self.history_flush_targets();
+        let mut history = self.coordinator.take_history_manager();
         let ids = self.coordinator.registry().list();
         let handles = ids
             .into_iter()
@@ -516,6 +633,14 @@ impl WorkspaceView {
         std::thread::spawn(move || {
             if let Some(mut server) = ipc_server {
                 let _ = server.shutdown();
+            }
+            // Encrypted history checkpoints before the final snapshot so a
+            // restart restores both layout and scrollback. Bounded: slow or
+            // locked key storage never blocks shutdown indefinitely.
+            if let Some(manager) = history.as_mut()
+                && !manager.shutdown_flush_targets(history_targets, Duration::from_secs(10))
+            {
+                tracing::warn!("history shutdown flush incomplete; in-memory records discarded");
             }
             let save_result = writer.map_or(Ok(()), |writer| {
                 writer.flush(snapshot, destination, revision)
@@ -941,6 +1066,107 @@ impl WorkspaceView {
         }
     }
 
+    /// Ctrl+Shift+O: explicit two-step history opt-in/opt-out. Enabling
+    /// discloses that terminal output and commands may contain secrets;
+    /// disabling deletes all persisted history data.
+    fn history_opt_in_key(&mut self, cx: &mut Context<Self>) {
+        let enabled = self
+            .coordinator
+            .history_manager()
+            .is_some_and(|manager| manager.config().enabled);
+        self.confirm_or_arm(
+            if enabled {
+                HistoryArm::Disable
+            } else {
+                HistoryArm::Enable
+            },
+            cx,
+        );
+    }
+
+    /// Ctrl+Shift+G: pause or resume capture for the focused pane.
+    /// Immediate (non-destructive); the kept record is preserved.
+    fn history_pause_key(&mut self, cx: &mut Context<Self>) {
+        let Some(pane) = self.coordinator.focused() else {
+            return;
+        };
+        let paused = self.coordinator.history_manager().is_some_and(|manager| {
+            manager
+                .config()
+                .is_paused(&history::HistoryManager::opaque_name(pane.0.as_bytes()))
+        });
+        let command = if paused {
+            OmaCommand::History(omaterm_core::HistoryCommand::ResumePane { pane })
+        } else {
+            OmaCommand::History(omaterm_core::HistoryCommand::PausePane { pane })
+        };
+        if let Err(error) = self.dispatch_command(command, cx) {
+            tracing::warn!("history pause toggle failed: {error}");
+        }
+    }
+
+    /// Ctrl+Shift+X: two-step clear of the focused pane's persisted history.
+    fn history_clear_key(&mut self, cx: &mut Context<Self>) {
+        let Some(pane) = self.coordinator.focused() else {
+            return;
+        };
+        self.confirm_or_arm(HistoryArm::ClearPane(pane), cx);
+    }
+
+    fn confirm_or_arm(&mut self, arm: HistoryArm, cx: &mut Context<Self>) {
+        let confirmed = matches!(&self.history_arm, Some((pending, at))
+            if pending == &arm && at.elapsed() < HISTORY_ARM_WINDOW);
+        if confirmed {
+            self.history_arm = None;
+            self.execute_history_arm(arm, cx);
+        } else {
+            self.history_arm = Some((arm, Instant::now()));
+            cx.notify();
+        }
+    }
+
+    fn execute_history_arm(&mut self, arm: HistoryArm, cx: &mut Context<Self>) {
+        use omaterm_core::HistoryCommand;
+        let command = match arm {
+            HistoryArm::Enable => OmaCommand::History(HistoryCommand::EnablePersistence),
+            HistoryArm::Disable => OmaCommand::History(HistoryCommand::DisablePersistence),
+            HistoryArm::ClearPane(pane) => OmaCommand::History(HistoryCommand::ClearPane { pane }),
+        };
+        if let Err(error) = self.dispatch_command(command, cx) {
+            self.persistence_warning = Some(format!("History: {error}"));
+        }
+        cx.notify();
+    }
+
+    fn history_arm_text(arm: &HistoryArm) -> &'static str {
+        match arm {
+            HistoryArm::Enable => {
+                "History records terminal output and commands, which may contain secrets. Press Ctrl+Shift+O again to enable encrypted history."
+            }
+            HistoryArm::Disable => {
+                "Press Ctrl+Shift+O again to disable history and delete all persisted archives and journals."
+            }
+            HistoryArm::ClearPane(_) => {
+                "Press Ctrl+Shift+X again to delete this pane's persisted history."
+            }
+        }
+    }
+
+    fn history_status_text(&self) -> Option<String> {
+        let manager = self.coordinator.history_manager()?;
+        let status = manager.status();
+        if !status.enabled {
+            return Some("history: off".into());
+        }
+        if status.warning.is_some() {
+            return Some("history: attention".into());
+        }
+        if status.paused_panes > 0 {
+            return Some(format!("history: on ({} paused)", status.paused_panes));
+        }
+        Some("history: on".into())
+    }
+
     fn close_focused(&mut self, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
@@ -976,6 +1202,15 @@ impl WorkspaceView {
 
     fn finish_close(&mut self, closed: omaterm_terminal::ClosedPane) {
         self.restored_failures.remove(&closed.pane_id);
+        self.coordinator.discard_restore_history(closed.pane_id);
+        // Per-pane history follows pane lifetime, including panes closed
+        // with their tab or project: every close path funnels through here.
+        if let Some(manager) = self.coordinator.history_manager_mut() {
+            let opaque = history::HistoryManager::opaque_name(closed.pane_id.0.as_bytes());
+            if let Err(error) = manager.clear_pane(&opaque) {
+                tracing::warn!("history cleanup for closed pane failed: {error}");
+            }
+        }
         if let Some(session_id) = closed.session_id {
             self.coordinator.revoke_session(session_id);
             self.forget_session_state(session_id, closed.pane_id);
@@ -1308,6 +1543,21 @@ impl WorkspaceView {
                 }
                 "t" => {
                     self.new_terminal_for_empty(cx);
+                    return;
+                }
+                // History controls (M10). Shortcuts dispatch the same
+                // semantic commands as IPC and CLI; destructive or
+                // secret-disclosing actions use the two-step arm pattern.
+                "o" => {
+                    self.history_opt_in_key(cx);
+                    return;
+                }
+                "g" => {
+                    self.history_pause_key(cx);
+                    return;
+                }
+                "x" => {
+                    self.history_clear_key(cx);
                     return;
                 }
                 _ => {}
@@ -2141,7 +2391,43 @@ impl Render for WorkspaceView {
                     .child("No project selected"),
             );
         }
+        // History state chip: same semantic opt-in toggle as Ctrl+Shift+O.
+        if let Some(status) = self.history_status_text() {
+            let attention = status != "history: off" && status != "history: on";
+            tabs_bar = tabs_bar.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(if attention { 0x3F321D } else { 0x111113 }))
+                    .text_color(rgb(if attention { 0xFDE68A } else { 0xA1A1AA }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.history_opt_in_key(cx);
+                        }),
+                    )
+                    .child(status),
+            );
+        }
         let mut pane_area = div().flex().flex_1().flex_col().size_full();
+        if let Some((arm, at)) = self.history_arm
+            && at.elapsed() < HISTORY_ARM_WINDOW
+        {
+            pane_area = pane_area.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0x3F321D))
+                    .text_color(rgb(0xFDE68A))
+                    .child(Self::history_arm_text(&arm)),
+            );
+        }
         if let Some(message) = self.persistence_warning.clone() {
             pane_area = pane_area.child(
                 div()
@@ -2150,6 +2436,18 @@ impl Render for WorkspaceView {
                     .bg(rgb(0x3F321D))
                     .text_color(rgb(0xFDE68A))
                     .child(message),
+            );
+        }
+        if let Some(manager) = self.coordinator.history_manager()
+            && let Some(message) = manager.warning()
+        {
+            pane_area = pane_area.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0x3F321D))
+                    .text_color(rgb(0xFDE68A))
+                    .child(format!("History: {message}")),
             );
         }
         if !self.coordinator.tree().is_empty()

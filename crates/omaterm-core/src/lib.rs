@@ -9,7 +9,8 @@ pub mod validation;
 pub mod workspace;
 
 pub use command::{
-    CommandContext, OmaCommand, PaneCommand, ProjectCommand, TabCommand, TerminalCommand,
+    CommandContext, HistoryCommand, OmaCommand, PaneCommand, ProjectCommand, TabCommand,
+    TerminalCommand,
 };
 pub use error::{CoreError, Result};
 pub use ids::{PaneId, ProjectId, SessionId, SplitId, TabId, WindowId};
@@ -19,8 +20,8 @@ pub use pane::{
 };
 pub use project::Project;
 pub use result::{
-    CommandError, CommandOutput, CommandResult, ErrorCode, PaneInfo, ProjectInfo, TabInfo,
-    TerminalInfo,
+    CommandError, CommandOutput, CommandResult, ErrorCode, HistoryStatusInfo, JournalEntryInfo,
+    PaneInfo, ProjectInfo, TabInfo, TerminalInfo,
 };
 pub use tab::Tab;
 pub use workspace::{Workspace, WorkspaceWindow};

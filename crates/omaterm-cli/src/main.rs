@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 use omaterm_protocol::{IpcRequest, PROTOCOL_VERSION};
 
 use commands::WireCall;
+use commands::history::HistoryCmd;
 use commands::pane::PaneCmd;
 use commands::project::ProjectCmd;
 use commands::tab::TabCmd;
@@ -59,6 +60,11 @@ enum Commands {
     Terminal {
         #[command(subcommand)]
         cmd: TerminalCmd,
+    },
+    /// Manage opt-in encrypted history.
+    History {
+        #[command(subcommand)]
+        cmd: HistoryCmd,
     },
 }
 
@@ -115,6 +121,9 @@ fn build_wire_call(command: &Commands) -> Result<(WireCall, String), String> {
         }
         Commands::Terminal { cmd } => {
             commands::terminal::build(cmd).map(|call| (call.clone(), call.method.clone()))
+        }
+        Commands::History { cmd } => {
+            commands::history::build(cmd).map(|call| (call.clone(), call.method.clone()))
         }
     }
 }
@@ -180,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn all_seventeen_coverage_rows_parse() {
+    fn all_coverage_rows_parse() {
         // One representative invocation per coverage-table row.
         let cases: &[&[&str]] = &[
             &["omaterm", "project", "list"],
@@ -210,14 +219,66 @@ mod tests {
                 "omaterm", "terminal", "run", "--pane", "pane-1", "--", "cargo", "test",
             ],
             &["omaterm", "terminal", "read", "--pane", "pane-1"],
+            &["omaterm", "history", "enable"],
+            &["omaterm", "history", "disable"],
+            &["omaterm", "history", "status"],
+            &["omaterm", "history", "list", "--pane", "pane-1"],
+            &[
+                "omaterm", "history", "list", "--pane", "pane-1", "--limit", "5",
+            ],
+            &["omaterm", "history", "pause", "--pane", "pane-1"],
+            &["omaterm", "history", "resume", "--pane", "pane-1"],
+            &["omaterm", "history", "clear", "--pane", "pane-1"],
+            &["omaterm", "history", "clear", "--project", "p1"],
+            &["omaterm", "history", "clear", "--all"],
         ];
-        assert_eq!(cases.len(), 17);
+        assert_eq!(cases.len(), 27);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");
             let cli = cli.unwrap();
             let command = cli.command.as_ref().expect("subcommand must parse");
             assert!(build_wire_call(command).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn history_clear_requires_exactly_one_scope() {
+        // No scope.
+        let cli = parse(&["omaterm", "history", "clear"]);
+        match cli.command {
+            Some(Commands::History { cmd }) => {
+                assert!(commands::history::build(&cmd).is_err())
+            }
+            other => panic!("expected history clear, got {other:?}"),
+        }
+        // Conflicting scopes are rejected by clap itself.
+        assert!(
+            Cli::try_parse_from(["omaterm", "history", "clear", "--pane", "p", "--all"]).is_err()
+        );
+        // Each single scope maps to its own wire method.
+        for (args, method) in [
+            (
+                &["omaterm", "history", "clear", "--pane", "p1"][..],
+                "history.clear-pane",
+            ),
+            (
+                &["omaterm", "history", "clear", "--project", "p1"][..],
+                "history.clear-project",
+            ),
+            (
+                &["omaterm", "history", "clear", "--all"][..],
+                "history.clear-all",
+            ),
+        ] {
+            let cli = parse(args);
+            match cli.command {
+                Some(Commands::History { cmd }) => {
+                    let call = commands::history::build(&cmd).expect("single scope builds");
+                    assert_eq!(call.method, method);
+                }
+                other => panic!("expected history clear, got {other:?}"),
+            }
         }
     }
 

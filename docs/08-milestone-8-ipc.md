@@ -111,6 +111,15 @@ crates/omaterm-ipc/
 | `terminal.send` | `TerminalCommand::SendBytes` |
 | `terminal.run` | `TerminalCommand::RunCommand` |
 | `terminal.read` | `TerminalCommand::ReadVisible` |
+| `history.enable` | `HistoryCommand::EnablePersistence` |
+| `history.disable` | `HistoryCommand::DisablePersistence` |
+| `history.status` | `HistoryCommand::Status` |
+| `history.list` | `HistoryCommand::ListJournal` |
+| `history.pause` | `HistoryCommand::PausePane` |
+| `history.resume` | `HistoryCommand::ResumePane` |
+| `history.clear-pane` | `HistoryCommand::ClearPane` |
+| `history.clear-project` | `HistoryCommand::ClearProject` |
+| `history.clear-all` | `HistoryCommand::ClearWorkspace` |
 
 ### Socket Path
 

@@ -26,15 +26,60 @@ pub(crate) fn encode_bash_argv(argv: &[String]) -> String {
 }
 
 /// Bash `--rcfile` contents. The user's interactive rc file is sourced first,
-/// then the private per-session OSC marker is appended to PROMPT_COMMAND.
+/// then private per-session lifecycle hooks are installed.
+///
+/// Two hooks report through token-authenticated OSC 133 sequences on the PTY
+/// stream (consumed by the session parser, never rendered):
+///
+/// - a `DEBUG` trap (`__omaterm_preexec`) reporting each command about to
+///   execute as `ESC ] 133 ; B ; <token> ; <base64-command> BEL`;
+/// - `PROMPT_COMMAND` guards (`__omaterm_prompt_first` /
+///   `__omaterm_prompt_last`) reporting prompt readiness and the last
+///   command's exit status as `ESC ] 133 ; A ; <token> ; <exit> BEL`.
+///
+/// Skip semantics (proven against real Bash, see lifecycle tests): our own
+/// functions, assignments, and prompt internals never become records — every
+/// internal simple command either starts with the `__omaterm_` prefix or
+/// runs while `__omaterm_in_prompt` is set. The guards wrap (not replace)
+/// the user's `PROMPT_COMMAND` entries, which keep their relative order.
+///
+/// Explicit semantics: `cmd1; cmd2` yields two starts and one completion
+/// (attributed to `cmd2`); loop bodies report per iteration; nested shells
+/// without our rcfile are invisible (only the outer invocation is
+/// recorded); TUI invocations record the launching command only. Without
+/// `base64(1)`, lifecycle emission disables itself and the shell runs
+/// normally without journal capture.
 pub(crate) fn bash_rcfile(token: &str) -> String {
     format!(
         r#"if [[ -r "$HOME/.bashrc" ]]; then source "$HOME/.bashrc"; fi
-__omaterm_emit_prompt_ready() {{ printf '\033]133;A;{token}\007'; }}
+__omaterm_token='{token}'
+__omaterm_in_prompt=0
+__omaterm_exit=0
+__omaterm_b64_ok=0
+if printf '' | base64 -w0 >/dev/null 2>&1; then __omaterm_b64_ok=1; fi
+__omaterm_prompt_first() {{ __omaterm_in_prompt=1; }}
+__omaterm_preexec() {{
+  case $1 in __omaterm_*) return 0;; esac
+  if [[ $__omaterm_in_prompt == 1 ]]; then return 0; fi
+  __omaterm_cmd=$1;
+  if [[ $__omaterm_b64_ok == 1 ]]; then
+    __omaterm_cmd=${{__omaterm_cmd:0:8192}};
+    __omaterm_b64=$(printf %s "$__omaterm_cmd" | base64 -w0);
+    __omaterm_in_prompt=1;
+    printf '\033]133;B;%s;%s\007' "$__omaterm_token" "$__omaterm_b64";
+    __omaterm_in_prompt=0;
+  fi
+}}
+__omaterm_prompt_last() {{
+  __omaterm_exit=$?;
+  printf '\033]133;A;%s;%s\007' "$__omaterm_token" "$__omaterm_exit";
+  __omaterm_in_prompt=0;
+}}
+trap '__omaterm_preexec "$BASH_COMMAND"' DEBUG
 if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
-  PROMPT_COMMAND+=(__omaterm_emit_prompt_ready)
+  PROMPT_COMMAND=(__omaterm_prompt_first "${{PROMPT_COMMAND[@]}}" __omaterm_prompt_last)
 else
-  PROMPT_COMMAND="${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}; }}__omaterm_emit_prompt_ready"
+  PROMPT_COMMAND="__omaterm_prompt_first; ${{PROMPT_COMMAND:+${{PROMPT_COMMAND}}; }}__omaterm_prompt_last"
 fi
 "#
     )
@@ -70,10 +115,32 @@ mod tests {
     }
 
     #[test]
-    fn bash_hook_sources_user_config_and_emits_session_marker() {
+    fn bash_hook_sources_user_config_and_emits_session_markers() {
         let source = bash_rcfile("session-token");
         assert!(source.contains("source \"$HOME/.bashrc\""));
-        assert!(source.contains("133;A;session-token"));
-        assert!(source.contains("PROMPT_COMMAND+=(__omaterm_emit_prompt_ready)"));
+        // Prompt hook carries the session token and the last-command exit status.
+        assert!(source.contains("__omaterm_token='session-token'"));
+        assert!(source.contains("133;A;"));
+        // Preexec hook reports each command start with its own kind.
+        assert!(source.contains("133;B;"));
+        assert!(source.contains("trap '__omaterm_preexec \"$BASH_COMMAND\"' DEBUG"));
+        // Guards wrap the user's PROMPT_COMMAND in both string and array form.
+        assert!(source.contains("__omaterm_prompt_first;"));
+        assert!(source.contains("__omaterm_prompt_last"));
+        assert!(source.contains("\"${PROMPT_COMMAND[@]}\""));
+    }
+
+    #[test]
+    fn bash_hook_internals_cannot_become_records() {
+        // Every internal simple command either carries the skip prefix or
+        // runs under the prompt guard: no `local` (which would not match the
+        // prefix) and no bare commands outside guarded regions.
+        let source = bash_rcfile("session-token");
+        assert!(
+            !source.contains("local "),
+            "locals would not match the __omaterm_ skip prefix"
+        );
+        assert!(source.contains("case $1 in __omaterm_*)"));
+        assert!(source.contains("__omaterm_in_prompt=1;"));
     }
 }

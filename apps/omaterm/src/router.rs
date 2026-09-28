@@ -1,14 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
 
 use crate::credentials::Credentials;
+use crate::history::HistoryManager;
 use omaterm_core::{
-    CommandContext, CommandError, CommandOutput, CommandResult, ErrorCode, OmaCommand, PaneCommand,
-    PaneContent, PaneId, PaneInfo, ProjectCommand, ProjectId, ProjectInfo, SessionId,
-    SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand, TerminalInfo,
+    CommandContext, CommandError, CommandOutput, CommandResult, ErrorCode, HistoryCommand,
+    HistoryStatusInfo, JournalEntryInfo, OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo,
+    ProjectCommand, ProjectId, ProjectInfo, SessionId, SplitDirection, TabCommand, TabId, TabInfo,
+    TerminalCommand, TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
+use omaterm_terminal::history::RecordedEvent;
 use omaterm_terminal::workspace::ClosedSessions;
 use omaterm_terminal::{
     ClosedPane, CoordinatorError, ProjectSessionCommit, SessionSpawnQueue, SpawnCompletion,
@@ -80,6 +83,11 @@ pub struct CommandRouter {
     next_operation: u64,
     credentials: Option<Credentials>,
     socket_path: Option<PathBuf>,
+    history: Option<HistoryManager>,
+    /// Verified scrollback staged per pane for restore-before-spawn. Loaded
+    /// by the desktop at restore time, consumed when the restored session
+    /// commits — before any reader pumps fresh shell output.
+    pending_history: HashMap<PaneId, Vec<RecordedEvent>>,
 }
 
 impl std::ops::Deref for CommandRouter {
@@ -96,6 +104,13 @@ impl std::ops::DerefMut for CommandRouter {
 
 impl CommandRouter {
     pub fn new(coordinator: WorkspaceCoordinator) -> Self {
+        let history_store = omaterm_state::default_history_dir().map(|dir| {
+            omaterm_state::HistoryStore::new(dir, omaterm_state::HistoryLimits::default())
+        });
+        let provider: Box<dyn omaterm_state::KeyProvider> =
+            Box::new(omaterm_state::OsKeyProvider::omaterm_default());
+        let mut history = HistoryManager::new(history_store, provider);
+        history.load_config();
         Self {
             coordinator,
             spawns: Some(SessionSpawnQueue::new(MAX_PENDING_LAUNCHES)),
@@ -103,6 +118,134 @@ impl CommandRouter {
             next_operation: 0,
             credentials: None,
             socket_path: None,
+            history: Some(history),
+            pending_history: HashMap::new(),
+        }
+    }
+
+    /// Replace the history manager (tests inject an in-memory key provider).
+    #[cfg(test)]
+    pub fn with_history_manager(mut self, manager: HistoryManager) -> Self {
+        self.history = Some(manager);
+        self
+    }
+
+    pub fn history_manager(&self) -> Option<&HistoryManager> {
+        self.history.as_ref()
+    }
+
+    pub fn history_manager_mut(&mut self) -> Option<&mut HistoryManager> {
+        self.history.as_mut()
+    }
+
+    /// Move the history manager out for shutdown-flush ownership. Dispatch
+    /// must already be stopped (the IPC server closes first).
+    pub fn take_history_manager(&mut self) -> Option<HistoryManager> {
+        self.history.take()
+    }
+
+    /// Stage verified scrollback for a restoring pane. Consumed exactly once
+    /// when the restored session commits.
+    pub fn stage_restore_history(&mut self, pane: PaneId, events: Vec<RecordedEvent>) {
+        self.pending_history.insert(pane, events);
+    }
+
+    fn take_restore_history(&mut self, pane: PaneId) -> Option<Vec<RecordedEvent>> {
+        self.pending_history.remove(&pane)
+    }
+
+    /// Drop staged restore history for a closed pane (e.g. closed before
+    /// its restore commit landed). Called on every pane-close path.
+    pub fn discard_restore_history(&mut self, pane: PaneId) {
+        self.pending_history.remove(&pane);
+    }
+
+    fn history_manager_or_unavailable(&mut self) -> Result<&mut HistoryManager, CommandError> {
+        self.history.as_mut().ok_or_else(|| {
+            CommandError::new(ErrorCode::HistoryUnavailable, "history is shutting down")
+        })
+    }
+
+    fn find_pane(&self, pane: PaneId) -> Option<(ProjectId, TabId)> {
+        for project in &self.coordinator.window().projects {
+            for tab in &project.tabs {
+                if tab.tree.find(pane).is_some() {
+                    return Some((project.id, tab.id));
+                }
+            }
+        }
+        None
+    }
+
+    /// Apply the manager's desired recording flags to one live session.
+    fn sync_session_history_flags(&self, pane: PaneId) {
+        let (enabled, paused) = match &self.history {
+            Some(manager) => (
+                manager.config().enabled,
+                manager.config().is_paused(&opaque_pane(pane)),
+            ),
+            None => return,
+        };
+        if let Some(session) = self.coordinator.session_id_for_pane(pane)
+            && let Some(handle) = self.coordinator.registry().get(session)
+            && let Ok(mut terminal) = handle.lock()
+        {
+            terminal.set_history_enabled(enabled);
+            terminal.set_history_paused(paused);
+        }
+    }
+
+    /// Reconcile every live session with history configuration. The
+    /// periodic desktop flush repeats this, so a missed update heals.
+    fn sync_all_session_history_flags(&self) {
+        let panes: Vec<PaneId> = self
+            .coordinator
+            .window()
+            .projects
+            .iter()
+            .flat_map(|project| project.tabs.iter())
+            .flat_map(|tab| tab.tree.panes())
+            .map(|pane| pane.id)
+            .collect();
+        for pane in panes {
+            self.sync_session_history_flags(pane);
+        }
+    }
+
+    /// Replay staged scrollback into a freshly committed restored session
+    /// and seed its recorder, before any reader pumps shell output: this
+    /// runs inside `finish_launch`, ahead of the `SessionStarted` effect
+    /// that starts runtime. Fresh shell, fresh PIDs — only pixels return.
+    ///
+    /// The trailing partial line (an idle shell's rendered prompt) is
+    /// stripped before replay and seeding alike, so the fresh shell's own
+    /// prompt does not stack under a stale duplicate on every restart.
+    fn replay_restore_history(&mut self, pane: PaneId) {
+        let Some(events) = self.take_restore_history(pane) else {
+            return;
+        };
+        if events.is_empty() {
+            return;
+        }
+        let events = omaterm_terminal::history::strip_trailing_partial_line(&events);
+        let paused = self
+            .history
+            .as_ref()
+            .is_some_and(|manager| manager.config().is_paused(&opaque_pane(pane)));
+        let replayed = (|| {
+            let session = self.coordinator.session_id_for_pane(pane)?;
+            let handle = self.coordinator.registry().get(session)?;
+            let mut terminal = handle.lock().ok()?;
+            omaterm_terminal::history::replay_into(terminal.engine_mut(), &events);
+            terminal.start_history_with_seed(&events);
+            terminal.set_history_paused(paused);
+            Some(())
+        })()
+        .is_some();
+        if !replayed {
+            // Never silently drop verified history: re-stage so a later
+            // commit or retry of the same pane attempts replay again.
+            self.pending_history.insert(pane, events);
         }
     }
 
@@ -206,6 +349,24 @@ impl CommandRouter {
                 | TerminalCommand::Clear { session },
             ) => owner_session(*session),
             OmaCommand::Terminal(TerminalCommand::RestorePane { project, .. }) => Some(*project),
+            OmaCommand::History(
+                HistoryCommand::EnablePersistence
+                | HistoryCommand::DisablePersistence
+                | HistoryCommand::Status
+                | HistoryCommand::ClearWorkspace,
+            ) => {
+                return Err(CommandError::new(
+                    ErrorCode::PermissionDenied,
+                    "global history operation requires local authority",
+                ));
+            }
+            OmaCommand::History(HistoryCommand::ClearProject { project }) => Some(*project),
+            OmaCommand::History(
+                HistoryCommand::PausePane { pane }
+                | HistoryCommand::ResumePane { pane }
+                | HistoryCommand::ListJournal { pane, .. }
+                | HistoryCommand::ClearPane { pane },
+            ) => owner_pane(*pane),
             OmaCommand::Pane(
                 PaneCommand::FocusDirection { .. }
                 | PaneCommand::ResizeFocused { .. }
@@ -616,10 +777,16 @@ impl CommandRouter {
                     session,
                 })
                 .map(|_| CommandOutput::PaneSplit { pane, session: id }),
-            PendingTarget::Restore { project, tab, pane } => self
-                .coordinator
-                .commit_restored_session(project, tab, pane, session)
-                .map(|_| CommandOutput::Unit),
+            PendingTarget::Restore { project, tab, pane } => {
+                let output = self
+                    .coordinator
+                    .commit_restored_session(project, tab, pane, session)
+                    .map(|_| CommandOutput::Unit);
+                if output.is_ok() {
+                    self.replay_restore_history(pane);
+                }
+                output
+            }
         };
         match result {
             Ok(output) => {
@@ -965,8 +1132,175 @@ impl CommandRouter {
                 ErrorCode::UnsupportedOperation,
                 "terminal.clear is not implemented",
             ),
+            OmaCommand::History(HistoryCommand::EnablePersistence) => {
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                manager.set_enabled(true);
+                // Warm journal buffers from existing archives so the first
+                // flush merges instead of discarding the persisted prefix.
+                let panes: Vec<String> = self
+                    .coordinator
+                    .window()
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.tabs.iter())
+                    .flat_map(|tab| tab.tree.panes())
+                    .map(|pane| opaque_pane(pane.id))
+                    .collect();
+                if let Some(manager) = self.history.as_mut() {
+                    manager.warm_journals(&panes);
+                }
+                self.sync_all_session_history_flags();
+                ok(Out::Unit)
+            }
+            OmaCommand::History(HistoryCommand::DisablePersistence) => {
+                let removed = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                }
+                .delete_all_data();
+                let removed = match removed {
+                    Ok(removed) => removed,
+                    Err(error) => return err(ErrorCode::HistoryUnavailable, error),
+                };
+                if let Some(manager) = self.history.as_mut() {
+                    manager.set_enabled(false);
+                }
+                self.sync_all_session_history_flags();
+                ok(Out::HistoryCleared {
+                    removed_files: removed,
+                })
+            }
+            OmaCommand::History(HistoryCommand::PausePane { pane }) => {
+                if self.find_pane(pane).is_none() {
+                    return err(ErrorCode::PaneNotFound, "pane does not exist");
+                }
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                manager.set_paused(&opaque_pane(pane), true);
+                self.sync_session_history_flags(pane);
+                ok(Out::Unit)
+            }
+            OmaCommand::History(HistoryCommand::ResumePane { pane }) => {
+                if self.find_pane(pane).is_none() {
+                    return err(ErrorCode::PaneNotFound, "pane does not exist");
+                }
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                manager.set_paused(&opaque_pane(pane), false);
+                self.sync_session_history_flags(pane);
+                ok(Out::Unit)
+            }
+            OmaCommand::History(HistoryCommand::ListJournal { pane, limit }) => {
+                if self.find_pane(pane).is_none() {
+                    return err(ErrorCode::PaneNotFound, "pane does not exist");
+                }
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                if !manager.config().enabled {
+                    return err(
+                        ErrorCode::HistoryDisabled,
+                        "history persistence is not enabled",
+                    );
+                }
+                match manager.list_journal(&opaque_pane(pane), limit) {
+                    Ok(entries) => ok(Out::JournalEntries(
+                        entries
+                            .into_iter()
+                            .map(|entry| JournalEntryInfo {
+                                pane: entry.pane,
+                                project: entry.project,
+                                tab: entry.tab,
+                                command: entry.command,
+                                shell_dialect: entry.shell_dialect,
+                                working_directory: entry.working_directory,
+                                started_unix_secs: entry.started_unix_secs,
+                                finished_unix_secs: entry.finished_unix_secs,
+                                exit_status: entry.exit_status,
+                            })
+                            .collect(),
+                    )),
+                    Err(error) => err(ErrorCode::HistoryUnavailable, error),
+                }
+            }
+            OmaCommand::History(HistoryCommand::ClearPane { pane }) => {
+                if self.find_pane(pane).is_none() {
+                    return err(ErrorCode::PaneNotFound, "pane does not exist");
+                }
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match manager.clear_pane(&opaque_pane(pane)) {
+                    Ok(removed) => ok(Out::HistoryCleared {
+                        removed_files: removed,
+                    }),
+                    Err(error) => err(ErrorCode::HistoryUnavailable, error),
+                }
+            }
+            OmaCommand::History(HistoryCommand::ClearProject { project }) => {
+                let Some(owner) = self.coordinator.window().project(project) else {
+                    return err(ErrorCode::ProjectNotFound, "project does not exist");
+                };
+                let panes: HashSet<PaneId> = owner
+                    .tabs
+                    .iter()
+                    .flat_map(|tab| tab.tree.panes())
+                    .map(|pane| pane.id)
+                    .collect();
+                let opaque: HashSet<String> = panes.iter().map(|pane| opaque_pane(*pane)).collect();
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match manager.clear_panes(&opaque) {
+                    Ok(removed) => ok(Out::HistoryCleared {
+                        removed_files: removed,
+                    }),
+                    Err(error) => err(ErrorCode::HistoryUnavailable, error),
+                }
+            }
+            OmaCommand::History(HistoryCommand::ClearWorkspace) => {
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match manager.clear_all() {
+                    Ok(removed) => ok(Out::HistoryCleared {
+                        removed_files: removed,
+                    }),
+                    Err(error) => err(ErrorCode::HistoryUnavailable, error),
+                }
+            }
+            OmaCommand::History(HistoryCommand::Status) => {
+                let manager = match self.history_manager_or_unavailable() {
+                    Ok(manager) => manager,
+                    Err(error) => return CommandResult::Err(error),
+                };
+                let status = manager.status();
+                ok(Out::HistoryStatus(HistoryStatusInfo {
+                    enabled: status.enabled,
+                    key_available: status.key_available,
+                    warning: status.warning,
+                    archive_files: status.archive_files,
+                    archive_bytes: status.archive_bytes,
+                    paused_panes: status.paused_panes,
+                }))
+            }
         }
     }
+}
+
+fn opaque_pane(pane: PaneId) -> String {
+    HistoryManager::opaque_name(pane.0.as_bytes())
 }
 
 fn dispose_session(mut session: TerminalSession) {
@@ -2383,5 +2717,534 @@ mod tests {
                 assert!(handle.lock().unwrap().shutdown());
             }
         }
+    }
+    fn history_router() -> (CommandRouter, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "omaterm-router-hist-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("history test dir");
+        let store = omaterm_state::HistoryStore::new(
+            dir.join("history"),
+            omaterm_state::HistoryLimits::default(),
+        );
+        let manager = crate::history::HistoryManager::new(
+            Some(store),
+            Box::new(omaterm_state::InMemoryKeyProvider::new()),
+        );
+        let router = CommandRouter::new(WorkspaceCoordinator::new(std::env::temp_dir()))
+            .with_history_manager(manager);
+        (router, dir)
+    }
+
+    fn create_history_project(router: &mut CommandRouter) -> (ProjectId, TabId, PaneId) {
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(std::env::temp_dir()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated {
+            project, tab, pane, ..
+        }) = created.result
+        else {
+            panic!("project creation failed: {:?}", created.result);
+        };
+        (project, tab, pane)
+    }
+
+    fn session_history_flags(router: &CommandRouter, pane: PaneId) -> (bool, bool) {
+        let session = router
+            .coordinator
+            .session_id_for_pane(pane)
+            .expect("pane has a session");
+        let handle = router
+            .coordinator
+            .registry()
+            .get(session)
+            .expect("session live");
+        let terminal = handle.lock().expect("session lock");
+        (terminal.history_enabled(), terminal.history_paused())
+    }
+
+    #[test]
+    fn history_enable_status_and_disable_cycle() {
+        let (mut router, dir) = history_router();
+        let status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::Status),
+        );
+        let CommandResult::Ok(CommandOutput::HistoryStatus(info)) = status.result else {
+            panic!("status must work while disabled: {:?}", status.result);
+        };
+        assert!(!info.enabled);
+        assert!(!info.key_available);
+
+        let missing = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ListJournal {
+                pane: PaneId::new(),
+                limit: 10,
+            }),
+        );
+        assert!(matches!(
+            missing.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::PaneNotFound
+        ));
+
+        let enabled = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::EnablePersistence),
+        );
+        assert!(matches!(
+            enabled.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+
+        let status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::Status),
+        );
+        let CommandResult::Ok(CommandOutput::HistoryStatus(info)) = status.result else {
+            panic!("status after enable: {:?}", status.result);
+        };
+        assert!(info.enabled);
+
+        let disabled = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::DisablePersistence),
+        );
+        assert!(matches!(
+            disabled.result,
+            CommandResult::Ok(CommandOutput::HistoryCleared { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_list_pause_resume_and_clear_need_known_pane_and_opt_in() {
+        let (mut router, dir) = history_router();
+        let (project, _tab, pane) = create_history_project(&mut router);
+
+        let unknown = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::PausePane {
+                pane: PaneId::new(),
+            }),
+        );
+        assert!(matches!(
+            unknown.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::PaneNotFound
+        ));
+
+        let gated = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ListJournal { pane, limit: 10 }),
+        );
+        assert!(matches!(
+            gated.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::HistoryDisabled
+        ));
+
+        router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::EnablePersistence),
+        );
+        assert_eq!(session_history_flags(&router, pane), (true, false));
+
+        let paused = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::PausePane { pane }),
+        );
+        assert!(matches!(
+            paused.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+        assert_eq!(session_history_flags(&router, pane), (true, true));
+
+        let listed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ListJournal { pane, limit: 10 }),
+        );
+        assert!(matches!(
+            listed.result,
+            CommandResult::Ok(CommandOutput::JournalEntries(ref entries)) if entries.is_empty()
+        ));
+
+        let resumed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ResumePane { pane }),
+        );
+        assert!(matches!(
+            resumed.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+        assert_eq!(session_history_flags(&router, pane), (true, false));
+
+        let cleared = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ClearPane { pane }),
+        );
+        assert!(matches!(
+            cleared.result,
+            CommandResult::Ok(CommandOutput::HistoryCleared { .. })
+        ));
+
+        let missing_project = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ClearProject {
+                project: ProjectId::new(),
+            }),
+        );
+        assert!(matches!(
+            missing_project.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::ProjectNotFound
+        ));
+
+        let cleared_project = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ClearProject { project }),
+        );
+        assert!(matches!(
+            cleared_project.result,
+            CommandResult::Ok(CommandOutput::HistoryCleared { .. })
+        ));
+
+        let cleared_all = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::ClearWorkspace),
+        );
+        assert!(matches!(
+            cleared_all.result,
+            CommandResult::Ok(CommandOutput::HistoryCleared { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_project_scope_denies_global_and_foreign_targets() {
+        let (mut router, dir) = history_router();
+        let (project_a, _, pane_a) = create_history_project(&mut router);
+        let (project_b, _, pane_b) = create_history_project(&mut router);
+        let scope_a = CommandContext::Project(project_a);
+
+        for command in [
+            OmaCommand::History(HistoryCommand::EnablePersistence),
+            OmaCommand::History(HistoryCommand::DisablePersistence),
+            OmaCommand::History(HistoryCommand::Status),
+            OmaCommand::History(HistoryCommand::ClearWorkspace),
+        ] {
+            let outcome = router.dispatch(scope_a, command);
+            assert!(
+                matches!(
+                    outcome.result,
+                    CommandResult::Err(ref error) if error.code == ErrorCode::PermissionDenied
+                ),
+                "global history op denied to project scope"
+            );
+        }
+
+        let own = router.dispatch(
+            scope_a,
+            OmaCommand::History(HistoryCommand::PausePane { pane: pane_a }),
+        );
+        assert!(matches!(own.result, CommandResult::Ok(CommandOutput::Unit)));
+
+        let foreign = router.dispatch(
+            scope_a,
+            OmaCommand::History(HistoryCommand::PausePane { pane: pane_b }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+
+        let foreign_project = router.dispatch(
+            scope_a,
+            OmaCommand::History(HistoryCommand::ClearProject { project: project_b }),
+        );
+        assert!(matches!(
+            foreign_project.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_limit_validation_rejects_out_of_range() {
+        let (mut router, dir) = history_router();
+        let (_, _, pane) = create_history_project(&mut router);
+        for limit in [0, 1001] {
+            let outcome = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::History(HistoryCommand::ListJournal { pane, limit }),
+            );
+            assert!(
+                matches!(
+                    outcome.result,
+                    CommandResult::Err(ref error) if error.code == ErrorCode::InvalidRequest
+                ),
+                "limit {limit} rejected"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_replays_staged_history_before_fresh_output() {
+        let (mut router, dir) = history_router();
+        // A restored window carries one Empty pane (M6 layout/CWD contract).
+        let pane = Pane::empty();
+        let pane_id = pane.id;
+        let tree = PaneTree::new(pane);
+        let tab = Tab::new(tree, pane_id).expect("restored tab");
+        let tab_id = tab.id;
+        let mut project = Project::new(None, Some(std::env::temp_dir()));
+        let project_id = project.id;
+        project.add_tab(tab).expect("restored project tab");
+        let mut window = WorkspaceWindow::new();
+        window.add_project(project).expect("restored window");
+        router
+            .coordinator
+            .restore_window(window)
+            .expect("install restored window");
+
+        router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::EnablePersistence),
+        );
+        router.stage_restore_history(
+            pane_id,
+            vec![RecordedEvent::Output(b"pre-restart line\r\n".to_vec())],
+        );
+
+        let outcome = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Terminal(TerminalCommand::RestorePane {
+                project: project_id,
+                tab: tab_id,
+                pane: pane_id,
+                directory: std::env::temp_dir(),
+            }),
+        );
+        assert!(matches!(
+            outcome.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+
+        // Restored pixels are visible immediately, before any shell output.
+        let session = router
+            .coordinator
+            .session_id_for_pane(pane_id)
+            .expect("restored session");
+        let handle = router
+            .coordinator
+            .registry()
+            .get(session)
+            .expect("live session");
+        let text = handle
+            .lock()
+            .expect("session lock")
+            .read_visible_text(24, 80);
+        assert!(
+            text.contains("pre-restart line"),
+            "replayed scrollback visible"
+        );
+        assert!(
+            !handle
+                .lock()
+                .expect("session lock")
+                .history_snapshot()
+                .is_empty(),
+            "recorder seeded so the next flush merges instead of discarding"
+        );
+
+        // The shell is fresh: it reaches readiness with a live child.
+        let start = std::time::Instant::now();
+        loop {
+            let ready = handle
+                .lock()
+                .map(|mut terminal| {
+                    let _ = terminal.pump();
+                    terminal.prompt_ready()
+                })
+                .unwrap_or(false);
+            if ready {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "fresh shell reaches readiness"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            handle.lock().expect("session lock").exited().is_none(),
+            "restored pane runs a fresh live shell, not a resumed process"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_seeds_recorder_without_the_trailing_idle_prompt() {
+        let (mut router, dir) = history_router();
+        let pane = Pane::empty();
+        let pane_id = pane.id;
+        let tree = PaneTree::new(pane);
+        let tab = Tab::new(tree, pane_id).expect("restored tab");
+        let tab_id = tab.id;
+        let mut project = Project::new(None, Some(std::env::temp_dir()));
+        let project_id = project.id;
+        project.add_tab(tab).expect("restored project tab");
+        let mut window = WorkspaceWindow::new();
+        window.add_project(project).expect("restored window");
+        router
+            .coordinator
+            .restore_window(window)
+            .expect("install restored window");
+        router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::EnablePersistence),
+        );
+        router.stage_restore_history(
+            pane_id,
+            vec![
+                RecordedEvent::Output(b"echo hi\r\n".to_vec()),
+                RecordedEvent::Output(b"hi\r\n".to_vec()),
+                RecordedEvent::Output("❯ ".as_bytes().to_vec()),
+            ],
+        );
+        let outcome = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Terminal(TerminalCommand::RestorePane {
+                project: project_id,
+                tab: tab_id,
+                pane: pane_id,
+                directory: std::env::temp_dir(),
+            }),
+        );
+        assert!(matches!(
+            outcome.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+        let session = router
+            .coordinator
+            .session_id_for_pane(pane_id)
+            .expect("restored session");
+        let snapshot = router
+            .coordinator
+            .registry()
+            .get(session)
+            .expect("live session")
+            .lock()
+            .expect("session lock")
+            .history_snapshot();
+        let combined: Vec<u8> = snapshot
+            .iter()
+            .filter_map(|event| match event {
+                RecordedEvent::Output(bytes) => Some(bytes.clone()),
+                RecordedEvent::Resize { .. } => None,
+            })
+            .flatten()
+            .collect();
+        let text = String::from_utf8_lossy(&combined);
+        assert!(text.contains("hi\r\n"), "complete lines seeded: {text:?}");
+        assert!(
+            !text.contains('❯'),
+            "stale idle prompt not seeded: {text:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_replays_history_for_panes_in_inactive_projects() {
+        let (mut router, dir) = history_router();
+        // Two same-directory projects (`omaterm` / `omaterm 1` report):
+        // project A stays selected, project B is never activated, yet both
+        // panes must replay their staged scrollback.
+        let mut window = WorkspaceWindow::new();
+        let mut panes = Vec::new();
+        for marker in ["project-a-marker", "project-b-marker"] {
+            let pane = Pane::empty();
+            let pane_id = pane.id;
+            let tree = PaneTree::new(pane);
+            let tab = Tab::new(tree, pane_id).expect("restored tab");
+            let tab_id = tab.id;
+            let mut project = Project::new(None, Some(std::env::temp_dir()));
+            let project_id = project.id;
+            project.add_tab(tab).expect("restored project tab");
+            panes.push((project_id, tab_id, pane_id, marker));
+            window.add_project(project).expect("restored window");
+        }
+        router
+            .coordinator
+            .restore_window(window)
+            .expect("install restored window");
+        router
+            .coordinator
+            .select_project(panes[0].0)
+            .expect("select project A");
+        router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::History(HistoryCommand::EnablePersistence),
+        );
+        for (_, _, pane_id, marker) in &panes {
+            router.stage_restore_history(
+                *pane_id,
+                vec![RecordedEvent::Output(format!("{marker}\r\n").into_bytes())],
+            );
+        }
+        for (project_id, tab_id, pane_id, marker) in &panes {
+            let outcome = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Terminal(TerminalCommand::RestorePane {
+                    project: *project_id,
+                    tab: *tab_id,
+                    pane: *pane_id,
+                    directory: std::env::temp_dir(),
+                }),
+            );
+            assert!(
+                matches!(outcome.result, CommandResult::Ok(CommandOutput::Unit)),
+                "restore commits for {marker}"
+            );
+        }
+        assert!(
+            router.pending_history.is_empty(),
+            "staged history consumed, not re-staged or dropped"
+        );
+        for (_, _, pane_id, marker) in &panes {
+            let session = router
+                .coordinator
+                .session_id_for_pane(*pane_id)
+                .expect("restored session resolves without activation");
+            let handle = router
+                .coordinator
+                .registry()
+                .get(session)
+                .expect("live session");
+            let text = handle
+                .lock()
+                .expect("session lock")
+                .read_visible_text(24, 80);
+            assert!(
+                text.contains(marker),
+                "inactive project pane replays scrollback"
+            );
+            assert!(
+                !handle
+                    .lock()
+                    .expect("session lock")
+                    .history_snapshot()
+                    .is_empty(),
+                "inactive project recorder seeded"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,5 +1,6 @@
 use crate::{
-    CommandError, ErrorCode, OmaCommand, PaneCommand, ProjectCommand, TabCommand, TerminalCommand,
+    CommandError, ErrorCode, HistoryCommand, OmaCommand, PaneCommand, ProjectCommand, TabCommand,
+    TerminalCommand,
 };
 
 pub const MAX_READ_LINES: usize = 1_000;
@@ -7,6 +8,8 @@ pub const MAX_READ_COLUMNS: usize = 1_000;
 pub const MAX_SEND_BYTES: usize = 8 * 1024;
 pub const MAX_ARG_COUNT: usize = 256;
 pub const MAX_ARG_BYTES: usize = 4 * 1024;
+/// Bounded journal listing: same 1000-entry ceiling as viewport reads.
+pub const MAX_JOURNAL_ENTRIES: usize = 1_000;
 
 /// Pure field validation. Target existence and authorization are checked by
 /// the application owner immediately before dispatch effects are applied.
@@ -81,6 +84,11 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
             || *max_columns > MAX_READ_COLUMNS =>
         {
             return invalid("read bounds must be between 1 and 1000 lines/columns");
+        }
+        OmaCommand::History(HistoryCommand::ListJournal { limit, .. })
+            if *limit == 0 || *limit > MAX_JOURNAL_ENTRIES =>
+        {
+            return invalid("journal list limit must be between 1 and 1000 entries");
         }
         _ => {}
     }

@@ -1,9 +1,14 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use omaterm_core::SessionId;
 
 use crate::alacritty::AlacrittyEngine;
 use crate::engine::{EngineOutput, ScrollCommand, TerminalEngine, TerminalViewport};
+use crate::history::{HistoryRecorder, RecordedEvent, RecorderLimits};
+use crate::lifecycle::{
+    LifecycleEvent, LifecycleKind, LifecycleParser, decode_command, decode_exit,
+};
 use crate::osc7::Osc7Parser;
 use crate::pty::{PtyError, PtyProcess};
 
@@ -60,9 +65,50 @@ pub struct TerminalSession {
     engine: AlacrittyEngine,
     title: Option<String>,
     exited: Option<std::process::ExitStatus>,
-    prompt_marker: Option<Vec<u8>>,
-    prompt_scan: Vec<u8>,
+    lifecycle: Option<LifecycleParser>,
+    pending_command: Option<PendingCommand>,
+    lifecycle_records: VecDeque<LifecycleRecord>,
+    recorder: HistoryRecorder,
+    history_enabled: bool,
+    history_paused: bool,
     prompt_ready: bool,
+    /// A prompt has been observed at least once. Command starts reported
+    /// before the first prompt are shell initialization (rcfile lines,
+    /// user dotfiles) rather than user commands, and are dropped.
+    seen_prompt: bool,
+}
+
+/// A command the shell reported starting but no prompt has completed yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingCommand {
+    command: String,
+    started_unix_secs: u64,
+    working_directory: PathBuf,
+}
+
+/// One authoritative shell lifecycle record: a reported command start,
+/// optionally completed by the next prompt with the shell's own exit
+/// status. Created only from token-authenticated lifecycle events —
+/// never from terminal text. Drained by the history writer (M10 Phase 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleRecord {
+    pub command: String,
+    pub shell_dialect: String,
+    pub working_directory: PathBuf,
+    pub started_unix_secs: u64,
+    pub finished_unix_secs: Option<u64>,
+    pub exit_status: Option<i32>,
+}
+
+/// Bounded completed-record queue: oldest records drop first so a chatty
+/// shell cannot grow memory without a history drain.
+const MAX_QUEUED_RECORDS: usize = 512;
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 impl TerminalSession {
@@ -109,9 +155,12 @@ impl TerminalSession {
             &prompt_token,
             child_env,
         )?;
-        let prompt_marker = pty
+        // Only Bash shells receive the lifecycle rcfile, so only they get a
+        // parser bound to the session token. Other shells run normally with
+        // no journal capture.
+        let lifecycle = pty
             .supports_run()
-            .then(|| format!("\x1b]133;A;{prompt_token}\x07").into_bytes());
+            .then(|| LifecycleParser::new(&prompt_token));
         let engine = AlacrittyEngine::new(cols, rows);
         let cwd = CurrentDirectory {
             path: working_directory.clone(),
@@ -126,9 +175,14 @@ impl TerminalSession {
             engine,
             title: None,
             exited: None,
-            prompt_marker,
-            prompt_scan: Vec::new(),
+            lifecycle,
+            pending_command: None,
+            lifecycle_records: VecDeque::new(),
+            recorder: HistoryRecorder::new(RecorderLimits::default()),
+            history_enabled: false,
+            history_paused: false,
             prompt_ready: false,
+            seen_prompt: false,
         })
     }
 
@@ -154,6 +208,7 @@ impl TerminalSession {
                 Ok(n) => {
                     bytes_read += n;
                     let chunk = &buf[..n];
+                    let was_alt = self.engine.is_alt_screen();
                     let out = self.engine.advance_output(chunk);
                     if !out.reply_bytes.is_empty() {
                         // Best effort: a failed reply write surfaces next pump.
@@ -161,7 +216,8 @@ impl TerminalSession {
                     }
                     combined.events.extend(out.events);
                     self.observe_osc7(chunk, &mut combined);
-                    self.observe_prompt_marker(chunk);
+                    self.observe_lifecycle(chunk);
+                    self.observe_history(chunk, was_alt);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -187,11 +243,70 @@ impl TerminalSession {
 
     /// Feed bytes without PTY I/O (tests).
     pub fn advance_output(&mut self, bytes: &[u8]) -> EngineOutput {
+        let was_alt = self.engine.is_alt_screen();
         let mut out = self.engine.advance_output(bytes);
         self.after_pump_collect(&out);
         self.observe_osc7(bytes, &mut out);
-        self.observe_prompt_marker(bytes);
+        self.observe_lifecycle(bytes);
+        self.observe_history(bytes, was_alt);
         out
+    }
+
+    /// Record one PTY chunk into the scrollback recorder. Hot path: bounded
+    /// memcopy only, never crypto/IO. Alt-screen policy mirrors the journal
+    /// channel — bytes from alternate-screen periods never enter the record.
+    fn observe_history(&mut self, chunk: &[u8], was_alt: bool) {
+        if !self.history_enabled {
+            return;
+        }
+        let is_alt = self.engine.is_alt_screen();
+        self.recorder.set_alt_screen(is_alt);
+        self.recorder.observe_output(chunk, was_alt, is_alt);
+    }
+
+    /// Opt the session into (or out of) scrollback recording. Enabling
+    /// starts a new record — output from before opt-in is never backfilled.
+    /// Disabling discards the in-memory record.
+    pub fn set_history_enabled(&mut self, enabled: bool) {
+        self.history_enabled = enabled;
+        self.recorder.set_enabled(enabled);
+    }
+
+    /// Start recording with a restored record: the verified pre-restart
+    /// events become the record prefix so the next flush persists merged
+    /// history instead of discarding the restored prefix.
+    pub fn start_history_with_seed(&mut self, events: &[RecordedEvent]) {
+        self.history_enabled = true;
+        self.recorder.set_enabled(true);
+        self.recorder.seed(events);
+    }
+
+    /// Pause or resume capture for this session without dropping the record.
+    pub fn set_history_paused(&mut self, paused: bool) {
+        self.history_paused = paused;
+        self.recorder.set_paused(paused);
+    }
+
+    #[must_use]
+    pub fn history_enabled(&self) -> bool {
+        self.history_enabled
+    }
+
+    #[must_use]
+    pub fn history_paused(&self) -> bool {
+        self.history_paused
+    }
+
+    /// Snapshot the current scrollback record for the background writer.
+    #[must_use]
+    pub fn history_snapshot(&self) -> Vec<RecordedEvent> {
+        self.recorder.snapshot()
+    }
+
+    /// Recorder mutation counter for writer dirty tracking.
+    #[must_use]
+    pub fn history_version(&self) -> u64 {
+        self.recorder.version()
     }
 
     /// Run the streaming OSC 7 extractor over raw PTY bytes. Accepted local
@@ -210,22 +325,74 @@ impl TerminalSession {
         }
     }
 
-    fn observe_prompt_marker(&mut self, bytes: &[u8]) {
-        let Some(marker) = self.prompt_marker.as_ref() else {
+    /// Run the token-authenticated lifecycle parser over raw PTY bytes.
+    ///
+    /// `PromptReady` sets prompt readiness (the legacy markerless form
+    /// included) and completes the pending command, if any, with the
+    /// shell's own exit status. `CommandStart` stores the pending command;
+    /// a new start flushes an uncompleted predecessor as an unfinished
+    /// record (`cmd1; cmd2` attributes completion to `cmd2`). Anything that
+    /// fails authentication or decoding leaves all state untouched.
+    fn observe_lifecycle(&mut self, bytes: &[u8]) {
+        let Some(parser) = self.lifecycle.as_mut() else {
             return;
         };
-        self.prompt_scan.extend_from_slice(bytes);
-        if self
-            .prompt_scan
-            .windows(marker.len())
-            .any(|window| window == marker)
-        {
-            self.prompt_ready = true;
-            self.prompt_scan.clear();
-        } else if self.prompt_scan.len() >= marker.len() {
-            let keep = marker.len().saturating_sub(1);
-            let remove = self.prompt_scan.len() - keep;
-            self.prompt_scan.drain(..remove);
+        let events: Vec<LifecycleEvent> = parser.feed(bytes);
+        for event in events {
+            match event.kind {
+                LifecycleKind::CommandStart => self.on_command_start(&event.payload),
+                LifecycleKind::PromptReady => self.on_prompt_ready(&event.payload),
+            }
+        }
+    }
+
+    fn on_command_start(&mut self, payload: &str) {
+        if !self.seen_prompt {
+            return;
+        }
+        let Some(command) = decode_command(payload) else {
+            return;
+        };
+        if let Some(pending) = self.pending_command.take() {
+            self.push_record(LifecycleRecord {
+                command: pending.command,
+                shell_dialect: "bash".to_string(),
+                working_directory: pending.working_directory,
+                started_unix_secs: pending.started_unix_secs,
+                finished_unix_secs: None,
+                exit_status: None,
+            });
+        }
+        self.pending_command = Some(PendingCommand {
+            command,
+            started_unix_secs: now_unix_secs(),
+            working_directory: self.cwd.path.clone(),
+        });
+    }
+
+    fn on_prompt_ready(&mut self, payload: &str) {
+        self.prompt_ready = true;
+        self.seen_prompt = true;
+        let Some(exit) = decode_exit(payload) else {
+            return;
+        };
+        if let Some(pending) = self.pending_command.take() {
+            let finished = now_unix_secs();
+            self.push_record(LifecycleRecord {
+                command: pending.command,
+                shell_dialect: "bash".to_string(),
+                working_directory: pending.working_directory,
+                started_unix_secs: pending.started_unix_secs,
+                finished_unix_secs: Some(finished),
+                exit_status: exit,
+            });
+        }
+    }
+
+    fn push_record(&mut self, record: LifecycleRecord) {
+        self.lifecycle_records.push_back(record);
+        while self.lifecycle_records.len() > MAX_QUEUED_RECORDS {
+            self.lifecycle_records.pop_front();
         }
     }
 
@@ -277,6 +444,29 @@ impl TerminalSession {
         self.prompt_ready
     }
 
+    /// Drain completed lifecycle records for the history writer (M10).
+    /// Bounded: the queue drops its oldest records past the cap, so a
+    /// session that is never drained cannot grow memory without bound.
+    pub fn drain_lifecycle_records(&mut self) -> Vec<LifecycleRecord> {
+        self.lifecycle_records.drain(..).collect()
+    }
+
+    /// Whether this session emits authenticated lifecycle events (Bash with
+    /// the private rcfile). Other shells run normally with no records.
+    pub fn emits_lifecycle(&self) -> bool {
+        self.lifecycle.is_some()
+    }
+
+    /// Session token for tests that feed crafted lifecycle sequences.
+    #[cfg(test)]
+    fn lifecycle_token_for_test(&self) -> Option<String> {
+        // The parser owns the token; re-derive it the same way the PTY
+        // layer does so tests stay coupled to the real association.
+        self.lifecycle
+            .as_ref()
+            .map(|_| self.id.0.simple().to_string())
+    }
+
     /// Submit a structured argv only after the trusted Bash prompt hook has
     /// confirmed the shell is idle. This acknowledges input submission only.
     pub fn run_argv(&mut self, argv: &[String]) -> Result<(), RunCommandError> {
@@ -299,6 +489,10 @@ impl TerminalSession {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.pty.resize(cols, rows);
         self.engine.resize(cols, rows);
+        // Main-screen resizes are part of the replay record; alt-screen
+        // resizes are skipped by the recorder's alt gate.
+        self.recorder.set_alt_screen(self.engine.is_alt_screen());
+        self.recorder.observe_resize(cols, rows);
     }
 
     pub fn scroll(&mut self, command: ScrollCommand) {
@@ -487,5 +681,297 @@ mod tests {
                 .any(|e| matches!(e, TerminalEvent::CwdChanged(_))),
             "unchanged CWD must not re-emit"
         );
+    }
+
+    fn bash_session() -> TerminalSession {
+        TerminalSession::new(std::env::temp_dir(), Some("/bin/bash"), 80, 24).expect("spawn bash")
+    }
+
+    fn encode_command(text: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(text)
+    }
+
+    fn lifecycle_start(token: &str, command: &str) -> Vec<u8> {
+        format!("\x1b]133;B;{token};{}\x07", encode_command(command)).into_bytes()
+    }
+
+    fn lifecycle_prompt(token: &str, status: &str) -> Vec<u8> {
+        format!("\x1b]133;A;{token};{status}\x07").into_bytes()
+    }
+
+    /// Establish the first prompt (as a real shell startup does); startup
+    /// itself must leave no records behind.
+    fn establish_first_prompt(session: &mut TerminalSession, token: &str) {
+        assert!(!session.prompt_ready());
+        session.advance_output(&lifecycle_prompt(token, "0"));
+        assert!(session.prompt_ready());
+        assert!(session.drain_lifecycle_records().is_empty());
+    }
+
+    #[test]
+    fn lifecycle_start_then_prompt_yields_completed_record() {
+        let mut session = bash_session();
+        assert!(session.emits_lifecycle());
+        let token = session
+            .lifecycle_token_for_test()
+            .expect("bash has a token");
+        establish_first_prompt(&mut session, &token);
+        session.advance_output(&lifecycle_start(&token, "echo hello"));
+        assert!(session.drain_lifecycle_records().is_empty());
+        session.advance_output(&lifecycle_prompt(&token, "0"));
+        assert!(session.prompt_ready());
+        let records = session.drain_lifecycle_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].command, "echo hello");
+        assert_eq!(records[0].shell_dialect, "bash");
+        assert_eq!(records[0].working_directory, std::env::temp_dir());
+        assert_eq!(records[0].exit_status, Some(0));
+        assert!(records[0].finished_unix_secs.unwrap_or(0) >= records[0].started_unix_secs);
+        assert!(session.drain_lifecycle_records().is_empty());
+    }
+
+    #[test]
+    fn lifecycle_second_start_flushes_first_unfinished() {
+        let mut session = bash_session();
+        let token = session
+            .lifecycle_token_for_test()
+            .expect("bash has a token");
+        establish_first_prompt(&mut session, &token);
+        session.advance_output(&lifecycle_start(&token, "true"));
+        session.advance_output(&lifecycle_start(&token, "false"));
+        session.advance_output(&lifecycle_prompt(&token, "1"));
+        let records = session.drain_lifecycle_records();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].command, "true");
+        assert_eq!(records[0].finished_unix_secs, None);
+        assert_eq!(records[0].exit_status, None);
+        assert_eq!(records[1].command, "false");
+        assert_eq!(records[1].exit_status, Some(1));
+    }
+
+    #[test]
+    fn lifecycle_spoofed_token_changes_nothing() {
+        let mut session = bash_session();
+        session.advance_output(b"\x1b]133;B;attacker;Y21k\x07");
+        session.advance_output(b"\x1b]133;A;attacker;0\x07");
+        assert!(!session.prompt_ready());
+        assert!(session.drain_lifecycle_records().is_empty());
+        // The real token still works afterwards.
+        let token = session
+            .lifecycle_token_for_test()
+            .expect("bash has a token");
+        session.advance_output(&lifecycle_prompt(&token, "0"));
+        assert!(session.prompt_ready());
+    }
+
+    #[test]
+    fn lifecycle_legacy_prompt_sets_readiness_and_closes_pending_without_status() {
+        let mut session = bash_session();
+        let token = session
+            .lifecycle_token_for_test()
+            .expect("bash has a token");
+        establish_first_prompt(&mut session, &token);
+        session.advance_output(&lifecycle_start(&token, "legacy-cmd"));
+        let legacy = format!("\x1b]133;A;{token}\x07").into_bytes();
+        session.advance_output(&legacy);
+        assert!(session.prompt_ready());
+        let records = session.drain_lifecycle_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].command, "legacy-cmd");
+        assert_eq!(records[0].exit_status, None);
+    }
+
+    #[test]
+    fn lifecycle_out_of_range_exit_sets_readiness_but_keeps_pending() {
+        let mut session = bash_session();
+        let token = session
+            .lifecycle_token_for_test()
+            .expect("bash has a token");
+        establish_first_prompt(&mut session, &token);
+        session.advance_output(&lifecycle_start(&token, "weird"));
+        session.advance_output(&lifecycle_prompt(&token, "999"));
+        assert!(session.prompt_ready(), "readiness is fail-open");
+        assert!(
+            session.drain_lifecycle_records().is_empty(),
+            "completion is fail-closed"
+        );
+        session.advance_output(&lifecycle_prompt(&token, "3"));
+        let records = session.drain_lifecycle_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].exit_status, Some(3));
+    }
+
+    #[test]
+    fn lifecycle_starts_before_first_prompt_are_dropped_as_initialization() {
+        let mut session = bash_session();
+        let token = session
+            .lifecycle_token_for_test()
+            .expect("bash has a token");
+        // rcfile/dotfile lines fire the DEBUG trap before the first prompt.
+        session.advance_output(&lifecycle_start(&token, "printf ''"));
+        session.advance_output(&lifecycle_prompt(&token, "0"));
+        assert!(session.prompt_ready());
+        assert!(session.drain_lifecycle_records().is_empty());
+        // Commands after the first prompt record normally.
+        session.advance_output(&lifecycle_start(&token, "real"));
+        session.advance_output(&lifecycle_prompt(&token, "0"));
+        assert_eq!(session.drain_lifecycle_records().len(), 1);
+    }
+
+    #[test]
+    fn history_recording_is_disabled_by_default() {
+        let mut session = test_session();
+        assert!(!session.history_enabled());
+        session.advance_output(b"before opt-in\r\n");
+        session.resize(100, 30);
+        assert!(session.history_snapshot().is_empty());
+    }
+
+    #[test]
+    fn history_enable_records_output_and_resize_without_backfill() {
+        let mut session = test_session();
+        session.advance_output(b"before opt-in\r\n");
+        session.set_history_enabled(true);
+        assert!(session.history_enabled());
+        session.advance_output(b"after opt-in\r\n");
+        session.resize(100, 30);
+        let snapshot = session.history_snapshot();
+        let combined: Vec<u8> = snapshot
+            .iter()
+            .filter_map(|event| match event {
+                crate::history::RecordedEvent::Output(bytes) => Some(bytes.clone()),
+                crate::history::RecordedEvent::Resize { .. } => None,
+            })
+            .flatten()
+            .collect();
+        let text = String::from_utf8_lossy(&combined);
+        assert!(
+            text.contains("after opt-in"),
+            "records post-opt-in: {text:?}"
+        );
+        assert!(!text.contains("before opt-in"), "never backfills: {text:?}");
+        assert!(
+            snapshot.iter().any(|event| matches!(
+                event,
+                crate::history::RecordedEvent::Resize {
+                    cols: 100,
+                    rows: 30
+                }
+            )),
+            "main-screen resize recorded"
+        );
+        session.set_history_enabled(false);
+        assert!(session.history_snapshot().is_empty(), "disable discards");
+    }
+
+    #[test]
+    fn history_pause_holds_the_record_and_resume_continues() {
+        let mut session = test_session();
+        session.set_history_enabled(true);
+        session.advance_output(b"first\r\n");
+        session.set_history_paused(true);
+        assert!(session.history_paused());
+        session.advance_output(b"while paused\r\n");
+        session.set_history_paused(false);
+        session.advance_output(b"resumed\r\n");
+        let snapshot = session.history_snapshot();
+        let combined: Vec<u8> = snapshot
+            .iter()
+            .filter_map(|event| match event {
+                crate::history::RecordedEvent::Output(bytes) => Some(bytes.clone()),
+                crate::history::RecordedEvent::Resize { .. } => None,
+            })
+            .flatten()
+            .collect();
+        let text = String::from_utf8_lossy(&combined);
+        assert!(text.contains("first") && text.contains("resumed"));
+        assert!(
+            !text.contains("while paused"),
+            "paused output dropped: {text:?}"
+        );
+    }
+
+    #[test]
+    fn history_session_drops_alt_screen_periods_end_to_end() {
+        let mut session = test_session();
+        session.set_history_enabled(true);
+        session.advance_output(b"main-before\r\n");
+        session.advance_output(b"\x1b[?1049h");
+        session.advance_output(b"alt-content\r\n");
+        session.advance_output(b"\x1b[?1049l");
+        session.advance_output(b"main-after\r\n");
+        let snapshot = session.history_snapshot();
+        let combined: Vec<u8> = snapshot
+            .iter()
+            .filter_map(|event| match event {
+                crate::history::RecordedEvent::Output(bytes) => Some(bytes.clone()),
+                crate::history::RecordedEvent::Resize { .. } => None,
+            })
+            .flatten()
+            .collect();
+        let text = String::from_utf8_lossy(&combined);
+        assert!(text.contains("main-before") && text.contains("main-after"));
+        assert!(!text.contains("alt-content"), "alt bytes dropped: {text:?}");
+    }
+
+    #[test]
+    fn start_history_with_seed_merges_restored_prefix_and_live_output() {
+        let mut session = test_session();
+        let seed = vec![
+            crate::history::RecordedEvent::Output(b"pre-restart line\r\n".to_vec()),
+            crate::history::RecordedEvent::Resize {
+                cols: 100,
+                rows: 30,
+            },
+        ];
+        session.start_history_with_seed(&seed);
+        assert!(session.history_enabled());
+        session.advance_output(b"post-restart line\r\n");
+        let snapshot = session.history_snapshot();
+        assert!(snapshot.len() >= 3, "seed plus live output");
+        let combined: Vec<u8> = snapshot
+            .iter()
+            .filter_map(|event| match event {
+                crate::history::RecordedEvent::Output(bytes) => Some(bytes.clone()),
+                crate::history::RecordedEvent::Resize { .. } => None,
+            })
+            .flatten()
+            .collect();
+        let text = String::from_utf8_lossy(&combined);
+        assert!(text.contains("pre-restart line") && text.contains("post-restart line"));
+    }
+
+    #[test]
+    fn non_bash_shell_emits_no_lifecycle_records() {
+        let mut session = test_session();
+        assert!(!session.emits_lifecycle());
+        session.advance_output(b"\x1b]133;B;whatever;Y21k\x07");
+        session.advance_output(b"\x1b]133;A;whatever;0\x07");
+        assert!(!session.prompt_ready());
+        assert!(session.drain_lifecycle_records().is_empty());
+    }
+
+    #[test]
+    fn lifecycle_record_queue_is_bounded() {
+        let mut session = bash_session();
+        let token = session
+            .lifecycle_token_for_test()
+            .expect("bash has a token");
+        establish_first_prompt(&mut session, &token);
+        for index in 0..700 {
+            let start = lifecycle_start(&token, &format!("cmd{index}"));
+            session.advance_output(&start);
+        }
+        let records = session.drain_lifecycle_records();
+        assert!(records.len() <= 512, "queue capped, got {}", records.len());
+        // cmd699 is still pending (no prompt yet); the newest *record* is
+        // the flushed predecessor.
+        assert_eq!(records.last().expect("records remain").command, "cmd698");
+        session.advance_output(&lifecycle_prompt(&token, "0"));
+        let records = session.drain_lifecycle_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].command, "cmd699");
+        assert_eq!(records[0].exit_status, Some(0));
     }
 }

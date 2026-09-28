@@ -51,6 +51,18 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "terminal.send" => "Sent bytes to terminal.".into(),
         "terminal.run" => "Submitted command to shell.".into(),
         "terminal.read" => render_read(&result),
+        "history.enable" => "History persistence enabled.".into(),
+        "history.disable" => render_cleared(&result, "History persistence disabled."),
+        "history.status" => render_history_status(&result),
+        "history.list" => render_journal(&result),
+        "history.pause" => "History capture paused for pane.".into(),
+        "history.resume" => "History capture resumed for pane.".into(),
+        "history.clear-pane" | "history.clear-project" => {
+            render_cleared(&result, "History cleared.")
+        }
+        "history.clear-all" => {
+            render_cleared(&result, "All history cleared; encryption key rotated.")
+        }
         _ => result.to_string(),
     }
 }
@@ -230,6 +242,83 @@ fn render_terminals(result: &Value) -> String {
     out.trim_end().to_owned()
 }
 
+fn render_cleared(result: &Value, message: &str) -> String {
+    let removed = result
+        .get("removed_files")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    format!("{message} ({removed} files removed)")
+}
+
+fn render_history_status(result: &Value) -> String {
+    let enabled = result
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let key = result
+        .get("key_available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let files = result
+        .get("archive_files")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let bytes = result
+        .get("archive_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let paused = result
+        .get("paused_panes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let warning = result.get("warning").and_then(Value::as_str).unwrap_or("");
+    let state = if enabled { "enabled" } else { "disabled" };
+    let mut out = format!(
+        "History {state} (key {}, {} archives, {} bytes, {} panes paused)",
+        if key { "available" } else { "unavailable" },
+        files,
+        bytes,
+        paused
+    );
+    if !warning.is_empty() {
+        out.push_str(&format!("\nwarning: {warning}"));
+    }
+    out
+}
+
+fn render_journal(result: &Value) -> String {
+    let entries = result
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let truncated = result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if entries.is_empty() {
+        return "No journal entries.".into();
+    }
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries.iter().take(128) {
+        let command = entry.get("command").and_then(Value::as_str).unwrap_or("");
+        let exit = entry
+            .get("exit_status")
+            .and_then(Value::as_i64)
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "-".into());
+        let started = entry
+            .get("started_unix_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        out.push(format!("[exit {exit}] {command} (@{started})"));
+    }
+    if truncated || entries.len() > out.len() {
+        out.push("[truncated: bounded journal listing]".into());
+    }
+    out.join("\n")
+}
+
 fn render_read(result: &Value) -> String {
     let text = result.get("text").and_then(Value::as_str).unwrap_or("");
     let truncated = result
@@ -280,6 +369,43 @@ mod tests {
         );
         assert!(text.contains("hello"));
         assert!(text.contains("truncated"));
+    }
+
+    #[test]
+    fn human_history_outputs_render() {
+        let status = human_success(
+            "history.status",
+            &ok(serde_json::json!({
+                "enabled": true, "key_available": true,
+                "archive_files": 2, "archive_bytes": 100,
+                "paused_panes": 1, "warning": "locked",
+            })),
+        );
+        assert!(status.contains("enabled"));
+        assert!(status.contains('2'));
+        assert!(status.contains("locked"));
+        let journal = human_success(
+            "history.list",
+            &ok(serde_json::json!({
+                "entries": [
+                    {"command": "cargo test", "exit_status": 0, "started_unix_secs": 7},
+                    {"command": "unfinished", "started_unix_secs": 8},
+                ],
+                "truncated": false,
+            })),
+        );
+        assert!(journal.contains("cargo test"));
+        assert!(journal.contains("[exit 0]"));
+        assert!(journal.contains("[exit -]"));
+        assert!(!journal.contains("No journal entries."));
+        let empty = human_success("history.list", &ok(serde_json::json!({"entries": []})));
+        assert!(empty.contains("No journal entries."));
+        let cleared = human_success(
+            "history.clear-all",
+            &ok(serde_json::json!({"removed_files": 3})),
+        );
+        assert!(cleared.contains('3'));
+        assert!(cleared.contains("rotated"));
     }
 
     #[test]

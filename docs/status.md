@@ -16,7 +16,7 @@ M4 evidence below.
 | 7 — Command Router | complete | Single async dispatch path, 19 router tests (variant matrix, cancel/duplicate rollback), commit guards, and release Wayland UI regression (resize/equalize/focus/close/tab) recorded below | None | Begin M8 acceptance review (done — see M8 row) |
 | 8 — IPC | complete | Typed 17-method mapping, bounds, credentials/scope/child-env, owner bridge, 11 transport tests, concurrent-load + shutdown-under-load Wayland proof recorded below | Documented limits only: cross-UID harness, fallback-dir creation path, owner-channel saturation race (see below) | Begin M9 CLI |
 | 9 — CLI | complete | `omaterm-cli` thin client (17/17 rows), 24 CLI tests, workspace gates, and release Wayland CLI/desktop proof recorded below | Documented limits only: live `pane.resize` success needs a discoverable split ID (invalid-split error path proven live); scoped in-app denial covered by M8 evidence plus CLI env/deny tests | M10 dependency/replay spikes (post-v0.1) |
-| 10 — Encrypted History Recovery | not_started | User selected both scrollback and an OmaTerm-owned command journal, explicit opt-in, and encrypted archives | Post-v0.1; requires M5–M9 completion, supported shell lifecycle integration, and verified Linux keyring/terminal replay dependencies | Complete M5–M9 before the M10 dependency and replay spikes |
+| 10 — Encrypted History Recovery | in_progress | History foundation implemented (config, key providers, encrypted archives, recorder/replay, journal types) with spikes and workspace gates recorded below; journal hooks, dispatcher/IPC/CLI, and desktop controls remain | Shell lifecycle hook reliability, `HistoryCommand` router/IPC/CLI wiring, desktop opt-in controls, and Wayland validation remain | Implement Bash lifecycle reporting, then router/IPC/CLI commands and desktop controls |
 
 ## Handoff rules
 
@@ -1239,3 +1239,521 @@ process or proof-window shell remained.
   separate live in-app token denial run was performed in M9.
 - No per-process GPU/startup/idle formal metrics were added in M9; the M5
   lifecycle observations stand.
+
+## Milestone 10 — History Foundation — in progress (2026-09-27)
+
+M5–M9 are complete, so M10 work has started. This slice implements the
+persistence/terminal foundation; shell lifecycle hooks, `HistoryCommand`
+router/IPC/CLI wiring, and desktop opt-in controls follow in later slices.
+M6's layout/CWD-only snapshot contract is unchanged: history lives in
+separate encrypted archives and is disabled by default.
+
+### Dependency and replay spikes (both PASS before implementation)
+
+- Secret Service: `secret-tool` store/lookup/clear round-trip against
+  `org.freedesktop.secrets` on Omarchy/Hyprland PASS. Production provider
+  (`omaterm-state::history::OsKeyProvider` over `keyring` 4.2.0 `v1` API)
+  proven with a throwaway binary: create → stable reget → rotate (key
+  changes) → remove → recreate → final cleanup PASS, using isolated
+  `omaterm-m10-spike` names; post-run `secret-tool lookup` confirms no
+  entries remain. Spike crates removed afterward (`/tmp/opencode/`).
+- Terminal replay: ordered PTY byte chunks + resize events replayed into a
+  fresh `AlacrittyEngine` reproduce main-screen visible text exactly (ANSI
+  colors, wide/combining Unicode, soft wraps, resize). Alt-screen policy
+  fixed by fixture: drop any chunk where alt is active before or after the
+  advance (enter/exit sequences included); pre-alt scrollback preserved.
+  Proven with a throwaway binary, then encoded as unit tests. No durable
+  storage was written before the round-trip held.
+
+### Changed files (uncommitted)
+
+- `Cargo.toml`, `Cargo.lock`
+- `crates/omaterm-state/Cargo.toml` (new: `chacha20poly1305`, `flate2`
+  with `rust_backend`, `hkdf`, `keyring`, `getrandom`, `sha2`, `zeroize`,
+  `libc`)
+- `crates/omaterm-state/src/history.rs` (new), `crates/omaterm-state/src/lib.rs`
+- `crates/omaterm-terminal/src/history.rs` (new), `crates/omaterm-terminal/src/lib.rs`
+- `docs/dependencies.md` and this status record
+
+### What was implemented
+
+- `HistoryConfig` (disabled by default; global opt-in + per-pane
+  pause/exclusion) with JSON persistence under `$XDG_CONFIG_HOME/omaterm/`
+  (forward-compatible `history.json`; full `config.toml` merge lands with
+  the desktop-controls slice). Never inside workspace snapshots.
+- `KeyProvider` trait + `InMemoryKeyProvider` (tests; one-shot failure
+  injection for key-loss paths) + `OsKeyProvider` (Secret Service only;
+  hex-encoded random 32-byte master key; `Locked`/`Denied`/`Unavailable`
+  mapping; keys zeroized on rotate/remove/drop). No plaintext fallback on
+  any failure path.
+- Versioned archive framing (`OMHIST01`, v1): HKDF-SHA256 per-archive keys
+  (separate info strings for scrollback vs journal), random salt/nonce per
+  save, ChaCha20Poly1305 with AAD-bound pane UUID + revision, deflate
+  compression before encryption. Header parsed and bounds-checked before
+  any attacker-sized allocation; decompression capped at
+  `max_decompressed_bytes + 1`.
+- Initial ceilings enforced before allocation: 10,000 lines/pane, 8 MiB
+  archive/pane, 64 MiB workspace quota, 10,000 journal entries/pane,
+  1 MiB decompressed frame, 64 KiB output frames, 4096 events/archive.
+  Retention drops oldest *complete* events/entries first.
+- `HistoryStore` (`$XDG_STATE_HOME/omaterm/history/`): opaque
+  `<32-hex-pane>.<revision>.omhist|omjournal` names, `0700` dirs / `0600`
+  files, symlink/owner/type rejection, same-directory atomic writes,
+  revision supersede (older revisions removed), corrupt archives renamed to
+  `.quarantined` and retained (never overwritten as valid), pane/project/
+  workspace clear (clear-all pairs with key rotation by the caller),
+  `stale_archives` helper for dead-pane cleanup including hidden tabs.
+- `HistoryRecorder` (hot path, `omaterm-terminal`, no crypto/IO): bounded
+  memcopy-only observation, alt-aware dropping, resize coalescing,
+  oldest-first trimming; plus `replay_into` for fresh-engine restore before
+  PTY attach (defensive alt re-exit).
+- `JournalEntry` + `JournalBuffer` (bounded, oldest-dropped, bounded `list`)
+  with encrypted persistence reusing the archive crypto under a separate
+  HKDF info string. Lifecycle-hook emission (Bash first) is a later slice;
+  the buffer already refuses oversized entries and never represents unknown
+  exit status as success/failure.
+
+### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm-state` | PASS: 29 tests (14 existing + 15 history: config, key round-trip/rotation/failure, archive round-trip/wrong-key/tamper/version/truncation, frame/decompression caps, journal round-trip/bounds/multibyte, store perms/quarantine/symlink/trim/stale, hex) |
+| `cargo test -p omaterm-terminal --lib` | PASS: 89 tests (81 existing + 8 history: disabled/pause/alt-policy/resize-skip/trim/split/replay-fidelity/flood) |
+| `cargo test --workspace -- --test-threads=1` | PASS: 215 tests, 0 failures (19 desktop router + 24 CLI + 13 core + 11 IPC + 6 protocol + 29 state + 89 terminal unit + 24 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo fmt --all --check` / `git diff --check` | PASS |
+| `cargo tree -p omaterm-terminal` / `-p omaterm-state` | PASS: zero `gpui` in either tree |
+| Live keyring spike (throwaway binary, real daemon) | PASS: create/reget/rotate/remove/recreate/cleanup; no entries left |
+
+Flake note: two workspace/PTY runs during this slice each failed the
+timing-sensitive `bash_run_waits_for_prompt…` test once (`pty_integration.rs`
+Bash second-prompt wait), while the same binary passed standalone, passed a
+repeat PTY-only run, and passed a repeat full-workspace run (215/215). The
+clean tree (stashed) also passed 24/24 PTY-only. The diff touches nothing in
+the PTY/session/shell path (purely additive history modules + deps), so this
+is the suite's known load sensitivity (cf. M4/M5 serial-gate notes), not an
+M10 regression. No failures are claimed as passes.
+
+### Explicit non-claims for this slice
+
+- No shell lifecycle hook changes: the journal has types, bounds, and
+  encrypted persistence, but no Bash/zsh/fish emission yet.
+- No `HistoryCommand` router, IPC methods, CLI commands, or desktop
+  opt-in/status/clear controls yet; no Wayland history validation yet.
+- `history.json` (not `config.toml` merge) persists config for now; the
+  merge lands with desktop controls.
+- Background revision-ordered history writer scheduling lives with the
+  desktop integration slice; the recorder itself performs no crypto/IO.
+
+### Next action
+
+Implement supported-shell lifecycle reporting (Bash first: hook reliability
+spike across interactive/nested/multiline/Ctrl+C/TUI/startup-file cases),
+then `HistoryCommand` dispatch + IPC/CLI + desktop controls + Wayland checks.
+
+## Milestone 10 — Phase 0: Foundation Audit — complete (2026-09-27)
+
+Reviewed the M10 foundation modules against the contract before adding any
+consumers. Four hardening fixes plus the `config.toml` reconciliation, each
+with focused tests. No router, IPC, CLI, shell-hook, or desktop changes.
+
+### Audit findings and fixes (all in `omaterm-state/src/history.rs`)
+
+- Symlinked history directory: `ensure_dir` previously followed symlinks.
+  The leaf directory is now rejected when it is a symlink, not a directory,
+  or unexpectedly owned; archive-file symlink/type/owner checks are
+  unchanged. Ancestor symlinks (e.g. `$HOME`) remain the user's own
+  environment and are out of scope.
+- Temporary-file collisions: both atomic writers used a fixed
+  `<name>.tmp` sidecar. Temp names are now same-directory unique
+  (`pid + process-wide counter + 8 random bytes`), so concurrent writers —
+  including writers in other processes — cannot share a temp file.
+- Quota overcharging on replacement: the workspace quota counted the pane's
+  own superseded revisions. `replaced_bytes` exempts the pane's live prior
+  revisions of the same suffix from the pre-write quota check; quarantined
+  files keep counting (conservative: they are retained for diagnosis).
+- Quarantine retention proven: a corrupt archive quarantined by load
+  survives newer valid revisions (never overwritten as valid) until an
+  explicit pane/project/workspace clear removes it.
+- Journal oversize on save: `save_journal` could fail when 10,000 entries
+  exceeded the 1 MiB decompressed cap. The save path now drops oldest
+  complete entries until the payload fits (bounded iterations, newest
+  survive); a single over-cap entry remains an error, not silent loss.
+- Redundant branch in `trim_events_to_limits` collapsed (no behavior change).
+- Configuration contract: history config moved from the temporary
+  `history.json` to the canonical `~/.config/omaterm/config.toml`
+  `[history]` section via `toml_edit` (other sections, comments, and
+  formatting preserved; atomic `0600` writes). One-time migration adopts a
+  legacy `history.json` opt-in into `config.toml` and removes it; malformed
+  TOML is an explicit `Parse` error rather than silent defaults.
+
+### Changed files (uncommitted, additive to the prior M10 slice)
+
+- `crates/omaterm-state/Cargo.toml`, `Cargo.lock` (new: `toml_edit` 0.25.15)
+- `crates/omaterm-state/src/history.rs`, `crates/omaterm-state/src/lib.rs`
+- `docs/dependencies.md` and this status record
+
+### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm-state` | PASS: 37 tests (29 prior + 8 audit: symlinked dir, temp uniqueness, quota replacement, quarantine retention, journal-fit trim, TOML round-trip preservation, migration adoption/precedence, malformed TOML) |
+| `cargo test --workspace -- --test-threads=1` | PASS: 223 tests, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `cargo fmt --all --check` / `git diff --check` | PASS |
+| `python3 scripts/check-docs.py` | PASS (rerun after doc edits; see below) |
+
+No Wayland validation in this slice (no desktop or behavior changes visible
+to the user). Stale crash-temp sidecars (`.<name>.<pid>.*.tmp`) share the
+pre-existing snapshot-writer crash-cleanup limitation and are documented as
+such rather than claimed clean.
+
+### Next action
+
+Phase 1: Bash lifecycle reliability spike (private owner-only channel,
+authenticated start/completion/exit events, nested-shell/TUI/Ctrl+C/
+startup-file matrix) before any journal emission code.
+
+## Milestone 10 — Phase 1: Bash Lifecycle Reliability — complete (2026-09-27)
+
+Shell-authoritative command records now exist: a private owner-only hook
+channel, a token-authenticated streaming parser, and a session state
+machine producing bounded `LifecycleRecord`s. Nothing is inferred from
+terminal text. Journal persistence/wiring stays in later phases.
+
+### Empirical hook design (proven before implementation)
+
+A PTY-driven DEBUG-trap experiment on real Bash showed: trap fires per
+simple command (`cmd1; cmd2` → two firings), per loop iteration, and for
+`PROMPT_COMMAND` internals and rcfile lines — while commands inside the
+trap handler itself stay silent. A prototype hook then proved the skip
+design airtight: zero phantom records across commands, chains, loops,
+`printf`, and `exit`, with exit statuses (`false` → 1) intact.
+
+### What was implemented (uncommitted)
+
+- `crates/omaterm-terminal/src/shell.rs`: `bash_rcfile` now installs a
+  `DEBUG`-trap preexec (`ESC ] 133 ; B ; <token> ; <base64-cmd> BEL`) plus
+  `PROMPT_COMMAND` wrap guards (`ESC ] 133 ; A ; <token> ; <exit> BEL`).
+  Every internal simple command either starts with `__omaterm_` or runs
+  under `__omaterm_in_prompt`; user entries keep their order in both
+  string and array `PROMPT_COMMAND` forms. No `base64(1)` → emission
+  disables itself, shell unaffected.
+- `crates/omaterm-terminal/src/lifecycle.rs` (new): streaming OSC 133
+  parser validating kind/token/charset/terminator (BEL or ST), tolerant of
+  arbitrary fragmentation, with 128 KiB runaway and 64 KiB payload caps;
+  strict base64/UTF-8 command decoding and 0–255 exit decoding.
+- `crates/omaterm-terminal/src/session.rs`: parser-driven readiness
+  replaces substring search (legacy `A;<token>` form still works);
+  pending-command state machine (new start flushes predecessor unfinished;
+  completion attributed to last start); pre-first-prompt starts dropped as
+  initialization; bounded 512-record queue with `drain_lifecycle_records`;
+  non-Bash shells get no parser and no records.
+- Documented semantics: `;`-chains record each start with completion on
+  the last; loop iterations record individually; nested shells/TUIs record
+  the outer invocation only; Ctrl+C completes with 130; `exit` stays
+  unfinished; readiness is fail-open while completion is fail-closed.
+
+### Changed files
+
+- `crates/omaterm-terminal/Cargo.toml` (`base64` =0.22.1), `src/{shell,lifecycle,session,lib}.rs`
+- `crates/omaterm-terminal/tests/pty_integration.rs` (8-test live matrix)
+- `docs/dependencies.md` and this status record
+
+### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm-terminal --lib -- --test-threads=1` | PASS: 108 tests (11 lifecycle parser + 8 lifecycle session + rest) |
+| `cargo test -p omaterm-terminal --test pty_integration -- --test-threads=1` | PASS: 32 tests incl. 8-test Bash matrix (text+exit, chain, Ctrl+C 130, nested hiding, string/array PROMPT_COMMAND coexistence, vim invocation-only, Unicode exactness) |
+| `cargo test --workspace -- --test-threads=1` | PASS: 250 tests, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `cargo fmt --all --check` / `git diff --check` | PASS |
+
+Self-correction during this slice: the first full-suite run failed five
+session tests because the `seen_prompt` gate (added after them) drops
+pre-prompt starts; the tests now establish a first prompt explicitly, and
+a dedicated test pins the initialization-drop behavior. One parallel-only
+lib run also showed a registry PTY flake; the serial gate (project
+standard) is green throughout.
+
+### Explicit non-claims
+
+- Records are queued in memory only; no `JournalBuffer`/archive writes yet.
+- No `HistoryCommand`, IPC/CLI, or desktop controls yet; no Wayland
+  validation yet. Shell-exit records come from PTY child-exit detection in
+  a later slice, not from a shell EXIT trap.
+
+### Next action
+
+Phase 2: runtime recording + background revision-ordered persistence
+writer (recorder wiring, key-gated encrypted saves, shutdown flush,
+pane/tab/project cleanup).
+
+## Milestone 10 — Phases 2–9: Integration, Controls, Acceptance — complete with documented limits (2026-09-28)
+
+Built on the foundation (spikes), Phase 0 (audit), and Phase 1 (lifecycle)
+slices. All remaining phases are implemented, gated, and validated on
+Wayland unless explicitly listed under limits. M6's layout/CWD-only
+contract is untouched throughout. Working tree only; no commit made.
+
+### Phase 2 — Runtime recording
+
+- `TerminalSession` owns a `HistoryRecorder` plus enabled/paused flags.
+  `pump()` and the test `advance_output()` path capture alt state before
+  and after every engine advance; main-screen chunks and resizes are
+  recorded with bounded memcpys only — never crypto, keyring, or disk I/O.
+- Enabling starts a new record (no backfill); disabling discards; pause
+  holds the record while dropping new output; alt-screen periods are
+  excluded end to end. A `version` counter supports writer dirty tracking.
+- Covered by 4 session tests (default-off, enable/pause/resume/alt/drop).
+
+### Phase 3 — Background persistence
+
+- New desktop `HistoryManager` (`apps/omaterm/src/history.rs`, GPUI-free):
+  owns config, `HistoryStore`, key provider, per-pane journal buffers,
+  warnings, and a single background worker thread (bounded 16-job queue,
+  per-job key copies zeroized after use).
+- Flush ticks drain recorder snapshots and lifecycle records, map them to
+  archives/journal entries with workspace identity, and queue dirty panes
+  only (recorder-version + journal-seq dirty tracking with in-flight
+  suppression). Key failures (30s retry gate) warn and keep terminals in
+  memory with prior archives untouched; nothing is ever written plaintext.
+- Desktop integration: config loaded at startup; a 30s checkpoint timer
+  plus workspace-dirty piggyback drive `flush_history`; `begin_shutdown`
+  runs a bounded (10s) `shutdown_flush_targets` before snapshot/reap;
+  every pane close clears its archives (tab/project closes funnel through
+  the same path); history warnings render as their own banner.
+- Covered by 6 manager tests (disabled no-op, persist/restore round-trip,
+  key-failure isolation, clear scopes + rotation, revision supersede,
+  journal-prefix merge).
+
+### Phase 5 — Core commands
+
+- `OmaCommand::History` with nine operations (enable, disable, pause,
+  resume, bounded list, clear pane/project/workspace, status); pure
+  field validation (`ListJournal` limit 1–1000); stable `history_disabled`
+  / `history_unavailable` error codes; owned `HistoryStatusInfo` /
+  `JournalEntryInfo` / `HistoryCleared` result DTOs (safe metadata only).
+
+### Phase 6 — Router, IPC, CLI
+
+- The router owns the single `HistoryManager` (production default built in
+  `Router::new`; `with_history_manager` is test-only). All nine operations
+  dispatch through it with pane/project existence checks, project-scope
+  authorization (global ops require local authority; targeted ops resolve
+  the owning project), immediate session flag sync plus tick
+  reconciliation, and destructive results reporting removed-file counts.
+- Disable deletes all history data without rotation; clear-all deletes and
+  rotates the master key. `list` serves in-memory buffers with newest-
+  archive fallback; empty while disabled is an error, not a silent dump.
+- Nine wire methods (`history.enable/disable/status/list/pause/resume/
+  clear-pane/clear-project/clear-all`) with strict DTOs; nine CLI verbs
+  with identical mapping (clear takes exactly one scope); human + JSON
+  renderers. Protocol (26), bridge (27-case), and CLI (27-row + scope
+  matrix) tests extended; IPC/CLI doc tables extended (checker green).
+
+### Phase 4 — Restore before fresh shells
+
+- Startup stages verified scrollback per pane into the router; the
+  `RestorePane` commit replays into the fresh engine and seeds the
+  recorder **before** `SessionStarted` effects start readers — merged,
+  never discarding the restored prefix. Shells always spawn fresh (new
+  PIDs/CWDs, no PTY/job/parser/alt state). Corrupt/missing/key-failure
+  outcomes start the pane empty with a warning. Staged events are
+  discarded if the pane closes first; retry reuses unstaged remainders.
+- Journal buffers are warmed from archives at startup and on opt-in: live
+  testing caught the first post-restart flush discarding the archived
+  prefix, fixed with a dedicated merge test plus live proof.
+- Covered by a router restore test (replay visible pre-output, seeded
+  recorder, fresh shell reaches readiness live).
+
+### Phase 7 — Desktop controls
+
+- `history: off|on|on (N paused)|attention` chip in the tab bar (click =
+  opt-in toggle); two-step `Ctrl+Shift+O` (disclosure banner for enable,
+  destructive confirm for disable+delete), `Ctrl+Shift+G` pause/resume of
+  the focused pane, `Ctrl+Shift+X` two-step pane clear (8s arm window).
+  All controls dispatch the same semantic commands as IPC/CLI; errors
+  surface as `History:` warnings. HJKL were taken (focus nav); O/G/X are
+  free and avoid the IBus Unicode key.
+
+### Phase 8 — Verification
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 269 tests, 0 failures (30 desktop + 26 CLI + 13 core + 11 IPC + 6 protocol + 37 state + 114 terminal unit + 32 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `cargo build --release --bin omaterm-desktop --bin omaterm` | PASS (used for all Wayland runs) |
+| `cargo tree -p omaterm-terminal` / `-p omaterm-state` | PASS: zero `gpui` |
+| `python3 scripts/check-docs.py` / `git diff --check` | PASS |
+
+The flaky `bash_run_waits_for_prompt` prompt race was fixed properly (pump
+until readiness instead of assuming same-chunk arrival). One full-suite
+run exceeded its 900s timeout under load average >3 with no failing test
+and no deadlock mechanism in the diff (no new locks/threads in the
+terminal crate); the rerun was green (269/269). Serial execution remains
+the gate per prior milestone notes.
+
+### Phase 9 — Wayland acceptance (Omarchy/Hyprland, release builds, Rust 1.98.1)
+
+Isolated `XDG_STATE_HOME`/`XDG_CONFIG_HOME`, real Secret Service for the
+main pass, real Bash + user dotfiles (starship/mise):
+
+- Default off, zero archives; `history enable` persists opt-in to
+  `config.toml`; status chip renders `history: on` (screenshot).
+- Styled/Unicode scrollback (`seq 1 35`, red/green SGR, `снег`) and three
+  journal entries with exact argv/exit/timestamps via CLI `run`/`list`.
+- Pause/resume flips the status paused count through CLI.
+- Restart: same panes, all-new session IDs, restored `seq`/styled output
+  above a fresh prompt; fresh shell runs new commands; journal merges the
+  archived prefix with new entries (live proof of the Phase 4 fix).
+- Alt-screen absence: `vim --clean -c 'q!'` recorded as invocation-only
+  (exit 0); post-restart viewport shows its command echo with zero TUI
+  residue and a live shell.
+- Scoped clears (`--pane` removed 2 files, `--project` removed 1),
+  `clear --all` with key rotation, `disable` with data deletion — all with
+  accurate status transitions.
+- Keyring-unavailable instance (broken bus address): enable succeeds,
+  terminal fully usable, status + amber banner read `history: attention /
+  key storage unavailable … terminals keep running in memory`, and **no
+  history directory is even created** (screenshot).
+- Shared-machine hazard noted: an unattended window received stray
+  keystrokes mid-pass (foreign `while` loop in a pane buffer), which
+  correctly surfaced as `shell_busy`; validation moved to fresh panes
+  with distinctive markers. Screenshots in `/tmp/opencode/m10-w/`;
+  isolated state/config removed afterward.
+
+Residue cleanup verified: test window closed, no desktop/shell test
+processes remain, stale socket removed, and the production-named test
+master key deleted from the real keyring (`secret-tool` search confirms
+absence). One caution learned: `secret-tool search --unlock` prints
+secrets to the transcript — the exposed value was a random single-purpose
+test key whose ciphertexts were already deleted.
+
+### Documented limits (not passes)
+
+- Live graceful shutdown (window-close path through `begin_shutdown`'s
+  history flush) was not exercised: the Hyprland 0.56 lua `dispatch`
+  surface rejected `closewindow`/`movetowindow` forms, and focus-stealing
+  on the shared machine ruled out key injection. SIGTERM kills without
+  cleanup (pre-existing: no handler) and leaves a stale socket (removed
+  manually; startup probing reclaims it per M8). Shutdown-flush ordering,
+  timeout, and ack draining are covered by manager unit tests; timer and
+  dirty-triggered checkpointing are proven live (all restart evidence
+  came from checkpointed archives).
+- Live corrupt-archive restart was not performed; tamper/metadata/nonce/
+  truncation/version/reorder rejection plus quarantine retention and
+  restore-outcome mapping are covered by 15+ deterministic tests.
+- Per-pane CWD after restore inherits the M6-tested snapshot plumbing
+  unchanged; this pass verified new PIDs/sessions and liveness rather
+  than re-proving per-pane directories.
+- First prompt after restart can take seconds under the user's real
+  dotfiles (starship/mise); readiness-gated `run` handles this by design.
+
+### Next action
+
+M10 is complete within the above limits. Remaining options (not
+required): live graceful-close proof on an unshared session, live
+corrupt-archive restart, per-pane CWD re-verification, and a SIGTERM
+handler proposal (separate product decision — instant-death-on-SIGTERM
+predates M10).
+
+## Milestone 10 — History restore fix: inactive projects (2026-09-28)
+
+User report: with two same-directory projects (`omaterm` / `omaterm 1`),
+only the last active pane's scrollback restored after a Super+W close and
+reopen. Layout, shells, and journal were fine; archives existed for all
+panes; no warning appeared.
+
+### Root cause (confirmed in code, proven by failing tests)
+
+`WorkspaceCoordinator::session_id_for_pane` searched only the **active**
+tree (`self.tree()` = active tab of the selected project). History replay
+(`replay_restore_history`) and recording-flag sync resolve sessions
+through it, so restores for panes in inactive projects or hidden tabs hit
+`None` and returned silently — after already consuming the staged events.
+Exactly the reported symptom: one pane (the active one) replays, the rest
+start fresh with no error anywhere.
+
+### Fix (working tree only, no commit)
+
+- `crates/omaterm-terminal/src/workspace.rs`: `session_id_for_pane`
+  searches every project and tab (pane IDs are unique workspace-wide, so
+  no caller can resolve a wrong session; focused/visible-pane callers
+  observe identical results).
+- `apps/omaterm/src/router.rs` `replay_restore_history`: staged events
+  are re-staged instead of dropped when the session cannot be resolved
+  and replayed, so a transient miss can never silently discard verified
+  history.
+- Regression tests: `session_id_for_pane_searches_inactive_projects_and_
+  hidden_tabs` (terminal) and
+  `restore_replays_history_for_panes_in_inactive_projects` (router,
+  two same-directory projects, inactive project never selected). Both
+  were verified to FAIL on the pre-fix lookup (`None` vs `Some`; staged
+  events unconsumed) and pass after.
+
+### Verification so far
+
+- `cargo fmt --all --check` PASS; `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS (known `proc-macro-error2` notice only).
+- Desktop (31), CLI (26), core (13), IPC (11), protocol (6), state (37),
+  terminal lib (115), PTY integration (32) suites green: 271 tests,
+  0 failures. (One full serial run exceeded its timeout under load
+  average >3 with no failing test; per-suite reruns are all green —
+  the known PTY-load sensitivity, not a deadlock: the fix adds no
+  locks or threads.)
+- `python3 scripts/check-docs.py` and `git diff --check` PASS.
+
+### Next action
+
+Finish PTY integration, then validate the user's exact flow live (release
+build, two same-folder projects, Super+W close, reopen, per-pane
+scrollback check) and record evidence here.
+
+## Milestone 10 — Duplicate-prompt fix (2026-09-28)
+
+User report: after every close/reopen cycle, one more stale prompt stacks
+above the fresh one (`❯` × N). Restoration itself was correct.
+
+### Root cause
+
+The recorder captures all main-screen bytes, including the idle shell's
+rendered prompt line (no trailing newline). Replay restored it verbatim,
+then the fresh shell printed its own prompt underneath — one duplicate
+per cycle, accumulating.
+
+### Fix (working tree only, no commit)
+
+- `crates/omaterm-terminal/src/history.rs`: new pure
+  `strip_trailing_partial_line` — drops bytes after the final `\n` from a
+  restored record, always keeps `Resize` events, reduces prompt-only
+  records to resizes. Truncation lands on `\n` (ASCII), so wide/combining
+  sequences never split; archives on disk keep full bytes (nothing lost
+  permanently; torn mid-command tails are display-only losses).
+- `apps/omaterm/src/router.rs` `replay_restore_history`: strips once and
+  feeds the stripped list to both `replay_into` and
+  `start_history_with_seed`, so later flushes never re-archive the stale
+  prompt either. Shell-agnostic (no `prompt_ready` gate): applies to
+  sh/zsh/fish too.
+- Regression tests: six `strip_*` unit cases (prompt tail, resizes
+  around tail, mid-chunk truncation, newline-terminated no-op,
+  prompt-only collapse, end-to-end no-stack replay) plus a router test
+  asserting the seeded snapshot keeps complete lines without the `❯`
+  tail. Existing replay/router tests use newline-terminated events, so
+  stripping is a proven no-op for them.
+
+### Verification
+
+- `cargo fmt --all --check` PASS; `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS (known `proc-macro-error2` notice only).
+- Desktop (32, incl. new seed test), CLI (26), core (13), IPC (11),
+  protocol (6), state (37) green; terminal history (21) green.
+- Full serial workspace suite: 278 tests, 0 failures (32 desktop + 26 CLI
+  + 13 core + 11 IPC + 6 protocol + 37 state + 121 terminal unit + 32 PTY
+  integration; per-suite runs — one full invocation stalled 4+ min in the
+  pre-existing `four_panes` PTY-spawn test under load, then passed standalone
+  in 0.67s with zero code changes: environmental, same signature as prior
+  documented PTY flakiness). `python3 scripts/check-docs.py` and
+  `git diff --check` PASS.

@@ -2,13 +2,13 @@
 //! resolve selectors or access workspace state.
 use base64::Engine;
 use omaterm_core::{
-    CommandContext, CommandOutput, CommandResult, OmaCommand, PaneCommand, PaneContent, PaneId,
-    ProjectCommand, ProjectId, SessionId, SplitDirection, SplitId, TabCommand, TabId,
-    TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, HistoryCommand, OmaCommand, PaneCommand,
+    PaneContent, PaneId, ProjectCommand, ProjectId, SessionId, SplitDirection, SplitId, TabCommand,
+    TabId, TerminalCommand,
 };
 use omaterm_protocol::{
-    IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_READ_COLUMNS, MAX_READ_LINES,
-    MAX_SEND_BYTES, method::Method,
+    IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_JOURNAL_ENTRIES,
+    MAX_READ_COLUMNS, MAX_READ_LINES, MAX_SEND_BYTES, method::Method,
 };
 use serde_json::{Value, json};
 
@@ -215,6 +215,32 @@ pub fn map_request(
                     max_columns: columns,
                 })
             }
+            Method::HistoryEnable(_) => OmaCommand::History(HistoryCommand::EnablePersistence),
+            Method::HistoryDisable(_) => OmaCommand::History(HistoryCommand::DisablePersistence),
+            Method::HistoryStatus(_) => OmaCommand::History(HistoryCommand::Status),
+            Method::HistoryList(p) => {
+                let limit = p.limit.unwrap_or(100);
+                if limit == 0 || limit > MAX_JOURNAL_ENTRIES {
+                    return Err("history.list exceeds the journal limit");
+                }
+                OmaCommand::History(HistoryCommand::ListJournal {
+                    pane: pane(&p.pane_id)?,
+                    limit,
+                })
+            }
+            Method::HistoryPause(p) => OmaCommand::History(HistoryCommand::PausePane {
+                pane: pane(&p.pane_id)?,
+            }),
+            Method::HistoryResume(p) => OmaCommand::History(HistoryCommand::ResumePane {
+                pane: pane(&p.pane_id)?,
+            }),
+            Method::HistoryClearPane(p) => OmaCommand::History(HistoryCommand::ClearPane {
+                pane: pane(&p.pane_id)?,
+            }),
+            Method::HistoryClearProject(p) => OmaCommand::History(HistoryCommand::ClearProject {
+                project: project(&p.project_id)?,
+            }),
+            Method::HistoryClearAll(_) => OmaCommand::History(HistoryCommand::ClearWorkspace),
         })
     })()
     .map_err(|message| invalid(id, message))?;
@@ -273,6 +299,16 @@ fn output_json(output: CommandOutput) -> Value {
             let truncated = items.len() > LIST_LIMIT;
             json!({"terminals":items.into_iter().take(LIST_LIMIT).map(|t| json!({"id":t.id.0.to_string(),"project_id":t.project.0.to_string(),"tab_id":t.tab.0.to_string(),"pane_id":t.pane.0.to_string(),"cwd":t.cwd,"title":t.title.map(|title| title.chars().take(256).collect::<String>()),"exited":t.exited,"columns":t.columns,"lines":t.lines})).collect::<Vec<_>>(),"truncated":truncated})
         }
+        CommandOutput::HistoryStatus(status) => {
+            json!({"enabled":status.enabled,"key_available":status.key_available,"warning":status.warning,"archive_files":status.archive_files,"archive_bytes":status.archive_bytes,"paused_panes":status.paused_panes})
+        }
+        CommandOutput::JournalEntries(items) => {
+            let truncated = items.len() > LIST_LIMIT;
+            json!({"entries":items.into_iter().take(LIST_LIMIT).map(|e| json!({"pane_id":e.pane,"project_id":e.project,"tab_id":e.tab,"command":e.command.chars().take(4096).collect::<String>(), "shell_dialect":e.shell_dialect,"working_directory":e.working_directory,"started_unix_secs":e.started_unix_secs,"finished_unix_secs":e.finished_unix_secs,"exit_status":e.exit_status})).collect::<Vec<_>>(),"truncated":truncated})
+        }
+        CommandOutput::HistoryCleared { removed_files } => {
+            json!({"removed_files":removed_files})
+        }
     }
 }
 
@@ -316,8 +352,18 @@ mod tests {
             ("terminal.send", json!({"pane_id":id,"data":"AQ=="}), false),
             ("terminal.run", json!({"pane_id":id,"argv":["true"]}), false),
             ("terminal.read", json!({"pane_id":id,"lines":5}), false),
+            ("history.enable", json!({}), true),
+            ("history.disable", json!({}), true),
+            ("history.status", json!({}), true),
+            ("history.list", json!({"pane_id":id,"limit":20}), true),
+            ("history.list", json!({"pane_id":id,"limit":0}), false),
+            ("history.pause", json!({"pane_id":id}), true),
+            ("history.resume", json!({"pane_id":id}), true),
+            ("history.clear-pane", json!({"pane_id":id}), true),
+            ("history.clear-project", json!({"project_id":id}), true),
+            ("history.clear-all", json!({}), true),
         ];
-        assert_eq!(cases.len(), 17);
+        assert_eq!(cases.len(), 27);
         for (method, params, valid) in cases {
             let result = map_request(&request(method, params), CommandContext::LocalUser, &router);
             assert_eq!(result.is_ok(), valid, "{method}");

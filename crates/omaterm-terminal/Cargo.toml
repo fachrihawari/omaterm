@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 alacritty_terminal = "=0.26.0"
+base64 = "=0.22.1"
 libc = "0.2"
 omaterm-core = { path = "../omaterm-core" }
 thiserror = "=2.0.21"

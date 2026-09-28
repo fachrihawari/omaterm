@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 
-use omaterm_core::SplitDirection;
+use omaterm_core::{SessionId, SplitDirection};
 use omaterm_terminal::{
-    RunCommandError, TerminalConfig, TerminalRegistry, TerminalSession, TerminalViewport,
-    WorkspaceCoordinator,
+    LifecycleRecord, RunCommandError, TerminalConfig, TerminalRegistry, TerminalSession,
+    TerminalViewport, WorkspaceCoordinator,
 };
 
 fn pump_until(
@@ -125,6 +125,14 @@ fn bash_run_waits_for_prompt_and_submits_argv_without_shell_interpolation() {
         !marker_path.exists(),
         "argv text must not be evaluated by Bash"
     );
+    // Command output and the prompt marker can arrive in separate PTY
+    // reads under load; wait for readiness instead of assuming it lands
+    // in the same chunk as the output text.
+    let start = Instant::now();
+    while !session.prompt_ready() && start.elapsed() < Duration::from_secs(10) {
+        let _ = session.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert!(
         session.prompt_ready(),
         "next prompt marker restores readiness"
@@ -903,4 +911,227 @@ fn combining_chars_compose_in_one_cell() {
         "combining mark should compose, got {:?}",
         cell.text
     );
+}
+
+// --- M10 Phase 1: Bash lifecycle reliability matrix ------------------------
+
+/// Spawn integrated Bash and synchronize on the first prompt. Startup
+/// initialization (rcfile lines, dotfiles) must never become records.
+fn bash_lifecycle_session() -> TerminalSession {
+    let mut session =
+        TerminalSession::new(std::env::temp_dir(), Some("/bin/bash"), 80, 24).expect("spawn bash");
+    assert!(session.emits_lifecycle());
+    let start = Instant::now();
+    while !session.prompt_ready() && start.elapsed() <= Duration::from_secs(10) {
+        let _ = session.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        session.prompt_ready(),
+        "integrated bash must reach readiness"
+    );
+    assert!(
+        session.drain_lifecycle_records().is_empty(),
+        "initialization noise must not become records"
+    );
+    session
+}
+
+fn wait_for_records(
+    session: &mut TerminalSession,
+    timeout: Duration,
+    min_records: usize,
+) -> Vec<LifecycleRecord> {
+    let mut collected = Vec::new();
+    let start = Instant::now();
+    while collected.len() < min_records && start.elapsed() <= timeout {
+        let _ = session.pump();
+        collected.extend(session.drain_lifecycle_records());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    collected
+}
+
+#[test]
+fn bash_lifecycle_reports_command_text_and_exit_status() {
+    let mut session = bash_lifecycle_session();
+    session.write_input(b"false\n").expect("write");
+    let records = wait_for_records(&mut session, Duration::from_secs(10), 1);
+    assert_eq!(records.len(), 1, "one command, one record");
+    assert_eq!(records[0].command, "false");
+    assert_eq!(records[0].shell_dialect, "bash");
+    assert_eq!(records[0].exit_status, Some(1));
+    assert!(
+        records[0].finished_unix_secs.unwrap_or(0) >= records[0].started_unix_secs,
+        "timestamps ordered"
+    );
+    assert!(
+        !records[0].command.contains("omaterm"),
+        "no hook internals leaked: {:?}",
+        records[0].command
+    );
+}
+
+#[test]
+fn bash_lifecycle_chain_attributes_completion_to_last() {
+    let mut session = bash_lifecycle_session();
+    session.write_input(b"true; false\n").expect("write");
+    let records = wait_for_records(&mut session, Duration::from_secs(10), 2);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].command, "true");
+    assert_eq!(
+        records[0].exit_status, None,
+        "superseded start has no completion"
+    );
+    assert_eq!(records[0].finished_unix_secs, None);
+    assert_eq!(records[1].command, "false");
+    assert_eq!(records[1].exit_status, Some(1));
+}
+
+#[test]
+fn bash_lifecycle_ctrl_c_reports_130() {
+    let mut session = bash_lifecycle_session();
+    session
+        .write_input(b"echo SLEEPING; sleep 10\n")
+        .expect("write sleep");
+    // SLEEPING in the viewport proves `sleep` is the foreground job, so
+    // SIGINT deterministically lands on it instead of the prompt.
+    pump_until(&mut session, Duration::from_secs(5), |viewport| {
+        viewport_text(viewport).contains("SLEEPING")
+    });
+    session.write_input(b"\x03").expect("write ctrl-c");
+    let records = wait_for_records(&mut session, Duration::from_secs(10), 2);
+    let sleep = records
+        .iter()
+        .find(|record| record.command == "sleep 10")
+        .expect("sleep record present");
+    assert_eq!(sleep.exit_status, Some(130), "SIGINT yields 130");
+}
+
+#[test]
+fn bash_lifecycle_nested_shell_hides_inner_commands() {
+    let mut session = bash_lifecycle_session();
+    session
+        .write_input(b"bash --norc -c 'echo inner-probe-xyz'\n")
+        .expect("write");
+    let records = wait_for_records(&mut session, Duration::from_secs(10), 1);
+    assert_eq!(records.len(), 1, "only the outer invocation is recorded");
+    assert!(
+        records[0].command.starts_with("bash --norc"),
+        "outer command recorded, got {:?}",
+        records[0].command
+    );
+    assert_eq!(records[0].exit_status, Some(0));
+    assert!(
+        !records
+            .iter()
+            .any(|record| record.command == "echo inner-probe-xyz"),
+        "inner shell has no hooks and stays invisible"
+    );
+}
+
+fn bash_lifecycle_session_with_bashrc(bashrc: &str) -> (TerminalSession, std::path::PathBuf) {
+    static HOME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = HOME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let home = std::env::temp_dir().join(format!(
+        "omaterm-lifecycle-home-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&home).expect("isolated home");
+    std::fs::write(home.join(".bashrc"), bashrc).expect("isolated bashrc");
+    let mut env = std::collections::HashMap::new();
+    env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
+    let mut session = TerminalSession::new_with_id_and_env(
+        SessionId::new(),
+        std::env::temp_dir(),
+        Some("/bin/bash"),
+        80,
+        24,
+        env,
+    )
+    .expect("spawn bash with isolated home");
+    let start = Instant::now();
+    while !session.prompt_ready() && start.elapsed() <= Duration::from_secs(10) {
+        let _ = session.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        session.prompt_ready(),
+        "bash with custom rc must reach readiness"
+    );
+    assert!(
+        session.drain_lifecycle_records().is_empty(),
+        "dotfile sourcing must not become records"
+    );
+    (session, home)
+}
+
+#[test]
+fn bash_lifecycle_user_string_prompt_command_is_not_recorded() {
+    let (mut session, home) =
+        bash_lifecycle_session_with_bashrc("PROMPT_COMMAND='echo USERPCMARK'\n");
+    session.write_input(b"true\n").expect("write");
+    let records = wait_for_records(&mut session, Duration::from_secs(10), 1);
+    assert_eq!(records.len(), 1, "only the typed command, got {records:?}");
+    assert_eq!(records[0].command, "true");
+    let viewport = pump_until(&mut session, Duration::from_secs(5), |viewport| {
+        viewport_text(viewport).contains("USERPCMARK")
+    });
+    assert!(
+        viewport_text(&viewport).contains("USERPCMARK"),
+        "user PROMPT_COMMAND still runs"
+    );
+    drop(session);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn bash_lifecycle_user_array_prompt_command_is_not_recorded() {
+    let (mut session, home) =
+        bash_lifecycle_session_with_bashrc("PROMPT_COMMAND=(echo USERPCARR)\n");
+    session.write_input(b"true\n").expect("write");
+    let records = wait_for_records(&mut session, Duration::from_secs(10), 1);
+    assert_eq!(records.len(), 1, "only the typed command, got {records:?}");
+    assert_eq!(records[0].command, "true");
+    let viewport = pump_until(&mut session, Duration::from_secs(5), |viewport| {
+        viewport_text(viewport).contains("USERPCARR")
+    });
+    assert!(
+        viewport_text(&viewport).contains("USERPCARR"),
+        "user array PROMPT_COMMAND still runs"
+    );
+    drop(session);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn bash_lifecycle_tui_records_invocation_only() {
+    let mut session = bash_lifecycle_session();
+    session
+        .write_input(b"vim --clean -c 'q!'\n")
+        .expect("write");
+    let records = wait_for_records(&mut session, Duration::from_secs(15), 1);
+    assert_eq!(
+        records.len(),
+        1,
+        "TUI internals stay invisible, got {records:?}"
+    );
+    assert!(
+        records[0].command.starts_with("vim "),
+        "invocation recorded, got {:?}",
+        records[0].command
+    );
+    assert_eq!(records[0].exit_status, Some(0));
+}
+
+#[test]
+fn bash_lifecycle_unicode_command_text_is_exact() {
+    let mut session = bash_lifecycle_session();
+    session
+        .write_input("printf '雪 %s\\n' ok\n".as_bytes())
+        .expect("write");
+    let records = wait_for_records(&mut session, Duration::from_secs(10), 1);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].command, "printf '雪 %s\\n' ok");
+    assert_eq!(records[0].exit_status, Some(0));
 }

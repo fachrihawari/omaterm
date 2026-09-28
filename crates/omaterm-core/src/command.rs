@@ -9,6 +9,7 @@ pub enum OmaCommand {
     Tab(TabCommand),
     Pane(PaneCommand),
     Terminal(TerminalCommand),
+    History(HistoryCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +113,22 @@ pub enum TerminalCommand {
         session: SessionId,
     },
     List,
+}
+
+/// Opt-in encrypted history operations. Every variant routes through the
+/// common dispatcher so UI, IPC, and CLI share one implementation; the
+/// desktop owner applies the effects. See the M10 milestone contract.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HistoryCommand {
+    EnablePersistence,
+    DisablePersistence,
+    PausePane { pane: PaneId },
+    ResumePane { pane: PaneId },
+    ListJournal { pane: PaneId, limit: usize },
+    ClearPane { pane: PaneId },
+    ClearProject { project: ProjectId },
+    ClearWorkspace,
+    Status,
 }
 
 /// Authority is kept separate from command data so transport identity cannot
