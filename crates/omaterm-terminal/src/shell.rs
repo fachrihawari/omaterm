@@ -37,6 +37,15 @@ pub(crate) fn encode_bash_argv(argv: &[String]) -> String {
 ///   `__omaterm_prompt_last`) reporting prompt readiness and the last
 ///   command's exit status as `ESC ] 133 ; A ; <token> ; <exit> BEL`.
 ///
+/// Exit-status capture must happen in `__omaterm_prompt_first`, the first
+/// `PROMPT_COMMAND` element: at that instant `$?` is still the last user
+/// command's status by documented bash semantics. Reading it later (in
+/// `__omaterm_prompt_last`, or after user `PROMPT_COMMAND` entries) is
+/// wrong on bash builds without the 5.3 DEBUG-trap `$?` save/restore
+/// quirk — `first()` itself is an assignment (exit 0) and every later
+/// element may clobber `$?` (proven by CI on bash 5.2: every status read
+/// `Some(0)`).
+///
 /// Skip semantics (proven against real Bash, see lifecycle tests): our own
 /// functions, assignments, and prompt internals never become records — every
 /// internal simple command either starts with the `__omaterm_` prefix or
@@ -57,7 +66,7 @@ __omaterm_in_prompt=0
 __omaterm_exit=0
 __omaterm_b64_ok=0
 if printf '' | base64 -w0 >/dev/null 2>&1; then __omaterm_b64_ok=1; fi
-__omaterm_prompt_first() {{ __omaterm_in_prompt=1; }}
+__omaterm_prompt_first() {{ __omaterm_exit=$?; __omaterm_in_prompt=1; }}
 __omaterm_preexec() {{
   case $1 in __omaterm_*) return 0;; esac
   if [[ $__omaterm_in_prompt == 1 ]]; then return 0; fi
@@ -71,7 +80,6 @@ __omaterm_preexec() {{
   fi
 }}
 __omaterm_prompt_last() {{
-  __omaterm_exit=$?;
   printf '\033]133;A;%s;%s\007' "$__omaterm_token" "$__omaterm_exit";
   __omaterm_in_prompt=0;
 }}
@@ -128,6 +136,14 @@ mod tests {
         assert!(source.contains("__omaterm_prompt_first;"));
         assert!(source.contains("__omaterm_prompt_last"));
         assert!(source.contains("\"${PROMPT_COMMAND[@]}\""));
+        // Exit capture is the FIRST statement of the FIRST guard: at that
+        // instant $? is still the last user command's status. Reading it any
+        // later (last guard, user entries) misreports on bash <= 5.2.
+        assert!(source.contains("__omaterm_prompt_first() { __omaterm_exit=$?;"));
+        assert!(
+            !source.contains("__omaterm_prompt_last() {\n  __omaterm_exit=$?;"),
+            "last guard must report the saved status, never re-read $?"
+        );
     }
 
     #[test]
