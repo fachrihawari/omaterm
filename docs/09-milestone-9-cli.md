@@ -68,6 +68,7 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `project open PATH` | `project.create` | Project Create | New project ID and root; local-user authority required |
 | `project select ID` | `project.select` | Project Select | Selection updated within scope |
 | `project set-directory ID PATH` | `project.set-directory` | Project SetDirectory | Base directory updated; future tabs use it |
+| `project root` | `project.root` | Project Root | Resolved root + source (`pinned`/`git`/`none`); empty state for non-repos |
 | `tab list` | `tab.list` | Tab List | Tabs in resolved project |
 | `tab new` | `tab.create` | Tab Create | Tab, pane, session IDs |
 | `tab close ID` | `tab.close` | Tab Close | Correct cleanup and focus fallback |

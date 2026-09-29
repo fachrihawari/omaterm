@@ -1,4 +1,4 @@
-use super::WireCall;
+use super::{WireCall, optional_selector};
 use clap::Subcommand;
 use serde_json::json;
 use std::path::PathBuf;
@@ -26,6 +26,12 @@ pub enum ProjectCmd {
         project_id: String,
         /// New base directory.
         directory: PathBuf,
+    },
+    /// Resolve the project's filesystem root (empty state for non-repos).
+    Root {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 
@@ -73,6 +79,13 @@ pub fn build(cmd: &ProjectCmd) -> Result<WireCall, String> {
                 }),
             })
         }
+        ProjectCmd::Root { project } => Ok(WireCall {
+            method: "project.root".into(),
+            params: match optional_selector(project.clone(), "OMATERM_PROJECT_ID") {
+                Some(id) => json!({ "project_id": id }),
+                None => json!({}),
+            },
+        }),
     }
 }
 
@@ -117,6 +130,14 @@ mod tests {
             })
             .is_err()
         );
+        let call = build(&ProjectCmd::Root { project: None }).unwrap();
+        assert_eq!(call.method, "project.root");
+        assert_eq!(call.params, json!({}));
+        let call = build(&ProjectCmd::Root {
+            project: Some("p1".into()),
+        })
+        .unwrap();
+        assert_eq!(call.params["project_id"], "p1");
     }
 
     #[test]

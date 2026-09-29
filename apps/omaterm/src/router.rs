@@ -7,8 +7,8 @@ use crate::history::HistoryManager;
 use omaterm_core::{
     CommandContext, CommandError, CommandOutput, CommandResult, ErrorCode, HistoryCommand,
     HistoryStatusInfo, JournalEntryInfo, OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo,
-    ProjectCommand, ProjectId, ProjectInfo, SessionId, SplitDirection, TabCommand, TabId, TabInfo,
-    TerminalCommand, TerminalInfo,
+    ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand,
+    TabId, TabInfo, TerminalCommand, TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
@@ -177,6 +177,20 @@ impl CommandRouter {
         None
     }
 
+    /// Shell CWD of the project's active tab (focused pane), refreshed from
+    /// procfs like persistence does. `None` when the tab has no live shell —
+    /// root resolution then reports the explicit empty state.
+    fn active_shell_cwd(&mut self, project: ProjectId) -> Option<PathBuf> {
+        let tab = self.coordinator.window().project(project)?.selected_tab()?;
+        let PaneContent::Terminal(session) = tab.tree.find(tab.focused_pane)?.content else {
+            return None;
+        };
+        let handle = self.coordinator.registry().get(session)?;
+        let mut live = handle.lock().ok()?;
+        live.refresh_cwd_from_procfs();
+        Some(live.cwd().path.clone())
+    }
+
     /// Apply the manager's desired recording flags to one live session.
     fn sync_session_history_flags(&self, pane: PaneId) {
         let (enabled, paused) = match &self.history {
@@ -328,7 +342,8 @@ impl CommandRouter {
             OmaCommand::Project(
                 ProjectCommand::Delete { project }
                 | ProjectCommand::Rename { project, .. }
-                | ProjectCommand::SetDirectory { project, .. },
+                | ProjectCommand::SetDirectory { project, .. }
+                | ProjectCommand::Root { project },
             )
             | OmaCommand::Tab(TabCommand::Create { project, .. } | TabCommand::List { project })
             | OmaCommand::Terminal(TerminalCommand::Create { project, .. }) => Some(*project),
@@ -874,6 +889,30 @@ impl CommandRouter {
                     Ok(()) => changed(effects, Out::Unit),
                     Err(e) => coordinator_error(e),
                 }
+            }
+            OmaCommand::Project(ProjectCommand::Root { project }) => {
+                let Some(target) = self.coordinator.window().project(project) else {
+                    return err(ErrorCode::ProjectNotFound, "project does not exist");
+                };
+                if matches!(context, CommandContext::Project(scope) if scope != project) {
+                    return err(ErrorCode::CrossProjectDenied, "outside project scope");
+                }
+                let pinned = target.pinned_directory.clone();
+                let active_cwd = self.active_shell_cwd(project);
+                let resolved =
+                    omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref());
+                // Redaction contract: IDs, source, and counts only — never
+                // raw paths or terminal output (blueprint §45).
+                tracing::debug!(
+                    target: "omaterm::files",
+                    project_id = %project.0,
+                    source = resolved.source.as_str(),
+                    "project root resolved",
+                );
+                ok(Out::ProjectRoot(ProjectRootInfo {
+                    root: resolved.root,
+                    source: resolved.source,
+                }))
             }
             OmaCommand::Tab(TabCommand::List { project }) => {
                 let Some(p) = self.coordinator.window().project(project) else {
@@ -1791,6 +1830,95 @@ mod tests {
                 OmaCommand::Project(ProjectCommand::Delete { project: id }),
             );
         }
+    }
+
+    #[test]
+    fn project_root_reports_pinned_git_empty_and_scope_without_effects() {
+        use omaterm_core::{ProjectRootInfo, RootSource};
+
+        let mut router = router();
+        let pin =
+            std::env::temp_dir().join(format!("omaterm-m12-router-pin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&pin);
+        std::fs::create_dir_all(&pin).unwrap();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(pin.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+        // Pin wins regardless of the live shell CWD; a query emits no effects.
+        let rooted = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Root { project }),
+        );
+        assert_eq!(
+            rooted.result,
+            CommandResult::Ok(CommandOutput::ProjectRoot(ProjectRootInfo {
+                root: Some(pin.clone()),
+                source: RootSource::Pinned,
+            }))
+        );
+        assert!(rooted.effects.is_empty());
+        // A scoped credential may query its own project through the same arm.
+        let scoped = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Project(ProjectCommand::Root { project }),
+        );
+        assert!(matches!(
+            scoped.result,
+            CommandResult::Ok(CommandOutput::ProjectRoot(_))
+        ));
+        assert!(scoped.effects.is_empty());
+        // A deleted pin is the explicit empty state, never a silent re-root.
+        let _ = std::fs::remove_dir_all(&pin);
+        let gone = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Root { project }),
+        );
+        assert_eq!(
+            gone.result,
+            CommandResult::Ok(CommandOutput::ProjectRoot(ProjectRootInfo {
+                root: None,
+                source: RootSource::Absent,
+            }))
+        );
+        assert!(gone.effects.is_empty());
+        // Stale IDs and foreign scopes fail without effects.
+        let stale = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Root {
+                project: omaterm_core::ProjectId::new(),
+            }),
+        );
+        assert!(matches!(
+            stale.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::ProjectNotFound,
+                ..
+            })
+        ));
+        assert!(stale.effects.is_empty());
+        let foreign = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Project(ProjectCommand::Root {
+                project: omaterm_core::ProjectId::new(),
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+        assert!(foreign.effects.is_empty());
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
     }
 
     #[test]

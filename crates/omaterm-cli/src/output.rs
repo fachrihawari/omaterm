@@ -29,6 +29,7 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
             string(&result, "session_id"),
         ),
         "project.select" => "Selected project.".into(),
+        "project.root" => render_root(&result),
         "tab.list" => render_tabs(&result),
         "tab.create" | "terminal.create" => format!(
             "Created tab {} (pane {}, session {})",
@@ -102,6 +103,15 @@ fn string(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("-")
         .to_owned()
+}
+
+fn render_root(result: &Value) -> String {
+    let source = result.get("source").and_then(Value::as_str);
+    match (result.get("root").and_then(Value::as_str), source) {
+        (Some(root), Some(source)) => format!("Project root: {root} (source: {source})"),
+        (_, Some(source)) => format!("No project root (source: {source})"),
+        _ => "No project root.".into(),
+    }
 }
 
 fn render_projects(result: &Value) -> String {
@@ -367,6 +377,22 @@ mod tests {
 
     fn ok(result: Value) -> IpcResponse {
         IpcResponse::success("req-1".into(), result)
+    }
+
+    #[test]
+    fn human_project_root_renders_source_and_empty_state() {
+        let rooted = human_success(
+            "project.root",
+            &ok(serde_json::json!({"root": "/repo", "source": "git"})),
+        );
+        assert!(rooted.contains("/repo"));
+        assert!(rooted.contains("git"));
+        let empty = human_success(
+            "project.root",
+            &ok(serde_json::json!({"root": null, "source": "none"})),
+        );
+        assert!(empty.contains("No project root"));
+        assert!(empty.contains("none"));
     }
 
     #[test]

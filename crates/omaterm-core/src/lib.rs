@@ -21,7 +21,7 @@ pub use pane::{
 pub use project::Project;
 pub use result::{
     CommandError, CommandOutput, CommandResult, ErrorCode, HistoryStatusInfo, JournalEntryInfo,
-    PaneInfo, ProjectInfo, TabInfo, TerminalInfo,
+    PaneInfo, ProjectInfo, ProjectRootInfo, RootSource, TabInfo, TerminalInfo,
 };
 pub use tab::Tab;
 pub use workspace::{Workspace, WorkspaceWindow};

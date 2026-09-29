@@ -14,12 +14,18 @@
 //! omaterm::ipc        socket server, owner bridge, credentials lifecycle
 //! omaterm::cli        CLI resolution, launch, request outcomes
 //! omaterm::persistence snapshots, recovery, history config/writer
+//! omaterm::files      project root resolution, file listing policy
+//! omaterm::git        git status/refresh lifecycle (never diff bodies)
+//! omaterm::search     filename search ranking and limits
 //! ```
 //!
 //! Redaction is a call-site contract, not a subscriber feature: the
 //! subscriber prints whatever fields it receives, so capability tokens,
-//! passwords, clipboard content, and terminal payloads MUST NOT be emitted
-//! (see the `no_secret_fields_at_call_sites` audit note in status.md).
+//! passwords, clipboard content, terminal payloads, file contents, diff
+//! bodies, and git stderr MUST NOT be emitted (see the
+//! `no_secret_fields_at_call_sites` audit note in status.md). The v0.2
+//! categories (`files`, `git`, `search`) log IDs, sources, counts, and
+//! truncation flags only — never path contents or command output.
 
 use std::io::Write;
 use std::sync::Mutex;
@@ -38,6 +44,9 @@ pub const CATEGORIES: &[&str] = &[
     "omaterm::ipc",
     "omaterm::cli",
     "omaterm::persistence",
+    "omaterm::files",
+    "omaterm::git",
+    "omaterm::search",
 ];
 
 /// One parsed directive: `target` (empty = default) and an optional ceiling.

@@ -20,6 +20,10 @@ pub enum ErrorCode {
     RuntimeFailure,
     HistoryDisabled,
     HistoryUnavailable,
+    /// A filesystem path escaped the resolved project root (M12 boundary,
+    /// blueprint §50). Introduced with the context foundation so M13 file
+    /// and M14 git mutations share one stable code.
+    PathOutsideRoot,
 }
 
 impl ErrorCode {
@@ -41,6 +45,7 @@ impl ErrorCode {
             Self::RuntimeFailure => "runtime_failure",
             Self::HistoryDisabled => "history_disabled",
             Self::HistoryUnavailable => "history_unavailable",
+            Self::PathOutsideRoot => "path_outside_root",
         }
     }
 }
@@ -127,6 +132,7 @@ pub enum CommandOutput {
     HistoryCleared {
         removed_files: usize,
     },
+    ProjectRoot(ProjectRootInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +142,35 @@ pub struct ProjectInfo {
     pub directory: Option<PathBuf>,
     pub selected: bool,
     pub tab_count: usize,
+}
+
+/// Where a resolved project root came from (M12, blueprint §31). The wire
+/// form is the lowercase string (`pinned` | `git` | `none`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootSource {
+    Pinned,
+    Git,
+    Absent,
+}
+
+impl RootSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pinned => "pinned",
+            Self::Git => "git",
+            Self::Absent => "none",
+        }
+    }
+}
+
+/// Owned result of `ProjectCommand::Root`: the resolved filesystem root
+/// plus its source. `root` is `None` exactly when `source` is `Absent`
+/// (non-repo project without a usable pin — an explicit empty state,
+/// never an error).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRootInfo {
+    pub root: Option<PathBuf>,
+    pub source: RootSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

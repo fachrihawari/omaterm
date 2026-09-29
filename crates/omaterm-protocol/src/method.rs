@@ -103,6 +103,7 @@ pub enum Method {
     ProjectCreate(ProjectCreate),
     ProjectSelect(ProjectSelector),
     ProjectSetDirectory(ProjectSetDirectory),
+    ProjectRoot(OptionalProject),
     TabList(OptionalProject),
     TabCreate(TabCreate),
     TabClose(TabSelector),
@@ -147,6 +148,7 @@ impl Method {
             "project.create" => decode!(ProjectCreate, ProjectCreate),
             "project.select" => decode!(ProjectSelector, ProjectSelect),
             "project.set-directory" => decode!(ProjectSetDirectory, ProjectSetDirectory),
+            "project.root" => decode!(OptionalProject, ProjectRoot),
             "tab.list" => decode!(OptionalProject, TabList),
             "tab.create" => decode!(TabCreate, TabCreate),
             "tab.close" => decode!(TabSelector, TabClose),
@@ -189,6 +191,7 @@ mod tests {
                 "project.set-directory",
                 serde_json::json!({"project_id":"id","directory":"/tmp"}),
             ),
+            ("project.root", serde_json::json!({})),
             ("tab.list", serde_json::json!({})),
             ("tab.create", serde_json::json!({"name":"test"})),
             ("tab.close", serde_json::json!({"tab_id":"id"})),
@@ -231,7 +234,7 @@ mod tests {
             ),
             ("history.clear-all", serde_json::json!({})),
         ];
-        assert_eq!(cases.len(), 27);
+        assert_eq!(cases.len(), 28);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

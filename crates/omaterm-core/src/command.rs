@@ -35,6 +35,12 @@ pub enum ProjectCommand {
         project: ProjectId,
         directory: PathBuf,
     },
+    /// Resolve the project's filesystem root (M12, blueprint §31). Pure
+    /// query: pin wins when set and present, else the nearest enclosing git
+    /// repository of the active tab's shell CWD, else no root. No effects.
+    Root {
+        project: ProjectId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -219,6 +219,7 @@ mod tests {
             &["omaterm", "project", "list"],
             &["omaterm", "project", "open", "/tmp"],
             &["omaterm", "project", "select", "p1"],
+            &["omaterm", "project", "root"],
             &["omaterm", "tab", "list"],
             &["omaterm", "tab", "new"],
             &["omaterm", "tab", "close", "t1"],
@@ -256,7 +257,7 @@ mod tests {
             &["omaterm", "history", "clear", "--project", "p1"],
             &["omaterm", "history", "clear", "--all"],
         ];
-        assert_eq!(cases.len(), 27);
+        assert_eq!(cases.len(), 28);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");

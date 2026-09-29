@@ -12,6 +12,13 @@
 //!
 //! [automation]
 //! enabled = true
+//!
+//! [files]
+//! max-results = 100
+//! show-hidden = false
+//!
+//! [git]
+//! refresh-secs = 5
 //! ```
 //!
 //! Every field is optional; an absent file or section means compiled defaults.
@@ -34,6 +41,15 @@ pub const MAX_FONT_SIZE: f32 = 72.0;
 /// Largest accepted `terminal.scrollback-lines`. The engine default
 /// (10 000) applies when the key is absent.
 pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
+/// Default/largest accepted `files.max-results`. 100 matches the M13 file
+/// listing default; the ceiling keeps a convenient local socket from
+/// becoming an unbounded memory interface (blueprint §64).
+pub const DEFAULT_MAX_RESULTS: u32 = 100;
+pub const MAX_FILE_RESULTS: u32 = 5_000;
+/// Default/bounds for `git.refresh-secs` (M14 debounced status refresh).
+pub const DEFAULT_GIT_REFRESH_SECS: u64 = 5;
+pub const MIN_GIT_REFRESH_SECS: u64 = 1;
+pub const MAX_GIT_REFRESH_SECS: u64 = 300;
 /// Accepted `appearance.theme` values. Only `system` changes nothing today;
 /// `dark`/`light` parse and validate so the key is reserved for the future
 /// theme engine (blueprint §58) without silently accepting typos.
@@ -59,12 +75,27 @@ pub struct AutomationSettings {
     pub enabled: Option<bool>,
 }
 
+/// `[files]` section (M12, consumed by the M13 file tree). All keys optional.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FilesSettings {
+    pub max_results: Option<u32>,
+    pub show_hidden: Option<bool>,
+}
+
+/// `[git]` section (M12, consumed by the M14 status panel). All keys optional.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GitSettings {
+    pub refresh_secs: Option<u64>,
+}
+
 /// Validated general configuration.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppConfig {
     pub terminal: TerminalSettings,
     pub appearance: AppearanceSettings,
     pub automation: AutomationSettings,
+    pub files: FilesSettings,
+    pub git: GitSettings,
 }
 
 impl AppConfig {
@@ -99,6 +130,21 @@ impl AppConfig {
     /// exposed rather than silently acted on.
     pub fn automation_enabled(&self) -> bool {
         self.automation.enabled.unwrap_or(true)
+    }
+
+    /// Effective file listing limit: configured value or 100.
+    pub fn resolved_max_results(&self) -> u32 {
+        self.files.max_results.unwrap_or(DEFAULT_MAX_RESULTS)
+    }
+
+    /// Whether dotfiles are included in file listings.
+    pub fn show_hidden(&self) -> bool {
+        self.files.show_hidden.unwrap_or(false)
+    }
+
+    /// Effective git status refresh interval in seconds.
+    pub fn resolved_git_refresh_secs(&self) -> u64 {
+        self.git.refresh_secs.unwrap_or(DEFAULT_GIT_REFRESH_SECS)
     }
 }
 
@@ -189,6 +235,44 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
         config.automation.enabled = Some(enabled);
     }
 
+    if let Some(table) = doc.get("files").and_then(toml_edit::Item::as_table) {
+        if let Some(item) = table.get("max-results") {
+            let limit = item
+                .as_integer()
+                .ok_or_else(|| invalid("files", "max-results", "expected an integer"))?;
+            if limit < 1 || limit > i64::from(MAX_FILE_RESULTS) {
+                return Err(invalid(
+                    "files",
+                    "max-results",
+                    format!("expected results in [1, {MAX_FILE_RESULTS}]"),
+                ));
+            }
+            config.files.max_results = Some(limit as u32);
+        }
+        if let Some(item) = table.get("show-hidden") {
+            let show = item
+                .as_bool()
+                .ok_or_else(|| invalid("files", "show-hidden", "expected true or false"))?;
+            config.files.show_hidden = Some(show);
+        }
+    }
+
+    if let Some(table) = doc.get("git").and_then(toml_edit::Item::as_table)
+        && let Some(item) = table.get("refresh-secs")
+    {
+        let secs = item
+            .as_integer()
+            .ok_or_else(|| invalid("git", "refresh-secs", "expected an integer"))?;
+        if secs < MIN_GIT_REFRESH_SECS as i64 || secs > MAX_GIT_REFRESH_SECS as i64 {
+            return Err(invalid(
+                "git",
+                "refresh-secs",
+                format!("expected seconds in [{MIN_GIT_REFRESH_SECS}, {MAX_GIT_REFRESH_SECS}]"),
+            ));
+        }
+        config.git.refresh_secs = Some(secs as u64);
+    }
+
     Ok(config)
 }
 
@@ -224,6 +308,9 @@ mod tests {
         assert_eq!(config.resolved_scrollback_lines(), None);
         assert_eq!(config.theme(), "system");
         assert!(config.automation_enabled());
+        assert_eq!(config.resolved_max_results(), DEFAULT_MAX_RESULTS);
+        assert!(!config.show_hidden());
+        assert_eq!(config.resolved_git_refresh_secs(), DEFAULT_GIT_REFRESH_SECS);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -232,7 +319,7 @@ mod tests {
         let dir = temp_dir("full");
         let path = write_config(
             &dir,
-            "[terminal]\nfont-family = \"JetBrains Mono\"\nfont-size = 13\nscrollback-lines = 5000\n[appearance]\ntheme = \"dark\"\n[automation]\nenabled = false\n[history]\nenabled = true\n",
+            "[terminal]\nfont-family = \"JetBrains Mono\"\nfont-size = 13\nscrollback-lines = 5000\n[appearance]\ntheme = \"dark\"\n[automation]\nenabled = false\n[files]\nmax-results = 250\nshow-hidden = true\n[git]\nrefresh-secs = 10\n[history]\nenabled = true\n",
         );
         let config = load_app_config_toml(&path).unwrap();
         assert_eq!(
@@ -243,6 +330,9 @@ mod tests {
         assert_eq!(config.resolved_scrollback_lines(), Some(5000));
         assert_eq!(config.theme(), "dark");
         assert!(!config.automation_enabled());
+        assert_eq!(config.resolved_max_results(), 250);
+        assert!(config.show_hidden());
+        assert_eq!(config.resolved_git_refresh_secs(), 10);
         // Loading never writes: foreign sections and bytes are untouched.
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.contains("[history]"));
@@ -261,6 +351,13 @@ mod tests {
             ("family", "[terminal]\nfont-family = \"  \"\n"),
             ("theme", "[appearance]\ntheme = \"dracula\"\n"),
             ("auto", "[automation]\nenabled = \"yes\"\n"),
+            ("max-results-huge", "[files]\nmax-results = 999999\n"),
+            ("max-results-zero", "[files]\nmax-results = 0\n"),
+            ("max-results-type", "[files]\nmax-results = \"many\"\n"),
+            ("show-hidden", "[files]\nshow-hidden = \"yes\"\n"),
+            ("refresh-zero", "[git]\nrefresh-secs = 0\n"),
+            ("refresh-huge", "[git]\nrefresh-secs = 9999\n"),
+            ("refresh-type", "[git]\nrefresh-secs = 1.5\n"),
         ] {
             let path = write_config(&dir, text);
             let error = load_app_config_toml(&path).expect_err(name);

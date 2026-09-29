@@ -134,6 +134,9 @@ pub fn map_request(
                 project: project(&p.project_id)?,
                 directory: std::path::PathBuf::from(text(&p.directory)?),
             }),
+            Method::ProjectRoot(p) => OmaCommand::Project(ProjectCommand::Root {
+                project: resolve_project(p.project_id)?,
+            }),
             Method::TabList(p) => OmaCommand::Tab(TabCommand::List {
                 project: resolve_project(p.project_id)?,
             }),
@@ -313,6 +316,9 @@ fn output_json(output: CommandOutput) -> Value {
         CommandOutput::HistoryCleared { removed_files } => {
             json!({"removed_files":removed_files})
         }
+        CommandOutput::ProjectRoot(info) => {
+            json!({"root":info.root,"source":info.source.as_str()})
+        }
     }
 }
 
@@ -347,6 +353,7 @@ mod tests {
                 json!({"project_id":id,"directory":"/tmp"}),
                 true,
             ),
+            ("project.root", json!({}), false),
             ("tab.list", json!({}), false),
             ("tab.create", json!({}), false),
             ("tab.close", json!({"tab_id":id}), true),
@@ -372,7 +379,7 @@ mod tests {
             ("history.clear-project", json!({"project_id":id}), true),
             ("history.clear-all", json!({}), true),
         ];
-        assert_eq!(cases.len(), 28);
+        assert_eq!(cases.len(), 29);
         for (method, params, valid) in cases {
             let result = map_request(&request(method, params), CommandContext::LocalUser, &router);
             assert_eq!(result.is_ok(), valid, "{method}");

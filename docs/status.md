@@ -17,7 +17,8 @@ M4 evidence below.
 | 8 — IPC | complete | Typed 17-method mapping, bounds, credentials/scope/child-env, owner bridge, 11 transport tests, concurrent-load + shutdown-under-load Wayland proof recorded below | Documented limits only: cross-UID harness, fallback-dir creation path, owner-channel saturation race (see below) | Begin M9 CLI |
 | 9 — CLI | complete | `omaterm-cli` thin client (27-row parser/mapping matrix plus path-launch forms), 31 CLI tests, workspace gates, and release Wayland CLI/desktop proof recorded below; live `pane.resize` via discovered split IDs closed by M11 | Scoped in-app denial covered by M8 evidence plus CLI env/deny tests | M10 history (post-v0.1) |
 | 10 — Encrypted History Recovery | complete | 287-test suite green 2026-09-28 plus release Wayland proof (opt-in, styled/Unicode restore, fresh shells, journal merge, alt absence, clears + rotation, disable, key-loss memory-only); M11 closed the remaining live items (same-pane restore, corrupt-archive quarantine) — see M11 record | Documented limits only: graceful-close live, banner-visibility eyes, per-pane CWD re-verification stays on M6 plumbing | M11 closure |
-| 11 — v0.1 Closure & Hardening | complete | 313-test serial suite green; release Wayland IPC proofs (split-ID discovery + live resize/equalize, path launch + run, history restore + quarantine, invalid-config survival, targeted logging); PKGBUILD + license inventory; perf baseline recorded — see M11 record below | Documented limits only: eyes/hands items (jump keys, picker portal, paste/drop live, font-size visual), theme engine + automation-disable enforcement future, X11/second-compositor/scaling, per-process GPU | v0.2 planning |
+| 11 — v0.1 Closure & Hardening | complete | 313-test serial suite green; release Wayland IPC proofs (split-ID discovery + live resize/equalize, path launch + run, history restore + quarantine, invalid-config survival, targeted logging); PKGBUILD + license inventory; perf baseline recorded — see M11 record below | Documented limits only: eyes/hands items (jump keys, picker portal, paste/drop live, font-size visual), theme engine + automation-disable enforcement future, X11/second-compositor/scaling, per-process GPU | M12 (done — see M12 row) |
+| 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 
 ## Handoff rules
 
@@ -2017,3 +2018,103 @@ captured (prior M10 caution stands).
 - Per-pane CWD re-verification after restore stays on M6 plumbing.
 - X11 runtime, second compositor, alternate scaling/monitor, `zsh`/`fish`
   unavailable, per-process GPU — same standing limits as M1–M5.
+
+## Milestone 12 — Project Context Root — complete (2026-09-29)
+
+Foundation for all v0.2 developer-context features with no user-visible
+panel. Every project resolves to one filesystem root (`pinned` when set and
+present, else the nearest enclosing git toplevel of the active tab's shell
+CWD, else the explicit `none` empty state) that M13–M18 target. Working
+tree only; no commit made.
+
+### Changed files
+
+- `Cargo.toml`, `Cargo.lock` (workspace member `crates/omaterm-context`)
+- `crates/omaterm-context/{Cargo.toml,src/lib.rs,src/resolve.rs,src/boundary.rs,src/ignore.rs}`
+  (new), `crates/omaterm-context/tests/git_roots.rs` (new)
+- `crates/omaterm-core/src/{command,result,lib}.rs` — `ProjectCommand::Root`,
+  `RootSource` (`pinned|git|none`), `ProjectRootInfo`, `ErrorCode::PathOutsideRoot`
+- `crates/omaterm-state/src/config.rs` — `[files]` (`max-results` default
+  100, `[1, 5000]`; `show-hidden` default false) and `[git]`
+  (`refresh-secs` default 5, `[1, 300]`) with the M11D
+  preserve-format/explicit-error pattern
+- `crates/omaterm-logging/src/lib.rs` — `omaterm::files`, `omaterm::git`,
+  `omaterm::search` categories with the M11G redaction contract (IDs,
+  sources, counts only — never paths, contents, or terminal output)
+- `crates/omaterm-protocol/src/method.rs` — `project.root` (`{"project_id?"}`)
+- `apps/omaterm/src/{router,ipc_bridge}.rs`, `apps/omaterm/Cargo.toml` —
+  query arm (no effects), scope filtering, `{"root?","source"}` envelope
+- `crates/omaterm-cli/src/{commands/project,output,main}.rs` — `omaterm
+  project root [--project ID]` (explicit > `OMATERM_PROJECT_ID` > server
+  selection), human + `--json` rendering
+- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping rows),
+  `docs/dependencies.md`, this status record
+
+### Semantic decisions (recorded, not deviations)
+
+- A set-but-missing pin resolves to `none` with **no** git fallback:
+  silently re-rooting an explicitly pinned project into an unrelated
+  repository would confuse file/git/diff targeting, so the missing root
+  surfaces as the downstream empty state.
+- `require_git(false)` on the ignore walker: a pinned non-repo directory
+  still has a root, and its `.gitignore` expresses the same listing intent
+  as inside a repository.
+- Ranking spike decided now to bound license risk: `fuzzy-matcher` 0.3.7
+  (MIT) over `nucleo` 0.5.0 (MPL-2.0); `notify` stays on stable 8.2.0
+  (CC0-1.0) while 9.x is RC. Neither is added until M13.
+
+### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace -- --test-threads=1` | PASS: 328 tests, 0 failures (37 desktop + 32 CLI + 14 core + 11 IPC + 6 protocol + 3 logging + 41 state + 13 context + 139 terminal unit + 32 PTY integration; 13 context incl. real-repo integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo fmt --all --check` | PASS |
+| `cargo tree -p omaterm-context` | PASS: `ignore`, `omaterm-core`, `thiserror` only; zero `gpui` |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS (used for all Wayland runs) |
+| `python3 scripts/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+New coverage: pin-wins/deleted-pin/git/empty matrix, missing-git,
+non-repo, wedged-git timeout bound (fake `sleep` binary, reaped),
+traversal/`..`/absolute/symlink-escape rejection, ignore + hidden policy,
+real nested-repo toplevel, `[files]`/`[git]` parse/preserve/invalid,
+router pinned/deleted-pin/stale/scope matrix with empty effects, protocol
+decode (28 methods), bridge mapping (29 rows), CLI parser (28 rows) +
+mapping + human/JSON rendering.
+
+### Release Wayland proofs (Omarchy/Hyprland, isolated STATE/CONFIG/HOME/RUNTIME, SHELL=/bin/bash)
+
+- First-launch `home` project: `project root` → `/tmp/opencode/m12/home`
+  (`pinned`), JSON envelope `{"root":…,"source":"pinned"}` valid, sidebar
+  header basename matches.
+- `project open` on the omaterm repo → sidebar `omaterm`, explicit
+  `project root --project` → repo path (`pinned`), human + JSON.
+- Deleted pin: `set-directory` to a temp dir (root `pinned`), `rm -rf` the
+  dir → `No project root (source: none)`, JSON `{"root":null,
+  "source":"none"}`; stale ID → `project_not_found`, exit 1.
+- Git fallback: snapshot edited to unpin the repo project (pane CWD kept in
+  the repo), restart → fresh shell prompt shows the repo dir, `project root`
+  → repo toplevel (`source: git`). Full chain live: restore → fresh shell in
+  saved CWD → procfs refresh → bounded `rev-parse` → wire/CLI.
+- Screenshot `/tmp/opencode/m12-sidebar.png`: sidebar `home` + `Project 2`
+  rows, restored shell in the repo directory. Test instance stopped; zero
+  `omaterm-desktop` processes, zero stray proof shells (per-`/proc` CWD
+  scan), isolated dirs removed.
+
+### Documented limits (not passes)
+
+- Live unpinned-project-with-no-shell path is unit-covered (context
+  matrix); all creation flows currently pin, so it has no UI trigger yet.
+- Standing v0.1 limits unchanged: second Wayland compositor, X11 runtime,
+  alternate scaling/monitor, `zsh`/`fish` unavailable, per-process GPU,
+  graceful `window.close` live path (SIGTERM kills without cleanup per
+  pre-existing behavior; stale socket reclaimed at startup per M8).
+- M13–M16 build the visible tree/git/diff/palette on this foundation; no
+  editor, no content grep, no `terminal wait` (v0.4).
+
+### Next action
+
+Begin M13 file tree + filename search on the M12 root/boundary/config
+foundation with the recorded `ignore` + `notify` 8.2.0 + `fuzzy-matcher`
+spike versions.

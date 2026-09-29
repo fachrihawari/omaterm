@@ -283,6 +283,47 @@ existing use. Dual lock entries (`thiserror` 1.0.69, `getrandom` 0.2/0.3,
 `hkdf` 0.13.0, `sha2` 0.11.0, `toml_edit` 0.22.27, `async-channel` 1.9.0)
 are transitive (GPUI/keyring subtrees) with the same permissive licensing.
 
+### Milestone 12 record — 2026-09-29 (context foundation + v0.2 spike)
+
+New workspace member `omaterm-context` 0.1.0 (direct deps only:
+`ignore` =0.4.33, `omaterm-core` path, `thiserror` =2.0.21 — the existing
+locked resolutions, no new async/runtime dependency). `cargo tree
+-p omaterm-context` shows zero `gpui`; `cargo tree -p omaterm-core`
+confirms core gained no dependency (pure `RootSource`/DTO additions).
+
+- `ignore` =0.4.33 (crates.io, `Unlicense OR MIT` per its manifest,
+  rust-version 1.88.0; working toolchain 1.98.1, no conflict): direct
+  `omaterm-context` dependency for `.gitignore` + `.ignore` + parent/global
+  walking policy consumed by the M13 file tree. Pure Rust (transitives
+  `globset`/`walkdir`/`same-file`/`memchr`, already largely in `Cargo.lock`
+  via the GPUI subtree); no native packages, no C library. Checksum and
+  registry source pinned in `Cargo.lock`. Verified with 13 context unit
+  tests plus the real-repo integration test below.
+- System git 2.55.0 (`git --version`, Omarchy): `git rev-parse
+  --show-toplevel` backs the no-pin fallback (argv vector only, never shell
+  interpolation; `GIT_TERMINAL_PROMPT=0`, `--no-optional-locks`; 2s bounded
+  wait with kill+reap). No new dependency — the system binary is used so
+  user config/hooks keep working (blueprint §32 precedent). Proven by the
+  `tests/git_roots.rs` integration (repo, nested repo, non-repo) and the
+  wedged-git timeout unit test (fake `sleep`-ing executable, bounded return).
+- Spike, no dependency added (M13 consumes after its own API-fit check):
+  `notify` 8.2.0 stable (`CC0-1.0`, rust 1.77; 9.x is RC — stay on 8) for
+  M13 watching — Linux backend is the `inotify` crate (pure Rust + `libc`,
+  no new native packages). Fuzzy ranking: `fuzzy-matcher` 0.3.7 (`MIT`,
+  skim algorithm) selected over `nucleo` 0.5.0 (`MPL-2.0`) to avoid adding a
+  second copyleft-adjacent license to the tree (`option-ext` MPL-2.0 and
+  `self_cell` Apache/GPL remain the only such entries, both compatible per
+  the M11 inventory). M13 re-verifies API fit before adding either crate.
+
+Verified with `cargo test --workspace -- --test-threads=1` (328 tests, 0
+failures — 313 prior + 13 context + 1 desktop router + 1 CLI render),
+`cargo clippy --workspace --all-targets -- -D warnings` (known transitive
+`proc-macro-error2` notice only), `cargo fmt --all --check`,
+`cargo build --release --bin omaterm --bin omaterm-desktop`,
+`python3 scripts/check-docs.py`, and `git diff --check` on Rust 1.98.1
+(Omarchy/Hyprland). `Cargo.lock` is committed with the `ignore` 0.4.33
+resolution.
+
 ## Reference provenance
 
 Kero and Zed terminal/terminal-view code are behavioral/architectural references.
