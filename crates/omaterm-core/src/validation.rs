@@ -1,6 +1,6 @@
 use crate::{
-    CommandError, ErrorCode, HistoryCommand, OmaCommand, PaneCommand, ProjectCommand, TabCommand,
-    TerminalCommand,
+    CommandError, ErrorCode, FileCommand, HistoryCommand, OmaCommand, PaneCommand, ProjectCommand,
+    TabCommand, TerminalCommand,
 };
 
 pub const MAX_READ_LINES: usize = 1_000;
@@ -10,6 +10,13 @@ pub const MAX_ARG_COUNT: usize = 256;
 pub const MAX_ARG_BYTES: usize = 4 * 1024;
 /// Bounded journal listing: same 1000-entry ceiling as viewport reads.
 pub const MAX_JOURNAL_ENTRIES: usize = 1_000;
+/// Bounded file listing/search envelope (M13). Matches the
+/// `files.max-results` ceiling so a local socket never becomes an
+/// unbounded memory interface (blueprint §64).
+pub const MAX_FILE_ENTRIES: usize = 5_000;
+/// Largest accepted `file.search` query: generous for a filename pattern,
+/// small enough to keep matching bounded.
+pub const MAX_FILE_QUERY_BYTES: usize = 256;
 
 /// Pure field validation. Target existence and authorization are checked by
 /// the application owner immediately before dispatch effects are applied.
@@ -95,6 +102,27 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
         {
             return invalid("journal list limit must be between 1 and 1000 entries");
         }
+        OmaCommand::File(FileCommand::List { limit, .. }) => {
+            if limit.is_some_and(|n| n == 0 || n > MAX_FILE_ENTRIES) {
+                return invalid("file list limit must be between 1 and 5000 entries");
+            }
+        }
+        OmaCommand::File(FileCommand::Search { query, limit, .. }) => {
+            if query.is_empty()
+                || query.len() > MAX_FILE_QUERY_BYTES
+                || query.chars().any(char::is_control)
+            {
+                return invalid(
+                    "file search query must be 1 to 256 bytes with no control characters",
+                );
+            }
+            if limit.is_some_and(|n| n == 0 || n > MAX_FILE_ENTRIES) {
+                return invalid("file search limit must be between 1 and 5000 entries");
+            }
+        }
+        OmaCommand::File(FileCommand::Open { path, .. }) if path.as_os_str().is_empty() => {
+            return invalid("file path must not be empty");
+        }
         _ => {}
     }
     Ok(())
@@ -147,6 +175,29 @@ mod tests {
             validate(&OmaCommand::Terminal(TerminalCommand::RunCommand {
                 session: SessionId::new(),
                 argv: vec![]
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::File(FileCommand::List {
+                project: ProjectId::new(),
+                dir: None,
+                limit: Some(0),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::File(FileCommand::Search {
+                project: ProjectId::new(),
+                query: String::new(),
+                limit: None,
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::File(FileCommand::Open {
+                project: ProjectId::new(),
+                path: std::path::PathBuf::new(),
             }))
             .is_err()
         );

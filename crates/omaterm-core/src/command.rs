@@ -10,6 +10,7 @@ pub enum OmaCommand {
     Pane(PaneCommand),
     Terminal(TerminalCommand),
     History(HistoryCommand),
+    File(FileCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +142,29 @@ pub enum HistoryCommand {
     ClearProject { project: ProjectId },
     ClearWorkspace,
     Status,
+}
+
+/// File tree + `Ctrl+P` filename search (M13, blueprint §23). All three
+/// variants route through the common dispatcher so sidebar, `Ctrl+P`,
+/// IPC, and CLI share one implementation. `List`/`Search` are pure
+/// queries; `Open` submits `$EDITOR <path>` to the focused pane through
+/// the existing `terminal.run` path (the editor pane itself is v0.3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FileCommand {
+    List {
+        project: ProjectId,
+        dir: Option<PathBuf>,
+        limit: Option<usize>,
+    },
+    Search {
+        project: ProjectId,
+        query: String,
+        limit: Option<usize>,
+    },
+    Open {
+        project: ProjectId,
+        path: PathBuf,
+    },
 }
 
 /// Authority is kept separate from command data so transport identity cannot

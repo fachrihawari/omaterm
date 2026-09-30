@@ -324,6 +324,51 @@ failures — 313 prior + 13 context + 1 desktop router + 1 CLI render),
 (Omarchy/Hyprland). `Cargo.lock` is committed with the `ignore` 0.4.33
 resolution.
 
+### Milestone 13 record — 2026-09-29 (file watcher + fuzzy ranking)
+
+API-fit re-verified before feature code (M12 spike versions confirmed):
+
+- `notify` =8.2.0 (crates.io, `CC0-1.0` per `cargo info`, rust-version
+  1.77; working toolchain 1.98.1, no conflict): direct
+  `omaterm-context` dependency for the M13 recursive project watcher.
+  Linux backend is `inotify` 0.11.5 (pure Rust + the existing `libc`
+  0.2.189 resolution — no new native packages). Stayed on stable 8.2.0
+  while 9.x is RC, per the M12 spike decision. Only
+  `RecommendedWatcher` + `RecursiveMode::Recursive` are consumed; events
+  are debounced and revision-ordered by the desktop, and dropping the
+  handle cancels watching on project switch.
+- `fuzzy-matcher` =0.3.7 (crates.io, `MIT` per `cargo info`): direct
+  `omaterm-context` dependency for `Ctrl+P` skim-algorithm ranking.
+  Transitives are `thread_local` 1.1.10 only (already in `Cargo.lock`
+  via the GPUI subtree). Selected over `nucleo` 0.5.0 (`MPL-2.0`) to
+  avoid a second copyleft-adjacent license in the tree, per the M12 spike
+  decision.
+- `cargo tree -p omaterm-context` shows zero `gpui`; `cargo tree
+  -p omaterm` confirms the desktop consumes both through
+  `omaterm-context` + `omaterm-core` only.
+
+Verified with `cargo test --workspace -- --test-threads=1` (345 tests, 0
+failures), `cargo clippy --workspace --all-targets -- -D warnings`
+(known transitive `proc-macro-error2` notice only), `cargo fmt
+--all --check`, `cargo build --release --bin omaterm --bin
+omaterm-desktop`, `python3 scripts/check-docs.py`, `git diff --check`,
+and the release Wayland proofs below on Rust 1.98.1 (Omarchy/Hyprland).
+`Cargo.lock` is committed with the `notify` 8.2.0 + `fuzzy-matcher`
+0.3.7 resolutions.
+
+### Milestone 13 follow-up record — 2026-09-29 (lazy loading + icons)
+
+No new runtime dependencies. `ttf-parser` =0.25.1 is a dev-only
+dependency of the desktop binary for the `icon_glyphs_exist_in_nerd_font`
+coverage test (already in `Cargo.lock` transitively via GPUI; never
+linked into `omaterm-desktop`). Icon codepoints were taken from the
+official Nerd Fonts 3.5.1 `glyphnames.json` reference (fetched 2026-09-29)
+and every tabled glyph plus both chevrons was verified present in the
+locally installed `JetBrainsMonoNerdFont-Regular.ttf` (the same family
+the app already resolves for its terminal grid, so no font dependency is
+added). The coverage test skips gracefully where the font is absent (CI
+runners).
+
 ## Reference provenance
 
 Kero and Zed terminal/terminal-view code are behavioral/architectural references.

@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use crate::credentials::Credentials;
 use crate::history::HistoryManager;
 use omaterm_core::{
-    CommandContext, CommandError, CommandOutput, CommandResult, ErrorCode, HistoryCommand,
-    HistoryStatusInfo, JournalEntryInfo, OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo,
-    ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand,
-    TabId, TabInfo, TerminalCommand, TerminalInfo,
+    CommandContext, CommandError, CommandOutput, CommandResult, ErrorCode, FileCommand,
+    FileListInfo, HistoryCommand, HistoryStatusInfo, JournalEntryInfo, OmaCommand, PaneCommand,
+    PaneContent, PaneId, PaneInfo, ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo,
+    SessionId, SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand, TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
@@ -175,6 +175,32 @@ impl CommandRouter {
             }
         }
         None
+    }
+
+    /// Filesystem root for file operations: project existence plus scope
+    /// check, then M12 resolution. `Ok(None)` is the explicit empty state
+    /// (non-repo project without a usable pin) — listing/searching returns
+    /// an empty envelope, only `open` reports `no_project_root`.
+    fn file_root(
+        &mut self,
+        context: CommandContext,
+        project: ProjectId,
+    ) -> Result<Option<PathBuf>, CommandError> {
+        let Some(target) = self.coordinator.window().project(project) else {
+            return Err(CommandError::new(
+                ErrorCode::ProjectNotFound,
+                "project does not exist",
+            ));
+        };
+        if matches!(context, CommandContext::Project(scope) if scope != project) {
+            return Err(CommandError::new(
+                ErrorCode::CrossProjectDenied,
+                "outside project scope",
+            ));
+        }
+        let pinned = target.pinned_directory.clone();
+        let active_cwd = self.active_shell_cwd(project);
+        Ok(omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref()).root)
     }
 
     /// Shell CWD of the project's active tab (focused pane), refreshed from
@@ -384,6 +410,9 @@ impl CommandRouter {
                 | HistoryCommand::ListJournal { pane, .. }
                 | HistoryCommand::ClearPane { pane },
             ) => owner_pane(*pane),
+            OmaCommand::File(FileCommand::List { project, .. })
+            | OmaCommand::File(FileCommand::Search { project, .. })
+            | OmaCommand::File(FileCommand::Open { project, .. }) => Some(*project),
             OmaCommand::Pane(
                 PaneCommand::FocusDirection { .. }
                 | PaneCommand::ResizeFocused { .. }
@@ -913,6 +942,158 @@ impl CommandRouter {
                     root: resolved.root,
                     source: resolved.source,
                 }))
+            }
+            OmaCommand::File(FileCommand::List {
+                project,
+                dir,
+                limit,
+            }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return ok(Out::FileList(FileListInfo {
+                            entries: Vec::new(),
+                            truncated: false,
+                        }));
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                let config = omaterm_state::AppConfig::load().unwrap_or_default();
+                let capped = limit
+                    .unwrap_or(config.resolved_max_results() as usize)
+                    .clamp(1, omaterm_core::validation::MAX_FILE_ENTRIES);
+                match omaterm_context::list_dir(&root, dir.as_deref(), capped, config.show_hidden())
+                {
+                    Ok(list) => {
+                        tracing::debug!(
+                            target: "omaterm::files",
+                            project_id = %project.0,
+                            entries = list.entries.len(),
+                            truncated = list.truncated,
+                            "file list served",
+                        );
+                        ok(Out::FileList(list))
+                    }
+                    Err(omaterm_context::ContextError::PathOutsideRoot) => {
+                        err(ErrorCode::PathOutsideRoot, "path escapes the project root")
+                    }
+                    Err(omaterm_context::ContextError::Io(error))
+                        if error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        err(ErrorCode::FileNotFound, "directory does not exist")
+                    }
+                    Err(error) => err(ErrorCode::RuntimeFailure, error.to_string()),
+                }
+            }
+            OmaCommand::File(FileCommand::Search {
+                project,
+                query,
+                limit,
+            }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return ok(Out::FileList(FileListInfo {
+                            entries: Vec::new(),
+                            truncated: false,
+                        }));
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                let config = omaterm_state::AppConfig::load().unwrap_or_default();
+                let capped = limit
+                    .unwrap_or(config.resolved_max_results() as usize)
+                    .clamp(1, omaterm_core::validation::MAX_FILE_ENTRIES);
+                match omaterm_context::search_files(&root, &query, capped, config.show_hidden()) {
+                    Ok(list) => {
+                        tracing::debug!(
+                            target: "omaterm::search",
+                            project_id = %project.0,
+                            entries = list.entries.len(),
+                            truncated = list.truncated,
+                            "file search served",
+                        );
+                        ok(Out::FileList(list))
+                    }
+                    Err(omaterm_context::ContextError::PathOutsideRoot) => {
+                        err(ErrorCode::PathOutsideRoot, "path escapes the project root")
+                    }
+                    Err(error) => err(ErrorCode::RuntimeFailure, error.to_string()),
+                }
+            }
+            OmaCommand::File(FileCommand::Open { project, path }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return err(ErrorCode::NoProjectRoot, "project has no filesystem root");
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                let absolute = match omaterm_context::canonicalize_under_root(&root, &path) {
+                    Ok(resolved) => resolved,
+                    Err(omaterm_context::ContextError::PathOutsideRoot) => {
+                        return err(ErrorCode::PathOutsideRoot, "path escapes the project root");
+                    }
+                    Err(omaterm_context::ContextError::Io(error))
+                        if error.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        return err(ErrorCode::FileNotFound, "file does not exist");
+                    }
+                    Err(error) => return err(ErrorCode::RuntimeFailure, error.to_string()),
+                };
+                let Some(owner) = self.coordinator.window().project(project) else {
+                    return err(ErrorCode::ProjectNotFound, "project does not exist");
+                };
+                let Some(tab) = owner.selected_tab() else {
+                    return err(ErrorCode::NoFocusedPane, "project has no open tab");
+                };
+                let PaneContent::Terminal(session) = tab
+                    .tree
+                    .find(tab.focused_pane)
+                    .map(|pane| pane.content.clone())
+                    .unwrap_or(PaneContent::Empty)
+                else {
+                    return err(
+                        ErrorCode::TerminalRequired,
+                        "focused pane has no live terminal",
+                    );
+                };
+                let editor = std::env::var("EDITOR").unwrap_or_default();
+                let editor = editor.trim();
+                if editor.is_empty() {
+                    return err(
+                        ErrorCode::EditorNotConfigured,
+                        "EDITOR is not set; cannot open files in a terminal editor",
+                    );
+                }
+                let mut argv: Vec<String> = editor.split_whitespace().map(str::to_owned).collect();
+                argv.push(absolute.to_string_lossy().into_owned());
+                let Some(handle) = self.coordinator.registry().get(session) else {
+                    return err(ErrorCode::SessionExited, "terminal session is unavailable");
+                };
+                match handle.lock() {
+                    Ok(mut terminal) if terminal.exited().is_none() => {
+                        match terminal.run_argv(&argv) {
+                            Ok(()) => ok(Out::RunSubmitted),
+                            Err(omaterm_terminal::RunCommandError::UnsupportedShell) => err(
+                                ErrorCode::UnsupportedOperation,
+                                "terminal.run is supported only by OmaTerm-integrated Bash sessions",
+                            ),
+                            Err(omaterm_terminal::RunCommandError::ShellBusy) => err(
+                                ErrorCode::ShellBusy,
+                                "shell is not at a confirmed ready prompt",
+                            ),
+                            Err(omaterm_terminal::RunCommandError::EmptyArgv) => err(
+                                ErrorCode::InvalidRequest,
+                                "argv must contain at least one argument",
+                            ),
+                            Err(omaterm_terminal::RunCommandError::Io(error)) => {
+                                err(ErrorCode::RuntimeFailure, error.to_string())
+                            }
+                        }
+                    }
+                    _ => err(ErrorCode::SessionExited, "terminal session has exited"),
+                }
             }
             OmaCommand::Tab(TabCommand::List { project }) => {
                 let Some(p) = self.coordinator.window().project(project) else {
@@ -1919,6 +2100,287 @@ mod tests {
             CommandContext::LocalUser,
             OmaCommand::Project(ProjectCommand::Delete { project }),
         );
+    }
+
+    #[test]
+    fn file_list_and_search_serve_bounded_results_without_effects() {
+        use omaterm_core::{FileCommand, FileListInfo};
+
+        let root = std::env::temp_dir().join(format!("omaterm-m13-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("main.rs"), b"fn main() {}").unwrap();
+        std::fs::write(root.join("README.md"), b"hi").unwrap();
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        let mut list = || {
+            router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::File(FileCommand::List {
+                    project,
+                    dir: None,
+                    limit: None,
+                }),
+            )
+        };
+        let listed = list();
+        let CommandResult::Ok(CommandOutput::FileList(FileListInfo { entries, truncated })) =
+            listed.result
+        else {
+            panic!("file list: {:?}", list().result);
+        };
+        assert!(!truncated);
+        assert!(entries.iter().any(|entry| entry.path.as_os_str() == "src"));
+        assert!(listed.effects.is_empty());
+
+        // Subdirectory scoping plus an accurate truncation flag.
+        let nested = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::List {
+                project,
+                dir: Some(std::path::PathBuf::from("src")),
+                limit: None,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::FileList(FileListInfo { entries, truncated })) =
+            nested.result
+        else {
+            panic!("nested list");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, std::path::PathBuf::from("src/main.rs"));
+        assert!(!truncated);
+        let bounded = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::List {
+                project,
+                dir: None,
+                limit: Some(1),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::FileList(FileListInfo { entries, truncated })) =
+            bounded.result
+        else {
+            panic!("bounded list");
+        };
+        assert_eq!(entries.len(), 1);
+        assert!(truncated);
+
+        // Escape attempts fail with the stable boundary code (an existing
+        // absolute path outside the root canonicalizes and is rejected).
+        let evil = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::List {
+                project,
+                dir: Some(std::env::temp_dir()),
+                limit: None,
+            }),
+        );
+        assert!(matches!(
+            evil.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::PathOutsideRoot,
+                ..
+            })
+        ));
+        assert!(evil.effects.is_empty());
+
+        // Search finds the file, never directories, with no effects.
+        let found = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::Search {
+                project,
+                query: "main".into(),
+                limit: None,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::FileList(FileListInfo { entries, .. })) = found.result
+        else {
+            panic!("file search");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, std::path::PathBuf::from("src/main.rs"));
+        assert!(found.effects.is_empty());
+
+        // Scoped credentials may query their own project but not a foreign one.
+        let scoped = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::File(FileCommand::List {
+                project,
+                dir: None,
+                limit: None,
+            }),
+        );
+        assert!(matches!(
+            scoped.result,
+            CommandResult::Ok(CommandOutput::FileList(_))
+        ));
+        let foreign = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::File(FileCommand::List {
+                project: omaterm_core::ProjectId::new(),
+                dir: None,
+                limit: None,
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_open_reports_no_root_missing_editor_and_submits_to_ready_bash() {
+        use omaterm_core::FileCommand;
+
+        // Serial-gate note: this test mutates SHELL/EDITOR and pumps a live
+        // Bash session; the workspace gate runs `--test-threads=1`.
+        let prior_shell = std::env::var("SHELL").ok();
+        let prior_editor = std::env::var("EDITOR").ok();
+        unsafe {
+            std::env::set_var("SHELL", "/bin/bash");
+            std::env::remove_var("EDITOR");
+        }
+
+        let root = std::env::temp_dir().join(format!("omaterm-m13-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("notes.txt"), b"hi").unwrap();
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, pane, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // Missing $EDITOR fails before any shell interaction.
+        let unconfigured = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::Open {
+                project,
+                path: std::path::PathBuf::from("notes.txt"),
+            }),
+        );
+        assert!(matches!(
+            unconfigured.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::EditorNotConfigured,
+                ..
+            })
+        ));
+
+        // Missing files and escapes fail with stable codes.
+        unsafe {
+            std::env::set_var("EDITOR", "true");
+        }
+        let missing = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::Open {
+                project,
+                path: std::path::PathBuf::from("no-such-file.txt"),
+            }),
+        );
+        assert!(matches!(
+            missing.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::FileNotFound,
+                ..
+            })
+        ));
+        let evil = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::Open {
+                project,
+                path: std::path::PathBuf::from("../outside.txt"),
+            }),
+        );
+        assert!(matches!(
+            evil.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::FileNotFound | ErrorCode::PathOutsideRoot,
+                ..
+            })
+        ));
+
+        // Wait for the Bash prompt hook, then submit `$EDITOR <path>`.
+        let session = router
+            .coordinator
+            .session_id_for_pane(pane)
+            .expect("pane session");
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            let handle = router.coordinator.registry().get(session).unwrap();
+            let mut terminal = handle.lock().unwrap();
+            let _ = terminal.pump();
+            if terminal.prompt_ready() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            router
+                .coordinator
+                .registry()
+                .get(session)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .prompt_ready(),
+            "Bash prompt hook should establish readiness"
+        );
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::File(FileCommand::Open {
+                project,
+                path: std::path::PathBuf::from("notes.txt"),
+            }),
+        );
+        assert_eq!(
+            opened.result,
+            CommandResult::Ok(CommandOutput::RunSubmitted)
+        );
+        assert!(opened.effects.is_empty());
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        unsafe {
+            match prior_shell {
+                Some(value) => std::env::set_var("SHELL", value),
+                None => std::env::remove_var("SHELL"),
+            }
+            match prior_editor {
+                Some(value) => std::env::set_var("EDITOR", value),
+                None => std::env::remove_var("EDITOR"),
+            }
+        }
     }
 
     #[test]

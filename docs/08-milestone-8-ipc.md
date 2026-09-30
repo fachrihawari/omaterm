@@ -122,6 +122,9 @@ crates/omaterm-ipc/
 | `history.clear-pane` | `HistoryCommand::ClearPane` |
 | `history.clear-project` | `HistoryCommand::ClearProject` |
 | `history.clear-all` | `HistoryCommand::ClearWorkspace` |
+| `file.list` | `FileCommand::List` |
+| `file.search` | `FileCommand::Search` |
+| `file.open` | `FileCommand::Open` |
 
 ### Socket Path
 

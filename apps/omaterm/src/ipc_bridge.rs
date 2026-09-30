@@ -2,13 +2,13 @@
 //! resolve selectors or access workspace state.
 use base64::Engine;
 use omaterm_core::{
-    CommandContext, CommandOutput, CommandResult, HistoryCommand, OmaCommand, PaneCommand,
-    PaneContent, PaneId, ProjectCommand, ProjectId, SessionId, SplitDirection, SplitId, TabCommand,
-    TabId, TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, FileCommand, HistoryCommand, OmaCommand,
+    PaneCommand, PaneContent, PaneId, ProjectCommand, ProjectId, SessionId, SplitDirection,
+    SplitId, TabCommand, TabId, TerminalCommand,
 };
 use omaterm_protocol::{
-    IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_JOURNAL_ENTRIES,
-    MAX_READ_COLUMNS, MAX_READ_LINES, MAX_SEND_BYTES, method::Method,
+    IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_FILE_ENTRIES,
+    MAX_JOURNAL_ENTRIES, MAX_READ_COLUMNS, MAX_READ_LINES, MAX_SEND_BYTES, method::Method,
 };
 use serde_json::{Value, json};
 
@@ -248,6 +248,37 @@ pub fn map_request(
                 project: project(&p.project_id)?,
             }),
             Method::HistoryClearAll(_) => OmaCommand::History(HistoryCommand::ClearWorkspace),
+            Method::FileList(p) => {
+                let limit = p.limit.unwrap_or(100);
+                if limit == 0 || limit > MAX_FILE_ENTRIES {
+                    return Err("file.list exceeds the entry limit");
+                }
+                OmaCommand::File(FileCommand::List {
+                    project: resolve_project(p.project_id)?,
+                    dir: p
+                        .dir
+                        .as_deref()
+                        .map(text)
+                        .transpose()?
+                        .map(std::path::PathBuf::from),
+                    limit: p.limit,
+                })
+            }
+            Method::FileSearch(p) => {
+                let limit = p.limit.unwrap_or(100);
+                if limit == 0 || limit > MAX_FILE_ENTRIES {
+                    return Err("file.search exceeds the entry limit");
+                }
+                OmaCommand::File(FileCommand::Search {
+                    project: resolve_project(p.project_id)?,
+                    query: text(&p.query)?.to_owned(),
+                    limit: p.limit,
+                })
+            }
+            Method::FileOpen(p) => OmaCommand::File(FileCommand::Open {
+                project: resolve_project(p.project_id)?,
+                path: std::path::PathBuf::from(text(&p.path)?),
+            }),
         })
     })()
     .map_err(|message| invalid(id, message))?;
@@ -319,6 +350,10 @@ fn output_json(output: CommandOutput) -> Value {
         CommandOutput::ProjectRoot(info) => {
             json!({"root":info.root,"source":info.source.as_str()})
         }
+        CommandOutput::FileList(list) => {
+            let truncated = list.truncated || list.entries.len() > LIST_LIMIT;
+            json!({"entries":list.entries.into_iter().take(LIST_LIMIT).map(|entry| json!({"path":entry.path,"kind":entry.kind.as_str()})).collect::<Vec<_>>(),"truncated":truncated})
+        }
     }
 }
 
@@ -378,8 +413,28 @@ mod tests {
             ("history.clear-pane", json!({"pane_id":id}), true),
             ("history.clear-project", json!({"project_id":id}), true),
             ("history.clear-all", json!({}), true),
+            ("file.list", json!({}), false),
+            (
+                "file.list",
+                json!({"project_id": id, "dir": "src", "limit": 20}),
+                true,
+            ),
+            ("file.list", json!({"limit": 0}), false),
+            ("file.search", json!({"query": "main"}), false),
+            (
+                "file.search",
+                json!({"project_id": id, "query": "main", "limit": 20}),
+                true,
+            ),
+            ("file.search", json!({"query": "x", "limit": 0}), false),
+            ("file.open", json!({"path": "src/main.rs"}), false),
+            (
+                "file.open",
+                json!({"project_id": id, "path": "src/main.rs"}),
+                true,
+            ),
         ];
-        assert_eq!(cases.len(), 29);
+        assert_eq!(cases.len(), 37);
         for (method, params, valid) in cases {
             let result = map_request(&request(method, params), CommandContext::LocalUser, &router);
             assert_eq!(result.is_ok(), valid, "{method}");

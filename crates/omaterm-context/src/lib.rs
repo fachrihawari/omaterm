@@ -10,10 +10,15 @@
 //! owner thread with a bounded git wait, never on socket threads.
 
 pub mod boundary;
+pub mod files;
 pub mod ignore;
 pub mod resolve;
 
 pub use boundary::{ContextError, canonicalize_under_root};
+pub use files::{
+    FileWatcher, WatchError, fuzzy_match_indices, is_limit_exhaustion_message, list_dir,
+    search_files,
+};
 pub use ignore::IgnoreFilter;
 pub use resolve::{
     GIT_TOPLEVEL_TIMEOUT, git_toplevel_of, git_toplevel_of_with, resolve_root, resolve_root_with,

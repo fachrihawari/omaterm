@@ -6,5 +6,7 @@ license.workspace = true
 
 [dependencies]
 ignore = "=0.4.33"
+notify = "=8.2.0"
+fuzzy-matcher = "=0.3.7"
 omaterm-core = { path = "../omaterm-core" }
 thiserror = "=2.0.21"

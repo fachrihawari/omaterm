@@ -64,6 +64,8 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "history.clear-all" => {
             render_cleared(&result, "All history cleared; encryption key rotated.")
         }
+        "file.list" | "file.search" => render_files(&result),
+        "file.open" => "Submitted open to shell.".into(),
         _ => result.to_string(),
     }
 }
@@ -356,6 +358,31 @@ fn render_journal(result: &Value) -> String {
     out.join("\n")
 }
 
+fn render_files(result: &Value) -> String {
+    let Some(items) = result.get("entries").and_then(Value::as_array) else {
+        return "No files.".into();
+    };
+    if items.is_empty() {
+        return "No files.".into();
+    }
+    let mut out = String::from("KIND\tPATH\n");
+    for item in items {
+        out.push_str(&format!(
+            "{}\t{}\n",
+            item.get("kind").and_then(Value::as_str).unwrap_or("-"),
+            item.get("path").and_then(Value::as_str).unwrap_or("-"),
+        ));
+    }
+    if result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(truncated: bounded file listing)\n");
+    }
+    out.trim_end().to_owned()
+}
+
 fn render_read(result: &Value) -> String {
     let text = result.get("text").and_then(Value::as_str).unwrap_or("");
     let truncated = result
@@ -490,6 +517,27 @@ mod tests {
         );
         assert!(cleared.contains('3'));
         assert!(cleared.contains("rotated"));
+    }
+
+    #[test]
+    fn human_file_outputs_render() {
+        let list = human_success(
+            "file.list",
+            &ok(serde_json::json!({
+                "entries": [
+                    {"path": "src", "kind": "directory"},
+                    {"path": "src/main.rs", "kind": "file"},
+                ],
+                "truncated": true,
+            })),
+        );
+        assert!(list.contains("src/main.rs"));
+        assert!(list.contains("directory"));
+        assert!(list.contains("truncated"));
+        let empty = human_success("file.search", &ok(serde_json::json!({"entries": []})));
+        assert!(empty.contains("No files."));
+        let opened = human_success("file.open", &ok(serde_json::json!({"submitted": true})));
+        assert!(opened.contains("Submitted"));
     }
 
     #[test]

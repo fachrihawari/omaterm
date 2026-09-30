@@ -92,6 +92,9 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `history clear --pane ID` | `history.clear-pane` | History ClearPane | Deletes the pane's archives and journal |
 | `history clear --project ID` | `history.clear-project` | History ClearProject | Deletes the project's archives and journals |
 | `history clear --all` | `history.clear-all` | History ClearWorkspace | Deletes everything and rotates the encryption key |
+| `file list` | `file.list` | File List | Bounded `{entries[{path, kind}], truncated}`; empty envelope without a root |
+| `file search QUERY` | `file.search` | File Search | Skim-ranked filename matches (`Ctrl+P` backend), bounded + truncated |
+| `file open PATH` | `file.open` | File Open | Submits `$EDITOR <path>` to the focused terminal (`terminal.run` semantics) |
 
 `terminal new` deliberately creates a new tab, avoiding an unspecified split target.
 `project open` creates a project even if another project uses the same directory.

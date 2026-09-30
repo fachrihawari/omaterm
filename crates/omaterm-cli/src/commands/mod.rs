@@ -1,6 +1,7 @@
 //! Thin CLI-to-wire mapping. No workspace logic lives here: each command
 //! builds exactly one `(method, params)` pair for the M8 protocol.
 
+pub mod file;
 pub mod history;
 pub mod pane;
 pub mod project;

@@ -67,6 +67,11 @@ pub struct ProjectSnapshot {
     pub pinned_directory: Option<PathBuf>,
     pub selected_tab: Option<String>,
     pub tabs: Vec<TabSnapshot>,
+    /// Expanded file-tree directories, relative to the project root
+    /// (M13, blueprint §30 sidebar state). Bounded to 128 per project;
+    /// absent in schema v1 (defaults to empty on migration).
+    #[serde(default)]
+    pub expanded_dirs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,9 +83,23 @@ pub struct TabSnapshot {
 }
 
 impl WorkspaceSnapshot {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
+    /// Previous schema version (M13 migration source). v1 snapshots carry
+    /// no `expanded_dirs` and decode with an empty expansion set.
+    pub const V1_SCHEMA_VERSION: u32 = 1;
 
     pub fn capture(window: &WorkspaceWindow, pane_cwds: &HashMap<PaneId, PersistedCwd>) -> Self {
+        Self::capture_with_expanded(window, pane_cwds, &HashMap::new())
+    }
+
+    /// Capture with per-project expanded file-tree directories (relative
+    /// to each project root, truncated to the limit). Keys for unknown
+    /// projects are ignored.
+    pub fn capture_with_expanded(
+        window: &WorkspaceWindow,
+        pane_cwds: &HashMap<PaneId, PersistedCwd>,
+        expanded: &HashMap<ProjectId, Vec<PathBuf>>,
+    ) -> Self {
         let projects = window
             .projects
             .iter()
@@ -89,6 +108,16 @@ impl WorkspaceSnapshot {
                 custom_name: project.custom_name.clone(),
                 pinned_directory: project.pinned_directory.clone(),
                 selected_tab: project.selected_tab.map(|id| id.0.to_string()),
+                expanded_dirs: expanded
+                    .get(&project.id)
+                    .map(|dirs| {
+                        dirs.iter()
+                            .filter(|dir| !dir.as_os_str().is_empty())
+                            .take(SnapshotLimits::default().max_expanded_dirs)
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 tabs: project
                     .tabs
                     .iter()
@@ -133,6 +162,29 @@ impl WorkspaceSnapshot {
             check_name(project.custom_name.as_deref(), limits)?;
             check_path(project.pinned_directory.as_deref(), limits)?;
             let project_id = ProjectId(parse_uuid(&project.id, &mut ids)?);
+            if project.expanded_dirs.len() > limits.max_expanded_dirs {
+                return Err(SnapshotError::Invalid(
+                    "too many expanded directories".into(),
+                ));
+            }
+            let mut expanded_dirs = Vec::with_capacity(project.expanded_dirs.len());
+            for dir in &project.expanded_dirs {
+                if dir.is_absolute()
+                    || dir.as_os_str().is_empty()
+                    || dir.components().any(|c| {
+                        matches!(
+                            c,
+                            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                        )
+                    })
+                {
+                    return Err(SnapshotError::Invalid(
+                        "expanded directory must be a relative path without traversals".into(),
+                    ));
+                }
+                check_path(Some(dir), limits)?;
+                expanded_dirs.push(dir.clone());
+            }
             if project.tabs.len() > limits.max_tabs_per_project {
                 return Err(SnapshotError::Invalid("too many tabs in project".into()));
             }
@@ -178,6 +230,7 @@ impl WorkspaceSnapshot {
                 tabs.into_iter()
                     .flat_map(|(_, cwd)| cwd)
                     .collect::<Vec<_>>(),
+                expanded_dirs,
             ));
         }
         let selected_project = window
@@ -190,17 +243,25 @@ impl WorkspaceSnapshot {
             id: window_id,
             projects: projects
                 .iter()
-                .map(|(project, _)| project.clone())
+                .map(|(project, _, _)| project.clone())
                 .collect(),
             selected_project,
         };
         core_window
             .validate()
             .map_err(|error| SnapshotError::Invalid(error.to_string()))?;
-        let pane_cwds = projects.into_iter().flat_map(|(_, cwds)| cwds).collect();
+        let mut expanded_out = Vec::with_capacity(projects.len());
+        let pane_cwds = projects
+            .into_iter()
+            .flat_map(|(project, cwds, expanded)| {
+                expanded_out.push((project.id, expanded));
+                cwds
+            })
+            .collect();
         Ok(ValidatedSnapshot {
             window: core_window,
             pane_cwds,
+            expanded_dirs: expanded_out,
         })
     }
 }
@@ -341,6 +402,8 @@ pub struct SnapshotLimits {
     pub max_nodes_per_tree: usize,
     pub max_name_bytes: usize,
     pub max_path_bytes: usize,
+    /// Bounded expanded file-tree directories per project (M13).
+    pub max_expanded_dirs: usize,
 }
 impl Default for SnapshotLimits {
     fn default() -> Self {
@@ -352,6 +415,7 @@ impl Default for SnapshotLimits {
             max_nodes_per_tree: 4096,
             max_name_bytes: 256,
             max_path_bytes: 4096,
+            max_expanded_dirs: 128,
         }
     }
 }
@@ -360,6 +424,8 @@ impl Default for SnapshotLimits {
 pub struct ValidatedSnapshot {
     pub window: WorkspaceWindow,
     pub pane_cwds: Vec<(PaneId, PersistedCwd)>,
+    /// Per-project expanded file-tree directories (relative to root).
+    pub expanded_dirs: Vec<(ProjectId, Vec<PathBuf>)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -593,6 +659,86 @@ mod tests {
             extra_tab_id,
             window.project(first_project_id).unwrap().tabs[1].id
         );
+    }
+
+    #[test]
+    fn expanded_dirs_round_trip_and_cap_at_capture() {
+        let (window, cwd) = sample();
+        let project_id = window.projects[0].id;
+        let expanded = HashMap::from([(
+            project_id,
+            vec![PathBuf::from("src"), PathBuf::from("docs")],
+        )]);
+        let snapshot = WorkspaceSnapshot::capture_with_expanded(&window, &cwd, &expanded);
+        assert_eq!(
+            snapshot.windows[0].projects[0].expanded_dirs,
+            vec![PathBuf::from("src"), PathBuf::from("docs")]
+        );
+        let restored = snapshot.validate(SnapshotLimits::default()).unwrap();
+        assert_eq!(
+            restored.expanded_dirs,
+            vec![(
+                project_id,
+                vec![PathBuf::from("src"), PathBuf::from("docs")]
+            )]
+        );
+    }
+
+    #[test]
+    fn v1_snapshot_without_expanded_dirs_migrates_cleanly() {
+        let (window, cwd) = sample();
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        snapshot.schema_version = WorkspaceSnapshot::V1_SCHEMA_VERSION;
+        let mut value = serde_json::to_value(&snapshot).unwrap();
+        // Simulate a real v1 file: no `expanded_dirs` key at all.
+        if let Some(projects) = value
+            .get_mut("windows")
+            .and_then(|windows| windows.as_array_mut())
+            .and_then(|windows| windows.first_mut())
+            .and_then(|window| window.get_mut("projects"))
+            .and_then(|projects| projects.as_array_mut())
+        {
+            for project in projects.iter_mut() {
+                project.as_object_mut().unwrap().remove("expanded_dirs");
+            }
+        }
+        value["schema_version"] = serde_json::json!(1);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let decoded = crate::migration::decode(&bytes, SnapshotLimits::default()).unwrap();
+        let restored = decoded.validate(SnapshotLimits::default()).unwrap();
+        assert_eq!(restored.window, window);
+        assert!(
+            restored
+                .expanded_dirs
+                .iter()
+                .all(|(_, dirs)| dirs.is_empty())
+        );
+    }
+
+    #[test]
+    fn rejects_over_bound_and_absolute_expanded_dirs() {
+        let (window, cwd) = sample();
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        snapshot.windows[0].projects[0].expanded_dirs =
+            vec![PathBuf::from("ok"); SnapshotLimits::default().max_expanded_dirs + 1];
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits::default()),
+            Err(SnapshotError::Invalid(_))
+        ));
+
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        snapshot.windows[0].projects[0].expanded_dirs = vec![PathBuf::from("/absolute")];
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits::default()),
+            Err(SnapshotError::Invalid(_))
+        ));
+
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        snapshot.windows[0].projects[0].expanded_dirs = vec![PathBuf::from("../escape")];
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits::default()),
+            Err(SnapshotError::Invalid(_))
+        ));
     }
 
     #[test]

@@ -39,7 +39,14 @@ impl IgnoreFilter {
     /// has a root, and its `.gitignore` expresses the same listing intent as
     /// inside a repository.
     pub fn walker(&self, root: &std::path::Path) -> ignore::Walk {
-        ignore::WalkBuilder::new(root)
+        self.builder(root).build()
+    }
+
+    /// Same policy as [`Self::walker`] as a builder so callers can bound
+    /// depth (single-level `list_dir`) without duplicating the options.
+    pub fn builder(&self, root: &std::path::Path) -> ignore::WalkBuilder {
+        let mut builder = ignore::WalkBuilder::new(root);
+        builder
             .hidden(!self.show_hidden)
             .git_ignore(true)
             .ignore(true)
@@ -47,8 +54,8 @@ impl IgnoreFilter {
             .git_global(true)
             .git_exclude(true)
             .require_git(false)
-            .follow_links(false)
-            .build()
+            .follow_links(false);
+        builder
     }
 }
 

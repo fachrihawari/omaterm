@@ -24,6 +24,17 @@ pub enum ErrorCode {
     /// blueprint §50). Introduced with the context foundation so M13 file
     /// and M14 git mutations share one stable code.
     PathOutsideRoot,
+    /// A file path under the project root does not exist or is not
+    /// accessible (M13). Distinct from `PathOutsideRoot`: the path is
+    /// inside the root but missing.
+    FileNotFound,
+    /// `$EDITOR` is unset or empty so `file.open` has nothing to submit
+    /// (M13). The editor pane itself is v0.3 scope.
+    EditorNotConfigured,
+    /// The project has no filesystem root (M12 `none` empty state) and the
+    /// requested operation needs one (`file.open`). Listing/searching
+    /// without a root returns an empty envelope instead of this error.
+    NoProjectRoot,
 }
 
 impl ErrorCode {
@@ -46,6 +57,9 @@ impl ErrorCode {
             Self::HistoryDisabled => "history_disabled",
             Self::HistoryUnavailable => "history_unavailable",
             Self::PathOutsideRoot => "path_outside_root",
+            Self::FileNotFound => "file_not_found",
+            Self::EditorNotConfigured => "editor_not_configured",
+            Self::NoProjectRoot => "no_project_root",
         }
     }
 }
@@ -133,6 +147,7 @@ pub enum CommandOutput {
         removed_files: usize,
     },
     ProjectRoot(ProjectRootInfo),
+    FileList(FileListInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +240,41 @@ pub struct JournalEntryInfo {
     pub started_unix_secs: u64,
     pub finished_unix_secs: Option<u64>,
     pub exit_status: Option<i32>,
+}
+
+/// One file-tree row (M13). `path` is relative to the project root so the
+/// wire form stays stable when the root moves (pinned edits, git re-root).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEntry {
+    pub path: PathBuf,
+    pub kind: FileKind,
+}
+
+/// Entry kind for file listings and search results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+impl FileKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+            Self::Symlink => "symlink",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Bounded file listing envelope: entries plus an accurate truncation flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileListInfo {
+    pub entries: Vec<FileEntry>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -96,6 +96,26 @@ pub struct HistoryList {
     pub pane_id: String,
     pub limit: Option<usize>,
 }
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileList {
+    pub project_id: Option<String>,
+    pub dir: Option<String>,
+    pub limit: Option<usize>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileSearch {
+    pub project_id: Option<String>,
+    pub query: String,
+    pub limit: Option<usize>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileOpen {
+    pub project_id: Option<String>,
+    pub path: String,
+}
 
 #[derive(Clone)]
 pub enum Method {
@@ -127,6 +147,9 @@ pub enum Method {
     HistoryClearPane(PaneSelector),
     HistoryClearProject(ProjectSelector),
     HistoryClearAll(Empty),
+    FileList(FileList),
+    FileSearch(FileSearch),
+    FileOpen(FileOpen),
 }
 
 impl Method {
@@ -172,6 +195,9 @@ impl Method {
             "history.clear-pane" => decode!(PaneSelector, HistoryClearPane),
             "history.clear-project" => decode!(ProjectSelector, HistoryClearProject),
             "history.clear-all" => decode!(Empty, HistoryClearAll),
+            "file.list" => decode!(FileList, FileList),
+            "file.search" => decode!(FileSearch, FileSearch),
+            "file.open" => decode!(FileOpen, FileOpen),
             _ => Err(MethodError("unknown method")),
         }
     }
@@ -233,8 +259,11 @@ mod tests {
                 serde_json::json!({"project_id":"id"}),
             ),
             ("history.clear-all", serde_json::json!({})),
+            ("file.list", serde_json::json!({})),
+            ("file.search", serde_json::json!({"query": "main"})),
+            ("file.open", serde_json::json!({"path": "src/main.rs"})),
         ];
-        assert_eq!(cases.len(), 28);
+        assert_eq!(cases.len(), 31);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

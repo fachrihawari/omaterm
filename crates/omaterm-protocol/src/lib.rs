@@ -13,6 +13,7 @@ pub const MAX_SEND_BYTES: usize = 8 * 1024;
 pub const MAX_ARG_COUNT: usize = 256;
 pub const MAX_ARGUMENT_BYTES: usize = 4 * 1024;
 pub const MAX_JOURNAL_ENTRIES: usize = 1_000;
+pub const MAX_FILE_ENTRIES: usize = 5_000;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

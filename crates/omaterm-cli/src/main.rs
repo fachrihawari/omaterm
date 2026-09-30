@@ -18,6 +18,7 @@ use clap::{Parser, Subcommand};
 use omaterm_protocol::{IpcRequest, PROTOCOL_VERSION};
 
 use commands::WireCall;
+use commands::file::FileCmd;
 use commands::history::HistoryCmd;
 use commands::pane::PaneCmd;
 use commands::project::ProjectCmd;
@@ -75,6 +76,11 @@ enum Commands {
     History {
         #[command(subcommand)]
         cmd: HistoryCmd,
+    },
+    /// Browse and search project files.
+    File {
+        #[command(subcommand)]
+        cmd: FileCmd,
     },
 }
 
@@ -146,6 +152,9 @@ fn build_wire_call(command: &Commands) -> Result<(WireCall, String), String> {
         }
         Commands::History { cmd } => {
             commands::history::build(cmd).map(|call| (call.clone(), call.method.clone()))
+        }
+        Commands::File { cmd } => {
+            commands::file::build(cmd).map(|call| (call.clone(), call.method.clone()))
         }
     }
 }
@@ -256,8 +265,11 @@ mod tests {
             &["omaterm", "history", "clear", "--pane", "pane-1"],
             &["omaterm", "history", "clear", "--project", "p1"],
             &["omaterm", "history", "clear", "--all"],
+            &["omaterm", "file", "list"],
+            &["omaterm", "file", "search", "main"],
+            &["omaterm", "file", "open", "src/main.rs"],
         ];
-        assert_eq!(cases.len(), 28);
+        assert_eq!(cases.len(), 31);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");

@@ -2115,6 +2115,398 @@ mapping + human/JSON rendering.
 
 ### Next action
 
-Begin M13 file tree + filename search on the M12 root/boundary/config
-foundation with the recorded `ignore` + `notify` 8.2.0 + `fuzzy-matcher`
-spike versions.
+M13 file tree + `Ctrl+P` finder (done — see M13 record below).
+
+## Milestone 13 — File Tree + Ctrl+P Finder — complete with documented limits (2026-09-29)
+
+Sidebar-first v0.2 panel on the M12 root/boundary/config foundation: a
+right-sidebar `FILES` tree plus a `Ctrl+P` fuzzy finder overlay. No
+in-sidebar filter box (user decision); finding is `Ctrl+P` only. "Open"
+routes to the user's `$EDITOR` inside the focused terminal through the
+existing `terminal.run` path (editor pane deferred to v0.3). Working tree
+only; no commit made.
+
+### Scope decisions (user-confirmed)
+
+- Right sidebar (~240px) hosts `FILES` now; Git (M14), Diff (M15), and
+  Process (M18) join it later. The left 180px `PROJECTS` sidebar and 36px
+  tab bar are untouched; pane geometry subtracts both sidebars.
+- `file.open` = submit `$EDITOR <shell-escaped path>` via `terminal.run`
+  semantics (missing `$EDITOR` → `editor_not_configured`, non-Bash →
+  `unsupported_operation`, not-ready → `shell_busy`).
+- Single slice: tree + finder + copy-path / reveal / open together.
+- Expanded-dirs bound 128 per project (snapshot schema v2).
+
+### Changed files
+
+- `crates/omaterm-context/Cargo.toml`, `Cargo.lock` (new: `notify`
+  =8.2.0, `fuzzy-matcher` =0.3.7)
+- `crates/omaterm-context/src/{lib,ignore,files}.rs` — `list_dir`
+  (single-level, ignore-respecting, symlink-rejecting), `search_files`
+  (skim-ranked, files-only, cancellable by caller generation),
+  `FileWatcher` (recursive, drop-cancels, typed limit-exhaustion),
+  `IgnoreFilter::builder` (shared policy with depth bound)
+- `crates/omaterm-core/src/{command,result,validation,lib}.rs` —
+  `FileCommand::{List,Search,Open}`, `FileEntry`/`FileKind`/`FileListInfo`
+  DTOs (root-relative paths), `MAX_FILE_ENTRIES` (5000) +
+  `MAX_FILE_QUERY_BYTES` (256), `file_not_found` /
+  `editor_not_configured` / `no_project_root` codes
+- `crates/omaterm-state/src/{snapshot,migration}.rs` — schema v2 with
+  per-project relative `expanded_dirs` (≤128, validated), v1→v2
+  migration (`expanded_dirs` defaults empty), `ValidatedSnapshot`
+  carries expansions to the desktop
+- `apps/omaterm/src/router.rs` — `file_root` helper (existence + scope
+  + M12 resolution), `List`/`Search` pure-query arms (empty envelope on
+  no-root, config `max-results`/`show-hidden`, redacted `files`/`search`
+  logging), `Open` arm (boundary → focused-pane session → `$EDITOR`
+  argv → `run_argv` error mapping), scope authorization for all three
+- `apps/omaterm/src/files.rs` (new) — GPUI-free panel (bounded
+  expansion set, row cache with 2000-row build / 400-row render caps,
+  persistence snapshot/restore)
+- `apps/omaterm/src/{main,ipc_bridge}.rs` — right sidebar, `Ctrl+P`
+  overlay (type/Up/Down/Enter/Esc + Ctrl+Y copy / Ctrl+U reveal on the
+  highlight), expand/collapse click, selected-row open/copy/reveal,
+  `Ctrl+Shift+Y/U` tree actions, 250ms files poller (debounced watcher
+  refresh, finder-result drain, 5s root re-resolve), snapshot
+  capture/restore of expansions, `file.*` bridge mapping + `FileList`
+  JSON envelope
+- `crates/omaterm-protocol/src/{lib,method}.rs` — `MAX_FILE_ENTRIES`,
+  `file.list` / `file.search` / `file.open` strict DTOs (28→31 methods)
+- `crates/omaterm-cli/src/{main,output,commands/file}.rs` — `file list`
+  / `search` / `open` verbs, human + `--json` rendering (28→31
+  coverage rows)
+- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping
+  rows), `docs/dependencies.md`, this status record
+
+### Key behaviors
+
+- Tree rows come only from `dispatch_command(OmaCommand::File…)`; the
+  finder keystroke search runs `omaterm_context::search_files` on a
+  background thread against a router-resolved root (generation-guarded,
+  stale results dropped). Nothing blocks the UI thread on a 10k walk.
+- Copy uses the existing Bourne single-quote escaper (§47 reuse).
+  Reveal types `cd <escaped>` with no newline (user reviews + submits).
+- Watcher-limit exhaustion keeps the last good tree plus an amber
+  banner; other watcher failures log and retry on the next tick.
+- Truncated listings sort after a bounded collect, so the visible order
+  under truncation is walk-ordered; the `truncated` flag is always
+  accurate. Full ordering holds whenever nothing truncates.
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 345 tests, 0 failures (43 desktop + 34 CLI + 18 context + 14 core + 11 IPC + 3 logging + 6 protocol + 44 state + 139 terminal unit + 32 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo tree -p omaterm-context` | PASS: zero `gpui` |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS (used for all Wayland runs) |
+| `python3 scripts/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+New coverage: context list/search/truncation/traversal/hidden-ignore/
+watcher-limit unit tests; core validation boundaries + stable codes;
+state v2 round-trip / v1 migration / over-bound + absolute + `..`
+rejection; router list/search/open matrix (empty-root, scope,
+truncation, no-EDITOR, missing-file, live Bash `RunSubmitted`);
+protocol decode (31 methods); bridge mapping (38 rows) + `FileList`
+envelope; CLI parser/mapping/rendering (31 rows); panel
+refresh/prune/select/restore unit tests.
+
+### Release Wayland proofs (Omarchy/Hyprland, isolated STATE/CONFIG/HOME/RUNTIME, SHELL=/bin/bash, EDITOR=/bin/true)
+
+- `project open` (repo + 10k-file `big`), `project root` → pinned.
+- `file list` (top + `--dir src`, hidden/ignored excluded), `--limit 1`
+  → `truncated`, human + `--json` envelopes valid.
+- `file search main` → `src/main.rs`; 10k-tree search → 5 bounded rows
+  in 22ms wall (`truncated` accurate).
+- `file open` → `Submitted open to shell.` (exit 0) with the quoted
+  `/bin/true '<abs path>'` submission visible at a fresh prompt;
+  missing → `file_not_found` exit 1; JSON `{"submitted":true}` valid.
+- Screenshot `/tmp/opencode/m13/tree.png`: right `FILES` sidebar (▸
+  docs, ▸ src, README.md, hint line), terminal showing both live
+  submissions above fresh prompts.
+- Expansion restore: stopped, injected `expanded_dirs: ["src"]` into
+  the repo project (simulated post-toggle persisted state — the toggle
+  itself is unit-covered; live click-toggle needs pointer control),
+  restarted → tree renders `▾ src` with `lib.rs`/`main.rs` nested,
+  layout/selection/fresh shells intact (`tree-restored.png`).
+- Watcher: `touch WATCHED.txt` in the repo root appeared as a tree row
+  within ~2s with no interaction (`tree-watcher.png`).
+- v1 migration: downgraded the snapshot (version 1, no `expanded_dirs`
+  keys), restarted → all 3 projects/tabs boot, `file list`/`search`
+  live green.
+- Residue cleanup verified: test units stopped, zero
+  `omaterm-desktop` processes, isolated dirs removed. Screenshots remain
+  outside the repository under `/tmp/opencode/m13/`.
+
+### Documented limits (not passes)
+
+- Live `Ctrl+P` key delivery, overlay typing/selection, and row
+  click-toggle were not exercised (no pointer/keyboard injection on the
+  shared session; `hyprctl closewindow` dispatch is rejected by this
+  Hyprland 0.56 lua surface, same M10 limit). Finder ranking,
+  overlay state machine, toggle/refresh/prune, and the `file.search`
+  backend it serves are unit-tested, and CLI `file.search` parity is
+  proven live on the same instance.
+- Graceful `window.close` live path still unavailable (SIGTERM stops
+  were used; debounced snapshots already held the latest state).
+- Stray `pe` input visible in one restored-window capture is
+  unattended-machine input (M10 shared-machine caution), not
+  application output.
+- Standing v0.1 limits unchanged: second compositor, X11 runtime,
+  alternate scaling/monitor, `zsh`/`fish` unavailable, per-process GPU.
+
+### Next action
+
+M13 follow-up v2 (lazy loading + icons, done — see below), then M14.
+
+## Milestone 13 follow-up v2 — on-demand loading + file icons — complete with documented limits (2026-09-29)
+
+Replaces the interim depth gate with true lazy loading (no depth limit
+at all) and gives the tree/finder VSCode-style colored Nerd Font icons.
+Working tree only; no commit made.
+
+### What changed and why
+
+- Depth gate removed (`MAX_AUTO_DEPTH`, session bypass, restore clamp,
+  `gated` rows, `update_dir`/`has_deeper_expansions` all gone). In its
+  place: a per-project listing cache. The root lists synchronously (one
+  bounded walk, instant first paint); every expanded directory resolves
+  from cache or fetches on a background worker (max 4 in flight) with
+  dimmed `loading` rows meanwhile. Completions are generation-guarded;
+  landing fetches rebuild rows and continue deeper levels until nothing
+  is needed. Cache drops per-directory on watcher events, wholesale on
+  project switch/root change (memory bounded by one project).
+- Prune rule hardened: a missing row prunes its expansion only with full
+  ancestor-chain ground truth (every ancestor listing cached). This fixed
+  a real race the follow-up itself exposed — mid-chain invalidation used
+  to orphan deeper intent when intermediate fetches were outstanding
+  (proven by a failing-then-passing unit test and live screenshots).
+- Watcher callbacks now drop `EventKind::Access` (`is_access()` verified
+  against the locked `notify` 8.2.0 / notify-types source). Diagnosis
+  evidence: with the app running, `inotifywait` showed a continuous
+  OPEN/ACCESS/CLOSE_NOWRITE stream and the tree refreshed 135/135 poller
+  ticks; with the app stopped, zero events. The app's own walks were
+  re-arming the watcher — a self-sustaining loop. After the filter: one
+  refresh per real change, 5s ticks resolve-only.
+- `list_dir` fills directories first within the walk bound (a truncated
+  `$HOME` listing used to cut `src/` while showing `topfile099.txt`),
+  and the recursive search never descends into `.cache`, `.git`,
+  `node_modules`, `target`, `__pycache__`, `.venv` (still listed as rows
+  and explicitly expandable; `Trash` deliberately excluded — name
+  collision risk).
+- `Show more (N+)` moved above the rows: the sidebar has no scroll, so a
+  bottom footer is unreachable behind a full page (found live on the
+  `$HOME` fixture). No-scroll remains a known limit (see below).
+- Icons: pure `icon_for()` table in `apps/omaterm/src/files.rs` (~70
+  extensions + exact filenames + README/LICENSE families + `.git` /
+  `node_modules` dirs + folder open/closed + Nerd chevrons), Seti-inspired
+  colors, rendered in tree rows and `Ctrl+P` results. Codepoints taken
+  from Nerd Fonts 3.5.1 `glyphnames.json` and every tabled glyph verified
+  present in the installed `JetBrainsMonoNerdFont-Regular.ttf` by the
+  kept `icon_glyphs_exist_in_nerd_font` test (skips where the font is
+  absent, e.g. CI). `ttf-parser` =0.25.1 is a dev-only test edge
+  (already in `Cargo.lock`; never linked into the binary).
+
+### Changed files
+
+- `apps/omaterm/src/files.rs` — cache/pending/placeholder model,
+  `icon_for` table, rewritten unit tests
+- `apps/omaterm/src/main.rs` — `sync_files_from_cache`, fetch channel +
+  generation, targeted event invalidation, top-placed `Show more`,
+  icon/chevron rendering (tree + finder)
+- `apps/omaterm/Cargo.toml` — `ttf-parser` dev-dependency (test only)
+- `crates/omaterm-context/src/files.rs` — access-event filter,
+  dirs-first truncation, traversal skip list + tests
+- `docs/dependencies.md`, this status record
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 354 tests, 0 failures (50 desktop + 34 CLI + 20 context + 14 core + 11 IPC + 3 logging + 6 protocol + 44 state + 139 terminal unit + 32 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `cargo tree -p omaterm-context` | PASS: zero `gpui` |
+| `python3 scripts/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+### Release Wayland proofs (Omarchy/Hyprland, isolated dirs, SHELL=/bin/bash)
+
+- `$HOME` fixture (123 entries): instant bounded tree, dirs-first
+  (`node_modules`, `projects`, `target`), top-placed `Show more (100+)`
+  (`home-tree2.png`).
+- 7-deep restored chain loads level-by-level with zero depth limit
+  (log: `needed=7` → `landed=4` → `needed=3` → quiet) and renders fully
+  with distinct folder/file icons (`deep-lazy5.png`).
+- Deep watcher file (`deep1/deep2/newfile.rs`, then `second.rs`)
+  appears in ~3s with the chain intact — targeted invalidation, no full
+  rebuild (`deep-watcher.png`, `deep-stable.png`).
+- Skip list live: `file search` for `node_modules`/`target` contents
+  returns empty envelopes while the dirs still list as rows.
+- Idle 10s shows no tree refreshes (refresh-once + resolve-only ticks).
+- Residue cleanup verified: units stopped, zero `omaterm-desktop`
+  processes, all isolated `/tmp/opencode/m13*` dirs removed.
+  Screenshots cited above were removed with their dirs; representative
+  captures for the slice: `icons-tree.png` (flat + icons),
+  `deep-lazy5.png` (7-deep + icons), `deep-stable.png` (targeted deep
+  refresh intact).
+
+### Documented limits (not passes)
+
+- The earlier nested-tree screenshots (empty expansion set rendering
+  deep chains) never reproduced once isolated: with the access-loop
+  fixed, fresh-state trees render flat and the injected-chain runs
+  behave exactly per the unit model. The leading explanations remain a
+  stop/edit/start race during rapid validation cycling (a debounced save
+  landing between snapshot edit and shutdown — observed once as a
+  partial chain on disk) and/or shared-machine pointer input (stray `pe`
+  input seen in one capture, M10 precedent). Recorded here instead of
+  claimed.
+- `Ctrl+P` key delivery, overlay typing, row click-toggle, and
+  `Show more` clicks were not exercised live (no pointer/keyboard
+  injection on the shared session); mapping, overlay state machine, and
+  the served backends are unit-tested with CLI parity live.
+- Directory rows show the folder glyph only (open = expanded, closed =
+  collapsed); the chevron prefix was removed as redundant per user review
+  (`single-marker.png`). Verified chevron codepoints stay reserved for
+  M16.
+- Row layout pass: fixed 18px icon cell (centered glyph) so labels align
+  per depth, uniform gap, roomier row padding matching the sidebar
+  rhythm, wider depth indent; same pattern in `Ctrl+P` results
+  (`layout.png`). Glyph set and colors unchanged.
+- Accepted spec deltas (user decision, M13 closed): no in-sidebar fuzzy
+  filter (the `Ctrl+P` overlay is the finder); no tree arrow-key
+  navigation (arrows belong to the terminal — keyboard-only flow runs
+  through the finder plus `Ctrl+Shift+Y/U`); no sidebar scroll (row caps
+  plus `Show more` bound listings, rows past the viewport stay
+  unreachable for now). A fresh project switch can flash
+  `Empty directory` for one 250ms tick before the first refresh lands
+  (pre-existing, self-heals).
+- Finder restyle (VSCode Quick Open): centered floating max-600px box
+  with shadow, input row (magnifier, block caret, dimmed placeholder),
+  divider, filename-bright + dimmed-parent rows (kind tag dropped),
+  accent match highlighting from the same skim scorer, selected-row
+  accent bar, footer hints inside the box (`quickopen.png`,
+  `final-state.png` — the latter proves the reverted closed-by-default
+  state; the open overlay was verified via a temporary open-by-default
+  build, reverted before the final gates).
+- Finder caret: 2px block at exact text-line height hugging the query,
+  blinking ~530ms with keystroke phase-reset and no timers while closed
+  (a text-pipe caret stacked glyph bearings on the row gap and stretched
+  to the padded row height).
+- Finder long rows: single `StyledText` per row half with skim ranges
+  mapped to byte spans (`highlight_ranges`, Unicode-tested), inside
+  `min-width: 0` + `truncate()` wrappers — verified root cause in the
+  GPUI 0.2.2 source that `white-space`/`text-overflow` only reach text
+  through the cascaded `TextStyle`, which bare `overflow_hidden()`
+  never sets. Filename keeps the larger share (parent capped at 140px).
+  Proven live on `…/admin/articles/Create|DeleteArticleWithAVeryLong…`
+  rows that previously wrapped to 2–3 broken lines.
+- Floating overlay (absolute layer over terminal content, explicit
+  viewport-arithmetic centering, no backdrop) plus a 2px block caret
+  hugging the query (replacing the pipe glyph whose side bearings
+  stacked with the row gap). Verified pixel-measured against the
+  struct layout after ruling out stale-process contamination via
+  `/proc` environ checks; shared-machine input observed again during
+  validation (M10 precedent).
+- Graceful `window.close` live path still unavailable (SIGTERM stops;
+  debounced snapshots held state). Standing v0.1 limits unchanged.
+
+### Next action
+
+M13 follow-up v3 (freeze fix + ellipsis + wheel scroll, done — see
+below), then M14.
+
+## Milestone 13 follow-up v3 — home freeze, ellipsis, scroll — complete with documented limits (2026-09-29)
+
+Three user-reported issues, one slice. Working tree only; no commit made.
+
+### 1. Freeze + 100% CPU on `$HOME`-rooted projects — fixed
+
+Root causes, both on the project-focus path: (a) `ensure_files_watcher`
+ran `notify` recursive arming **synchronously on the UI thread** — tens
+of thousands of inotify watches before returning; (b) every debounced
+event batch re-resolved the root (procfs + `git rev-parse` subprocess)
+and re-walked on the UI thread, so a live home kept the app hot; the
+earlier access-event filter stopped self-triggering, but real home
+traffic (caches, editors, daemons) sustained the load.
+
+- `omaterm-context`: new `FileWatcher::watch(root, extra_skips,
+  show_hidden, callback)` arms top-down with `NonRecursive` watches,
+  pruning `SKIP_TRAVERSE_NAMES` plus caller-supplied canonical prefixes
+  (our own state/config dirs when under the root, so snapshot saves
+  never self-trigger); hidden dirs skipped when `show_hidden` is false.
+  New `watch_single()` tops up directories created after arming
+  (idempotent; missing paths are a no-op). Access-kind filtering kept.
+- Desktop: arming moved to a background worker keyed by
+  `files_generation` (new `files_arm_tx/rx`, `files_arming` dedupe;
+  stale installs drop, failures retry at most every 5s). Event batches
+  invalidate + rebuild from cache + bounded background refetch only —
+  no root re-resolve, no synchronous root walk (root moves stay on the
+  5s tick) — coalesced to ~1Hz with backlog-shed warnings. New dirs in
+  event paths get `watch_single` top-ups.
+- Adjacent fix: generation-mismatched fetch completions now unpend
+  (plus `unpend_all` on switch), closing a fetch-budget leak that could
+  stall tree loading after rapid switches.
+
+### 2. Long names break alignment — fixed
+
+Row labels use GPUI's first-class `truncate()` (overflow-hidden +
+nowrap + ellipsis, verified in the locked 0.2.2 source) inside
+`flex_1`, with a `flex_shrink_0` fixed-width icon cell as the alignment
+anchor. Full paths stay available via copy-path. Same pattern in
+`Ctrl+P` results.
+
+### 3. Tree scrolling — added (wheel-only per user decision)
+
+Row-step scrolling over fixed-height rows: pixel offset state,
+wheel handler mirroring the terminal's delta convention, per-render
+clamping, `.skip().take()` window (header/footers/hints stay fixed),
+reset on project switch. Proven live by real user scrolls (offset 14
+persisted across captures with correct clamping).
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 356 tests, 0 failures (50 desktop + 34 CLI + 22 context + 14 core + 11 IPC + 3 logging + 6 protocol + 44 state + 139 terminal unit + 32 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `python3 scripts/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+New coverage: pruned arming (skip-list + extra-skip silence with live
+notify assertions), `watch_single` top-up/idempotence/missing-path,
+dirs-first truncation priority, plus the carried v2 panel/context tests.
+
+### Release Wayland proofs (Omarchy/Hyprland, isolated dirs)
+
+- 60-dir `$HOME` fixture: focus paints instantly, arming finishes on the
+  worker in **2ms**, process replaces the old refresh storm with
+  resolve-only 5s ticks.
+- **Idle CPU: 1.097s over 100.0s wall (~1.1% of one core), 31.1M peak**
+  (systemd accounting) — against 3.1s/112s for the pre-fix code on a
+  smaller fixture, and the reported 100% pin gone.
+- Ellipsis + alignment on a long-name fixture (`ellipsis.png`); wheel
+  scroll offset working across captures; targeted deep refresh intact
+  from the v2 proofs (unchanged paths).
+- Residue cleanup verified: units stopped, zero desktop processes, all
+  isolated `/tmp/opencode/m13*` dirs removed.
+
+### Documented limits (not passes)
+
+- Wheel scroll **direction** follows the terminal convention
+  (positive delta toward top) but was not explicitly confirmed live —
+  report back if it feels inverted and the sign flips in one line.
+- `Ctrl+P` typing and row click-toggle still need hands (standing
+  limit). Test instances exited during validation with no crash
+  evidence (no coredump/OOM/panic lines; orderly logs to the end) —
+  treated as user-closed on the shared machine per M10 precedent.
+- Graceful `window.close` live path still unavailable. Next: M14.
+
+### Next action
+
+Begin M14 Git Status panel on the M12 root/boundary foundation and the
+M13 right-sidebar shell.

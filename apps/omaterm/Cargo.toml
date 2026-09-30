@@ -23,3 +23,8 @@ serde_json = "=1.0.149"
 tracing = "0.1"
 uuid = "=1.26.1"
 zeroize = "=1.9.0"
+
+[dev-dependencies]
+# Test-only glyph-coverage check for the file-icon table (already in the
+# lock file transitively; never linked into the desktop binary).
+ttf-parser = "=0.25.1"

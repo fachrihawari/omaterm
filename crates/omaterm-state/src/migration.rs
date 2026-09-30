@@ -14,7 +14,9 @@ pub(crate) fn decode(
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| SnapshotError::Corrupt("missing or invalid schema_version".into()))?;
-    if version != WorkspaceSnapshot::SCHEMA_VERSION {
+    if version != WorkspaceSnapshot::SCHEMA_VERSION
+        && version != WorkspaceSnapshot::V1_SCHEMA_VERSION
+    {
         return Err(SnapshotError::UnsupportedVersion(version));
     }
     let snapshot: WorkspaceSnapshot =

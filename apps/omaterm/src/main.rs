@@ -6,16 +6,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, AsyncApp, Bounds, ClipboardItem, Context, ExternalPaths, FocusHandle, Font,
-    FontFallbacks, Hsla, KeyDownEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, ScrollDelta, ScrollWheelEvent,
-    SharedString, TextRun, Timer, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div,
-    font, prelude::*, px, relative, rgb, rgba, size,
+    App, Application, AsyncApp, Bounds, ClipboardItem, Context, Div, ExternalPaths, FocusHandle,
+    Font, FontFallbacks, HighlightStyle, Hsla, KeyDownEvent, ModifiersChangedEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, ScrollDelta,
+    ScrollWheelEvent, SharedString, StyledText, TextRun, Timer, WeakEntity, Window, WindowBounds,
+    WindowOptions, canvas, div, font, hsla, prelude::*, px, relative, rgb, rgba, size,
 };
 use omaterm_core::{
-    CommandContext, CommandOutput, CommandResult, OmaCommand, Pane, PaneCommand, PaneContent,
-    PaneId, PaneNode, ProjectCommand, SessionId, SplitAxis, SplitDirection, TabCommand,
-    TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, FileCommand, FileEntry, OmaCommand, Pane,
+    PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis,
+    SplitDirection, TabCommand, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -29,6 +29,7 @@ use omaterm_terminal::{
     format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
 };
 mod credentials;
+mod files;
 mod history;
 mod ipc_bridge;
 mod router;
@@ -86,6 +87,63 @@ struct WorkspaceView {
     paste_arm: Option<(SessionId, Vec<u8>, Instant)>,
     /// Transient input notice (paste confirmation prompt, drop errors).
     input_notice: Option<String>,
+    /// M13 file panel: right-sidebar tree rows for the selected project.
+    files_panel: files::FilePanel,
+    /// Watcher-limit banner (inotify exhaustion keeps the last good tree).
+    files_warning: Option<String>,
+    /// Active recursive watcher plus the (project, root) it watches.
+    files_watcher: Option<omaterm_context::FileWatcher>,
+    files_watched: Option<(ProjectId, std::path::PathBuf)>,
+    /// Background watcher-arm completions `(generation, project, root,
+    /// result)`; arming walks the whole tree, so it never runs on the UI
+    /// thread. Stale generations drop on project/root transitions.
+    files_arm_tx: std::sync::mpsc::Sender<(
+        u64,
+        ProjectId,
+        std::path::PathBuf,
+        Result<omaterm_context::FileWatcher, omaterm_context::WatchError>,
+    )>,
+    files_arm_rx: std::sync::mpsc::Receiver<(
+        u64,
+        ProjectId,
+        std::path::PathBuf,
+        Result<omaterm_context::FileWatcher, omaterm_context::WatchError>,
+    )>,
+    /// Watcher arm currently in flight, if any (dedupes re-arms).
+    files_arming: Option<(ProjectId, std::path::PathBuf)>,
+    /// Last event-batch refresh; batches coalesce to ~1Hz max so a busy
+    /// filesystem can never keep the UI thread hot.
+    files_last_event_refresh: Instant,
+    /// Watcher hit flag + last-event time (set on the notify thread,
+    /// consumed debounced by the files poller on the UI thread).
+    files_event: Arc<AtomicBool>,
+    files_event_at: Arc<Mutex<Instant>>,
+    /// Absolute event paths batch-drained by the poller; each maps to one
+    /// invalidated tree directory (targeted refetch, never a blind walk).
+    files_event_paths: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    /// Background directory-fetch completions `(generation, project, dir,
+    /// entries)`; stale generations drop on project/root transitions.
+    files_fetch_tx: std::sync::mpsc::Sender<(u64, ProjectId, std::path::PathBuf, Vec<FileEntry>)>,
+    files_fetch_rx: std::sync::mpsc::Receiver<(u64, ProjectId, std::path::PathBuf, Vec<FileEntry>)>,
+    files_generation: u64,
+    /// Per-project top-level listing caps (`Show more` paging; ephemeral,
+    /// never persisted). Nested dirs always use the config default.
+    files_root_caps: HashMap<ProjectId, usize>,
+    /// Wheel scroll offset into the tree rows (row-granular, clamped every
+    /// render). Reset on project switch.
+    files_scroll_rows: usize,
+    files_last_resolve: Instant,
+    files_poller_active: bool,
+    /// `Ctrl+P` fuzzy finder overlay state.
+    ctrlp_open: bool,
+    ctrlp_query: String,
+    ctrlp_results: Vec<FileEntry>,
+    ctrlp_selected: usize,
+    ctrlp_truncated: bool,
+    ctrlp_generation: u64,
+    ctrlp_rx: Option<std::sync::mpsc::Receiver<(u64, Vec<FileEntry>, bool)>>,
+    ctrlp_caret_on: bool,
+    ctrlp_blink_active: bool,
 }
 
 /// Two-step destructive-or-sensitive history control: the first press arms
@@ -166,6 +224,12 @@ impl WorkspaceView {
         let (app_config, config_warning) = Self::startup_config();
         let mut coordinator = WorkspaceCoordinator::new(working_directory);
         coordinator.set_scrollback_lines(app_config.resolved_scrollback_lines());
+        // Background directory-fetch channel for lazy tree loading;
+        // completions are generation-guarded in the files poller.
+        let (files_fetch_tx, files_fetch_rx) = std::sync::mpsc::channel();
+        // Background watcher-arm channel; arming walks the whole tree, so
+        // it never runs on the UI thread.
+        let (files_arm_tx, files_arm_rx) = std::sync::mpsc::channel();
         let mut view = Self {
             focus_handle,
             coordinator: router::CommandRouter::new(coordinator),
@@ -200,11 +264,43 @@ impl WorkspaceView {
             history_arm: None,
             paste_arm: None,
             input_notice: None,
+            files_panel: files::FilePanel::default(),
+            files_warning: None,
+            files_watcher: None,
+            files_watched: None,
+            files_event: Arc::new(AtomicBool::new(false)),
+            files_event_at: Arc::new(Mutex::new(Instant::now())),
+            files_event_paths: Arc::new(Mutex::new(Vec::new())),
+            files_fetch_tx,
+            files_fetch_rx,
+            files_generation: 0,
+            files_arm_tx,
+            files_arm_rx,
+            files_arming: None,
+            files_last_event_refresh: Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .unwrap_or_else(Instant::now),
+            files_root_caps: HashMap::new(),
+            files_scroll_rows: 0,
+            files_last_resolve: Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .unwrap_or_else(Instant::now),
+            files_poller_active: false,
+            ctrlp_open: false,
+            ctrlp_query: String::new(),
+            ctrlp_results: Vec::new(),
+            ctrlp_selected: 0,
+            ctrlp_truncated: false,
+            ctrlp_generation: 0,
+            ctrlp_rx: None,
+            ctrlp_caret_on: true,
+            ctrlp_blink_active: false,
         };
         view.start_ipc(cx);
         view.restore_or_initialize(cx);
         view.warm_history_journals();
         view.start_history_timer(cx);
+        view.start_files_poller(cx);
         view
     }
 
@@ -389,6 +485,10 @@ impl WorkspaceView {
     ) {
         let pane_cwds: HashMap<PaneId, PersistedCwd> = restored.pane_cwds.into_iter().collect();
         self.observed_cwds = pane_cwds.clone();
+        self.files_panel.restore(restored.expanded_dirs);
+        // Force the watcher to re-arm on the restored selection.
+        self.files_watcher = None;
+        self.files_watched = None;
         if let Err(error) = self.coordinator.restore_window(restored.window) {
             self.persistence_destination = self
                 .persistence_store
@@ -479,7 +579,11 @@ impl WorkspaceView {
     }
 
     fn snapshot(&self) -> WorkspaceSnapshot {
-        WorkspaceSnapshot::capture(self.coordinator.window(), &self.current_cwds())
+        WorkspaceSnapshot::capture_with_expanded(
+            self.coordinator.window(),
+            &self.current_cwds(),
+            &self.files_panel.expanded_snapshot(),
+        )
     }
 
     fn current_cwds(&self) -> HashMap<PaneId, PersistedCwd> {
@@ -1442,6 +1546,717 @@ impl WorkspaceView {
         let _ = self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx);
     }
 
+    // ---- M13 file panel (right-sidebar tree + Ctrl+P finder) ----
+    //
+    // Every read goes through the same `OmaCommand::File` dispatcher arms
+    // as IPC/CLI. The tree refreshes on project switch, expansion toggle,
+    // debounced watcher events, and a 5s root re-resolve; only the `Ctrl+P`
+    // keystroke search runs on a background thread (with a router-resolved
+    // root), cancelled by generation.
+
+    /// Resolve the selected project's filesystem root through the dispatcher.
+    /// `None` is the explicit empty state (or a stale project), never an error.
+    fn files_project_root(
+        &mut self,
+        project: ProjectId,
+        cx: &mut Context<Self>,
+    ) -> Option<std::path::PathBuf> {
+        match self.dispatch_command(
+            OmaCommand::Project(omaterm_core::ProjectCommand::Root { project }),
+            cx,
+        ) {
+            Ok(CommandOutput::ProjectRoot(info)) => info.root,
+            Ok(_) => None,
+            Err(error) => {
+                tracing::debug!(target: "omaterm::files", project_id = %project.0, "root resolve failed: {error}");
+                None
+            }
+        }
+    }
+
+    /// One bounded directory listing through the dispatcher. Errors yield an
+    /// empty envelope (missing dirs prune from the expansion set); the
+    /// boundary code is preserved in tests, not shown as tree content.
+    fn file_list_info(
+        &mut self,
+        project: ProjectId,
+        dir: Option<std::path::PathBuf>,
+        limit: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> omaterm_core::FileListInfo {
+        match self.dispatch_command(
+            OmaCommand::File(FileCommand::List {
+                project,
+                dir,
+                limit,
+            }),
+            cx,
+        ) {
+            Ok(CommandOutput::FileList(list)) => list,
+            Ok(_) => omaterm_core::FileListInfo {
+                entries: Vec::new(),
+                truncated: false,
+            },
+            Err(error) => {
+                tracing::debug!(target: "omaterm::files", project_id = %project.0, "file list failed: {error}");
+                omaterm_core::FileListInfo {
+                    entries: Vec::new(),
+                    truncated: false,
+                }
+            }
+        }
+    }
+
+    /// Effective top-level cap for a project: the `Show more` paging
+    /// override or the configured file default.
+    fn files_root_cap(&self, project: ProjectId) -> usize {
+        self.files_root_caps
+            .get(&project)
+            .copied()
+            .unwrap_or_else(|| {
+                omaterm_state::AppConfig::load()
+                    .unwrap_or_default()
+                    .resolved_max_results() as usize
+            })
+    }
+
+    /// At most this many directory fetches run concurrently; the rest wait
+    /// for the next poller tick (their rows show `loading` meanwhile).
+    const MAX_FETCH_IN_FLIGHT: usize = 4;
+
+    /// Rebuild the tree rows for the selected project and (re)arm the
+    /// watcher on its root. Only the top level lists synchronously (one
+    /// bounded walk so first paint never waits); expanded directories
+    /// resolve from cache or fetch in the background. The top level honors
+    /// the `Show more` cap; nested dirs use the config default.
+    fn refresh_files(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            self.files_watcher = None;
+            self.files_watched = None;
+            return;
+        };
+        let Some(root) = self.files_project_root(project, cx) else {
+            self.files_panel.refresh(project, true);
+            self.files_watcher = None;
+            self.files_watched = None;
+            self.files_warning = None;
+            cx.notify();
+            return;
+        };
+        let root_cap = self.files_root_cap(project);
+        let top = self.file_list_info(project, None, Some(root_cap), cx);
+        self.files_panel
+            .insert_listing(project, std::path::PathBuf::new(), top.entries);
+        self.files_panel.set_root_truncated(top.truncated);
+        self.sync_files_from_cache(project, &root);
+        self.ensure_files_watcher(project, &root);
+        cx.notify();
+    }
+
+    /// Rebuild rows purely from cache, then spawn background fetches for
+    /// uncached expansions (bounded concurrency). Never touches the
+    /// filesystem itself.
+    fn sync_files_from_cache(&mut self, project: ProjectId, root: &std::path::Path) {
+        self.files_panel.refresh(project, false);
+        let in_flight = self.files_panel.pending_count(project);
+        let slots = Self::MAX_FETCH_IN_FLIGHT.saturating_sub(in_flight);
+        if slots == 0 {
+            return;
+        }
+        let needed = self.files_panel.needed_dirs(project);
+        if needed.is_empty() {
+            return;
+        }
+        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let config = omaterm_state::AppConfig::load().unwrap_or_default();
+        let limit = config.resolved_max_results() as usize;
+        let show_hidden = config.show_hidden();
+        for dir in needed.into_iter().take(slots) {
+            self.files_panel.mark_pending(project, dir.clone());
+            let tx = self.files_fetch_tx.clone();
+            let generation = self.files_generation;
+            let canonical = canonical.clone();
+            std::thread::spawn(move || {
+                let entries = omaterm_context::list_dir(&canonical, Some(&dir), limit, show_hidden)
+                    .map(|list| list.entries)
+                    .unwrap_or_default();
+                let _ = tx.send((generation, project, dir, entries));
+            });
+        }
+    }
+
+    /// Watch exactly the selected project's root. Arming walks the whole
+    /// tree, so it runs on a background thread keyed by generation — the UI
+    /// thread never blocks, even on `$HOME`. Dropping the old handle
+    /// cancels watching on project switch; limit exhaustion keeps the last
+    /// good tree plus a warning banner.
+    fn ensure_files_watcher(&mut self, project: ProjectId, root: &std::path::Path) {
+        // Store the canonical root so watcher event paths (always
+        // canonical) map back to tree-relative directories.
+        let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        if self
+            .files_watched
+            .as_ref()
+            .is_some_and(|(watched_project, watched_root)| {
+                *watched_project == project && *watched_root == canonical
+            })
+            || self
+                .files_arming
+                .as_ref()
+                .is_some_and(|(arming_project, arming_root)| {
+                    *arming_project == project && *arming_root == canonical
+                })
+        {
+            return;
+        }
+        self.files_watcher = None;
+        self.files_watched = None;
+        self.files_arming = Some((project, canonical.clone()));
+        let hit = self.files_event.clone();
+        let at = self.files_event_at.clone();
+        let paths = self.files_event_paths.clone();
+        let tx = self.files_arm_tx.clone();
+        let generation = self.files_generation;
+        let root = root.to_path_buf();
+        // Skip our own state/config writes when they sit under the root —
+        // their saves must never re-arm our own refresh.
+        let mut extra_skips = Vec::new();
+        if let Some(store) = self.persistence_store.as_ref()
+            && let Some(parent) = store.path().parent()
+            && let Ok(canonical_parent) = std::fs::canonicalize(parent)
+        {
+            extra_skips.push(canonical_parent);
+        }
+        if let Some(config) = omaterm_state::default_config_toml_path()
+            && let Some(parent) = config.parent()
+            && let Ok(canonical_parent) = std::fs::canonicalize(parent)
+        {
+            extra_skips.push(canonical_parent);
+        }
+        let config = omaterm_state::AppConfig::load().unwrap_or_default();
+        let show_hidden = config.show_hidden();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let result = omaterm_context::FileWatcher::watch(
+                &root,
+                &extra_skips,
+                show_hidden,
+                move |event_paths| {
+                    hit.store(true, Ordering::Release);
+                    if let Ok(mut stamp) = at.lock() {
+                        *stamp = Instant::now();
+                    }
+                    if let Ok(mut pending) = paths.lock() {
+                        pending.extend(event_paths);
+                        // Bound the backlog: a burst re-lists its dirs once each.
+                        if pending.len() > 512 {
+                            let excess = pending.len() - 512;
+                            pending.drain(..excess);
+                        }
+                    }
+                },
+            );
+            tracing::debug!(
+                target: "omaterm::files",
+                project_id = %project.0,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                armed = result.is_ok(),
+                "watcher arming finished",
+            );
+            let _ = tx.send((generation, project, canonical, result));
+        });
+    }
+
+    /// 250ms UI-thread poller: debounced watcher refresh, `Ctrl+P` result
+    /// drain, and a 5s root re-resolve (pins and git toplevels move). One
+    /// cheap task per window, like the history timer; exits with the view.
+    fn start_files_poller(&mut self, cx: &mut Context<Self>) {
+        if self.files_poller_active {
+            return;
+        }
+        self.files_poller_active = true;
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                Timer::after(Duration::from_millis(250)).await;
+                let alive = weak
+                    .update(cx, |view, cx| view.files_tick(cx))
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn files_tick(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.shutting_down {
+            return false;
+        }
+        // Latest `Ctrl+P` result wins; stale generations are dropped.
+        if let Some(rx) = self.ctrlp_rx.as_ref() {
+            let mut latest = None;
+            while let Ok(result) = rx.try_recv() {
+                latest = Some(result);
+            }
+            if let Some((generation, entries, truncated)) = latest
+                && generation == self.ctrlp_generation
+                && self.ctrlp_open
+            {
+                self.ctrlp_results = entries;
+                self.ctrlp_selected = 0;
+                self.ctrlp_truncated = truncated;
+                cx.notify();
+            }
+        }
+        let project = self.coordinator.selected_project_id();
+        let switched = project != self.files_panel.rows_project_for_tick();
+        let event_due = self.files_event.load(Ordering::Acquire)
+            && self
+                .files_event_at
+                .lock()
+                .is_ok_and(|stamp| stamp.elapsed() >= Duration::from_millis(250));
+        if project.is_none() {
+            if self.files_watched.is_some() || self.files_panel.rows_project_for_tick().is_some() {
+                self.files_watcher = None;
+                self.files_watched = None;
+            }
+            return true;
+        }
+        let project = project.expect("selected project");
+        // Background directory-fetch completions: stale generations (from
+        // before a switch/root change) drop; the rest land in cache and
+        // rebuild rows with zero filesystem work on this thread. A landed
+        // fetch can unblock deeper levels, so fetching continues until
+        // nothing is needed (still bounded per tick).
+        let mut landed_selected = false;
+        while let Ok((generation, fetched_project, dir, entries)) = self.files_fetch_rx.try_recv() {
+            if generation != self.files_generation {
+                // Retired by a switch/root change: drop the payload and free
+                // its in-flight slot so the fetch budget never leaks.
+                self.files_panel.unpend(fetched_project, &dir);
+                continue;
+            }
+            self.files_panel
+                .insert_listing(fetched_project, dir, entries);
+            if Some(fetched_project) == self.coordinator.selected_project_id() {
+                landed_selected = true;
+            }
+        }
+        // Background watcher-arm completions: stale generations drop (the
+        // tick re-arms for whatever is current); otherwise install the
+        // handle or surface the limit banner.
+        while let Ok((generation, armed_project, armed_root, result)) = self.files_arm_rx.try_recv()
+        {
+            self.files_arming = None;
+            if generation != self.files_generation {
+                continue;
+            }
+            if Some(armed_project) != self.coordinator.selected_project_id() {
+                continue;
+            }
+            match result {
+                Ok(watcher) => {
+                    self.files_watcher = Some(watcher);
+                    self.files_watched = Some((armed_project, armed_root));
+                    self.files_warning = None;
+                    cx.notify();
+                }
+                Err(omaterm_context::WatchError::LimitExhausted(message)) => {
+                    tracing::warn!(target: "omaterm::files", "file watcher limit exhausted: {message}");
+                    self.files_warning = Some(
+                        "Files: system watch limit reached — showing the last good tree.".into(),
+                    );
+                    cx.notify();
+                }
+                Err(omaterm_context::WatchError::Unavailable(message)) => {
+                    tracing::debug!(target: "omaterm::files", "file watcher unavailable: {message}");
+                }
+            }
+        }
+        if landed_selected && let Some(project) = self.coordinator.selected_project_id() {
+            self.files_panel.refresh(project, false);
+            // Continue fetching independent of watcher health: re-resolve
+            // the root (cheap for pinned projects) and sync from cache.
+            if !self.files_panel.needed_dirs(project).is_empty()
+                && let Some(root) = self.files_project_root(project, cx)
+            {
+                self.sync_files_from_cache(project, &root);
+            }
+            cx.notify();
+        }
+        if switched {
+            self.files_event.store(false, Ordering::Release);
+            self.files_last_resolve = Instant::now();
+            self.files_scroll_rows = 0;
+            // New generation retires in-flight fetches; other projects'
+            // caches drop so memory stays bounded by one project.
+            self.files_generation = self.files_generation.wrapping_add(1);
+            self.files_panel.unpend_all(project);
+            self.files_arming = None;
+            for other in self
+                .coordinator
+                .projects()
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>()
+            {
+                if other != project {
+                    self.files_panel.clear_project(other);
+                }
+            }
+            self.refresh_files(cx);
+            if self.ctrlp_open {
+                self.ctrlp_search(cx);
+            }
+            return true;
+        }
+        // The 5s tick only re-resolves the root (pins and git toplevels
+        // move); the tree rebuilds solely when the root actually changed.
+        if self.files_last_resolve.elapsed() >= Duration::from_secs(5) {
+            self.files_last_resolve = Instant::now();
+            let root = self.files_project_root(project, cx);
+            let changed = match (&root, &self.files_watched) {
+                (Some(root), Some((watched_project, watched_root))) => {
+                    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+                    *watched_project != project || *watched_root != canonical
+                }
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if changed {
+                self.files_generation = self.files_generation.wrapping_add(1);
+                self.files_panel.clear_project(project);
+                self.files_arming = None;
+                self.refresh_files(cx);
+                if self.ctrlp_open {
+                    self.ctrlp_search(cx);
+                }
+                return true;
+            }
+            // A selected project with no watcher and no arm in flight
+            // re-arms here (at most once per 5s), so arming failures retry
+            // instead of wedging the tree unwatched. `root` is already
+            // resolved above — no extra subprocess.
+            if self.files_watched.is_none()
+                && self.files_arming.is_none()
+                && let Some(root) = root
+            {
+                self.ensure_files_watcher(project, &root);
+            }
+        }
+        // Debounced watcher events refresh their parent directories. The
+        // batch path never re-resolves the root (the 5s tick owns root
+        // moves) and coalesces to ~1Hz, so a busy filesystem can never
+        // keep the UI thread hot.
+        if event_due && self.files_last_event_refresh.elapsed() >= Duration::from_secs(1) {
+            self.files_event.store(false, Ordering::Release);
+            self.files_last_event_refresh = Instant::now();
+            let paths = self
+                .files_event_paths
+                .lock()
+                .map(|mut pending| std::mem::take(&mut *pending))
+                .unwrap_or_default();
+            let backlog_shed = paths.len();
+            if backlog_shed >= 512 {
+                tracing::warn!(
+                    target: "omaterm::files",
+                    backlog_shed,
+                    "watcher event backlog shed; tree converges on next quiet tick",
+                );
+            }
+            self.refresh_files_events(project, paths, cx);
+        }
+        true
+    }
+
+    /// Targeted refresh for debounced watcher event paths (absolute,
+    /// canonical). Each path invalidates its parent tree directory; rows
+    /// rebuild purely from cache while background refetches converge.
+    /// Deliberately no root re-resolve and no synchronous root re-walk
+    /// here (the 5s tick owns root moves) — only the root level itself
+    /// re-lists synchronously when directly affected, one bounded walk.
+    /// Unknown prefixes fall back to a full rebuild.
+    fn refresh_files_events(
+        &mut self,
+        project: ProjectId,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, watched_root)) = self.files_watched.clone() else {
+            self.refresh_files(cx);
+            return;
+        };
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        for path in &paths {
+            let Ok(relative) = path.strip_prefix(&watched_root) else {
+                self.refresh_files(cx);
+                return;
+            };
+            let dir = relative
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(|parent| parent.to_path_buf())
+                .unwrap_or_else(std::path::PathBuf::new);
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        if dirs.is_empty() {
+            return;
+        }
+        for dir in &dirs {
+            self.files_panel.invalidate(project, dir);
+        }
+        // Top up watches for newly created directories (the pruned arming
+        // walk cannot see the future); files and known dirs are cheap
+        // no-ops inside `watch_single`.
+        if let Some(watcher) = self.files_watcher.as_mut() {
+            for path in &paths {
+                if path.is_dir() {
+                    // A failed top-up only delays coverage until the next
+                    // batch; the row still refreshes through the listing.
+                    let _ = watcher.watch_single(path);
+                }
+            }
+        }
+        // Only a directly-affected root re-lists synchronously (one bounded
+        // walk); nested levels refetch in the background.
+        if dirs.iter().any(|dir| dir.as_os_str().is_empty()) {
+            let root_cap = self.files_root_cap(project);
+            let top = self.file_list_info(project, None, Some(root_cap), cx);
+            self.files_panel
+                .insert_listing(project, std::path::PathBuf::new(), top.entries);
+            self.files_panel.set_root_truncated(top.truncated);
+        }
+        self.files_panel.refresh(project, false);
+        self.sync_files_from_cache(project, &watched_root);
+        cx.notify();
+        if self.ctrlp_open {
+            self.ctrlp_search(cx);
+        }
+    }
+
+    fn toggle_file_row(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        is_dir: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        self.files_panel.toggle(project, &path, is_dir);
+        self.refresh_files(cx);
+        self.mark_persistence_dirty(cx);
+    }
+
+    fn open_file_path(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        if let Err(error) =
+            self.dispatch_command(OmaCommand::File(FileCommand::Open { project, path }), cx)
+        {
+            self.input_notice = Some(format!("Open: {error}"));
+            cx.notify();
+        }
+    }
+
+    /// Copy the selected row's absolute path, Bourne shell-escaped (§47
+    /// policy reuse), to the clipboard.
+    fn copy_selected_path(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        let Some(relative) = self
+            .files_panel
+            .selected_path(project)
+            .map(|path| path.to_path_buf())
+        else {
+            self.input_notice = Some("Files: no file selected.".into());
+            cx.notify();
+            return;
+        };
+        self.copy_path(project, &relative, cx);
+    }
+
+    fn copy_path(
+        &mut self,
+        project: ProjectId,
+        relative: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.files_project_root(project, cx) else {
+            self.input_notice = Some("Files: project has no root.".into());
+            cx.notify();
+            return;
+        };
+        let absolute = root.join(relative);
+        let escaped = omaterm_terminal::escape_shell_path(&absolute);
+        cx.write_to_clipboard(ClipboardItem::new_string(escaped));
+        tracing::debug!(target: "omaterm::files", project_id = %project.0, "file path copied");
+    }
+
+    /// Type `cd <escaped-dir>` (no newline — the user reviews and submits)
+    /// into the focused terminal.
+    fn reveal_selected_in_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        let Some(relative) = self
+            .files_panel
+            .selected_path(project)
+            .map(|path| path.to_path_buf())
+        else {
+            self.input_notice = Some("Files: no file selected.".into());
+            cx.notify();
+            return;
+        };
+        self.reveal_path(project, &relative, cx);
+    }
+
+    fn reveal_path(
+        &mut self,
+        project: ProjectId,
+        relative: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.files_project_root(project, cx) else {
+            self.input_notice = Some("Files: project has no root.".into());
+            cx.notify();
+            return;
+        };
+        let absolute = root.join(relative);
+        let dir = if absolute.is_dir() {
+            absolute
+        } else {
+            absolute
+                .parent()
+                .map(|parent| parent.to_path_buf())
+                .unwrap_or(root)
+        };
+        let Some(session) = self.focused_session_id() else {
+            self.input_notice = Some("Files: no focused terminal.".into());
+            cx.notify();
+            return;
+        };
+        let text = format!("cd {}", omaterm_terminal::escape_shell_path(&dir));
+        if let Err(error) = self.dispatch_command(
+            OmaCommand::Terminal(TerminalCommand::SendBytes {
+                session,
+                data: text.into_bytes(),
+            }),
+            cx,
+        ) {
+            self.input_notice = Some(format!("Reveal: {error}"));
+            cx.notify();
+        }
+    }
+
+    fn toggle_ctrlp(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        self.ctrlp_open = !self.ctrlp_open;
+        if self.ctrlp_open {
+            self.ctrlp_query.clear();
+            self.ctrlp_results.clear();
+            self.ctrlp_selected = 0;
+            self.ctrlp_truncated = false;
+            self.ctrlp_caret_on = true;
+            self.ensure_ctrlp_blink(cx);
+            self.ctrlp_search(cx);
+        } else {
+            self.ctrlp_rx = None;
+        }
+        cx.notify();
+    }
+
+    /// Drives the finder caret blink (~530ms, VSCode-like rate). One task
+    /// per open session: it exits on close/shutdown, and any keystroke
+    /// restores visibility (standard blink-phase reset). No timers run
+    /// while the finder is closed.
+    fn ensure_ctrlp_blink(&mut self, cx: &mut Context<Self>) {
+        if self.ctrlp_blink_active {
+            return;
+        }
+        self.ctrlp_blink_active = true;
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                Timer::after(Duration::from_millis(530)).await;
+                let alive = weak
+                    .update(cx, |view, cx| {
+                        if view.shutting_down || !view.ctrlp_open {
+                            view.ctrlp_blink_active = false;
+                            return false;
+                        }
+                        view.ctrlp_caret_on = !view.ctrlp_caret_on;
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Run the fuzzy search on a background thread against a
+    /// router-resolved root; results land via the files poller keyed by
+    /// generation (stale keystrokes never overwrite newer ones).
+    fn ctrlp_search(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            self.ctrlp_results.clear();
+            return;
+        };
+        let query = self.ctrlp_query.clone();
+        if query.is_empty() {
+            self.ctrlp_results.clear();
+            self.ctrlp_selected = 0;
+            self.ctrlp_truncated = false;
+            return;
+        }
+        let root = self.files_project_root(project, cx);
+        let config = omaterm_state::AppConfig::load().unwrap_or_default();
+        let show_hidden = config.show_hidden();
+        self.ctrlp_generation = self.ctrlp_generation.wrapping_add(1);
+        let generation = self.ctrlp_generation;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ctrlp_rx = Some(rx);
+        std::thread::spawn(move || {
+            let (entries, truncated) = match root {
+                Some(root) => omaterm_context::search_files(&root, &query, 100, show_hidden)
+                    .map(|list| (list.entries, list.truncated))
+                    .unwrap_or_default(),
+                None => (Vec::new(), false),
+            };
+            let _ = tx.send((generation, entries, truncated));
+        });
+    }
+
+    fn ctrlp_confirm(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.ctrlp_results.get(self.ctrlp_selected).cloned() else {
+            return;
+        };
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        self.files_panel.select(project, entry.path.clone());
+        self.ctrlp_open = false;
+        self.ctrlp_rx = None;
+        self.open_file_path(project, entry.path, cx);
+        cx.notify();
+    }
+
     /// Open the native folder picker to change a project's base directory.
     /// Only future tabs, splits, and default launches use the new directory;
     /// live sessions keep their CWD. Cancellation changes nothing; a missing
@@ -1511,6 +2326,79 @@ impl WorkspaceView {
         self.fonts.clone().expect("fonts just resolved")
     }
 
+    /// Keyboard handling while the `Ctrl+P` finder is open: the overlay
+    /// owns every keystroke (typing filters, Up/Down navigate, Enter opens,
+    /// Esc dismisses back to the terminal). Nothing reaches the shell.
+    fn on_ctrlp_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        // Any keystroke restores caret visibility (standard blink-phase
+        // reset) and keeps the blink task alive while open.
+        self.ctrlp_caret_on = true;
+        self.ensure_ctrlp_blink(cx);
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        // Keyboard-only copy/reveal of the highlighted result (mirrors the
+        // tree's Ctrl+Shift+Y/U); the finder stays open for further picks.
+        if event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && let Some(entry) = self.ctrlp_results.get(self.ctrlp_selected).cloned()
+            && let Some(project) = self.coordinator.selected_project_id()
+        {
+            if key_name == "y" {
+                self.files_panel.select(project, entry.path.clone());
+                self.copy_path(project, &entry.path, cx);
+                return;
+            }
+            if key_name == "u" {
+                self.files_panel.select(project, entry.path.clone());
+                self.reveal_path(project, &entry.path, cx);
+                return;
+            }
+        }
+        match key_name.as_str() {
+            "escape" => {
+                self.ctrlp_open = false;
+                self.ctrlp_rx = None;
+                cx.notify();
+            }
+            "enter" | "return" | "kpenter" => self.ctrlp_confirm(cx),
+            "backspace" => {
+                self.ctrlp_query.pop();
+                self.ctrlp_search(cx);
+                cx.notify();
+            }
+            "up" => {
+                if self.ctrlp_selected > 0 {
+                    self.ctrlp_selected -= 1;
+                    cx.notify();
+                }
+            }
+            "down" => {
+                if self.ctrlp_selected + 1 < self.ctrlp_results.len() {
+                    self.ctrlp_selected += 1;
+                    cx.notify();
+                }
+            }
+            _ => {
+                if event.keystroke.modifiers.control || event.keystroke.modifiers.alt {
+                    return;
+                }
+                let ch = event
+                    .keystroke
+                    .key_char
+                    .as_ref()
+                    .and_then(|s| s.chars().next());
+                if let Some(ch) = ch
+                    && !ch.is_control()
+                    && self.ctrlp_query.len() < 256
+                {
+                    self.ctrlp_query.push(ch);
+                    self.ctrlp_search(cx);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
@@ -1519,6 +2407,19 @@ impl WorkspaceView {
 
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "p" {
             self.create_project(cx);
+            return;
+        }
+        // M13 `Ctrl+P` file finder (plain Ctrl+P is free: Ctrl+Shift+P
+        // creates projects). While open, the overlay owns the keyboard.
+        if self.ctrlp_open {
+            return self.on_ctrlp_key(event, cx);
+        }
+        if event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && key_name == "p"
+        {
+            self.toggle_ctrlp(cx);
             return;
         }
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "t" {
@@ -1674,6 +2575,17 @@ impl WorkspaceView {
                 }
                 "x" => {
                     self.history_clear_key(cx);
+                    return;
+                }
+                // M13 file actions on the tree's selected row. Same
+                // semantic commands as IPC/CLI; failures surface as a
+                // transient input notice.
+                "y" => {
+                    self.copy_selected_path(cx);
+                    return;
+                }
+                "u" => {
+                    self.reveal_selected_in_terminal(cx);
                     return;
                 }
                 _ => {}
@@ -2269,8 +3181,10 @@ impl WorkspaceView {
             return;
         }
         let viewport = window.viewport_size();
-        // The pane viewport starts after the fixed project sidebar and tab strip.
-        let window_width: f32 = (viewport.width - px(180.0)).max(px(1.0)).into();
+        // The pane viewport starts after the fixed sidebars and tab strip.
+        let window_width: f32 = (viewport.width - px(180.0) - px(files::RIGHT_SIDEBAR_WIDTH_PX))
+            .max(px(1.0))
+            .into();
         let window_height: f32 = (viewport.height - px(36.0)).max(px(1.0)).into();
         for pane_rect in self.coordinator.tree().pane_rects() {
             let Some(session_id) = self.coordinator.session_id_for_pane(pane_rect.pane) else {
@@ -2297,6 +3211,486 @@ impl WorkspaceView {
                 self.grid_sizes.insert(session_id, (cols, rows));
             }
         }
+    }
+}
+
+impl WorkspaceView {
+    /// Right-sidebar file tree for the selected project. Pure render from
+    /// the panel row cache (no filesystem or dispatcher work per frame);
+    /// clicks select/toggle through the dispatcher-owned refresh.
+    /// Vertical padding both sides of one tree row (`py_1` at the 16px
+    /// tailwind base). Added to the font line height for scroll math; a
+    /// small mismatch only costs a partially-cut last row, never input.
+    const FILES_ROW_VPAD: f32 = 8.0;
+
+    fn render_files_tree(&mut self, bar: Div, viewport_height: f32, cx: &mut Context<Self>) -> Div {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("No project"),
+            );
+        };
+        let mut bar = bar;
+        if self.files_panel.is_empty_root() {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("No files (no project root)"),
+            );
+        }
+        let selected = self
+            .files_panel
+            .selected_path(project)
+            .map(|path| path.to_path_buf());
+        // Row-granular wheel scroll: visible window over the cached rows.
+        // Header, footers, and hints stay fixed; only rows move.
+        let row_height = f32::from(self.fonts(&*cx).line_height).max(1.0) + Self::FILES_ROW_VPAD;
+        let visible = ((viewport_height / row_height) as usize).clamp(1, files::MAX_RENDER_ROWS);
+        let all_rows = self.files_panel.rows_for(project).unwrap_or_default();
+        let max_start = all_rows
+            .len()
+            .saturating_sub(visible.min(all_rows.len().max(1)));
+        self.files_scroll_rows = self.files_scroll_rows.min(max_start);
+        let rows: Vec<files::FileRow> = all_rows
+            .iter()
+            .skip(self.files_scroll_rows)
+            .take(visible)
+            .cloned()
+            .collect();
+        if rows.is_empty() {
+            bar = bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("Empty directory"),
+            );
+        }
+        // Paged top-level cap for crowded roots (`$HOME`): rendered above
+        // the rows (not as a footer) so it stays reachable — the sidebar
+        // has no scroll, and a full page of rows pushes any footer out of
+        // view. Each press re-lists just the root wider (100 → 500 → 5000);
+        // hides once the cap reaches the entry ceiling.
+        let root_cap = self.files_root_cap(project);
+        if self.files_panel.is_root_truncated() && root_cap < 5_000 {
+            bar = bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0xA1A1AA))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            window.focus(&view.focus_handle);
+                            let next = if view.files_root_cap(project) >= 500 {
+                                5_000
+                            } else {
+                                500
+                            };
+                            view.files_root_caps.insert(project, next);
+                            view.refresh_files(cx);
+                        }),
+                    )
+                    .child(format!("Show more ({root_cap}+)")),
+            );
+        }
+        for row in rows {
+            let is_selected = selected.as_ref() == Some(&row.path);
+            let is_dir = row.kind == omaterm_core::FileKind::Directory;
+            let name = row
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| row.path.to_string_lossy().into_owned());
+            // Directories carry no chevron: the folder glyph alone shows
+            // state (closed = collapsed, open = expanded, dimmed + `…` =
+            // still loading), so a second leading marker is redundant.
+            let icon = files::icon_for(&row.path, row.kind, row.expanded);
+            let icon_color =
+                icon.color
+                    .unwrap_or(if is_selected { 0xFA_FA_FA } else { 0xA1_A1_AA });
+            let label = if is_dir && row.loading {
+                format!("{name} …")
+            } else {
+                name
+            };
+            let path = row.path.clone();
+            let dimmed = row.loading && !is_selected;
+            bar = bar.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .pl(px(8.0 + row.depth as f32 * 16.0))
+                    .rounded_sm()
+                    .bg(rgb(if is_selected { 0x27272A } else { 0x111113 }))
+                    .text_color(rgb(if is_selected {
+                        0xFAFAFA
+                    } else if dimmed {
+                        0x52525B
+                    } else {
+                        0xA1A1AA
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            window.focus(&view.focus_handle);
+                            if is_dir {
+                                view.toggle_file_row(project, path.clone(), true, cx);
+                            } else {
+                                view.files_panel.select(project, path.clone());
+                                view.open_file_path(project, path.clone(), cx);
+                                view.refresh_files(cx);
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(18.0))
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .text_color(rgb(icon_color))
+                            .child(icon.glyph.to_string()),
+                    )
+                    // Long names ellipsize inside the fixed sidebar instead
+                    // of stretching the row and breaking column alignment.
+                    .child(div().flex_1().min_w(px(0.0)).truncate().child(label)),
+            );
+        }
+        if self.files_panel.is_truncated() {
+            bar = bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("(truncated: bounded tree)"),
+            );
+        }
+        // Mouse-friendly actions for the selected file row.
+        if let Some(path) = selected
+            && let Some(row) = self
+                .files_panel
+                .rows_for(project)
+                .unwrap_or_default()
+                .iter()
+                .find(|row| row.path == path)
+            && row.kind != omaterm_core::FileKind::Directory
+        {
+            let open_path = path.clone();
+            let bar_with_actions = bar.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child(
+                        div()
+                            .px_1()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.open_file_path(project, open_path.clone(), cx);
+                                }),
+                            )
+                            .child("open"),
+                    )
+                    .child(
+                        div()
+                            .px_1()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.copy_selected_path(cx);
+                                }),
+                            )
+                            .child("copy"),
+                    )
+                    .child(
+                        div()
+                            .px_1()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.reveal_selected_in_terminal(cx);
+                                }),
+                            )
+                            .child("reveal"),
+                    ),
+            );
+            bar = bar_with_actions.child(
+                div()
+                    .px_2()
+                    .text_color(rgb(0x52525B))
+                    .child("Ctrl+P find · ^⇧Y copy · ^⇧U reveal"),
+            );
+        } else {
+            bar = bar.child(
+                div()
+                    .px_2()
+                    .text_color(rgb(0x52525B))
+                    .child("Ctrl+P find · ^⇧Y copy · ^⇧U reveal"),
+            );
+        }
+        bar
+    }
+
+    /// `Ctrl+P` overlay in VSCode Quick Open style: centered floating box
+    /// with an input row (magnifier, query, caret), a divider, filename +
+    /// dimmed-parent result rows with accent match highlights, and footer
+    /// hints. Enter opens through `FileCommand::Open`; Esc dismisses.
+    fn render_ctrlp(&mut self, box_x: f32, box_w: f32, cx: &mut Context<Self>) -> Div {
+        // Input row: magnifier + query with a 2px block caret hugging the
+        // last character (a text-pipe caret would add glyph side bearings
+        // on top of the row gap), or a dimmed placeholder when empty. The
+        // caret is exactly one text line tall (never the padded row) and
+        // blinks via `ctrlp_caret_on`, holding its 2px slot while hidden
+        // so the query text never shifts.
+        let input = if self.ctrlp_query.is_empty() {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(rgb(0x71717A))
+                        .child(files::SEARCH_ICON.to_string()),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(0x71717A))
+                        .child("Search files by name…"),
+                )
+        } else {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(rgb(0x71717A))
+                        .child(files::SEARCH_ICON.to_string()),
+                )
+                .child({
+                    let caret_h = px(f32::from(self.fonts(&*cx).line_height));
+                    let caret_bg = if self.ctrlp_caret_on {
+                        rgb(0x71717A)
+                    } else {
+                        rgba(0x00000000)
+                    };
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(div().child(self.ctrlp_query.clone()))
+                        .child(div().w(px(2.0)).h(caret_h).bg(caret_bg))
+                })
+        };
+        let mut overlay = div()
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x52525B))
+            .shadow_lg()
+            .bg(rgb(0x18181B))
+            .text_color(rgb(0xE4E4E7))
+            .child(div().px_3().py_2().child(input))
+            .child(div().h(px(1.0)).w_full().bg(rgb(0x2E2E33)));
+        if self.ctrlp_results.is_empty() {
+            overlay = overlay.child(div().px_3().py_2().text_color(rgb(0x71717A)).child(
+                if self.ctrlp_query.is_empty() {
+                    "Type to narrow the file list."
+                } else {
+                    "No matches."
+                },
+            ));
+            overlay = overlay.child(Self::ctrlp_hint_row());
+            return self.ctrlp_frame(overlay, box_x, box_w);
+        }
+        // Match indices come from the same skim scorer as the ranking, so
+        // highlights always agree with result order. Recomputed per frame
+        // over at most 100 short strings — microseconds, no caching needed.
+        let query = self.ctrlp_query.clone();
+        for (index, entry) in self.ctrlp_results.iter().take(100).cloned().enumerate() {
+            let selected = index == self.ctrlp_selected;
+            let icon = files::icon_for(&entry.path, entry.kind, false);
+            let icon_color = icon
+                .color
+                .unwrap_or(if selected { 0xFA_FA_FA } else { 0xA1_A1_AA });
+            let full = entry.path.to_string_lossy().into_owned();
+            let (name, parent) = match full.rfind('/') {
+                Some(at) => (full[at + 1..].to_owned(), full[..at].to_owned()),
+                None => (full.clone(), String::new()),
+            };
+            // Full-path char indices mapped onto each segment, then to
+            // byte ranges via highlight_ranges for StyledText.
+            let matched: Vec<usize> = omaterm_context::fuzzy_match_indices(&full, &query)
+                .map(|(_, indices)| indices)
+                .unwrap_or_default();
+            let parent_chars = parent.chars().count();
+            let name_offset = if parent.is_empty() {
+                0
+            } else {
+                parent_chars + 1
+            };
+            let name_hits: Vec<usize> = matched
+                .iter()
+                .filter_map(|index| index.checked_sub(name_offset))
+                .collect();
+            let parent_hits: Vec<usize> = matched
+                .iter()
+                .copied()
+                .filter(|index| *index < parent_chars)
+                .collect();
+            // One StyledText per row half: a single wrapping context, so
+            // long names clip instead of breaking rows apart. Ranges are
+            // byte spans from char indices (see highlight_ranges).
+            let accent = HighlightStyle {
+                // files::MATCH_ACCENT as HSL.
+                color: Some(hsla(0.594, 1.0, 0.649, 1.0)),
+                ..Default::default()
+            };
+            // truncate() cascades nowrap + ellipsis into the StyledText;
+            // overflow_hidden alone would still let it wrap.
+            let name_row = div().flex_1().min_w(px(0.0)).truncate().child(
+                StyledText::new(name.clone()).with_highlights(
+                    files::highlight_ranges(&name, &name_hits)
+                        .into_iter()
+                        .map(|range| (range, accent)),
+                ),
+            );
+            // Capped well below the filename's share: the name is the
+            // primary identifier, the parent is context.
+            let mut parent_row = div()
+                .truncate()
+                .min_w(px(0.0))
+                .text_color(rgb(0x71717A))
+                .max_w(px(140.0));
+            parent_row = parent_row.child(
+                StyledText::new(parent.clone()).with_highlights(
+                    files::highlight_ranges(&parent, &parent_hits)
+                        .into_iter()
+                        .map(|range| (range, accent)),
+                ),
+            );
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .bg(rgb(if selected { 0x27272A } else { 0x18181B }))
+                .text_color(rgb(if selected { 0xFAFAFA } else { 0xA1A1AA }));
+            if selected {
+                row = row.border_l_2().border_color(rgb(files::MATCH_ACCENT));
+            }
+            overlay = overlay.child(
+                row.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        window.focus(&view.focus_handle);
+                        view.ctrlp_selected = index;
+                        view.ctrlp_confirm(cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_1()
+                        .items_center()
+                        .gap_2()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .w(px(18.0))
+                                .flex()
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .text_color(rgb(icon_color))
+                                .child(icon.glyph.to_string()),
+                        )
+                        .child(name_row)
+                        .child(parent_row),
+                ),
+            );
+        }
+        if self.ctrlp_truncated {
+            overlay = overlay.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("(truncated: showing first 100)"),
+            );
+        }
+        overlay = overlay.child(Self::ctrlp_hint_row());
+        self.ctrlp_frame(overlay, box_x, box_w)
+    }
+
+    /// Footer hint row living inside the box, so it shares the box's
+    /// centering instead of needing its own.
+    fn ctrlp_hint_row() -> Div {
+        div()
+            .px_3()
+            .py_1()
+            .text_color(rgb(0x71717A))
+            .child("up/down navigate · enter open · esc dismiss")
+    }
+
+    /// True floating layer, VSCode Quick Open style: absolutely positioned
+    /// over the terminal content (painted last, so always on top — GPUI
+    /// 0.2.2 has no z-index) at an explicitly computed offset. The box
+    /// position and width are plain arithmetic from the viewport constants
+    /// (sidebar widths are fixed), deliberately avoiding any reliance on
+    /// max-width/align/spacer interplay. No backdrop dim: shadow and border
+    /// carry the elevation and the terminal stays fully visible around it.
+    fn ctrlp_frame(&mut self, overlay: Div, box_x: f32, box_w: f32) -> Div {
+        div()
+            .absolute()
+            .left(px(box_x))
+            .top(px(72.0))
+            .child(overlay.w(px(box_w)))
     }
 }
 
@@ -2608,7 +4002,48 @@ impl Render for WorkspaceView {
                     .child(status),
             );
         }
-        let mut pane_area = div().flex().flex_1().flex_col().size_full();
+        let mut files_bar = div()
+            .w(px(files::RIGHT_SIDEBAR_WIDTH_PX))
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .bg(rgb(0x111113))
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+                // Row-step scrolling with the terminal's delta
+                // convention: positive deltas move toward the top
+                // (earlier rows). Render clamps the offset, so no max
+                // math is needed here.
+                let row_height = {
+                    let line_height: f32 = view.fonts(&*cx).line_height.into();
+                    if line_height <= 0.0 {
+                        return;
+                    }
+                    line_height + WorkspaceView::FILES_ROW_VPAD
+                };
+                let dy_lines: f32 = match event.delta {
+                    ScrollDelta::Pixels(point) => f32::from(point.y) / row_height,
+                    ScrollDelta::Lines(point) => point.y,
+                };
+                let mut steps = dy_lines.round() as i32;
+                if steps == 0 && dy_lines != 0.0 {
+                    steps = dy_lines.signum() as i32;
+                }
+                if steps == 0 {
+                    return;
+                }
+                view.files_scroll_rows = (view.files_scroll_rows as i32 - steps).max(0) as usize;
+                cx.notify();
+            }))
+            .child(div().px_2().py_1().text_color(rgb(0xA1A1AA)).child("FILES"));
+        files_bar = self.render_files_tree(files_bar, f32::from(window.viewport_size().height), cx);
+        if let Some(message) = self.files_warning.clone() {
+            files_bar =
+                files_bar.child(div().px_2().py_1().text_color(rgb(0xFDE68A)).child(message));
+        }
+
+        let mut pane_area = div().flex().flex_1().flex_col().size_full().relative();
         if let Some((arm, at)) = self.history_arm
             && at.elapsed() < HISTORY_ARM_WINDOW
         {
@@ -2694,6 +4129,16 @@ impl Render for WorkspaceView {
             );
         }
         pane_area = pane_area.child(div().flex().flex_1().size_full().child(content));
+        // Finder paints last so the floating layer sits above the terminal.
+        // Box geometry is plain arithmetic from the fixed sidebar widths —
+        // no reliance on align/max interplay.
+        if self.ctrlp_open {
+            let viewport_w: f32 = window.viewport_size().width.into();
+            let pane_w = (viewport_w - 180.0 - files::RIGHT_SIDEBAR_WIDTH_PX).max(1.0);
+            let box_w = (pane_w - 32.0).clamp(200.0, 600.0);
+            let box_x = ((pane_w - box_w) / 2.0).max(0.0);
+            pane_area = pane_area.child(self.render_ctrlp(box_x, box_w, cx));
+        }
         let main = div()
             .flex()
             .flex_1()
@@ -2727,6 +4172,7 @@ impl Render for WorkspaceView {
             .bg(rgb(0x18181B))
             .child(sidebar)
             .child(main)
+            .child(files_bar)
     }
 }
 
