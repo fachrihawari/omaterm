@@ -11,6 +11,8 @@ pub enum OmaCommand {
     Terminal(TerminalCommand),
     History(HistoryCommand),
     File(FileCommand),
+    Git(GitCommand),
+    Diff(DiffCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,6 +167,61 @@ pub enum FileCommand {
         project: ProjectId,
         path: PathBuf,
     },
+}
+
+/// VSCode-Source-Control-style git operations over the system git binary
+/// (M14, blueprint §32). All variants route through the common dispatcher
+/// so the sidebar panel, IPC, and CLI share one implementation.
+/// `Status` is a pure query (empty envelope without a repo root, never an
+/// error); `Stage`/`Unstage`/`Discard` mutate the index/worktree through
+/// explicit root-relative paths only. No commit/push/pull surface exists
+/// (explicit non-goal); `Discard` of untracked paths deletes them from
+/// disk, which is why the desktop arms it two-step before dispatching.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GitCommand {
+    Status {
+        project: ProjectId,
+    },
+    Stage {
+        project: ProjectId,
+        paths: Vec<PathBuf>,
+    },
+    Unstage {
+        project: ProjectId,
+        paths: Vec<PathBuf>,
+    },
+    Discard {
+        project: ProjectId,
+        paths: Vec<PathBuf>,
+    },
+    /// Commit staged changes with an explicit message. Authorship comes
+    /// from the repository's git config (no author UI); amend/push stay
+    /// out of scope.
+    Commit {
+        project: ProjectId,
+        message: String,
+    },
+}
+
+/// Read-only unified-diff viewer over `git diff` (M15, blueprint §33).
+/// Both variants route through the common dispatcher so the sidebar
+/// panel, IPC, and CLI share one implementation. Both are pure queries:
+/// a project without a repo root returns the empty envelope, never an
+/// error. Per-hunk stage buttons dispatch `GitCommand::Stage` for the
+/// hunk's file — no bespoke git logic in the view.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiffCommand {
+    /// Full hunk bodies for unstaged (`staged: false`), staged
+    /// (`staged: true`), or one filtered path.
+    Show {
+        project: ProjectId,
+        path: Option<PathBuf>,
+        staged: bool,
+        context_lines: u8,
+    },
+    /// File headers + hunk counts without bodies (the fast 1000-file
+    /// surface).
+    ListFiles { project: ProjectId, staged: bool },
 }
 
 /// Authority is kept separate from command data so transport identity cannot

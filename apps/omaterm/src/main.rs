@@ -13,9 +13,9 @@ use gpui::{
     WindowOptions, canvas, div, font, hsla, prelude::*, px, relative, rgb, rgba, size,
 };
 use omaterm_core::{
-    CommandContext, CommandOutput, CommandResult, FileCommand, FileEntry, OmaCommand, Pane,
-    PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis,
-    SplitDirection, TabCommand, TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, FileCommand, FileEntry, GitCommand, OmaCommand,
+    Pane, PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId,
+    SplitAxis, SplitDirection, TabCommand, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -29,7 +29,9 @@ use omaterm_terminal::{
     format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
 };
 mod credentials;
+mod diff_panel;
 mod files;
+mod git_panel;
 mod history;
 mod ipc_bridge;
 mod router;
@@ -132,6 +134,13 @@ struct WorkspaceView {
     /// Wheel scroll offset into the tree rows (row-granular, clamped every
     /// render). Reset on project switch.
     files_scroll_rows: usize,
+    /// Horizontal tree offset in pixels (Shift+wheel or bar drag, clamped
+    /// to `MAX_SCROLL_COLS_PX`). Zero renders the classic ellipsis path.
+    files_scroll_cols: f32,
+    /// Thumb drag in flight: (last pointer position, sub-row accumulator).
+    /// Cleared on release, pane clicks, and tab switches (no stuck drags).
+    files_vdrag: Option<(f32, f32)>,
+    files_hdrag: Option<(f32, f32)>,
     files_last_resolve: Instant,
     files_poller_active: bool,
     /// `Ctrl+P` fuzzy finder overlay state.
@@ -144,6 +153,48 @@ struct WorkspaceView {
     ctrlp_rx: Option<std::sync::mpsc::Receiver<(u64, Vec<FileEntry>, bool)>>,
     ctrlp_caret_on: bool,
     ctrlp_blink_active: bool,
+    /// M14 Source Control panel: last-good statuses, explicit empty/error
+    /// states, selection, and the discard two-step arm (GPUI-free).
+    git_panel: git_panel::GitPanel,
+    /// Background status-refresh completions `(generation, project,
+    /// outcome)`. Root resolution and `git status` both run on the worker
+    /// (never the UI thread); stale generations drop on project switch.
+    git_tx: std::sync::mpsc::Sender<(u64, ProjectId, git_panel::GitRefresh)>,
+    git_rx: std::sync::mpsc::Receiver<(u64, ProjectId, git_panel::GitRefresh)>,
+    git_generation: u64,
+    /// Project with a refresh in flight, if any (one status call at a
+    /// time; the rest wait for the next poller tick).
+    git_in_flight: Option<ProjectId>,
+    /// Last landed refresh per project (interval source).
+    git_refreshed_at: HashMap<ProjectId, Instant>,
+    /// Set by manual refresh, git mutations, and post-`terminal.run`
+    /// submissions: the next tick refreshes immediately.
+    git_dirty_hint: bool,
+    /// Last project the git poller served (switch detection).
+    git_last_project: Option<ProjectId>,
+    /// Right-sidebar tab: the Files tree or the Git status panel (M14
+    /// follow-up; git no longer stacks under files). View-local, never
+    /// persisted.
+    sidebar_tab: SidebarTab,
+    /// M15 unified-diff panel: last-good diffs per project+side, explicit
+    /// empty/error states, file/hunk selection, staged toggle (GPUI-free).
+    diff_panel: diff_panel::DiffPanel,
+    /// Background diff-refresh completions `(generation, project, staged,
+    /// outcome)`. Root resolution and `git diff` both run on the worker
+    /// (never the UI thread); stale generations drop on project switch.
+    diff_tx: std::sync::mpsc::Sender<(u64, ProjectId, bool, diff_panel::DiffRefresh)>,
+    diff_rx: std::sync::mpsc::Receiver<(u64, ProjectId, bool, diff_panel::DiffRefresh)>,
+    diff_generation: u64,
+    /// Project+side with a refresh in flight, if any (one diff call at a
+    /// time; the rest wait for the next poller tick).
+    diff_in_flight: Option<(ProjectId, bool)>,
+    /// Last landed refresh per project+side (interval source).
+    diff_refreshed_at: HashMap<(ProjectId, bool), Instant>,
+    /// Set by manual refresh, staged-toggle, git mutations, and
+    /// post-`terminal.run` submissions: the next tick refreshes immediately.
+    diff_dirty_hint: bool,
+    /// Last project the diff poller served (switch detection).
+    diff_last_project: Option<ProjectId>,
 }
 
 /// Two-step destructive-or-sensitive history control: the first press arms
@@ -154,6 +205,16 @@ enum HistoryArm {
     Enable,
     Disable,
     ClearPane(PaneId),
+}
+
+/// Right-sidebar tab (M14 follow-up): the file tree or the Source
+/// Control panel. Defaults to Files every launch; intentionally not
+/// persisted (view chrome, not workspace state — no schema churn).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SidebarTab {
+    #[default]
+    Files,
+    Git,
 }
 
 /// Arm window for two-step history controls.
@@ -230,6 +291,11 @@ impl WorkspaceView {
         // Background watcher-arm channel; arming walks the whole tree, so
         // it never runs on the UI thread.
         let (files_arm_tx, files_arm_rx) = std::sync::mpsc::channel();
+        // Background git-status channel (M14): root resolution and the
+        // status subprocess both run on the worker, never the UI thread.
+        let (git_tx, git_rx) = std::sync::mpsc::channel();
+        // Background diff channel (M15): same contract for `git diff`.
+        let (diff_tx, diff_rx) = std::sync::mpsc::channel();
         let mut view = Self {
             focus_handle,
             coordinator: router::CommandRouter::new(coordinator),
@@ -282,6 +348,9 @@ impl WorkspaceView {
                 .unwrap_or_else(Instant::now),
             files_root_caps: HashMap::new(),
             files_scroll_rows: 0,
+            files_scroll_cols: 0.0,
+            files_vdrag: None,
+            files_hdrag: None,
             files_last_resolve: Instant::now()
                 .checked_sub(Duration::from_secs(60))
                 .unwrap_or_else(Instant::now),
@@ -295,6 +364,23 @@ impl WorkspaceView {
             ctrlp_rx: None,
             ctrlp_caret_on: true,
             ctrlp_blink_active: false,
+            git_panel: git_panel::GitPanel::default(),
+            git_tx,
+            git_rx,
+            git_generation: 0,
+            git_in_flight: None,
+            git_refreshed_at: HashMap::new(),
+            git_dirty_hint: true,
+            git_last_project: None,
+            sidebar_tab: SidebarTab::Files,
+            diff_panel: diff_panel::DiffPanel::default(),
+            diff_tx,
+            diff_rx,
+            diff_generation: 0,
+            diff_in_flight: None,
+            diff_refreshed_at: HashMap::new(),
+            diff_dirty_hint: true,
+            diff_last_project: None,
         };
         view.start_ipc(cx);
         view.restore_or_initialize(cx);
@@ -1047,6 +1133,10 @@ impl WorkspaceView {
             },
             _ => PendingUiLaunch::Other,
         };
+        let submitted_run = matches!(
+            &command,
+            OmaCommand::Terminal(TerminalCommand::RunCommand { .. })
+        );
         let outcome = self
             .coordinator
             .dispatch_async(CommandContext::LocalUser, command);
@@ -1055,7 +1145,15 @@ impl WorkspaceView {
             self.pending_ui_launches.insert(*operation_id, launch);
             self.ensure_launch_poller(cx);
         }
-        outcome.result.output()
+        let output = outcome.result.output();
+        // Post-`terminal.run` hint (M14): a submitted command may change
+        // the worktree, so the next poller tick refreshes git status. The
+        // hint never scrapes terminal text — it only re-runs `git status`.
+        if output.is_ok() && submitted_run {
+            self.git_dirty_hint = true;
+            self.diff_dirty_hint = true;
+        }
+        output
     }
 
     fn ensure_launch_poller(&mut self, cx: &mut Context<Self>) {
@@ -1793,6 +1891,11 @@ impl WorkspaceView {
         if self.shutting_down {
             return false;
         }
+        // M14 status refresh rides the same 250ms poller: drains landed
+        // workers and spawns at most one fetch per tick. M15 diff rides
+        // along with the same one-fetch-per-tick bound per surface.
+        self.git_tick(cx);
+        self.diff_tick(cx);
         // Latest `Ctrl+P` result wins; stale generations are dropped.
         if let Some(rx) = self.ctrlp_rx.as_ref() {
             let mut latest = None;
@@ -2034,6 +2137,428 @@ impl WorkspaceView {
         cx.notify();
         if self.ctrlp_open {
             self.ctrlp_search(cx);
+        }
+    }
+
+    /// M14 git poller section: drain landed background refreshes (stale
+    /// generations drop), then spawn one status worker when the selected
+    /// project is new, dirty-hinted, or past its refresh interval. Only
+    /// cheap clones happen on this thread (pinned dir, shell CWD path);
+    /// root resolution and `git status` run on the worker.
+    fn git_tick(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let mut landed = false;
+        while let Ok((generation, project, refresh)) = self.git_rx.try_recv() {
+            if generation != self.git_generation {
+                continue;
+            }
+            // Landed work ran off this thread by construction; pin it.
+            debug_assert_ne!(refresh.worker, std::thread::current().id());
+            if self.git_in_flight == Some(project) {
+                self.git_in_flight = None;
+            }
+            self.git_panel.apply_refresh(project, refresh);
+            self.git_refreshed_at.insert(project, Instant::now());
+            landed = true;
+        }
+        if landed {
+            cx.notify();
+        }
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        // A switch retires in-flight work (landings drop by generation)
+        // and bounds memory to one project (files panel precedent).
+        if self.git_last_project != Some(project) {
+            self.git_last_project = Some(project);
+            self.git_generation = self.git_generation.wrapping_add(1);
+            self.git_in_flight = None;
+            for other in self
+                .coordinator
+                .projects()
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>()
+            {
+                if other != project {
+                    self.git_panel.clear_project(other);
+                    self.git_refreshed_at.remove(&other);
+                }
+            }
+        }
+        if self.git_in_flight.is_some() {
+            return;
+        }
+        let config = omaterm_state::AppConfig::load().unwrap_or_default();
+        let interval = Duration::from_secs(config.resolved_git_refresh_secs().clamp(1, 300));
+        let known = self.git_panel.status_for(project).is_some()
+            || self.git_panel.empty_for(project).is_some();
+        if !git_panel::should_refresh(
+            known,
+            self.git_dirty_hint,
+            self.git_refreshed_at.get(&project).copied(),
+            interval,
+            Instant::now(),
+        ) {
+            return;
+        }
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let limit = (config.resolved_max_results() as usize)
+            .clamp(1, omaterm_core::validation::MAX_FILE_ENTRIES);
+        let tx = self.git_tx.clone();
+        git_panel::spawn_status_thread(
+            std::thread::current().id(),
+            project,
+            self.git_generation,
+            pinned,
+            active_cwd,
+            limit,
+            tx,
+        );
+        self.git_in_flight = Some(project);
+        self.git_dirty_hint = false;
+    }
+
+    /// M15 diff refresh on the same 250ms poller: drains landed workers
+    /// and spawns at most one fetch per tick for the visible side
+    /// (unstaged/staged toggle). Stale generations drop on project
+    /// switch; other projects' caches clear to bound memory.
+    fn diff_tick(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let mut landed = false;
+        while let Ok((generation, project, staged, refresh)) = self.diff_rx.try_recv() {
+            if generation != self.diff_generation {
+                continue;
+            }
+            // Landed work ran off this thread by construction; pin it.
+            debug_assert_ne!(refresh.worker, std::thread::current().id());
+            if self.diff_in_flight == Some((project, staged)) {
+                self.diff_in_flight = None;
+            }
+            self.diff_panel.apply_refresh(project, staged, refresh);
+            self.diff_refreshed_at
+                .insert((project, staged), Instant::now());
+            landed = true;
+        }
+        if landed {
+            cx.notify();
+        }
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        if self.diff_last_project != Some(project) {
+            self.diff_last_project = Some(project);
+            self.diff_generation = self.diff_generation.wrapping_add(1);
+            self.diff_in_flight = None;
+            for other in self
+                .coordinator
+                .projects()
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>()
+            {
+                if other != project {
+                    self.diff_panel.clear_project(other);
+                    self.diff_refreshed_at.remove(&(other, false));
+                    self.diff_refreshed_at.remove(&(other, true));
+                }
+            }
+        }
+        if self.diff_in_flight.is_some() {
+            return;
+        }
+        let staged = self.diff_panel.show_staged(project);
+        let config = omaterm_state::AppConfig::load().unwrap_or_default();
+        let interval = Duration::from_secs(config.resolved_git_refresh_secs().clamp(1, 300));
+        let known = self.diff_panel.diff_for(project, staged).is_some()
+            || self.diff_panel.empty_for(project, staged).is_some();
+        if !git_panel::should_refresh(
+            known,
+            self.diff_dirty_hint,
+            self.diff_refreshed_at.get(&(project, staged)).copied(),
+            interval,
+            Instant::now(),
+        ) {
+            return;
+        }
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let tx = self.diff_tx.clone();
+        diff_panel::spawn_diff_thread(
+            std::thread::current().id(),
+            diff_panel::DiffSpawn {
+                project,
+                staged,
+                generation: self.diff_generation,
+                pinned,
+                active_cwd,
+                context_lines: 3,
+                tx,
+            },
+        );
+        self.diff_in_flight = Some((project, staged));
+        self.diff_dirty_hint = false;
+    }
+
+    /// Stage one file from a diff hunk button through the dispatcher
+    /// (same path as the Source Control panel and IPC/CLI), then hint
+    /// both refreshers. Visible only for unstaged-side files.
+    fn diff_stage_file(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![path],
+            }),
+            cx,
+        ) {
+            Ok(_) => {
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                self.diff_panel.set_show_staged(project, true);
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Stage: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Copy a diff file's absolute path, Bourne shell-escaped (§47
+    /// policy reuse), to the clipboard.
+    fn diff_copy_path(
+        &mut self,
+        project: ProjectId,
+        relative: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        self.copy_path(project, relative, cx);
+    }
+
+    /// Jump to a diff file through `FileCommand::Open` (terminal-routed,
+    /// v0.3-editor-compatible). Failures surface as notices, never silent.
+    fn diff_open_file(
+        &mut self,
+        project: ProjectId,
+        relative: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::File(FileCommand::Open {
+                project,
+                path: relative,
+            }),
+            cx,
+        ) {
+            Ok(_) => {}
+            Err(error) => {
+                self.input_notice = Some(format!("Open: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Stage explicit paths through the dispatcher (same path as IPC/CLI),
+    /// then hint an immediate status refresh.
+    fn git_stage_paths(
+        &mut self,
+        project: ProjectId,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(OmaCommand::Git(GitCommand::Stage { project, paths }), cx) {
+            Ok(_) => {
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                self.diff_panel.set_show_staged(project, true);
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Stage: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Unstage explicit paths (index restored, worktree kept).
+    fn git_unstage_paths(
+        &mut self,
+        project: ProjectId,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(OmaCommand::Git(GitCommand::Unstage { project, paths }), cx) {
+            Ok(_) => {
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Unstage: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Discard with the two-step arm: the first press arms (banner), the
+    /// second press inside the window dispatches. No code path dispatches
+    /// without a live arm, so discard-without-confirm is impossible.
+    fn git_discard_path(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        if !self.git_panel.arm_discard(project, &path) {
+            cx.notify();
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::Discard {
+                project,
+                paths: vec![path],
+            }),
+            cx,
+        ) {
+            Ok(_) => {
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                // Discard may delete files: rebuild the tree now instead
+                // of waiting for the watcher tick.
+                self.refresh_files(cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Discard: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Select a changed path and show its M15 diff in the Git panel. The
+    /// clicked row's group selects the staged or unstaged diff side.
+    fn git_select_path(&mut self, project: ProjectId, path: std::path::PathBuf, staged: bool) {
+        self.git_panel.select(project, path.clone());
+        self.diff_panel.select_file(project, path);
+        self.diff_panel.set_show_staged(project, staged);
+        self.diff_dirty_hint = true;
+        tracing::debug!(
+            target: "omaterm::git",
+            project_id = %project.0,
+            "git change selected (diff shown in Git panel)",
+        );
+    }
+
+    /// Keyboard for the focused commit input (single-line): Esc releases,
+    /// Enter submits, Backspace deletes, printable characters append.
+    /// Ctrl/Alt combinations never reach here — the caller falls through
+    /// to global shortcuts so they keep working while typing.
+    fn on_commit_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        match key_name.as_str() {
+            "escape" => {
+                self.git_panel.set_commit_focused(false);
+                cx.notify();
+            }
+            "enter" | "return" | "kpenter" => self.git_commit_submit(project, cx),
+            "backspace" => {
+                if self.git_panel.pop_commit_char(project) {
+                    cx.notify();
+                }
+            }
+            _ => {
+                let char = event
+                    .keystroke
+                    .key_char
+                    .as_ref()
+                    .and_then(|text| text.chars().next());
+                if let Some(char) = char
+                    && self.git_panel.push_commit_char(project, char)
+                {
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Submit the draft through the dispatcher (same path as IPC/CLI).
+    /// Success clears and releases the input; failure puts the message
+    /// back so the user fixes and retries instead of retyping.
+    fn git_commit_submit(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let staged_empty = self
+            .git_panel
+            .status_for(project)
+            .is_none_or(|status| status.staged.is_empty());
+        if staged_empty {
+            self.input_notice = Some("Commit: nothing staged to commit.".into());
+            cx.notify();
+            return;
+        }
+        let message = self.git_panel.take_commit_draft(project);
+        if message.trim().is_empty() {
+            self.git_panel.restore_commit_draft(project, message);
+            self.input_notice = Some("Commit: type a commit message first.".into());
+            cx.notify();
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: message.clone(),
+            }),
+            cx,
+        ) {
+            Ok(CommandOutput::GitCommitted { oid }) => {
+                self.git_panel.set_commit_focused(false);
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                self.input_notice = Some(format!("Committed {oid}."));
+                cx.notify();
+            }
+            Ok(_) => {
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                cx.notify();
+            }
+            Err(error) => {
+                // Put the message back: a hook/GPG rejection is fixable.
+                self.git_panel.restore_commit_draft(project, message);
+                self.input_notice = Some(format!("Commit: {error}"));
+                cx.notify();
+            }
         }
     }
 
@@ -2414,6 +2939,16 @@ impl WorkspaceView {
         if self.ctrlp_open {
             return self.on_ctrlp_key(event, cx);
         }
+        // M14 commit input: while focused (Git tab), plain keys type the
+        // message; Ctrl/Alt combinations fall through to global shortcuts
+        // so they keep working while typing.
+        if self.git_panel.commit_focused()
+            && self.sidebar_tab == SidebarTab::Git
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+        {
+            return self.on_commit_key(event, cx);
+        }
         if event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
             && !event.keystroke.modifiers.alt
@@ -2421,6 +2956,26 @@ impl WorkspaceView {
         {
             self.toggle_ctrlp(cx);
             return;
+        }
+        // M15 hunk navigation: Alt+N next / Alt+P previous within the
+        // selected diff in Git. Plain Alt+letter is otherwise free
+        // (Alt only pairs with PageUp/PageDown for tab/project jumps).
+        if event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && self.sidebar_tab == SidebarTab::Git
+            && let Some(project) = self.coordinator.selected_project_id()
+        {
+            if key_name == "n" {
+                self.diff_panel.next_hunk(project);
+                cx.notify();
+                return;
+            }
+            if key_name == "p" {
+                self.diff_panel.prev_hunk(project);
+                cx.notify();
+                return;
+            }
         }
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "t" {
             self.create_tab(cx);
@@ -2775,6 +3330,8 @@ impl WorkspaceView {
         if self.coordinator.focused() != Some(pane) {
             let _ = self.dispatch_command(OmaCommand::Pane(PaneCommand::Focus { pane }), cx);
         }
+        // Typing belongs to the terminal again once its pane is clicked.
+        self.git_panel.set_commit_focused(false);
         window.focus(&self.focus_handle);
         let Some(cell) = self.pos_to_cell(pane, event.position, cx) else {
             return;
@@ -3215,6 +3772,165 @@ impl WorkspaceView {
 }
 
 impl WorkspaceView {
+    /// Vertical tree scrollbar: a thin rail beside the rows with a
+    /// proportional thumb. Wheel scrolls, press-and-slide on the rail
+    /// drags (deltas only — no window geometry needed), releases end the
+    /// drag; stuck drags clear on the next pane click or row action.
+    /// Hidden entirely when everything fits (nothing to scroll).
+    fn render_tree_vscrollbar(
+        &mut self,
+        total: usize,
+        visible: usize,
+        rows_shown: usize,
+        row_height: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        if total <= visible {
+            return div();
+        }
+        let (top_frac, height_frac) = files::scroll_thumb(total, visible, self.files_scroll_rows);
+        let track_h = (rows_shown as f32 * row_height).max(1.0);
+        let thumb_h = (height_frac * track_h)
+            .max(files::MIN_THUMB_PX)
+            .min(track_h);
+        let top_px = top_frac * (track_h - thumb_h);
+        div()
+            .w(px(files::SCROLLBAR_WIDTH_PX))
+            .h(px(track_h))
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(
+                div()
+                    .w(px(6.0))
+                    .h(px(track_h))
+                    .rounded_full()
+                    .bg(rgb(0x1F1F23))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            view.files_vdrag = Some((f32::from(event.position.y), 0.0));
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                        let Some((last_y, mut acc)) = view.files_vdrag else {
+                            return;
+                        };
+                        if view.shutting_down {
+                            view.files_vdrag = None;
+                            return;
+                        }
+                        let row_height =
+                            f32::from(view.fonts(&*cx).line_height).max(1.0) + Self::FILES_ROW_VPAD;
+                        let y = f32::from(event.position.y);
+                        acc += (y - last_y) / row_height;
+                        let step = acc.trunc() as i32;
+                        acc -= step as f32;
+                        view.files_scroll_rows =
+                            (view.files_scroll_rows as i32 + step).max(0) as usize;
+                        view.files_vdrag = Some((y, acc));
+                        cx.notify();
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|view, _, _, cx| {
+                            view.files_vdrag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().h(px(top_px)))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(thumb_h))
+                            .rounded_full()
+                            .bg(rgb(0x52525B)),
+                    )
+                    .child(div().flex_1()),
+            )
+    }
+
+    /// Horizontal tree scrollbar: position nub over an estimated-width
+    /// track (content width is unmeasured; the estimate is documented at
+    /// the constant). Shift+wheel, native x deltas, or press-and-slide.
+    fn render_tree_hscrollbar(&mut self, cx: &mut Context<Self>) -> Div {
+        /// Track width estimate: sidebar minus padding, row gutters, and
+        /// the vertical rail. A few px off either way is invisible on an
+        /// 8px chrome element.
+        const TRACK_W: f32 = files::RIGHT_SIDEBAR_WIDTH_PX - 16.0 - 12.0 - 12.0;
+        const THUMB_W: f32 = 48.0;
+        let pos = (self.files_scroll_cols / files::MAX_SCROLL_COLS_PX).clamp(0.0, 1.0);
+        let left_px = pos * (TRACK_W - THUMB_W);
+        div()
+            .h(px(10.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_2()
+            .child(
+                div()
+                    .w(px(TRACK_W))
+                    .h(px(6.0))
+                    .rounded_full()
+                    .bg(rgb(0x1F1F23))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            view.files_hdrag = Some((f32::from(event.position.x), 0.0));
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                        let Some((last_x, mut acc)) = view.files_hdrag else {
+                            return;
+                        };
+                        if view.shutting_down {
+                            view.files_hdrag = None;
+                            return;
+                        }
+                        let x = f32::from(event.position.x);
+                        acc += x - last_x;
+                        let step = acc.trunc();
+                        acc -= step;
+                        view.files_scroll_cols =
+                            (view.files_scroll_cols + step).clamp(0.0, files::MAX_SCROLL_COLS_PX);
+                        view.files_hdrag = Some((x, acc));
+                        cx.notify();
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|view, _, _, cx| {
+                            view.files_hdrag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().w(px(left_px)))
+                    .child(
+                        div()
+                            .w(px(THUMB_W))
+                            .h_full()
+                            .rounded_full()
+                            .bg(rgb(0x52525B)),
+                    )
+                    .child(div().flex_1()),
+            )
+    }
+
     /// Right-sidebar file tree for the selected project. Pure render from
     /// the panel row cache (no filesystem or dispatcher work per frame);
     /// clicks select/toggle through the dispatcher-owned refresh.
@@ -3302,6 +4018,12 @@ impl WorkspaceView {
                     .child(format!("Show more ({root_cap}+)")),
             );
         }
+        // Rows render into their own column so the vertical scrollbar
+        // rail can sit beside them (footers stay full-width below).
+        let mut rows_col = div().flex().flex_col().flex_1().min_w(px(0.0));
+        let h_offset = self.files_scroll_cols;
+        let rows_shown = rows.len();
+        let rows_total = all_rows.len();
         for row in rows {
             let is_selected = selected.as_ref() == Some(&row.path);
             let is_dir = row.kind == omaterm_core::FileKind::Directory;
@@ -3324,7 +4046,26 @@ impl WorkspaceView {
             };
             let path = row.path.clone();
             let dimmed = row.loading && !is_selected;
-            bar = bar.child(
+            // Horizontal scroll: at rest the classic ellipsis path renders
+            // (byte-identical to before); once shifted, the full relative
+            // path lays out nowrap inside an overflow-hidden viewport and
+            // slides under a negative margin.
+            let full_path = row.path.to_string_lossy().into_owned();
+            let label_view = if h_offset <= 0.0 {
+                div().flex_1().min_w(px(0.0)).truncate().child(label)
+            } else {
+                div().flex_1().min_w(px(0.0)).overflow_hidden().child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .ml(px(-h_offset))
+                        .child(full_path),
+                )
+            };
+            rows_col = rows_col.child(
                 div()
                     .flex()
                     .flex_row()
@@ -3349,6 +4090,8 @@ impl WorkspaceView {
                                 return;
                             }
                             window.focus(&view.focus_handle);
+                            view.files_vdrag = None;
+                            view.files_hdrag = None;
                             if is_dir {
                                 view.toggle_file_row(project, path.clone(), true, cx);
                             } else {
@@ -3370,9 +4113,13 @@ impl WorkspaceView {
                     )
                     // Long names ellipsize inside the fixed sidebar instead
                     // of stretching the row and breaking column alignment.
-                    .child(div().flex_1().min_w(px(0.0)).truncate().child(label)),
+                    .child(label_view),
             );
         }
+        // Rows area: windowed rows beside the vertical scrollbar rail.
+        // The rail spans exactly the shown rows (one unit each).
+        let vbar = self.render_tree_vscrollbar(rows_total, visible, rows_shown, row_height, cx);
+        bar = bar.child(div().flex().flex_row().child(rows_col).child(vbar));
         if self.files_panel.is_truncated() {
             bar = bar.child(
                 div()
@@ -3464,7 +4211,683 @@ impl WorkspaceView {
                     .child("Ctrl+P find · ^⇧Y copy · ^⇧U reveal"),
             );
         }
+        bar = bar.child(self.render_tree_hscrollbar(cx));
         bar
+    }
+
+    /// M14 Source Control section: branch header with ahead/behind,
+    /// staged/unstaged/untracked groups with counts, and per-file
+    /// stage/unstage/discard actions through the `GitCommand` dispatcher.
+    /// Pure render from the panel cache; refreshes land via `git_tick`.
+    /// Row selection only highlights + logs (diff-on-select opens M15).
+    fn render_git_panel(&mut self, bar: Div, cx: &mut Context<Self>) -> Div {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("No project"),
+            );
+        };
+        let mut bar = bar;
+        // Discard arm banner (two-step confirm).
+        if let Some(text) = self.git_panel.armed_text(project) {
+            bar = bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .bg(rgb(0x3F321D))
+                    .text_color(rgb(0xFDE68A))
+                    .child(text),
+            );
+        }
+        // Explicit empty/error states (never a spinner forever).
+        // Failure details are truncated: the stable code drives agents,
+        // never the full stderr text.
+        if let Some(empty) = self.git_panel.empty_for(project).cloned() {
+            let snippet = |detail: &str| {
+                let short: String = detail.chars().take(160).collect();
+                if detail.chars().count() > 160 {
+                    format!("{short}…")
+                } else {
+                    short
+                }
+            };
+            let message = match &empty {
+                git_panel::GitEmpty::NoRoot => "No project root".to_owned(),
+                git_panel::GitEmpty::NotRepo => "Not a git repository".to_owned(),
+                git_panel::GitEmpty::Unavailable(detail) => {
+                    format!("Git unavailable: {}", snippet(detail))
+                }
+                git_panel::GitEmpty::Failed(detail) => {
+                    format!("Git error: {}", snippet(detail))
+                }
+            };
+            let amber = !matches!(
+                empty,
+                git_panel::GitEmpty::NoRoot | git_panel::GitEmpty::NotRepo
+            );
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(if amber { 0xFDE68A } else { 0x71717A }))
+                    .child(message),
+            );
+        }
+        let Some(status) = self.git_panel.status_for(project).cloned() else {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("Loading git status…"),
+            );
+        };
+        // Branch header with ahead/behind badge.
+        let mut badge = String::new();
+        if status.ahead > 0 {
+            badge.push_str(&format!(" ↑{}", status.ahead));
+        }
+        if status.behind > 0 {
+            badge.push_str(&format!(" ↓{}", status.behind));
+        }
+        let branch_line = match (&status.branch, &status.upstream) {
+            (Some(branch), Some(upstream)) => format!("{branch}{badge} ({upstream})"),
+            (Some(branch), None) => format!("{branch}{badge}"),
+            (None, _) => format!("detached{badge}"),
+        };
+        // Branch header with the refresh action icon at the far end.
+        bar = bar.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .text_color(rgb(0xFAFAFA))
+                .child(div().child(branch_line))
+                .child(
+                    div()
+                        .px_1()
+                        .text_color(rgb(0x71717A))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_dirty_hint = true;
+                                cx.notify();
+                            }),
+                        )
+                        .child(git_panel::REFRESH_ICON.to_string()),
+                ),
+        );
+        if status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty() {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("Working tree clean"),
+            );
+        }
+        // Commit row: single-line message input plus a check button. The
+        // button enables only with staged changes; authorship comes from
+        // the repo config (no author UI).
+        let can_commit = !status.staged.is_empty();
+        let input_focused = self.git_panel.commit_focused();
+        let draft = self.git_panel.commit_draft(project).to_owned();
+        let caret_h = px(f32::from(self.fonts(&*cx).line_height).max(1.0));
+        let input_content = if draft.is_empty() && !input_focused {
+            div().text_color(rgb(0x52525B)).child("Commit message…")
+        } else {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(div().child(draft))
+                .child(div().w(px(2.0)).h(caret_h).bg(rgb(if input_focused {
+                    0xFAFAFA
+                } else {
+                    0x52525B
+                })))
+        };
+        bar = bar.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(rgb(if input_focused { 0x4C9AFF } else { 0x27272A }))
+                        .bg(rgb(0x18181B))
+                        .text_color(rgb(0xE4E4E7))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_panel.set_commit_focused(true);
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .child(input_content),
+                        ),
+                )
+                .child(
+                    div()
+                        .px_1()
+                        .text_color(rgb(if can_commit { 0x89E051 } else { 0x52525B }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_commit_submit(project, cx);
+                            }),
+                        )
+                        .child(git_panel::COMMIT_ICON.to_string()),
+                ),
+        );
+        let selected = self
+            .git_panel
+            .selected_path(project)
+            .map(|path| path.to_path_buf());
+        // Flatten groups in order with a render cap; the footer names it.
+        let mut rows: Vec<(git_panel::GitGroup, &omaterm_core::GitEntry)> = Vec::new();
+        for entry in &status.staged {
+            rows.push((git_panel::GitGroup::Staged, entry));
+        }
+        for entry in &status.unstaged {
+            rows.push((git_panel::GitGroup::Unstaged, entry));
+        }
+        for entry in &status.untracked {
+            rows.push((git_panel::GitGroup::Untracked, entry));
+        }
+        let total = rows.len();
+        let capped = total > git_panel::MAX_GIT_RENDER_ROWS;
+        let mut last_group: Option<git_panel::GitGroup> = None;
+        for (group, entry) in rows.into_iter().take(git_panel::MAX_GIT_RENDER_ROWS) {
+            if last_group != Some(group) {
+                last_group = Some(group);
+                let (title, count) = match group {
+                    git_panel::GitGroup::Staged => ("Staged", status.staged.len()),
+                    git_panel::GitGroup::Unstaged => ("Unstaged", status.unstaged.len()),
+                    git_panel::GitGroup::Untracked => ("Untracked", status.untracked.len()),
+                };
+                bar = bar.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_color(rgb(0xA1A1AA))
+                        .child(format!("{title} ({count})")),
+                );
+            }
+            let is_selected = selected.as_ref() == Some(&entry.path);
+            let path = entry.path.clone();
+            let label = match &entry.renamed_from {
+                Some(from) => format!(
+                    "{} → {}",
+                    from.to_string_lossy(),
+                    entry.path.to_string_lossy()
+                ),
+                None => entry.path.to_string_lossy().into_owned(),
+            };
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_sm()
+                .bg(rgb(if is_selected { 0x27272A } else { 0x111113 }))
+                .text_color(rgb(if is_selected { 0xFAFAFA } else { 0xA1A1AA }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        window.focus(&view.focus_handle);
+                        view.git_select_path(
+                            project,
+                            path.clone(),
+                            group == git_panel::GitGroup::Staged,
+                        );
+                        cx.notify();
+                    }),
+                )
+                .child(div().flex_1().min_w(px(0.0)).truncate().child(label));
+            // Per-group action icons through the dispatcher (VSCode-style:
+            // plus/minus/trash with decorator hues). The path clones
+            // before the listener so the handler owns 'static data.
+            let action = |kind: git_panel::GitAction, path: std::path::PathBuf| {
+                let glyph = kind.icon();
+                div()
+                    .px_1()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            match kind {
+                                git_panel::GitAction::Stage => {
+                                    view.git_stage_paths(project, vec![path.clone()], cx)
+                                }
+                                git_panel::GitAction::Unstage => {
+                                    view.git_unstage_paths(project, vec![path.clone()], cx)
+                                }
+                                git_panel::GitAction::Discard => {
+                                    view.git_discard_path(project, path.clone(), cx)
+                                }
+                            }
+                        }),
+                    )
+                    .child(glyph.to_string())
+            };
+            use git_panel::GitAction as Act;
+            match group {
+                git_panel::GitGroup::Staged => {
+                    row = row
+                        .child(action(Act::Unstage, entry.path.clone()))
+                        .child(action(Act::Discard, entry.path.clone()));
+                }
+                git_panel::GitGroup::Unstaged | git_panel::GitGroup::Untracked => {
+                    row = row
+                        .child(action(Act::Stage, entry.path.clone()))
+                        .child(action(Act::Discard, entry.path.clone()));
+                }
+            }
+            bar = bar.child(row);
+        }
+        if capped || status.truncated {
+            bar = bar.child(div().px_2().py_1().text_color(rgb(0x71717A)).child(
+                if status.truncated {
+                    format!("(truncated: showing first {total} bounded entries)")
+                } else {
+                    format!(
+                        "(showing first {} of {total})",
+                        git_panel::MAX_GIT_RENDER_ROWS
+                    )
+                },
+            ));
+        }
+        // Legend: the icons are conventional, the line guarantees nobody
+        // has to guess. Rendered from the same glyph constants as the
+        // actions so they can never drift apart.
+        bar = bar.child(div().px_2().py_1().text_color(rgb(0x52525B)).child(format!(
+            "{} stage · {} unstage · {} discard",
+            git_panel::STAGE_ICON,
+            git_panel::UNSTAGE_ICON,
+            git_panel::DISCARD_ICON,
+        )));
+        self.render_selected_diff(bar, project, cx)
+    }
+
+    /// Show the selected change's unified diff beneath Git's change list.
+    /// The selected path comes from the clicked M14 Git row; no second file
+    /// list or separate Diff tab exists. Refreshes land via `diff_tick`.
+    /// Stage uses the shared GitCommand path.
+    fn render_selected_diff(
+        &mut self,
+        bar: Div,
+        project: ProjectId,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let staged = self.diff_panel.show_staged(project);
+        let mut bar = bar;
+        let Some(path) = self
+            .git_panel
+            .selected_path(project)
+            .or_else(|| self.diff_panel.selected_file(project))
+            .map(|path| path.to_path_buf())
+        else {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("Select a Git change to view its diff"),
+            );
+        };
+        // Keep the refresh affordance in Git, adjacent to the selected
+        // change. The diff command runs in the background.
+        let refresh = div()
+            .px_1()
+            .text_color(rgb(0x71717A))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.diff_dirty_hint = true;
+                    cx.notify();
+                }),
+            )
+            .child(git_panel::REFRESH_ICON.to_string());
+        let open_path = path.clone();
+        let open = div()
+            .px_1()
+            .text_color(rgb(0x71717A))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.diff_open_file(project, open_path.clone(), cx);
+                }),
+            )
+            .child("open");
+        let copy_path = path.clone();
+        let copy = div()
+            .px_1()
+            .text_color(rgb(0x71717A))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.diff_copy_path(project, &copy_path, cx);
+                }),
+            )
+            .child("copy");
+        bar = bar.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .text_color(rgb(0xA1A1AA))
+                .child(format!("Diff · {}", path.to_string_lossy()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(open)
+                        .child(copy)
+                        .child(refresh),
+                ),
+        );
+        // Explicit empty/error states (never a spinner forever). Details
+        // are bounded; diff bodies and stderr never enter logs.
+        if let Some(empty) = self.diff_panel.empty_for(project, staged).cloned() {
+            let short = |detail: &str| {
+                let text: String = detail.chars().take(160).collect();
+                if detail.chars().count() > 160 {
+                    format!("{text}…")
+                } else {
+                    text
+                }
+            };
+            let message = match &empty {
+                diff_panel::DiffEmpty::NoRoot => "No project root".to_owned(),
+                diff_panel::DiffEmpty::NotRepo => "Not a git repository".to_owned(),
+                diff_panel::DiffEmpty::Unavailable(detail) => {
+                    format!("Git unavailable: {}", short(detail))
+                }
+                diff_panel::DiffEmpty::Failed(detail) => {
+                    format!("Git error: {}", short(detail))
+                }
+            };
+            let amber = !matches!(
+                empty,
+                diff_panel::DiffEmpty::NoRoot | diff_panel::DiffEmpty::NotRepo
+            );
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(if amber { 0xFDE68A } else { 0x71717A }))
+                    .child(message),
+            );
+        }
+        let Some(info) = self.diff_panel.diff_for(project, staged).cloned() else {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("Loading diff…"),
+            );
+        };
+        if info.files.is_empty() {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("No diff for selected change"),
+            );
+        }
+        let Some(file) = info.files.iter().find(|file| file.path == path) else {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("Selected change is no longer in this diff"),
+            );
+        };
+        if file.binary {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("binary, not shown"),
+            );
+        }
+        {
+            let count = file.hunks.len().min(diff_panel::MAX_DIFF_RENDER_HUNKS);
+            let cursor = self
+                .diff_panel
+                .selected_hunk(project)
+                .min(count.saturating_sub(1));
+            bar = bar.child(div().px_2().py_1().text_color(rgb(0xA1A1AA)).child(format!(
+                "{} ({}/{})",
+                file.path.to_string_lossy(),
+                if count == 0 { 0 } else { cursor + 1 },
+                file.hunk_count,
+            )));
+            let nav = |label: &'static str, next: bool| {
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            if next {
+                                view.diff_panel.next_hunk(project);
+                            } else {
+                                view.diff_panel.prev_hunk(project);
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(label)
+            };
+            bar = bar.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .child(nav("‹ prev", false))
+                    .child(nav("next ›", true)),
+            );
+            for (index, hunk) in file
+                .hunks
+                .iter()
+                .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
+                .enumerate()
+            {
+                let current = index == cursor;
+                let heading = format!(
+                    "@@ -{},{} +{},{} @@{}",
+                    hunk.old_start,
+                    hunk.old_lines,
+                    hunk.new_start,
+                    hunk.new_lines,
+                    if current { " ◀" } else { "" },
+                );
+                let mut hunk_header = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child(heading);
+                if !staged {
+                    let stage_path = path.clone();
+                    hunk_header = hunk_header.child(
+                        div()
+                            .px_1()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.diff_stage_file(project, stage_path.clone(), cx);
+                                }),
+                            )
+                            .child(git_panel::STAGE_ICON.to_string()),
+                    );
+                }
+                bar = bar.child(hunk_header);
+                for line in hunk.lines.iter().take(diff_panel::MAX_DIFF_RENDER_LINES) {
+                    let (marker, color) = match line.kind {
+                        omaterm_core::DiffLineKind::Addition => ("+", 0x89E051),
+                        omaterm_core::DiffLineKind::Deletion => ("-", 0xE06C75),
+                        omaterm_core::DiffLineKind::Context => (" ", 0xA1A1AA),
+                    };
+                    bar = bar.child(
+                        div()
+                            .px_2()
+                            .text_color(rgb(color))
+                            .child(format!("{marker}{}", line.text)),
+                    );
+                }
+                if hunk.truncated || hunk.lines.len() > diff_panel::MAX_DIFF_RENDER_LINES {
+                    bar = bar.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_color(rgb(0x71717A))
+                            .child("… (hunk truncated)"),
+                    );
+                }
+            }
+            if file.truncated || file.hunks.len() > diff_panel::MAX_DIFF_RENDER_HUNKS {
+                bar = bar.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_color(rgb(0x71717A))
+                        .child("… (file truncated)"),
+                );
+            }
+        }
+        bar = bar.child(
+            div()
+                .px_2()
+                .py_1()
+                .text_color(rgb(0x52525B))
+                .child(if staged {
+                    "Open/copy path · Alt+N/P hunk navigation"
+                } else {
+                    "Stage hunk · open/copy path · Alt+N/P hunk navigation"
+                }),
+        );
+        bar
+    }
+
+    /// Right-sidebar tab bar: `| Files | Git |` (M14 follow-up). Diff
+    /// details are shown inline in Git when a changed path is selected.
+    fn render_sidebar_tabs(&mut self, bar: Div, cx: &mut Context<Self>) -> Div {
+        let active = self.sidebar_tab;
+        let mut row = div().flex().flex_row().items_center().gap_1().px_2().py_1();
+        for (tab, label) in [(SidebarTab::Files, "Files"), (SidebarTab::Git, "Git")] {
+            let selected = tab == active;
+            row = row.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(if selected { 0x27272A } else { 0x111113 }))
+                    .text_color(rgb(if selected { 0xFAFAFA } else { 0x71717A }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.sidebar_tab = tab;
+                            view.git_panel.set_commit_focused(false);
+                            view.files_vdrag = None;
+                            view.files_hdrag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(label),
+            );
+        }
+        bar.child(row)
     }
 
     /// `Ctrl+P` overlay in VSCode Quick Open style: centered floating box
@@ -4030,17 +5453,45 @@ impl Render for WorkspaceView {
                 if steps == 0 && dy_lines != 0.0 {
                     steps = dy_lines.signum() as i32;
                 }
-                if steps == 0 {
+                // Horizontal: native x deltas, plus Shift+wheel (vertical
+                // deltas with Shift held) for ordinary mice. Checked before
+                // the vertical early-return so pure-horizontal events are
+                // never swallowed.
+                let dx_px: f32 = match event.delta {
+                    ScrollDelta::Pixels(point) => f32::from(point.x),
+                    ScrollDelta::Lines(point) => point.x * row_height,
+                };
+                let dy_px: f32 = match event.delta {
+                    ScrollDelta::Pixels(point) => f32::from(point.y),
+                    ScrollDelta::Lines(point) => point.y * row_height,
+                };
+                let mut sideways = dx_px;
+                if event.modifiers.shift {
+                    sideways += dy_px;
+                }
+                if steps == 0 && sideways == 0.0 {
                     return;
                 }
                 view.files_scroll_rows = (view.files_scroll_rows as i32 - steps).max(0) as usize;
+                if sideways != 0.0 {
+                    view.files_scroll_cols =
+                        (view.files_scroll_cols + sideways).clamp(0.0, files::MAX_SCROLL_COLS_PX);
+                }
                 cx.notify();
-            }))
-            .child(div().px_2().py_1().text_color(rgb(0xA1A1AA)).child("FILES"));
-        files_bar = self.render_files_tree(files_bar, f32::from(window.viewport_size().height), cx);
-        if let Some(message) = self.files_warning.clone() {
-            files_bar =
-                files_bar.child(div().px_2().py_1().text_color(rgb(0xFDE68A)).child(message));
+            }));
+        files_bar = self.render_sidebar_tabs(files_bar, cx);
+        match self.sidebar_tab {
+            SidebarTab::Files => {
+                files_bar =
+                    self.render_files_tree(files_bar, f32::from(window.viewport_size().height), cx);
+                if let Some(message) = self.files_warning.clone() {
+                    files_bar = files_bar
+                        .child(div().px_2().py_1().text_color(rgb(0xFDE68A)).child(message));
+                }
+            }
+            SidebarTab::Git => {
+                files_bar = self.render_git_panel(files_bar, cx);
+            }
         }
 
         let mut pane_area = div().flex().flex_1().flex_col().size_full().relative();
@@ -4754,7 +6205,13 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_jump_index, select_mono_family};
+    use super::{SidebarTab, project_jump_index, select_mono_family};
+
+    #[test]
+    fn sidebar_tab_defaults_to_files() {
+        assert_eq!(SidebarTab::default(), SidebarTab::Files);
+        assert_ne!(SidebarTab::Files, SidebarTab::Git);
+    }
 
     #[test]
     fn jump_index_maps_digits_and_shifted_symbols_to_slots() {

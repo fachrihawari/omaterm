@@ -10,14 +10,25 @@
 //! owner thread with a bounded git wait, never on socket threads.
 
 pub mod boundary;
+pub mod diff;
 pub mod files;
+pub mod git;
 pub mod ignore;
 pub mod resolve;
 
 pub use boundary::{ContextError, canonicalize_under_root};
+pub use diff::{
+    DEFAULT_DIFF_CONTEXT_LINES, DiffRequest, MAX_DIFF_BYTES, MAX_DIFF_CONTEXT_LINES,
+    MAX_DIFF_FILES, MAX_DIFF_HUNKS_PER_FILE, MAX_DIFF_LINE_BYTES, MAX_DIFF_LINES_PER_HUNK,
+    git_diff, parse_diff,
+};
 pub use files::{
     FileWatcher, WatchError, fuzzy_match_indices, is_limit_exhaustion_message, list_dir,
     search_files,
+};
+pub use git::{
+    GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, git_commit, git_discard, git_stage,
+    git_status, git_unstage, join_under_root,
 };
 pub use ignore::IgnoreFilter;
 pub use resolve::{

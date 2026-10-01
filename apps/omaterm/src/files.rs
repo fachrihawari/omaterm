@@ -25,6 +25,14 @@ pub const RIGHT_SIDEBAR_WIDTH_PX: f32 = 240.0;
 pub const MAX_TREE_ROWS: usize = 2_000;
 /// Rows rendered at most; the footer names the truncation.
 pub const MAX_RENDER_ROWS: usize = 400;
+/// Vertical scrollbar width: thin VSCode-style rail beside the rows.
+pub const SCROLLBAR_WIDTH_PX: f32 = 12.0;
+/// Horizontal scroll clamp in pixels: far past any plausible filename at
+/// the tree font, tight enough to keep the offset state honest.
+pub const MAX_SCROLL_COLS_PX: f32 = 1600.0;
+/// Thumbs never shrink past this: still grabbable at the bottom of deep
+/// trees.
+pub const MIN_THUMB_PX: f32 = 14.0;
 /// Bounded expanded directories per project (snapshot schema v2).
 pub const MAX_EXPANDED_DIRS: usize = 128;
 /// Cache key for the top-level listing.
@@ -276,6 +284,20 @@ pub struct FileRow {
     /// Expanded but children not loaded yet (background fetch in flight or
     /// queued). Renders dimmed; rows fill in when the fetch lands.
     pub loading: bool,
+}
+
+/// Scrollbar thumb geometry as track fractions `(top, height)`, each in
+/// `[0, 1]`. The thumb fills the track when everything fits; otherwise
+/// its height is the visible share and its top slides over the remaining
+/// travel. Over-clamped offsets pin to the nearer end, never NaN.
+pub fn scroll_thumb(total: usize, visible: usize, offset: usize) -> (f32, f32) {
+    if total <= visible || total == 0 || visible == 0 {
+        return (0.0, 1.0);
+    }
+    let height = (visible as f32 / total as f32).clamp(0.0, 1.0);
+    let max_offset = total.saturating_sub(visible);
+    let top = (offset.min(max_offset) as f32 / max_offset.max(1) as f32) * (1.0 - height);
+    (top, height)
 }
 
 /// Per-project expansion + selection state with a listing cache and a row
@@ -981,6 +1003,11 @@ mod tests {
                 SEARCH_ICON,
                 CHEVRON_RIGHT,
                 CHEVRON_DOWN,
+                crate::git_panel::STAGE_ICON,
+                crate::git_panel::UNSTAGE_ICON,
+                crate::git_panel::DISCARD_ICON,
+                crate::git_panel::REFRESH_ICON,
+                crate::git_panel::COMMIT_ICON,
                 '\u{e609}',
                 '\u{e60a}',
                 '\u{e616}',
@@ -997,6 +1024,26 @@ mod tests {
                 glyph as u32
             );
         }
+    }
+
+    #[test]
+    fn scroll_thumb_covers_fit_top_middle_bottom_and_clamp() {
+        // Everything fits: full thumb, no travel.
+        assert_eq!(scroll_thumb(0, 10, 0), (0.0, 1.0));
+        assert_eq!(scroll_thumb(10, 10, 0), (0.0, 1.0));
+        assert_eq!(scroll_thumb(5, 10, 3), (0.0, 1.0));
+        // Quarter visible: quarter thumb sliding over the rest.
+        let (top, height) = scroll_thumb(40, 10, 0);
+        assert!((height - 0.25).abs() < 1e-6);
+        assert!((top - 0.0).abs() < 1e-6);
+        let (top, _) = scroll_thumb(40, 10, 15);
+        assert!((top - 0.375).abs() < 1e-6);
+        let (top, _) = scroll_thumb(40, 10, 30);
+        assert!((top - 0.75).abs() < 1e-6);
+        // Over-clamped offsets pin to the end, never past it or NaN.
+        let (top, _) = scroll_thumb(40, 10, 999);
+        assert!((top - 0.75).abs() < 1e-6);
+        assert!(scroll_thumb(40, 10, 999).0.is_finite());
     }
 
     #[test]

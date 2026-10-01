@@ -1,6 +1,6 @@
 use crate::{
-    CommandError, ErrorCode, FileCommand, HistoryCommand, OmaCommand, PaneCommand, ProjectCommand,
-    TabCommand, TerminalCommand,
+    CommandError, DiffCommand, ErrorCode, FileCommand, GitCommand, HistoryCommand, OmaCommand,
+    PaneCommand, ProjectCommand, TabCommand, TerminalCommand,
 };
 
 pub const MAX_READ_LINES: usize = 1_000;
@@ -17,6 +17,19 @@ pub const MAX_FILE_ENTRIES: usize = 5_000;
 /// Largest accepted `file.search` query: generous for a filename pattern,
 /// small enough to keep matching bounded.
 pub const MAX_FILE_QUERY_BYTES: usize = 256;
+/// Bounded git mutation fan-out (M14): at most this many explicit paths per
+/// `stage`/`unstage`/`discard` call, so one wire request stays one bounded
+/// subprocess batch (blueprint §64).
+pub const MAX_GIT_PATHS: usize = 100;
+/// Largest accepted single git path in bytes. Generous for deep trees,
+/// small enough to keep argv bounded.
+pub const MAX_GIT_PATH_BYTES: usize = 4 * 1024;
+/// Largest accepted commit message in bytes. Generous for a summary plus
+/// body, small enough to keep the subprocess argv bounded.
+pub const MAX_GIT_MESSAGE_BYTES: usize = 4 * 1024;
+/// Largest accepted `diff.show` context size (`-U` lines). Generous for
+/// review, small enough to keep one wire response bounded.
+pub const MAX_DIFF_CONTEXT_LINES: u8 = 10;
 
 /// Pure field validation. Target existence and authorization are checked by
 /// the application owner immediately before dispatch effects are applied.
@@ -123,6 +136,54 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
         OmaCommand::File(FileCommand::Open { path, .. }) if path.as_os_str().is_empty() => {
             return invalid("file path must not be empty");
         }
+        OmaCommand::Git(GitCommand::Stage { paths, .. })
+        | OmaCommand::Git(GitCommand::Unstage { paths, .. })
+        | OmaCommand::Git(GitCommand::Discard { paths, .. }) => {
+            if paths.is_empty() || paths.len() > MAX_GIT_PATHS {
+                return invalid("git paths must contain 1 to 100 entries");
+            }
+            if paths.iter().any(|path| {
+                path.as_os_str().is_empty()
+                    || path.as_os_str().len() > MAX_GIT_PATH_BYTES
+                    || path.to_string_lossy().chars().any(char::is_control)
+            }) {
+                return invalid(
+                    "each git path must be non-empty, at most 4096 bytes, with no control characters",
+                );
+            }
+        }
+        OmaCommand::Git(GitCommand::Commit { message, .. })
+            if message.is_empty()
+                || message.len() > MAX_GIT_MESSAGE_BYTES
+                || message
+                    .chars()
+                    .any(|char| char.is_control() && char != '\n' && char != '\t') =>
+        {
+            // Newlines/tabs separate summary from body; every other
+            // control character (notably NUL, which argv cannot carry)
+            // is rejected.
+            return invalid(
+                "commit message must be 1 to 4096 bytes with no control characters besides newline/tab",
+            );
+        }
+        OmaCommand::Diff(DiffCommand::Show {
+            path,
+            context_lines,
+            ..
+        }) => {
+            if *context_lines > MAX_DIFF_CONTEXT_LINES {
+                return invalid("diff context lines must be between 0 and 10");
+            }
+            if path.as_ref().is_some_and(|path| {
+                path.as_os_str().is_empty()
+                    || path.as_os_str().len() > MAX_GIT_PATH_BYTES
+                    || path.to_string_lossy().chars().any(char::is_control)
+            }) {
+                return invalid(
+                    "diff path must be non-empty, at most 4096 bytes, with no control characters",
+                );
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -200,6 +261,126 @@ mod tests {
                 path: std::path::PathBuf::new(),
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn git_commit_rejects_empty_oversize_and_nul_messages() {
+        let project = ProjectId::new();
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: String::new(),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: "x".repeat(MAX_GIT_MESSAGE_BYTES + 1),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: "bad\0message".into(),
+            }))
+            .is_err()
+        );
+        // Summary + body with newline/tab passes.
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: "subject\n\nbody\twith tab".into(),
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn git_mutations_reject_empty_oversize_and_control_paths() {
+        let project = ProjectId::new();
+        // Empty path list.
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![],
+            }))
+            .is_err()
+        );
+        // Over fan-out.
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Discard {
+                project,
+                paths: vec![std::path::PathBuf::from("a"); MAX_GIT_PATHS + 1],
+            }))
+            .is_err()
+        );
+        // Control character in a path.
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Unstage {
+                project,
+                paths: vec![std::path::PathBuf::from("bad\npath")],
+            }))
+            .is_err()
+        );
+        // Empty single path.
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![std::path::PathBuf::new()],
+            }))
+            .is_err()
+        );
+        // Boundary: exactly the fan-out cap with ordinary paths passes, and
+        // status carries no fields to reject.
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![std::path::PathBuf::from("src/main.rs"); MAX_GIT_PATHS],
+            }))
+            .is_ok()
+        );
+        assert!(validate(&OmaCommand::Git(GitCommand::Status { project })).is_ok());
+    }
+
+    #[test]
+    fn diff_show_rejects_over_context_and_control_paths() {
+        let project = ProjectId::new();
+        assert!(
+            validate(&OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: None,
+                staged: false,
+                context_lines: MAX_DIFF_CONTEXT_LINES + 1,
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: Some(std::path::PathBuf::from("bad\npath")),
+                staged: false,
+                context_lines: 3,
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: Some(std::path::PathBuf::from("src/main.rs")),
+                staged: true,
+                context_lines: MAX_DIFF_CONTEXT_LINES,
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate(&OmaCommand::Diff(DiffCommand::ListFiles {
+                project,
+                staged: false
+            }))
+            .is_ok()
         );
     }
 

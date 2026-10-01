@@ -35,6 +35,17 @@ pub enum ErrorCode {
     /// requested operation needs one (`file.open`). Listing/searching
     /// without a root returns an empty envelope instead of this error.
     NoProjectRoot,
+    /// The project root is not inside a git repository, so a git mutation
+    /// has no repository to target (M14). `git.status` on a non-repo root
+    /// returns an empty envelope instead of this error.
+    NotARepo,
+    /// A git subprocess failed: the message carries bounded git stderr so
+    /// agents never parse it for control flow (M14, blueprint §§32, 44).
+    GitFailed,
+    /// The system git binary is missing or cannot be spawned (M14,
+    /// blueprint §32). Distinct from `GitFailed`: the tool is absent, not
+    /// the repository.
+    GitUnavailable,
 }
 
 impl ErrorCode {
@@ -60,6 +71,9 @@ impl ErrorCode {
             Self::FileNotFound => "file_not_found",
             Self::EditorNotConfigured => "editor_not_configured",
             Self::NoProjectRoot => "no_project_root",
+            Self::NotARepo => "not_a_repo",
+            Self::GitFailed => "git_failed",
+            Self::GitUnavailable => "git_unavailable",
         }
     }
 }
@@ -148,6 +162,11 @@ pub enum CommandOutput {
     },
     ProjectRoot(ProjectRootInfo),
     FileList(FileListInfo),
+    GitStatus(GitStatusInfo),
+    GitCommitted {
+        oid: String,
+    },
+    Diff(DiffInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,6 +294,172 @@ impl FileKind {
 pub struct FileListInfo {
     pub entries: Vec<FileEntry>,
     pub truncated: bool,
+}
+
+/// One changed path from `git status --porcelain=v2 -z` (M14, blueprint
+/// §32). `path` is relative to the project root (git runs with
+/// `status.relativePaths=true` and the root as its working directory), so
+/// the wire form stays stable when the root moves. `x`/`y` are the raw
+/// index/worktree status codes (`.` = unmodified); `renamed_from` carries
+/// the pre-rename path for `R`/`C` entries (`git status -z` order).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitEntry {
+    pub path: PathBuf,
+    pub renamed_from: Option<PathBuf>,
+    pub x: char,
+    pub y: char,
+}
+
+impl GitEntry {
+    /// True when the index side differs from HEAD (staged change).
+    pub const fn is_staged(&self) -> bool {
+        self.x != '.'
+    }
+
+    /// True when the worktree side differs from the index (unstaged change).
+    pub const fn is_unstaged(&self) -> bool {
+        self.y != '.'
+    }
+}
+
+/// Bounded git status envelope (M14). Groups mirror the VSCode Source
+/// Control sections; `truncated` is accurate whenever the entry cap drops
+/// paths. `branch` is `None` for detached HEAD; `upstream` is `None`
+/// without a configured upstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusInfo {
+    pub branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    pub staged: Vec<GitEntry>,
+    pub unstaged: Vec<GitEntry>,
+    pub untracked: Vec<GitEntry>,
+    pub truncated: bool,
+}
+
+impl GitStatusInfo {
+    /// Explicit empty state for non-repo roots: never an error (M14).
+    pub const fn empty() -> Self {
+        Self {
+            branch: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    /// Total entries across all three groups.
+    pub fn len(&self) -> usize {
+        self.staged.len() + self.unstaged.len() + self.untracked.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.staged.is_empty() && self.unstaged.is_empty() && self.untracked.is_empty()
+    }
+}
+
+/// One unified-diff file (M15, blueprint §33). `path` is relative to the
+/// project root (git runs with the root as its working directory), so the
+/// wire form stays stable when the root moves. `old_path` is set for
+/// renames only. Binary files carry no hunks ("binary, not shown").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffFileInfo {
+    pub path: PathBuf,
+    pub old_path: Option<PathBuf>,
+    pub status: DiffFileStatus,
+    pub binary: bool,
+    pub hunks: Vec<DiffHunkInfo>,
+    /// Total hunks in the file, including dropped ones. Equals
+    /// `hunks.len()` when fully loaded; larger when caps truncated the
+    /// file or `list-files` skipped bodies.
+    pub hunk_count: usize,
+    pub truncated: bool,
+}
+
+/// File change kind from the `diff --git` headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffFileStatus {
+    Added,
+    Deleted,
+    Modified,
+    Renamed,
+    Copied,
+}
+
+impl DiffFileStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Deleted => "deleted",
+            Self::Modified => "modified",
+            Self::Renamed => "renamed",
+            Self::Copied => "copied",
+        }
+    }
+}
+
+/// One `@@` hunk with its bounded body lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffHunkInfo {
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub lines: Vec<DiffLineInfo>,
+    pub truncated: bool,
+}
+
+/// One hunk body line. The marker is structural (`kind`); `text` never
+/// carries the leading ` `/`+`/`-`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLineInfo {
+    pub kind: DiffLineKind,
+    pub text: String,
+}
+
+/// Hunk line kind for the `±` coloring (no highlighting in v0.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLineKind {
+    Context,
+    Addition,
+    Deletion,
+}
+
+impl DiffLineKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Context => "context",
+            Self::Addition => "addition",
+            Self::Deletion => "deletion",
+        }
+    }
+}
+
+/// Bounded diff envelope (M15). `staged` records which side was read
+/// (`git diff` vs `git diff --cached`); `truncated` is accurate whenever
+/// any cap dropped files, hunks, lines, or bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffInfo {
+    pub files: Vec<DiffFileInfo>,
+    pub truncated: bool,
+    pub staged: bool,
+}
+
+impl DiffInfo {
+    /// Explicit empty state for non-repo roots: never an error (M14
+    /// product contract, reused for diff).
+    pub const fn empty(staged: bool) -> Self {
+        Self {
+            files: Vec::new(),
+            truncated: false,
+            staged,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

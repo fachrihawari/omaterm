@@ -116,6 +116,37 @@ pub struct FileOpen {
     pub project_id: Option<String>,
     pub path: String,
 }
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitStatus {
+    pub project_id: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitPaths {
+    pub project_id: Option<String>,
+    pub paths: Vec<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitCommit {
+    pub project_id: Option<String>,
+    pub message: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffShow {
+    pub project_id: Option<String>,
+    pub path: Option<String>,
+    pub staged: Option<bool>,
+    pub context_lines: Option<u8>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffListFiles {
+    pub project_id: Option<String>,
+    pub staged: Option<bool>,
+}
 
 #[derive(Clone)]
 pub enum Method {
@@ -150,6 +181,13 @@ pub enum Method {
     FileList(FileList),
     FileSearch(FileSearch),
     FileOpen(FileOpen),
+    GitStatus(GitStatus),
+    GitStage(GitPaths),
+    GitUnstage(GitPaths),
+    GitDiscard(GitPaths),
+    GitCommit(GitCommit),
+    DiffShow(DiffShow),
+    DiffListFiles(DiffListFiles),
 }
 
 impl Method {
@@ -198,6 +236,13 @@ impl Method {
             "file.list" => decode!(FileList, FileList),
             "file.search" => decode!(FileSearch, FileSearch),
             "file.open" => decode!(FileOpen, FileOpen),
+            "git.status" => decode!(GitStatus, GitStatus),
+            "git.stage" => decode!(GitPaths, GitStage),
+            "git.unstage" => decode!(GitPaths, GitUnstage),
+            "git.discard" => decode!(GitPaths, GitDiscard),
+            "git.commit" => decode!(GitCommit, GitCommit),
+            "diff.show" => decode!(DiffShow, DiffShow),
+            "diff.list-files" => decode!(DiffListFiles, DiffListFiles),
             _ => Err(MethodError("unknown method")),
         }
     }
@@ -262,8 +307,18 @@ mod tests {
             ("file.list", serde_json::json!({})),
             ("file.search", serde_json::json!({"query": "main"})),
             ("file.open", serde_json::json!({"path": "src/main.rs"})),
+            ("git.status", serde_json::json!({})),
+            ("git.stage", serde_json::json!({"paths": ["a.txt"]})),
+            ("git.unstage", serde_json::json!({"paths": ["a.txt"]})),
+            ("git.discard", serde_json::json!({"paths": ["a.txt"]})),
+            ("git.commit", serde_json::json!({"message": "hello"})),
+            (
+                "diff.show",
+                serde_json::json!({"path": "src/main.rs", "staged": true, "context_lines": 5}),
+            ),
+            ("diff.list-files", serde_json::json!({"staged": false})),
         ];
-        assert_eq!(cases.len(), 31);
+        assert_eq!(cases.len(), 38);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

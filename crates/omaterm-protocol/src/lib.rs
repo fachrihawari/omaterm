@@ -14,6 +14,15 @@ pub const MAX_ARG_COUNT: usize = 256;
 pub const MAX_ARGUMENT_BYTES: usize = 4 * 1024;
 pub const MAX_JOURNAL_ENTRIES: usize = 1_000;
 pub const MAX_FILE_ENTRIES: usize = 5_000;
+/// Bounded git mutation fan-out (M14): at most this many explicit paths
+/// per stage/unstage/discard wire call, mirroring core validation.
+pub const MAX_GIT_PATHS: usize = 100;
+/// Largest accepted single git path in bytes on the wire.
+pub const MAX_GIT_PATH_BYTES: usize = 4 * 1024;
+/// Largest accepted commit message in bytes on the wire.
+pub const MAX_GIT_MESSAGE_BYTES: usize = 4 * 1024;
+/// Largest accepted `diff.show` context size on the wire.
+pub const MAX_DIFF_CONTEXT_LINES: u8 = 10;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

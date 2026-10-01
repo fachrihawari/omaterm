@@ -11,20 +11,21 @@ VSCode Source Control conventions adapted to a compact sidebar: branch +
 ahead/behind badge, three change groups, per-file `stage` / `unstage` /
 `discard` (discard is arm-and-confirm, like paste/history), `refresh`
 (manual + debounced interval + post-`terminal.run` hint — never terminal
-text scraping). Non-repo projects show the empty state. **No commit UI**:
-message/authorship/push/pull stay out of v0.2; staging is reversible and
-project-scoped, so it fits the approval model, while commit is deferred.
+text scraping), and a minimal commit message row. Commit uses
+`git commit -m` and repository-configured authorship; no amend/push UI.
+The commit UI was added by user-approved scope change 2026-10-01. Non-repo
+projects show the empty state.
 
-## Goals
+## Goals (complete 2026-10-01 — see `docs/status.md` M14 record)
 
-- [ ] `git status --porcelain=v2 -z` parser: branch, ahead/behind, `X/Y`
+- [x] `git status --porcelain=v2 -z` parser: branch, ahead/behind, `X/Y`
   codes, renames, NUL-safe paths with spaces/Unicode.
-- [ ] Env hygiene: `GIT_TERMINAL_PROMPT=0`, `--no-optional-locks`; all git
+- [x] Env hygiene: `GIT_TERMINAL_PROMPT=0`, `--no-optional-locks`; all git
   I/O off the UI thread with timeout + cancellation.
-- [ ] `GitCommand::{Status, Stage, Unstage, Discard}` via dispatcher;
-  `git.status` / `git.stage` / `git.unstage` / `git.discard` wire methods +
+- [x] `GitCommand::{Status, Stage, Unstage, Discard, Commit}` via dispatcher;
+  `git.status` / `git.stage` / `git.unstage` / `git.discard` / `git.commit` wire methods +
   CLI, bounded entries + `truncated`.
-- [ ] Stage/unstage operate on explicit file paths under the M12 root
+- [x] Stage/unstage operate on explicit file paths under the M12 root
   (traversal-rejected); discard requires the two-step confirm.
 
 ## Prerequisites
@@ -52,17 +53,18 @@ project-scoped, so it fits the approval model, while commit is deferred.
 - Desktop live: edit/stage/untracked appears after refresh; CLI JSON
   matches the panel on the same instance.
 
-## Acceptance Criteria
+## Acceptance Criteria (complete 2026-10-01)
 
-- [ ] Status + stage/unstage/discard all work from panel and CLI
-- [ ] Locked-index / missing-git / non-repo paths show explicit states
-- [ ] No git process ever runs on the UI thread (timed assertion)
-- [ ] Discard without confirm is impossible (test the arm window)
-- [ ] Quality gates green
+- [x] Status + stage/unstage/discard/commit all work from panel and CLI
+- [x] Locked-index / missing-git / non-repo paths show explicit states
+- [x] No git process ever runs on the UI thread (timed assertion)
+- [x] Discard without confirm is impossible (test the arm window)
+- [x] Quality gates green
 
 ## Non-Goals
 
-- No commit/push/pull/merge/rebase UI (explicit per §32; needs design).
+- No push/pull/merge/rebase UI; no amend. Commit is limited to staged changes
+  with a message and repository-configured authorship.
 - No diff rendering here (M15). No editor (v0.3). No `terminal wait` (v0.4).
 
 ## References

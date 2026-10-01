@@ -2,12 +2,13 @@
 //! resolve selectors or access workspace state.
 use base64::Engine;
 use omaterm_core::{
-    CommandContext, CommandOutput, CommandResult, FileCommand, HistoryCommand, OmaCommand,
-    PaneCommand, PaneContent, PaneId, ProjectCommand, ProjectId, SessionId, SplitDirection,
-    SplitId, TabCommand, TabId, TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, DiffCommand, FileCommand, GitCommand,
+    HistoryCommand, OmaCommand, PaneCommand, PaneContent, PaneId, ProjectCommand, ProjectId,
+    SessionId, SplitDirection, SplitId, TabCommand, TabId, TerminalCommand,
 };
 use omaterm_protocol::{
-    IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_FILE_ENTRIES,
+    IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_DIFF_CONTEXT_LINES,
+    MAX_FILE_ENTRIES, MAX_GIT_MESSAGE_BYTES, MAX_GIT_PATH_BYTES, MAX_GIT_PATHS,
     MAX_JOURNAL_ENTRIES, MAX_READ_COLUMNS, MAX_READ_LINES, MAX_SEND_BYTES, method::Method,
 };
 use serde_json::{Value, json};
@@ -53,6 +54,39 @@ fn text(raw: &str) -> Result<&str, &'static str> {
     } else {
         Ok(raw)
     }
+}
+
+/// Bounded commit message: 1–4096 bytes, newlines/tabs allowed for the
+/// body, every other control character rejected (mirrors core
+/// validation; the router re-validates).
+fn git_message(raw: &str) -> Result<&str, &'static str> {
+    if raw.is_empty()
+        || raw.len() > MAX_GIT_MESSAGE_BYTES
+        || raw
+            .chars()
+            .any(|char| char.is_control() && char != '\n' && char != '\t')
+    {
+        Err("commit message must be 1 to 4096 bytes with no control characters besides newline/tab")
+    } else {
+        Ok(raw)
+    }
+}
+
+/// Bounded git path vectors: 1–100 entries, each at most 4 KiB with no
+/// control characters (mirrors core validation; the router re-validates).
+fn git_paths(raw: &[String]) -> Result<Vec<std::path::PathBuf>, &'static str> {
+    if raw.is_empty() || raw.len() > MAX_GIT_PATHS {
+        return Err("git paths must contain 1 to 100 entries");
+    }
+    raw.iter()
+        .map(|path| {
+            if path.is_empty() || path.len() > MAX_GIT_PATH_BYTES || path.chars().any(char::is_control) {
+                Err("each git path must be non-empty, at most 4096 bytes, with no control characters")
+            } else {
+                Ok(std::path::PathBuf::from(path))
+            }
+        })
+        .collect()
 }
 
 pub fn map_request(
@@ -279,6 +313,46 @@ pub fn map_request(
                 project: resolve_project(p.project_id)?,
                 path: std::path::PathBuf::from(text(&p.path)?),
             }),
+            Method::GitStatus(p) => OmaCommand::Git(GitCommand::Status {
+                project: resolve_project(p.project_id)?,
+            }),
+            Method::GitStage(p) => OmaCommand::Git(GitCommand::Stage {
+                project: resolve_project(p.project_id)?,
+                paths: git_paths(&p.paths)?,
+            }),
+            Method::GitUnstage(p) => OmaCommand::Git(GitCommand::Unstage {
+                project: resolve_project(p.project_id)?,
+                paths: git_paths(&p.paths)?,
+            }),
+            Method::GitDiscard(p) => OmaCommand::Git(GitCommand::Discard {
+                project: resolve_project(p.project_id)?,
+                paths: git_paths(&p.paths)?,
+            }),
+            Method::GitCommit(p) => OmaCommand::Git(GitCommand::Commit {
+                project: resolve_project(p.project_id)?,
+                message: git_message(&p.message)?.to_owned(),
+            }),
+            Method::DiffShow(p) => {
+                let context = p.context_lines.unwrap_or(3);
+                if context > MAX_DIFF_CONTEXT_LINES {
+                    return Err("diff.show exceeds the context-line limit");
+                }
+                OmaCommand::Diff(DiffCommand::Show {
+                    project: resolve_project(p.project_id)?,
+                    path: p
+                        .path
+                        .as_deref()
+                        .map(text)
+                        .transpose()?
+                        .map(std::path::PathBuf::from),
+                    staged: p.staged.unwrap_or(false),
+                    context_lines: context,
+                })
+            }
+            Method::DiffListFiles(p) => OmaCommand::Diff(DiffCommand::ListFiles {
+                project: resolve_project(p.project_id)?,
+                staged: p.staged.unwrap_or(false),
+            }),
         })
     })()
     .map_err(|message| invalid(id, message))?;
@@ -353,6 +427,84 @@ fn output_json(output: CommandOutput) -> Value {
         CommandOutput::FileList(list) => {
             let truncated = list.truncated || list.entries.len() > LIST_LIMIT;
             json!({"entries":list.entries.into_iter().take(LIST_LIMIT).map(|entry| json!({"path":entry.path,"kind":entry.kind.as_str()})).collect::<Vec<_>>(),"truncated":truncated})
+        }
+        CommandOutput::GitStatus(status) => {
+            fn render(entries: Vec<omaterm_core::GitEntry>) -> Vec<Value> {
+                entries
+                    .into_iter()
+                    .map(|entry| {
+                        json!({"path":entry.path,"renamed_from":entry.renamed_from,"x":entry.x.to_string(),"y":entry.y.to_string()})
+                    })
+                    .collect()
+            }
+            // Bridge wire cap mirrors the list surfaces: groups fill in
+            // staged → unstaged → untracked order with an accurate flag.
+            let mut remaining = LIST_LIMIT;
+            let mut truncated = status.truncated;
+            let mut staged = render(status.staged);
+            let mut unstaged = render(status.unstaged);
+            let mut untracked = render(status.untracked);
+            for group in [&mut staged, &mut unstaged, &mut untracked] {
+                if group.len() > remaining {
+                    group.truncate(remaining);
+                    truncated = true;
+                    remaining = 0;
+                } else {
+                    remaining -= group.len();
+                }
+            }
+            json!({"branch":status.branch,"upstream":status.upstream,"ahead":status.ahead,"behind":status.behind,"staged":staged,"unstaged":unstaged,"untracked":untracked,"truncated":truncated})
+        }
+        CommandOutput::GitCommitted { oid } => {
+            json!({"oid":oid})
+        }
+        CommandOutput::Diff(info) => {
+            // Bridge wire cap mirrors the list surfaces: files fill in
+            // walk order with an accurate flag; hunks and lines are
+            // additionally windowed so one file cannot blow the 1 MiB
+            // response frame (the frame encoder stays the backstop).
+            const MAX_BRIDGE_FILES: usize = 128;
+            const MAX_BRIDGE_HUNKS: usize = 64;
+            const MAX_BRIDGE_LINES: usize = 200;
+            const MAX_BRIDGE_LINE_CHARS: usize = 2000;
+            let mut truncated = info.truncated || info.files.len() > MAX_BRIDGE_FILES;
+            let files = info
+                .files
+                .into_iter()
+                .take(MAX_BRIDGE_FILES)
+                .map(|file| {
+                    truncated = truncated
+                        || file.truncated
+                        || file.hunks.len() > MAX_BRIDGE_HUNKS;
+                    let hunks = file
+                        .hunks
+                        .into_iter()
+                        .take(MAX_BRIDGE_HUNKS)
+                        .map(|hunk| {
+                            let mut hunk_truncated =
+                                hunk.truncated || hunk.lines.len() > MAX_BRIDGE_LINES;
+                            truncated = truncated || hunk_truncated;
+                            let lines = hunk
+                                .lines
+                                .into_iter()
+                                .take(MAX_BRIDGE_LINES)
+                                .map(|line| {
+                                    let line_truncated =
+                                        line.text.chars().count() > MAX_BRIDGE_LINE_CHARS;
+                                    if line_truncated {
+                                        truncated = true;
+                                        hunk_truncated = true;
+                                    }
+                                    json!({"kind":line.kind.as_str(),"text":line.text.chars().take(MAX_BRIDGE_LINE_CHARS).collect::<String>()})
+                                })
+                                .collect::<Vec<_>>();
+                            json!({"old_start":hunk.old_start,"old_lines":hunk.old_lines,"new_start":hunk.new_start,"new_lines":hunk.new_lines,"lines":lines,"truncated":hunk_truncated})
+                        })
+                        .collect::<Vec<_>>();
+                    json!({"path":file.path,"old_path":file.old_path,"status":file.status.as_str(),"binary":file.binary,"hunks":hunks,"hunk_count":file.hunk_count,"truncated":file.truncated})
+                })
+                .collect::<Vec<_>>();
+            json!({"files":files,"truncated":truncated,"staged":info.staged})
         }
     }
 }
@@ -433,8 +585,43 @@ mod tests {
                 json!({"project_id": id, "path": "src/main.rs"}),
                 true,
             ),
+            ("git.status", json!({}), false),
+            ("git.status", json!({"project_id": id}), true),
+            ("git.stage", json!({"paths": ["a.txt"]}), false),
+            ("git.stage", json!({"paths": []}), false),
+            (
+                "git.unstage",
+                json!({"project_id": id, "paths": ["a.txt"]}),
+                true,
+            ),
+            (
+                "git.discard",
+                json!({"project_id": id, "paths": ["a.txt"]}),
+                true,
+            ),
+            ("git.commit", json!({"message": "hello"}), false),
+            (
+                "git.commit",
+                json!({"project_id": id, "message": "hello"}),
+                true,
+            ),
+            ("git.commit", json!({"message": ""}), false),
+            ("diff.show", json!({}), false),
+            (
+                "diff.show",
+                json!({"project_id": id, "path": "src/main.rs", "staged": true, "context_lines": 5}),
+                true,
+            ),
+            ("diff.show", json!({"context_lines": 11}), false),
+            ("diff.show", json!({"path": "bad\npath"}), false),
+            ("diff.list-files", json!({}), false),
+            (
+                "diff.list-files",
+                json!({"project_id": id, "staged": true}),
+                true,
+            ),
         ];
-        assert_eq!(cases.len(), 37);
+        assert_eq!(cases.len(), 52);
         for (method, params, valid) in cases {
             let result = map_request(&request(method, params), CommandContext::LocalUser, &router);
             assert_eq!(result.is_ok(), valid, "{method}");
@@ -541,6 +728,157 @@ mod tests {
             result.result.unwrap()["projects"].as_array().unwrap().len(),
             128
         );
+    }
+
+    #[test]
+    fn git_status_response_groups_entries_with_an_accurate_flag() {
+        let entry = |path: &str| omaterm_core::GitEntry {
+            path: std::path::PathBuf::from(path),
+            renamed_from: None,
+            x: 'M',
+            y: '.',
+        };
+        let status = omaterm_core::GitStatusInfo {
+            branch: Some("main".into()),
+            upstream: None,
+            ahead: 1,
+            behind: 0,
+            staged: vec![entry("a.txt")],
+            unstaged: vec![entry("b.txt")],
+            untracked: vec![entry("c.txt")],
+            truncated: false,
+        };
+        let result = response(
+            "id".into(),
+            CommandResult::Ok(CommandOutput::GitStatus(status)),
+        );
+        let body = result.result.unwrap();
+        assert_eq!(body["branch"], "main");
+        assert_eq!(body["ahead"], 1);
+        assert_eq!(body["staged"][0]["path"], "a.txt");
+        assert_eq!(body["staged"][0]["x"], "M");
+        assert_eq!(body["truncated"], false);
+
+        // Bridge wire cap: 130 staged entries truncate to 128.
+        let big = omaterm_core::GitStatusInfo {
+            branch: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            staged: (0..130).map(|i| entry(&format!("f{i}.txt"))).collect(),
+            unstaged: vec![],
+            untracked: vec![],
+            truncated: false,
+        };
+        let result = response(
+            "id".into(),
+            CommandResult::Ok(CommandOutput::GitStatus(big)),
+        );
+        let body = result.result.unwrap();
+        assert_eq!(body["staged"].as_array().unwrap().len(), 128);
+        assert_eq!(body["truncated"], true);
+    }
+
+    #[test]
+    fn diff_response_shapes_files_hunks_and_bridge_caps() {
+        let line = |kind, text: &str| omaterm_core::DiffLineInfo {
+            kind,
+            text: text.into(),
+        };
+        let info = omaterm_core::DiffInfo {
+            files: vec![omaterm_core::DiffFileInfo {
+                path: std::path::PathBuf::from("src/main.rs"),
+                old_path: None,
+                status: omaterm_core::DiffFileStatus::Modified,
+                binary: false,
+                hunks: vec![omaterm_core::DiffHunkInfo {
+                    old_start: 1,
+                    old_lines: 2,
+                    new_start: 1,
+                    new_lines: 2,
+                    lines: vec![
+                        line(omaterm_core::DiffLineKind::Context, "ctx"),
+                        line(omaterm_core::DiffLineKind::Deletion, "old"),
+                        line(omaterm_core::DiffLineKind::Addition, "new"),
+                    ],
+                    truncated: false,
+                }],
+                hunk_count: 1,
+                truncated: false,
+            }],
+            truncated: false,
+            staged: false,
+        };
+        let result = response("id".into(), CommandResult::Ok(CommandOutput::Diff(info)));
+        let body = result.result.unwrap();
+        assert_eq!(body["files"][0]["path"], "src/main.rs");
+        assert_eq!(body["files"][0]["status"], "modified");
+        assert_eq!(body["files"][0]["hunks"][0]["old_start"], 1);
+        assert_eq!(body["files"][0]["hunks"][0]["lines"][1]["kind"], "deletion");
+        assert_eq!(body["files"][0]["hunks"][0]["lines"][1]["text"], "old");
+        assert_eq!(body["truncated"], false);
+
+        // Bridge byte/line cap marks both the envelope and the specific
+        // hunk whose body was shortened.
+        let long = omaterm_core::DiffInfo {
+            files: vec![omaterm_core::DiffFileInfo {
+                path: std::path::PathBuf::from("long.txt"),
+                old_path: None,
+                status: omaterm_core::DiffFileStatus::Modified,
+                binary: false,
+                hunks: vec![omaterm_core::DiffHunkInfo {
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 1,
+                    new_lines: 1,
+                    lines: vec![line(
+                        omaterm_core::DiffLineKind::Addition,
+                        &"x".repeat(2500),
+                    )],
+                    truncated: false,
+                }],
+                hunk_count: 1,
+                truncated: false,
+            }],
+            truncated: false,
+            staged: false,
+        };
+        let long_response = response("id".into(), CommandResult::Ok(CommandOutput::Diff(long)));
+        let body = long_response.result.unwrap();
+        assert_eq!(body["truncated"], true);
+        assert_eq!(body["files"][0]["hunks"][0]["truncated"], true);
+        assert_eq!(
+            body["files"][0]["hunks"][0]["lines"][0]["text"]
+                .as_str()
+                .unwrap()
+                .len(),
+            2000
+        );
+
+        // Bridge wire cap: 130 files truncate to 128 with the flag set.
+        let many = |count: usize| omaterm_core::DiffInfo {
+            files: (0..count)
+                .map(|i| omaterm_core::DiffFileInfo {
+                    path: std::path::PathBuf::from(format!("f{i}.txt")),
+                    old_path: None,
+                    status: omaterm_core::DiffFileStatus::Modified,
+                    binary: false,
+                    hunks: vec![],
+                    hunk_count: 1,
+                    truncated: false,
+                })
+                .collect(),
+            truncated: false,
+            staged: true,
+        };
+        let result = response(
+            "id".into(),
+            CommandResult::Ok(CommandOutput::Diff(many(130))),
+        );
+        let body = result.result.unwrap();
+        assert_eq!(body["files"].as_array().unwrap().len(), 128);
+        assert_eq!(body["truncated"], true);
+        assert_eq!(body["staged"], true);
     }
 
     #[test]

@@ -125,6 +125,13 @@ crates/omaterm-ipc/
 | `file.list` | `FileCommand::List` |
 | `file.search` | `FileCommand::Search` |
 | `file.open` | `FileCommand::Open` |
+| `git.status` | `GitCommand::Status` |
+| `git.stage` | `GitCommand::Stage` |
+| `git.unstage` | `GitCommand::Unstage` |
+| `git.discard` | `GitCommand::Discard` |
+| `git.commit` | `GitCommand::Commit` |
+| `diff.show` | `DiffCommand::Show` |
+| `diff.list-files` | `DiffCommand::ListFiles` |
 
 ### Socket Path
 

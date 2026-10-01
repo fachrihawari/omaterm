@@ -66,6 +66,13 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         }
         "file.list" | "file.search" => render_files(&result),
         "file.open" => "Submitted open to shell.".into(),
+        "git.status" => render_git_status(&result),
+        "git.stage" => "Staged paths.".into(),
+        "git.unstage" => "Unstaged paths.".into(),
+        "git.discard" => "Discarded paths.".into(),
+        "git.commit" => format!("Committed {}.", string(&result, "oid")),
+        "diff.show" => render_diff(&result),
+        "diff.list-files" => render_diff_files(&result),
         _ => result.to_string(),
     }
 }
@@ -383,6 +390,182 @@ fn render_files(result: &Value) -> String {
     out.trim_end().to_owned()
 }
 
+/// Grouped git status: branch header plus staged/unstaged/untracked
+/// sections with counts, mirroring the desktop Source Control panel.
+fn render_git_status(result: &Value) -> String {
+    let branch = result.get("branch").and_then(Value::as_str);
+    let upstream = result.get("upstream").and_then(Value::as_str);
+    let ahead = result.get("ahead").and_then(Value::as_u64).unwrap_or(0);
+    let behind = result.get("behind").and_then(Value::as_u64).unwrap_or(0);
+    let mut out = match (branch, upstream) {
+        (Some(branch), Some(upstream)) => {
+            format!("Branch: {branch} ({upstream}, ahead {ahead}, behind {behind})\n")
+        }
+        (Some(branch), None) => format!("Branch: {branch} (ahead {ahead}, behind {behind})\n"),
+        (None, _) => "Not a git repository.\n".to_owned(),
+    };
+    let mut any = false;
+    for (key, title) in [
+        ("staged", "Staged"),
+        ("unstaged", "Unstaged"),
+        ("untracked", "Untracked"),
+    ] {
+        let items = result
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if items.is_empty() {
+            continue;
+        }
+        any = true;
+        out.push_str(&format!("\n{title} ({})\n", items.len()));
+        for item in &items {
+            let path = item.get("path").and_then(Value::as_str).unwrap_or("-");
+            let renamed = item.get("renamed_from").and_then(Value::as_str);
+            match renamed {
+                Some(from) => out.push_str(&format!("  {from} -> {path}\n")),
+                None => out.push_str(&format!("  {path}\n")),
+            }
+        }
+    }
+    if !any {
+        out.push_str("\nWorking tree clean.\n");
+    }
+    if result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(truncated: bounded git status)\n");
+    }
+    out.trim_end().to_owned()
+}
+
+/// Unified diff: one section per file with `±` hunk bodies in plain
+/// monospace (mirrors the desktop Diff tab; no highlighting in v0.2).
+/// Binary files render the "binary, not shown" marker.
+fn render_diff(result: &Value) -> String {
+    let staged = result
+        .get("staged")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let files = result
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if files.is_empty() {
+        return if staged {
+            "No staged changes.".into()
+        } else {
+            "No changes.".into()
+        };
+    }
+    let mut out = String::new();
+    for file in &files {
+        let path = file.get("path").and_then(Value::as_str).unwrap_or("-");
+        let status = file.get("status").and_then(Value::as_str).unwrap_or("-");
+        let binary = file.get("binary").and_then(Value::as_bool).unwrap_or(false);
+        match file.get("old_path").and_then(Value::as_str) {
+            Some(from) => out.push_str(&format!("diff --git {from} -> {path} ({status})\n")),
+            None => out.push_str(&format!("diff --git {path} ({status})\n")),
+        }
+        if binary {
+            out.push_str("binary, not shown\n");
+            continue;
+        }
+        let hunks = file
+            .get("hunks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for hunk in &hunks {
+            let (old_start, old_lines) = (
+                hunk.get("old_start").and_then(Value::as_u64).unwrap_or(0),
+                hunk.get("old_lines").and_then(Value::as_u64).unwrap_or(0),
+            );
+            let (new_start, new_lines) = (
+                hunk.get("new_start").and_then(Value::as_u64).unwrap_or(0),
+                hunk.get("new_lines").and_then(Value::as_u64).unwrap_or(0),
+            );
+            out.push_str(&format!(
+                "@@ -{old_start},{old_lines} +{new_start},{new_lines} @@\n"
+            ));
+            let lines = hunk
+                .get("lines")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for line in &lines {
+                let marker = match line.get("kind").and_then(Value::as_str) {
+                    Some("addition") => "+",
+                    Some("deletion") => "-",
+                    _ => " ",
+                };
+                out.push_str(&format!(
+                    "{marker}{}\n",
+                    line.get("text").and_then(Value::as_str).unwrap_or("")
+                ));
+            }
+            if hunk
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                out.push_str("… (hunk truncated)\n");
+            }
+        }
+        if file
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            out.push_str("… (file truncated)\n");
+        }
+    }
+    if result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(truncated: bounded diff)\n");
+    }
+    out.trim_end().to_owned()
+}
+
+/// Changed-file list with per-file status (the fast header-only
+/// surface).
+fn render_diff_files(result: &Value) -> String {
+    let files = result
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if files.is_empty() {
+        return "No changed files.".into();
+    }
+    let mut out = String::new();
+    for file in &files {
+        let path = file.get("path").and_then(Value::as_str).unwrap_or("-");
+        let status = file
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(|status| status.chars().next())
+            .unwrap_or('?');
+        let hunks = file.get("hunk_count").and_then(Value::as_u64).unwrap_or(0);
+        out.push_str(&format!("{status} {path} ({hunks} hunks)\n"));
+    }
+    if result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(truncated: bounded diff)\n");
+    }
+    out.trim_end().to_owned()
+}
+
 fn render_read(result: &Value) -> String {
     let text = result.get("text").and_then(Value::as_str).unwrap_or("");
     let truncated = result
@@ -538,6 +721,121 @@ mod tests {
         assert!(empty.contains("No files."));
         let opened = human_success("file.open", &ok(serde_json::json!({"submitted": true})));
         assert!(opened.contains("Submitted"));
+    }
+
+    #[test]
+    fn human_git_outputs_render() {
+        let status = human_success(
+            "git.status",
+            &ok(serde_json::json!({
+                "branch": "main", "upstream": "origin/main",
+                "ahead": 1, "behind": 0,
+                "staged": [{"path": "a.txt", "x": "M", "y": "."}],
+                "unstaged": [],
+                "untracked": [{"path": "new.txt"}],
+                "truncated": false,
+            })),
+        );
+        assert!(status.contains("main"));
+        assert!(status.contains("Staged (1)"));
+        assert!(status.contains("a.txt"));
+        assert!(status.contains("Untracked (1)"));
+        let renamed = human_success(
+            "git.status",
+            &ok(serde_json::json!({
+                "branch": "main", "ahead": 0, "behind": 0,
+                "staged": [{"path": "after.txt", "renamed_from": "before.txt"}],
+                "unstaged": [], "untracked": [], "truncated": true,
+            })),
+        );
+        assert!(renamed.contains("before.txt -> after.txt"));
+        assert!(renamed.contains("truncated"));
+        let clean = human_success(
+            "git.status",
+            &ok(serde_json::json!({
+                "branch": "main", "ahead": 0, "behind": 0,
+                "staged": [], "unstaged": [], "untracked": [],
+                "truncated": false,
+            })),
+        );
+        assert!(clean.contains("clean"));
+        let non_repo = human_success(
+            "git.status",
+            &ok(serde_json::json!({
+                "branch": null, "ahead": 0, "behind": 0,
+                "staged": [], "unstaged": [], "untracked": [],
+                "truncated": false,
+            })),
+        );
+        assert!(non_repo.contains("Not a git repository"));
+        assert_eq!(
+            human_success("git.stage", &ok(serde_json::json!({}))),
+            "Staged paths."
+        );
+        assert_eq!(
+            human_success("git.commit", &ok(serde_json::json!({"oid": "abc123"}))),
+            "Committed abc123."
+        );
+    }
+
+    #[test]
+    fn human_diff_outputs_render() {
+        let show = human_success(
+            "diff.show",
+            &ok(serde_json::json!({
+                "files": [{
+                    "path": "src/main.rs", "old_path": null,
+                    "status": "modified", "binary": false,
+                    "hunks": [{
+                        "old_start": 1, "old_lines": 2,
+                        "new_start": 1, "new_lines": 2,
+                        "lines": [
+                            {"kind": "context", "text": "ctx"},
+                            {"kind": "deletion", "text": "old"},
+                            {"kind": "addition", "text": "new"},
+                        ],
+                        "truncated": false,
+                    }],
+                    "hunk_count": 1, "truncated": false,
+                }],
+                "truncated": false, "staged": false,
+            })),
+        );
+        assert!(show.contains("diff --git src/main.rs (modified)"));
+        assert!(show.contains("@@ -1,2 +1,2 @@"));
+        assert!(show.contains(" ctx"));
+        assert!(show.contains("-old"));
+        assert!(show.contains("+new"));
+        let binary = human_success(
+            "diff.show",
+            &ok(serde_json::json!({
+                "files": [{
+                    "path": "logo.png", "old_path": null,
+                    "status": "added", "binary": true,
+                    "hunks": [], "hunk_count": 0, "truncated": false,
+                }],
+                "truncated": false, "staged": false,
+            })),
+        );
+        assert!(binary.contains("binary, not shown"));
+        let empty = human_success(
+            "diff.show",
+            &ok(serde_json::json!({"files": [], "truncated": false, "staged": true})),
+        );
+        assert!(empty.contains("No staged changes"));
+        let files = human_success(
+            "diff.list-files",
+            &ok(serde_json::json!({
+                "files": [
+                    {"path": "a.txt", "status": "modified", "hunk_count": 2},
+                    {"path": "b.txt", "status": "added", "hunk_count": 1},
+                ],
+                "truncated": true, "staged": false,
+            })),
+        );
+        assert!(files.contains("m a.txt (2 hunks)"));
+        assert!(files.contains("a b.txt (1 hunks)"));
+        assert!(files.contains("truncated"));
     }
 
     #[test]

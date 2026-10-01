@@ -95,6 +95,13 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `file list` | `file.list` | File List | Bounded `{entries[{path, kind}], truncated}`; empty envelope without a root |
 | `file search QUERY` | `file.search` | File Search | Skim-ranked filename matches (`Ctrl+P` backend), bounded + truncated |
 | `file open PATH` | `file.open` | File Open | Submits `$EDITOR <path>` to the focused terminal (`terminal.run` semantics) |
+| `git status` | `git.status` | Git Status | Branch + ahead/behind + staged/unstaged/untracked groups, bounded + truncated; empty envelope for non-repos |
+| `git stage PATHS...` | `git.stage` | Git Stage | Stages 1–100 explicit root-relative paths (`git add --`) |
+| `git unstage PATHS...` | `git.unstage` | Git Unstage | Restores the index for 1–100 paths, worktree kept |
+| `git discard PATHS...` | `git.discard` | Git Discard | Restores tracked paths from HEAD, deletes untracked (desktop arms two-step; CLI dispatches directly) |
+| `git commit -m MESSAGE` | `git.commit` | Git Commit | Commits staged changes with a message (author from repo config); nothing staged fails with `git_failed` |
+| `diff show` | `diff.show` | Diff Show | Bounded unified diff for unstaged/staged changes or one selected path |
+| `diff list-files` | `diff.list-files` | Diff ListFiles | Bounded changed-file headers and hunk counts without bodies |
 
 `terminal new` deliberately creates a new tab, avoiding an unspecified split target.
 `project open` creates a project even if another project uses the same directory.

@@ -19,6 +19,9 @@ M4 evidence below.
 | 10 — Encrypted History Recovery | complete | 287-test suite green 2026-09-28 plus release Wayland proof (opt-in, styled/Unicode restore, fresh shells, journal merge, alt absence, clears + rotation, disable, key-loss memory-only); M11 closed the remaining live items (same-pane restore, corrupt-archive quarantine) — see M11 record | Documented limits only: graceful-close live, banner-visibility eyes, per-pane CWD re-verification stays on M6 plumbing | M11 closure |
 | 11 — v0.1 Closure & Hardening | complete | 313-test serial suite green; release Wayland IPC proofs (split-ID discovery + live resize/equalize, path launch + run, history restore + quarantine, invalid-config survival, targeted logging); PKGBUILD + license inventory; perf baseline recorded — see M11 record below | Documented limits only: eyes/hands items (jump keys, picker portal, paste/drop live, font-size visual), theme engine + automation-disable enforcement future, X11/second-compositor/scaling, per-process GPU | M12 (done — see M12 row) |
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
+| 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
+| 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
+| 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, selected Git row detail rendered inline in the Git panel; focused tests green (see M15 progress below) | Wayland click/render proof pending; workspace serial suite timed out at the pre-existing terminal four-pane test | Finish live proof, close any M15 acceptance gaps |
 
 ## Handoff rules
 
@@ -2510,3 +2513,339 @@ dirs-first truncation priority, plus the carried v2 panel/context tests.
 
 Begin M14 Git Status panel on the M12 root/boundary foundation and the
 M13 right-sidebar shell.
+
+## Milestone 14 — Git Status Panel — complete with documented limits (2026-10-01)
+
+VSCode-Source-Control-style status over the system git binary only
+(blueprint §32 — no libgit2, so user config/hooks/SSH/GPG keep working):
+branch header with ahead/behind badge, Staged/Unstaged/Untracked groups,
+per-file stage/unstage/discard, manual + interval + post-`terminal.run`
+refresh, and a two-step discard arm. No commit UI (explicit non-goal).
+Working tree only; no commit made.
+
+### Scope decisions (user-confirmed in planning)
+
+- Git code extends `omaterm-context` (`src/git.rs`); no new crate.
+- Discard arm is desktop-only (paste/history precedent): the router stays
+  single-step, and no panel code path dispatches without a live arm.
+- Entry cap reuses `[files] max-results` (1–5000, default 100); no new
+  `[git]` key. The existing `[git] refresh-secs` (1–300, default 5)
+  drives the panel interval.
+- Diff-on-select only highlights + logs (`diff opens in M15`); M15 wires
+  the viewer.
+
+### Changed files
+
+- `crates/omaterm-context/src/git.rs` (new), `src/lib.rs` — porcelain
+  v2 `-z --branch` parser + `status`/`stage`/`unstage`/`discard` runners
+- `crates/omaterm-context/tests/git_status.rs` (new) — real-repo
+  integration (clean/dirty/round-trip/discard/traversal/locked/missing)
+- `crates/omaterm-core/src/{command,result,validation,lib}.rs` —
+  `GitCommand`, `GitEntry`/`GitStatusInfo`, `NotARepo`/`GitFailed`/
+  `GitUnavailable` codes, `MAX_GIT_PATHS` (100) + `MAX_GIT_PATH_BYTES`
+- `apps/omaterm/src/router.rs` — `Git{Status,Stage,Unstage,Discard}` arms
+  (scope auth, `omaterm::git` redacted logging, no persistence effects),
+  `pinned_for`/`shell_cwd_for` clones for the worker path
+- `apps/omaterm/src/git_panel.rs` (new) — GPUI-free panel state, arm
+  window, `should_refresh`, `spawn_status_thread` (root resolution and
+  `git status` off-thread with worker-id tagging)
+- `apps/omaterm/src/main.rs` — `git_tick` on the 250ms poller (drain +
+  one in-flight fetch, switch generation, per-project cache),
+  stage/unstage/discard handlers, SOURCE CONTROL sidebar section,
+  post-`terminal.run` dirty hint
+- `crates/omaterm-protocol/src/{lib,method}.rs` — `git.status/stage/
+  unstage/discard` strict DTOs (31→35 methods), `MAX_GIT_PATHS`
+- `apps/omaterm/src/ipc_bridge.rs` — mapping (37→43 rows) + grouped
+  `GitStatus` JSON with bridge cap + truncation test
+- `crates/omaterm-cli/src/{commands/git.rs (new),commands/mod.rs,main.rs,
+  output.rs}` — `git status/stage/unstage/discard` verbs (31→35 parser
+  rows), grouped human rendering + `--json`
+- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping
+  rows), `docs/dependencies.md`, this status record
+
+### Key behaviors
+
+- Env hygiene on every spawn: `GIT_TERMINAL_PROMPT=0`,
+  `--no-optional-locks` (reads), `--no-pager`, closed stdin, bounded
+  waits (10s status / 30s mutations) with kill+reap; stdout capped at
+  4 MiB (torn tail dropped on a NUL boundary, `truncated` set), stderr
+  capped at 4 KiB for `git_failed` messages.
+- Parser verified empirically against git 2.55.0: branch headers require
+  `--branch`; `-z` rename records are `<new> NUL <old>` (TAB without it);
+  non-`-z` quoting would corrupt Unicode — `-z` is mandatory. Scores
+  strip only on the `R100`/`C75` shape so spaced paths survive.
+- Paths run with the root as git's working directory plus
+  `-c status.relativePaths=true`, so entries are root-relative even
+  under hostile user config. Mutations boundary-check through
+  `join_under_root` (lexical + symlink-aware for existing targets;
+  missing paths resolve lexically so discard accepts deleted files).
+- Discard: tracked paths via `git restore --source=HEAD --staged
+  --worktree` (partitioned by one `git ls-files -z` call); untracked
+  paths deleted from disk; missing paths are success. Locked index
+  surfaces `git_failed`, never hangs.
+- Desktop reads never touch the dispatcher on the UI thread (M13
+  background-fetch precedent); mutations go through the single
+  dispatcher like IPC/CLI (§62). The off-thread contract is pinned by a
+  deterministic worker-id assertion, not a timing flake.
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 385 tests, 0 failures (58 desktop + 36 CLI + 33 context + 1 git-roots + 7 git-status + 15 core + 11 IPC + 3 logging + 6 protocol + 44 state + 139 terminal unit + 32 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo tree -p omaterm-context` | PASS: zero `gpui`, zero git library (system binary only) |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS (used for all Wayland runs) |
+| `python3 scripts/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+New coverage: porcelain fixtures (headers, detached, groups, rename +
+Unicode/spaces, unmerged-both-groups, torn tail, truncation order),
+join/traversal/symlink rejection, missing-binary `git_unavailable`
+mapping, real-repo integration (clean branch, dirty groups, rename
+both-paths live, stage→status→unstage round-trip, discard restore +
+delete + idempotent-missing, traversal rejection on all three
+mutations, non-repo `NotARepo`, locked-index `git_failed` with working
+status, wedged-git timeout), core validation boundaries, router
+flow/scope/stale/empty-envelope matrix, protocol decode (35),
+bridge mapping (43) + JSON shape + 128-cap truncation, CLI
+parser/mapping/render (35 rows), panel arm-window/refresh-timing/
+off-thread-worker tests.
+
+### Release Wayland proofs (Omarchy/Hyprland, isolated STATE/CONFIG/HOME/RUNTIME, SHELL=/bin/bash)
+
+- `project open` on a repo fixture → `project root` pinned; `git
+  status` shows `Branch: master` + `Unstaged (1)` + `Untracked (1)`;
+  `--json` envelope valid (`branch`, `truncated: false`, group keys).
+- `git stage tracked.txt` → `Staged (1)`; `git unstage` → back to
+  `Unstaged`; `git discard untracked.txt` deletes it;
+  `git discard tracked.txt` restores HEAD content; final
+  `Working tree clean` (all matched `git diff` ground truth).
+- Error paths live: `../outside.txt` → `path_outside_root` exit 1;
+  bare `git stage` → usage exit 64; pinned non-repo project →
+  `Not a git repository` envelope on status, `not_a_repo` exit 1 on
+  stage.
+- Panel: after re-dirtying + `project select`, grim capture shows the
+  right sidebar SOURCE CONTROL section (`master`, `Unstaged (1)` with
+  `tracked.txt stage discard`, `Untracked (1)` with `new2.txt stage
+  discard`) matching CLI state on the same instance. Capture verified
+  during the pass; the file was not retained (tmp reaped).
+- Residue cleanup verified: test unit stopped, zero
+  `omaterm-desktop` processes, isolated STATE/HOME/repo dirs removed
+  (socket/credential are pre-existing SIGTERM-stale artifacts, reclaimed
+  at startup per M8).
+
+### Round-2 live proofs — auto-refresh + post-run hint (2026-10-01, same release build)
+
+A second isolated instance closed the remaining live rows without any
+pointer/keyboard injection:
+
+- Background auto-refresh: with a clean tree, `echo external >>
+  tracked.txt` was made outside OmaTerm; ~9s later (one 5s interval +
+  tick) CLI `git status` showed `Unstaged (1) tracked.txt`, and a
+  window-region grim capture shows the panel rendering `Unstaged (1)`
+  with `tracked.txt stage discard` — no OmaTerm interaction at all.
+- CLI→panel parity on mutated state: `git stage tracked.txt` →
+  `--json` reports `staged: ['tracked.txt'], truncated: false`.
+- Post-`terminal.run` hint: after `git unstage`, `terminal run --pane
+  <id> -- touch runhint.txt` submitted to the ready Bash shell; 2s
+  later (inside the 5s interval, proving the hint path rather than the
+  interval) CLI status listed `runhint.txt` untracked, and a second
+  capture shows the terminal with the executed `'touch' 'runhint.txt'`
+  plus the panel rendering `Untracked (1)` / `runhint.txt stage
+  discard` alongside the unstaged entry.
+- Captures were verified during the pass (`auto-refresh.png`,
+  `staged.png` under `/tmp/opencode/m14b/`); the directory has since
+  been reaped with the rest of the isolated fixture. Residue cleanup
+  re-verified: unit stopped, no desktop/shell test processes remain
+  (one `pgrep -f` self-match ruled out via `pgrep -af` showing only
+  the pgrep pipeline itself), isolated dirs removed.
+
+With these, every M14 test-plan live row has same-instance evidence;
+the only remaining non-passes are hands-on-panel-clicks (standing
+shared-machine limit) and the pre-existing graceful-close path.
+
+### Follow-up — icon actions + Files|Git tabs (2026-10-01, user notes)
+
+- Stage/unstage/discard row actions render Nerd Font icons instead of
+  text (`GitAction::icon` in `git_panel.rs`: plus/minus/trash in
+  green/amber/red decorator hues; refresh is an icon too). All four
+  codepoints are covered by the `icon_glyphs_exist_in_nerd_font` test,
+  which ran against the installed `JetBrainsMonoNerdFont-Regular.ttf`
+  (not skipped).
+- Git is a right-sidebar tab (`| Files | Git |`, `SidebarTab`
+  defaulting to Files, view-local and never persisted — no schema
+  churn) instead of a section stacked under the tree. The files
+  watcher warning stays on the Files tab; the poller serves both tabs
+  regardless of visibility.
+- Changed files: `apps/omaterm/src/{git_panel.rs,files.rs,main.rs}`.
+  No dispatcher/protocol/CLI changes (same `GitCommand` path).
+- Gates: `cargo fmt --check` PASS, `clippy -D warnings` PASS,
+  per-package serial suites green (59 desktop incl. new tab-default
+  test + glyph coverage, 33 context lib, 36 CLI, 15 core, 6
+  protocol). The full serial workspace run exceeded its 600s timeout
+  under concurrent user load (known PTY-load sensitivity per M4/M6;
+  untouched suites last green at 385/385).
+- Live screenshots attempted on an isolated instance (dirty repo,
+  temp Git-default build): the shared-machine session stayed busy and
+  the test window sat occluded, so no Git-tab capture landed. The
+  temp default was reverted (`SidebarTab::Files`) and release
+  rebuilt. Icons are test-verified against the real font and the tab
+  layout reuses proven render primitives — eyes verification stays
+  open for the user at a glance.
+
+### Follow-up 2 — commit, monochrome icons, scrollbars (2026-10-01, user notes)
+
+Three user notes, one slice. The "no commit UI" non-goal is
+deliberately reversed (user-approved scope change): blueprint §32's
+normative rules (system git only, no silent merge/rebase strategy)
+are untouched — plain `git commit -m` violates neither.
+
+**Commit (bare minimum).** Message input row + check button atop the
+Git tab (single-line, Ctrl+P input precedent: click focuses, Esc
+releases, Enter submits, Backspace deletes; Ctrl/Alt combos fall
+through to global shortcuts; pane clicks and tab switches release
+focus). Button enables only with staged changes; authorship from repo
+config; no amend/push. Failed submissions (hook/GPG rejection) put
+the message back for fix-and-retry. Full slice:
+`omaterm-context::git_commit` (→ short HEAD oid) →
+`GitCommand::Commit` + `MAX_GIT_MESSAGE_BYTES` (newlines/tabs allowed
+for the body, NUL/controls rejected) + `CommandOutput::GitCommitted`
+→ router arm (scope auth, redacted log, no persistence effects) →
+`git.commit` DTO/bridge/CLI (`git commit -m`, `Committed <oid>.`) →
+desktop input state in `GitPanel` (per-project drafts, pure + tested)
+→ docs mapping rows (32 CLI methods now).
+
+**Monochrome icons.** Colored plus/minus/trash are gone: stage=plus,
+unstage=minus, discard=undo-arrow (U+F0E2, VSCode-style), refresh and
+commit-check likewise, all in the row color. No GPUI tooltips —
+0.2.2 tooltips need a full View type per hint, disproportionate for
+four labels — so a dimmed legend footer renders from the same glyph
+constants as the actions (cannot drift). `fa-check` (U+F00C) added to
+the glyph-coverage test.
+
+**Scrollbars.** Vertical: thin rail beside the rows with a proportional
+thumb (`scroll_thumb` pure + tested), wheel, press-and-slide drag
+(delta-only, no geometry needed), stuck-drag guards (release, pane
+clicks, tab switches). Hidden when everything fits. Horizontal:
+Shift+wheel / native-x / rail drag into a clamped px offset; at rest
+the classic ellipsis path renders byte-identical, shifted rows lay out
+the full relative path nowrap in an overflow viewport. View-local
+state only, no persistence/schema change.
+
+Changed files: `omaterm-context/{git.rs, tests/git_status.rs}`,
+`omaterm-core/{command,validation,result}.rs`,
+`apps/omaterm/{router.rs,git_panel.rs,files.rs,main.rs}`,
+`omaterm-protocol/{lib,method}.rs`, `omaterm-cli/{commands/git.rs,
+main.rs,output.rs}`, `docs/{08,09,14}-*.md` checkboxes below, this
+record.
+
+Automated: fmt/clippy clean; desktop 62, context lib 33 + 8
+integration, core 16, CLI 36, protocol 6 — all green (full serial
+workspace run deferred: 600s timeout under concurrent user load,
+known PTY sensitivity; untouched suites last green 385/385).
+
+Live (release, isolated instance): `git stage` → `git commit -m "add
+work"` → `Committed 8955ec5.`, clean tree, HEAD matches ground
+truth; nothing-staged → `git_failed` exit 1; missing repo identity →
+bounded author-identity `git_failed` (no prompt, no hang — env
+hygiene holds). grim went unresponsive mid-pass (compositor load),
+so the new Git-tab/commit-row/scrollbar rendering is NOT
+eyes-verified this round: glyphs are font-test-verified and layout
+reuses proven primitives. Residue verified clean (unit stopped, no
+desktop processes, fixture removed).
+
+### Documented limits (not passes)
+
+- Panel clicks (stage/unstage/discard actions, refresh, row select) and
+  the discard arm banner were not exercised by hand (no pointer
+  injection on the shared session); the arm state machine, dispatch
+  wiring, and CLI parity on the same instance are tested/proven, and
+  the panel render itself is screenshot-verified.
+- The timed off-thread assertion is a deterministic worker-identity
+  check plus interval/timing unit tests, not a wall-clock UI-thread
+  profiler trace.
+- Wheel-scroll direction for the new section inherits the tree
+  convention (standing M13v3 note).
+- Graceful `window.close` live path still unavailable (SIGTERM stops;
+  snapshots already held state). Standing v0.1 limits unchanged:
+  second compositor, X11 runtime, alternate scaling/monitor,
+  `zsh`/`fish` unavailable, per-process GPU.
+
+### Next action
+
+Finish M15 live Git-row-to-inline-diff Wayland proof.
+
+## Milestone 15 — Diff Viewer — implementation in progress
+
+Added bounded unified-diff parsing and execution over the system `git`
+binary. The desktop presents the selected changed file's diff **inside the
+existing Git panel**, directly beneath Git's change list; there is no
+separate Diff sidebar tab. Clicking a staged/unstaged Git row selects the
+matching diff side. Hunks render with plain monospace `+`/`-` colors,
+previous/next navigation, copy/open-path actions, and stage controls routed
+through the existing `GitCommand::Stage` path. `diff.show` and
+`diff.list-files` are also available through the common dispatcher, IPC,
+and CLI. Working tree only; no commit made.
+
+### Changed files
+
+- `crates/omaterm-context/src/{diff,git,lib}.rs` — bounded `git diff`
+  runner/parser, caps, binary handling, UTF-8-safe truncation, shared
+  M14 subprocess helper
+- `crates/omaterm-context/tests/diff_repo.rs` — real-repository staged /
+  unstaged / single-path / binary / rename / 1000-file coverage
+- `crates/omaterm-core/src/{command,result,validation,lib}.rs` —
+  `DiffCommand`, bounded result DTOs, context/path validation
+- `apps/omaterm/src/{router,ipc_bridge,diff_panel,main}.rs` — scoped
+  query path, bounded bridge response, off-thread refresh state, inline
+  Git-panel detail
+- `crates/omaterm-protocol/src/{lib,method}.rs` — strict
+  `diff.show` / `diff.list-files` DTOs
+- `crates/omaterm-logging/src/lib.rs` — `omaterm::diff` category;
+  logs only project ID, staged flag, file count, and truncation
+- `crates/omaterm-cli/src/{commands/diff.rs,commands/mod.rs,main.rs,output.rs}`
+  — CLI mapping and human/JSON rendering
+- `docs/{08-milestone-8-ipc.md,09-milestone-9-cli.md,15-milestone-15-diff-viewer.md}`
+  — method mappings and corrected Git-panel UI contract
+- This status record
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | TIMED OUT after 900s at `omaterm_terminal::workspace::tests::four_panes_have_independent_sessions`; that terminal unit target passes independently |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 72 tests |
+| `cargo test -p omaterm-context -- --test-threads=1` | PASS: 44 unit + 5 diff integration + 1 git-root integration + 8 git-status integration tests |
+| `cargo test -p omaterm-cli -p omaterm-protocol -p omaterm-core` | PASS: 38 CLI + 6 protocol + 17 core tests |
+| `cargo test -p omaterm-logging` | PASS: 3 tests |
+| `cargo test -p omaterm-terminal --lib -- --test-threads=1` | PASS: 139 tests |
+| `cargo test -p omaterm-terminal --test pty_integration -- --test-threads=1` | PASS: 32 PTY integration tests |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (existing transitive `proc-macro-error2` future-incompatibility notice only) |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS: 27 Markdown files, 60 local links, 229 blueprint references, 33 CLI/IPC methods mapped |
+| `git diff --check` | PASS |
+
+The full serial workspace invocation did not finish, despite the same
+terminal unit and PTY targets passing independently; do not treat that
+workspace invocation as a pass.
+
+### Desktop validation
+
+Wayland (`wayland-1`) is available, but an existing `omaterm-desktop`
+instance (PID 83052) is active on the shared session. No second window was
+launched or existing window manipulated during this pass. Therefore the
+inline Git-row selection, hunk rendering, and stage interaction still need
+release-build Wayland validation; no desktop visual proof is claimed.
+The current hunk-header stage control dispatches M14's whole-file
+`GitCommand::Stage` for that file; true partial-hunk staging is not yet
+implemented and remains an M15 acceptance gap.
+
+### Next action
+
+Validate on Wayland that clicking a Git change shows its diff inline in the
+Git panel and that staged/unstaged rows select the matching side. Implement
+and verify partial-hunk staging (or explicitly revise the product contract)
+before closing the remaining M15 acceptance criteria; rerun final gates.

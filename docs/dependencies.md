@@ -369,8 +369,56 @@ the app already resolves for its terminal grid, so no font dependency is
 added). The coverage test skips gracefully where the font is absent (CI
 runners).
 
-## Reference provenance
+### Milestone 14 record — 2026-10-01 (git status over the system binary)
 
+No new dependencies of any kind: `omaterm-context/src/git.rs` spawns
+the system git binary (`PATH` lookup, argv vectors only) and
+`omaterm-core`/`omaterm-protocol`/`omaterm-cli`/desktop consume it
+through existing `thiserror`/`serde_json`/GPUI edges. `cargo tree
+-p omaterm-context` confirms zero `gpui` and zero git library —
+blueprint §32 (no libgit2) holds by construction, so user
+config/hooks/SSH/GPG keep working.
+
+- System git 2.55.0 (`git --version`, Omarchy) re-verified 2026-10-01:
+  the same resolution recorded in M12. Porcelain behavior the parser
+  depends on was verified empirically against this version: branch
+  headers require `--branch`, `-z` rename records are `<new> NUL
+  <old>`, non-`-z` output C-octal-quotes non-ASCII paths (hence `-z`
+  is mandatory). `git restore --source=HEAD --staged --worktree`
+  (discard path) requires git ≥ 2.23; failure on older binaries
+  surfaces as bounded `git_failed`, never silent.
+- Verified with `cargo test --workspace -- --test-threads=1` (385
+  tests green, incl. 7 real-repo git integration tests),
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo build --release --bin omaterm --bin omaterm-desktop`, and
+  the release Wayland CLI/desktop proof on Rust 1.98.1.
+  `Cargo.lock` is committed; no new resolution was introduced.
+
+### Standing note — `proc-macro-error2` future-incompat warning (2026-10-01)
+
+Every workspace build prints: ``proc-macro-error2 v2.0.1 ... will be
+rejected by a future version of Rust'' (`E0365`: `pub use proc_macro`
+re-export in its `src/lib.rs:494`). Investigated 2026-10-01, conclusion:
+**no clean fix exists today, and none is needed:**
+
+- Provenance: `proc-macro-error2 2.0.1` ← `stacksafe-macro =0.1.4` ←
+  `stacksafe 0.1.4` ← `gpui 0.2.2` (our pinned GUI release). It is
+  transitively required; no OmaTerm code touches it.
+- Dead ends verified: `gpui` 0.2.2 is the latest release (nothing to
+  bump to); `proc-macro-error2` 2.0.1 is its latest release; its
+  upstream repository was **archived read-only (Jun 7, 2026)**, so no
+  upstream fix will ever ship; `stacksafe` 1.x exists but `gpui`
+  0.2.2 pins `stacksafe ^0.1`, so cargo cannot migrate.
+- Impact: zero. It is a *future*-version diagnostic only — under the
+  pinned toolchain (Rust 1.98.1, `rust-toolchain.toml`) everything
+  builds, and no quality gate fails because of it. A `[patch]` fork
+  would trade permanent maintenance burden for silencing build noise;
+  deliberately not done.
+- Revisit when: a future `gpui` release migrates to `stacksafe` 1.x
+  (which drops the `proc-macro-error2` edge), or the pinned toolchain
+  moves to a rustc where E0365 is a hard error.
+
+## Reference provenance
 Kero and Zed terminal/terminal-view code are behavioral/architectural references.
 Record inspected URLs and revisions with relevant findings at implementation time.
 Do not copy GPL implementation without an explicit compatible project-license

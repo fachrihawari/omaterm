@@ -16,6 +16,7 @@
 //! omaterm::persistence snapshots, recovery, history config/writer
 //! omaterm::files      project root resolution, file listing policy
 //! omaterm::git        git status/refresh lifecycle (never diff bodies)
+//! omaterm::diff       diff query lifecycle (IDs, counts, truncation only)
 //! omaterm::search     filename search ranking and limits
 //! ```
 //!
@@ -24,7 +25,7 @@
 //! passwords, clipboard content, terminal payloads, file contents, diff
 //! bodies, and git stderr MUST NOT be emitted (see the
 //! `no_secret_fields_at_call_sites` audit note in status.md). The v0.2
-//! categories (`files`, `git`, `search`) log IDs, sources, counts, and
+//! categories (`files`, `git`, `diff`, `search`) log IDs, sources, counts, and
 //! truncation flags only — never path contents or command output.
 
 use std::io::Write;
@@ -46,6 +47,7 @@ pub const CATEGORIES: &[&str] = &[
     "omaterm::persistence",
     "omaterm::files",
     "omaterm::git",
+    "omaterm::diff",
     "omaterm::search",
 ];
 

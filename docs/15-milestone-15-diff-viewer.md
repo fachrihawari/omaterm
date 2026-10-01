@@ -1,13 +1,16 @@
 # Milestone 15 — Diff Viewer
 
-> VSCode-diff-editor-style hunk view over `git diff`: `Files → Hunks →
-> Lines` model (blueprint §33), virtualized, with per-hunk stage buttons
-> once M14 mutations exist. Single-pane hunk list first; side-by-side later.
+> Git Source Control detail view: click a changed file in the existing Git
+> panel to see its `Files → Hunks → Lines` diff there (blueprint §33).
+> Per-hunk stage buttons use M14 mutations. Single-pane hunk list first;
+> side-by-side later. Diff is not a separate sidebar tab.
 
 ## Product Contract
 
-Read-only-by-default viewer for unstaged (`git diff`) and staged
-(`git diff --cached`) changes plus `git show <path>` file diffs. Binary
+Read-only-by-default detail view for a selected Git change: unstaged
+(`git diff`) and staged (`git diff --cached`) changes plus single-path
+diffs. Selecting a row in Git shows its matching diff beneath the change
+list in the same panel. Binary
 files render as "binary, not shown". Everything is capped before
 allocation (files/hunks/lines/bytes) with accurate `truncated` flags.
 No syntax highlighting in v0.2 (Tree-sitter arrives with the v0.3 editor);
@@ -36,7 +39,8 @@ the view.
 - Diff parser: `Diff → Files[] → Hunks[] → Lines[]` with strict caps,
   multibyte-safe truncation, binary detection.
 - Core: `DiffCommand` + validation + result DTOs.
-- Desktop: diff panel/section with hunk navigation and stage buttons.
+- Desktop: show the selected changed file's diff inline in the Git panel,
+  with hunk navigation and stage buttons; no separate Diff tab.
 - Protocol/bridge/CLI with human + `--json` rendering.
 
 ## Test Plan

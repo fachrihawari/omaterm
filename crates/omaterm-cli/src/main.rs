@@ -18,7 +18,9 @@ use clap::{Parser, Subcommand};
 use omaterm_protocol::{IpcRequest, PROTOCOL_VERSION};
 
 use commands::WireCall;
+use commands::diff::DiffCmd;
 use commands::file::FileCmd;
+use commands::git::GitCmd;
 use commands::history::HistoryCmd;
 use commands::pane::PaneCmd;
 use commands::project::ProjectCmd;
@@ -81,6 +83,16 @@ enum Commands {
     File {
         #[command(subcommand)]
         cmd: FileCmd,
+    },
+    /// Git status and staging operations.
+    Git {
+        #[command(subcommand)]
+        cmd: GitCmd,
+    },
+    /// Unified diffs over `git diff`.
+    Diff {
+        #[command(subcommand)]
+        cmd: DiffCmd,
     },
 }
 
@@ -155,6 +167,12 @@ fn build_wire_call(command: &Commands) -> Result<(WireCall, String), String> {
         }
         Commands::File { cmd } => {
             commands::file::build(cmd).map(|call| (call.clone(), call.method.clone()))
+        }
+        Commands::Git { cmd } => {
+            commands::git::build(cmd).map(|call| (call.clone(), call.method.clone()))
+        }
+        Commands::Diff { cmd } => {
+            commands::diff::build(cmd).map(|call| (call.clone(), call.method.clone()))
         }
     }
 }
@@ -268,8 +286,18 @@ mod tests {
             &["omaterm", "file", "list"],
             &["omaterm", "file", "search", "main"],
             &["omaterm", "file", "open", "src/main.rs"],
+            &["omaterm", "git", "status"],
+            &["omaterm", "git", "stage", "a.txt"],
+            &["omaterm", "git", "unstage", "a.txt"],
+            &["omaterm", "git", "discard", "a.txt"],
+            &["omaterm", "git", "commit", "-m", "hello"],
+            &["omaterm", "diff", "show"],
+            &["omaterm", "diff", "show", "--staged", "--context", "5"],
+            &["omaterm", "diff", "show", "--path", "src/main.rs"],
+            &["omaterm", "diff", "list-files"],
+            &["omaterm", "diff", "list-files", "--staged"],
         ];
-        assert_eq!(cases.len(), 31);
+        assert_eq!(cases.len(), 41);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");

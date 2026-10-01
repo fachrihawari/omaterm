@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use crate::credentials::Credentials;
 use crate::history::HistoryManager;
 use omaterm_core::{
-    CommandContext, CommandError, CommandOutput, CommandResult, ErrorCode, FileCommand,
-    FileListInfo, HistoryCommand, HistoryStatusInfo, JournalEntryInfo, OmaCommand, PaneCommand,
-    PaneContent, PaneId, PaneInfo, ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo,
-    SessionId, SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand, TerminalInfo,
+    CommandContext, CommandError, CommandOutput, CommandResult, DiffCommand, ErrorCode,
+    FileCommand, FileListInfo, GitCommand, GitStatusInfo, HistoryCommand, HistoryStatusInfo,
+    JournalEntryInfo, OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo, ProjectCommand,
+    ProjectId, ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand, TabId, TabInfo,
+    TerminalCommand, TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
@@ -203,6 +204,95 @@ impl CommandRouter {
         Ok(omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref()).root)
     }
 
+    /// Shared stage/unstage/discard path (M14): project existence plus
+    /// scope check through `file_root`, then one bounded git subprocess
+    /// batch. No root (non-repo without a pin) is `not_a_repo` for
+    /// mutations — unlike status, which renders the empty envelope. No
+    /// persistence effects: git state lives outside the snapshot.
+    fn git_mutation(
+        &mut self,
+        context: CommandContext,
+        project: ProjectId,
+        paths: &[PathBuf],
+        mutation: GitMutation,
+    ) -> CommandResult {
+        let root = match self.file_root(context, project) {
+            Ok(Some(root)) => root,
+            Ok(None) => {
+                return err(
+                    ErrorCode::NotARepo,
+                    "project is not inside a git repository",
+                );
+            }
+            Err(error) => return CommandResult::Err(error),
+        };
+        let result = match mutation {
+            GitMutation::Stage => omaterm_context::git_stage(&root, paths),
+            GitMutation::Unstage => omaterm_context::git_unstage(&root, paths),
+            GitMutation::Discard => omaterm_context::git_discard(&root, paths),
+        };
+        match result {
+            Ok(()) => {
+                tracing::debug!(
+                    target: "omaterm::git",
+                    project_id = %project.0,
+                    operation = mutation.name(),
+                    paths = paths.len(),
+                    "git mutation applied",
+                );
+                ok(CommandOutput::Unit)
+            }
+            Err(error) => git_error(error),
+        }
+    }
+
+    /// Shared diff query path (M15): project existence plus scope check
+    /// through `file_root`, then one bounded `git diff` subprocess. No
+    /// root or a non-repo root renders the empty envelope (M14 product
+    /// contract); no persistence effects — diffs are read-only views of
+    /// repository state. Only counts reach the log: diff bodies never do
+    /// (blueprint §45).
+    fn diff_query(
+        &mut self,
+        context: CommandContext,
+        project: ProjectId,
+        path: Option<&std::path::Path>,
+        staged: bool,
+        context_lines: u8,
+        files_only: bool,
+    ) -> CommandResult {
+        let root = match self.file_root(context, project) {
+            Ok(Some(root)) => root,
+            Ok(None) => {
+                return ok(CommandOutput::Diff(omaterm_core::DiffInfo::empty(staged)));
+            }
+            Err(error) => return CommandResult::Err(error),
+        };
+        let request = omaterm_context::DiffRequest {
+            staged,
+            path: path.map(std::path::PathBuf::from),
+            context_lines,
+            files_only,
+        };
+        match omaterm_context::git_diff(&root, &request) {
+            Ok(info) => {
+                tracing::debug!(
+                    target: "omaterm::diff",
+                    project_id = %project.0,
+                    staged = info.staged,
+                    files = info.files.len(),
+                    truncated = info.truncated,
+                    "diff served",
+                );
+                ok(CommandOutput::Diff(info))
+            }
+            Err(omaterm_context::GitError::NotARepo) => {
+                ok(CommandOutput::Diff(omaterm_core::DiffInfo::empty(staged)))
+            }
+            Err(error) => git_error(error),
+        }
+    }
+
     /// Shell CWD of the project's active tab (focused pane), refreshed from
     /// procfs like persistence does. `None` when the tab has no live shell —
     /// root resolution then reports the explicit empty state.
@@ -303,6 +393,21 @@ impl CommandRouter {
         if let Some(credentials) = &mut self.credentials {
             credentials.revoke(session);
         }
+    }
+
+    /// Pinned directory for git root resolution (M14 desktop refresh
+    /// clones this on the UI thread; all git subprocesses run on a
+    /// background worker).
+    pub fn pinned_for(&self, project: ProjectId) -> Option<PathBuf> {
+        self.coordinator
+            .window()
+            .project(project)
+            .and_then(|target| target.pinned_directory.clone())
+    }
+
+    /// Active shell CWD for the same path (procfs refresh, no subprocess).
+    pub fn shell_cwd_for(&mut self, project: ProjectId) -> Option<PathBuf> {
+        self.active_shell_cwd(project)
     }
 
     fn authorize(&self, context: CommandContext, command: &OmaCommand) -> Result<(), CommandError> {
@@ -413,6 +518,13 @@ impl CommandRouter {
             OmaCommand::File(FileCommand::List { project, .. })
             | OmaCommand::File(FileCommand::Search { project, .. })
             | OmaCommand::File(FileCommand::Open { project, .. }) => Some(*project),
+            OmaCommand::Git(GitCommand::Status { project })
+            | OmaCommand::Git(GitCommand::Stage { project, .. })
+            | OmaCommand::Git(GitCommand::Unstage { project, .. })
+            | OmaCommand::Git(GitCommand::Discard { project, .. })
+            | OmaCommand::Git(GitCommand::Commit { project, .. }) => Some(*project),
+            OmaCommand::Diff(DiffCommand::Show { project, .. })
+            | OmaCommand::Diff(DiffCommand::ListFiles { project, .. }) => Some(*project),
             OmaCommand::Pane(
                 PaneCommand::FocusDirection { .. }
                 | PaneCommand::ResizeFocused { .. }
@@ -1095,6 +1207,88 @@ impl CommandRouter {
                     _ => err(ErrorCode::SessionExited, "terminal session has exited"),
                 }
             }
+            OmaCommand::Git(GitCommand::Status { project }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return ok(Out::GitStatus(GitStatusInfo::empty()));
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                let config = omaterm_state::AppConfig::load().unwrap_or_default();
+                let capped = config.resolved_max_results() as usize;
+                let capped = capped.clamp(1, omaterm_core::validation::MAX_FILE_ENTRIES);
+                match omaterm_context::git_status(&root, capped) {
+                    Ok(status) => {
+                        // Redaction contract: IDs and counts only — never
+                        // branch names, paths, or contents (blueprint §45).
+                        tracing::debug!(
+                            target: "omaterm::git",
+                            project_id = %project.0,
+                            staged = status.staged.len(),
+                            unstaged = status.unstaged.len(),
+                            untracked = status.untracked.len(),
+                            truncated = status.truncated,
+                            "git status served",
+                        );
+                        ok(Out::GitStatus(status))
+                    }
+                    // A pinned non-repo directory is the explicit empty
+                    // state, never an error (M14 product contract).
+                    Err(omaterm_context::GitError::NotARepo) => {
+                        ok(Out::GitStatus(GitStatusInfo::empty()))
+                    }
+                    Err(error) => git_error(error),
+                }
+            }
+            OmaCommand::Git(GitCommand::Stage { project, paths }) => {
+                self.git_mutation(context, project, &paths, GitMutation::Stage)
+            }
+            OmaCommand::Git(GitCommand::Unstage { project, paths }) => {
+                self.git_mutation(context, project, &paths, GitMutation::Unstage)
+            }
+            OmaCommand::Git(GitCommand::Discard { project, paths }) => {
+                self.git_mutation(context, project, &paths, GitMutation::Discard)
+            }
+            OmaCommand::Git(GitCommand::Commit { project, message }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return err(
+                            ErrorCode::NotARepo,
+                            "project is not inside a git repository",
+                        );
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_commit(&root, &message) {
+                    Ok(oid) => {
+                        tracing::debug!(
+                            target: "omaterm::git",
+                            project_id = %project.0,
+                            "git commit created",
+                        );
+                        ok(CommandOutput::GitCommitted { oid })
+                    }
+                    Err(error) => git_error(error),
+                }
+            }
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path,
+                staged,
+                context_lines,
+            }) => self.diff_query(
+                context,
+                project,
+                path.as_deref(),
+                staged,
+                context_lines,
+                false,
+            ),
+            OmaCommand::Diff(DiffCommand::ListFiles { project, staged }) => {
+                self.diff_query(context, project, None, staged, 0, true)
+            }
             OmaCommand::Tab(TabCommand::List { project }) => {
                 let Some(p) = self.coordinator.window().project(project) else {
                     return err(ErrorCode::ProjectNotFound, "project does not exist");
@@ -1567,6 +1761,42 @@ fn coordinator_error(error: CoordinatorError) -> CommandResult {
         }
         CoordinatorError::NoFocusedPane => err(ErrorCode::NoFocusedPane, error.to_string()),
         _ => err(ErrorCode::RuntimeFailure, error.to_string()),
+    }
+}
+
+/// Map a context git failure to its stable wire code (M14, blueprint
+/// §44). `GitFailed` carries bounded git stderr as the message; agents
+/// key off the code, never the text.
+fn git_error(error: omaterm_context::GitError) -> CommandResult {
+    use omaterm_context::GitError as Context;
+    match &error {
+        Context::NotARepo => err(ErrorCode::NotARepo, error.to_string()),
+        Context::GitFailed(_) => err(ErrorCode::GitFailed, error.to_string()),
+        Context::GitUnavailable(_) => err(ErrorCode::GitUnavailable, error.to_string()),
+        Context::PathOutsideRoot => {
+            err(ErrorCode::PathOutsideRoot, "path escapes the project root")
+        }
+        Context::Timeout => err(ErrorCode::Timeout, error.to_string()),
+        Context::Io(_) => err(ErrorCode::RuntimeFailure, error.to_string()),
+    }
+}
+
+/// Which git mutation a `git_mutation` call performs. Kept separate from
+/// `GitCommand` so the shared resolve/map/log path stays in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitMutation {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+impl GitMutation {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Unstage => "unstage",
+            Self::Discard => "discard",
+        }
     }
 }
 
@@ -2381,6 +2611,572 @@ mod tests {
                 None => std::env::remove_var("EDITOR"),
             }
         }
+    }
+
+    #[test]
+    fn git_status_stage_unstage_and_discard_flow() {
+        use omaterm_core::{GitCommand, GitStatusInfo};
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let root = std::env::temp_dir().join(format!("omaterm-m14-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init"]);
+        git(&root, &["config", "user.email", "m14@test"]);
+        git(&root, &["config", "user.name", "m14"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), b"v1\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "init"]);
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // Dirty worktree: status groups it unstaged with no effects.
+        std::fs::write(root.join("a.txt"), b"v2\n").unwrap();
+        let status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStatus(GitStatusInfo {
+            staged, unstaged, ..
+        })) = status.result
+        else {
+            panic!("git status");
+        };
+        assert!(staged.is_empty());
+        assert_eq!(unstaged.len(), 1);
+        assert_eq!(unstaged[0].path, std::path::PathBuf::from("a.txt"));
+        assert!(status.effects.is_empty());
+
+        // Stage → staged; unstage → unstaged again. Mutations emit no
+        // persistence effects (git state lives outside the snapshot).
+        let paths = vec![std::path::PathBuf::from("a.txt")];
+        let staged_outcome = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: paths.clone(),
+            }),
+        );
+        assert_eq!(
+            staged_outcome.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        );
+        assert!(staged_outcome.effects.is_empty());
+        let status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStatus(info)) = status.result else {
+            panic!("staged status");
+        };
+        assert_eq!(info.staged.len(), 1);
+        assert!(info.unstaged.is_empty());
+
+        let unstage = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Unstage {
+                project,
+                paths: paths.clone(),
+            }),
+        );
+        assert_eq!(unstage.result, CommandResult::Ok(CommandOutput::Unit));
+
+        // Untracked discard deletes from disk; missing paths are success.
+        std::fs::write(root.join("scratch.txt"), b"drop\n").unwrap();
+        let discard = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Discard {
+                project,
+                paths: vec![std::path::PathBuf::from("scratch.txt")],
+            }),
+        );
+        assert_eq!(discard.result, CommandResult::Ok(CommandOutput::Unit));
+        assert!(!root.join("scratch.txt").exists());
+
+        // Traversal is rejected before git runs; empty paths fail
+        // validation; stale and foreign projects fail with stable codes.
+        let evil = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Discard {
+                project,
+                paths: vec![std::path::PathBuf::from("../outside.txt")],
+            }),
+        );
+        assert!(matches!(
+            evil.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::PathOutsideRoot,
+                ..
+            })
+        ));
+        let empty = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![],
+            }),
+        );
+        assert!(matches!(
+            empty.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
+        let stale = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status {
+                project: omaterm_core::ProjectId::new(),
+            }),
+        );
+        assert!(matches!(
+            stale.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::ProjectNotFound,
+                ..
+            })
+        ));
+        let foreign = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Git(GitCommand::Status {
+                project: omaterm_core::ProjectId::new(),
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_commit_creates_a_head_commit_from_staged_changes() {
+        use omaterm_core::GitCommand;
+
+        fn git(repo: &std::path::Path, args: &[&str]) -> String {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("git must spawn");
+            assert!(output.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        }
+
+        let root = std::env::temp_dir().join(format!("omaterm-m14-commit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init"]);
+        git(&root, &["config", "user.email", "m14@test"]);
+        git(&root, &["config", "user.name", "m14"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), b"v1\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "init"]);
+        std::fs::write(root.join("b.txt"), b"new\n").unwrap();
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // Empty messages fail validation with no effects; committing with
+        // nothing staged fails loudly (nothing to commit) instead of an
+        // empty commit.
+        let empty = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: String::new(),
+            }),
+        );
+        assert!(matches!(
+            empty.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
+        assert!(empty.effects.is_empty());
+        let unstaged = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: "nothing staged".into(),
+            }),
+        );
+        assert!(matches!(
+            unstaged.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::GitFailed,
+                ..
+            })
+        ));
+
+        // Stage, then commit: the oid returns and the tree goes clean.
+        let staged = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![std::path::PathBuf::from("b.txt")],
+            }),
+        );
+        assert_eq!(staged.result, CommandResult::Ok(CommandOutput::Unit));
+        let committed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Commit {
+                project,
+                message: "add b".into(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::GitCommitted { oid }) = committed.result else {
+            panic!("git commit");
+        };
+        assert!(!oid.is_empty());
+        assert!(committed.effects.is_empty());
+        assert_eq!(git(&root, &["log", "-1", "--format=%s"]), "add b");
+        assert_eq!(git(&root, &["rev-parse", "--short", "HEAD"]), oid);
+        let status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStatus(info)) = status.result else {
+            panic!("post-commit status");
+        };
+        assert!(info.is_empty());
+
+        // Foreign scope is denied.
+        let foreign = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Git(GitCommand::Commit {
+                project: omaterm_core::ProjectId::new(),
+                message: "x".into(),
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diff_show_and_list_files_serve_bounded_envelopes() {
+        use omaterm_core::{DiffCommand, DiffFileStatus};
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let root = std::env::temp_dir().join(format!("omaterm-m15-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init"]);
+        git(&root, &["config", "user.email", "m15@test"]);
+        git(&root, &["config", "user.name", "m15"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), b"one\ntwo\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "init"]);
+        std::fs::write(root.join("a.txt"), b"one\nTWO\n").unwrap();
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // Unstaged show carries hunk bodies with no effects; the staged
+        // side is empty until something is staged.
+        let show = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: None,
+                staged: false,
+                context_lines: 3,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Diff(info)) = show.result else {
+            panic!("diff show");
+        };
+        assert!(!info.staged && !info.truncated);
+        assert_eq!(info.files.len(), 1);
+        assert_eq!(info.files[0].path, std::path::PathBuf::from("a.txt"));
+        assert_eq!(info.files[0].status, DiffFileStatus::Modified);
+        assert_eq!(info.files[0].hunks.len(), 1);
+        assert!(show.effects.is_empty());
+
+        let staged_empty = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: None,
+                staged: true,
+                context_lines: 3,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Diff(staged_info)) = staged_empty.result else {
+            panic!("staged diff show");
+        };
+        assert!(staged_info.staged && staged_info.files.is_empty());
+
+        // Header-only surface: same file, hunk count without bodies.
+        let headers = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::ListFiles {
+                project,
+                staged: false,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Diff(header_info)) = headers.result else {
+            panic!("diff list-files");
+        };
+        assert_eq!(header_info.files.len(), 1);
+        assert!(header_info.files[0].hunks.is_empty());
+        assert_eq!(header_info.files[0].hunk_count, 1);
+        assert!(headers.effects.is_empty());
+
+        // Path filter, over-context validation, traversal, stale, and
+        // foreign scope follow the git matrix exactly.
+        let filtered = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: Some(std::path::PathBuf::from("a.txt")),
+                staged: false,
+                context_lines: 0,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Diff(filtered_info)) = filtered.result else {
+            panic!("filtered diff show");
+        };
+        assert_eq!(filtered_info.files.len(), 1);
+        let over_context = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: None,
+                staged: false,
+                context_lines: 11,
+            }),
+        );
+        assert!(matches!(
+            over_context.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
+        assert!(over_context.effects.is_empty());
+        let evil = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: Some(std::path::PathBuf::from("../outside.txt")),
+                staged: false,
+                context_lines: 3,
+            }),
+        );
+        assert!(matches!(
+            evil.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::PathOutsideRoot,
+                ..
+            })
+        ));
+        let stale = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::ListFiles {
+                project: omaterm_core::ProjectId::new(),
+                staged: false,
+            }),
+        );
+        assert!(matches!(
+            stale.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::ProjectNotFound,
+                ..
+            })
+        ));
+        let foreign = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Diff(DiffCommand::ListFiles {
+                project: omaterm_core::ProjectId::new(),
+                staged: false,
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diff_on_non_repo_root_is_an_empty_envelope() {
+        use omaterm_core::DiffCommand;
+
+        let root = std::env::temp_dir().join(format!("omaterm-m15-norepo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+        for command in [
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: None,
+                staged: false,
+                context_lines: 3,
+            }),
+            OmaCommand::Diff(DiffCommand::ListFiles {
+                project,
+                staged: true,
+            }),
+        ] {
+            let outcome = router.dispatch(CommandContext::LocalUser, command);
+            let CommandResult::Ok(CommandOutput::Diff(info)) = outcome.result else {
+                panic!("non-repo diff must be an empty envelope");
+            };
+            assert!(info.files.is_empty() && !info.truncated);
+            assert!(outcome.effects.is_empty());
+        }
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_status_on_non_repo_root_is_an_empty_envelope() {
+        use omaterm_core::{GitCommand, GitStatusInfo};
+
+        let root = std::env::temp_dir().join(format!("omaterm-m14-norepo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+        // Status on a pinned non-repo directory is the explicit empty
+        // state, never an error; mutations report `not_a_repo`.
+        let status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        assert_eq!(
+            status.result,
+            CommandResult::Ok(CommandOutput::GitStatus(GitStatusInfo::empty()))
+        );
+        let mutation = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![std::path::PathBuf::from("a.txt")],
+            }),
+        );
+        assert!(matches!(
+            mutation.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::NotARepo,
+                ..
+            })
+        ));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
