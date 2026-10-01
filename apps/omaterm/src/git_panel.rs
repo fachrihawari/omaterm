@@ -1,4 +1,4 @@
-//! M14 Source Control panel state: right-sidebar git status rows plus the
+//! M14 Source Control panel state: contextual-sidebar git status rows plus the
 //! discard two-step arm.
 //!
 //! GPUI-free. Rendering and key/mouse wiring live in `main.rs`, which owns

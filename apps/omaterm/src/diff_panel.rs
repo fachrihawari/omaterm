@@ -45,6 +45,11 @@ pub struct DiffRefresh {
 pub const MAX_DIFF_RENDER_HUNKS: usize = 32;
 /// Body lines rendered per hunk at most.
 pub const MAX_DIFF_RENDER_LINES: usize = 200;
+/// Hunks visible at once in the main-area preview tab. The cursor can
+/// range over the full render window; this viewport follows it, and the
+/// wheel scrolls it. Keeps huge diffs off the GPUI tree (M15 virtualized
+/// rendering goal) without per-line geometry math.
+pub const MAX_DIFF_PREVIEW_HUNKS: usize = 8;
 
 #[derive(Default)]
 pub struct DiffPanel {
@@ -53,6 +58,12 @@ pub struct DiffPanel {
     selected_file: HashMap<ProjectId, PathBuf>,
     selected_hunk: HashMap<ProjectId, usize>,
     show_staged: HashMap<ProjectId, bool>,
+    /// View-local preview tab in the main area (M15): which projects have
+    /// the diff preview open. Never persisted, never on the wire — the
+    /// core tab model stays terminal-only (M13/M17 scope).
+    preview_open: HashMap<ProjectId, bool>,
+    /// Top hunk of the preview viewport, per project.
+    hunk_offset: HashMap<ProjectId, usize>,
 }
 
 impl DiffPanel {
@@ -74,6 +85,54 @@ impl DiffPanel {
         self.show_staged.insert(project, staged);
     }
 
+    /// Open the main-area preview tab for a project. View-local only:
+    /// never persisted, never sent over IPC (core tabs stay terminal).
+    pub fn open_preview(&mut self, project: ProjectId) {
+        self.preview_open.insert(project, true);
+    }
+
+    /// Close the main-area preview tab for a project.
+    pub fn close_preview(&mut self, project: ProjectId) {
+        self.preview_open.remove(&project);
+    }
+
+    /// Whether the main area shows the diff preview for a project.
+    pub fn preview_open(&self, project: ProjectId) -> bool {
+        self.preview_open.get(&project).copied().unwrap_or(false)
+    }
+
+    /// Top hunk of the preview viewport for a project.
+    pub fn hunk_offset(&self, project: ProjectId) -> usize {
+        self.hunk_offset.get(&project).copied().unwrap_or(0)
+    }
+
+    /// Scroll the preview viewport by `steps` hunks (positive scrolls
+    /// toward later hunks), clamped so the last hunk can sit at the
+    /// viewport bottom. No-op without a selection. Returns the new offset.
+    pub fn scroll_preview(&mut self, project: ProjectId, steps: i32) -> usize {
+        let max = self
+            .hunk_count_for(project)
+            .saturating_sub(MAX_DIFF_PREVIEW_HUNKS) as i32;
+        let next = (self.hunk_offset(project) as i32 + steps).clamp(0, max.max(0)) as usize;
+        self.hunk_offset.insert(project, next);
+        next
+    }
+
+    /// Keep the cursor inside the preview viewport after cursor moves.
+    fn ensure_cursor_visible(&mut self, project: ProjectId) {
+        let cursor = self.selected_hunk(project);
+        let mut offset = self.hunk_offset(project);
+        if cursor < offset {
+            offset = cursor;
+        } else if cursor >= offset + MAX_DIFF_PREVIEW_HUNKS {
+            offset = cursor + 1 - MAX_DIFF_PREVIEW_HUNKS;
+        }
+        let max = self
+            .hunk_count_for(project)
+            .saturating_sub(MAX_DIFF_PREVIEW_HUNKS);
+        self.hunk_offset.insert(project, offset.min(max));
+    }
+
     /// Record a landed refresh: diffs replace any error and vice versa.
     pub fn apply_refresh(&mut self, project: ProjectId, staged: bool, refresh: DiffRefresh) {
         match refresh.result {
@@ -90,6 +149,7 @@ impl DiffPanel {
                 if self.show_staged(project) == staged {
                     self.selected_file.remove(&project);
                     self.selected_hunk.remove(&project);
+                    self.hunk_offset.remove(&project);
                 }
             }
         }
@@ -105,6 +165,8 @@ impl DiffPanel {
         self.selected_file.remove(&project);
         self.selected_hunk.remove(&project);
         self.show_staged.remove(&project);
+        self.preview_open.remove(&project);
+        self.hunk_offset.remove(&project);
     }
 
     /// Select a file and reset its hunk cursor. Called by file-row clicks
@@ -112,6 +174,7 @@ impl DiffPanel {
     pub fn select_file(&mut self, project: ProjectId, path: PathBuf) {
         self.selected_file.insert(project, path);
         self.selected_hunk.insert(project, 0);
+        self.hunk_offset.insert(project, 0);
     }
 
     pub fn selected_file(&self, project: ProjectId) -> Option<&PathBuf> {
@@ -141,7 +204,8 @@ impl DiffPanel {
 
     /// Advance the hunk cursor, wrapping within the rendered window so
     /// keyboard navigation never walks off the end. Empty selection is a
-    /// no-op. Returns the new cursor.
+    /// no-op. The preview viewport follows the cursor. Returns the new
+    /// cursor.
     pub fn next_hunk(&mut self, project: ProjectId) -> usize {
         let count = self.hunk_count_for(project);
         let next = if count == 0 {
@@ -150,11 +214,12 @@ impl DiffPanel {
             (self.selected_hunk(project) + 1) % count
         };
         self.selected_hunk.insert(project, next);
+        self.ensure_cursor_visible(project);
         next
     }
 
     /// Move the hunk cursor back, wrapping to the last rendered hunk.
-    /// Returns the new cursor.
+    /// The preview viewport follows the cursor. Returns the new cursor.
     pub fn prev_hunk(&mut self, project: ProjectId) -> usize {
         let count = self.hunk_count_for(project);
         let cursor = self.selected_hunk(project);
@@ -164,6 +229,7 @@ impl DiffPanel {
             cursor.checked_sub(1).unwrap_or(count - 1)
         };
         self.selected_hunk.insert(project, next);
+        self.ensure_cursor_visible(project);
         next
     }
 
@@ -185,12 +251,14 @@ impl DiffPanel {
         if !visible {
             self.selected_file.remove(&project);
             self.selected_hunk.remove(&project);
+            self.hunk_offset.remove(&project);
             return;
         }
         let count = self.hunk_count_for(project);
         if self.selected_hunk(project) >= count.max(1) {
             self.selected_hunk.insert(project, 0);
         }
+        self.ensure_cursor_visible(project);
     }
 }
 
@@ -428,6 +496,52 @@ mod tests {
             Some(&DiffEmpty::Failed("boom".into()))
         );
         assert!(panel.selected_file(project).is_none());
+    }
+
+    #[test]
+    fn preview_open_close_is_view_local_per_project() {
+        let project = ProjectId::new();
+        let other = ProjectId::new();
+        let mut panel = DiffPanel::default();
+        assert!(!panel.preview_open(project));
+        panel.open_preview(project);
+        assert!(panel.preview_open(project));
+        assert!(!panel.preview_open(other));
+        panel.close_preview(project);
+        assert!(!panel.preview_open(project));
+        // Clearing the project closes its preview and viewport.
+        panel.open_preview(project);
+        panel.select_file(project, PathBuf::from("a.txt"));
+        panel.clear_project(project);
+        assert!(!panel.preview_open(project));
+        assert_eq!(panel.hunk_offset(project), 0);
+    }
+
+    #[test]
+    fn preview_viewport_follows_cursor_and_wheel() {
+        let project = ProjectId::new();
+        // 10 hunks render (under the 32 cap); viewport shows 8.
+        let mut panel = panel_with(project, vec![file("a.txt", 10)]);
+        panel.select_file(project, PathBuf::from("a.txt"));
+        panel.open_preview(project);
+        assert_eq!(panel.hunk_offset(project), 0);
+        for _ in 0..8 {
+            panel.next_hunk(project);
+        }
+        // Cursor 8 sits outside [0, 8): viewport slides to [1, 9).
+        assert_eq!(panel.selected_hunk(project), 8);
+        assert_eq!(panel.hunk_offset(project), 1);
+        panel.prev_hunk(project);
+        panel.prev_hunk(project);
+        // Cursor 6 is inside [1, 9): viewport stays.
+        assert_eq!(panel.hunk_offset(project), 1);
+        // Wheel clamps at both ends.
+        assert_eq!(panel.scroll_preview(project, 100), 2);
+        assert_eq!(panel.scroll_preview(project, -100), 0);
+        assert_eq!(panel.scroll_preview(project, 1), 1);
+        // Cursor wrap keeps the viewport valid.
+        panel.select_file(project, PathBuf::from("a.txt"));
+        assert_eq!(panel.hunk_offset(project), 0);
     }
 
     #[test]

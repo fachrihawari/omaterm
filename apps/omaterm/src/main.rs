@@ -35,6 +35,7 @@ mod git_panel;
 mod history;
 mod ipc_bridge;
 mod router;
+mod workbench;
 
 /// M4 workspace: a recursive pane tree whose leaves reference
 /// registry-owned `TerminalSession`s by `SessionId`.
@@ -89,7 +90,7 @@ struct WorkspaceView {
     paste_arm: Option<(SessionId, Vec<u8>, Instant)>,
     /// Transient input notice (paste confirmation prompt, drop errors).
     input_notice: Option<String>,
-    /// M13 file panel: right-sidebar tree rows for the selected project.
+    /// M13 file panel: contextual-sidebar tree rows for the selected project.
     files_panel: files::FilePanel,
     /// Watcher-limit banner (inotify exhaustion keeps the last good tree).
     files_warning: Option<String>,
@@ -172,10 +173,17 @@ struct WorkspaceView {
     git_dirty_hint: bool,
     /// Last project the git poller served (switch detection).
     git_last_project: Option<ProjectId>,
-    /// Right-sidebar tab: the Files tree or the Git status panel (M14
-    /// follow-up; git no longer stacks under files). View-local, never
-    /// persisted.
+    /// Contextual-sidebar panel: the Files tree or the Git status panel
+    /// (M14 follow-up; git no longer stacks under files). View-local,
+    /// never persisted.
     sidebar_tab: SidebarTab,
+    /// Workbench shell: contextual-sidebar collapsed state and width.
+    /// View chrome, never persisted. Width is clamped to
+    /// `workbench::SIDEBAR_MIN..=MAX` on every resize.
+    sidebar_collapsed: bool,
+    sidebar_width: f32,
+    /// Sidebar-resize drag in flight: last pointer x. Cleared on release.
+    sidebar_resize: Option<f32>,
     /// M15 unified-diff panel: last-good diffs per project+side, explicit
     /// empty/error states, file/hunk selection, staged toggle (GPUI-free).
     diff_panel: diff_panel::DiffPanel,
@@ -207,8 +215,8 @@ enum HistoryArm {
     ClearPane(PaneId),
 }
 
-/// Right-sidebar tab (M14 follow-up): the file tree or the Source
-/// Control panel. Defaults to Files every launch; intentionally not
+/// Contextual-sidebar panel (M14 follow-up): the file tree or the
+/// Source Control panel. Defaults to Files every launch; intentionally not
 /// persisted (view chrome, not workspace state — no schema churn).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum SidebarTab {
@@ -373,6 +381,9 @@ impl WorkspaceView {
             git_dirty_hint: true,
             git_last_project: None,
             sidebar_tab: SidebarTab::Files,
+            sidebar_collapsed: false,
+            sidebar_width: workbench::SIDEBAR_DEFAULT,
+            sidebar_resize: None,
             diff_panel: diff_panel::DiffPanel::default(),
             diff_tx,
             diff_rx,
@@ -1644,7 +1655,7 @@ impl WorkspaceView {
         let _ = self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx);
     }
 
-    // ---- M13 file panel (right-sidebar tree + Ctrl+P finder) ----
+    // ---- M13 file panel (contextual-sidebar tree + Ctrl+P finder) ----
     //
     // Every read goes through the same `OmaCommand::File` dispatcher arms
     // as IPC/CLI. The tree refreshes on project switch, expansion toggle,
@@ -2462,17 +2473,20 @@ impl WorkspaceView {
         }
     }
 
-    /// Select a changed path and show its M15 diff in the Git panel. The
-    /// clicked row's group selects the staged or unstaged diff side.
+    /// Select a changed path and open its M15 diff in the main-area
+    /// preview tab. The clicked row's group selects the staged or
+    /// unstaged diff side. The preview is view-local: core tabs stay
+    /// terminal-only (M13/M17 scope).
     fn git_select_path(&mut self, project: ProjectId, path: std::path::PathBuf, staged: bool) {
         self.git_panel.select(project, path.clone());
         self.diff_panel.select_file(project, path);
         self.diff_panel.set_show_staged(project, staged);
+        self.diff_panel.open_preview(project);
         self.diff_dirty_hint = true;
         tracing::debug!(
             target: "omaterm::git",
             project_id = %project.0,
-            "git change selected (diff shown in Git panel)",
+            "git change selected (diff preview opened)",
         );
     }
 
@@ -2957,14 +2971,40 @@ impl WorkspaceView {
             self.toggle_ctrlp(cx);
             return;
         }
+        // Workbench shell: Ctrl+B toggles the contextual sidebar,
+        // Ctrl+Shift+E/G select Explorer / Source Control (VSCode parity).
+        // Ctrl+Shift+P/T/Q/V stay reserved (project/tab/close/paste).
+        if event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && (key_name == "b" || key_name == "e" || key_name == "g")
+        {
+            if key_name == "b" && !event.keystroke.modifiers.shift {
+                self.sidebar_collapsed = !self.sidebar_collapsed;
+                cx.notify();
+                return;
+            }
+            if event.keystroke.modifiers.shift && (key_name == "e" || key_name == "g") {
+                self.sidebar_tab = if key_name == "e" {
+                    SidebarTab::Files
+                } else {
+                    SidebarTab::Git
+                };
+                self.sidebar_collapsed = false;
+                self.git_panel.set_commit_focused(false);
+                self.files_vdrag = None;
+                self.files_hdrag = None;
+                cx.notify();
+                return;
+            }
+        }
         // M15 hunk navigation: Alt+N next / Alt+P previous within the
-        // selected diff in Git. Plain Alt+letter is otherwise free
+        // main-area diff preview tab. Plain Alt+letter is otherwise free
         // (Alt only pairs with PageUp/PageDown for tab/project jumps).
         if event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
-            && self.sidebar_tab == SidebarTab::Git
             && let Some(project) = self.coordinator.selected_project_id()
+            && self.diff_panel.preview_open(project)
         {
             if key_name == "n" {
                 self.diff_panel.next_hunk(project);
@@ -3738,11 +3778,21 @@ impl WorkspaceView {
             return;
         }
         let viewport = window.viewport_size();
-        // The pane viewport starts after the fixed sidebars and tab strip.
-        let window_width: f32 = (viewport.width - px(180.0) - px(files::RIGHT_SIDEBAR_WIDTH_PX))
-            .max(px(1.0))
-            .into();
-        let window_height: f32 = (viewport.height - px(36.0)).max(px(1.0)).into();
+        // The pane viewport starts after the workbench chrome: the activity
+        // rail plus the contextual sidebar when revealed, and the
+        // title/tab/context/status rows vertically.
+        let chrome_w = workbench::ACTIVITY_WIDTH
+            + if self.sidebar_collapsed {
+                0.0
+            } else {
+                workbench::clamp_sidebar_width(self.sidebar_width)
+            };
+        let chrome_h = workbench::TITLE_HEIGHT
+            + workbench::TAB_HEIGHT
+            + workbench::CONTEXT_HEIGHT
+            + workbench::STATUS_HEIGHT;
+        let window_width: f32 = (viewport.width - px(chrome_w)).max(px(1.0)).into();
+        let window_height: f32 = (viewport.height - px(chrome_h)).max(px(1.0)).into();
         for pane_rect in self.coordinator.tree().pane_rects() {
             let Some(session_id) = self.coordinator.session_id_for_pane(pane_rect.pane) else {
                 continue;
@@ -3864,8 +3914,9 @@ impl WorkspaceView {
     fn render_tree_hscrollbar(&mut self, cx: &mut Context<Self>) -> Div {
         /// Track width estimate: sidebar minus padding, row gutters, and
         /// the vertical rail. A few px off either way is invisible on an
-        /// 8px chrome element.
-        const TRACK_W: f32 = files::RIGHT_SIDEBAR_WIDTH_PX - 16.0 - 12.0 - 12.0;
+        /// 8px chrome element; the sidebar is resizable, so this tracks the
+        /// default width only.
+        const TRACK_W: f32 = workbench::SIDEBAR_DEFAULT - 16.0 - 12.0 - 12.0;
         const THUMB_W: f32 = 48.0;
         let pos = (self.files_scroll_cols / files::MAX_SCROLL_COLS_PX).clamp(0.0, 1.0);
         let left_px = pos * (TRACK_W - THUMB_W);
@@ -3931,7 +3982,7 @@ impl WorkspaceView {
             )
     }
 
-    /// Right-sidebar file tree for the selected project. Pure render from
+    /// Contextual-sidebar file tree for the selected project. Pure render from
     /// the panel row cache (no filesystem or dispatcher work per frame);
     /// clicks select/toggle through the dispatcher-owned refresh.
     /// Vertical padding both sides of one tree row (`py_1` at the 16px
@@ -4237,8 +4288,8 @@ impl WorkspaceView {
                 div()
                     .px_2()
                     .py_1()
-                    .bg(rgb(0x3F321D))
-                    .text_color(rgb(0xFDE68A))
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
                     .child(text),
             );
         }
@@ -4544,28 +4595,51 @@ impl WorkspaceView {
         }
         // Legend: the icons are conventional, the line guarantees nobody
         // has to guess. Rendered from the same glyph constants as the
-        // actions so they can never drift apart.
+        // actions so they can never drift apart. The selected change's
+        // diff opens as a preview tab in the main area (M15), not here.
         bar = bar.child(div().px_2().py_1().text_color(rgb(0x52525B)).child(format!(
-            "{} stage · {} unstage · {} discard",
+            "{} stage · {} unstage · {} discard · click a row for its diff",
             git_panel::STAGE_ICON,
             git_panel::UNSTAGE_ICON,
             git_panel::DISCARD_ICON,
         )));
-        self.render_selected_diff(bar, project, cx)
+        bar
     }
 
-    /// Show the selected change's unified diff beneath Git's change list.
-    /// The selected path comes from the clicked M14 Git row; no second file
-    /// list or separate Diff tab exists. Refreshes land via `diff_tick`.
-    /// Stage uses the shared GitCommand path.
-    fn render_selected_diff(
-        &mut self,
-        bar: Div,
-        project: ProjectId,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    /// Main-area diff preview tab (M15): the selected change's unified
+    /// diff, opened by clicking a Git row. The tab holds a file diff,
+    /// never a terminal — core tabs stay terminal-only (M13/M17 scope).
+    /// Refreshes land via `diff_tick`; stage uses the shared GitCommand
+    /// path. Hunks render windowed (viewport follows the cursor, wheel
+    /// scrolls) so huge diffs stay off the GPUI tree.
+    fn render_diff_preview(&mut self, project: ProjectId, cx: &mut Context<Self>) -> Div {
         let staged = self.diff_panel.show_staged(project);
-        let mut bar = bar;
+        let mut bar = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .size_full()
+            .bg(rgb(0x18181B))
+            .on_scroll_wheel(cx.listener(move |view, event: &ScrollWheelEvent, _, cx| {
+                if view.shutting_down {
+                    return;
+                }
+                // Hunk-granularity scroll with the files-tree sign
+                // convention: positive deltas move toward earlier hunks.
+                let dy: f32 = match event.delta {
+                    ScrollDelta::Pixels(point) => f32::from(point.y),
+                    ScrollDelta::Lines(point) => point.y,
+                };
+                let mut steps = (dy / 24.0).round() as i32;
+                if steps == 0 && dy != 0.0 {
+                    steps = dy.signum() as i32;
+                }
+                if steps == 0 {
+                    return;
+                }
+                view.diff_panel.scroll_preview(project, -steps);
+                cx.notify();
+            }));
         let Some(path) = self
             .git_panel
             .selected_path(project)
@@ -4726,10 +4800,21 @@ impl WorkspaceView {
                 .diff_panel
                 .selected_hunk(project)
                 .min(count.saturating_sub(1));
+            let offset = self.diff_panel.hunk_offset(project).min(count);
+            let shown = file
+                .hunks
+                .iter()
+                .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
+                .skip(offset)
+                .take(diff_panel::MAX_DIFF_PREVIEW_HUNKS)
+                .count();
             bar = bar.child(div().px_2().py_1().text_color(rgb(0xA1A1AA)).child(format!(
-                "{} ({}/{})",
+                "{} ({}/{}; hunks {}–{} of {})",
                 file.path.to_string_lossy(),
                 if count == 0 { 0 } else { cursor + 1 },
+                file.hunk_count,
+                if count == 0 { 0 } else { offset + 1 },
+                offset + shown,
                 file.hunk_count,
             )));
             let nav = |label: &'static str, next: bool| {
@@ -4769,6 +4854,8 @@ impl WorkspaceView {
                 .iter()
                 .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
                 .enumerate()
+                .skip(offset)
+                .take(diff_panel::MAX_DIFF_PREVIEW_HUNKS)
             {
                 let current = index == cursor;
                 let heading = format!(
@@ -4847,47 +4934,408 @@ impl WorkspaceView {
                 .py_1()
                 .text_color(rgb(0x52525B))
                 .child(if staged {
-                    "Open/copy path · Alt+N/P hunk navigation"
+                    "Open/copy path · Alt+N/P hunk · wheel scrolls hunks"
                 } else {
-                    "Stage hunk · open/copy path · Alt+N/P hunk navigation"
+                    "Stage hunk · open/copy path · Alt+N/P hunk · wheel scrolls hunks"
                 }),
         );
         bar
     }
 
-    /// Right-sidebar tab bar: `| Files | Git |` (M14 follow-up). Diff
-    /// details are shown inline in Git when a changed path is selected.
-    fn render_sidebar_tabs(&mut self, bar: Div, cx: &mut Context<Self>) -> Div {
-        let active = self.sidebar_tab;
-        let mut row = div().flex().flex_row().items_center().gap_1().px_2().py_1();
-        for (tab, label) in [(SidebarTab::Files, "Files"), (SidebarTab::Git, "Git")] {
-            let selected = tab == active;
-            row = row.child(
+    /// Switch the contextual sidebar to `tab`, revealing it. Clicking the
+    /// already-active activity icon toggles collapse instead (VSCode
+    /// activity-rail behavior). Shared by pointer and `Ctrl+Shift+E/G`.
+    fn set_activity(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
+        let pressed_active = self.sidebar_tab == tab && !self.sidebar_collapsed;
+        self.sidebar_tab = tab;
+        self.sidebar_collapsed =
+            workbench::activity_press_collapsed(self.sidebar_collapsed, pressed_active);
+        self.git_panel.set_commit_focused(false);
+        self.files_vdrag = None;
+        self.files_hdrag = None;
+        self.sidebar_resize = None;
+        cx.notify();
+    }
+
+    /// Command/title row (VSCode title-bar role, not an OS control): app +
+    /// project identity left, a centered palette affordance opening the
+    /// `Ctrl+P` finder, and a sidebar toggle right. Native window controls
+    /// stay the compositor's job — no fake traffic lights on Linux.
+    fn render_title_bar(&mut self, cx: &mut Context<Self>) -> Div {
+        let project_name = self
+            .coordinator
+            .active_project()
+            .map(|project| {
+                let index = self
+                    .coordinator
+                    .projects()
+                    .iter()
+                    .position(|p| p.id == project.id)
+                    .unwrap_or(0);
+                project.display_name(index + 1)
+            })
+            .unwrap_or_else(|| "No project".to_string());
+        div()
+            .h(px(workbench::TITLE_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_3()
+            .gap_3()
+            .bg(rgb(workbench::WINDOW_BG))
+            .border_b_1()
+            .border_color(rgb(workbench::BORDER))
+            .text_color(rgb(workbench::MUTED))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_color(rgb(workbench::TEXT)).child("OmaTerm"))
+                    .child(div().child("—"))
+                    .child(div().child(project_name)),
+            )
+            .child(
+                div().flex_1().flex().flex_row().justify_center().child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(workbench::BORDER))
+                        .bg(rgb(workbench::INPUT_BG))
+                        .text_color(rgb(workbench::TEXT))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                window.focus(&view.focus_handle);
+                                view.toggle_ctrlp(cx);
+                            }),
+                        )
+                        .child(files::SEARCH_ICON.to_string())
+                        .child("Search files (Ctrl+P)"),
+                ),
+            )
+            .child(
                 div()
                     .px_2()
                     .py_1()
                     .rounded_sm()
-                    .bg(rgb(if selected { 0x27272A } else { 0x111113 }))
-                    .text_color(rgb(if selected { 0xFAFAFA } else { 0x71717A }))
+                    .text_color(rgb(workbench::MUTED))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
+                        cx.listener(|view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            window.focus(&view.focus_handle);
+                            view.sidebar_collapsed = !view.sidebar_collapsed;
+                            cx.notify();
+                        }),
+                    )
+                    .child("«"),
+            )
+    }
+
+    /// 48px activity rail: Explorer and Source Control only. Later panels
+    /// arrive with their milestones — never as dead icons. The Source
+    /// Control icon carries the selected project's change-count badge.
+    fn render_activity_rail(&mut self, cx: &mut Context<Self>) -> Div {
+        let badge = self
+            .coordinator
+            .selected_project_id()
+            .and_then(|project| self.git_panel.status_for(project))
+            .and_then(|status| {
+                workbench::change_badge(
+                    status.staged.len(),
+                    status.unstaged.len(),
+                    status.untracked.len(),
+                )
+            });
+        let mut rail = div()
+            .w(px(workbench::ACTIVITY_WIDTH))
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .py_1()
+            .bg(rgb(workbench::WINDOW_BG))
+            .border_r_1()
+            .border_color(rgb(workbench::BORDER));
+        for (tab, glyph) in [
+            (SidebarTab::Files, workbench::EXPLORER_ICON),
+            (SidebarTab::Git, workbench::SOURCE_ICON),
+        ] {
+            let active = self.sidebar_tab == tab && !self.sidebar_collapsed;
+            let mut button = div()
+                .w(px(workbench::ACTIVITY_WIDTH))
+                .h(px(workbench::ACTIVITY_WIDTH))
+                .flex()
+                .items_center()
+                .justify_center()
+                .relative()
+                .text_color(rgb(if active {
+                    workbench::TEXT_BRIGHT
+                } else {
+                    0x858585
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&view.focus_handle);
+                        view.set_activity(tab, cx);
+                    }),
+                )
+                .child(div().child(glyph.to_string()));
+            if active {
+                button = button.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(8.0))
+                        .bottom(px(8.0))
+                        .w(px(2.0))
+                        .bg(rgb(workbench::TEXT_BRIGHT)),
+                );
+            }
+            if tab == SidebarTab::Git
+                && let Some(count) = badge.clone()
+            {
+                button = button.child(
+                    div()
+                        .absolute()
+                        .right(px(4.0))
+                        .top(px(4.0))
+                        .px_1()
+                        .rounded_full()
+                        .bg(rgb(workbench::ACCENT))
+                        .text_color(rgb(workbench::TEXT_BRIGHT))
+                        .child(count),
+                );
+            }
+            rail = rail.child(button);
+        }
+        rail
+    }
+
+    /// Uppercase section header for the contextual sidebar with a collapse
+    /// affordance. Keyboard equivalent: `Ctrl+B`.
+    fn render_sidebar_header(&mut self, title: &str, cx: &mut Context<Self>) -> Div {
+        div()
+            .h(px(workbench::TITLE_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_4()
+            .text_color(rgb(0xBBBBBB))
+            .child(div().child(title.to_uppercase()))
+            .child(
+                div()
+                    .px_1()
+                    .text_color(rgb(workbench::MUTED))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
                             if view.shutting_down {
                                 return;
                             }
                             cx.stop_propagation();
                             window.focus(&view.focus_handle);
-                            view.sidebar_tab = tab;
-                            view.git_panel.set_commit_focused(false);
-                            view.files_vdrag = None;
-                            view.files_hdrag = None;
+                            view.sidebar_collapsed = true;
                             cx.notify();
                         }),
                     )
-                    .child(label),
+                    .child("«"),
+            )
+    }
+
+    /// 3px sidebar resizer between the contextual sidebar and the main
+    /// surface (VSCode split-handle role). Press-and-slide tracks pointer x
+    /// like the tree scrollbars; the width clamps every render and keyboard
+    /// resize stays available via `Ctrl+B` collapse.
+    fn render_sidebar_resizer(&mut self, cx: &mut Context<Self>) -> Div {
+        div()
+            .w(px(3.0))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(workbench::BORDER))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    view.sidebar_resize = Some(f32::from(event.position.x));
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                let Some(last_x) = view.sidebar_resize else {
+                    return;
+                };
+                if view.shutting_down {
+                    view.sidebar_resize = None;
+                    return;
+                }
+                let x = f32::from(event.position.x);
+                view.sidebar_width =
+                    workbench::clamp_sidebar_width(view.sidebar_width + (x - last_x));
+                view.sidebar_resize = Some(x);
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    view.sidebar_resize = None;
+                    cx.notify();
+                }),
+            )
+    }
+
+    /// Context row under the tab strip. Terminal tabs show
+    /// `project › tab`; a diff preview shows its file, side, and hunk
+    /// position. Never an editor breadcrumb — OmaTerm tabs are terminals.
+    fn render_context_row(&mut self, _cx: &mut Context<Self>) -> Div {
+        let mut row = div()
+            .h(px(workbench::CONTEXT_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_4()
+            .bg(rgb(workbench::SURFACE_BG))
+            .border_b_1()
+            .border_color(rgb(0x252525))
+            .text_color(rgb(0x9B9B9B));
+        if let Some(project_id) = self.coordinator.selected_project_id()
+            && self.diff_panel.preview_open(project_id)
+            && let Some(path) = self.diff_panel.selected_file(project_id).cloned()
+        {
+            let staged = self.diff_panel.show_staged(project_id);
+            let hunk = self.diff_panel.selected_hunk(project_id);
+            let total = self.diff_panel.hunk_count_for(project_id);
+            row = row
+                .child(div().child(path.to_string_lossy().into_owned()))
+                .child(div().text_color(rgb(0x6E7681)).child("·"))
+                .child(div().child(if staged { "Staged" } else { "Working tree" }));
+            if total > 0 {
+                row = row
+                    .child(div().text_color(rgb(0x6E7681)).child("·"))
+                    .child(div().child(format!("hunk {} of {total}", hunk + 1)));
+            }
+            return row;
+        }
+        if let Some(project) = self.coordinator.active_project() {
+            let index = self
+                .coordinator
+                .projects()
+                .iter()
+                .position(|p| p.id == project.id)
+                .unwrap_or(0);
+            let project_name = project.display_name(index + 1);
+            let tab_name = project
+                .tabs
+                .iter()
+                .position(|tab| Some(tab.id) == project.selected_tab)
+                .map(|tab_index| project.tabs[tab_index].display_name(tab_index + 1))
+                .unwrap_or_else(|| "no tab".to_string());
+            row = row
+                .child(div().child(project_name))
+                .child(div().text_color(rgb(0x6E7681)).child("›"))
+                .child(div().text_color(rgb(0xC7C7C7)).child(tab_name));
+        } else {
+            row = row.child(div().child("No project selected"));
+        }
+        row
+    }
+
+    /// 22px status bar. Left: selected project's branch + change summary
+    /// (omitted entirely outside a repo). Right: history state and terminal
+    /// font size — both real, both already in the app. Unavailable values
+    /// are omitted, never fabricated.
+    fn render_status_bar(&mut self, cx: &mut Context<Self>) -> Div {
+        let mut left = div().flex().flex_row().items_center().h_full();
+        if let Some(project) = self.coordinator.selected_project_id()
+            && let Some(status) = self.git_panel.status_for(project)
+        {
+            let dirty = !(status.staged.is_empty()
+                && status.unstaged.is_empty()
+                && status.untracked.is_empty());
+            if let Some(branch) = workbench::branch_label(status.branch.as_deref(), dirty) {
+                left = left.child(
+                    div()
+                        .px_2()
+                        .h_full()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(div().child(workbench::SOURCE_ICON.to_string()))
+                        .child(branch),
+                );
+            }
+            if let Some(summary) = workbench::change_summary(
+                status.staged.len(),
+                status.unstaged.len(),
+                status.untracked.len(),
+            ) {
+                left = left.child(div().px_2().h_full().flex().items_center().child(summary));
+            }
+        }
+        let mut right = div().flex().flex_row().items_center().h_full();
+        if let Some(status) = self.history_status_text() {
+            right = right.child(
+                div()
+                    .px_2()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.history_opt_in_key(cx);
+                        }),
+                    )
+                    .child(status),
             );
         }
-        bar.child(row)
+        right = right.child(
+            div()
+                .px_2()
+                .h_full()
+                .flex()
+                .items_center()
+                .child(format!("{:.0}px", self.font_size)),
+        );
+        div()
+            .h(px(workbench::STATUS_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .bg(rgb(workbench::ACCENT))
+            .text_color(rgb(workbench::TEXT_BRIGHT))
+            .child(left)
+            .child(right)
     }
 
     /// `Ctrl+P` overlay in VSCode Quick Open style: centered floating box
@@ -5195,20 +5643,15 @@ impl Render for WorkspaceView {
                     .into_any_element()
             });
         let selected_project = self.coordinator.selected_project_id();
-        let mut sidebar = div()
-            .w(px(180.0))
-            .h_full()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_2()
-            .bg(rgb(0x111113));
-        sidebar = sidebar.child(
+        // WORKSPACE section: project switcher living inside the contextual
+        // sidebar (Explorer) instead of a permanent second column.
+        let mut workspace_section = div().flex().flex_col().gap_1().pb_2();
+        workspace_section = workspace_section.child(
             div()
                 .px_2()
                 .py_1()
-                .text_color(rgb(0xA1A1AA))
-                .child("PROJECTS"),
+                .text_color(rgb(workbench::MUTED))
+                .child("WORKSPACE"),
         );
         let mut project_label_counts = HashMap::<String, usize>::new();
         for (index, project) in self.coordinator.projects().iter().enumerate() {
@@ -5238,8 +5681,16 @@ impl Render for WorkspaceView {
                 .px_2()
                 .py_1()
                 .rounded_sm()
-                .bg(rgb(if active { 0x27272A } else { 0x111113 }))
-                .text_color(rgb(if active { 0xFAFAFA } else { 0xA1A1AA }))
+                .bg(rgb(if active {
+                    workbench::SELECTION_BG
+                } else {
+                    workbench::SIDEBAR_BG
+                }))
+                .text_color(rgb(if active {
+                    workbench::TEXT_BRIGHT
+                } else {
+                    workbench::MUTED
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, _, window, cx| {
@@ -5294,9 +5745,9 @@ impl Render for WorkspaceView {
             } else {
                 row
             };
-            sidebar = sidebar.child(row);
+            workspace_section = workspace_section.child(row);
         }
-        sidebar = sidebar.child(
+        workspace_section = workspace_section.child(
             div()
                 .px_2()
                 .py_1()
@@ -5315,13 +5766,11 @@ impl Render for WorkspaceView {
         );
 
         let mut tabs_bar = div()
-            .h(px(36.0))
+            .h(px(workbench::TAB_HEIGHT))
             .flex()
             .flex_row()
-            .items_center()
-            .gap_1()
             .px_2()
-            .bg(rgb(0x111113));
+            .bg(rgb(workbench::TABSTRIP_BG));
         if let Some(project) = self.coordinator.active_project() {
             for (index, tab) in project.tabs.iter().enumerate() {
                 let project_id = project.id;
@@ -5329,16 +5778,23 @@ impl Render for WorkspaceView {
                 let label = tab.display_name(index + 1);
                 let active = project.selected_tab == Some(tab_id);
                 let label = div().flex_1().child(label);
-                let chip = div()
+                let mut chip = div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_1()
                     .px_3()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(if active { 0x27272A } else { 0x111113 }))
-                    .text_color(rgb(if active { 0xFAFAFA } else { 0xA1A1AA }))
+                    .h_full()
+                    .bg(rgb(if active {
+                        workbench::SURFACE_BG
+                    } else {
+                        workbench::TAB_INACTIVE_BG
+                    }))
+                    .text_color(rgb(if active {
+                        workbench::TEXT_BRIGHT
+                    } else {
+                        workbench::TAB_INACTIVE_TEXT
+                    }))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
@@ -5346,6 +5802,9 @@ impl Render for WorkspaceView {
                                 return;
                             }
                             window.focus(&view.focus_handle);
+                            // Returning to a terminal tab closes the
+                            // view-local diff preview.
+                            view.diff_panel.close_preview(project_id);
                             let _ = view.dispatch_command(
                                 OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
                                 cx,
@@ -5354,7 +5813,11 @@ impl Render for WorkspaceView {
                     )
                     .child(label);
                 // The selected tab owns its close control; the add button
-                // remains the final item in the strip.
+                // remains the final item in the strip. The active tab gets
+                // the workbench accent edge; inactive tabs sit flat.
+                if active {
+                    chip = chip.border_t_2().border_color(rgb(workbench::ACCENT));
+                }
                 let chip = if active {
                     chip.child(
                         div()
@@ -5387,52 +5850,95 @@ impl Render for WorkspaceView {
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| {
                             window.focus(&view.focus_handle);
+                            if let Some(project) = view.coordinator.selected_project_id() {
+                                view.diff_panel.close_preview(project);
+                            }
                             view.create_tab(cx);
                         }),
                     )
                     .child("+"),
             );
+            // M15 diff preview tab: view-local, rendered when a Git row is
+            // selected. It shows a file diff, never a terminal — core tabs
+            // stay terminal-only (M13/M17 scope). Selecting a terminal tab
+            // or closing the chip returns to the terminal surface.
+            if self.diff_panel.preview_open(project.id)
+                && let Some(path) = self.diff_panel.selected_file(project.id).cloned()
+            {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                let preview_id = project.id;
+                tabs_bar = tabs_bar.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .px_3()
+                        .h_full()
+                        .border_t_2()
+                        .border_color(rgb(workbench::ACCENT))
+                        .bg(rgb(workbench::SURFACE_BG))
+                        .text_color(rgb(workbench::TEXT_BRIGHT))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                window.focus(&view.focus_handle);
+                                cx.notify();
+                            }),
+                        )
+                        .child(format!("Diff: {name}"))
+                        .child(
+                            div()
+                                .px_1()
+                                .text_color(rgb(workbench::MUTED))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.diff_panel.close_preview(preview_id);
+                                        cx.notify();
+                                    }),
+                                )
+                                .child("×"),
+                        ),
+                );
+            }
         } else {
             tabs_bar = tabs_bar.child(
                 div()
                     .px_3()
                     .py_1()
-                    .text_color(rgb(0xA1A1AA))
+                    .text_color(rgb(workbench::MUTED))
                     .child("No project selected"),
             );
         }
-        // History state chip: same semantic opt-in toggle as Ctrl+Shift+O.
-        if let Some(status) = self.history_status_text() {
-            let attention = status != "history: off" && status != "history: on";
-            tabs_bar = tabs_bar.child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(if attention { 0x3F321D } else { 0x111113 }))
-                    .text_color(rgb(if attention { 0xFDE68A } else { 0xA1A1AA }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            view.history_opt_in_key(cx);
-                        }),
-                    )
-                    .child(status),
-            );
-        }
-        let mut files_bar = div()
-            .w(px(files::RIGHT_SIDEBAR_WIDTH_PX))
+        // History state moved to the status bar (application status, not a
+        // document tab).
+        let sidebar_width = workbench::clamp_sidebar_width(self.sidebar_width);
+        self.sidebar_width = sidebar_width;
+        let sidebar_header = match self.sidebar_tab {
+            SidebarTab::Files => self.render_sidebar_header("Explorer", cx),
+            SidebarTab::Git => self.render_sidebar_header("Source Control", cx),
+        };
+        let mut context_sidebar = div()
+            .w(px(sidebar_width))
             .h_full()
             .flex()
             .flex_col()
-            .gap_1()
-            .p_2()
-            .bg(rgb(0x111113))
+            .bg(rgb(workbench::SIDEBAR_BG))
+            .border_r_1()
+            .border_color(rgb(workbench::BORDER))
+            .child(sidebar_header)
             .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
                 // Row-step scrolling with the terminal's delta
                 // convention: positive deltas move toward the top
@@ -5479,21 +5985,28 @@ impl Render for WorkspaceView {
                 }
                 cx.notify();
             }));
-        files_bar = self.render_sidebar_tabs(files_bar, cx);
         match self.sidebar_tab {
             SidebarTab::Files => {
-                files_bar =
-                    self.render_files_tree(files_bar, f32::from(window.viewport_size().height), cx);
+                context_sidebar = context_sidebar.child(workspace_section);
+                context_sidebar = self.render_files_tree(
+                    context_sidebar,
+                    f32::from(window.viewport_size().height),
+                    cx,
+                );
                 if let Some(message) = self.files_warning.clone() {
-                    files_bar = files_bar
-                        .child(div().px_2().py_1().text_color(rgb(0xFDE68A)).child(message));
+                    context_sidebar = context_sidebar.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_color(rgb(workbench::WARN_TEXT))
+                            .child(message),
+                    );
                 }
             }
             SidebarTab::Git => {
-                files_bar = self.render_git_panel(files_bar, cx);
+                context_sidebar = self.render_git_panel(context_sidebar, cx);
             }
         }
-
         let mut pane_area = div().flex().flex_1().flex_col().size_full().relative();
         if let Some((arm, at)) = self.history_arm
             && at.elapsed() < HISTORY_ARM_WINDOW
@@ -5502,8 +6015,8 @@ impl Render for WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .bg(rgb(0x3F321D))
-                    .text_color(rgb(0xFDE68A))
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
                     .child(Self::history_arm_text(&arm)),
             );
         }
@@ -5512,8 +6025,8 @@ impl Render for WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .bg(rgb(0x3F321D))
-                    .text_color(rgb(0xFDE68A))
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
                     .child(message),
             );
         }
@@ -5522,8 +6035,8 @@ impl Render for WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .bg(rgb(0x3F321D))
-                    .text_color(rgb(0xFDE68A))
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
                     .child(message),
             );
         }
@@ -5532,8 +6045,8 @@ impl Render for WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .bg(rgb(0x3F321D))
-                    .text_color(rgb(0xFDE68A))
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
                     .child(message),
             );
         }
@@ -5544,8 +6057,8 @@ impl Render for WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .bg(rgb(0x3F321D))
-                    .text_color(rgb(0xFDE68A))
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
                     .child(format!("History: {message}")),
             );
         }
@@ -5560,14 +6073,14 @@ impl Render for WorkspaceView {
                     .justify_between()
                     .px_3()
                     .py_1()
-                    .bg(rgb(0x3F1D1D))
-                    .text_color(rgb(0xFCA5A5))
+                    .bg(rgb(workbench::ERROR_BG))
+                    .text_color(rgb(workbench::ERROR_TEXT))
                     .child(message)
                     .child(
                         div()
                             .px_2()
                             .py_1()
-                            .text_color(rgb(0xFECACA))
+                            .text_color(rgb(workbench::ERROR_TEXT))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|view, _, window, cx| {
@@ -5579,24 +6092,55 @@ impl Render for WorkspaceView {
                     ),
             );
         }
-        pane_area = pane_area.child(div().flex().flex_1().size_full().child(content));
+        // M15 diff preview tab: when open for the selected project, the
+        // main area shows the file diff instead of the terminal pane tree.
+        // Core tabs are untouched — selecting a terminal tab closes this.
+        let preview_project = self
+            .coordinator
+            .selected_project_id()
+            .filter(|project| self.diff_panel.preview_open(*project));
+        if let Some(project) = preview_project {
+            pane_area = pane_area.child(self.render_diff_preview(project, cx));
+        } else {
+            pane_area = pane_area.child(div().flex().flex_1().size_full().child(content));
+        }
         // Finder paints last so the floating layer sits above the terminal.
-        // Box geometry is plain arithmetic from the fixed sidebar widths —
-        // no reliance on align/max interplay.
+        // Box geometry is plain arithmetic from the workbench chrome widths
+        // (activity rail plus the contextual sidebar when revealed) — no
+        // reliance on align/max interplay.
         if self.ctrlp_open {
             let viewport_w: f32 = window.viewport_size().width.into();
-            let pane_w = (viewport_w - 180.0 - files::RIGHT_SIDEBAR_WIDTH_PX).max(1.0);
+            let chrome_w = workbench::ACTIVITY_WIDTH
+                + if self.sidebar_collapsed {
+                    0.0
+                } else {
+                    sidebar_width
+                };
+            let pane_w = (viewport_w - chrome_w).max(1.0);
             let box_w = (pane_w - 32.0).clamp(200.0, 600.0);
             let box_x = ((pane_w - box_w) / 2.0).max(0.0);
             pane_area = pane_area.child(self.render_ctrlp(box_x, box_w, cx));
         }
+        let context_row = self.render_context_row(cx);
         let main = div()
             .flex()
             .flex_1()
             .flex_col()
             .size_full()
+            .min_w(px(0.0))
             .child(tabs_bar)
+            .child(context_row)
             .child(pane_area);
+        // Workbench frame: title row, then activity rail + (optional)
+        // contextual sidebar + main surface, then the status bar.
+        let mut workbench_row = div().flex().flex_1().flex_row().min_h(px(0.0));
+        workbench_row = workbench_row.child(self.render_activity_rail(cx));
+        if !self.sidebar_collapsed {
+            workbench_row = workbench_row.child(context_sidebar);
+            workbench_row = workbench_row.child(self.render_sidebar_resizer(cx));
+        }
+        workbench_row = workbench_row.child(main);
+        let status_bar = self.render_status_bar(cx);
         // Reveal the Ctrl+Shift+1..9 jump indexes in the sidebar only while
         // Control or Shift is held.
         let weak = cx.entity().downgrade();
@@ -5620,10 +6164,11 @@ impl Render for WorkspaceView {
             })
             .size_full()
             .flex()
-            .bg(rgb(0x18181B))
-            .child(sidebar)
-            .child(main)
-            .child(files_bar)
+            .flex_col()
+            .bg(rgb(workbench::WINDOW_BG))
+            .child(self.render_title_bar(cx))
+            .child(workbench_row)
+            .child(status_bar)
     }
 }
 

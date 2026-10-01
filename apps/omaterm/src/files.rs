@@ -1,4 +1,4 @@
-//! M13 file panel state: right-sidebar tree rows plus persistence.
+//! M13 file panel state: contextual-sidebar tree rows plus persistence.
 //!
 //! GPUI-free. Rendering and key/mouse wiring live in `main.rs`. Depth is
 //! never limited: every directory listing loads lazily — the root lists
@@ -17,9 +17,6 @@ use std::path::{Path, PathBuf};
 
 use omaterm_core::{FileEntry, FileKind, ProjectId};
 
-/// Right sidebar width: roomier than the 180px project sidebar so nested
-/// tree indentation stays readable; future Git/Diff sections share it.
-pub const RIGHT_SIDEBAR_WIDTH_PX: f32 = 240.0;
 /// Rows built per refresh at most (virtualization: the tree never holds an
 /// unbounded repo walk).
 pub const MAX_TREE_ROWS: usize = 2_000;

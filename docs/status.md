@@ -21,7 +21,7 @@ M4 evidence below.
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
-| 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, selected Git row detail rendered inline in the Git panel; focused tests green (see M15 progress below) | Wayland click/render proof pending; workspace serial suite timed out at the pre-existing terminal four-pane test | Finish live proof, close any M15 acceptance gaps |
+| 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, Git-row selection opens the diff as a main-area preview tab (file diff, never a terminal); focused tests green (see M15 progress below) | Wayland click/render proof pending; workspace serial suite timed out at the pre-existing terminal four-pane test | Finish live proof, close any M15 acceptance gaps |
 
 ## Handoff rules
 
@@ -2775,16 +2775,19 @@ desktop processes, fixture removed).
 
 ### Next action
 
-Finish M15 live Git-row-to-inline-diff Wayland proof.
+Finish M15 live Git-row-to-preview-tab Wayland proof.
 
 ## Milestone 15 — Diff Viewer — implementation in progress
 
 Added bounded unified-diff parsing and execution over the system `git`
-binary. The desktop presents the selected changed file's diff **inside the
-existing Git panel**, directly beneath Git's change list; there is no
-separate Diff sidebar tab. Clicking a staged/unstaged Git row selects the
-matching diff side. Hunks render with plain monospace `+`/`-` colors,
-previous/next navigation, copy/open-path actions, and stage controls routed
+binary. Clicking a staged/unstaged Git row opens the selected changed
+file's diff as a preview tab in the main tab strip (`Diff: <name>`);
+the tab holds the file diff, never a terminal — core tabs stay
+terminal-only and the layout is never persisted (view-local, M13/M17
+scope). Selecting a terminal tab or closing the chip returns to the
+terminal surface. Hunks render windowed (8-hunk viewport follows the
+cursor, wheel scrolls) with plain monospace `+`/`-` colors, previous/next
+navigation, copy/open-path actions, and per-hunk stage controls routed
 through the existing `GitCommand::Stage` path. `diff.show` and
 `diff.list-files` are also available through the common dispatcher, IPC,
 and CLI. Working tree only; no commit made.
@@ -2799,8 +2802,8 @@ and CLI. Working tree only; no commit made.
 - `crates/omaterm-core/src/{command,result,validation,lib}.rs` —
   `DiffCommand`, bounded result DTOs, context/path validation
 - `apps/omaterm/src/{router,ipc_bridge,diff_panel,main}.rs` — scoped
-  query path, bounded bridge response, off-thread refresh state, inline
-  Git-panel detail
+  query path, bounded bridge response, off-thread refresh state, main-area
+  preview tab (view-local open/close, hunk viewport + wheel scroll)
 - `crates/omaterm-protocol/src/{lib,method}.rs` — strict
   `diff.show` / `diff.list-files` DTOs
 - `crates/omaterm-logging/src/lib.rs` — `omaterm::diff` category;
@@ -2817,7 +2820,7 @@ and CLI. Working tree only; no commit made.
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo test --workspace -- --test-threads=1` | TIMED OUT after 900s at `omaterm_terminal::workspace::tests::four_panes_have_independent_sessions`; that terminal unit target passes independently |
-| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 72 tests |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 74 tests (incl. preview open/close + viewport follow/wheel) |
 | `cargo test -p omaterm-context -- --test-threads=1` | PASS: 44 unit + 5 diff integration + 1 git-root integration + 8 git-status integration tests |
 | `cargo test -p omaterm-cli -p omaterm-protocol -p omaterm-core` | PASS: 38 CLI + 6 protocol + 17 core tests |
 | `cargo test -p omaterm-logging` | PASS: 3 tests |
@@ -2837,15 +2840,107 @@ workspace invocation as a pass.
 Wayland (`wayland-1`) is available, but an existing `omaterm-desktop`
 instance (PID 83052) is active on the shared session. No second window was
 launched or existing window manipulated during this pass. Therefore the
-inline Git-row selection, hunk rendering, and stage interaction still need
-release-build Wayland validation; no desktop visual proof is claimed.
+Git-row-to-preview-tab flow, preview hunk rendering/scroll, and stage
+interaction still need release-build Wayland validation; no desktop visual
+proof is claimed.
 The current hunk-header stage control dispatches M14's whole-file
 `GitCommand::Stage` for that file; true partial-hunk staging is not yet
 implemented and remains an M15 acceptance gap.
 
 ### Next action
 
-Validate on Wayland that clicking a Git change shows its diff inline in the
-Git panel and that staged/unstaged rows select the matching side. Implement
-and verify partial-hunk staging (or explicitly revise the product contract)
-before closing the remaining M15 acceptance criteria; rerun final gates.
+Validate on Wayland that clicking a Git change opens its diff as a
+main-area preview tab (not a terminal) and that staged/unstaged rows
+select the matching side. Implement and verify partial-hunk staging (or
+explicitly revise the product contract) before closing the remaining M15
+acceptance criteria; rerun final gates.
+
+## Workbench shell redesign (VS Code workbench chrome) — implemented, partial live proof
+
+Replaced the prototype three-column window (180px project list + terminal
+tabs + fixed 240px right Files/Git panel, text-chip controls) with a VS
+Code-workbench frame per `docs/ui-workbench-redesign-plan.md` (Phases 0–3;
+terminal-first scope preserved, no editor/debugger/extensions):
+
+- 35px command/title row: app + project identity, centered `Ctrl+P`
+  palette affordance, sidebar toggle. No fake OS traffic lights.
+- 48px activity rail: Explorer and Source Control only (verified Nerd
+  Font glyphs `\uf07b`/`\ue65d`), active accent bar, change-count badge.
+  Clicking the active icon toggles the sidebar.
+- One left contextual sidebar (default 260px, clamped 190–460, `Ctrl+B`
+  collapse, 3px press-and-slide resizer): `EXPLORER` holds the moved
+  `WORKSPACE` project switcher plus the existing Files tree;
+  `SOURCE CONTROL` holds the existing Git panel. No second fixed column.
+- VS Code-style tab strip (inactive `#2d2d2d`, active surface + accent
+  top edge) for terminal tabs and the view-local `Diff:` preview;
+  history state moved out of the tabs into the status bar.
+- Context row under tabs: `project › tab`, or diff path + side + hunk
+  position for previews. 22px accent status bar: branch + change
+  summary (omitted outside repos), history state, font size.
+- `Ctrl+Shift+E/G` select Explorer / Source Control; `Ctrl+B` toggles.
+- Terminal grid, pane-tree geometry, router/IPC parity, session
+  lifetime, and persistence contracts unchanged. Pane-size estimation
+  and the `Ctrl+P` overlay geometry now derive from the workbench
+  chrome widths instead of the old fixed sidebars.
+
+### Changed files
+
+- `apps/omaterm/src/workbench.rs` (new, GPUI-free) — palette/dimension
+  tokens, `clamp_sidebar_width` (non-finite falls back to default),
+  `activity_press_collapsed`, `change_badge`, `change_summary`,
+  `branch_label`; 5 unit tests
+- `apps/omaterm/src/main.rs` — title/activity/sidebar/tabs/context/
+  status shell, `set_activity`, sidebar resizer drag, keybindings,
+  notice/banner + palette-button token reuse; removed
+  `render_sidebar_tabs` and `files::RIGHT_SIDEBAR_WIDTH_PX`
+- `docs/ui-workbench-redesign-plan.md` (new), `docs/00-overview.md`
+  (link), this status record
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 79 tests (74 existing + 5 workbench) |
+| `cargo test -p omaterm-context -p omaterm-cli -p omaterm-protocol -p omaterm-core -p omaterm-logging` | PASS (38 CLI / 44 context / 5 protocol / 1 logging-core / 8 / 17 / 3 / 6 unit targets green) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (existing transitive `proc-macro-error2` future-incompatibility notice only) |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS (pending rerun count in final gate below) |
+| `git diff --check` | PASS (pending rerun in final gate below) |
+
+### Desktop validation (isolated instance, release build)
+
+Launched with `XDG_RUNTIME_DIR=/tmp/omaterm-wb/runtime` (0700),
+`XDG_STATE_HOME=/tmp/omaterm-wb/state`, cwd `/tmp/omaterm-wb/repo`
+(a scratch git repo with 1 modified + 1 untracked file); project
+content itself comes from the user's read-only config pins. Two
+`grim` captures on `wayland-1`:
+
+- `/tmp/omaterm-wb/shot-1-explorer.png` — full Explorer frame: title
+  row, palette button, collapse control, activity rail with badge,
+  `WORKSPACE` switcher, icon file tree, accented `Tab 1`, context
+  row, working terminal, status bar (`main`, `history: on`, `14px`).
+  An IPC banner is visible here (runtime dir was 0755 before chmod).
+- `/tmp/omaterm-wb/shot-2-explorer-clean.png` — tiled window after the
+  chmod fix: no banner; status bar shows the dirty-repo treatment
+  (`main*`, `4 changed`) plus badge `4` on the Source Control icon.
+
+The compositor's `dispatch` path in Hyprland 0.56.2 routes through a
+Lua bridge that rejects `address:`/`pid:` selectors, and the installed
+`wtype` only types text (no modifiers), so no window focus, keystroke,
+or pointer injection was possible. Therefore live-proven: workbench
+frame render, Explorer content, badge/branch/summary/history status
+states, IPC parity against the isolated socket (`project list`).
+Still unit/code-review-only, explicitly NOT claimed live: Source
+Control panel render, diff preview open/render, sidebar
+collapse/resize drag, `Ctrl+P` overlay geometry, and all
+keyboard/pointer flows for the new chrome.
+
+### Next action
+
+Validate the unproven chrome paths on Wayland with real
+input/focus control (Source Control render, Git-row-to-diff-preview,
+`Ctrl+B`/resizer, `Ctrl+P` overlay, `Ctrl+Shift+E/G`), then close the
+standing M15 gaps (partial-hunk staging, full live proof). Uncommitted
+work: `apps/omaterm/src/{main,workbench}.rs`,
+`docs/{ui-workbench-redesign-plan.md,00-overview.md,status.md}`.

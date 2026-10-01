@@ -1,16 +1,21 @@
 # Milestone 15 — Diff Viewer
 
 > Git Source Control detail view: click a changed file in the existing Git
-> panel to see its `Files → Hunks → Lines` diff there (blueprint §33).
+> panel to open its `Files → Hunks → Lines` diff as a preview tab in the
+> main area (blueprint §33). The tab holds the file diff, never a terminal.
 > Per-hunk stage buttons use M14 mutations. Single-pane hunk list first;
-> side-by-side later. Diff is not a separate sidebar tab.
+> side-by-side later. No editor (v0.3); preview state is view-local and
+> never persisted.
 
 ## Product Contract
 
 Read-only-by-default detail view for a selected Git change: unstaged
 (`git diff`) and staged (`git diff --cached`) changes plus single-path
-diffs. Selecting a row in Git shows its matching diff beneath the change
-list in the same panel. Binary
+diffs. Selecting a row in Git opens its matching diff as a preview tab in
+the main tab strip (`Diff: <name>`); selecting a terminal tab or closing
+the chip returns to the terminal surface. Core tabs and snapshots stay
+terminal-only (editor deferred to v0.3): preview state is view-local,
+never persisted or sent over IPC. Binary
 files render as "binary, not shown". Everything is capped before
 allocation (files/hunks/lines/bytes) with accurate `truncated` flags.
 No syntax highlighting in v0.2 (Tree-sitter arrives with the v0.3 editor);
@@ -39,8 +44,9 @@ the view.
 - Diff parser: `Diff → Files[] → Hunks[] → Lines[]` with strict caps,
   multibyte-safe truncation, binary detection.
 - Core: `DiffCommand` + validation + result DTOs.
-- Desktop: show the selected changed file's diff inline in the Git panel,
-  with hunk navigation and stage buttons; no separate Diff tab.
+- Desktop: open the selected changed file's diff as a main-area preview
+  tab with hunk navigation and stage buttons; no editor, no persistence
+  or protocol change for the preview itself.
 - Protocol/bridge/CLI with human + `--json` rendering.
 
 ## Test Plan
