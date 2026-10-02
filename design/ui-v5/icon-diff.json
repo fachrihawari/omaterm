@@ -1,0 +1,9 @@
+{
+ "usedNames": [
+  "open-in-new"
+ ],
+ "vendoredCount": 31,
+ "shapeComparison": "all 31 vendored 1.49.0 SVGs have identical element/kind/d-attribute shapes to the 1.50.0 browser render; only serialization differs",
+ "mismatched150vs149": [],
+ "open-in-new": "NOT a Lucide name: unpkg returns 404, browser leaves an empty <i>; reference renders nothing in that slot"
+}

@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -80,6 +81,9 @@ struct WorkspaceView {
     /// True while Control or Shift is held: the sidebar then shows the
     /// `Ctrl+Shift+1..9` jump index next to each project.
     show_project_hints: bool,
+    /// Project whose context menu is open. The menu is transient view chrome;
+    /// keeping it outside the card preserves the reference card height.
+    project_context_menu: Option<ProjectId>,
     ipc_server: Option<IpcServer>,
     ipc_receiver: Option<async_channel::Receiver<IpcWork>>,
     ipc_pending: HashMap<u64, IpcWork>,
@@ -348,6 +352,7 @@ impl WorkspaceView {
             pending_ui_launches: HashMap::new(),
             launch_poller_active: false,
             show_project_hints: false,
+            project_context_menu: None,
             ipc_server: None,
             ipc_receiver: None,
             ipc_pending: HashMap::new(),
@@ -1579,6 +1584,56 @@ impl WorkspaceView {
                 cx.notify();
             }
         }
+    }
+
+    /// Open a directory picker before creating a project. This is distinct
+    /// from the keyboard New Project action, which intentionally starts at
+    /// the default home directory.
+    fn open_project_directory(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open project directory".into()),
+        });
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = receiver.await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.shutting_down {
+                    return;
+                }
+                match result {
+                    Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
+                        let directory = paths.remove(0);
+                        if let Err(error) = view.dispatch_command(
+                            OmaCommand::Project(ProjectCommand::Create {
+                                name: None,
+                                directory: Some(directory),
+                            }),
+                            cx,
+                        ) {
+                            tracing::warn!(target: "omaterm::workspace", "project directory not opened: {error}");
+                            view.persistence_warning =
+                                Some(format!("Project directory not opened: {error}"));
+                            cx.notify();
+                        }
+                    }
+                    // Dialog cancellation is intentionally a no-op.
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(target: "omaterm::workspace", "folder picker unavailable: {error:#}");
+                        view.persistence_warning =
+                            Some(format!("Folder picker unavailable: {error:#}"));
+                        cx.notify();
+                    }
+                    Err(_) => {}
+                }
+            });
+        })
+        .detach();
     }
 
     fn create_tab(&mut self, cx: &mut Context<Self>) {
@@ -3137,6 +3192,14 @@ impl WorkspaceView {
         }
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
+        if event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && key_name == "o"
+        {
+            self.open_project_directory(cx);
+            return;
+        }
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "p" {
             self.create_project(cx);
             return;
@@ -3853,24 +3916,48 @@ impl WorkspaceView {
                 let first = self.render_node(&first, _window, cx);
                 let second = self.render_node(&second, _window, cx);
                 let first = match axis {
-                    SplitAxis::Horizontal => {
-                        div().w(relative(fraction)).h_full().flex().child(first)
-                    }
-                    SplitAxis::Vertical => div().h(relative(fraction)).w_full().flex().child(first),
+                    SplitAxis::Horizontal => div()
+                        .w(relative(fraction))
+                        .h_full()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .overflow_hidden()
+                        .flex()
+                        .child(first),
+                    SplitAxis::Vertical => div()
+                        .h(relative(fraction))
+                        .w_full()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .overflow_hidden()
+                        .flex()
+                        .child(first),
                 };
                 let second = match axis {
                     SplitAxis::Horizontal => div()
                         .w(relative(1.0 - fraction))
                         .h_full()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .overflow_hidden()
                         .flex()
                         .child(second),
                     SplitAxis::Vertical => div()
                         .h(relative(1.0 - fraction))
                         .w_full()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .overflow_hidden()
                         .flex()
                         .child(second),
                 };
-                let container = div().flex().flex_1().size_full();
+                let container = div()
+                    .flex()
+                    .flex_1()
+                    .size_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_hidden();
                 match axis {
                     SplitAxis::Horizontal => container.flex_row(),
                     SplitAxis::Vertical => container.flex_col(),
@@ -4025,7 +4112,10 @@ impl WorkspaceView {
             .flex_shrink_0()
             .border_b_1()
             .border_color(rgb(crate::ui::theme::BORDER))
-            .bg(rgba(0x0F1318E6))
+            .bg(rgba(crate::ui::theme::with_alpha(
+                crate::ui::theme::BG2,
+                crate::ui::theme::PANE_HEADER_BG_OPACITY,
+            )))
             .text_color(rgb(crate::ui::theme::TEXT2))
             .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(dot)))
             .child(div().flex_1().truncate().child(title))
@@ -4053,6 +4143,9 @@ impl WorkspaceView {
             .flex_1()
             .flex_col()
             .size_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .overflow_hidden()
             .relative()
             .bg(rgb(crate::ui::theme::BG2))
             .border_1()
@@ -4105,7 +4198,10 @@ impl WorkspaceView {
                     .rounded_md()
                     .border_1()
                     .border_color(rgb(crate::ui::theme::BORDER2))
-                    .bg(rgba(0x141A21F2))
+                    .bg(rgba(crate::ui::theme::with_alpha(
+                        crate::ui::theme::ACTIVE_TAB_BG,
+                        crate::ui::theme::PANE_TOOLBAR_BG_OPACITY,
+                    )))
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .child(
                         div()
@@ -4128,7 +4224,7 @@ impl WorkspaceView {
                                     );
                                 }),
                             )
-                            .child(crate::ui::assets::icon(
+                            .child(crate::ui::primitives::cmd_icon(
                                 crate::ui::assets::COLUMNS,
                                 14.0,
                                 crate::ui::theme::MUTED,
@@ -4155,7 +4251,7 @@ impl WorkspaceView {
                                     );
                                 }),
                             )
-                            .child(crate::ui::assets::icon(
+                            .child(crate::ui::primitives::cmd_icon(
                                 crate::ui::assets::ROWS,
                                 14.0,
                                 crate::ui::theme::MUTED,
@@ -4179,7 +4275,7 @@ impl WorkspaceView {
                                     );
                                 }),
                             )
-                            .child(crate::ui::assets::icon(
+                            .child(crate::ui::primitives::cmd_icon(
                                 crate::ui::assets::TRASH,
                                 14.0,
                                 crate::ui::theme::MUTED,
@@ -4192,6 +4288,7 @@ impl WorkspaceView {
                 .flex()
                 .flex_1()
                 .size_full()
+                .min_w(px(0.0))
                 .min_h(px(0.0))
                 .child(canvas(
                     move |bounds, _, _| bounds,
@@ -4623,6 +4720,7 @@ impl WorkspaceView {
                 Some((text, color)) => div()
                     .w(px(18.0))
                     .flex_shrink_0()
+                    .font_weight(crate::ui::metrics::BADGE_600)
                     .text_color(rgb(color))
                     .child(text),
                 None if is_dir => div()
@@ -4656,7 +4754,7 @@ impl WorkspaceView {
                     .px_2()
                     .h(px(files::TREE_ROW_H))
                     .pl(px(8.0 + row.depth as f32 * 16.0))
-                    .rounded_sm()
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
                     .bg(rgb(if is_selected {
                         crate::ui::theme::TREE_SELECTED_BG
                     } else {
@@ -4930,6 +5028,7 @@ impl WorkspaceView {
                         .items_center()
                         .gap_2()
                         .text_size(px(11.0))
+                        .text_color(rgb(crate::ui::theme::TEXT))
                         .child(crate::ui::assets::icon(
                             crate::ui::assets::GIT_BRANCH,
                             16.0,
@@ -4937,16 +5036,15 @@ impl WorkspaceView {
                         ))
                         .child(branch_name)
                         .child(
-                            div()
-                                .px(px(6.0))
-                                .py(px(2.0))
-                                .rounded_sm()
-                                .border_1()
-                                .border_color(rgb(crate::ui::theme::PILL_BORDER))
-                                .bg(rgb(crate::ui::theme::PILL_BG))
-                                .text_size(px(9.0))
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .child(sync_pill),
+                            crate::ui::metrics::text_role(
+                                crate::ui::primitives::pill()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded_sm(),
+                                crate::ui::metrics::META_9,
+                            )
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child(sync_pill),
                         )
                         .child(div().flex_1())
                         .child(
@@ -4962,11 +5060,12 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
-                                        view.create_project(cx);
+                                        view.git_dirty_hint = true;
+                                        cx.notify();
                                     }),
                                 )
-                                .child(crate::ui::assets::icon(
-                                    crate::ui::assets::FOLDER_PLUS,
+                                .child(crate::ui::primitives::cmd_icon(
+                                    crate::ui::assets::REFRESH,
                                     14.0,
                                     crate::ui::theme::MUTED,
                                 )),
@@ -5001,38 +5100,40 @@ impl WorkspaceView {
                         .child(input_content),
                 )
                 .child(
-                    div()
-                        .h(px(32.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_center()
-                        .rounded_md()
-                        .bg(rgb(if can_commit {
-                            crate::ui::theme::BLUE2
-                        } else {
-                            crate::ui::theme::PANEL2
-                        }))
-                        .text_size(px(11.0))
-                        .text_color(rgb(if can_commit {
-                            0xFFFFFF
-                        } else {
-                            crate::ui::theme::MUTED
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                if can_commit {
-                                    view.git_commit_submit(project, cx);
-                                }
-                            }),
-                        )
-                        .child("Commit"),
+                    crate::ui::metrics::text_role(
+                        div()
+                            .h(px(32.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .bg(rgb(if can_commit {
+                                crate::ui::theme::BLUE2
+                            } else {
+                                crate::ui::theme::PANEL2
+                            })),
+                        crate::ui::metrics::BODY_11_MEDIUM,
+                    )
+                    .text_color(rgb(if can_commit {
+                        0xFFFFFF
+                    } else {
+                        crate::ui::theme::MUTED
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            if can_commit {
+                                view.git_commit_submit(project, cx);
+                            }
+                        }),
+                    )
+                    .child("Commit"),
                 ),
         );
         if status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty() {
@@ -5280,7 +5381,7 @@ impl WorkspaceView {
                             view.git_unstage_all(project, cx);
                         }),
                     )
-                    .child(crate::ui::assets::icon(
+                    .child(crate::ui::primitives::cmd_icon(
                         crate::ui::assets::UNSTAGE,
                         14.0,
                         crate::ui::theme::MUTED,
@@ -5304,7 +5405,7 @@ impl WorkspaceView {
                                 view.git_stage_all(project, cx);
                             }),
                         )
-                        .child(crate::ui::assets::icon(
+                        .child(crate::ui::primitives::cmd_icon(
                             crate::ui::assets::STAGE,
                             14.0,
                             crate::ui::theme::MUTED,
@@ -5326,7 +5427,7 @@ impl WorkspaceView {
                                 view.git_discard_all(project, cx);
                             }),
                         )
-                        .child(crate::ui::assets::icon(
+                        .child(crate::ui::primitives::cmd_icon(
                             crate::ui::assets::UNDO,
                             14.0,
                             crate::ui::theme::MUTED,
@@ -5367,6 +5468,7 @@ impl WorkspaceView {
                 .items_center()
                 .gap_2()
                 .px_3()
+                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
                 .text_size(px(11.0))
                 .text_color(rgb(if is_selected {
                     0xFAFAFA
@@ -5398,6 +5500,7 @@ impl WorkspaceView {
                                 .w(px(20.0))
                                 .flex_shrink_0()
                                 .text_size(px(10.0))
+                                .font_weight(crate::ui::metrics::BADGE_600)
                                 .text_color(rgb(color))
                                 .child(text),
                             None => div()
@@ -5844,7 +5947,7 @@ impl WorkspaceView {
                                     cx.notify();
                                 }),
                             )
-                            .child(crate::ui::assets::icon(
+                            .child(crate::ui::primitives::cmd_icon(
                                 crate::ui::assets::REFRESH,
                                 14.0,
                                 crate::ui::theme::MUTED,
@@ -6032,9 +6135,13 @@ impl WorkspaceView {
         if let Some(dir) = project.pinned_directory.as_deref() {
             let text = dir.to_string_lossy().into_owned();
             if let Ok(home) = std::env::var("HOME")
-                && let Some(rest) = text.strip_prefix(&home)
+                && let Ok(rest) = Path::new(&text).strip_prefix(Path::new(&home))
             {
-                return format!("~{rest}");
+                return if rest.as_os_str().is_empty() {
+                    "~".to_string()
+                } else {
+                    format!("~/{}", rest.display())
+                };
             }
             text
         } else {
@@ -6075,6 +6182,7 @@ impl WorkspaceView {
             let active = selected == Some(id);
             let close_id = id;
             let pick_id = id;
+            let context_menu_open = self.project_context_menu == Some(id);
             let label = if self.show_project_hints && index < 9 {
                 format!("{} · {name}", index + 1)
             } else {
@@ -6085,15 +6193,19 @@ impl WorkspaceView {
             } else {
                 crate::ui::theme::MUTED2
             };
+            // Measured card: 8px radius, 1px border (transparent when
+            // inactive), 10px padding; name 12px (500 active / 400 idle),
+            // branch 10px, path 9px; inactive hover #171d25.
             let mut card = div()
                 .w_full()
-                .rounded_md()
+                .relative()
+                .rounded(px(8.0))
                 .border_1()
-                .border_color(rgb(if active {
-                    crate::ui::theme::BORDER2
+                .border_color(if active {
+                    rgb(crate::ui::theme::BORDER2)
                 } else {
-                    crate::ui::theme::BG
-                }))
+                    gpui::rgba(0x00000000)
+                })
                 .bg(rgb(if active {
                     crate::ui::theme::SELECTED_PROJECT_BG
                 } else {
@@ -6101,6 +6213,13 @@ impl WorkspaceView {
                 }))
                 .px(px(10.0))
                 .py(px(10.0))
+                .hover(|s| {
+                    if active {
+                        s
+                    } else {
+                        s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG))
+                    }
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, _, window, cx| {
@@ -6108,10 +6227,23 @@ impl WorkspaceView {
                             return;
                         }
                         window.focus(&view.focus_handle);
+                        view.project_context_menu = None;
                         let _ = view.dispatch_command(
                             OmaCommand::Project(ProjectCommand::Select { project: id }),
                             cx,
                         );
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&view.focus_handle);
+                        view.project_context_menu = Some(id);
+                        cx.notify();
                     }),
                 )
                 .child(
@@ -6127,35 +6259,56 @@ impl WorkspaceView {
                                 .rounded_full()
                                 .bg(rgb(dot_color)),
                         )
-                        .child(div().flex_1().truncate().child(label))
                         .child(
-                            div()
+                            crate::ui::metrics::text_role(
+                                div().flex_1().truncate(),
+                                if active {
+                                    crate::ui::metrics::NAME_12_MEDIUM
+                                } else {
+                                    crate::ui::metrics::NAME_12
+                                },
+                            )
+                            .text_color(rgb(crate::ui::theme::TEXT))
+                            .child(label),
+                        )
+                        .child(
+                            crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10)
                                 .text_color(rgb(crate::ui::theme::MUTED))
                                 .child(branch.unwrap_or_default()),
                         ),
                 )
                 .child(
-                    div()
-                        .pl(px(16.0))
-                        .pt(px(4.0))
-                        .text_color(rgb(crate::ui::theme::MUTED))
-                        .truncate()
-                        .child(path),
+                    crate::ui::metrics::text_role(
+                        div().pl(px(16.0)).pt(px(4.0)),
+                        crate::ui::metrics::META_9,
+                    )
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .truncate()
+                    .child(path),
                 );
-            // The selected card keeps its directory-change and close
-            // actions; inactive cards stay clean like the reference.
-            if active {
+            // Actions live in a transient context menu so selection never
+            // changes the measured 57.5px card geometry.
+            if context_menu_open {
                 card = card.child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .pl(px(16.0))
-                        .pt(px(4.0))
-                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .absolute()
+                        .top(px(60.0))
+                        .right(px(0.0))
+                        .w(px(132.0))
+                        .p(px(4.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(rgb(crate::ui::theme::BORDER2))
+                        .bg(rgb(crate::ui::theme::PANEL2))
+                        .text_color(rgb(crate::ui::theme::TEXT2))
                         .child(
                             div()
-                                .px_1()
+                                .h(px(28.0))
+                                .flex()
+                                .items_center()
+                                .px(px(8.0))
+                                .rounded(px(4.0))
+                                .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, window, cx| {
@@ -6164,14 +6317,20 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
+                                        view.project_context_menu = None;
                                         view.pick_project_directory(pick_id, cx);
                                     }),
                                 )
-                                .child("change"),
+                                .child("Change directory"),
                         )
                         .child(
                             div()
-                                .px_1()
+                                .h(px(28.0))
+                                .flex()
+                                .items_center()
+                                .px(px(8.0))
+                                .rounded(px(4.0))
+                                .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, window, cx| {
@@ -6180,10 +6339,11 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
+                                        view.project_context_menu = None;
                                         view.close_project(close_id, cx);
                                     }),
                                 )
-                                .child("×"),
+                                .child("Close project"),
                         ),
                 );
             }
@@ -6213,11 +6373,15 @@ impl WorkspaceView {
                     .child(
                         div()
                             .p(px(6.0))
-                            .rounded_sm()
+                            .rounded(px(7.0))
                             .border_1()
-                            .border_color(rgb(crate::ui::theme::BORDER2))
-                            .bg(rgb(crate::ui::theme::SELECTED_PROJECT_BG))
-                            .text_color(rgb(0xFFFFFF))
+                            .border_color(rgba(0x00000000))
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .hover(|s| {
+                                s.bg(rgb(crate::ui::theme::CMD_HOVER_BG))
+                                    .border_color(rgb(crate::ui::theme::CMD_HOVER_BORDER))
+                                    .text_color(rgb(0xFFFFFF))
+                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|view, _, window, cx| {
@@ -6231,10 +6395,10 @@ impl WorkspaceView {
                                     cx.notify();
                                 }),
                             )
-                            .child(crate::ui::assets::icon(
+                            .child(crate::ui::primitives::cmd_icon(
                                 crate::ui::assets::PANEL_LEFT_CLOSE,
                                 16.0,
-                                0xFFFFFF,
+                                crate::ui::theme::MUTED,
                             )),
                     )
                     .child(
@@ -6256,20 +6420,25 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
-                                        view.create_project(cx);
+                                        view.open_project_directory(cx);
                                     }),
                                 )
-                                .child("+"),
+                                .child(crate::ui::primitives::cmd_icon(
+                                    crate::ui::assets::FOLDER_PLUS,
+                                    14.0,
+                                    crate::ui::theme::MUTED,
+                                )),
                         ),
                     ),
             )
             .child(
                 div()
+                    .id("projects-list")
                     .flex()
                     .flex_1()
                     .flex_col()
                     .min_h(px(0.0))
-                    .overflow_hidden()
+                    .overflow_y_scroll()
                     .p_2()
                     .gap_1()
                     .children(cards),
@@ -6285,9 +6454,9 @@ impl WorkspaceView {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_1()
-                            .px_1()
-                            .rounded_md()
+                            .gap_2()
+                            .px(px(8.0))
+                            .rounded(px(6.0))
                             .border_1()
                             .border_color(rgb(crate::ui::theme::BORDER2))
                             .text_color(rgb(crate::ui::theme::TEXT2))
@@ -6299,32 +6468,28 @@ impl WorkspaceView {
                                     }
                                     cx.stop_propagation();
                                     window.focus(&view.focus_handle);
-                                    view.create_project(cx);
+                                    view.open_project_directory(cx);
                                 }),
                             )
-                            .child(crate::ui::assets::icon(
+                            .child(crate::ui::primitives::cmd_icon(
                                 crate::ui::assets::FOLDER_PLUS,
                                 14.0,
                                 crate::ui::theme::TEXT2,
                             ))
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .child("Open Project"),
+                                crate::ui::metrics::text_role(
+                                    div().flex_1().min_w(px(0.0)).truncate(),
+                                    crate::ui::metrics::BODY_11,
+                                )
+                                .child("Open Project"),
                             )
                             .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .px(px(6.0))
-                                    .py(px(2.0))
-                                    .rounded_sm()
-                                    .border_1()
-                                    .border_color(rgb(0x313B48))
-                                    .bg(rgb(0x161B22))
-                                    .text_color(rgb(crate::ui::theme::MUTED))
-                                    .child("Ctrl+Shift+P"),
+                                crate::ui::metrics::text_role(
+                                    crate::ui::primitives::kbd().flex_shrink_0(),
+                                    crate::ui::metrics::META_9,
+                                )
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child("Ctrl+O"),
                             ),
                     ),
             )
@@ -6455,7 +6620,7 @@ impl WorkspaceView {
                             cx.notify();
                         }),
                     )
-                    .child(crate::ui::assets::icon(
+                    .child(crate::ui::primitives::cmd_icon(
                         crate::ui::assets::PANEL_LEFT,
                         16.0,
                         crate::ui::theme::MUTED,
@@ -6483,41 +6648,44 @@ impl WorkspaceView {
                 } else {
                     crate::ui::theme::GREEN
                 };
-                let mut chip = div()
-                    .flex()
-                    .flex_row()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .h(px(36.0))
-                    .rounded_t_md()
-                    .bg(rgb(if active {
-                        crate::ui::theme::ACTIVE_TAB_BG
-                    } else {
-                        crate::ui::theme::PANEL
-                    }))
-                    .text_color(rgb(if active {
-                        0xFFFFFF
-                    } else {
-                        crate::ui::theme::TEXT2
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            window.focus(&view.focus_handle);
-                            view.diff_panel.close_preview(project_id);
-                            let _ = view.dispatch_command(
-                                OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
-                                cx,
-                            );
-                        }),
-                    )
-                    .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
-                    .child(tab.display_name(index + 1));
+                let mut chip = crate::ui::metrics::text_role(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .h(px(36.0))
+                        .rounded_t_md(),
+                    crate::ui::metrics::TAB_12,
+                )
+                .bg(rgb(if active {
+                    crate::ui::theme::ACTIVE_TAB_BG
+                } else {
+                    crate::ui::theme::PANEL
+                }))
+                .text_color(rgb(if active {
+                    0xFFFFFF
+                } else {
+                    crate::ui::theme::TEXT2
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        window.focus(&view.focus_handle);
+                        view.diff_panel.close_preview(project_id);
+                        let _ = view.dispatch_command(
+                            OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
+                            cx,
+                        );
+                    }),
+                )
+                .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
+                .child(tab.display_name(index + 1));
                 if active {
                     chip = chip
                         .border_t_2()
@@ -6675,7 +6843,7 @@ impl WorkspaceView {
                                 view.toggle_ctrlp(cx);
                             }),
                         )
-                        .child(crate::ui::assets::icon(
+                        .child(crate::ui::primitives::cmd_icon(
                             crate::ui::assets::SEARCH,
                             16.0,
                             crate::ui::theme::MUTED,
@@ -6715,7 +6883,7 @@ impl WorkspaceView {
                                 cx.notify();
                             }),
                         )
-                        .child(crate::ui::assets::icon(
+                        .child(crate::ui::primitives::cmd_icon(
                             crate::ui::assets::PANEL_RIGHT,
                             16.0,
                             if visible {
@@ -6757,32 +6925,35 @@ impl WorkspaceView {
             } else {
                 crate::ui::theme::MUTED
             };
-            let mut button = div()
-                .h_full()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.0))
-                .px_3()
-                .relative()
-                .text_color(rgb(if active {
-                    0xFFFFFF
-                } else {
-                    crate::ui::theme::MUTED
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
-                        }
-                        cx.stop_propagation();
-                        window.focus(&view.focus_handle);
-                        view.select_inspector_tab(tab, cx);
-                    }),
-                )
-                .child(crate::ui::assets::icon(glyph, 14.0, glyph_color))
-                .child(label);
+            let mut button = crate::ui::metrics::text_role(
+                div()
+                    .h_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .px_3()
+                    .relative(),
+                crate::ui::metrics::BODY_11,
+            )
+            .text_color(rgb(if active {
+                0xFFFFFF
+            } else {
+                crate::ui::theme::MUTED
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.select_inspector_tab(tab, cx);
+                }),
+            )
+            .child(crate::ui::assets::icon(glyph, 14.0, glyph_color))
+            .child(label);
             if active {
                 button = button.child(
                     div()
@@ -6797,12 +6968,15 @@ impl WorkspaceView {
             }
             if tab == InspectorTab::Git && git_count > 0 {
                 button = button.child(
-                    div()
-                        .ml(px(4.0))
-                        .px(px(6.0))
-                        .rounded_full()
-                        .bg(rgb(crate::ui::theme::GIT_BADGE_BG))
-                        .child(format!("{git_count}")),
+                    crate::ui::metrics::text_role(
+                        div()
+                            .ml(px(4.0))
+                            .px(px(6.0))
+                            .rounded_full()
+                            .bg(rgb(crate::ui::theme::GIT_BADGE_BG)),
+                        crate::ui::metrics::META_9,
+                    )
+                    .child(format!("{git_count}")),
                 );
             }
             tabs = tabs.child(button);
@@ -6973,13 +7147,13 @@ impl WorkspaceView {
                 .flex_col()
                 .gap_2()
                 .child(
-                    div()
+                    crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
                         .text_color(rgb(crate::ui::theme::MUTED))
                         .child("PROJECT"),
                 )
                 .child(
                     div()
-                        .rounded_md()
+                        .rounded(px(8.0))
                         .border_1()
                         .border_color(rgb(crate::ui::theme::BORDER))
                         .bg(rgb(crate::ui::theme::INFO_CARD_BG))
@@ -7014,25 +7188,34 @@ impl WorkspaceView {
                                         .flex_1()
                                         .flex_col()
                                         .min_w(px(0.0))
-                                        .child(div().truncate().child(name))
                                         .child(
-                                            div()
-                                                .text_color(rgb(crate::ui::theme::MUTED))
-                                                .truncate()
-                                                .child(path),
+                                            crate::ui::metrics::text_role(
+                                                div().truncate(),
+                                                crate::ui::metrics::NAME_12,
+                                            )
+                                            .text_color(rgb(crate::ui::theme::TEXT))
+                                            .child(name),
+                                        )
+                                        .child(
+                                            crate::ui::metrics::text_role(
+                                                div().truncate(),
+                                                crate::ui::metrics::META_10,
+                                            )
+                                            .text_color(rgb(crate::ui::theme::MUTED))
+                                            .child(path),
                                         ),
                                 )
                                 .child(if let Some(branch) = branch {
-                                    div()
-                                        .px(px(6.0))
-                                        .py(px(2.0))
-                                        .rounded_sm()
-                                        .border_1()
-                                        .border_color(rgb(crate::ui::theme::PILL_BORDER))
-                                        .bg(rgb(crate::ui::theme::PILL_BG))
-                                        .text_color(rgb(crate::ui::theme::MUTED))
-                                        .child(branch)
-                                        .into_any_element()
+                                    crate::ui::metrics::text_role(
+                                        crate::ui::primitives::pill()
+                                            .px(px(6.0))
+                                            .py(px(2.0))
+                                            .rounded_sm(),
+                                        crate::ui::metrics::META_9,
+                                    )
+                                    .text_color(rgb(crate::ui::theme::MUTED))
+                                    .child(branch)
+                                    .into_any_element()
                                 } else {
                                     div().into_any_element()
                                 }),
@@ -7048,16 +7231,23 @@ impl WorkspaceView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(div().text_color(rgb(crate::ui::theme::MUTED)).child(title))
                     .child(
-                        div()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(rgb(crate::ui::theme::BORDER))
-                            .px_3()
-                            .py_2()
+                        crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
                             .text_color(rgb(crate::ui::theme::MUTED))
-                            .child(note),
+                            .child(title),
+                    )
+                    .child(
+                        crate::ui::metrics::text_role(
+                            div()
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(rgb(crate::ui::theme::BORDER))
+                                .px_3()
+                                .py_2(),
+                            crate::ui::metrics::BODY_11,
+                        )
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(note),
                     ),
             );
         }
@@ -7153,18 +7343,21 @@ impl WorkspaceView {
                 .items_center()
                 .child("UTF-8"),
         );
-        div()
-            .h(px(crate::ui::geometry::STATUS_H))
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .bg(rgb(crate::ui::theme::HEADER_BG))
-            .border_t_1()
-            .border_color(rgb(crate::ui::theme::BORDER))
-            .text_color(rgb(crate::ui::theme::MUTED))
-            .child(left)
-            .child(right)
+        crate::ui::metrics::text_role(
+            div()
+                .h(px(crate::ui::geometry::STATUS_H))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .bg(rgb(crate::ui::theme::HEADER_BG))
+                .border_t_1()
+                .border_color(rgb(crate::ui::theme::BORDER)),
+            crate::ui::metrics::META_10,
+        )
+        .text_color(rgb(crate::ui::theme::MUTED))
+        .child(left)
+        .child(right)
     }
 
     /// `Ctrl+P` overlay in VSCode Quick Open style: centered floating box
@@ -7471,7 +7664,7 @@ impl Render for WorkspaceView {
                                     if has_project {
                                         view.create_tab(cx);
                                     } else {
-                                        view.create_project(cx);
+                                        view.open_project_directory(cx);
                                     }
                                 }),
                             )
@@ -7485,7 +7678,14 @@ impl Render for WorkspaceView {
         // UI v5: the tab strip is built by `render_header` at composition
         // time (see below); the legacy workbench strip is retired.
         // UI v5 composition happens below, after `pane_area` is built.
-        let mut pane_area = div().flex().flex_1().flex_col().size_full().relative();
+        let mut pane_area = div()
+            .flex()
+            .flex_1()
+            .flex_col()
+            .size_full()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .relative();
         if let Some((arm, at)) = self.history_arm
             && at.elapsed() < HISTORY_ARM_WINDOW
         {
@@ -7580,7 +7780,16 @@ impl Render for WorkspaceView {
         if let Some(project) = preview_project {
             pane_area = pane_area.child(self.render_diff_preview(project, cx));
         } else {
-            pane_area = pane_area.child(div().flex().flex_1().size_full().child(content));
+            pane_area = pane_area.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .size_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(content),
+            );
         }
         // Toast paints last inside the relative pane area: bottom-center,
         // above the status bar, pointer-transparent (no handlers).
@@ -7637,7 +7846,13 @@ impl Render for WorkspaceView {
         // then main | resizer | inspector), then the global status bar.
         let viewport_h: f32 = window.viewport_size().height.into();
         let header = self.render_header(cx);
-        let mut center_row = div().flex().flex_1().flex_row().min_h(px(0.0));
+        let mut center_row = div()
+            .flex()
+            .flex_1()
+            .flex_row()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .overflow_hidden();
         center_row = center_row.child(
             div()
                 .flex()
@@ -7652,6 +7867,7 @@ impl Render for WorkspaceView {
                         .flex_1()
                         .flex_row()
                         .size_full()
+                        .min_w(px(0.0))
                         .min_h(px(0.0))
                         .child(
                             div()
@@ -7674,7 +7890,12 @@ impl Render for WorkspaceView {
                         }),
                 ),
         );
-        let mut content_row = div().flex().flex_1().flex_row().min_h(px(0.0));
+        let mut content_row = div()
+            .flex()
+            .flex_1()
+            .flex_row()
+            .min_w(px(0.0))
+            .min_h(px(0.0));
         if self.projects_visible {
             content_row = content_row.child(self.render_projects_sidebar(cx));
             content_row = content_row.child(self.render_projects_resizer(cx));
@@ -7706,6 +7927,7 @@ impl Render for WorkspaceView {
             .flex()
             .flex_col()
             .bg(rgb(crate::ui::theme::BG))
+            .text_color(rgb(crate::ui::theme::TEXT))
             .child(content_row)
             .child(status_bar)
     }
@@ -7734,9 +7956,14 @@ fn mono_family_for_chrome(cx: &App, configured: Option<&str>) -> String {
 
 /// Line-number gutter for diff rows: right-aligned number or an empty
 /// spacer that keeps add/delete-only rows aligned with their siblings.
+/// Split gutters are 54px; inline gutters are measured 46px.
 fn diff_gutter(no: Option<u32>, color: u32) -> Div {
+    diff_gutter_w(no, color, 54.0)
+}
+
+fn diff_gutter_w(no: Option<u32>, color: u32, width: f32) -> Div {
     div()
-        .w(px(54.0))
+        .w(px(width))
         .flex_shrink_0()
         .text_right()
         .text_color(rgb(color))
@@ -7749,17 +7976,19 @@ fn diff_gutter(no: Option<u32>, color: u32) -> Div {
 
 /// Background + inset mark for an added/removed diff row. GPUI has no
 /// inset-shadow primitive, so the mock's 3px mark renders as a 2px left
-/// border (recorded 1px delta); context rows stay transparent.
+/// border (recorded 1px delta); context rows stay transparent. Alpha is
+/// significant here: `rgba()` preserves the .12/.8 translucency, while
+/// `rgb()` would force opaque and misread the packed bytes.
 fn diff_row_decor(kind: omaterm_core::DiffLineKind) -> Div {
     match kind {
         omaterm_core::DiffLineKind::Addition => div()
-            .bg(rgb(crate::ui::theme::DIFF_ADD_BG))
+            .bg(rgba(crate::ui::theme::DIFF_ADD_BG))
             .border_l_2()
-            .border_color(rgb(crate::ui::theme::DIFF_ADD_MARK)),
+            .border_color(rgba(crate::ui::theme::DIFF_ADD_MARK)),
         omaterm_core::DiffLineKind::Deletion => div()
-            .bg(rgb(crate::ui::theme::DIFF_DEL_BG))
+            .bg(rgba(crate::ui::theme::DIFF_DEL_BG))
             .border_l_2()
-            .border_color(rgb(crate::ui::theme::DIFF_DEL_MARK)),
+            .border_color(rgba(crate::ui::theme::DIFF_DEL_MARK)),
         omaterm_core::DiffLineKind::Context => div(),
     }
 }
@@ -7831,20 +8060,28 @@ fn inline_row(row: &diff_panel::AlignedRow, mono: &str) -> Div {
             diff_row_decor(row.kind)
                 .flex_1()
                 .flex_row()
-                .child(diff_gutter(row.old_no, {
-                    if row.old_no.is_some() {
-                        no_color
-                    } else {
-                        crate::ui::theme::EDITOR_BG
-                    }
-                }))
-                .child(diff_gutter(row.new_no, {
-                    if row.new_no.is_some() {
-                        no_color
-                    } else {
-                        crate::ui::theme::EDITOR_BG
-                    }
-                }))
+                .child(diff_gutter_w(
+                    row.old_no,
+                    {
+                        if row.old_no.is_some() {
+                            no_color
+                        } else {
+                            crate::ui::theme::EDITOR_BG
+                        }
+                    },
+                    46.0,
+                ))
+                .child(diff_gutter_w(
+                    row.new_no,
+                    {
+                        if row.new_no.is_some() {
+                            no_color
+                        } else {
+                            crate::ui::theme::EDITOR_BG
+                        }
+                    },
+                    46.0,
+                ))
                 .child(div().flex_1().min_w(px(0.0)).child(row.text.clone())),
         )
 }

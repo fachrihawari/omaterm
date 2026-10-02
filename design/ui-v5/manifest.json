@@ -1,19 +1,27 @@
 {
   "reference": {
     "source_file": "reference.html",
-    "source_status": "MISSING — drop the exact user-supplied omaterm_mock_ui_v5.html here byte-for-byte, then record sha256",
-    "sha256": null,
+    "source_status": "archived 2026-10-02 from /home/fachri/Downloads/omaterm_mock_ui_v5.html (identical copy at /home/fachri/omaterm_mock_ui_v5.html)",
+    "sha256": "cad67d42a421a29a5d118aa5944c2c0e6dc3046baa25be06e2b8b61edb1b1ad5",
+    "lines": 1312,
+    "capture_copy": "capture.html (CDN URLs rewritten to ./vendor/*)",
     "cdn": {
-      "tailwind": "UNPINNED — resolve once, vendor response, record hash/version",
-      "lucide": "UNPINNED (lucide@latest) — resolve once, vendor payload, record hash/version"
+      "tailwind": "vendored vendor/tailwind-cdn.js (407279 bytes, fetched 2026-10-02)",
+      "lucide": "lucide@latest resolved to 1.50.0 on 2026-10-02; vendored vendor/lucide-1.50.0.min.js (444764 bytes); Rust app vendors lucide-static 1.49.0 SVGs — shape-identical for all 31 used icons (see icon-diff.json); open-in-new is not a Lucide name (404, browser renders empty slot)"
     },
     "browser": {
-      "build": null,
-      "os": null,
+      "build": "/usr/bin/chromium headless via puppeteer-core",
+      "os": "Omarchy Linux",
       "viewport_css_px": [1440, 900],
       "device_pixel_ratio": 1,
       "zoom": "100%",
-      "root_font_px": 16
+      "root_font_px": 16,
+      "box_sizing": "border-box globally (Tailwind preflight + * rule): ALL specified heights INCLUDE padding/border"
+    },
+    "fonts_measured": {
+      "ui_stack": "Inter unresolved (document.fonts empty); falls back to system sans",
+      "mono_stack": "same fallback (no JetBrains files loaded by the page)",
+      "inter_installed": false
     }
   },
   "shell_geometry_css_px": {
@@ -46,12 +54,31 @@
     "inspector": [1110, 42, 330, 834],
     "status": [0, 876, 1440, 24]
   },
+  "measured_component_facts_2026_10_02": {
+    "project_card": "193x57.5 at 210px sidebar; radius 8px; padding 10px; name 12px/500/18px; meta 10px/15px; path 9px/13.5px; inactive hover bg #171d25",
+    "toggle_cmd": "30x30 (6px padding + 16px icon + 1px border); radius 7px; bg #18202a",
+    "top_tab": "h=36 at y=5 (bottom-aligned, 1px above header border); radius 6px top; padding 0/12px; active bg #141a21; label 12px/18px",
+    "inspector_underline": "::after left/right 9px, bottom 0, height 2px, #5aa9ff",
+    "pane_header": "h=32 border-box; bg rgba(15,19,24,0.9); 10px/15px; padding 0/12px",
+    "pane_footer": "h=28 border-box, primary pane only",
+    "pane_toolbar": "container bg rgba(20,26,33,0.95), radius 6px, padding 2px/4px; NO split-handle element exists in default DOM",
+    "term_cursor": "8x15 #95d7ff",
+    "tree_row": "h=28, 11px/16.5px, padding 0/8px, active bg #1b2430 with NO radius",
+    "files_search": "313x32, radius 6px, bg #151a21; inner input 11px padding 0/8px",
+    "git_row": "h=40 border-box, padding 0/12px; name 11px/16.5px; commit button 32px radius 6px bg #2f81f7 11px/500; textarea min 56px border-box padding 8px 11px",
+    "diff_split_row": "h=22, 12px; add bg rgba(46,160,67,0.12); del bg rgba(248,81,73,0.12)",
+    "diff_inline_row": "h=21; gutters 46px each (NOT 54)",
+    "editor_line": "12.5px/22px; gutter 54px with 14px right padding",
+    "kbd": "9px/13.5px, radius 4px, padding 2px/6px",
+    "toast_rule": "position fixed, bottom 38px, window-centered (left 50%), radius 8px, 11px, 180ms ease, 1400ms hold"
+  },
   "cascade_traps": [
     ".cmd padding 5px 7px wins over p-1.5 at equal specificity — freeze computed padding",
     ".terminal-glow assigns background-image AFTER .subtle-grid, replacing the grid image",
     ".line sets min-height 22px AND line-height 22px — diff leading-[21px] does not override .line rows",
     "transparent borders occupy layout space; inset shadows do not",
-    "active classes coexist with Tailwind text classes — measure actual foreground"
+    "active classes coexist with Tailwind text classes — measure actual foreground",
+    "box-sizing is border-box: specified heights already include padding/border"
   ],
   "palette": {
     "bg": "#0b0e12",
@@ -76,9 +103,9 @@
     "lime": "#b9f263"
   },
   "spike_2026_10_02": {
-    "gpui_svg": "elements/svg.rs: svg().path(SharedString) + Styled/InteractiveElement; usvg-backed render_pixmap — vendored Lucide SVG asset paths are viable, tint via text_color to verify in P2c",
+    "gpui_svg": "elements/svg.rs: svg().path(SharedString) + Styled/InteractiveElement; usvg-backed render_pixmap — vendored Lucide SVG asset paths are viable, tint via text_color verified in committed UI",
     "fonts": "Inter NOT installed (UI falls back to system sans — separate baseline); JetBrainsMono Nerd Font installed (terminal + code)",
     "inter_installed": false
   },
-  "notes": "Source-derived values from docs/ui-v5-pixel-perfect-plan.md sections 3-5. P0 replaces derived assumptions with measured computed-styles.json where layout/fonts/cascade change the result. No native pixel claim precedes the frozen capture."
+  "notes": "Measured values from headless Chromium 2026-10-02 (computed-styles.json, component-measures.json, component-measures-states.json + 12 captures). These supersede source-derived estimates wherever they differ (inline gutters 46px, tree-row radius 0, border-box heights)."
 }

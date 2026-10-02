@@ -2,6 +2,12 @@
 
 ## Current position
 
+**UI v5 fidelity: incomplete.** The committed rewrite `8cade1b` has confirmed
+sidebar, icon, typography, spacing, hover, geometry and color differences from
+the supplied HTML. The earlier all-phases-finished claim is superseded by the
+[fidelity correction plan](ui-v5-fidelity-correction-plan.md). Historical Rust
+check results below do not establish pixel-perfect visual acceptance.
+
 Milestones 1–3 are complete. Milestone 4 is implemented and verified; see the
 M4 evidence below.
 
@@ -37,6 +43,85 @@ The [acceptance matrix](acceptance-matrix.md) tracks release requirements. Plann
 tests in milestone documents are not evidence of implemented application behavior.
 The [M5–M8 closure plan](m5-m8-closure-plan.md) orders the remaining blockers;
 it records intended work, not completed validation.
+
+## UI v5 correction audit and plan — 2026-10-02
+
+User feedback: both sidebars, icons and numerous details still differ from
+the HTML. Audited the clean `8cade1b` baseline against the supplied source and
+created the [correction plan](ui-v5-fidelity-correction-plan.md).
+
+Confirmed gaps include inherited sidebar typography, an extra selected-project
+action row, remaining text/Nerd icon substitutions, missing Inspector menus,
+clipped/non-scrolling bodies, always-visible Git actions, focus-gated pane
+toolbar at the wrong position, missing Info/status capabilities, and unmeasured
+reference/render geometry. Verified against GPUI 0.2.2 that `rgb()` drops alpha
+and reads the low three bytes: diff `0xRRGGBBAA` values currently produce wrong
+opaque colors. Exact source transparency and inset paints require corrections.
+
+The correction plan supplies named discrepancy IDs, ordered R0–R7 deliveries,
+component targets, real browser/native measurement requirements and per-panel
+acceptance gates. No application code was changed in this planning pass. No
+new browser/Wayland fidelity check is claimed. Previous completion claims for
+UI fidelity are superseded; missing phases remain pending.
+
+Documentation checks:
+
+| Command/review | Result |
+|---|---|
+| `python3 scripts/check-docs.py` | PASS: 30 Markdown files, 90 local link targets, 254 numbered blueprint references; 33 CLI methods mapped |
+| `git diff --check` | PASS |
+| `git diff --no-index --check /dev/null docs/ui-v5-fidelity-correction-plan.md` | PASS: new plan has no whitespace errors |
+| Consistency review | Source targets distinguished from measured evidence; missing capabilities and visual gates remain open; no phase marked complete by this plan |
+
+Cargo checks are not required for this documentation-only change. The next
+implementation action is R0 reference measurement and the R1 specimen, followed
+by R2 Projects and R3/R4 right-panel corrections.
+
+### R0–R2 implementation progress — 2026-10-02
+
+The frozen reference, offline browser capture and component measurements are now
+present under `design/ui-v5/`. R1 added measured type roles, pill/kbd/icon
+primitives, and correct RGBA treatment for diff fills. R2 began the Projects
+sidebar correction in `apps/omaterm/src/main.rs`: project cards now preserve
+their idle height, selected-card actions moved to a transient right-click menu,
+the list uses its own vertical scroll container, and both Open Project controls
+plus `Ctrl+O` use the directory picker before dispatching project creation.
+Home-path shortening now uses path-component prefix matching rather than string
+prefix matching.
+
+Verification evidence:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 87 tests |
+| `cargo clippy -p omaterm --all-targets -- -D warnings` | PASS; dependency future-incompatibility notice for `proc-macro-error2 v2.0.1` only |
+| `cargo test --workspace -- --test-threads=1` | TIMED OUT after 20 minutes during the existing terminal suite; not a pass |
+
+Native Wayland screenshot comparison and manual picker/context-menu validation
+remain pending. R2 is in progress: measured capture is available, but its
+five-project/width-variant acceptance gate is not yet claimed.
+
+### Split containment and sidebar tint correction — 2026-10-02
+
+Reported desktop regression: a horizontal terminal split let the main pane tree
+claim its content minimum width and pushed the Inspector beyond the viewport.
+Every split wrapper, leaf, canvas wrapper and center main-area flex item now has
+zero minimum width/height and clips at its allocated pane rectangle; the fixed
+Inspector width therefore remains reserved. Explicit `TEXT` tint now applies to
+Projects card names, the Git branch label, the Info project name, and the root
+UI surface so these labels cannot inherit a muted/default GPUI foreground.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 87 tests |
+| `cargo clippy -p omaterm --all-targets -- -D warnings` | PASS; dependency future-incompatibility notice for `proc-macro-error2 v2.0.1` only |
+| `git diff --check` | PASS |
+
+Manual Wayland validation remains required: horizontal split with Inspector
+visible at the user's desktop size, followed by visual comparison of the three
+explicitly tinted labels.
 
 ## UI v5 exact-design planning — 2026-10-02
 

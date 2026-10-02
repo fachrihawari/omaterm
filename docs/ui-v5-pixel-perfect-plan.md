@@ -1,5 +1,10 @@
 # OmaTerm UI v5 — Exact-Design Rewrite Plan
 
+> **Implementation fidelity is incomplete.** The baseline `8cade1b` does not
+> satisfy this specification. Follow the
+> [fidelity correction plan](ui-v5-fidelity-correction-plan.md) for the audited
+> discrepancy register, ordered fixes, and visual acceptance gates.
+
 > User requirement: reproduce `omaterm_mock_ui_v5.html` faithfully, including
 > icons, layout, colors, typography, spacing, borders, shadows, and interactive
 > states. This is a measured native GPUI reproduction, not an inspired redesign.

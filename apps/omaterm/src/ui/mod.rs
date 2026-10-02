@@ -6,6 +6,8 @@
 //! freeze, so no visual behavior changes yet.
 pub mod assets;
 pub mod geometry;
+pub mod metrics;
+pub mod primitives;
 // P2 wires these tokens into the render path; until then they are an
 // unwired foundation, not dead logic.
 // (allow(dead_code) is scoped to this declaration.)

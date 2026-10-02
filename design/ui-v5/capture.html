@@ -1,0 +1,1312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Omaterm — Terminal Project Mock UI</title>
+
+  <script src="./vendor/tailwind-cdn.js"></script>
+  <script src="./vendor/lucide-1.50.0.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            oma: {
+              bg: '#0b0e12',
+              bg2: '#0f1318',
+              panel: '#11161c',
+              panel2: '#161c24',
+              panel3: '#1b222c',
+              border: '#252d38',
+              border2: '#303a48',
+              text: '#d7dde5',
+              text2: '#bcc5d0',
+              muted: '#7f8a99',
+              muted2: '#596474',
+              blue: '#5aa9ff',
+              blue2: '#2f81f7',
+              cyan: '#61d8df',
+              green: '#63d58d',
+              yellow: '#e9c66d',
+              orange: '#f3a85f',
+              red: '#ff6f6f',
+              purple: '#c792ea',
+              lime: '#b9f263'
+            }
+          },
+          boxShadow: {
+            pane: '0 10px 30px rgba(0,0,0,.22)',
+            pop: '0 20px 55px rgba(0,0,0,.48)'
+          },
+          fontFamily: {
+            ui: ['Inter','ui-sans-serif','system-ui','-apple-system','BlinkMacSystemFont','Segoe UI','sans-serif'],
+            mono: ['"JetBrains Mono"','"SFMono-Regular"','Consolas','"Liberation Mono"','Menlo','monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    html, body { height:100%; margin:0; background:#0b0e12; }
+    body { overflow:hidden; }
+    * { box-sizing:border-box; scrollbar-width:thin; scrollbar-color:#343e4b transparent; }
+    *::-webkit-scrollbar { width:9px; height:9px; }
+    *::-webkit-scrollbar-thumb { background:#343e4b; border-radius:999px; }
+    *::-webkit-scrollbar-track { background:transparent; }
+
+    .subtle-grid{
+      background-image:
+        linear-gradient(rgba(255,255,255,.016) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.016) 1px, transparent 1px);
+      background-size:28px 28px;
+      background-position:-1px -1px;
+    }
+    .terminal-glow{
+      background-image:
+        radial-gradient(circle at 28% 18%, rgba(90,169,255,.035), transparent 24%),
+        radial-gradient(circle at 78% 10%, rgba(185,242,99,.024), transparent 22%);
+    }
+
+    .top-tab.active{
+      background:#141a21;
+      color:white;
+      box-shadow:inset 0 1px 0 rgba(90,169,255,.9);
+    }
+    .right-tab.active{
+      color:#fff;
+    }
+    .right-tab.active::after{
+      content:"";
+      position:absolute; left:9px; right:9px; bottom:0; height:2px;
+      background:#5aa9ff; border-radius:99px;
+    }
+
+    .cmd{
+      border:1px solid transparent;
+      border-radius:7px;
+      padding:5px 7px;
+      transition:.12s ease;
+    }
+    .cmd:hover{ background:#182029; border-color:#27313d; color:#fff; }
+
+    .pill{
+      border:1px solid #2c3643;
+      background:#151a21;
+    }
+    .kbd{
+      border:1px solid #313b48;
+      border-bottom-color:#1d232b;
+      background:#161b22;
+      box-shadow:inset 0 -1px 0 rgba(255,255,255,.03);
+    }
+
+    .project-view.hidden,
+    .right-panel.hidden,
+    .drawer.hidden,
+    .diff-mode.hidden { display:none; }
+
+    .terminal-pane{
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.006), rgba(255,255,255,0)),
+        #0f1318;
+      position:relative;
+      min-width:0;
+      min-height:0;
+    }
+    .terminal-pane.active{
+      box-shadow:inset 0 0 0 1px rgba(90,169,255,.34);
+    }
+    .terminal-pane:hover .pane-toolbar{
+      opacity:1;
+      transform:translateY(0);
+      pointer-events:auto;
+    }
+    .pane-toolbar{
+      opacity:0;
+      transform:translateY(-3px);
+      pointer-events:none;
+      transition:.12s ease;
+      position:absolute;
+      right:8px;
+      top:7px;
+      z-index:20;
+    }
+
+    .split-handle-v{
+      width:4px; cursor:col-resize; background:#202731;
+    }
+    .split-handle-h{
+      height:4px; cursor:row-resize; background:#202731;
+    }
+    .split-handle-v:hover,
+    .split-handle-h:hover{ background:#2f81f7; }
+
+    .line{
+      display:grid; grid-template-columns:54px 1fr;
+      min-height:22px; line-height:22px;
+    }
+    .line:hover{ background:rgba(255,255,255,.016); }
+    .ln{
+      color:#515d6d;
+      text-align:right;
+      padding-right:14px;
+      user-select:none;
+    }
+    .diff-add{
+      background:rgba(46,160,67,.12);
+      box-shadow:inset 3px 0 0 rgba(75,190,104,.8);
+    }
+    .diff-del{
+      background:rgba(248,81,73,.12);
+      box-shadow:inset 3px 0 0 rgba(248,81,73,.82);
+    }
+
+    .tree-row:hover{ background:#171d25; }
+    .tree-row.active{ background:#1b2430; }
+
+    .git-file:hover .git-actions{ opacity:1; }
+    .git-actions{ opacity:0; transition:.1s ease; }
+
+    .terminal-cursor{
+      display:inline-block;
+      width:8px;height:15px;background:#95d7ff;
+      vertical-align:-2px;
+      animation:blink 1.05s steps(1) infinite;
+    }
+    .editor-cursor{
+      display:inline-block;width:1px;height:16px;background:#d7dde5;
+      vertical-align:-3px;animation:blink 1s steps(1) infinite;
+    }
+    @keyframes blink{50%{opacity:0}}
+
+    .drawer{
+      position:absolute;
+      top:42px;
+      left:0;
+      bottom:24px;
+      width:260px;
+      z-index:60;
+      border-right:1px solid #252d38;
+      background:#11161c;
+      box-shadow:12px 0 35px rgba(0,0,0,.26);
+    }
+
+    .scrim{
+      position:absolute;
+      top:42px; left:0; right:0; bottom:24px;
+      background:rgba(0,0,0,.22);
+      z-index:50;
+      backdrop-filter:blur(1px);
+    }
+    .scrim.hidden{display:none;}
+
+    .selection:focus-within{
+      box-shadow:inset 0 0 0 1px #2f81f7;
+    }
+
+    .toast{
+      position:fixed;
+      bottom:38px;
+      left:50%;
+      transform:translateX(-50%) translateY(12px);
+      opacity:0;
+      transition:.18s ease;
+      z-index:200;
+      background:#1b222c;
+      border:1px solid #303a48;
+      color:#d7dde5;
+      padding:8px 12px;
+      border-radius:8px;
+      box-shadow:0 15px 40px rgba(0,0,0,.35);
+      font-size:11px;
+      pointer-events:none;
+    }
+    .toast.show{
+      opacity:1;
+      transform:translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+
+<body class="font-ui text-oma-text bg-oma-bg">
+<div id="app" class="h-screen w-screen flex flex-col bg-oma-bg">
+
+  <!-- application chrome -->
+  <div class="flex-1 min-h-0 flex">
+
+    <!-- persistent projects sidebar -->
+    <aside id="projectsSidebar" class="w-[210px] min-w-[164px] max-w-[340px] shrink-0 bg-oma-panel border-r border-oma-border flex flex-col">
+      <div class="h-[42px] px-2 flex items-center border-b border-oma-border shrink-0">
+        <button id="toggleProjectsTop" class="cmd p-1.5 text-white bg-[#18202a] border border-oma-border2" title="Hide Projects">
+          <i data-lucide="panel-left-close" class="w-4 h-4"></i>
+        </button>
+        <div class="ml-2 text-[10px] uppercase tracking-[.12em] text-oma-muted">Projects</div>
+        <button class="cmd p-1.5 text-oma-muted ml-auto" title="Open project">
+          <i data-lucide="folder-plus" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      <div id="projectList" class="flex-1 overflow-auto p-2 space-y-1">
+        <button class="project-item active w-full rounded-lg border border-oma-border2 bg-[#18202a] px-2.5 py-2.5 text-left" data-project="omaterm">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-oma-green shadow-[0_0_10px_rgba(99,213,141,.24)]"></span>
+            <span class="project-name text-[12px] font-medium truncate">omaterm</span>
+            <span class="project-meta ml-auto text-[10px] text-oma-muted">main*</span>
+          </div>
+          <div class="project-path pl-4 mt-1 text-[9px] text-oma-muted truncate">~/dev/omaterm</div>
+        </button>
+
+        <button class="project-item w-full rounded-lg border border-transparent px-2.5 py-2.5 text-left hover:bg-[#171d25]" data-project="phoenix">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-oma-green"></span>
+            <span class="project-name text-[12px] truncate">phoenix</span>
+            <span class="project-meta ml-auto text-[10px] text-oma-muted">main</span>
+          </div>
+          <div class="project-path pl-4 mt-1 text-[9px] text-oma-muted truncate">~/dev/phoenix</div>
+        </button>
+
+        <button class="project-item w-full rounded-lg border border-transparent px-2.5 py-2.5 text-left hover:bg-[#171d25]" data-project="dolphin">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-oma-green"></span>
+            <span class="project-name text-[12px] truncate">dolphin</span>
+            <span class="project-meta ml-auto text-[10px] text-oma-muted">feat/booking</span>
+          </div>
+          <div class="project-path pl-4 mt-1 text-[9px] text-oma-muted truncate">~/dev/dolphin</div>
+        </button>
+
+        <button class="project-item w-full rounded-lg border border-transparent px-2.5 py-2.5 text-left hover:bg-[#171d25]" data-project="mindwave">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-oma-muted2"></span>
+            <span class="project-name text-[12px] truncate">mindwave</span>
+            <span class="project-meta ml-auto text-[10px] text-oma-muted">main</span>
+          </div>
+          <div class="project-path pl-4 mt-1 text-[9px] text-oma-muted truncate">~/dev/mindwave</div>
+        </button>
+
+        <button class="project-item w-full rounded-lg border border-transparent px-2.5 py-2.5 text-left hover:bg-[#171d25]" data-project="fortis">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-oma-green"></span>
+            <span class="project-name text-[12px] truncate">fortis</span>
+            <span class="project-meta ml-auto text-[10px] text-oma-muted">develop</span>
+          </div>
+          <div class="project-path pl-4 mt-1 text-[9px] text-oma-muted truncate">~/dev/fortis</div>
+        </button>
+      </div>
+
+      <div class="p-2 border-t border-oma-border">
+        <button class="w-full h-8 px-2 rounded-md border border-oma-border2 hover:bg-[#18202a] flex items-center gap-2 text-[11px] text-oma-text2">
+          <i data-lucide="folder-plus" class="w-3.5 h-3.5"></i>
+          <span class="project-bottom-label">Open Project</span>
+          <span class="project-shortcut ml-auto kbd px-1.5 py-0.5 rounded text-[9px] text-oma-muted">⌘O</span>
+        </button>
+      </div>
+    </aside>
+
+    <div id="projectsResizer" class="w-1 cursor-col-resize bg-transparent hover:bg-oma-blue2 shrink-0"></div>
+
+    <!-- main + inspector -->
+    <div class="flex-1 min-w-0 flex flex-col">
+
+      <!-- tabs bar -->
+      <header class="h-[42px] shrink-0 flex items-center border-b border-oma-border bg-[#0d1014]">
+        <button id="showProjectsTop" class="hidden ml-2 mr-1 cmd text-oma-muted shrink-0" title="Show Projects">
+          <i data-lucide="panel-left" class="w-4 h-4"></i>
+        </button>
+        <div class="flex-1 min-w-0 h-full flex items-end px-1 gap-1 overflow-x-auto">
+          <button data-view="terminal" class="top-tab active h-9 min-w-[154px] px-3 rounded-t-md flex items-center gap-2 text-[12px]">
+            <span class="w-2 h-2 rounded-full bg-oma-green shadow-[0_0_10px_rgba(99,213,141,.28)]"></span>
+            <span>dev</span>
+            <span class="text-oma-muted ml-auto">3 panes</span>
+            <i data-lucide="x" class="w-3.5 h-3.5 text-oma-muted"></i>
+          </button>
+
+          <button data-view="terminal" class="top-tab h-9 min-w-[130px] px-3 rounded-t-md flex items-center gap-2 text-[12px] text-oma-text2">
+            <span class="w-2 h-2 rounded-full bg-oma-green"></span>
+            <span>api</span>
+            <i data-lucide="x" class="w-3.5 h-3.5 ml-auto text-oma-muted"></i>
+          </button>
+
+          <button data-view="terminal" class="top-tab h-9 min-w-[130px] px-3 rounded-t-md flex items-center gap-2 text-[12px] text-oma-text2">
+            <span class="w-2 h-2 rounded-full bg-oma-yellow"></span>
+            <span>tests</span>
+            <i data-lucide="x" class="w-3.5 h-3.5 ml-auto text-oma-muted"></i>
+          </button>
+
+          <button data-view="editor" class="top-tab h-9 min-w-[165px] px-3 rounded-t-md flex items-center gap-2 text-[12px] text-oma-text2">
+            <i data-lucide="file-code-2" class="w-3.5 h-3.5 text-[#519aba]"></i>
+            <span>App.tsx</span>
+            <span class="text-oma-yellow text-[10px]">M</span>
+            <i data-lucide="x" class="w-3.5 h-3.5 ml-auto text-oma-muted"></i>
+          </button>
+
+          <button data-view="diff" class="top-tab h-9 min-w-[185px] px-3 rounded-t-md flex items-center gap-2 text-[12px] text-oma-text2">
+            <i data-lucide="git-compare-arrows" class="w-3.5 h-3.5 text-oma-green"></i>
+            <span>Diff · GitPanel.tsx</span>
+            <i data-lucide="x" class="w-3.5 h-3.5 ml-auto text-oma-muted"></i>
+          </button>
+
+          <button class="h-8 w-8 mb-0.5 shrink-0 rounded-md hover:bg-oma-panel2 flex items-center justify-center text-oma-muted" title="New tab">
+            <i data-lucide="plus" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <div class="px-2 flex justify-end items-center gap-1 shrink-0">
+          <button class="cmd text-oma-muted" title="Search">
+            <i data-lucide="search" class="w-4 h-4"></i>
+          </button>
+          <button id="toggleInspectorTop" class="cmd text-white bg-[#18202a] border border-oma-border2" title="Toggle Info / Files / Git">
+            <i data-lucide="panel-right" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </header>
+
+      <!-- content row -->
+      <div class="flex-1 min-h-0 flex">
+    <!-- center -->
+    <main class="flex-1 min-w-0 relative bg-oma-bg2">
+
+      <!-- terminal view -->
+      <section id="view-terminal" class="project-view absolute inset-0 flex flex-col subtle-grid terminal-glow">
+        <!-- terminal layout area -->
+        <div id="terminalLayout" class="flex-1 min-h-0 flex">
+
+          <!-- left column: pane 1 -->
+          <div id="pane1" class="terminal-pane active w-1/2 border-r border-oma-border flex flex-col">
+            <div class="pane-toolbar">
+              <div class="flex items-center gap-0.5 rounded-md border border-oma-border2 bg-[#141a21]/95 shadow-pane px-1 py-0.5">
+                <button class="cmd p-1.5 text-oma-muted split-right" title="Split right"><i data-lucide="columns-2" class="w-3.5 h-3.5"></i></button>
+                <button class="cmd p-1.5 text-oma-muted split-down" title="Split down"><i data-lucide="rows-2" class="w-3.5 h-3.5"></i></button>
+                <button class="cmd p-1.5 text-oma-muted" title="Restart"><i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i></button>
+                <button class="cmd p-1.5 text-oma-muted" title="More"><i data-lucide="ellipsis" class="w-3.5 h-3.5"></i></button>
+              </div>
+            </div>
+
+            <div class="h-8 px-3 border-b border-oma-border bg-[#0f1318]/90 flex items-center text-[10px] shrink-0">
+              <span class="w-1.5 h-1.5 rounded-full bg-oma-green mr-2"></span>
+              <span class="text-oma-text2">bun --filter web dev</span>
+              <span class="text-oma-muted ml-2">fish · pid 27682</span>
+            </div>
+
+            <div class="flex-1 overflow-auto px-5 py-5 font-mono text-[12px] leading-[1.72]">
+              <div class="flex gap-2">
+                <span class="text-oma-cyan font-semibold">omaterm</span>
+                <span class="text-oma-muted">on</span>
+                <span class="text-oma-purple"> main*</span>
+                <span class="text-oma-muted">via</span>
+                <span class="text-oma-orange">bun v1.3.13</span>
+              </div>
+              <div><span class="text-oma-lime">❯</span> <span class="text-[#e7ecf2]">bun --filter web dev</span></div>
+              <div class="mt-2 text-oma-text2">web dev <span class="text-oma-muted">$</span> vite dev</div>
+
+              <div class="mt-4 text-[#e0e6ed]">VITE v6.1.5 <span class="text-oma-muted">ready in</span> <span class="text-oma-green">1609 ms</span></div>
+              <div class="mt-3">
+                <div><span class="text-oma-muted">➜</span> <span>Local:</span> <span class="text-oma-blue">http://localhost:3000/</span></div>
+                <div><span class="text-oma-muted">➜</span> <span>Network:</span> <span class="text-oma-muted">use --host to expose</span></div>
+                <div><span class="text-oma-muted">➜</span> <span>Debug:</span> <span class="text-oma-blue">http://localhost:3000/__debug</span></div>
+              </div>
+              <div class="mt-3 text-oma-cyan">└─ Running...</div>
+              <div class="mt-8 text-oma-muted">[vite] connected.</div>
+              <div class="text-oma-muted">[vite] hmr update /src/components/GitPanel.tsx</div>
+              <div class="mt-8"><span class="text-oma-lime">❯</span> <span class="terminal-cursor"></span></div>
+            </div>
+
+            <div class="h-7 px-3 border-t border-oma-border flex items-center text-[10px] text-oma-muted shrink-0">
+              <span>fish</span><span class="ml-3">~/dev/omaterm</span><span class="ml-auto">128×34</span>
+            </div>
+          </div>
+
+          <!-- right column -->
+          <div id="rightColumn" class="w-1/2 flex flex-col min-w-0 min-h-0">
+
+            <!-- pane 2 -->
+            <div id="pane2" class="terminal-pane h-1/2 border-b border-oma-border flex flex-col">
+              <div class="pane-toolbar">
+                <div class="flex items-center gap-0.5 rounded-md border border-oma-border2 bg-[#141a21]/95 shadow-pane px-1 py-0.5">
+                  <button class="cmd p-1.5 text-oma-muted split-right" title="Split right"><i data-lucide="columns-2" class="w-3.5 h-3.5"></i></button>
+                  <button class="cmd p-1.5 text-oma-muted split-down" title="Split down"><i data-lucide="rows-2" class="w-3.5 h-3.5"></i></button>
+                  <button class="cmd p-1.5 text-oma-muted" title="Kill terminal"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                </div>
+              </div>
+
+              <div class="h-8 px-3 border-b border-oma-border bg-[#0f1318]/90 flex items-center text-[10px] shrink-0">
+                <span class="w-1.5 h-1.5 rounded-full bg-oma-green mr-2"></span>
+                <span class="text-oma-text2">pnpm api:dev</span>
+                <span class="text-oma-muted ml-2">fish · pid 27901</span>
+              </div>
+
+              <div class="flex-1 overflow-auto px-5 py-4 font-mono text-[11.5px] leading-[1.68]">
+                <div><span class="text-oma-lime">❯</span> <span>pnpm api:dev</span></div>
+                <div class="mt-2 text-oma-muted">&gt; api@1.0.0 dev</div>
+                <div class="text-oma-muted">&gt; tsx watch src/server.ts</div>
+                <div class="mt-3"><span class="text-oma-green">✓</span> database connected</div>
+                <div><span class="text-oma-green">✓</span> queues initialized</div>
+                <div><span class="text-oma-green">✓</span> server listening <span class="text-oma-blue">:4000</span></div>
+              </div>
+            </div>
+
+            <!-- pane 3 -->
+            <div id="pane3" class="terminal-pane h-1/2 flex flex-col">
+              <div class="pane-toolbar">
+                <div class="flex items-center gap-0.5 rounded-md border border-oma-border2 bg-[#141a21]/95 shadow-pane px-1 py-0.5">
+                  <button class="cmd p-1.5 text-oma-muted split-right" title="Split right"><i data-lucide="columns-2" class="w-3.5 h-3.5"></i></button>
+                  <button class="cmd p-1.5 text-oma-muted split-down" title="Split down"><i data-lucide="rows-2" class="w-3.5 h-3.5"></i></button>
+                  <button class="cmd p-1.5 text-oma-muted" title="Kill terminal"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                </div>
+              </div>
+
+              <div class="h-8 px-3 border-b border-oma-border bg-[#0f1318]/90 flex items-center text-[10px] shrink-0">
+                <span class="w-1.5 h-1.5 rounded-full bg-oma-yellow mr-2"></span>
+                <span class="text-oma-text2">tail -f logs/app.log</span>
+                <span class="text-oma-muted ml-2">fish</span>
+              </div>
+
+              <div class="flex-1 overflow-auto px-5 py-4 font-mono text-[11px] leading-[1.6] text-oma-muted">
+                <div>05:41:22 INFO request GET /api/projects 200 18ms</div>
+                <div>05:41:26 INFO ws client connected session=dev</div>
+                <div>05:41:31 INFO git watcher changed src/components/GitPanel.tsx</div>
+                <div>05:41:31 INFO hmr broadcast clients=1</div>
+                <div>05:41:34 DEBUG terminal resize cols=82 rows=17</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- editor view -->
+      <section id="view-editor" class="project-view hidden absolute inset-0 flex flex-col bg-[#101318]">
+        <div class="h-9 px-3 border-b border-oma-border bg-[#11161c] flex items-center shrink-0">
+          <div class="flex items-center gap-1 text-[10px] text-oma-muted">
+            <span>src</span><i data-lucide="chevron-right" class="w-3 h-3"></i>
+            <span>components</span><i data-lucide="chevron-right" class="w-3 h-3"></i>
+            <span class="text-oma-text2">App.tsx</span>
+          </div>
+          <div class="ml-auto flex items-center gap-1">
+            <button class="cmd text-oma-muted"><i data-lucide="split-square-vertical" class="w-3.5 h-3.5"></i></button>
+            <button class="cmd text-oma-muted"><i data-lucide="more-horizontal" class="w-3.5 h-3.5"></i></button>
+          </div>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-auto font-mono text-[12.5px]">
+          <div class="min-w-[880px] py-3">
+            <div class="line"><span class="ln">1</span><pre><span class="text-oma-purple">import</span> <span class="text-[#9cdcfe]">{ useState }</span> <span class="text-oma-purple">from</span> <span class="text-oma-orange">'react'</span>;</pre></div>
+            <div class="line"><span class="ln">2</span><pre><span class="text-oma-purple">import</span> <span class="text-[#9cdcfe]">TerminalProject</span> <span class="text-oma-purple">from</span> <span class="text-oma-orange">'./TerminalProject'</span>;</pre></div>
+            <div class="line"><span class="ln">3</span><pre><span class="text-oma-purple">import</span> <span class="text-[#9cdcfe]">Inspector</span> <span class="text-oma-purple">from</span> <span class="text-oma-orange">'./Inspector'</span>;</pre></div>
+            <div class="line"><span class="ln">4</span><pre></pre></div>
+            <div class="line"><span class="ln">5</span><pre><span class="text-[#569cd6]">export default function</span> <span class="text-[#dcdcaa]">App</span>() <span class="text-oma-yellow">{</span></pre></div>
+            <div class="line"><span class="ln">6</span><pre>  <span class="text-oma-purple">const</span> <span class="text-[#9cdcfe]">[project, setProject]</span> = <span class="text-[#dcdcaa]">useState</span>(<span class="text-oma-orange">'dev'</span>);</pre></div>
+            <div class="line"><span class="ln">7</span><pre>  <span class="text-oma-purple">const</span> <span class="text-[#9cdcfe]">[inspector, setInspector]</span> = <span class="text-[#dcdcaa]">useState</span>(<span class="text-oma-orange">'info'</span>);</pre></div>
+            <div class="line"><span class="ln">8</span><pre></pre></div>
+            <div class="line bg-[#141a21]"><span class="ln text-[#768193]">9</span><pre>  <span class="text-oma-purple">return</span> <span class="text-[#808080]">(</span></pre></div>
+            <div class="line bg-[#141a21]"><span class="ln text-[#768193]">10</span><pre>    <span class="text-[#808080]">&lt;</span><span class="text-oma-cyan">Shell</span><span class="text-[#808080]">&gt;</span></pre></div>
+            <div class="line"><span class="ln">11</span><pre>      <span class="text-[#808080]">&lt;</span><span class="text-oma-cyan">TerminalProject</span> <span class="text-[#9cdcfe]">id</span>=<span class="text-[#808080]">{</span><span class="text-[#9cdcfe]">project</span><span class="text-[#808080]">}</span> <span class="text-[#808080]">/&gt;</span></pre></div>
+            <div class="line"><span class="ln">12</span><pre>      <span class="text-[#808080]">&lt;</span><span class="text-oma-cyan">Inspector</span> <span class="text-[#9cdcfe]">tab</span>=<span class="text-[#808080]">{</span><span class="text-[#9cdcfe]">inspector</span><span class="text-[#808080]">}</span> <span class="text-[#808080]">/&gt;</span></pre></div>
+            <div class="line"><span class="ln">13</span><pre>    <span class="text-[#808080]">&lt;/</span><span class="text-oma-cyan">Shell</span><span class="text-[#808080]">&gt;</span></pre></div>
+            <div class="line"><span class="ln">14</span><pre>  <span class="text-[#808080]">)</span>;</pre></div>
+            <div class="line"><span class="ln">15</span><pre><span class="text-oma-yellow">}</span><span class="editor-cursor"></span></pre></div>
+          </div>
+        </div>
+
+        <div class="h-7 px-3 border-t border-oma-border bg-[#0f1216] flex items-center text-[10px] text-oma-muted shrink-0">
+          <span>Ln 15, Col 2</span><span class="ml-4">Spaces: 2</span><span class="ml-4">UTF-8</span><span class="ml-auto">TypeScript React</span>
+        </div>
+      </section>
+
+      <!-- diff view -->
+      <section id="view-diff" class="project-view hidden absolute inset-0 flex flex-col bg-[#101318]">
+        <div class="h-10 px-3 border-b border-oma-border bg-[#11161c] flex items-center shrink-0">
+          <div class="flex items-center gap-2">
+            <i data-lucide="git-compare-arrows" class="w-4 h-4 text-oma-green"></i>
+            <span class="text-[12px]">GitPanel.tsx</span>
+            <span id="diffScopeLabel" class="text-[10px] text-oma-muted">Working Tree · INDEX ↔ WORKING TREE</span>
+          </div>
+
+          <div class="ml-auto flex items-center gap-1.5">
+            <button id="diffStageBtn" class="pill px-2.5 py-1 rounded-md text-[10px] text-oma-text2">Stage File</button>
+            <button id="diffDiscardBtn" class="px-2.5 py-1 rounded-md text-[10px] text-oma-red hover:bg-[#24181b]">Discard</button>
+            <div class="w-px h-4 bg-oma-border mx-1"></div>
+            <button id="splitDiffBtn" class="pill px-2.5 py-1 rounded-md text-[10px] text-white">Split</button>
+            <button id="inlineDiffBtn" class="px-2.5 py-1 rounded-md text-[10px] text-oma-muted hover:bg-oma-panel2">Inline</button>
+          </div>
+        </div>
+
+        <div id="splitDiff" class="diff-mode flex-1 min-h-0 flex">
+          <div class="w-1/2 min-w-0 border-r border-oma-border flex flex-col">
+            <div class="h-7 px-3 border-b border-oma-border bg-[#0f1216] flex items-center text-[10px] text-oma-muted">
+              INDEX · GitPanel.tsx
+            </div>
+            <div class="flex-1 overflow-auto font-mono text-[12px] leading-[21px]">
+              <div class="min-w-[610px] py-2">
+                <div class="line"><span class="ln">1</span><pre><span class="text-oma-purple">type</span> <span class="text-oma-cyan">Props</span> = <span class="text-oma-yellow">{</span></pre></div>
+                <div class="line"><span class="ln">2</span><pre>  <span class="text-[#9cdcfe]">repo</span>: <span class="text-oma-cyan">Repository</span>;</pre></div>
+                <div class="line"><span class="ln">3</span><pre><span class="text-oma-yellow">}</span>;</pre></div>
+                <div class="line"><span class="ln">4</span><pre></pre></div>
+                <div class="line"><span class="ln">5</span><pre><span class="text-[#569cd6]">export function</span> <span class="text-[#dcdcaa]">GitPanel</span>(<span class="text-[#9cdcfe]">props</span>: <span class="text-oma-cyan">Props</span>) <span class="text-oma-yellow">{</span></pre></div>
+                <div class="line diff-del"><span class="ln text-[#8b5e5e]">6</span><pre>  <span class="text-oma-purple">return</span> <span class="text-[#808080]">&lt;</span><span class="text-oma-cyan">div</span><span class="text-[#808080]">&gt;</span><span class="text-[#9cdcfe]">{props.repo.name}</span><span class="text-[#808080]">&lt;/</span><span class="text-oma-cyan">div</span><span class="text-[#808080]">&gt;</span>;</pre></div>
+                <div class="line"><span class="ln">7</span><pre><span class="text-oma-yellow">}</span></pre></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="w-1/2 min-w-0 flex flex-col">
+            <div class="h-7 px-3 border-b border-oma-border bg-[#0f1216] flex items-center text-[10px] text-oma-muted">
+              WORKING TREE · GitPanel.tsx
+            </div>
+            <div class="flex-1 overflow-auto font-mono text-[12px] leading-[21px]">
+              <div class="min-w-[650px] py-2">
+                <div class="line"><span class="ln">1</span><pre><span class="text-oma-purple">type</span> <span class="text-oma-cyan">Props</span> = <span class="text-oma-yellow">{</span></pre></div>
+                <div class="line"><span class="ln">2</span><pre>  <span class="text-[#9cdcfe]">repo</span>: <span class="text-oma-cyan">Repository</span>;</pre></div>
+                <div class="line diff-add"><span class="ln text-[#5d8a67]">3</span><pre>  <span class="text-[#9cdcfe]">compact</span>?: <span class="text-[#569cd6]">boolean</span>;</pre></div>
+                <div class="line"><span class="ln">4</span><pre><span class="text-oma-yellow">}</span>;</pre></div>
+                <div class="line"><span class="ln">5</span><pre></pre></div>
+                <div class="line"><span class="ln">6</span><pre><span class="text-[#569cd6]">export function</span> <span class="text-[#dcdcaa]">GitPanel</span>(<span class="text-[#9cdcfe]">props</span>: <span class="text-oma-cyan">Props</span>) <span class="text-oma-yellow">{</span></pre></div>
+                <div class="line diff-add"><span class="ln text-[#5d8a67]">7</span><pre>  <span class="text-oma-purple">const</span> <span class="text-[#9cdcfe]">changes</span> = <span class="text-[#dcdcaa]">useGitChanges</span>(props.repo.path);</pre></div>
+                <div class="line diff-add"><span class="ln text-[#5d8a67]">8</span><pre>  <span class="text-oma-purple">return</span> <span class="text-[#808080]">&lt;</span><span class="text-oma-cyan">ChangeList</span> <span class="text-[#9cdcfe]">items</span>=<span class="text-[#808080]">{</span><span class="text-[#9cdcfe]">changes</span><span class="text-[#808080]">}</span> <span class="text-[#808080]">/&gt;</span>;</pre></div>
+                <div class="line"><span class="ln">9</span><pre><span class="text-oma-yellow">}</span></pre></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="inlineDiff" class="diff-mode hidden flex-1 overflow-auto font-mono text-[12px] leading-[21px]">
+          <div class="min-w-[850px] py-2">
+            <div class="grid grid-cols-[46px_46px_1fr]"><span class="ln">1</span><span class="ln">1</span><pre><span class="text-oma-purple">type</span> <span class="text-oma-cyan">Props</span> = <span class="text-oma-yellow">{</span></pre></div>
+            <div class="grid grid-cols-[46px_46px_1fr]"><span class="ln">2</span><span class="ln">2</span><pre>  <span class="text-[#9cdcfe]">repo</span>: <span class="text-oma-cyan">Repository</span>;</pre></div>
+            <div class="diff-add grid grid-cols-[46px_46px_1fr]"><span></span><span class="ln text-[#5d8a67]">3</span><pre>  <span class="text-[#9cdcfe]">compact</span>?: <span class="text-[#569cd6]">boolean</span>;</pre></div>
+            <div class="grid grid-cols-[46px_46px_1fr]"><span class="ln">3</span><span class="ln">4</span><pre><span class="text-oma-yellow">}</span>;</pre></div>
+            <div class="grid grid-cols-[46px_46px_1fr]"><span class="ln">4</span><span class="ln">5</span><pre></pre></div>
+            <div class="grid grid-cols-[46px_46px_1fr]"><span class="ln">5</span><span class="ln">6</span><pre><span class="text-[#569cd6]">export function</span> <span class="text-[#dcdcaa]">GitPanel</span>(<span class="text-[#9cdcfe]">props</span>: <span class="text-oma-cyan">Props</span>) <span class="text-oma-yellow">{</span></pre></div>
+            <div class="diff-del grid grid-cols-[46px_46px_1fr]"><span class="ln text-[#8b5e5e]">6</span><span></span><pre>  <span class="text-oma-purple">return</span> <span class="text-[#808080]">&lt;</span><span class="text-oma-cyan">div</span><span class="text-[#808080]">&gt;</span><span class="text-[#9cdcfe]">{props.repo.name}</span><span class="text-[#808080]">&lt;/</span><span class="text-oma-cyan">div</span><span class="text-[#808080]">&gt;</span>;</pre></div>
+            <div class="diff-add grid grid-cols-[46px_46px_1fr]"><span></span><span class="ln text-[#5d8a67]">7</span><pre>  <span class="text-oma-purple">const</span> <span class="text-[#9cdcfe]">changes</span> = <span class="text-[#dcdcaa]">useGitChanges</span>(props.repo.path);</pre></div>
+            <div class="diff-add grid grid-cols-[46px_46px_1fr]"><span></span><span class="ln text-[#5d8a67]">8</span><pre>  <span class="text-oma-purple">return</span> <span class="text-[#808080]">&lt;</span><span class="text-oma-cyan">ChangeList</span> <span class="text-[#9cdcfe]">items</span>=<span class="text-[#808080]">{</span><span class="text-[#9cdcfe]">changes</span><span class="text-[#808080]">}</span> <span class="text-[#808080]">/&gt;</span>;</pre></div>
+            <div class="grid grid-cols-[46px_46px_1fr]"><span class="ln">7</span><span class="ln">9</span><pre><span class="text-oma-yellow">}</span></pre></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <div id="inspectorResizer" class="w-1 cursor-col-resize bg-transparent hover:bg-oma-blue2 shrink-0"></div>
+
+    <!-- right inspector -->
+    <aside id="inspector" class="w-[330px] min-w-[280px] max-w-[470px] shrink-0 bg-oma-panel border-l border-oma-border flex flex-col">
+      <div class="h-10 shrink-0 flex items-end border-b border-oma-border px-1">
+        <button data-right="info" class="right-tab active relative h-full px-3 flex items-center gap-1.5 text-[11px] text-oma-text2">
+          <i data-lucide="info" class="w-3.5 h-3.5"></i> Info
+        </button>
+        <button data-right="files" class="right-tab relative h-full px-3 flex items-center gap-1.5 text-[11px] text-oma-muted">
+          <i data-lucide="folder" class="w-3.5 h-3.5"></i> Files
+        </button>
+        <button data-right="git" class="right-tab relative h-full px-3 flex items-center gap-1.5 text-[11px] text-oma-muted">
+          <i data-lucide="git-branch" class="w-3.5 h-3.5"></i> Git
+          <span id="gitCountBadge" class="ml-1 rounded-full bg-[#222b36] px-1.5 text-[9px]">5</span>
+        </button>
+        <button class="ml-auto mb-1 cmd text-oma-muted"><i data-lucide="ellipsis" class="w-3.5 h-3.5"></i></button>
+      </div>
+
+      <!-- INFO -->
+      <section id="right-info" class="right-panel flex-1 min-h-0 overflow-auto">
+        <div class="p-3 space-y-4">
+          <div>
+            <div class="text-[10px] uppercase tracking-[.12em] text-oma-muted mb-2">Project</div>
+            <div class="border border-oma-border rounded-lg bg-[#141920] p-3">
+              <div class="flex items-center gap-2">
+                <div class="w-7 h-7 rounded-md border border-oma-border2 bg-[#10151a] flex items-center justify-center">
+                  <i data-lucide="folder-git-2" class="w-4 h-4 text-oma-blue"></i>
+                </div>
+                <div>
+                  <div class="text-[12px]">omaterm</div>
+                  <div class="text-[10px] text-oma-muted">~/dev/omaterm</div>
+                </div>
+                <span class="ml-auto pill rounded px-1.5 py-0.5 text-[9px] text-oma-muted">main*</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center mb-2">
+              <div class="text-[10px] uppercase tracking-[.12em] text-oma-muted">Processes</div>
+              <span class="ml-auto pill rounded-full px-1.5 text-[9px] text-oma-muted">3</span>
+            </div>
+            <div class="border border-oma-border rounded-lg overflow-hidden">
+              <div class="px-3 py-2.5 border-b border-oma-border flex items-center text-[11px]">
+                <span class="w-1.5 h-1.5 rounded-full bg-oma-green mr-2"></span><span>bun</span><span class="text-oma-muted ml-2">36587</span><span class="ml-auto text-oma-muted">0% · 6 MB</span>
+              </div>
+              <div class="px-3 py-2.5 border-b border-oma-border flex items-center text-[11px]">
+                <span class="w-1.5 h-1.5 rounded-full bg-oma-green mr-2"></span><span>node</span><span class="text-oma-muted ml-2">36588</span><span class="ml-auto text-oma-muted">0% · 427 MB</span>
+              </div>
+              <div class="px-3 py-2.5 flex items-center text-[11px]">
+                <span class="w-1.5 h-1.5 rounded-full bg-oma-green mr-2"></span><span>worker</span><span class="text-oma-muted ml-2">36596</span><span class="ml-auto text-oma-muted">0% · 75 MB</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center mb-2">
+              <div class="text-[10px] uppercase tracking-[.12em] text-oma-muted">Ports</div>
+              <span class="ml-auto pill rounded-full px-1.5 text-[9px] text-oma-muted">4</span>
+            </div>
+            <div class="border border-oma-border rounded-lg overflow-hidden">
+              <div class="px-3 py-2.5 border-b border-oma-border flex items-center text-[11px]"><i data-lucide="globe-2" class="w-3.5 h-3.5 text-oma-blue mr-2"></i><span>3000</span><span class="text-oma-muted ml-2">web</span><button class="ml-auto text-oma-muted"><i data-lucide="external-link" class="w-3.5 h-3.5"></i></button></div>
+              <div class="px-3 py-2.5 border-b border-oma-border flex items-center text-[11px]"><i data-lucide="globe-2" class="w-3.5 h-3.5 text-oma-blue mr-2"></i><span>4000</span><span class="text-oma-muted ml-2">api</span><button class="ml-auto text-oma-muted"><i data-lucide="external-link" class="w-3.5 h-3.5"></i></button></div>
+              <div class="px-3 py-2.5 border-b border-oma-border flex items-center text-[11px]"><i data-lucide="globe-2" class="w-3.5 h-3.5 text-oma-blue mr-2"></i><span>9229</span><span class="text-oma-muted ml-2">debug</span></div>
+              <div class="px-3 py-2.5 flex items-center text-[11px]"><i data-lucide="globe-2" class="w-3.5 h-3.5 text-oma-blue mr-2"></i><span>61922</span><span class="text-oma-muted ml-2">worker</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- FILES -->
+      <section id="right-files" class="right-panel hidden flex-1 min-h-0 flex flex-col">
+        <div class="p-2 border-b border-oma-border">
+          <div class="selection rounded-md border border-oma-border bg-[#151a21] flex items-center h-8 px-2">
+            <i data-lucide="search" class="w-3.5 h-3.5 text-oma-muted"></i>
+            <input class="w-full bg-transparent outline-none px-2 text-[11px]" placeholder="Search files" />
+          </div>
+        </div>
+
+        <div class="flex-1 overflow-auto py-1 text-[11px]">
+          <button class="tree-row w-full h-7 px-2 flex items-center gap-1.5 text-left"><i data-lucide="chevron-down" class="w-3.5 h-3.5 text-oma-muted"></i><i data-lucide="folder-open" class="w-4 h-4 text-oma-yellow"></i><span>src</span></button>
+          <div class="pl-4">
+            <button class="tree-row w-full h-7 px-2 flex items-center gap-1.5 text-left"><i data-lucide="chevron-down" class="w-3.5 h-3.5 text-oma-muted"></i><i data-lucide="folder-open" class="w-4 h-4 text-oma-yellow"></i><span>components</span></button>
+            <div class="pl-4">
+              <button data-open="editor" class="tree-row active w-full h-7 px-2 flex items-center gap-2 text-left"><span class="text-[#519aba] font-semibold">TS</span><span>App.tsx</span><span class="ml-auto text-oma-yellow">M</span></button>
+              <button data-open="editor" class="tree-row w-full h-7 px-2 flex items-center gap-2 text-left"><span class="text-[#519aba] font-semibold">TS</span><span>FileTree.tsx</span><span class="ml-auto text-oma-yellow">M</span></button>
+              <button data-open="diff" class="tree-row w-full h-7 px-2 flex items-center gap-2 text-left"><span class="text-[#519aba] font-semibold">TS</span><span>GitPanel.tsx</span><span class="ml-auto text-oma-green">U</span></button>
+              <button class="tree-row w-full h-7 px-2 flex items-center gap-2 text-left"><span class="text-[#519aba] font-semibold">TS</span><span>TerminalProject.tsx</span></button>
+            </div>
+            <button class="tree-row w-full h-7 px-2 flex items-center gap-1.5 text-left"><i data-lucide="chevron-right" class="w-3.5 h-3.5 text-oma-muted"></i><i data-lucide="folder" class="w-4 h-4 text-oma-yellow"></i><span>lib</span></button>
+          </div>
+          <button class="tree-row w-full h-7 px-2 flex items-center gap-2 text-left"><span class="w-3.5"></span><span class="text-[#cbcb41] font-semibold">{ }</span><span>package.json</span></button>
+          <button class="tree-row w-full h-7 px-2 flex items-center gap-2 text-left"><span class="w-3.5"></span><i data-lucide="file-text" class="w-4 h-4 text-oma-blue"></i><span>README.md</span></button>
+        </div>
+      </section>
+
+      <!-- GIT -->
+      <section id="right-git" class="right-panel hidden flex-1 min-h-0 flex flex-col">
+        <div class="p-3 border-b border-oma-border">
+          <div class="flex items-center gap-2 text-[11px]">
+            <i data-lucide="git-branch" class="w-4 h-4 text-oma-purple"></i>
+            <span>main</span>
+            <span class="pill rounded px-1.5 py-0.5 text-[9px] text-oma-muted">↑0 ↓0</span>
+            <button class="ml-auto cmd text-oma-muted"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+            <button class="cmd text-oma-muted"><i data-lucide="ellipsis" class="w-3.5 h-3.5"></i></button>
+          </div>
+
+          <div class="mt-3 selection rounded-md border border-oma-border bg-[#151a21]">
+            <textarea class="w-full min-h-[56px] resize-none bg-transparent outline-none p-2 text-[11px]" placeholder="Commit message">feat: improve split terminal project</textarea>
+          </div>
+
+          <div class="mt-2 flex gap-2">
+            <button id="commitBtn" class="flex-1 h-8 rounded-md bg-oma-blue2 hover:bg-[#3d8bf8] text-white text-[11px] font-medium">Commit</button>
+            <button class="w-8 h-8 rounded-md border border-oma-border2 hover:bg-[#18202a] flex items-center justify-center text-oma-muted"><i data-lucide="chevron-down" class="w-3.5 h-3.5"></i></button>
+          </div>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-auto">
+
+          <!-- staged -->
+          <div class="h-8 px-2 flex items-center text-[10px] uppercase tracking-[.1em] text-oma-muted group">
+            <i data-lucide="chevron-down" class="w-3.5 h-3.5 mr-1"></i>
+            <span>Staged Changes</span>
+            <span id="stagedCount" class="ml-2 pill rounded-full px-1.5 text-[9px]">2</span>
+            <div class="ml-auto flex items-center gap-0.5">
+              <button id="unstageAllBtn" class="cmd p-1.5 text-oma-muted" title="Unstage all"><i data-lucide="minus" class="w-3.5 h-3.5"></i></button>
+              <button class="cmd p-1.5 text-oma-muted"><i data-lucide="ellipsis" class="w-3.5 h-3.5"></i></button>
+            </div>
+          </div>
+
+          <div id="stagedList">
+            <div class="git-file h-10 px-3 flex items-center gap-2 hover:bg-[#171d25]" data-name="App.tsx" data-status="M">
+              <button class="open-staged-diff flex-1 min-w-0 flex items-center gap-2 text-left">
+                <span class="text-[#519aba] font-semibold text-[10px]">TS</span>
+                <div class="min-w-0"><div class="text-[11px] truncate">App.tsx</div><div class="text-[9px] text-oma-muted truncate">src/components</div></div>
+              </button>
+              <div class="git-actions flex items-center gap-0.5">
+                <button class="unstage-file cmd p-1.5 text-oma-muted" title="Unstage"><i data-lucide="minus" class="w-3.5 h-3.5"></i></button>
+                <button class="cmd p-1.5 text-oma-muted"><i data-lucide="open-in-new" class="w-3.5 h-3.5"></i></button>
+              </div>
+              <span class="text-oma-yellow text-[10px]">M</span>
+            </div>
+
+            <div class="git-file h-10 px-3 flex items-center gap-2 hover:bg-[#171d25]" data-name="GitPanel.tsx" data-status="A">
+              <button class="open-staged-diff flex-1 min-w-0 flex items-center gap-2 text-left">
+                <span class="text-[#519aba] font-semibold text-[10px]">TS</span>
+                <div class="min-w-0"><div class="text-[11px] truncate">GitPanel.tsx</div><div class="text-[9px] text-oma-muted truncate">src/components</div></div>
+              </button>
+              <div class="git-actions flex items-center gap-0.5">
+                <button class="unstage-file cmd p-1.5 text-oma-muted" title="Unstage"><i data-lucide="minus" class="w-3.5 h-3.5"></i></button>
+                <button class="cmd p-1.5 text-oma-muted"><i data-lucide="open-in-new" class="w-3.5 h-3.5"></i></button>
+              </div>
+              <span class="text-oma-green text-[10px]">A</span>
+            </div>
+          </div>
+
+          <!-- unstaged -->
+          <div class="h-8 px-2 flex items-center text-[10px] uppercase tracking-[.1em] text-oma-muted border-t border-oma-border mt-1">
+            <i data-lucide="chevron-down" class="w-3.5 h-3.5 mr-1"></i>
+            <span>Changes</span>
+            <span id="changesCount" class="ml-2 pill rounded-full px-1.5 text-[9px]">3</span>
+            <div class="ml-auto flex items-center gap-0.5">
+              <button id="stageAllBtn" class="cmd p-1.5 text-oma-muted" title="Stage all"><i data-lucide="plus" class="w-3.5 h-3.5"></i></button>
+              <button id="discardAllBtn" class="cmd p-1.5 text-oma-muted" title="Discard all"><i data-lucide="undo-2" class="w-3.5 h-3.5"></i></button>
+              <button class="cmd p-1.5 text-oma-muted"><i data-lucide="ellipsis" class="w-3.5 h-3.5"></i></button>
+            </div>
+          </div>
+
+          <div id="changesList">
+            <div class="git-file h-10 px-3 flex items-center gap-2 hover:bg-[#171d25]" data-name="FileTree.tsx" data-status="M">
+              <button class="open-unstaged-diff flex-1 min-w-0 flex items-center gap-2 text-left">
+                <span class="text-[#519aba] font-semibold text-[10px]">TS</span>
+                <div class="min-w-0"><div class="text-[11px] truncate">FileTree.tsx</div><div class="text-[9px] text-oma-muted truncate">src/components</div></div>
+              </button>
+              <div class="git-actions flex items-center gap-0.5">
+                <button class="stage-file cmd p-1.5 text-oma-muted" title="Stage"><i data-lucide="plus" class="w-3.5 h-3.5"></i></button>
+                <button class="discard-file cmd p-1.5 text-oma-muted" title="Discard"><i data-lucide="undo-2" class="w-3.5 h-3.5"></i></button>
+              </div>
+              <span class="text-oma-yellow text-[10px]">M</span>
+            </div>
+
+            <div class="git-file h-10 px-3 flex items-center gap-2 hover:bg-[#171d25]" data-name="TerminalProject.tsx" data-status="M">
+              <button class="open-unstaged-diff flex-1 min-w-0 flex items-center gap-2 text-left">
+                <span class="text-[#519aba] font-semibold text-[10px]">TS</span>
+                <div class="min-w-0"><div class="text-[11px] truncate">TerminalProject.tsx</div><div class="text-[9px] text-oma-muted truncate">src/components</div></div>
+              </button>
+              <div class="git-actions flex items-center gap-0.5">
+                <button class="stage-file cmd p-1.5 text-oma-muted" title="Stage"><i data-lucide="plus" class="w-3.5 h-3.5"></i></button>
+                <button class="discard-file cmd p-1.5 text-oma-muted" title="Discard"><i data-lucide="undo-2" class="w-3.5 h-3.5"></i></button>
+              </div>
+              <span class="text-oma-yellow text-[10px]">M</span>
+            </div>
+
+            <div class="git-file h-10 px-3 flex items-center gap-2 hover:bg-[#171d25]" data-name="terminal-layout.ts" data-status="?">
+              <button class="open-unstaged-diff flex-1 min-w-0 flex items-center gap-2 text-left">
+                <span class="text-[#519aba] font-semibold text-[10px]">TS</span>
+                <div class="min-w-0"><div class="text-[11px] truncate">terminal-layout.ts</div><div class="text-[9px] text-oma-muted truncate">src/lib</div></div>
+              </button>
+              <div class="git-actions flex items-center gap-0.5">
+                <button class="stage-file cmd p-1.5 text-oma-muted" title="Stage"><i data-lucide="plus" class="w-3.5 h-3.5"></i></button>
+                <button class="discard-file cmd p-1.5 text-oma-muted" title="Discard"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+              </div>
+              <span class="text-oma-green text-[10px]">U</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="border-t border-oma-border p-3 text-[10px] text-oma-muted">
+          <div class="flex items-center">
+            <span>origin/main</span><span class="ml-auto">HEAD 84a2f73</span>
+          </div>
+        </div>
+      </section>
+    </aside>
+      </div>
+    </div>
+  </div>
+  <!-- status -->
+  <footer class="h-6 shrink-0 border-t border-oma-border bg-[#0d1014] flex items-center text-[10px] text-oma-muted">
+    <button class="h-full px-2.5 flex items-center gap-1.5 hover:bg-[#151a21]"><i data-lucide="git-branch" class="w-3 h-3"></i><span>main*</span></button>
+    <div class="h-full px-2.5 flex items-center gap-1.5"><span class="text-oma-green">●</span><span>3 processes</span></div>
+    <div class="h-full px-2.5 flex items-center gap-1.5"><i data-lucide="radio" class="w-3 h-3"></i><span>4 ports</span></div>
+
+    <div class="ml-auto h-full flex items-center">
+      <div class="h-full px-2.5 flex items-center hover:bg-[#151a21]">CPU 3%</div>
+      <div class="h-full px-2.5 flex items-center hover:bg-[#151a21]">MEM 1.3 GB</div>
+      <div class="h-full px-2.5 flex items-center hover:bg-[#151a21]">UTF-8</div>
+      <div class="h-full px-2.5 flex items-center hover:bg-[#151a21]"><i data-lucide="bell" class="w-3 h-3"></i></div>
+    </div>
+  </footer>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+  lucide.createIcons();
+
+  const toast = document.getElementById('toast');
+  let toastTimer;
+  function showToast(message){
+    toast.textContent = message;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 1400);
+  }
+
+  // Persistent Projects sidebar — fully hide/show from the top bar
+  const projectsSidebar = document.getElementById('projectsSidebar');
+  const projectsResizer = document.getElementById('projectsResizer');
+  const toggleProjectsTop = document.getElementById('toggleProjectsTop');
+  const showProjectsTop = document.getElementById('showProjectsTop');
+
+  const inspector = document.getElementById('inspector');
+  const inspectorResizer = document.getElementById('inspectorResizer');
+  const toggleInspectorTop = document.getElementById('toggleInspectorTop');
+
+  let projectsVisible = true;
+  let inspectorVisible = true;
+  let projectsWidth = 210;
+  let inspectorWidth = 330;
+
+  const projectTabs = {
+    omaterm: ['dev', 'api', 'tests'],
+    phoenix: ['dev', 'worker', 'db'],
+    dolphin: ['dev', 'booking', 'jobs'],
+    mindwave: ['dev', 'checkout'],
+    fortis: ['frontend', 'api', 'workers']
+  };
+
+  function updateTopToggleState(button, visible){
+    button.classList.toggle('text-white', visible);
+    button.classList.toggle('bg-[#18202a]', visible);
+    button.classList.toggle('border', visible);
+    button.classList.toggle('border-oma-border2', visible);
+
+    button.classList.toggle('text-oma-muted', !visible);
+    if(!visible){
+      button.classList.remove('bg-[#18202a]','border','border-oma-border2');
+    }
+  }
+
+  function setProjectsVisible(visible){
+    projectsVisible = visible;
+
+    if(visible){
+      projectsSidebar.classList.remove('hidden');
+      projectsResizer.classList.remove('hidden');
+      projectsSidebar.style.width = projectsWidth + 'px';
+      showProjectsTop.classList.add('hidden');
+    } else {
+      const currentWidth = projectsSidebar.getBoundingClientRect().width;
+      if(currentWidth > 0) projectsWidth = currentWidth;
+      projectsSidebar.classList.add('hidden');
+      projectsResizer.classList.add('hidden');
+      showProjectsTop.classList.remove('hidden');
+    }
+  }
+
+  function setInspectorVisible(visible){
+    inspectorVisible = visible;
+
+    if(visible){
+      inspector.classList.remove('hidden');
+      inspectorResizer.classList.remove('hidden');
+      inspector.style.width = inspectorWidth + 'px';
+    } else {
+      const currentWidth = inspector.getBoundingClientRect().width;
+      if(currentWidth > 0) inspectorWidth = currentWidth;
+      inspector.classList.add('hidden');
+      inspectorResizer.classList.add('hidden');
+    }
+
+    updateTopToggleState(toggleInspectorTop, visible);
+  }
+
+  function toggleProjectsSidebar(){
+    setProjectsVisible(!projectsVisible);
+  }
+
+  function toggleInspectorSidebar(){
+    setInspectorVisible(!inspectorVisible);
+  }
+
+  toggleProjectsTop.addEventListener('click', toggleProjectsSidebar);
+  showProjectsTop.addEventListener('click', () => setProjectsVisible(true));
+  toggleInspectorTop.addEventListener('click', toggleInspectorSidebar);
+
+  function renderProjectTabs(project){
+    const names = projectTabs[project] || ['dev'];
+    const tabs = document.querySelectorAll('.top-tab[data-view="terminal"]');
+
+    tabs.forEach((tab, i) => {
+      const label = tab.querySelector('span:nth-child(2)');
+      if(!label) return;
+
+      if(names[i]){
+        tab.classList.remove('hidden');
+        label.textContent = names[i];
+      } else {
+        tab.classList.add('hidden');
+      }
+    });
+
+    document.querySelectorAll('#view-terminal *').forEach(el => {
+      if(el.children.length === 0 && el.textContent.includes('~/dev/')){
+        el.textContent = el.textContent.replace(/~\/dev\/[a-zA-Z0-9_-]+/g, `~/dev/${project}`);
+      }
+    });
+  }
+
+  document.querySelectorAll('.project-item').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.project-item').forEach(p => {
+        p.classList.remove('active','bg-[#18202a]','border-oma-border2');
+        p.classList.add('border-transparent');
+      });
+
+      item.classList.add('active','bg-[#18202a]','border-oma-border2');
+      item.classList.remove('border-transparent');
+
+      const project = item.dataset.project;
+      renderProjectTabs(project);
+      setView('terminal');
+      showToast(`Switched to ${project}`);
+    });
+  });
+
+  // Resizable left sidebar
+  let resizingProjects = false;
+
+  projectsResizer.addEventListener('mousedown', () => {
+    if(!projectsVisible) return;
+    resizingProjects = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  // Resizable right sidebar
+  let resizingInspector = false;
+
+  inspectorResizer.addEventListener('mousedown', () => {
+    if(!inspectorVisible) return;
+    resizingInspector = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  window.addEventListener('mousemove', e => {
+    if(resizingProjects){
+      const width = Math.max(164, Math.min(340, e.clientX));
+      projectsWidth = width;
+      projectsSidebar.style.width = width + 'px';
+    }
+
+    if(resizingInspector){
+      const width = Math.max(280, Math.min(470, window.innerWidth - e.clientX));
+      inspectorWidth = width;
+      inspector.style.width = width + 'px';
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    resizingProjects = false;
+    resizingInspector = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+
+  // Main views
+  const views = [...document.querySelectorAll('.project-view')];
+  const topTabs = [...document.querySelectorAll('.top-tab')];
+
+  function setView(name){
+    views.forEach(v => v.classList.add('hidden'));
+    document.getElementById('view-' + name)?.classList.remove('hidden');
+
+    topTabs.forEach(t => t.classList.remove('active'));
+    const matching = topTabs.find(t => t.dataset.view === name);
+    if(matching) matching.classList.add('active');
+  }
+
+  topTabs.forEach(tab => tab.addEventListener('click', () => setView(tab.dataset.view)));
+  document.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => setView(el.dataset.open)));
+
+  // Right tabs
+  const rightTabs = [...document.querySelectorAll('.right-tab')];
+  const rightPanels = [...document.querySelectorAll('.right-panel')];
+
+  rightTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      rightTabs.forEach(t => {
+        t.classList.remove('active','text-oma-text2');
+        t.classList.add('text-oma-muted');
+      });
+      tab.classList.add('active','text-oma-text2');
+      tab.classList.remove('text-oma-muted');
+
+      rightPanels.forEach(p => p.classList.add('hidden'));
+      document.getElementById('right-' + tab.dataset.right)?.classList.remove('hidden');
+    });
+  });
+
+  // Terminal pane active focus
+  document.querySelectorAll('.terminal-pane').forEach(pane => {
+    pane.addEventListener('mousedown', () => {
+      document.querySelectorAll('.terminal-pane').forEach(p => p.classList.remove('active'));
+      pane.classList.add('active');
+    });
+  });
+
+  function applyLayout(type){
+    const layout = document.getElementById('terminalLayout');
+    const pane1 = document.getElementById('pane1');
+    const rightCol = document.getElementById('rightColumn');
+    const pane2 = document.getElementById('pane2');
+    const pane3 = document.getElementById('pane3');
+
+    layout.classList.remove('flex-row','flex-col');
+    layout.classList.add('flex-row');
+
+    [pane1,rightCol,pane2,pane3].forEach(el => {
+      el.classList.remove('hidden','w-full','w-1/2','h-full','h-1/2','border-r','border-b');
+      el.style.width='';
+      el.style.height='';
+    });
+
+    if(type === 'single'){
+      pane1.classList.add('w-full','h-full');
+      rightCol.classList.add('hidden');
+      showToast('Single terminal pane');
+      return;
+    }
+
+    if(type === 'vertical'){
+      pane1.classList.add('w-1/2','h-full','border-r');
+      rightCol.classList.add('w-1/2','h-full');
+      pane2.classList.add('h-full');
+      pane3.classList.add('hidden');
+      showToast('Vertical terminal split');
+      return;
+    }
+
+    if(type === 'horizontal'){
+      layout.classList.remove('flex-row');
+      layout.classList.add('flex-col');
+
+      pane1.classList.add('w-full','h-1/2','border-b');
+      rightCol.classList.add('w-full','h-1/2');
+      pane2.classList.add('h-full');
+      pane3.classList.add('hidden');
+
+      showToast('Horizontal terminal split');
+      return;
+    }
+
+    pane1.classList.add('w-1/2','h-full','border-r');
+    rightCol.classList.add('w-1/2','h-full');
+    pane2.classList.add('h-1/2','border-b');
+    pane3.classList.add('h-1/2');
+    showToast('Mixed terminal split');
+  }
+
+
+
+  document.querySelectorAll('.split-right').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    setView('terminal');
+    applyLayout('vertical');
+  }));
+  document.querySelectorAll('.split-down').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    setView('terminal');
+    applyLayout('horizontal');
+  }));
+
+  // Diff modes
+  const splitDiff = document.getElementById('splitDiff');
+  const inlineDiff = document.getElementById('inlineDiff');
+  const splitDiffBtn = document.getElementById('splitDiffBtn');
+  const inlineDiffBtn = document.getElementById('inlineDiffBtn');
+
+  splitDiffBtn.addEventListener('click', () => {
+    splitDiff.classList.remove('hidden');
+    inlineDiff.classList.add('hidden');
+    splitDiffBtn.classList.add('pill','text-white');
+    inlineDiffBtn.classList.remove('pill','text-white');
+    inlineDiffBtn.classList.add('text-oma-muted');
+  });
+
+  inlineDiffBtn.addEventListener('click', () => {
+    inlineDiff.classList.remove('hidden');
+    splitDiff.classList.add('hidden');
+    inlineDiffBtn.classList.add('pill','text-white');
+    inlineDiffBtn.classList.remove('text-oma-muted');
+    splitDiffBtn.classList.remove('pill','text-white');
+    splitDiffBtn.classList.add('text-oma-muted');
+  });
+
+  // Git model helpers
+  const stagedList = document.getElementById('stagedList');
+  const changesList = document.getElementById('changesList');
+  const stagedCount = document.getElementById('stagedCount');
+  const changesCount = document.getElementById('changesCount');
+  const gitCountBadge = document.getElementById('gitCountBadge');
+
+  function updateGitCounts(){
+    const staged = stagedList.querySelectorAll('.git-file').length;
+    const changes = changesList.querySelectorAll('.git-file').length;
+    stagedCount.textContent = staged;
+    changesCount.textContent = changes;
+    gitCountBadge.textContent = staged + changes;
+  }
+
+  function bindGitActions(){
+    document.querySelectorAll('.stage-file').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const row = btn.closest('.git-file');
+        const name = row.dataset.name;
+        const status = row.dataset.status;
+
+        row.querySelector('.git-actions').innerHTML = `
+          <button class="unstage-file cmd p-1.5 text-oma-muted" title="Unstage">
+            <i data-lucide="minus" class="w-3.5 h-3.5"></i>
+          </button>
+          <button class="cmd p-1.5 text-oma-muted">
+            <i data-lucide="open-in-new" class="w-3.5 h-3.5"></i>
+          </button>`;
+        const opener = row.querySelector('button.flex-1');
+        opener.classList.remove('open-unstaged-diff');
+        opener.classList.add('open-staged-diff');
+        stagedList.appendChild(row);
+        lucide.createIcons();
+        bindGitActions();
+        bindDiffOpeners();
+        updateGitCounts();
+        showToast(`Staged ${name}`);
+      };
+    });
+
+    document.querySelectorAll('.unstage-file').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const row = btn.closest('.git-file');
+        const name = row.dataset.name;
+
+        row.querySelector('.git-actions').innerHTML = `
+          <button class="stage-file cmd p-1.5 text-oma-muted" title="Stage">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+          </button>
+          <button class="discard-file cmd p-1.5 text-oma-muted" title="Discard">
+            <i data-lucide="undo-2" class="w-3.5 h-3.5"></i>
+          </button>`;
+        const opener = row.querySelector('button.flex-1');
+        opener.classList.remove('open-staged-diff');
+        opener.classList.add('open-unstaged-diff');
+        changesList.appendChild(row);
+        lucide.createIcons();
+        bindGitActions();
+        bindDiffOpeners();
+        updateGitCounts();
+        showToast(`Unstaged ${name}`);
+      };
+    });
+
+    document.querySelectorAll('.discard-file').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const row = btn.closest('.git-file');
+        const name = row.dataset.name;
+        row.remove();
+        updateGitCounts();
+        showToast(`Discarded changes in ${name}`);
+      };
+    });
+  }
+
+  function openDiff(staged){
+    setView('diff');
+    document.getElementById('diffScopeLabel').textContent =
+      staged ? 'Staged · HEAD ↔ INDEX' : 'Working Tree · INDEX ↔ WORKING TREE';
+
+    const stageBtn = document.getElementById('diffStageBtn');
+    const discardBtn = document.getElementById('diffDiscardBtn');
+
+    if(staged){
+      stageBtn.textContent = 'Unstage File';
+      discardBtn.classList.add('hidden');
+    } else {
+      stageBtn.textContent = 'Stage File';
+      discardBtn.classList.remove('hidden');
+    }
+  }
+
+  function bindDiffOpeners(){
+    document.querySelectorAll('.open-staged-diff').forEach(btn => {
+      btn.onclick = () => openDiff(true);
+    });
+    document.querySelectorAll('.open-unstaged-diff').forEach(btn => {
+      btn.onclick = () => openDiff(false);
+    });
+  }
+
+  document.getElementById('stageAllBtn').addEventListener('click', () => {
+    [...changesList.querySelectorAll('.git-file')].forEach(row => {
+      const btn = row.querySelector('.stage-file');
+      if(btn) btn.click();
+    });
+    showToast('Staged all changes');
+  });
+
+  document.getElementById('unstageAllBtn').addEventListener('click', () => {
+    [...stagedList.querySelectorAll('.git-file')].forEach(row => {
+      const btn = row.querySelector('.unstage-file');
+      if(btn) btn.click();
+    });
+    showToast('Unstaged all changes');
+  });
+
+  document.getElementById('discardAllBtn').addEventListener('click', () => {
+    changesList.innerHTML = '';
+    updateGitCounts();
+    showToast('Discarded all unstaged changes');
+  });
+
+  document.getElementById('commitBtn').addEventListener('click', () => {
+    const count = stagedList.querySelectorAll('.git-file').length;
+    if(count === 0){
+      showToast('Nothing staged to commit');
+      return;
+    }
+    stagedList.innerHTML = '';
+    updateGitCounts();
+    showToast(`Committed ${count} staged file${count > 1 ? 's' : ''}`);
+  });
+
+  document.getElementById('diffStageBtn').addEventListener('click', () => {
+    const btn = document.getElementById('diffStageBtn');
+    if(btn.textContent.includes('Unstage')){
+      btn.textContent = 'Stage File';
+      document.getElementById('diffScopeLabel').textContent = 'Working Tree · INDEX ↔ WORKING TREE';
+      document.getElementById('diffDiscardBtn').classList.remove('hidden');
+      showToast('File moved to unstaged changes');
+    } else {
+      btn.textContent = 'Unstage File';
+      document.getElementById('diffScopeLabel').textContent = 'Staged · HEAD ↔ INDEX';
+      document.getElementById('diffDiscardBtn').classList.add('hidden');
+      showToast('File staged');
+    }
+  });
+
+  document.getElementById('diffDiscardBtn').addEventListener('click', () => showToast('Discarded working tree changes'));
+
+  bindGitActions();
+  bindDiffOpeners();
+  updateGitCounts();
+  setProjectsVisible(true);
+  setInspectorVisible(true);
+
+  // Shortcuts
+  window.addEventListener('keydown', (e) => {
+    if((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'b'){
+      e.preventDefault();
+      toggleInspectorSidebar();
+    } else if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b'){
+      e.preventDefault();
+      toggleProjectsSidebar();
+    }
+    if((e.ctrlKey || e.metaKey) && e.key === '1'){
+      e.preventDefault(); setView('terminal');
+    }
+    if((e.ctrlKey || e.metaKey) && e.key === '2'){
+      e.preventDefault(); setView('editor');
+    }
+    if((e.ctrlKey || e.metaKey) && e.key === '3'){
+      e.preventDefault(); setView('diff');
+    }
+  });
+</script>
+</body>
+</html>

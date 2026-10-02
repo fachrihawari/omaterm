@@ -62,3 +62,24 @@ pub const PANE_TOOLBAR_BG_OPACITY: f32 = 0.95;
 pub const PANE_FOCUS_STROKE_ALPHA: f32 = 0.34;
 /// Inset top-accent alpha on the active top tab.
 pub const TAB_ACTIVE_TOP_ACCENT_ALPHA: f32 = 0.9;
+
+/// Pack an `0xRRGGBB` literal with float alpha into `0xRRGGBBAA` for
+/// `gpui::rgba`. `gpui::rgb()` drops the low byte and forces opaque, so
+/// translucent surfaces must go through here.
+pub fn with_alpha(rgb: u32, alpha: f32) -> u32 {
+    (rgb << 8) | (alpha.clamp(0.0, 1.0) * 255.0).round() as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BG2, DIFF_ADD_BG, PANE_HEADER_BG_OPACITY, with_alpha};
+
+    #[test]
+    fn with_alpha_packs_exact_rgba_bytes() {
+        assert_eq!(with_alpha(BG2, PANE_HEADER_BG_OPACITY), 0x0F1318E6);
+        assert_eq!(with_alpha(0x141A21, 0.95), 0x141A21F2);
+        assert_eq!(with_alpha(0x2EA043, 0.12), DIFF_ADD_BG);
+        assert_eq!(with_alpha(0x123456, 2.0), 0x123456FF);
+        assert_eq!(with_alpha(0x123456, -1.0), 0x12345600);
+    }
+}

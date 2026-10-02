@@ -108,6 +108,7 @@ If this works, OmaTerm has proven the architecture for future agent control.
 
 - [OMATERM_AGENT_BLUEPRINT.md](../OMATERM_AGENT_BLUEPRINT.md) — Authoritative specification (79 sections)
 - [AGENTS.md](../AGENTS.md) — AI agent instructions
+- [UI v5 Fidelity Correction Plan](ui-v5-fidelity-correction-plan.md) — next UI execution plan: audited sidebar/icon/detail mismatches and evidence-based correction gates
 - [UI v5 Pixel-Perfect Rewrite Plan](ui-v5-pixel-perfect-plan.md) — exact mockup reproduction, assets/measurements, phased delivery, and screenshot acceptance
 - [VS Code Workbench UI Redesign Plan](ui-workbench-redesign-plan.md) — superseded visual direction; retained implementation history
 - Blueprint §22 — First-Run Product Scope
