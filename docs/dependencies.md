@@ -432,3 +432,25 @@ hard dependency exists, so the permissive choice covers the whole tree;
 `option-ext` (MPL-2.0, file-level) and `self_cell` (Apache-2.0 disjunct)
 remain compatible. This document records dependencies; Kero/Zed stay
 behavioral references only.
+
+### UI v5 record — 2026-10-02 (Lucide icon vendoring)
+
+- Lucide `lucide-static` =1.49.0 (pinned; unpkg redirect and npm registry
+  agree on the version): 31 SVGs vendored at
+  `apps/omaterm/assets/icons/*.svg`, embedded at compile time via
+  `include_bytes!` and served through a GPUI `AssetSource`
+  (`apps/omaterm/src/ui/assets.rs`, `OmaAssets`). No new Cargo dependency.
+- License ISC (per-file `@license lucide-static v1.49.0 - ISC` banner,
+  e.g. `x.svg` SHA-256
+  `f0c8edc0adc2dc42a45e286fb2342c164c761d52f3c366f20278f4e661a91745`).
+  Compatible with the project license; no GPL code involved.
+- All icons are 24×24 `fill=none stroke=currentColor stroke-width=2`
+  round-cap geometry; native tint flows through the element text color and
+  no vendored path was edited. `open-in-new` is not a Lucide name (404 at
+  pin time) and maps to `external-link` (documented in the plan/assets).
+- GPUI 0.2.2 SVG spike outcome (locked dependency source): `svg().path()`
+  + `Styled` sizing + `text_color` tint over a usvg renderer with sprite
+  atlas; asset paths resolve through `Application::with_assets`.
+- Inter is NOT installed on this machine (UI chrome falls back to system
+  sans — separate baseline); JetBrainsMono Nerd Font is installed
+  (terminal/code). No font files bundled yet.

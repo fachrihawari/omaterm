@@ -1,0 +1,26 @@
+{
+  "viewport": [1440, 900],
+  "scale": 1,
+  "states": [
+    {"id": "S01", "description": "Default terminal, mixed 3-pane layout, Info, both panels visible"},
+    {"id": "S02-S04", "description": "Hover pane 1/2/3 toolbar separately; active pane border states"},
+    {"id": "S05", "description": "Projects hidden; reveal button and widened header/main"},
+    {"id": "S06", "description": "Inspector hidden; muted toggle and widened main"},
+    {"id": "S07", "description": "Both panels hidden"},
+    {"id": "S08", "description": "Projects widths 164/210/340; Inspector widths 280/330/470"},
+    {"id": "S09", "description": "Alternate selected project, corresponding terminal labels/paths"},
+    {"id": "S10", "description": "Files selected, source expansion/selection/status marks"},
+    {"id": "S11", "description": "Files input focused and typed; tree overflow/scroll offsets from frozen source"},
+    {"id": "S12", "description": "Git selected with staged 2/changes 3 and badge 5"},
+    {"id": "S13", "description": "Hover staged/modified/untracked Git rows independently"},
+    {"id": "S14", "description": "Commit input focused and multiline; Commit/dropdown hover"},
+    {"id": "S15", "description": "Working-tree Split diff, source file toolbar"},
+    {"id": "S16", "description": "Working-tree Inline diff"},
+    {"id": "S17", "description": "Staged Split/Inline; correct scope and Stage/Unstage/Discard state"},
+    {"id": "S18", "description": "Editor source tab/breadcrumb/highlighted rows/footer"},
+    {"id": "S19", "description": "Toast at 0/90/180/1400ms and after dismissal"},
+    {"id": "S20", "description": "Cursor visible/hidden phases at deterministic clock times"},
+    {"id": "S21", "description": "Header toggle/search/New-tab/close hover states"},
+    {"id": "S22", "description": "Source scrollbars with identical content overflow and offsets"}
+  ]
+}

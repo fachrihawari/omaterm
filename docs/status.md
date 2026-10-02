@@ -38,6 +38,152 @@ tests in milestone documents are not evidence of implemented application behavio
 The [M5–M8 closure plan](m5-m8-closure-plan.md) orders the remaining blockers;
 it records intended work, not completed validation.
 
+## UI v5 exact-design planning — 2026-10-02
+
+The user requires exact reproduction of the supplied `omaterm_mock_ui_v5.html`,
+including Lucide icon geometry, both sidebar layouts, colors, typography,
+spacing, states, and motion. The new
+[pixel-perfect rewrite plan](ui-v5-pixel-perfect-plan.md) supersedes the visual
+direction of the earlier VS Code workbench plan. Baseline: `dca4e4e`; the
+working tree was clean before this documentation change.
+
+Completed planning: source-derived component specifications and icon/color
+inventories, computed-CSS caveats, reference-freeze requirements, native module
+and geometry boundaries, phase gates, capability dependencies, screenshot
+comparison criteria, and behavioral regression requirements. Full-reference
+delivery includes Info, Files search, split/inline diff, and the eventual
+lightweight editor; their owning milestones remain explicit dependencies.
+
+The source HTML is supplied inline in the conversation and was not located
+as a checked-in file. Reference archiving, browser computed-style measurement,
+font/SVG resolution, and native/browser screenshots are the first next actions.
+No application code was changed, no UI behavior or milestone was marked
+complete, and no browser/Wayland visual pass is claimed by this planning work.
+
+Documentation verification:
+
+| Command/review | Result |
+|---|---|
+| `python3 scripts/check-docs.py` | PASS: 29 Markdown files, 76 local link targets, 243 numbered blueprint references; 33 CLI methods mapped |
+| `git diff --check` | PASS: tracked documentation changes have no whitespace errors |
+| `git diff --no-index --check /dev/null docs/ui-v5-pixel-perfect-plan.md` | PASS: new plan has no whitespace errors |
+| Local consistency review | PASS: exact-design authority, source-derived versus measured values, current workbench baseline, milestone sequencing, and fixture/live acceptance are explicit |
+
+Cargo checks are not required for this docs-only change. External URL availability
+and browser/font/asset measurements remain P0 work, not passing check claims.
+
+## UI v5 P0 — reference-freeze skeleton — 2026-10-02
+
+Started P0 without changing application code. Created `design/ui-v5/`
+with `manifest.json` (source-derived geometry/palette/cascade traps from
+the v5 plan), `states.json` (S01–S22 capture matrix), and
+`extract-computed.py` (freezes `reference.html` + selector checklist).
+No `reference.html` exists on disk: `python3
+design/ui-v5/extract-computed.py` exits 1 with `MISSING
+design/ui-v5/reference.html`. No browser computed-style, font, SVG, or
+screenshot evidence is claimed. Next: drop the exact supplied HTML at
+`design/ui-v5/reference.html`, pin its SHA-256/CDN payloads, then build
+the P1 icon/primitive specimen before any shell rewrite.
+
+## UI v5 P1 — pure theme/geometry foundation — 2026-10-02
+
+Added test-only `apps/omaterm/src/ui/` (`theme.rs` exact v5 tokens,
+`geometry.rs` panel clamps + shell rectangles, `mod.rs`), wired as
+`#[cfg(test)] mod ui` so the production binary is byte-identical in
+behavior: no render-path, domain, IPC, or persistence change. Theme
+tokens are explicitly `#[allow(dead_code)]` until P2 wires them; geometry
+carries 3 tests (1440×900 baseline rects, hidden-panel space release,
+width clamps including non-finite fallback).
+
+Changed files: `apps/omaterm/src/{main.rs,ui/mod.rs,ui/theme.rs,ui/geometry.rs}`,
+`design/ui-v5/{manifest.json,states.json,extract-computed.py}`, this record.
+
+Automated verification (Rust 1.98.1):
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 82 tests (79 existing + 3 new geometry), 0 failures |
+| `cargo clippy -p omaterm --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo fmt --all --check` | PASS |
+| `python3 scripts/check-docs.py` | PASS (29 files, 76 links, 243 refs; 33 CLI methods mapped) |
+| `git diff --check` | PASS |
+
+## UI v5 P2–P6 — shell rewrite implemented (2026-10-02)
+
+Replaced the VS Code-style frame (activity rail, title row, context row,
+single contextual sidebar) with the v5 composition: persistent Projects
+sidebar (210px, 164–340) + 42px tab header + right Inspector (330px,
+280–470, Info/Files/Git) + 24px status bar. Terminal tabs keep
+`TabCommand` selection and session lifetime; diff previews stay
+view-local; every mutation still dispatches `OmaCommand`.
+
+- P2: dual-panel state/shortcuts (`Ctrl+B` Projects, `Ctrl+Shift+B`
+  Inspector, `Ctrl+Shift+E/G/I` tabs), `ui::geometry::shell_rects` driving
+  both PTY sizing and render composition, v5 Projects/Header/Inspector/
+  status shell, `workbench.rs` trimmed to notices/icons/branch-label,
+  `flex_shrink_0` on fixed chrome (found live: panels squished without it).
+- P3: terminal leaf chrome — 32px header (live dot, OSC title, shell·pid),
+  focused-pane toolbar (split right/down, close), 28px footer (shell, cwd,
+  grid dims), blue focus border; PTY rows subtract the 60px leaf chrome
+  (`LEAF_CHROME_H`) so grids match the visible canvas.
+- P4: Files inline substring filter with real input/focus/keys, 28px rows,
+  chevrons, TS/`{ }` badges, Git M/U decorations; Git two groups (Staged
+  Changes/Changes incl. untracked), 40px rows, collapsible sections,
+  stage-all/unstage-all/discard-all (two-step arm), whole-file Stage/
+  Unstage/Discard in the detail header, upstream footer; Alt+Up/Down/Enter
+  row navigation; 1400ms toast for Git confirmations.
+- P5: Split (default) + Inline diff modes from a tested old/new alignment
+  model (`align_hunk`), v5 file-action header, side headers with real
+  revision pairs, mono code rows with add/del backgrounds. Per-hunk stage
+  buttons removed (they staged whole files — now honestly header-scoped).
+- P6: 31 Lucide 1.49.0 SVGs vendored + `OmaAssets` + `icon()` wired across
+  all chrome; `open-in-new` (non-Lucide) maps to `external-link`.
+
+Changed files: `apps/omaterm/src/{main.rs,ui/*,files.rs,git_panel.rs,
+diff_panel.rs,workbench.rs}`, `apps/omaterm/assets/icons/*`,
+`design/ui-v5/*`, `docs/{dependencies.md,status.md,ui-v5-pixel-perfect-plan.md}`.
+No core/protocol/CLI/persistence change; all temp proof gates reverted
+(zero `TEMP-PROOF` markers in tree).
+
+### Automated verification (Rust 1.98.1)
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 434 tests, 0 failures (86 desktop + 38 CLI + 44 context + 5 diff + 1 git-roots + 8 git-status + 17 core + 11 IPC + 3 logging + 6 protocol + 44 state + 139 terminal unit + 32 PTY integration) — full suite green in one shot, no stall this run |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` future-incompat notice only) |
+| `cargo build --release --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS: 29 files, 76 links, 243 refs; 33 CLI methods mapped |
+| `git diff --check` | PASS |
+
+### Desktop validation (Omarchy/Hyprland Wayland, isolated dirs)
+
+- P2/P3 release proof (`shot-v5b`): Projects cards with live branch/dirty,
+  tab strip with pane counts, focused-pane toolbar + header/footer with
+  real PID/CWD/dims, Info body, 24px status (branch, N processes, history,
+  font, UTF-8); grid dims matched the chrome-subtracted canvas.
+- P4 Git render proof (`shot-git-big`, debug): real staged/unstaged/
+  untracked groups, M/A/U marks, bulk + per-row actions, upstream footer.
+- Screenshots live under `/tmp/omaterm-v5/` (outside the repo).
+- Live-proven: frame render, terminal input/resize, panel content against
+  real projects/sessions. Explicitly NOT claimed live (no pointer/modifier
+  injection on the shared session): panel collapse/resize drags, Git row
+  clicks → diff preview, Split/Inline toggle clicks, toast timing,
+  commit/discard interactions, `Ctrl+B`/`Ctrl+Shift+B` delivery. Row/diff
+  action wiring is unit-tested; the diff preview render path is exercised
+  in code review only.
+
+### Known deltas vs the mock (all recorded in the plan)
+
+Text «/»/+/× stand-ins replaced by Lucide SVGs (done); Lucide file-type
+set still partial (Nerd glyphs for non-TS/JSON); 2px left mark instead of
+3px; border (not inset) focus stroke; no hover-slide animation on the
+toolbar (focused-pane scoping instead); domains persist `Ctrl+Shift+P`
+label (not ⌘O); no Inter bundle (system sans); no syntax colors (v0.3);
+no short-HEAD in Git footer; commit box single-line editing; ports/CPU/
+MEM/bell omitted until M18/telemetry; editor surface belongs to v0.3;
+split-diff full-file semantics render bounded hunks.
+
 ## Foundation preparation — 2026-09-26
 
 Completed: README/navigation, canonical agent workflow, all nine milestone contract

@@ -1,0 +1,84 @@
+{
+  "reference": {
+    "source_file": "reference.html",
+    "source_status": "MISSING — drop the exact user-supplied omaterm_mock_ui_v5.html here byte-for-byte, then record sha256",
+    "sha256": null,
+    "cdn": {
+      "tailwind": "UNPINNED — resolve once, vendor response, record hash/version",
+      "lucide": "UNPINNED (lucide@latest) — resolve once, vendor payload, record hash/version"
+    },
+    "browser": {
+      "build": null,
+      "os": null,
+      "viewport_css_px": [1440, 900],
+      "device_pixel_ratio": 1,
+      "zoom": "100%",
+      "root_font_px": 16
+    }
+  },
+  "shell_geometry_css_px": {
+    "projects_default": 210,
+    "projects_min": 164,
+    "projects_max": 340,
+    "inspector_default": 330,
+    "inspector_min": 280,
+    "inspector_max": 470,
+    "resizer": 4,
+    "header": 42,
+    "inspector_header": 40,
+    "status": 24,
+    "pane_header": 32,
+    "pane_footer": 28,
+    "editor_breadcrumb": 36,
+    "editor_footer": 28,
+    "diff_header": 40,
+    "diff_side_header": 28,
+    "top_tab_height": 36,
+    "git_row": 40,
+    "files_row": 28
+  },
+  "baseline_rects_at_1440x900": {
+    "projects": [0, 0, 210, 876],
+    "projects_resizer": [210, 0, 4, 876],
+    "header": [214, 0, 1226, 42],
+    "main_view": [214, 42, 892, 834],
+    "inspector_resizer": [1106, 42, 4, 834],
+    "inspector": [1110, 42, 330, 834],
+    "status": [0, 876, 1440, 24]
+  },
+  "cascade_traps": [
+    ".cmd padding 5px 7px wins over p-1.5 at equal specificity — freeze computed padding",
+    ".terminal-glow assigns background-image AFTER .subtle-grid, replacing the grid image",
+    ".line sets min-height 22px AND line-height 22px — diff leading-[21px] does not override .line rows",
+    "transparent borders occupy layout space; inset shadows do not",
+    "active classes coexist with Tailwind text classes — measure actual foreground"
+  ],
+  "palette": {
+    "bg": "#0b0e12",
+    "bg2": "#0f1318",
+    "panel": "#11161c",
+    "panel2": "#161c24",
+    "panel3": "#1b222c",
+    "border": "#252d38",
+    "border2": "#303a48",
+    "text": "#d7dde5",
+    "text2": "#bcc5d0",
+    "muted": "#7f8a99",
+    "muted2": "#596474",
+    "blue": "#5aa9ff",
+    "blue2": "#2f81f7",
+    "cyan": "#61d8df",
+    "green": "#63d58d",
+    "yellow": "#e9c66d",
+    "orange": "#f3a85f",
+    "red": "#ff6f6f",
+    "purple": "#c792ea",
+    "lime": "#b9f263"
+  },
+  "spike_2026_10_02": {
+    "gpui_svg": "elements/svg.rs: svg().path(SharedString) + Styled/InteractiveElement; usvg-backed render_pixmap — vendored Lucide SVG asset paths are viable, tint via text_color to verify in P2c",
+    "fonts": "Inter NOT installed (UI falls back to system sans — separate baseline); JetBrainsMono Nerd Font installed (terminal + code)",
+    "inter_installed": false
+  },
+  "notes": "Source-derived values from docs/ui-v5-pixel-perfect-plan.md sections 3-5. P0 replaces derived assumptions with measured computed-styles.json where layout/fonts/cascade change the result. No native pixel claim precedes the frozen capture."
+}

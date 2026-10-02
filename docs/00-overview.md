@@ -108,7 +108,8 @@ If this works, OmaTerm has proven the architecture for future agent control.
 
 - [OMATERM_AGENT_BLUEPRINT.md](../OMATERM_AGENT_BLUEPRINT.md) — Authoritative specification (79 sections)
 - [AGENTS.md](../AGENTS.md) — AI agent instructions
-- [VS Code Workbench UI Redesign Plan](ui-workbench-redesign-plan.md) — desktop visual-system and workbench-shell refactor plan
+- [UI v5 Pixel-Perfect Rewrite Plan](ui-v5-pixel-perfect-plan.md) — exact mockup reproduction, assets/measurements, phased delivery, and screenshot acceptance
+- [VS Code Workbench UI Redesign Plan](ui-workbench-redesign-plan.md) — superseded visual direction; retained implementation history
 - Blueprint §22 — First-Run Product Scope
 - Blueprint §23 — Suggested Version Progression
 - Blueprint §55 — MVP Acceptance Criteria

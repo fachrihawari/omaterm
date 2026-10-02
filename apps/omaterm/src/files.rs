@@ -163,21 +163,45 @@ const FOLDER_OPEN_ICON: FileIcon = FileIcon {
     color: Some(0xA1A1AA),
 };
 
-/// Chevron markers, reserved for future nesting affordances (e.g. the M16
-/// palette). Tree and finder rows intentionally use none: directory state
-/// rides on the folder open/closed glyphs alone, so a second leading
-/// marker would be redundant. Kept (and glyph-covered by test) rather than
-/// deleted so the verified codepoints stay available.
-#[allow(dead_code)]
-pub const CHEVRON_RIGHT: char = '\u{f054}';
-#[allow(dead_code)]
-pub const CHEVRON_DOWN: char = '\u{f078}';
-
-/// Magnifier for the finder input box (fa-search, Nerd Font).
-pub const SEARCH_ICON: char = '\u{f002}';
-
 /// VSCode-style match-highlight accent for finder results.
 pub const MATCH_ACCENT: u32 = 0x4C9AFF;
+
+/// Exact inspector tree row height (mock): 28px rows, 11px labels.
+pub const TREE_ROW_H: f32 = 28.0;
+
+/// Text badge for a tree/Git row: TypeScript families render `TS`,
+/// JSON renders `{ }` (mock); everything else uses the icon glyph.
+/// Returns the badge text plus its color.
+pub fn file_badge(path: &Path) -> Option<(&'static str, u32)> {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if name == "package.json" || name == "package-lock.json" {
+        return Some(("{ }", 0xCBCB41));
+    }
+    if let Some(extension) = Path::new(&name).extension().and_then(|ext| ext.to_str()) {
+        match extension {
+            "ts" | "mts" | "cts" | "tsx" => return Some(("TS", 0x519ABA)),
+            "json" => return Some(("{ }", 0xCBCB41)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Case-insensitive substring filter for the inspector search box.
+/// Empty queries match everything; matching is over the file name.
+pub fn row_matches_query(path: &Path, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    name.contains(&query.to_lowercase())
+}
 
 /// Convert skim char `indices` into byte ranges over `text` for
 /// `StyledText` highlights. Consecutive indices merge into single ranges;
@@ -997,14 +1021,6 @@ mod tests {
                 FALLBACK_FILE_ICON.glyph,
                 FOLDER_CLOSED_ICON.glyph,
                 FOLDER_OPEN_ICON.glyph,
-                SEARCH_ICON,
-                CHEVRON_RIGHT,
-                CHEVRON_DOWN,
-                crate::git_panel::STAGE_ICON,
-                crate::git_panel::UNSTAGE_ICON,
-                crate::git_panel::DISCARD_ICON,
-                crate::git_panel::REFRESH_ICON,
-                crate::git_panel::COMMIT_ICON,
                 '\u{e609}',
                 '\u{e60a}',
                 '\u{e616}',
@@ -1041,6 +1057,30 @@ mod tests {
         let (top, _) = scroll_thumb(40, 10, 999);
         assert!((top - 0.75).abs() < 1e-6);
         assert!(scroll_thumb(40, 10, 999).0.is_finite());
+    }
+
+    #[test]
+    fn file_badge_marks_ts_and_json_families() {
+        assert_eq!(
+            icon_for(Path::new("src/main.rs"), FileKind::File, false).glyph,
+            '\u{e68b}'
+        );
+        assert_eq!(file_badge(Path::new("src/App.TSX")), Some(("TS", 0x519ABA)));
+        assert_eq!(file_badge(Path::new("src/main.ts")), Some(("TS", 0x519ABA)));
+        assert_eq!(file_badge(Path::new("data.json")), Some(("{ }", 0xCBCB41)));
+        assert_eq!(file_badge(Path::new("notes.txt")), None);
+        assert_eq!(file_badge(Path::new("src")), None);
+    }
+
+    #[test]
+    fn row_matches_query_is_case_insensitive_substring() {
+        assert!(row_matches_query(Path::new("src/App.tsx"), ""));
+        assert!(row_matches_query(Path::new("src/App.tsx"), "app"));
+        assert!(row_matches_query(Path::new("src/App.tsx"), "APP"));
+        assert!(row_matches_query(Path::new("src/App.tsx"), ".tsx"));
+        assert!(!row_matches_query(Path::new("src/App.tsx"), "zzz"));
+        // Matches the file name, not the parent chain.
+        assert!(!row_matches_query(Path::new("src/main.rs"), "src"));
     }
 
     #[test]

@@ -35,6 +35,7 @@ mod git_panel;
 mod history;
 mod ipc_bridge;
 mod router;
+mod ui;
 mod workbench;
 
 /// M4 workspace: a recursive pane tree whose leaves reference
@@ -90,6 +91,9 @@ struct WorkspaceView {
     paste_arm: Option<(SessionId, Vec<u8>, Instant)>,
     /// Transient input notice (paste confirmation prompt, drop errors).
     input_notice: Option<String>,
+    /// Bottom-center toast (message, hide-after deadline). Pointer-
+    /// transparent; action confirmations only, never errors or prompts.
+    toast: Option<(String, Instant)>,
     /// M13 file panel: contextual-sidebar tree rows for the selected project.
     files_panel: files::FilePanel,
     /// Watcher-limit banner (inotify exhaustion keeps the last good tree).
@@ -132,6 +136,12 @@ struct WorkspaceView {
     /// Per-project top-level listing caps (`Show more` paging; ephemeral,
     /// never persisted). Nested dirs always use the config default.
     files_root_caps: HashMap<ProjectId, usize>,
+    /// Inspector search-box query: filters cached tree rows by file-name
+    /// substring (view-local, never persisted). Empty matches everything.
+    files_search: String,
+    /// Whether the inspector search box owns the keyboard. Clicking it
+    /// focuses; Esc/Enter, tab switches, and terminal clicks release it.
+    files_search_focused: bool,
     /// Wheel scroll offset into the tree rows (row-granular, clamped every
     /// render). Reset on project switch.
     files_scroll_rows: usize,
@@ -173,17 +183,20 @@ struct WorkspaceView {
     git_dirty_hint: bool,
     /// Last project the git poller served (switch detection).
     git_last_project: Option<ProjectId>,
-    /// Contextual-sidebar panel: the Files tree or the Git status panel
-    /// (M14 follow-up; git no longer stacks under files). View-local,
-    /// never persisted.
-    sidebar_tab: SidebarTab,
-    /// Workbench shell: contextual-sidebar collapsed state and width.
-    /// View chrome, never persisted. Width is clamped to
-    /// `workbench::SIDEBAR_MIN..=MAX` on every resize.
-    sidebar_collapsed: bool,
-    sidebar_width: f32,
-    /// Sidebar-resize drag in flight: last pointer x. Cleared on release.
-    sidebar_resize: Option<f32>,
+    /// UI v5 shell: independent Projects (left) and Inspector (right)
+    /// panels. View chrome, never persisted. Widths clamp to the v5 ranges
+    /// on every resize; visibility toggles remember the last nonzero width.
+    projects_visible: bool,
+    projects_width: f32,
+    /// Projects-resize drag in flight: last pointer x. Cleared on release.
+    projects_resize: Option<f32>,
+    inspector_visible: bool,
+    inspector_width: f32,
+    /// Inspector-resize drag in flight: last pointer x. Cleared on release.
+    inspector_resize: Option<f32>,
+    /// Inspector tab: Info, Files, or Git. Defaults to Info every launch
+    /// (mock default); intentionally not persisted.
+    inspector_tab: InspectorTab,
     /// M15 unified-diff panel: last-good diffs per project+side, explicit
     /// empty/error states, file/hunk selection, staged toggle (GPUI-free).
     diff_panel: diff_panel::DiffPanel,
@@ -215,12 +228,13 @@ enum HistoryArm {
     ClearPane(PaneId),
 }
 
-/// Contextual-sidebar panel (M14 follow-up): the file tree or the
-/// Source Control panel. Defaults to Files every launch; intentionally not
-/// persisted (view chrome, not workspace state — no schema churn).
+/// Right-inspector panel: Info, Files tree, or Source Control. Defaults to
+/// Info every launch (mock default); intentionally not persisted (view
+/// chrome, not workspace state — no schema churn).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum SidebarTab {
+enum InspectorTab {
     #[default]
+    Info,
     Files,
     Git,
 }
@@ -230,6 +244,9 @@ const HISTORY_ARM_WINDOW: Duration = Duration::from_secs(8);
 
 /// Arm window for two-step risky-paste confirmation.
 const PASTE_ARM_WINDOW: Duration = Duration::from_secs(8);
+
+/// Toast visibility after the last confirmation (mock: 1400ms).
+const TOAST_MS: u64 = 1400;
 
 struct IpcWork {
     request: IpcRequest,
@@ -338,6 +355,7 @@ impl WorkspaceView {
             history_arm: None,
             paste_arm: None,
             input_notice: None,
+            toast: None,
             files_panel: files::FilePanel::default(),
             files_warning: None,
             files_watcher: None,
@@ -355,6 +373,8 @@ impl WorkspaceView {
                 .checked_sub(Duration::from_secs(60))
                 .unwrap_or_else(Instant::now),
             files_root_caps: HashMap::new(),
+            files_search: String::new(),
+            files_search_focused: false,
             files_scroll_rows: 0,
             files_scroll_cols: 0.0,
             files_vdrag: None,
@@ -380,10 +400,13 @@ impl WorkspaceView {
             git_refreshed_at: HashMap::new(),
             git_dirty_hint: true,
             git_last_project: None,
-            sidebar_tab: SidebarTab::Files,
-            sidebar_collapsed: false,
-            sidebar_width: workbench::SIDEBAR_DEFAULT,
-            sidebar_resize: None,
+            projects_visible: true,
+            projects_width: crate::ui::geometry::PROJECTS_DEFAULT,
+            projects_resize: None,
+            inspector_visible: true,
+            inspector_width: crate::ui::geometry::INSPECTOR_DEFAULT,
+            inspector_resize: None,
+            inspector_tab: InspectorTab::Info,
             diff_panel: diff_panel::DiffPanel::default(),
             diff_tx,
             diff_rx,
@@ -2348,6 +2371,37 @@ impl WorkspaceView {
         }
     }
 
+    /// Unstage one file from the staged diff side (whole-file scope,
+    /// same path as the Source Control panel).
+    fn diff_unstage_file(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::Unstage {
+                project,
+                paths: vec![path],
+            }),
+            cx,
+        ) {
+            Ok(_) => {
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                self.diff_panel.set_show_staged(project, false);
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Unstage: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
     /// Copy a diff file's absolute path, Bourne shell-escaped (§47
     /// policy reuse), to the clipboard.
     fn diff_copy_path(
@@ -2399,12 +2453,13 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
+        let summary = summarize_paths(&paths);
         match self.dispatch_command(OmaCommand::Git(GitCommand::Stage { project, paths }), cx) {
             Ok(_) => {
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
                 self.diff_panel.set_show_staged(project, true);
-                cx.notify();
+                self.show_toast(format!("Staged {summary}"), cx);
             }
             Err(error) => {
                 self.input_notice = Some(format!("Stage: {error}"));
@@ -2423,11 +2478,12 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
+        let summary = summarize_paths(&paths);
         match self.dispatch_command(OmaCommand::Git(GitCommand::Unstage { project, paths }), cx) {
             Ok(_) => {
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
-                cx.notify();
+                self.show_toast(format!("Unstaged {summary}"), cx);
             }
             Err(error) => {
                 self.input_notice = Some(format!("Unstage: {error}"));
@@ -2452,6 +2508,7 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
+        let summary = summarize_paths(std::slice::from_ref(&path));
         match self.dispatch_command(
             OmaCommand::Git(GitCommand::Discard {
                 project,
@@ -2465,6 +2522,82 @@ impl WorkspaceView {
                 // Discard may delete files: rebuild the tree now instead
                 // of waiting for the watcher tick.
                 self.refresh_files(cx);
+                self.show_toast(format!("Discarded {summary}"), cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Discard: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Stage every unstaged/untracked path of the working-tree group.
+    fn git_stage_all(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        let paths: Vec<std::path::PathBuf> = self
+            .git_panel
+            .status_for(project)
+            .map(|status| {
+                status
+                    .unstaged
+                    .iter()
+                    .chain(status.untracked.iter())
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !paths.is_empty() {
+            self.git_stage_paths(project, paths, cx);
+        }
+    }
+
+    /// Unstage every staged path.
+    fn git_unstage_all(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        let paths: Vec<std::path::PathBuf> = self
+            .git_panel
+            .status_for(project)
+            .map(|status| {
+                status
+                    .staged
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !paths.is_empty() {
+            self.git_unstage_paths(project, paths, cx);
+        }
+    }
+
+    /// Discard every working-tree path behind the same two-step arm as
+    /// single-path discard: first press arms (banner names the count),
+    /// second press inside the window dispatches one discard per path.
+    fn git_discard_all(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        let paths: Vec<std::path::PathBuf> = self
+            .git_panel
+            .status_for(project)
+            .map(|status| {
+                status
+                    .unstaged
+                    .iter()
+                    .chain(status.untracked.iter())
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if paths.is_empty() {
+            return;
+        }
+        if !self.git_panel.arm_discard_all(project, &paths) {
+            cx.notify();
+            return;
+        }
+        let summary = summarize_paths(&paths);
+        match self.dispatch_command(OmaCommand::Git(GitCommand::Discard { project, paths }), cx) {
+            Ok(_) => {
+                self.git_dirty_hint = true;
+                self.diff_dirty_hint = true;
+                self.refresh_files(cx);
+                self.show_toast(format!("Discarded {summary}"), cx);
             }
             Err(error) => {
                 self.input_notice = Some(format!("Discard: {error}"));
@@ -2559,8 +2692,7 @@ impl WorkspaceView {
                 self.git_panel.set_commit_focused(false);
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
-                self.input_notice = Some(format!("Committed {oid}."));
-                cx.notify();
+                self.show_toast(format!("Committed {oid}"), cx);
             }
             Ok(_) => {
                 self.git_dirty_hint = true;
@@ -2868,6 +3000,67 @@ impl WorkspaceView {
     /// Keyboard handling while the `Ctrl+P` finder is open: the overlay
     /// owns every keystroke (typing filters, Up/Down navigate, Enter opens,
     /// Esc dismisses back to the terminal). Nothing reaches the shell.
+    /// Inspector search-box key handling: Esc clears and releases, Enter
+    /// opens the first file match (dirs toggle), Backspace edits, printable
+    /// characters append (bounded). The filter applies to cached rows only.
+    fn on_files_search_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        match key_name.as_str() {
+            "escape" => {
+                self.files_search.clear();
+                self.files_search_focused = false;
+                self.files_scroll_rows = 0;
+                cx.notify();
+            }
+            "enter" | "return" | "kpenter" => {
+                let project = self.coordinator.selected_project_id();
+                let query = self.files_search.clone();
+                if let Some(project) = project
+                    && let Some(row) = self
+                        .files_panel
+                        .rows_for(project)
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|row| files::row_matches_query(&row.path, &query))
+                        .cloned()
+                {
+                    let is_dir = row.kind == omaterm_core::FileKind::Directory;
+                    self.files_search_focused = false;
+                    if is_dir {
+                        self.toggle_file_row(project, row.path, true, cx);
+                    } else {
+                        self.files_panel.select(project, row.path.clone());
+                        self.open_file_path(project, row.path, cx);
+                        self.refresh_files(cx);
+                    }
+                } else {
+                    self.files_search_focused = false;
+                }
+                cx.notify();
+            }
+            "backspace" => {
+                self.files_search.pop();
+                self.files_scroll_rows = 0;
+                cx.notify();
+            }
+            _ => {
+                let ch = event
+                    .keystroke
+                    .key_char
+                    .as_ref()
+                    .and_then(|s| s.chars().next());
+                if let Some(ch) = ch
+                    && !ch.is_control()
+                    && self.files_search.len() < 256
+                {
+                    self.files_search.push(ch);
+                    self.files_scroll_rows = 0;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
     fn on_ctrlp_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         // Any keystroke restores caret visibility (standard blink-phase
         // reset) and keeps the blink task alive while open.
@@ -2957,11 +3150,22 @@ impl WorkspaceView {
         // message; Ctrl/Alt combinations fall through to global shortcuts
         // so they keep working while typing.
         if self.git_panel.commit_focused()
-            && self.sidebar_tab == SidebarTab::Git
+            && self.inspector_tab == InspectorTab::Git
             && !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.alt
         {
             return self.on_commit_key(event, cx);
+        }
+        // Inspector search input: while focused (Files tab), plain keys
+        // edit the filter; Ctrl/Alt combinations fall through. Esc clears
+        // and releases, Enter opens the first match.
+        if self.files_search_focused
+            && self.inspector_tab == InspectorTab::Files
+            && self.inspector_visible
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+        {
+            return self.on_files_search_key(event, cx);
         }
         if event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
@@ -2971,26 +3175,38 @@ impl WorkspaceView {
             self.toggle_ctrlp(cx);
             return;
         }
-        // Workbench shell: Ctrl+B toggles the contextual sidebar,
-        // Ctrl+Shift+E/G select Explorer / Source Control (VSCode parity).
+        // UI v5 shell: Ctrl+B toggles Projects, Ctrl+Shift+B toggles the
+        // Inspector, Ctrl+Shift+E/G/I select its Files/Git/Info tabs.
         // Ctrl+Shift+P/T/Q/V stay reserved (project/tab/close/paste).
         if event.keystroke.modifiers.control
             && !event.keystroke.modifiers.alt
-            && (key_name == "b" || key_name == "e" || key_name == "g")
+            && (key_name == "b" || key_name == "e" || key_name == "g" || key_name == "i")
         {
             if key_name == "b" && !event.keystroke.modifiers.shift {
-                self.sidebar_collapsed = !self.sidebar_collapsed;
+                self.projects_visible = !self.projects_visible;
+                self.projects_resize = None;
                 cx.notify();
                 return;
             }
-            if event.keystroke.modifiers.shift && (key_name == "e" || key_name == "g") {
-                self.sidebar_tab = if key_name == "e" {
-                    SidebarTab::Files
+            if key_name == "b" && event.keystroke.modifiers.shift {
+                self.inspector_visible = !self.inspector_visible;
+                self.inspector_resize = None;
+                cx.notify();
+                return;
+            }
+            if event.keystroke.modifiers.shift
+                && (key_name == "e" || key_name == "g" || key_name == "i")
+            {
+                self.inspector_tab = if key_name == "e" {
+                    InspectorTab::Files
+                } else if key_name == "g" {
+                    InspectorTab::Git
                 } else {
-                    SidebarTab::Git
+                    InspectorTab::Info
                 };
-                self.sidebar_collapsed = false;
+                self.inspector_visible = true;
                 self.git_panel.set_commit_focused(false);
+                self.files_search_focused = false;
                 self.files_vdrag = None;
                 self.files_hdrag = None;
                 cx.notify();
@@ -3013,6 +3229,46 @@ impl WorkspaceView {
             }
             if key_name == "p" {
                 self.diff_panel.prev_hunk(project);
+                cx.notify();
+                return;
+            }
+        }
+        // Git row keyboard navigation: Alt+Up/Down moves the Source
+        // Control selection, Alt+Enter opens the selected row's diff.
+        // Guarded to the visible Git tab with the commit box unfocused so
+        // terminal input (including plain arrows) never leaks.
+        if event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && self.inspector_visible
+            && self.inspector_tab == InspectorTab::Git
+            && !self.git_panel.commit_focused()
+            && let Some(project) = self.coordinator.selected_project_id()
+        {
+            if key_name == "up" {
+                self.git_panel.move_selection(project, -1);
+                cx.notify();
+                return;
+            }
+            if key_name == "down" {
+                self.git_panel.move_selection(project, 1);
+                cx.notify();
+                return;
+            }
+            if (key_name == "enter" || key_name == "return" || key_name == "kpenter")
+                && let Some(row) = self
+                    .git_panel
+                    .selected_path(project)
+                    .cloned()
+                    .and_then(|path| {
+                        self.git_panel
+                            .rows_for(project)
+                            .into_iter()
+                            .find(|row| row.path == path)
+                    })
+            {
+                let staged = row.group == git_panel::GitGroup::Staged;
+                self.git_select_path(project, row.path, staged);
                 cx.notify();
                 return;
             }
@@ -3372,6 +3628,7 @@ impl WorkspaceView {
         }
         // Typing belongs to the terminal again once its pane is clicked.
         self.git_panel.set_commit_focused(false);
+        self.files_search_focused = false;
         window.focus(&self.focus_handle);
         let Some(cell) = self.pos_to_cell(pane, event.position, cx) else {
             return;
@@ -3477,6 +3734,28 @@ impl WorkspaceView {
     }
 
     /// Flash the scroll thumb for [`SCROLL_INDICATOR_FADE_MS`], then hide it.
+    /// Show a transient bottom-center confirmation. A new message
+    /// replaces the current one and restarts the hide timer; stale timer
+    /// tasks exit quietly. Pointer-transparent: never blocks pane clicks.
+    fn show_toast(&mut self, message: String, cx: &mut Context<Self>) {
+        self.toast = Some((message, Instant::now() + Duration::from_millis(TOAST_MS)));
+        cx.notify();
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            Timer::after(Duration::from_millis(TOAST_MS + 50)).await;
+            let _ = weak.update(cx, |view, cx| {
+                if view
+                    .toast
+                    .as_ref()
+                    .is_some_and(|(_, deadline)| Instant::now() >= *deadline)
+                {
+                    view.toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn flash_scroll_indicator(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
         self.scroll_indicator_until.insert(
             session_id,
@@ -3702,15 +3981,88 @@ impl WorkspaceView {
             }
         });
 
-        let border = if focused { 0xA1A1AA } else { 0x27272A };
-        div()
+        // UI v5 pane chrome: 32px header (status dot, OSC title, pid),
+        // hover-equivalent toolbar on the focused pane (hover-to-focus
+        // keeps this equivalent to the reference in practice), 28px footer
+        // (shell, cwd, grid dims). Every string here is live session data.
+        let (title, pid) = self
+            .coordinator
+            .registry()
+            .get(session_id)
+            .and_then(|handle| {
+                handle.lock().ok().map(|session| {
+                    (
+                        session.title().unwrap_or("shell").to_string(),
+                        session.child_pid(),
+                    )
+                })
+            })
+            .unwrap_or_else(|| ("shell".to_string(), 0));
+        let attention = self.restored_failures.contains_key(&pane_id);
+        let dot = if attention {
+            crate::ui::theme::YELLOW
+        } else {
+            crate::ui::theme::GREEN
+        };
+        let cwd = self
+            .observed_cwds
+            .get(&pane_id)
+            .map(|cwd| short_home_path(&cwd.path))
+            .unwrap_or_default();
+        let dims = self
+            .grid_sizes
+            .get(&session_id)
+            .map(|(cols, rows)| format!("{cols}×{rows}"))
+            .unwrap_or_default();
+        let shell = shell_name();
+        let header = div()
+            .h(px(31.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_3()
+            .gap_2()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .bg(rgba(0x0F1318E6))
+            .text_color(rgb(crate::ui::theme::TEXT2))
+            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(dot)))
+            .child(div().flex_1().truncate().child(title))
+            .child(
+                div()
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .child(format!("{shell} · pid {pid}")),
+            );
+        let footer = div()
+            .h(px(27.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_3()
+            .gap_3()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .text_color(rgb(crate::ui::theme::MUTED))
+            .child(shell)
+            .child(div().flex_1().truncate().child(cwd))
+            .child(dims);
+        let mut leaf = div()
             .flex()
             .flex_1()
             .flex_col()
             .size_full()
-            .bg(rgb(0x18181B))
+            .relative()
+            .bg(rgb(crate::ui::theme::BG2))
             .border_1()
-            .border_color(rgb(border))
+            .border_color(rgb(if focused {
+                crate::ui::theme::BLUE
+            } else {
+                crate::ui::theme::BORDER
+            }))
+            .child(header);
+        leaf = leaf
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -3732,34 +4084,143 @@ impl WorkspaceView {
                 cx.listener(move |view, event: &ScrollWheelEvent, window, cx| {
                     view.on_scroll_wheel(session_id, event, window, cx);
                 }),
-            )
-            .child(div().flex_1().size_full().child(canvas(
-                move |bounds, _, _| bounds,
-                move |bounds: Bounds<Pixels>,
-                      bounds_prepaint: Bounds<Pixels>,
-                      window: &mut Window,
-                      cx: &mut App| {
-                    // Grid origin for mouse-to-cell mapping. PTY sizing is
-                    // handled in `render` via window geometry x pane
-                    // fractions (deterministic); paint never resizes, so a
-                    // transient canvas offer can never collapse a live grid.
-                    origin.set(bounds_prepaint.origin);
-                    paint_terminal(
-                        bounds,
-                        bounds_prepaint,
-                        &PaintArgs {
-                            snapshot: &snapshot,
-                            fonts: &fonts,
-                            cursor_color,
-                            show_scrollbar,
-                            selection,
-                        },
-                        window,
-                        cx,
-                    );
-                },
-            )))
-            .into_any_element()
+            );
+        // Toolbar floats over the canvas (never consumes grid space) and
+        // shows on the focused pane. Restart/overflow arrive with their own
+        // command/menu slices; only implemented actions render.
+        if focused {
+            let split_id = pane_id;
+            let close_id = pane_id;
+            leaf = leaf.child(
+                div()
+                    .absolute()
+                    .top(px(39.0))
+                    .right(px(8.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.0))
+                    .px_1()
+                    .py(px(2.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::BORDER2))
+                    .bg(rgba(0x141A21F2))
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .child(
+                        div()
+                            .p(px(6.0))
+                            .rounded_sm()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    let _ = view.dispatch_command(
+                                        OmaCommand::Pane(PaneCommand::Split {
+                                            target: split_id,
+                                            direction: SplitDirection::Right,
+                                        }),
+                                        cx,
+                                    );
+                                }),
+                            )
+                            .child(crate::ui::assets::icon(
+                                crate::ui::assets::COLUMNS,
+                                14.0,
+                                crate::ui::theme::MUTED,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .p(px(6.0))
+                            .rounded_sm()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    let _ = view.dispatch_command(
+                                        OmaCommand::Pane(PaneCommand::Split {
+                                            target: split_id,
+                                            direction: SplitDirection::Down,
+                                        }),
+                                        cx,
+                                    );
+                                }),
+                            )
+                            .child(crate::ui::assets::icon(
+                                crate::ui::assets::ROWS,
+                                14.0,
+                                crate::ui::theme::MUTED,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .p(px(6.0))
+                            .rounded_sm()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    let _ = view.dispatch_command(
+                                        OmaCommand::Pane(PaneCommand::Close { pane: close_id }),
+                                        cx,
+                                    );
+                                }),
+                            )
+                            .child(crate::ui::assets::icon(
+                                crate::ui::assets::TRASH,
+                                14.0,
+                                crate::ui::theme::MUTED,
+                            )),
+                    ),
+            );
+        }
+        leaf = leaf.child(
+            div()
+                .flex()
+                .flex_1()
+                .size_full()
+                .min_h(px(0.0))
+                .child(canvas(
+                    move |bounds, _, _| bounds,
+                    move |bounds: Bounds<Pixels>,
+                          bounds_prepaint: Bounds<Pixels>,
+                          window: &mut Window,
+                          cx: &mut App| {
+                        // Grid origin for mouse-to-cell mapping. PTY sizing is
+                        // handled in `render` via window geometry x pane
+                        // fractions (deterministic); paint never resizes, so a
+                        // transient canvas offer can never collapse a live grid.
+                        origin.set(bounds_prepaint.origin);
+                        paint_terminal(
+                            bounds,
+                            bounds_prepaint,
+                            &PaintArgs {
+                                snapshot: &snapshot,
+                                fonts: &fonts,
+                                cursor_color,
+                                show_scrollbar,
+                                selection,
+                            },
+                            window,
+                            cx,
+                        );
+                    },
+                )),
+        );
+        leaf.child(footer).into_any_element()
     }
 
     /// Match every live PTY grid to its pane's share of the window.
@@ -3778,29 +4239,34 @@ impl WorkspaceView {
             return;
         }
         let viewport = window.viewport_size();
-        // The pane viewport starts after the workbench chrome: the activity
-        // rail plus the contextual sidebar when revealed, and the
-        // title/tab/context/status rows vertically.
-        let chrome_w = workbench::ACTIVITY_WIDTH
-            + if self.sidebar_collapsed {
-                0.0
-            } else {
-                workbench::clamp_sidebar_width(self.sidebar_width)
-            };
-        let chrome_h = workbench::TITLE_HEIGHT
-            + workbench::TAB_HEIGHT
-            + workbench::CONTEXT_HEIGHT
-            + workbench::STATUS_HEIGHT;
-        let window_width: f32 = (viewport.width - px(chrome_w)).max(px(1.0)).into();
-        let window_height: f32 = (viewport.height - px(chrome_h)).max(px(1.0)).into();
+        // UI v5 chrome: the header row and global status vertically; the
+        // Projects and Inspector panels (plus their resizers) horizontally.
+        // One shared helper drives both this and the render composition so
+        // sizing and painting can never disagree.
+        let viewport_w: f32 = viewport.width.into();
+        let viewport_h: f32 = viewport.height.into();
+        let shell = crate::ui::geometry::shell_rects(
+            viewport_w,
+            viewport_h,
+            self.projects_visible,
+            self.projects_width,
+            self.inspector_visible,
+            self.inspector_width,
+        );
+        let window_width: f32 = px(shell.main_view.2).max(px(1.0)).into();
+        let window_height: f32 = px(shell.main_view.3).max(px(1.0)).into();
         for pane_rect in self.coordinator.tree().pane_rects() {
             let Some(session_id) = self.coordinator.session_id_for_pane(pane_rect.pane) else {
                 continue;
             };
             let cols =
                 ((window_width * pane_rect.rect.width / cell_width).floor() as u16).clamp(2, 500);
-            let rows = ((window_height * pane_rect.rect.height / line_height).floor() as u16)
-                .clamp(1, 500);
+            // Every leaf carries the v5 header (31px + 1px border) and
+            // footer (27px + 1px border): the grid gets the canvas remainder
+            // so rows are never hidden behind the chrome.
+            let rows = ((window_height * pane_rect.rect.height - LEAF_CHROME_H) / line_height)
+                .floor() as u16;
+            let rows = rows.clamp(1, 500);
             if cols < 2 || rows < 2 {
                 continue;
             }
@@ -3878,8 +4344,7 @@ impl WorkspaceView {
                             view.files_vdrag = None;
                             return;
                         }
-                        let row_height =
-                            f32::from(view.fonts(&*cx).line_height).max(1.0) + Self::FILES_ROW_VPAD;
+                        let row_height = files::TREE_ROW_H;
                         let y = f32::from(event.position.y);
                         acc += (y - last_y) / row_height;
                         let step = acc.trunc() as i32;
@@ -3908,18 +4373,17 @@ impl WorkspaceView {
             )
     }
 
-    /// Horizontal tree scrollbar: position nub over an estimated-width
-    /// track (content width is unmeasured; the estimate is documented at
-    /// the constant). Shift+wheel, native x deltas, or press-and-slide.
+    /// Horizontal tree scrollbar: position nub over the measured inspector
+    /// width minus padding, row gutters, and the vertical rail. Content
+    /// width is unmeasured; a few px off either way is invisible on an 8px
+    /// chrome element. Shift+wheel, native x deltas, or press-and-slide.
     fn render_tree_hscrollbar(&mut self, cx: &mut Context<Self>) -> Div {
-        /// Track width estimate: sidebar minus padding, row gutters, and
-        /// the vertical rail. A few px off either way is invisible on an
-        /// 8px chrome element; the sidebar is resizable, so this tracks the
-        /// default width only.
-        const TRACK_W: f32 = workbench::SIDEBAR_DEFAULT - 16.0 - 12.0 - 12.0;
+        let track_w =
+            crate::ui::geometry::clamp_inspector_width(self.inspector_width) - 16.0 - 12.0 - 12.0;
         const THUMB_W: f32 = 48.0;
+        let track_w = track_w.max(THUMB_W + 1.0);
         let pos = (self.files_scroll_cols / files::MAX_SCROLL_COLS_PX).clamp(0.0, 1.0);
-        let left_px = pos * (TRACK_W - THUMB_W);
+        let left_px = pos * (track_w - THUMB_W);
         div()
             .h(px(10.0))
             .flex()
@@ -3928,7 +4392,7 @@ impl WorkspaceView {
             .px_2()
             .child(
                 div()
-                    .w(px(TRACK_W))
+                    .w(px(track_w))
                     .h(px(6.0))
                     .rounded_full()
                     .bg(rgb(0x1F1F23))
@@ -3982,14 +4446,11 @@ impl WorkspaceView {
             )
     }
 
-    /// Contextual-sidebar file tree for the selected project. Pure render from
+    /// Inspector file tree for the selected project. Pure render from
     /// the panel row cache (no filesystem or dispatcher work per frame);
-    /// clicks select/toggle through the dispatcher-owned refresh.
-    /// Vertical padding both sides of one tree row (`py_1` at the 16px
-    /// tailwind base). Added to the font line height for scroll math; a
-    /// small mismatch only costs a partially-cut last row, never input.
-    const FILES_ROW_VPAD: f32 = 8.0;
-
+    /// clicks select/toggle through the dispatcher-owned refresh. Rows are
+    /// the exact 28px height (`files::TREE_ROW_H`); scroll math uses the
+    /// same constant so wheel, drag, and render always agree.
     fn render_files_tree(&mut self, bar: Div, viewport_height: f32, cx: &mut Context<Self>) -> Div {
         let Some(project) = self.coordinator.selected_project_id() else {
             return bar.child(
@@ -4015,10 +4476,20 @@ impl WorkspaceView {
             .selected_path(project)
             .map(|path| path.to_path_buf());
         // Row-granular wheel scroll: visible window over the cached rows.
-        // Header, footers, and hints stay fixed; only rows move.
-        let row_height = f32::from(self.fonts(&*cx).line_height).max(1.0) + Self::FILES_ROW_VPAD;
+        // Header, footers, and hints stay fixed; only rows move. Rows are
+        // the exact 28px inspector height; the search box filters cached
+        // rows by file-name substring (display only, cache intact).
+        let row_height = files::TREE_ROW_H;
         let visible = ((viewport_height / row_height) as usize).clamp(1, files::MAX_RENDER_ROWS);
-        let all_rows = self.files_panel.rows_for(project).unwrap_or_default();
+        let query = self.files_search.clone();
+        let all_rows: Vec<files::FileRow> = self
+            .files_panel
+            .rows_for(project)
+            .unwrap_or_default()
+            .iter()
+            .filter(|row| files::row_matches_query(&row.path, &query))
+            .cloned()
+            .collect();
         let max_start = all_rows
             .len()
             .saturating_sub(visible.min(all_rows.len().max(1)));
@@ -4030,13 +4501,13 @@ impl WorkspaceView {
             .cloned()
             .collect();
         if rows.is_empty() {
-            bar = bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(0x71717A))
-                    .child("Empty directory"),
-            );
+            bar = bar.child(div().px_2().py_1().text_color(rgb(0x71717A)).child(
+                if query.is_empty() {
+                    "Empty directory"
+                } else {
+                    "No matches."
+                },
+            ));
         }
         // Paged top-level cap for crowded roots (`$HOME`): rendered above
         // the rows (not as a footer) so it stays reachable — the sidebar
@@ -4075,6 +4546,20 @@ impl WorkspaceView {
         let h_offset = self.files_scroll_cols;
         let rows_shown = rows.len();
         let rows_total = all_rows.len();
+        // Git decorations for tree rows (mock M/U marks): untracked → U,
+        // staged/unstaged → M. Computed once per frame over bounded rows.
+        let git_mark = |path: &std::path::Path| -> Option<(char, u32)> {
+            let status = self.git_panel.status_for(project)?;
+            if status.untracked.iter().any(|entry| entry.path == path) {
+                return Some(('U', crate::ui::theme::GREEN));
+            }
+            if status.staged.iter().any(|entry| entry.path == path)
+                || status.unstaged.iter().any(|entry| entry.path == path)
+            {
+                return Some(('M', crate::ui::theme::YELLOW));
+            }
+            None
+        };
         for row in rows {
             let is_selected = selected.as_ref() == Some(&row.path);
             let is_dir = row.kind == omaterm_core::FileKind::Directory;
@@ -4083,9 +4568,6 @@ impl WorkspaceView {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| row.path.to_string_lossy().into_owned());
-            // Directories carry no chevron: the folder glyph alone shows
-            // state (closed = collapsed, open = expanded, dimmed + `…` =
-            // still loading), so a second leading marker is redundant.
             let icon = files::icon_for(&row.path, row.kind, row.expanded);
             let icon_color =
                 icon.color
@@ -4097,10 +4579,9 @@ impl WorkspaceView {
             };
             let path = row.path.clone();
             let dimmed = row.loading && !is_selected;
-            // Horizontal scroll: at rest the classic ellipsis path renders
-            // (byte-identical to before); once shifted, the full relative
-            // path lays out nowrap inside an overflow-hidden viewport and
-            // slides under a negative margin.
+            // Horizontal scroll: at rest the classic ellipsis path renders;
+            // once shifted, the full relative path lays out nowrap inside
+            // an overflow-hidden viewport and slides under a negative margin.
             let full_path = row.path.to_string_lossy().into_owned();
             let label_view = if h_offset <= 0.0 {
                 div().flex_1().min_w(px(0.0)).truncate().child(label)
@@ -4116,6 +4597,56 @@ impl WorkspaceView {
                         .child(full_path),
                 )
             };
+            // Leading marker: explicit chevron for directories (mock),
+            // 14px spacer for files. Badge: TS/{ } text marks, else the
+            // file-type glyph.
+            let marker: Div = if is_dir {
+                div()
+                    .w(px(14.0))
+                    .flex_shrink_0()
+                    .child(crate::ui::assets::icon(
+                        if row.expanded {
+                            crate::ui::assets::CHEVRON_DOWN
+                        } else {
+                            crate::ui::assets::CHEVRON_RIGHT
+                        },
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    ))
+            } else {
+                div().w(px(14.0)).flex_shrink_0()
+            };
+            // Directories use Lucide folder glyphs (mock); other types
+            // keep Nerd file marks plus TS/{ } badges until the full
+            // Lucide file set lands (recorded P6 follow-up).
+            let badge: Div = match files::file_badge(&row.path) {
+                Some((text, color)) => div()
+                    .w(px(18.0))
+                    .flex_shrink_0()
+                    .text_color(rgb(color))
+                    .child(text),
+                None if is_dir => div()
+                    .w(px(18.0))
+                    .flex_shrink_0()
+                    .child(crate::ui::assets::icon(
+                        if row.expanded {
+                            crate::ui::assets::FOLDER_OPEN
+                        } else {
+                            crate::ui::assets::FOLDER
+                        },
+                        16.0,
+                        crate::ui::theme::YELLOW,
+                    )),
+                None => div()
+                    .w(px(18.0))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .text_color(rgb(icon_color))
+                    .child(icon.glyph.to_string()),
+            };
+            let mark = git_mark(&row.path);
             rows_col = rows_col.child(
                 div()
                     .flex()
@@ -4123,16 +4654,21 @@ impl WorkspaceView {
                     .items_center()
                     .gap_2()
                     .px_2()
-                    .py_1()
+                    .h(px(files::TREE_ROW_H))
                     .pl(px(8.0 + row.depth as f32 * 16.0))
                     .rounded_sm()
-                    .bg(rgb(if is_selected { 0x27272A } else { 0x111113 }))
+                    .bg(rgb(if is_selected {
+                        crate::ui::theme::TREE_SELECTED_BG
+                    } else {
+                        crate::ui::theme::PANEL
+                    }))
+                    .text_size(px(11.0))
                     .text_color(rgb(if is_selected {
                         0xFAFAFA
                     } else if dimmed {
                         0x52525B
                     } else {
-                        0xA1A1AA
+                        crate::ui::theme::TEXT2
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -4141,6 +4677,7 @@ impl WorkspaceView {
                                 return;
                             }
                             window.focus(&view.focus_handle);
+                            view.files_search_focused = false;
                             view.files_vdrag = None;
                             view.files_hdrag = None;
                             if is_dir {
@@ -4152,19 +4689,23 @@ impl WorkspaceView {
                             }
                         }),
                     )
-                    .child(
-                        div()
-                            .w(px(18.0))
-                            .flex()
-                            .flex_shrink_0()
-                            .items_center()
-                            .justify_center()
-                            .text_color(rgb(icon_color))
-                            .child(icon.glyph.to_string()),
-                    )
+                    .child(marker)
+                    .child(badge)
                     // Long names ellipsize inside the fixed sidebar instead
                     // of stretching the row and breaking column alignment.
-                    .child(label_view),
+                    .child(label_view)
+                    .child(
+                        div()
+                            .w(px(14.0))
+                            .flex_shrink_0()
+                            .text_color(rgb(mark
+                                .map(|(_, color)| color)
+                                .unwrap_or(crate::ui::theme::PANEL)))
+                            .child(
+                                mark.map(|(letter, _)| letter.to_string())
+                                    .unwrap_or_default(),
+                            ),
+                    ),
             );
         }
         // Rows area: windowed rows beside the vertical scrollbar rail.
@@ -4282,8 +4823,18 @@ impl WorkspaceView {
             );
         };
         let mut bar = bar;
-        // Discard arm banner (two-step confirm).
+        // Discard arm banners (two-step confirm, single and bulk).
         if let Some(text) = self.git_panel.armed_text(project) {
+            bar = bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
+                    .child(text),
+            );
+        }
+        if let Some(text) = self.git_panel.armed_all_text(project) {
             bar = bar.child(
                 div()
                     .px_2()
@@ -4336,98 +4887,105 @@ impl WorkspaceView {
                     .child("Loading git status…"),
             );
         };
-        // Branch header with ahead/behind badge.
-        let mut badge = String::new();
-        if status.ahead > 0 {
-            badge.push_str(&format!(" ↑{}", status.ahead));
-        }
-        if status.behind > 0 {
-            badge.push_str(&format!(" ↓{}", status.behind));
-        }
-        let branch_line = match (&status.branch, &status.upstream) {
-            (Some(branch), Some(upstream)) => format!("{branch}{badge} ({upstream})"),
-            (Some(branch), None) => format!("{branch}{badge}"),
-            (None, _) => format!("detached{badge}"),
-        };
-        // Branch header with the refresh action icon at the far end.
-        bar = bar.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .px_2()
-                .py_1()
-                .text_color(rgb(0xFAFAFA))
-                .child(div().child(branch_line))
-                .child(
-                    div()
-                        .px_1()
-                        .text_color(rgb(0x71717A))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                view.git_dirty_hint = true;
-                                cx.notify();
-                            }),
-                        )
-                        .child(git_panel::REFRESH_ICON.to_string()),
-                ),
-        );
-        if status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty() {
-            return bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(0x71717A))
-                    .child("Working tree clean"),
-            );
-        }
-        // Commit row: single-line message input plus a check button. The
-        // button enables only with staged changes; authorship comes from
-        // the repo config (no author UI).
+        // Branch + commit header: 11px branch row (icon, name, sync pill,
+        // refresh), draft box (min 56px), full-width Commit button. The
+        // draft stays single-line editing (multiline caret/selection is a
+        // recorded P4 follow-up); the commit-options dropdown is omitted
+        // until its menu has backend actions.
+        let branch_name = status
+            .branch
+            .clone()
+            .unwrap_or_else(|| "detached".to_string());
+        let sync_pill = format!("↑{} ↓{}", status.ahead, status.behind);
         let can_commit = !status.staged.is_empty();
         let input_focused = self.git_panel.commit_focused();
         let draft = self.git_panel.commit_draft(project).to_owned();
-        let caret_h = px(f32::from(self.fonts(&*cx).line_height).max(1.0));
         let input_content = if draft.is_empty() && !input_focused {
-            div().text_color(rgb(0x52525B)).child("Commit message…")
+            div()
+                .text_color(rgb(crate::ui::theme::MUTED))
+                .child("Commit message")
         } else {
             div()
                 .flex()
                 .flex_row()
-                .items_center()
-                .child(div().child(draft))
-                .child(div().w(px(2.0)).h(caret_h).bg(rgb(if input_focused {
-                    0xFAFAFA
+                .child(div().flex_1().min_w(px(0.0)).child(draft))
+                .child(div().w(px(2.0)).h(px(15.0)).bg(rgb(if input_focused {
+                    crate::ui::theme::TEXT
                 } else {
-                    0x52525B
+                    crate::ui::theme::MUTED
                 })))
         };
         bar = bar.child(
             div()
+                .p_3()
                 .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
+                .flex_col()
+                .gap_3()
+                .border_b_1()
+                .border_color(rgb(crate::ui::theme::BORDER))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .text_size(px(11.0))
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::GIT_BRANCH,
+                            16.0,
+                            crate::ui::theme::PURPLE,
+                        ))
+                        .child(branch_name)
+                        .child(
+                            div()
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                                .bg(rgb(crate::ui::theme::PILL_BG))
+                                .text_size(px(9.0))
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child(sync_pill),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .p(px(6.0))
+                                .rounded_sm()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.create_project(cx);
+                                    }),
+                                )
+                                .child(crate::ui::assets::icon(
+                                    crate::ui::assets::FOLDER_PLUS,
+                                    14.0,
+                                    crate::ui::theme::MUTED,
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .min_h(px(56.0))
+                        .p_2()
+                        .rounded_md()
                         .border_1()
-                        .border_color(rgb(if input_focused { 0x4C9AFF } else { 0x27272A }))
-                        .bg(rgb(0x18181B))
-                        .text_color(rgb(0xE4E4E7))
+                        .border_color(rgb(if input_focused {
+                            crate::ui::theme::BLUE2
+                        } else {
+                            crate::ui::theme::BORDER
+                        }))
+                        .bg(rgb(crate::ui::theme::PILL_BG))
+                        .text_size(px(11.0))
+                        .text_color(rgb(crate::ui::theme::TEXT))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -4440,18 +4998,27 @@ impl WorkspaceView {
                                 cx.notify();
                             }),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .child(input_content),
-                        ),
+                        .child(input_content),
                 )
                 .child(
                     div()
-                        .px_1()
-                        .text_color(rgb(if can_commit { 0x89E051 } else { 0x52525B }))
+                        .h(px(32.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .bg(rgb(if can_commit {
+                            crate::ui::theme::BLUE2
+                        } else {
+                            crate::ui::theme::PANEL2
+                        }))
+                        .text_size(px(11.0))
+                        .text_color(rgb(if can_commit {
+                            0xFFFFFF
+                        } else {
+                            crate::ui::theme::MUTED
+                        }))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -4460,89 +5027,248 @@ impl WorkspaceView {
                                 }
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
-                                view.git_commit_submit(project, cx);
+                                if can_commit {
+                                    view.git_commit_submit(project, cx);
+                                }
                             }),
                         )
-                        .child(git_panel::COMMIT_ICON.to_string()),
+                        .child("Commit"),
                 ),
         );
+        if status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty() {
+            return bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("Working tree clean"),
+            );
+        }
         let selected = self
             .git_panel
             .selected_path(project)
             .map(|path| path.to_path_buf());
-        // Flatten groups in order with a render cap; the footer names it.
-        let mut rows: Vec<(git_panel::GitGroup, &omaterm_core::GitEntry)> = Vec::new();
-        for entry in &status.staged {
-            rows.push((git_panel::GitGroup::Staged, entry));
+        // Two visible groups (mock): Staged Changes, then Changes holding
+        // unstaged + untracked. Backend group identity still drives row
+        // actions and the diff side; untracked rows open the unstaged side
+        // (empty/error states render there, as before).
+        let staged_count = status.staged.len();
+        let changes_count = status.unstaged.len() + status.untracked.len();
+        let staged_entries: Vec<(bool, omaterm_core::GitEntry)> = status
+            .staged
+            .iter()
+            .take(git_panel::MAX_GIT_RENDER_ROWS)
+            .map(|entry| (false, entry.clone()))
+            .collect();
+        let changes_entries: Vec<(bool, omaterm_core::GitEntry)> = status
+            .unstaged
+            .iter()
+            .map(|entry| (false, entry.clone()))
+            .chain(status.untracked.iter().map(|entry| (true, entry.clone())))
+            .take(git_panel::MAX_GIT_RENDER_ROWS)
+            .collect();
+        let capped = staged_count + changes_count > staged_entries.len() + changes_entries.len();
+        bar = bar.child(self.render_change_group(
+            project,
+            true,
+            staged_count,
+            staged_entries,
+            selected.clone(),
+            cx,
+        ));
+        bar = bar.child(self.render_change_group(
+            project,
+            false,
+            changes_count,
+            changes_entries,
+            selected,
+            cx,
+        ));
+        if capped || status.truncated {
+            bar = bar.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("(truncated: bounded change list)"),
+            );
         }
-        for entry in &status.unstaged {
-            rows.push((git_panel::GitGroup::Unstaged, entry));
-        }
-        for entry in &status.untracked {
-            rows.push((git_panel::GitGroup::Untracked, entry));
-        }
-        let total = rows.len();
-        let capped = total > git_panel::MAX_GIT_RENDER_ROWS;
-        let mut last_group: Option<git_panel::GitGroup> = None;
-        for (group, entry) in rows.into_iter().take(git_panel::MAX_GIT_RENDER_ROWS) {
-            if last_group != Some(group) {
-                last_group = Some(group);
-                let (title, count) = match group {
-                    git_panel::GitGroup::Staged => ("Staged", status.staged.len()),
-                    git_panel::GitGroup::Unstaged => ("Unstaged", status.unstaged.len()),
-                    git_panel::GitGroup::Untracked => ("Untracked", status.untracked.len()),
-                };
-                bar = bar.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_color(rgb(0xA1A1AA))
-                        .child(format!("{title} ({count})")),
-                );
-            }
-            let is_selected = selected.as_ref() == Some(&entry.path);
-            let path = entry.path.clone();
-            let label = match &entry.renamed_from {
-                Some(from) => format!(
-                    "{} → {}",
-                    from.to_string_lossy(),
-                    entry.path.to_string_lossy()
-                ),
-                None => entry.path.to_string_lossy().into_owned(),
-            };
-            let mut row = div()
+        // Footer: upstream identity left; the short HEAD hash has no
+        // semantic query yet, so nothing renders on the right (recorded).
+        bar = bar.child(
+            div()
+                .border_t_1()
+                .border_color(rgb(crate::ui::theme::BORDER))
+                .p_3()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .rounded_sm()
-                .bg(rgb(if is_selected { 0x27272A } else { 0x111113 }))
-                .text_color(rgb(if is_selected { 0xFAFAFA } else { 0xA1A1AA }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
+                .text_size(px(10.0))
+                .text_color(rgb(crate::ui::theme::MUTED))
+                .child(
+                    status
+                        .upstream
+                        .clone()
+                        .unwrap_or_else(|| status.branch.clone().unwrap_or_default()),
+                ),
+        );
+        bar
+    }
+
+    /// Per-row Git actions in the reserved 56px slot: staged rows offer
+    /// unstage + terminal-routed open; working-tree rows offer stage +
+    /// discard (trash glyph for untracked paths, undo glyph otherwise).
+    /// Every action dispatches through the shared `GitCommand` path.
+    fn git_row_actions(
+        &mut self,
+        cx: &mut Context<Self>,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        open_path: std::path::PathBuf,
+        staged_group: bool,
+        untracked: bool,
+    ) -> Div {
+        let (first, second) = if staged_group {
+            (
+                (crate::ui::assets::UNSTAGE, GitRowAction::Unstage),
+                (crate::ui::assets::EXTERNAL, GitRowAction::Open),
+            )
+        } else if untracked {
+            (
+                (crate::ui::assets::STAGE, GitRowAction::Stage),
+                (crate::ui::assets::TRASH, GitRowAction::Discard),
+            )
+        } else {
+            (
+                (crate::ui::assets::STAGE, GitRowAction::Stage),
+                (crate::ui::assets::UNDO, GitRowAction::Discard),
+            )
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(self.git_action_button(cx, project, path.clone(), open_path.clone(), first))
+            .child(self.git_action_button(cx, project, path, open_path, second))
+    }
+
+    /// One inspector Git icon button. The glyph → action pair is chosen by
+    /// the caller; dispatch always flows through the shared commands.
+    fn git_action_button(
+        &mut self,
+        cx: &mut Context<Self>,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        open_path: std::path::PathBuf,
+        (asset, run): (&'static str, GitRowAction),
+    ) -> Div {
+        div()
+            .p(px(6.0))
+            .rounded_sm()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    match run {
+                        GitRowAction::Stage => {
+                            view.git_stage_paths(project, vec![path.clone()], cx)
                         }
-                        window.focus(&view.focus_handle);
-                        view.git_select_path(
-                            project,
-                            path.clone(),
-                            group == git_panel::GitGroup::Staged,
-                        );
-                        cx.notify();
-                    }),
-                )
-                .child(div().flex_1().min_w(px(0.0)).truncate().child(label));
-            // Per-group action icons through the dispatcher (VSCode-style:
-            // plus/minus/trash with decorator hues). The path clones
-            // before the listener so the handler owns 'static data.
-            let action = |kind: git_panel::GitAction, path: std::path::PathBuf| {
-                let glyph = kind.icon();
+                        GitRowAction::Unstage => {
+                            view.git_unstage_paths(project, vec![path.clone()], cx)
+                        }
+                        GitRowAction::Discard => view.git_discard_path(project, path.clone(), cx),
+                        GitRowAction::Open => view.open_file_path(project, open_path.clone(), cx),
+                    }
+                }),
+            )
+            .child(crate::ui::assets::icon(
+                asset,
+                14.0,
+                crate::ui::theme::MUTED,
+            ))
+    }
+
+    /// One change-group section: 32px collapsible header (chevron, title,
+    /// count pill, bulk actions) plus 40px rows. `staged_group` selects the
+    /// staged section; `untracked` flags entries inside the working-tree
+    /// section. Row actions reserve a fixed slot so hover state never
+    /// reflows filenames.
+    fn render_change_group(
+        &mut self,
+        project: ProjectId,
+        staged_group: bool,
+        count: usize,
+        entries: Vec<(bool, omaterm_core::GitEntry)>,
+        selected: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let title = if staged_group {
+            "Staged Changes"
+        } else {
+            "Changes"
+        };
+        let collapsed = self.git_panel.is_collapsed(project, staged_group);
+        let mut section = div().flex().flex_col().flex_shrink_0();
+        let mut header = div()
+            .h(px(32.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_2()
+            .gap_1()
+            .text_size(px(10.0))
+            .text_color(rgb(crate::ui::theme::MUTED))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.git_panel.toggle_collapsed(project, staged_group);
+                    cx.notify();
+                }),
+            )
+            .child(
                 div()
-                    .px_1()
+                    .w(px(14.0))
+                    .flex_shrink_0()
+                    .child(crate::ui::assets::icon(
+                        if collapsed {
+                            crate::ui::assets::CHEVRON_RIGHT
+                        } else {
+                            crate::ui::assets::CHEVRON_DOWN
+                        },
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            )
+            .child(title.to_uppercase())
+            .child(
+                div()
+                    .ml(px(8.0))
+                    .px(px(6.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                    .bg(rgb(crate::ui::theme::PILL_BG))
+                    .text_size(px(9.0))
+                    .child(format!("{count}")),
+            )
+            .child(div().flex_1());
+        // Bulk actions: unstage-all on staged, stage-all + discard-all on
+        // working tree. Discard-all keeps the two-step arm.
+        if staged_group {
+            header = header.child(
+                div()
+                    .p(px(6.0))
+                    .rounded_sm()
+                    .text_color(rgb(crate::ui::theme::MUTED))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
@@ -4551,59 +5277,184 @@ impl WorkspaceView {
                             }
                             cx.stop_propagation();
                             window.focus(&view.focus_handle);
-                            match kind {
-                                git_panel::GitAction::Stage => {
-                                    view.git_stage_paths(project, vec![path.clone()], cx)
-                                }
-                                git_panel::GitAction::Unstage => {
-                                    view.git_unstage_paths(project, vec![path.clone()], cx)
-                                }
-                                git_panel::GitAction::Discard => {
-                                    view.git_discard_path(project, path.clone(), cx)
-                                }
-                            }
+                            view.git_unstage_all(project, cx);
                         }),
                     )
-                    .child(glyph.to_string())
+                    .child(crate::ui::assets::icon(
+                        crate::ui::assets::UNSTAGE,
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            );
+        } else {
+            header = header
+                .child(
+                    div()
+                        .p(px(6.0))
+                        .rounded_sm()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_stage_all(project, cx);
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::STAGE,
+                            14.0,
+                            crate::ui::theme::MUTED,
+                        )),
+                )
+                .child(
+                    div()
+                        .p(px(6.0))
+                        .rounded_sm()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_discard_all(project, cx);
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::UNDO,
+                            14.0,
+                            crate::ui::theme::MUTED,
+                        )),
+                );
+        }
+        section = section.child(header);
+        if collapsed {
+            return section;
+        }
+        for (untracked, entry) in entries {
+            let is_selected = selected.as_ref() == Some(&entry.path);
+            let name = entry
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| entry.path.to_string_lossy().into_owned());
+            let dir = entry
+                .path
+                .parent()
+                .map(|parent| parent.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // Status letter from porcelain codes (mock M/A/U/D column).
+            let (mark, mark_color) = if untracked {
+                ("U", crate::ui::theme::GREEN)
+            } else if entry.x == 'A' {
+                ("A", crate::ui::theme::GREEN)
+            } else if entry.x == 'D' || entry.y == 'D' {
+                ("D", crate::ui::theme::RED)
+            } else {
+                ("M", crate::ui::theme::YELLOW)
             };
-            use git_panel::GitAction as Act;
-            match group {
-                git_panel::GitGroup::Staged => {
-                    row = row
-                        .child(action(Act::Unstage, entry.path.clone()))
-                        .child(action(Act::Discard, entry.path.clone()));
-                }
-                git_panel::GitGroup::Unstaged | git_panel::GitGroup::Untracked => {
-                    row = row
-                        .child(action(Act::Stage, entry.path.clone()))
-                        .child(action(Act::Discard, entry.path.clone()));
-                }
-            }
-            bar = bar.child(row);
-        }
-        if capped || status.truncated {
-            bar = bar.child(div().px_2().py_1().text_color(rgb(0x71717A)).child(
-                if status.truncated {
-                    format!("(truncated: showing first {total} bounded entries)")
+            let path = entry.path.clone();
+            let row = div()
+                .h(px(40.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .text_size(px(11.0))
+                .text_color(rgb(if is_selected {
+                    0xFAFAFA
                 } else {
-                    format!(
-                        "(showing first {} of {total})",
-                        git_panel::MAX_GIT_RENDER_ROWS
-                    )
-                },
-            ));
+                    crate::ui::theme::TEXT2
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        window.focus(&view.focus_handle);
+                        view.files_search_focused = false;
+                        view.git_select_path(project, path.clone(), staged_group);
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .min_w(px(0.0))
+                        .child(match files::file_badge(&entry.path) {
+                            Some((text, color)) => div()
+                                .w(px(20.0))
+                                .flex_shrink_0()
+                                .text_size(px(10.0))
+                                .text_color(rgb(color))
+                                .child(text),
+                            None => div()
+                                .w(px(20.0))
+                                .flex_shrink_0()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child("···"),
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex_col()
+                                .min_w(px(0.0))
+                                .child(div().truncate().child(name))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(crate::ui::theme::MUTED))
+                                        .child(dir),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(2.0))
+                        .flex_shrink_0()
+                        .min_w(px(56.0))
+                        .justify_end()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child({
+                            let actions_path = entry.path.clone();
+                            let actions_open = entry.path.clone();
+                            self.git_row_actions(
+                                cx,
+                                project,
+                                actions_path,
+                                actions_open,
+                                staged_group,
+                                untracked,
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .w(px(14.0))
+                        .flex_shrink_0()
+                        .text_size(px(10.0))
+                        .text_color(rgb(mark_color))
+                        .child(mark),
+                );
+            section = section.child(row);
         }
-        // Legend: the icons are conventional, the line guarantees nobody
-        // has to guess. Rendered from the same glyph constants as the
-        // actions so they can never drift apart. The selected change's
-        // diff opens as a preview tab in the main area (M15), not here.
-        bar = bar.child(div().px_2().py_1().text_color(rgb(0x52525B)).child(format!(
-            "{} stage · {} unstage · {} discard · click a row for its diff",
-            git_panel::STAGE_ICON,
-            git_panel::UNSTAGE_ICON,
-            git_panel::DISCARD_ICON,
-        )));
-        bar
+        section
     }
 
     /// Main-area diff preview tab (M15): the selected change's unified
@@ -4654,76 +5505,164 @@ impl WorkspaceView {
                     .child("Select a Git change to view its diff"),
             );
         };
-        // Keep the refresh affordance in Git, adjacent to the selected
-        // change. The diff command runs in the background.
-        let refresh = div()
-            .px_1()
-            .text_color(rgb(0x71717A))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    if view.shutting_down {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    window.focus(&view.focus_handle);
-                    view.diff_dirty_hint = true;
-                    cx.notify();
-                }),
+        // v5 file-action header (40px): filename + staged/working-tree
+        // scope left; whole-file Stage/Unstage, Discard (working tree
+        // only), and Split/Inline toggle right. Stage buttons act on the
+        // whole file through the shared Git path — never per-hunk.
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let scope_label = if staged {
+            "Staged · HEAD ↔ INDEX"
+        } else {
+            "Working Tree · INDEX ↔ WORKING TREE"
+        };
+        let mode = self.diff_panel.diff_mode(project);
+        let stage_path = path.clone();
+        let discard_path = path.clone();
+        let mut actions = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .text_size(px(10.0))
+            .child(
+                div()
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                    .bg(rgb(crate::ui::theme::PILL_BG))
+                    .text_color(rgb(crate::ui::theme::TEXT2))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            if staged {
+                                view.diff_unstage_file(project, stage_path.clone(), cx);
+                            } else {
+                                view.diff_stage_file(project, stage_path.clone(), cx);
+                            }
+                        }),
+                    )
+                    .child(if staged { "Unstage File" } else { "Stage File" }),
+            );
+        if !staged {
+            actions = actions.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded_md()
+                    .text_color(rgb(crate::ui::theme::RED))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.git_discard_path(project, discard_path.clone(), cx);
+                        }),
+                    )
+                    .child("Discard"),
+            );
+        }
+        actions = actions
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .bg(rgb(crate::ui::theme::BORDER)),
             )
-            .child(git_panel::REFRESH_ICON.to_string());
-        let open_path = path.clone();
-        let open = div()
-            .px_1()
-            .text_color(rgb(0x71717A))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    if view.shutting_down {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    window.focus(&view.focus_handle);
-                    view.diff_open_file(project, open_path.clone(), cx);
-                }),
-            )
-            .child("open");
-        let copy_path = path.clone();
-        let copy = div()
-            .px_1()
-            .text_color(rgb(0x71717A))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    if view.shutting_down {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    window.focus(&view.focus_handle);
-                    view.diff_copy_path(project, &copy_path, cx);
-                }),
-            )
-            .child("copy");
+            .child({
+                let pill = |label: &'static str, selected: bool, next: diff_panel::DiffMode| {
+                    div()
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(if selected {
+                            crate::ui::theme::PILL_BORDER
+                        } else {
+                            crate::ui::theme::EDITOR_BG
+                        }))
+                        .bg(rgb(if selected {
+                            crate::ui::theme::PILL_BG
+                        } else {
+                            crate::ui::theme::EDITOR_BG
+                        }))
+                        .text_color(rgb(if selected {
+                            0xFFFFFF
+                        } else {
+                            crate::ui::theme::MUTED
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.diff_panel.set_diff_mode(project, next);
+                                cx.notify();
+                            }),
+                        )
+                        .child(label)
+                };
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(pill(
+                        "Split",
+                        mode == diff_panel::DiffMode::Split,
+                        diff_panel::DiffMode::Split,
+                    ))
+                    .child(pill(
+                        "Inline",
+                        mode == diff_panel::DiffMode::Inline,
+                        diff_panel::DiffMode::Inline,
+                    ))
+            });
         bar = bar.child(
             div()
+                .h(px(40.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .justify_between()
-                .px_2()
-                .py_1()
-                .text_color(rgb(0xA1A1AA))
-                .child(format!("Diff · {}", path.to_string_lossy()))
+                .flex_shrink_0()
+                .gap_2()
+                .px_3()
+                .border_b_1()
+                .border_color(rgb(crate::ui::theme::BORDER))
+                .bg(rgb(crate::ui::theme::PANEL))
+                .child(crate::ui::assets::icon(
+                    crate::ui::assets::GIT_COMPARE,
+                    16.0,
+                    crate::ui::theme::GREEN,
+                ))
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .child(open)
-                        .child(copy)
-                        .child(refresh),
-                ),
+                        .text_size(px(12.0))
+                        .text_color(rgb(crate::ui::theme::TEXT))
+                        .child(file_name),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(scope_label),
+                )
+                .child(div().flex_1())
+                .child(actions),
         );
         // Explicit empty/error states (never a spinner forever). Details
         // are bounded; diff bodies and stderr never enter logs.
@@ -4808,15 +5747,12 @@ impl WorkspaceView {
                 .skip(offset)
                 .take(diff_panel::MAX_DIFF_PREVIEW_HUNKS)
                 .count();
-            bar = bar.child(div().px_2().py_1().text_color(rgb(0xA1A1AA)).child(format!(
-                "{} ({}/{}; hunks {}–{} of {})",
-                file.path.to_string_lossy(),
-                if count == 0 { 0 } else { cursor + 1 },
-                file.hunk_count,
-                if count == 0 { 0 } else { offset + 1 },
-                offset + shown,
-                file.hunk_count,
-            )));
+            // Slim position line: file progress plus the file actions that
+            // the v5 file header omits (open/copy/refresh) and hunk nav.
+            // Per-hunk stage buttons are intentionally gone: staging acts
+            // on the whole file from the header, so a per-hunk affordance
+            // would misrepresent its scope (true partial-hunk staging is a
+            // recorded M15 gap).
             let nav = |label: &'static str, next: bool| {
                 div()
                     .px_2()
@@ -4840,44 +5776,28 @@ impl WorkspaceView {
                     )
                     .child(label)
             };
+            let open_hunk_path = path.clone();
+            let copy_hunk_path = path.clone();
             bar = bar.child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_1()
-                    .child(nav("‹ prev", false))
-                    .child(nav("next ›", true)),
-            );
-            for (index, hunk) in file
-                .hunks
-                .iter()
-                .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
-                .enumerate()
-                .skip(offset)
-                .take(diff_panel::MAX_DIFF_PREVIEW_HUNKS)
-            {
-                let current = index == cursor;
-                let heading = format!(
-                    "@@ -{},{} +{},{} @@{}",
-                    hunk.old_start,
-                    hunk.old_lines,
-                    hunk.new_start,
-                    hunk.new_lines,
-                    if current { " ◀" } else { "" },
-                );
-                let mut hunk_header = div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
                     .px_2()
                     .py_1()
-                    .text_color(rgb(0x71717A))
-                    .child(heading);
-                if !staged {
-                    let stage_path = path.clone();
-                    hunk_header = hunk_header.child(
+                    .text_size(px(10.0))
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .child(format!(
+                        "hunks {}–{} of {}",
+                        if count == 0 { 0 } else { offset + 1 },
+                        offset + shown,
+                        file.hunk_count,
+                    ))
+                    .child(nav("‹ prev", false))
+                    .child(nav("next ›", true))
+                    .child(div().flex_1())
+                    .child(
                         div()
                             .px_1()
                             .on_mouse_down(
@@ -4888,25 +5808,146 @@ impl WorkspaceView {
                                     }
                                     cx.stop_propagation();
                                     window.focus(&view.focus_handle);
-                                    view.diff_stage_file(project, stage_path.clone(), cx);
+                                    view.diff_open_file(project, open_hunk_path.clone(), cx);
                                 }),
                             )
-                            .child(git_panel::STAGE_ICON.to_string()),
-                    );
-                }
-                bar = bar.child(hunk_header);
-                for line in hunk.lines.iter().take(diff_panel::MAX_DIFF_RENDER_LINES) {
-                    let (marker, color) = match line.kind {
-                        omaterm_core::DiffLineKind::Addition => ("+", 0x89E051),
-                        omaterm_core::DiffLineKind::Deletion => ("-", 0xE06C75),
-                        omaterm_core::DiffLineKind::Context => (" ", 0xA1A1AA),
-                    };
-                    bar = bar.child(
+                            .child("open"),
+                    )
+                    .child(
                         div()
-                            .px_2()
-                            .text_color(rgb(color))
-                            .child(format!("{marker}{}", line.text)),
-                    );
+                            .px_1()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.diff_copy_path(project, &copy_hunk_path, cx);
+                                }),
+                            )
+                            .child("copy"),
+                    )
+                    .child(
+                        div()
+                            .px_1()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.diff_dirty_hint = true;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(crate::ui::assets::icon(
+                                crate::ui::assets::REFRESH,
+                                14.0,
+                                crate::ui::theme::MUTED,
+                            )),
+                    ),
+            );
+            let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
+            let mode = self.diff_panel.diff_mode(project);
+            // Split side headers identify the compared revisions once per
+            // file (mock): staged HEAD↔INDEX, working tree INDEX↔WORKTREE.
+            if mode == diff_panel::DiffMode::Split {
+                let (left_rev, right_rev) = if staged {
+                    ("HEAD", "INDEX")
+                } else {
+                    ("INDEX", "WORKING TREE")
+                };
+                let side_header = |rev: &str| {
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .h(px(28.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .px_3()
+                        .border_b_1()
+                        .border_color(rgb(crate::ui::theme::BORDER))
+                        .bg(rgb(crate::ui::theme::EDITOR_SIDE_HEADER_BG))
+                        .text_size(px(10.0))
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(format!(
+                            "{rev} · {}",
+                            file.path.to_string_lossy().rsplit('/').next().unwrap_or("")
+                        ))
+                };
+                bar = bar.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .child(side_header(left_rev))
+                        .child(
+                            div()
+                                .w(px(1.0))
+                                .flex_shrink_0()
+                                .bg(rgb(crate::ui::theme::BORDER)),
+                        )
+                        .child(side_header(right_rev)),
+                );
+            }
+            for (index, hunk) in file
+                .hunks
+                .iter()
+                .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
+                .enumerate()
+                .skip(offset)
+                .take(diff_panel::MAX_DIFF_PREVIEW_HUNKS)
+            {
+                let current = index == cursor;
+                let rows: Vec<diff_panel::AlignedRow> = diff_panel::align_hunk(hunk)
+                    .into_iter()
+                    .take(diff_panel::MAX_DIFF_RENDER_LINES)
+                    .collect();
+                bar = bar.child(
+                    div()
+                        .px_2()
+                        .py(px(2.0))
+                        .text_size(px(10.0))
+                        .text_color(rgb(if current {
+                            crate::ui::theme::TEXT2
+                        } else {
+                            crate::ui::theme::MUTED
+                        }))
+                        .child(format!(
+                            "@@ -{},{} +{},{} @@{}",
+                            hunk.old_start,
+                            hunk.old_lines,
+                            hunk.new_start,
+                            hunk.new_lines,
+                            if current { " ◀" } else { "" },
+                        )),
+                );
+                if mode == diff_panel::DiffMode::Split {
+                    for row in &rows {
+                        bar = bar.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .flex_shrink_0()
+                                .child(split_cell(row, true, &mono))
+                                .child(
+                                    div()
+                                        .w(px(1.0))
+                                        .flex_shrink_0()
+                                        .bg(rgb(crate::ui::theme::BORDER)),
+                                )
+                                .child(split_cell(row, false, &mono)),
+                        );
+                    }
+                } else {
+                    for row in &rows {
+                        bar = bar.child(inline_row(row, &mono));
+                    }
                 }
                 if hunk.truncated || hunk.lines.len() > diff_panel::MAX_DIFF_RENDER_LINES {
                     bar = bar.child(
@@ -4934,158 +5975,800 @@ impl WorkspaceView {
                 .py_1()
                 .text_color(rgb(0x52525B))
                 .child(if staged {
-                    "Open/copy path · Alt+N/P hunk · wheel scrolls hunks"
+                    "Unstage acts on the whole file · open/copy path · Alt+N/P hunk · wheel scrolls hunks"
                 } else {
-                    "Stage hunk · open/copy path · Alt+N/P hunk · wheel scrolls hunks"
+                    "Stage acts on the whole file · open/copy path · Alt+N/P hunk · wheel scrolls hunks"
                 }),
         );
         bar
     }
 
-    /// Switch the contextual sidebar to `tab`, revealing it. Clicking the
-    /// already-active activity icon toggles collapse instead (VSCode
-    /// activity-rail behavior). Shared by pointer and `Ctrl+Shift+E/G`.
-    fn set_activity(&mut self, tab: SidebarTab, cx: &mut Context<Self>) {
-        let pressed_active = self.sidebar_tab == tab && !self.sidebar_collapsed;
-        self.sidebar_tab = tab;
-        self.sidebar_collapsed =
-            workbench::activity_press_collapsed(self.sidebar_collapsed, pressed_active);
+    /// Select an inspector tab, revealing the inspector. Shared by pointer
+    /// and `Ctrl+Shift+E/G/I`.
+    fn select_inspector_tab(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
+        self.inspector_tab = tab;
+        self.inspector_visible = true;
         self.git_panel.set_commit_focused(false);
+        self.files_search_focused = false;
         self.files_vdrag = None;
         self.files_hdrag = None;
-        self.sidebar_resize = None;
         cx.notify();
     }
 
-    /// Command/title row (VSCode title-bar role, not an OS control): app +
-    /// project identity left, a centered palette affordance opening the
-    /// `Ctrl+P` finder, and a sidebar toggle right. Native window controls
-    /// stay the compositor's job — no fake traffic lights on Linux.
-    fn render_title_bar(&mut self, cx: &mut Context<Self>) -> Div {
-        let project_name = self
-            .coordinator
-            .active_project()
-            .map(|project| {
-                let index = self
-                    .coordinator
-                    .projects()
+    /// Whether a project's dot reads live: green when at least one of its
+    /// tab panes still owns a registry session, muted otherwise.
+    fn project_is_live(&self, panes: &[Pane]) -> bool {
+        panes.iter().any(|pane| match pane.content {
+            PaneContent::Terminal(session) => self.coordinator.registry().contains(session),
+            PaneContent::Empty => false,
+        })
+    }
+
+    /// Branch name plus dirty flag for a project, from the last-good Git
+    /// status. `None` outside a repo so callers omit git rather than
+    /// inventing metadata.
+    fn branch_for(&self, project: ProjectId) -> Option<(String, bool)> {
+        let status = self.git_panel.status_for(project)?;
+        let dirty = !(status.staged.is_empty()
+            && status.unstaged.is_empty()
+            && status.untracked.is_empty());
+        status.branch.clone().map(|branch| (branch, dirty))
+    }
+
+    /// Pane count plus attention flag for a tab: attention when any pane
+    /// holds a restore failure or the global spawn failure is set.
+    fn tab_health(&self, tab: &omaterm_core::Tab) -> (usize, bool) {
+        let panes = tab.tree.panes();
+        let attention = self.spawn_failure.is_some()
+            || panes
+                .iter()
+                .any(|pane| self.restored_failures.contains_key(&pane.id));
+        (panes.len(), attention)
+    }
+
+    /// Display path for a project card: pinned directory with `$HOME`
+    /// shortened to `~`, else an explicit empty state.
+    fn project_path_label(&self, project: &omaterm_core::Project) -> String {
+        if let Some(dir) = project.pinned_directory.as_deref() {
+            let text = dir.to_string_lossy().into_owned();
+            if let Ok(home) = std::env::var("HOME")
+                && let Some(rest) = text.strip_prefix(&home)
+            {
+                return format!("~{rest}");
+            }
+            text
+        } else {
+            "no root".to_string()
+        }
+    }
+
+    /// UI v5 Projects sidebar: 42px header (hide control, label, open
+    /// action), project cards, bottom Open Project button. All actions go
+    /// through the dispatcher; collapse only hides the panel.
+    fn render_projects_sidebar(&mut self, cx: &mut Context<Self>) -> Div {
+        let mut cards: Vec<Div> = Vec::new();
+        let selected = self.coordinator.selected_project_id();
+        let mut label_counts = HashMap::<String, usize>::new();
+        for (index, project) in self.coordinator.projects().iter().enumerate() {
+            let id = project.id;
+            let base_name = project.display_name(index + 1);
+            let occurrence = label_counts.entry(base_name.clone()).or_default();
+            *occurrence += 1;
+            let name = if *occurrence == 1 {
+                base_name
+            } else {
+                format!("{base_name} {}", *occurrence)
+            };
+            let live = self.project_is_live(
+                &project
+                    .tabs
                     .iter()
-                    .position(|p| p.id == project.id)
-                    .unwrap_or(0);
-                project.display_name(index + 1)
-            })
-            .unwrap_or_else(|| "No project".to_string());
-        div()
-            .h(px(workbench::TITLE_HEIGHT))
-            .flex()
-            .flex_row()
-            .items_center()
-            .px_3()
-            .gap_3()
-            .bg(rgb(workbench::WINDOW_BG))
-            .border_b_1()
-            .border_color(rgb(workbench::BORDER))
-            .text_color(rgb(workbench::MUTED))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(div().text_color(rgb(workbench::TEXT)).child("OmaTerm"))
-                    .child(div().child("—"))
-                    .child(div().child(project_name)),
-            )
-            .child(
-                div().flex_1().flex().flex_row().justify_center().child(
+                    .flat_map(|tab| tab.tree.panes().into_iter().cloned())
+                    .collect::<Vec<_>>(),
+            );
+            let branch = self.branch_for(id).map(
+                |(branch, dirty)| {
+                    if dirty { format!("{branch}*") } else { branch }
+                },
+            );
+            let path = self.project_path_label(project);
+            let active = selected == Some(id);
+            let close_id = id;
+            let pick_id = id;
+            let label = if self.show_project_hints && index < 9 {
+                format!("{} · {name}", index + 1)
+            } else {
+                name
+            };
+            let dot_color = if live {
+                crate::ui::theme::GREEN
+            } else {
+                crate::ui::theme::MUTED2
+            };
+            let mut card = div()
+                .w_full()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(if active {
+                    crate::ui::theme::BORDER2
+                } else {
+                    crate::ui::theme::BG
+                }))
+                .bg(rgb(if active {
+                    crate::ui::theme::SELECTED_PROJECT_BG
+                } else {
+                    crate::ui::theme::PANEL
+                }))
+                .px(px(10.0))
+                .py(px(10.0))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        window.focus(&view.focus_handle);
+                        let _ = view.dispatch_command(
+                            OmaCommand::Project(ProjectCommand::Select { project: id }),
+                            cx,
+                        );
+                    }),
+                )
+                .child(
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap_2()
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgb(workbench::BORDER))
-                        .bg(rgb(workbench::INPUT_BG))
-                        .text_color(rgb(workbench::TEXT))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                window.focus(&view.focus_handle);
-                                view.toggle_ctrlp(cx);
-                            }),
+                        .child(
+                            div()
+                                .w(px(8.0))
+                                .h(px(8.0))
+                                .rounded_full()
+                                .bg(rgb(dot_color)),
                         )
-                        .child(files::SEARCH_ICON.to_string())
-                        .child("Search files (Ctrl+P)"),
-                ),
+                        .child(div().flex_1().truncate().child(label))
+                        .child(
+                            div()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child(branch.unwrap_or_default()),
+                        ),
+                )
+                .child(
+                    div()
+                        .pl(px(16.0))
+                        .pt(px(4.0))
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .truncate()
+                        .child(path),
+                );
+            // The selected card keeps its directory-change and close
+            // actions; inactive cards stay clean like the reference.
+            if active {
+                card = card.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .pl(px(16.0))
+                        .pt(px(4.0))
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(
+                            div()
+                                .px_1()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.pick_project_directory(pick_id, cx);
+                                    }),
+                                )
+                                .child("change"),
+                        )
+                        .child(
+                            div()
+                                .px_1()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.close_project(close_id, cx);
+                                    }),
+                                )
+                                .child("×"),
+                        ),
+                );
+            }
+            cards.push(card);
+        }
+        div()
+            .w(px(crate::ui::geometry::clamp_projects_width(
+                self.projects_width,
+            )))
+            .h_full()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .bg(rgb(crate::ui::theme::PANEL))
+            .border_r_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .child(
+                div()
+                    .h(px(crate::ui::geometry::HEADER_H))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px_2()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(rgb(crate::ui::theme::BORDER))
+                    .child(
+                        div()
+                            .p(px(6.0))
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(rgb(crate::ui::theme::BORDER2))
+                            .bg(rgb(crate::ui::theme::SELECTED_PROJECT_BG))
+                            .text_color(rgb(0xFFFFFF))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.projects_visible = false;
+                                    view.projects_resize = None;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(crate::ui::assets::icon(
+                                crate::ui::assets::PANEL_LEFT_CLOSE,
+                                16.0,
+                                0xFFFFFF,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child("PROJECTS"),
+                    )
+                    .child(
+                        div().flex_1().flex().flex_row().justify_end().child(
+                            div()
+                                .p(px(6.0))
+                                .rounded_sm()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.create_project(cx);
+                                    }),
+                                )
+                                .child("+"),
+                        ),
+                    ),
             )
             .child(
                 div()
-                    .px_2()
-                    .py_1()
+                    .flex()
+                    .flex_1()
+                    .flex_col()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .p_2()
+                    .gap_1()
+                    .children(cards),
+            )
+            .child(
+                div()
+                    .p_2()
+                    .border_t_1()
+                    .border_color(rgb(crate::ui::theme::BORDER))
+                    .child(
+                        div()
+                            .h(px(32.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .px_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(crate::ui::theme::BORDER2))
+                            .text_color(rgb(crate::ui::theme::TEXT2))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.create_project(cx);
+                                }),
+                            )
+                            .child(crate::ui::assets::icon(
+                                crate::ui::assets::FOLDER_PLUS,
+                                14.0,
+                                crate::ui::theme::TEXT2,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .child("Open Project"),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(rgb(0x313B48))
+                                    .bg(rgb(0x161B22))
+                                    .text_color(rgb(crate::ui::theme::MUTED))
+                                    .child("Ctrl+Shift+P"),
+                            ),
+                    ),
+            )
+    }
+
+    /// 4px Projects resizer: transparent at rest, highlighted while the
+    /// pointer drags. Pointer capture ends on release anywhere.
+    fn render_projects_resizer(&mut self, cx: &mut Context<Self>) -> Div {
+        let dragging = self.projects_resize.is_some();
+        div()
+            .w(px(crate::ui::geometry::RESIZER))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(if dragging {
+                crate::ui::theme::BLUE2
+            } else {
+                crate::ui::theme::BG
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    view.projects_resize = Some(f32::from(event.position.x));
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                let Some(last_x) = view.projects_resize else {
+                    return;
+                };
+                if view.shutting_down {
+                    view.projects_resize = None;
+                    return;
+                }
+                let x = f32::from(event.position.x);
+                view.projects_width =
+                    crate::ui::geometry::clamp_projects_width(view.projects_width + (x - last_x));
+                view.projects_resize = Some(x);
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    view.projects_resize = None;
+                    cx.notify();
+                }),
+            )
+    }
+
+    /// 4px Inspector resizer: mirrored drag math (the panel grows leftward).
+    fn render_inspector_resizer(&mut self, cx: &mut Context<Self>) -> Div {
+        let dragging = self.inspector_resize.is_some();
+        div()
+            .w(px(crate::ui::geometry::RESIZER))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(if dragging {
+                crate::ui::theme::BLUE2
+            } else {
+                crate::ui::theme::BG
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    view.inspector_resize = Some(f32::from(event.position.x));
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                let Some(last_x) = view.inspector_resize else {
+                    return;
+                };
+                if view.shutting_down {
+                    view.inspector_resize = None;
+                    return;
+                }
+                let x = f32::from(event.position.x);
+                view.inspector_width =
+                    crate::ui::geometry::clamp_inspector_width(view.inspector_width + (last_x - x));
+                view.inspector_resize = Some(x);
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    view.inspector_resize = None;
+                    cx.notify();
+                }),
+            )
+    }
+
+    /// UI v5 header row (42px): reveal-projects control when hidden, the
+    /// terminal tab strip, new-tab control, then search and inspector
+    /// toggle pinned right. Exactly one visible surface is active.
+    fn render_header(&mut self, cx: &mut Context<Self>) -> Div {
+        let mut row = div()
+            .h(px(crate::ui::geometry::HEADER_H))
+            .flex()
+            .flex_row()
+            .items_center()
+            .bg(rgb(crate::ui::theme::HEADER_BG))
+            .border_b_1()
+            .border_color(rgb(crate::ui::theme::BORDER));
+        if !self.projects_visible {
+            row = row.child(
+                div()
+                    .ml(px(8.0))
+                    .mr(px(4.0))
+                    .p(px(6.0))
                     .rounded_sm()
-                    .text_color(rgb(workbench::MUTED))
+                    .text_color(rgb(crate::ui::theme::MUTED))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| {
                             if view.shutting_down {
                                 return;
                             }
+                            cx.stop_propagation();
                             window.focus(&view.focus_handle);
-                            view.sidebar_collapsed = !view.sidebar_collapsed;
+                            view.projects_visible = true;
                             cx.notify();
                         }),
                     )
-                    .child("«"),
-            )
+                    .child(crate::ui::assets::icon(
+                        crate::ui::assets::PANEL_LEFT,
+                        16.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            );
+        }
+        let mut tabs = div()
+            .flex()
+            .flex_1()
+            .flex_row()
+            .items_end()
+            .min_w(px(0.0))
+            .h_full()
+            .px_1()
+            .gap_1()
+            .overflow_hidden();
+        if let Some(project) = self.coordinator.active_project() {
+            for (index, tab) in project.tabs.iter().enumerate() {
+                let project_id = project.id;
+                let tab_id = tab.id;
+                let active = project.selected_tab == Some(tab_id);
+                let (pane_count, attention) = self.tab_health(tab);
+                let dot = if attention {
+                    crate::ui::theme::YELLOW
+                } else {
+                    crate::ui::theme::GREEN
+                };
+                let mut chip = div()
+                    .flex()
+                    .flex_row()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h(px(36.0))
+                    .rounded_t_md()
+                    .bg(rgb(if active {
+                        crate::ui::theme::ACTIVE_TAB_BG
+                    } else {
+                        crate::ui::theme::PANEL
+                    }))
+                    .text_color(rgb(if active {
+                        0xFFFFFF
+                    } else {
+                        crate::ui::theme::TEXT2
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            window.focus(&view.focus_handle);
+                            view.diff_panel.close_preview(project_id);
+                            let _ = view.dispatch_command(
+                                OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
+                                cx,
+                            );
+                        }),
+                    )
+                    .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
+                    .child(tab.display_name(index + 1));
+                if active {
+                    chip = chip
+                        .border_t_2()
+                        .border_color(rgb(crate::ui::theme::BLUE))
+                        .child(
+                            div()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child(format!("{pane_count} panes")),
+                        );
+                }
+                let close_project = project_id;
+                let close_tab = tab_id;
+                chip = chip.child(
+                    div()
+                        .px_1()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.close_tab(close_project, close_tab, cx);
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::CLOSE,
+                            14.0,
+                            crate::ui::theme::MUTED,
+                        )),
+                );
+                tabs = tabs.child(chip);
+            }
+            tabs = tabs.child(
+                div()
+                    .w(px(32.0))
+                    .h(px(32.0))
+                    .mb(px(2.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            if let Some(project) = view.coordinator.selected_project_id() {
+                                view.diff_panel.close_preview(project);
+                            }
+                            view.create_tab(cx);
+                        }),
+                    )
+                    .child(crate::ui::assets::icon(
+                        crate::ui::assets::PLUS,
+                        16.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            );
+            // M15 diff preview chip: view-local, visually distinct from
+            // terminal tabs. Selecting a terminal tab or closing the chip
+            // returns to the terminal surface.
+            if self.diff_panel.preview_open(project.id)
+                && let Some(path) = self.diff_panel.selected_file(project.id).cloned()
+            {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                let preview_id = project.id;
+                tabs = tabs.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .h(px(36.0))
+                        .rounded_t_md()
+                        .border_t_2()
+                        .border_color(rgb(crate::ui::theme::BLUE))
+                        .bg(rgb(crate::ui::theme::ACTIVE_TAB_BG))
+                        .text_color(rgb(0xFFFFFF))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                window.focus(&view.focus_handle);
+                                cx.notify();
+                            }),
+                        )
+                        .child(format!("Diff: {name}"))
+                        .child(
+                            div()
+                                .px_1()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.diff_panel.close_preview(preview_id);
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(crate::ui::assets::icon(
+                                    crate::ui::assets::CLOSE,
+                                    14.0,
+                                    crate::ui::theme::MUTED,
+                                )),
+                        ),
+                );
+            }
+        } else {
+            tabs = tabs.child(
+                div()
+                    .px_3()
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .child("No project selected"),
+            );
+        }
+        row = row.child(tabs);
+        row.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .p(px(6.0))
+                        .rounded_sm()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.toggle_ctrlp(cx);
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::SEARCH,
+                            16.0,
+                            crate::ui::theme::MUTED,
+                        )),
+                )
+                .child({
+                    let visible = self.inspector_visible;
+                    div()
+                        .p(px(6.0))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(rgb(if visible {
+                            crate::ui::theme::BORDER2
+                        } else {
+                            crate::ui::theme::HEADER_BG
+                        }))
+                        .bg(rgb(if visible {
+                            crate::ui::theme::SELECTED_PROJECT_BG
+                        } else {
+                            crate::ui::theme::HEADER_BG
+                        }))
+                        .text_color(rgb(if visible {
+                            0xFFFFFF
+                        } else {
+                            crate::ui::theme::MUTED
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.inspector_visible = !view.inspector_visible;
+                                view.inspector_resize = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::PANEL_RIGHT,
+                            16.0,
+                            if visible {
+                                0xFFFFFF
+                            } else {
+                                crate::ui::theme::MUTED
+                            },
+                        ))
+                }),
+        )
     }
 
-    /// 48px activity rail: Explorer and Source Control only. Later panels
-    /// arrive with their milestones — never as dead icons. The Source
-    /// Control icon carries the selected project's change-count badge.
-    fn render_activity_rail(&mut self, cx: &mut Context<Self>) -> Div {
-        let badge = self
+    /// Right inspector: 40px Info/Files/Git tab row plus the selected body.
+    /// Switching tabs never disturbs the center surface or panel geometry.
+    fn render_inspector(&mut self, viewport_h: f32, cx: &mut Context<Self>) -> Div {
+        let git_count = self
             .coordinator
             .selected_project_id()
             .and_then(|project| self.git_panel.status_for(project))
-            .and_then(|status| {
-                workbench::change_badge(
-                    status.staged.len(),
-                    status.unstaged.len(),
-                    status.untracked.len(),
-                )
-            });
-        let mut rail = div()
-            .w(px(workbench::ACTIVITY_WIDTH))
-            .h_full()
+            .map(|status| status.staged.len() + status.unstaged.len() + status.untracked.len())
+            .unwrap_or(0);
+        let mut tabs = div()
+            .h(px(40.0))
             .flex()
-            .flex_col()
-            .items_center()
-            .py_1()
-            .bg(rgb(workbench::WINDOW_BG))
-            .border_r_1()
-            .border_color(rgb(workbench::BORDER));
-        for (tab, glyph) in [
-            (SidebarTab::Files, workbench::EXPLORER_ICON),
-            (SidebarTab::Git, workbench::SOURCE_ICON),
+            .flex_row()
+            .items_end()
+            .px_1()
+            .border_b_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .flex_shrink_0();
+        for (tab, label, glyph) in [
+            (InspectorTab::Info, "Info", crate::ui::assets::INFO),
+            (InspectorTab::Files, "Files", crate::ui::assets::FOLDER),
+            (InspectorTab::Git, "Git", crate::ui::assets::GIT_BRANCH),
         ] {
-            let active = self.sidebar_tab == tab && !self.sidebar_collapsed;
+            let active = self.inspector_tab == tab;
+            let glyph_color = if active {
+                0xFFFFFF
+            } else {
+                crate::ui::theme::MUTED
+            };
             let mut button = div()
-                .w(px(workbench::ACTIVITY_WIDTH))
-                .h(px(workbench::ACTIVITY_WIDTH))
+                .h_full()
                 .flex()
+                .flex_row()
                 .items_center()
-                .justify_center()
+                .gap(px(6.0))
+                .px_3()
                 .relative()
                 .text_color(rgb(if active {
-                    workbench::TEXT_BRIGHT
+                    0xFFFFFF
                 } else {
-                    0x858585
+                    crate::ui::theme::MUTED
                 }))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -5095,178 +6778,296 @@ impl WorkspaceView {
                         }
                         cx.stop_propagation();
                         window.focus(&view.focus_handle);
-                        view.set_activity(tab, cx);
+                        view.select_inspector_tab(tab, cx);
                     }),
                 )
-                .child(div().child(glyph.to_string()));
+                .child(crate::ui::assets::icon(glyph, 14.0, glyph_color))
+                .child(label);
             if active {
                 button = button.child(
                     div()
                         .absolute()
-                        .left(px(0.0))
-                        .top(px(8.0))
-                        .bottom(px(8.0))
-                        .w(px(2.0))
-                        .bg(rgb(workbench::TEXT_BRIGHT)),
+                        .left(px(9.0))
+                        .right(px(9.0))
+                        .bottom(px(0.0))
+                        .h(px(2.0))
+                        .rounded_full()
+                        .bg(rgb(crate::ui::theme::BLUE)),
                 );
             }
-            if tab == SidebarTab::Git
-                && let Some(count) = badge.clone()
-            {
+            if tab == InspectorTab::Git && git_count > 0 {
                 button = button.child(
                     div()
-                        .absolute()
-                        .right(px(4.0))
-                        .top(px(4.0))
-                        .px_1()
+                        .ml(px(4.0))
+                        .px(px(6.0))
                         .rounded_full()
-                        .bg(rgb(workbench::ACCENT))
-                        .text_color(rgb(workbench::TEXT_BRIGHT))
-                        .child(count),
+                        .bg(rgb(crate::ui::theme::GIT_BADGE_BG))
+                        .child(format!("{git_count}")),
                 );
             }
-            rail = rail.child(button);
+            tabs = tabs.child(button);
         }
-        rail
-    }
-
-    /// Uppercase section header for the contextual sidebar with a collapse
-    /// affordance. Keyboard equivalent: `Ctrl+B`.
-    fn render_sidebar_header(&mut self, title: &str, cx: &mut Context<Self>) -> Div {
-        div()
-            .h(px(workbench::TITLE_HEIGHT))
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .px_4()
-            .text_color(rgb(0xBBBBBB))
-            .child(div().child(title.to_uppercase()))
-            .child(
-                div()
-                    .px_1()
-                    .text_color(rgb(workbench::MUTED))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            view.sidebar_collapsed = true;
-                            cx.notify();
-                        }),
-                    )
-                    .child("«"),
-            )
-    }
-
-    /// 3px sidebar resizer between the contextual sidebar and the main
-    /// surface (VSCode split-handle role). Press-and-slide tracks pointer x
-    /// like the tree scrollbars; the width clamps every render and keyboard
-    /// resize stays available via `Ctrl+B` collapse.
-    fn render_sidebar_resizer(&mut self, cx: &mut Context<Self>) -> Div {
-        div()
-            .w(px(3.0))
+        let mut panel = div()
+            .w(px(crate::ui::geometry::clamp_inspector_width(
+                self.inspector_width,
+            )))
             .h_full()
-            .flex_shrink_0()
-            .bg(rgb(workbench::BORDER))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|view, event: &MouseDownEvent, _, cx| {
-                    if view.shutting_down {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    view.sidebar_resize = Some(f32::from(event.position.x));
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
-                let Some(last_x) = view.sidebar_resize else {
-                    return;
-                };
-                if view.shutting_down {
-                    view.sidebar_resize = None;
-                    return;
-                }
-                let x = f32::from(event.position.x);
-                view.sidebar_width =
-                    workbench::clamp_sidebar_width(view.sidebar_width + (x - last_x));
-                view.sidebar_resize = Some(x);
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|view, _, _, cx| {
-                    view.sidebar_resize = None;
-                    cx.notify();
-                }),
-            )
-    }
-
-    /// Context row under the tab strip. Terminal tabs show
-    /// `project › tab`; a diff preview shows its file, side, and hunk
-    /// position. Never an editor breadcrumb — OmaTerm tabs are terminals.
-    fn render_context_row(&mut self, _cx: &mut Context<Self>) -> Div {
-        let mut row = div()
-            .h(px(workbench::CONTEXT_HEIGHT))
             .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_4()
-            .bg(rgb(workbench::SURFACE_BG))
-            .border_b_1()
-            .border_color(rgb(0x252525))
-            .text_color(rgb(0x9B9B9B));
-        if let Some(project_id) = self.coordinator.selected_project_id()
-            && self.diff_panel.preview_open(project_id)
-            && let Some(path) = self.diff_panel.selected_file(project_id).cloned()
-        {
-            let staged = self.diff_panel.show_staged(project_id);
-            let hunk = self.diff_panel.selected_hunk(project_id);
-            let total = self.diff_panel.hunk_count_for(project_id);
-            row = row
-                .child(div().child(path.to_string_lossy().into_owned()))
-                .child(div().text_color(rgb(0x6E7681)).child("·"))
-                .child(div().child(if staged { "Staged" } else { "Working tree" }));
-            if total > 0 {
-                row = row
-                    .child(div().text_color(rgb(0x6E7681)).child("·"))
-                    .child(div().child(format!("hunk {} of {total}", hunk + 1)));
-            }
-            return row;
-        }
-        if let Some(project) = self.coordinator.active_project() {
-            let index = self
-                .coordinator
-                .projects()
-                .iter()
-                .position(|p| p.id == project.id)
-                .unwrap_or(0);
-            let project_name = project.display_name(index + 1);
-            let tab_name = project
-                .tabs
-                .iter()
-                .position(|tab| Some(tab.id) == project.selected_tab)
-                .map(|tab_index| project.tabs[tab_index].display_name(tab_index + 1))
-                .unwrap_or_else(|| "no tab".to_string());
-            row = row
-                .child(div().child(project_name))
-                .child(div().text_color(rgb(0x6E7681)).child("›"))
-                .child(div().text_color(rgb(0xC7C7C7)).child(tab_name));
-        } else {
-            row = row.child(div().child("No project selected"));
-        }
-        row
+            .flex_col()
+            .flex_shrink_0()
+            .bg(rgb(crate::ui::theme::PANEL))
+            .border_l_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .child(tabs);
+        panel = match self.inspector_tab {
+            InspectorTab::Info => panel.child(self.render_inspector_info()),
+            InspectorTab::Files => panel.child(self.render_inspector_files(viewport_h, cx)),
+            InspectorTab::Git => panel
+                .child(self.render_git_panel(div().flex().flex_col().flex_1().min_h(px(0.0)), cx)),
+        };
+        panel
     }
 
-    /// 22px status bar. Left: selected project's branch + change summary
-    /// (omitted entirely outside a repo). Right: history state and terminal
-    /// font size — both real, both already in the app. Unavailable values
-    /// are omitted, never fabricated.
+    /// Inspector Files body: search box plus the existing tree, with the
+    /// row-step wheel handler attached to the scroll container.
+    fn render_inspector_files(&mut self, viewport_h: f32, cx: &mut Context<Self>) -> Div {
+        // Real filter input over the cached rows (file-name substring).
+        // Clicking focuses the box; typing filters, Enter opens the first
+        // match, Esc clears and releases. Ctrl+P stays the fuzzy path.
+        let query = self.files_search.clone();
+        let search_focused = self.files_search_focused;
+        let mut body = div().flex().flex_col().flex_1().min_h(px(0.0)).child(
+            div()
+                .p_2()
+                .border_b_1()
+                .border_color(rgb(crate::ui::theme::BORDER))
+                .child(
+                    div()
+                        .h(px(32.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .px_2()
+                        .gap_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(if search_focused {
+                            crate::ui::theme::BLUE2
+                        } else {
+                            crate::ui::theme::BORDER
+                        }))
+                        .bg(rgb(crate::ui::theme::PILL_BG))
+                        .text_size(px(11.0))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.files_search_focused = true;
+                                cx.notify();
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::SEARCH,
+                            14.0,
+                            crate::ui::theme::MUTED,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_color(rgb(if query.is_empty() {
+                                    crate::ui::theme::MUTED
+                                } else {
+                                    crate::ui::theme::TEXT
+                                }))
+                                .child(if query.is_empty() {
+                                    "Search files".to_string()
+                                } else {
+                                    query
+                                }),
+                        ),
+                ),
+        );
+        body = self.render_files_tree(body, viewport_h, cx);
+        if let Some(message) = self.files_warning.clone() {
+            body = body.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_color(rgb(workbench::WARN_TEXT))
+                    .child(message),
+            );
+        }
+        body.on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+            let row_height = files::TREE_ROW_H;
+            let dy_lines: f32 = match event.delta {
+                ScrollDelta::Pixels(point) => f32::from(point.y) / row_height,
+                ScrollDelta::Lines(point) => point.y,
+            };
+            let mut steps = dy_lines.round() as i32;
+            if steps == 0 && dy_lines != 0.0 {
+                steps = dy_lines.signum() as i32;
+            }
+            let dx_px: f32 = match event.delta {
+                ScrollDelta::Pixels(point) => f32::from(point.x),
+                ScrollDelta::Lines(point) => point.x * row_height,
+            };
+            let dy_px: f32 = match event.delta {
+                ScrollDelta::Pixels(point) => f32::from(point.y),
+                ScrollDelta::Lines(point) => point.y * row_height,
+            };
+            let mut sideways = dx_px;
+            if event.modifiers.shift {
+                sideways += dy_px;
+            }
+            if steps == 0 && sideways == 0.0 {
+                return;
+            }
+            view.files_scroll_rows = (view.files_scroll_rows as i32 - steps).max(0) as usize;
+            if sideways != 0.0 {
+                view.files_scroll_cols =
+                    (view.files_scroll_cols + sideways).clamp(0.0, files::MAX_SCROLL_COLS_PX);
+            }
+            cx.notify();
+        }))
+    }
+
+    /// Inspector Info body: real project card plus explicit M18-pending
+    /// states for process/port inspection. No fabricated telemetry.
+    fn render_inspector_info(&mut self) -> Div {
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .p_3()
+            .gap_4();
+        let (name, path, branch) =
+            if let Some(project) = self.coordinator.active_project() {
+                let index = self
+                    .coordinator
+                    .projects()
+                    .iter()
+                    .position(|p| p.id == project.id)
+                    .unwrap_or(0);
+                let branch = self.branch_for(project.id).map(|(branch, dirty)| {
+                    if dirty { format!("{branch}*") } else { branch }
+                });
+                (
+                    project.display_name(index + 1),
+                    self.project_path_label(project),
+                    branch,
+                )
+            } else {
+                ("No project".to_string(), String::new(), None)
+            };
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child("PROJECT"),
+                )
+                .child(
+                    div()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(crate::ui::theme::BORDER))
+                        .bg(rgb(crate::ui::theme::INFO_CARD_BG))
+                        .p_3()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(28.0))
+                                        .h(px(28.0))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(rgb(crate::ui::theme::BORDER2))
+                                        .bg(rgb(crate::ui::theme::INFO_ICON_BOX_BG))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(rgb(crate::ui::theme::BLUE))
+                                        .child(crate::ui::assets::icon(
+                                            crate::ui::assets::FOLDER_GIT,
+                                            16.0,
+                                            crate::ui::theme::BLUE,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_1()
+                                        .flex_col()
+                                        .min_w(px(0.0))
+                                        .child(div().truncate().child(name))
+                                        .child(
+                                            div()
+                                                .text_color(rgb(crate::ui::theme::MUTED))
+                                                .truncate()
+                                                .child(path),
+                                        ),
+                                )
+                                .child(if let Some(branch) = branch {
+                                    div()
+                                        .px(px(6.0))
+                                        .py(px(2.0))
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                                        .bg(rgb(crate::ui::theme::PILL_BG))
+                                        .text_color(rgb(crate::ui::theme::MUTED))
+                                        .child(branch)
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }),
+                        ),
+                ),
+        );
+        for (title, note) in [
+            ("PROCESSES", "Process inspection arrives with M18."),
+            ("PORTS", "Port attribution arrives with M18."),
+        ] {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_color(rgb(crate::ui::theme::MUTED)).child(title))
+                    .child(
+                        div()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(crate::ui::theme::BORDER))
+                            .px_3()
+                            .py_2()
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child(note),
+                    ),
+            );
+        }
+        body
+    }
+
+    /// UI v5 global status bar (24px): branch button, live process count,
+    /// then history state, font size, and encoding at right. Port counts,
+    /// CPU/MEM telemetry, and the notices bell arrive with M18/P6 — omitted
+    /// until real, never fabricated.
     fn render_status_bar(&mut self, cx: &mut Context<Self>) -> Div {
         let mut left = div().flex().flex_row().items_center().h_full();
         if let Some(project) = self.coordinator.selected_project_id()
@@ -5278,29 +7079,47 @@ impl WorkspaceView {
             if let Some(branch) = workbench::branch_label(status.branch.as_deref(), dirty) {
                 left = left.child(
                     div()
-                        .px_2()
+                        .px(px(10.0))
                         .h_full()
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap_1()
-                        .child(div().child(workbench::SOURCE_ICON.to_string()))
+                        .gap(px(6.0))
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::GIT_BRANCH,
+                            12.0,
+                            crate::ui::theme::MUTED,
+                        ))
                         .child(branch),
                 );
             }
-            if let Some(summary) = workbench::change_summary(
-                status.staged.len(),
-                status.unstaged.len(),
-                status.untracked.len(),
-            ) {
-                left = left.child(div().px_2().h_full().flex().items_center().child(summary));
-            }
         }
+        let live = self.coordinator.registry().len();
+        left = left.child(
+            div()
+                .px(px(10.0))
+                .h_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .w(px(8.0))
+                        .h(px(8.0))
+                        .rounded_full()
+                        .bg(rgb(crate::ui::theme::GREEN)),
+                )
+                .child(format!(
+                    "{live} process{}",
+                    if live == 1 { "" } else { "es" }
+                )),
+        );
         let mut right = div().flex().flex_row().items_center().h_full();
         if let Some(status) = self.history_status_text() {
             right = right.child(
                 div()
-                    .px_2()
+                    .px(px(10.0))
                     .h_full()
                     .flex()
                     .items_center()
@@ -5320,20 +7139,30 @@ impl WorkspaceView {
         }
         right = right.child(
             div()
-                .px_2()
+                .px(px(10.0))
                 .h_full()
                 .flex()
                 .items_center()
                 .child(format!("{:.0}px", self.font_size)),
         );
+        right = right.child(
+            div()
+                .px(px(10.0))
+                .h_full()
+                .flex()
+                .items_center()
+                .child("UTF-8"),
+        );
         div()
-            .h(px(workbench::STATUS_HEIGHT))
+            .h(px(crate::ui::geometry::STATUS_H))
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
-            .bg(rgb(workbench::ACCENT))
-            .text_color(rgb(workbench::TEXT_BRIGHT))
+            .bg(rgb(crate::ui::theme::HEADER_BG))
+            .border_t_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .text_color(rgb(crate::ui::theme::MUTED))
             .child(left)
             .child(right)
     }
@@ -5358,7 +7187,11 @@ impl WorkspaceView {
                 .child(
                     div()
                         .text_color(rgb(0x71717A))
-                        .child(files::SEARCH_ICON.to_string()),
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::SEARCH,
+                            14.0,
+                            0x71717A,
+                        )),
                 )
                 .child(
                     div()
@@ -5374,7 +7207,11 @@ impl WorkspaceView {
                 .child(
                     div()
                         .text_color(rgb(0x71717A))
-                        .child(files::SEARCH_ICON.to_string()),
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::SEARCH,
+                            14.0,
+                            0x71717A,
+                        )),
                 )
                 .child({
                     let caret_h = px(f32::from(self.fonts(&*cx).line_height));
@@ -5642,371 +7479,12 @@ impl Render for WorkspaceView {
                     )
                     .into_any_element()
             });
-        let selected_project = self.coordinator.selected_project_id();
-        // WORKSPACE section: project switcher living inside the contextual
-        // sidebar (Explorer) instead of a permanent second column.
-        let mut workspace_section = div().flex().flex_col().gap_1().pb_2();
-        workspace_section = workspace_section.child(
-            div()
-                .px_2()
-                .py_1()
-                .text_color(rgb(workbench::MUTED))
-                .child("WORKSPACE"),
-        );
-        let mut project_label_counts = HashMap::<String, usize>::new();
-        for (index, project) in self.coordinator.projects().iter().enumerate() {
-            let id = project.id;
-            let base_name = project.display_name(index + 1);
-            let occurrence = project_label_counts.entry(base_name.clone()).or_default();
-            *occurrence += 1;
-            let name = if *occurrence == 1 {
-                base_name
-            } else {
-                format!("{base_name} {}", *occurrence)
-            };
-            let active = selected_project == Some(id);
-            let close_id = id;
-            let pick_id = id;
-            let label = if self.show_project_hints && index < 9 {
-                format!("{} · {name}", index + 1)
-            } else {
-                name
-            };
-            let label = div().flex_1().child(label);
-            let row = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .px_2()
-                .py_1()
-                .rounded_sm()
-                .bg(rgb(if active {
-                    workbench::SELECTION_BG
-                } else {
-                    workbench::SIDEBAR_BG
-                }))
-                .text_color(rgb(if active {
-                    workbench::TEXT_BRIGHT
-                } else {
-                    workbench::MUTED
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
-                        }
-                        window.focus(&view.focus_handle);
-                        let _ = view.dispatch_command(
-                            OmaCommand::Project(ProjectCommand::Select { project: id }),
-                            cx,
-                        );
-                    }),
-                )
-                .child(label);
-            // Keep row controls inside the selected row and out of
-            // the way for inactive projects.
-            let row = if active {
-                row.child(
-                    div()
-                        .px_1()
-                        .text_color(rgb(0x71717A))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                view.pick_project_directory(pick_id, cx);
-                            }),
-                        )
-                        .child("change"),
-                )
-                .child(
-                    div()
-                        .px_1()
-                        .text_color(rgb(0xA1A1AA))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                view.close_project(close_id, cx);
-                            }),
-                        )
-                        .child("×"),
-                )
-            } else {
-                row
-            };
-            workspace_section = workspace_section.child(row);
-        }
-        workspace_section = workspace_section.child(
-            div()
-                .px_2()
-                .py_1()
-                .text_color(rgb(0xA1A1AA))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
-                        }
-                        window.focus(&view.focus_handle);
-                        view.create_project(cx);
-                    }),
-                )
-                .child("+ New project"),
-        );
-
-        let mut tabs_bar = div()
-            .h(px(workbench::TAB_HEIGHT))
-            .flex()
-            .flex_row()
-            .px_2()
-            .bg(rgb(workbench::TABSTRIP_BG));
-        if let Some(project) = self.coordinator.active_project() {
-            for (index, tab) in project.tabs.iter().enumerate() {
-                let project_id = project.id;
-                let tab_id = tab.id;
-                let label = tab.display_name(index + 1);
-                let active = project.selected_tab == Some(tab_id);
-                let label = div().flex_1().child(label);
-                let mut chip = div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_3()
-                    .h_full()
-                    .bg(rgb(if active {
-                        workbench::SURFACE_BG
-                    } else {
-                        workbench::TAB_INACTIVE_BG
-                    }))
-                    .text_color(rgb(if active {
-                        workbench::TEXT_BRIGHT
-                    } else {
-                        workbench::TAB_INACTIVE_TEXT
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            window.focus(&view.focus_handle);
-                            // Returning to a terminal tab closes the
-                            // view-local diff preview.
-                            view.diff_panel.close_preview(project_id);
-                            let _ = view.dispatch_command(
-                                OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
-                                cx,
-                            );
-                        }),
-                    )
-                    .child(label);
-                // The selected tab owns its close control; the add button
-                // remains the final item in the strip. The active tab gets
-                // the workbench accent edge; inactive tabs sit flat.
-                if active {
-                    chip = chip.border_t_2().border_color(rgb(workbench::ACCENT));
-                }
-                let chip = if active {
-                    chip.child(
-                        div()
-                            .px_1()
-                            .text_color(rgb(0xA1A1AA))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.close_tab(project_id, tab_id, cx);
-                                }),
-                            )
-                            .child("×"),
-                    )
-                } else {
-                    chip
-                };
-                tabs_bar = tabs_bar.child(chip);
-            }
-            tabs_bar = tabs_bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(0xA1A1AA))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            window.focus(&view.focus_handle);
-                            if let Some(project) = view.coordinator.selected_project_id() {
-                                view.diff_panel.close_preview(project);
-                            }
-                            view.create_tab(cx);
-                        }),
-                    )
-                    .child("+"),
-            );
-            // M15 diff preview tab: view-local, rendered when a Git row is
-            // selected. It shows a file diff, never a terminal — core tabs
-            // stay terminal-only (M13/M17 scope). Selecting a terminal tab
-            // or closing the chip returns to the terminal surface.
-            if self.diff_panel.preview_open(project.id)
-                && let Some(path) = self.diff_panel.selected_file(project.id).cloned()
-            {
-                let name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
-                let preview_id = project.id;
-                tabs_bar = tabs_bar.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .px_3()
-                        .h_full()
-                        .border_t_2()
-                        .border_color(rgb(workbench::ACCENT))
-                        .bg(rgb(workbench::SURFACE_BG))
-                        .text_color(rgb(workbench::TEXT_BRIGHT))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                window.focus(&view.focus_handle);
-                                cx.notify();
-                            }),
-                        )
-                        .child(format!("Diff: {name}"))
-                        .child(
-                            div()
-                                .px_1()
-                                .text_color(rgb(workbench::MUTED))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        view.diff_panel.close_preview(preview_id);
-                                        cx.notify();
-                                    }),
-                                )
-                                .child("×"),
-                        ),
-                );
-            }
-        } else {
-            tabs_bar = tabs_bar.child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_color(rgb(workbench::MUTED))
-                    .child("No project selected"),
-            );
-        }
-        // History state moved to the status bar (application status, not a
-        // document tab).
-        let sidebar_width = workbench::clamp_sidebar_width(self.sidebar_width);
-        self.sidebar_width = sidebar_width;
-        let sidebar_header = match self.sidebar_tab {
-            SidebarTab::Files => self.render_sidebar_header("Explorer", cx),
-            SidebarTab::Git => self.render_sidebar_header("Source Control", cx),
-        };
-        let mut context_sidebar = div()
-            .w(px(sidebar_width))
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(workbench::SIDEBAR_BG))
-            .border_r_1()
-            .border_color(rgb(workbench::BORDER))
-            .child(sidebar_header)
-            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
-                // Row-step scrolling with the terminal's delta
-                // convention: positive deltas move toward the top
-                // (earlier rows). Render clamps the offset, so no max
-                // math is needed here.
-                let row_height = {
-                    let line_height: f32 = view.fonts(&*cx).line_height.into();
-                    if line_height <= 0.0 {
-                        return;
-                    }
-                    line_height + WorkspaceView::FILES_ROW_VPAD
-                };
-                let dy_lines: f32 = match event.delta {
-                    ScrollDelta::Pixels(point) => f32::from(point.y) / row_height,
-                    ScrollDelta::Lines(point) => point.y,
-                };
-                let mut steps = dy_lines.round() as i32;
-                if steps == 0 && dy_lines != 0.0 {
-                    steps = dy_lines.signum() as i32;
-                }
-                // Horizontal: native x deltas, plus Shift+wheel (vertical
-                // deltas with Shift held) for ordinary mice. Checked before
-                // the vertical early-return so pure-horizontal events are
-                // never swallowed.
-                let dx_px: f32 = match event.delta {
-                    ScrollDelta::Pixels(point) => f32::from(point.x),
-                    ScrollDelta::Lines(point) => point.x * row_height,
-                };
-                let dy_px: f32 = match event.delta {
-                    ScrollDelta::Pixels(point) => f32::from(point.y),
-                    ScrollDelta::Lines(point) => point.y * row_height,
-                };
-                let mut sideways = dx_px;
-                if event.modifiers.shift {
-                    sideways += dy_px;
-                }
-                if steps == 0 && sideways == 0.0 {
-                    return;
-                }
-                view.files_scroll_rows = (view.files_scroll_rows as i32 - steps).max(0) as usize;
-                if sideways != 0.0 {
-                    view.files_scroll_cols =
-                        (view.files_scroll_cols + sideways).clamp(0.0, files::MAX_SCROLL_COLS_PX);
-                }
-                cx.notify();
-            }));
-        match self.sidebar_tab {
-            SidebarTab::Files => {
-                context_sidebar = context_sidebar.child(workspace_section);
-                context_sidebar = self.render_files_tree(
-                    context_sidebar,
-                    f32::from(window.viewport_size().height),
-                    cx,
-                );
-                if let Some(message) = self.files_warning.clone() {
-                    context_sidebar = context_sidebar.child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_color(rgb(workbench::WARN_TEXT))
-                            .child(message),
-                    );
-                }
-            }
-            SidebarTab::Git => {
-                context_sidebar = self.render_git_panel(context_sidebar, cx);
-            }
-        }
+        // UI v5: the project list lives in the persistent left sidebar
+        // (`render_projects_sidebar`) and the tab strip in the 42px header
+        // (`render_header`); both built below at composition time.
+        // UI v5: the tab strip is built by `render_header` at composition
+        // time (see below); the legacy workbench strip is retired.
+        // UI v5 composition happens below, after `pane_area` is built.
         let mut pane_area = div().flex().flex_1().flex_col().size_full().relative();
         if let Some((arm, at)) = self.history_arm
             && at.elapsed() < HISTORY_ARM_WINDOW
@@ -6104,42 +7582,104 @@ impl Render for WorkspaceView {
         } else {
             pane_area = pane_area.child(div().flex().flex_1().size_full().child(content));
         }
+        // Toast paints last inside the relative pane area: bottom-center,
+        // above the status bar, pointer-transparent (no handlers).
+        if let Some((message, deadline)) = self.toast.clone()
+            && Instant::now() < deadline
+        {
+            pane_area = pane_area.child(
+                div()
+                    .absolute()
+                    .bottom(px(14.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .flex()
+                    .flex_row()
+                    .justify_center()
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(crate::ui::theme::BORDER2))
+                            .bg(rgb(crate::ui::theme::PANEL3))
+                            .shadow_lg()
+                            .text_size(px(11.0))
+                            .text_color(rgb(crate::ui::theme::TEXT))
+                            .child(message),
+                    ),
+            );
+        }
         // Finder paints last so the floating layer sits above the terminal.
-        // Box geometry is plain arithmetic from the workbench chrome widths
-        // (activity rail plus the contextual sidebar when revealed) — no
-        // reliance on align/max interplay.
+        // Box geometry is plain arithmetic from the v5 main-view rectangle
+        // (the same helper that sizes PTY grids) — no reliance on
+        // align/max interplay.
         if self.ctrlp_open {
             let viewport_w: f32 = window.viewport_size().width.into();
-            let chrome_w = workbench::ACTIVITY_WIDTH
-                + if self.sidebar_collapsed {
-                    0.0
-                } else {
-                    sidebar_width
-                };
-            let pane_w = (viewport_w - chrome_w).max(1.0);
+            let viewport_h: f32 = window.viewport_size().height.into();
+            let shell = crate::ui::geometry::shell_rects(
+                viewport_w,
+                viewport_h,
+                self.projects_visible,
+                self.projects_width,
+                self.inspector_visible,
+                self.inspector_width,
+            );
+            let pane_w = shell.main_view.2.max(1.0);
             let box_w = (pane_w - 32.0).clamp(200.0, 600.0);
+            // Relative to the center column origin (the overlay's parent),
+            // not the window: the finder floats over the main view only.
             let box_x = ((pane_w - box_w) / 2.0).max(0.0);
             pane_area = pane_area.child(self.render_ctrlp(box_x, box_w, cx));
         }
-        let context_row = self.render_context_row(cx);
-        let main = div()
-            .flex()
-            .flex_1()
-            .flex_col()
-            .size_full()
-            .min_w(px(0.0))
-            .child(tabs_bar)
-            .child(context_row)
-            .child(pane_area);
-        // Workbench frame: title row, then activity rail + (optional)
-        // contextual sidebar + main surface, then the status bar.
-        let mut workbench_row = div().flex().flex_1().flex_row().min_h(px(0.0));
-        workbench_row = workbench_row.child(self.render_activity_rail(cx));
-        if !self.sidebar_collapsed {
-            workbench_row = workbench_row.child(context_sidebar);
-            workbench_row = workbench_row.child(self.render_sidebar_resizer(cx));
+        // UI v5 frame: Projects | resizer | (header over main+inspector,
+        // then main | resizer | inspector), then the global status bar.
+        let viewport_h: f32 = window.viewport_size().height.into();
+        let header = self.render_header(cx);
+        let mut center_row = div().flex().flex_1().flex_row().min_h(px(0.0));
+        center_row = center_row.child(
+            div()
+                .flex()
+                .flex_1()
+                .flex_col()
+                .size_full()
+                .min_w(px(0.0))
+                .child(header)
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .flex_row()
+                        .size_full()
+                        .min_h(px(0.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_1()
+                                .flex_col()
+                                .size_full()
+                                .min_w(px(0.0))
+                                .child(pane_area),
+                        )
+                        .child(if self.inspector_visible {
+                            self.render_inspector_resizer(cx).into_any_element()
+                        } else {
+                            div().into_any_element()
+                        })
+                        .child(if self.inspector_visible {
+                            self.render_inspector(viewport_h, cx).into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }),
+                ),
+        );
+        let mut content_row = div().flex().flex_1().flex_row().min_h(px(0.0));
+        if self.projects_visible {
+            content_row = content_row.child(self.render_projects_sidebar(cx));
+            content_row = content_row.child(self.render_projects_resizer(cx));
         }
-        workbench_row = workbench_row.child(main);
+        content_row = content_row.child(center_row);
         let status_bar = self.render_status_bar(cx);
         // Reveal the Ctrl+Shift+1..9 jump indexes in the sidebar only while
         // Control or Shift is held.
@@ -6165,11 +7705,186 @@ impl Render for WorkspaceView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(workbench::WINDOW_BG))
-            .child(self.render_title_bar(cx))
-            .child(workbench_row)
+            .bg(rgb(crate::ui::theme::BG))
+            .child(content_row)
             .child(status_bar)
     }
+}
+
+/// Basename of `$SHELL` (`bash`, `fish`, …) for pane chrome labels.
+/// Falls back to `shell` when unset or unparseable — never empty.
+fn shell_name() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .and_then(|shell| {
+            std::path::Path::new(&shell)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "shell".to_string())
+}
+
+/// Monospace family for diff code rows: the configured terminal family
+/// when installed, else the built-in preference stack (same resolution
+/// as the terminal grid, so code never renders in the UI face).
+fn mono_family_for_chrome(cx: &App, configured: Option<&str>) -> String {
+    select_mono_family(&cx.text_system().all_font_names(), configured)
+}
+
+/// Line-number gutter for diff rows: right-aligned number or an empty
+/// spacer that keeps add/delete-only rows aligned with their siblings.
+fn diff_gutter(no: Option<u32>, color: u32) -> Div {
+    div()
+        .w(px(54.0))
+        .flex_shrink_0()
+        .text_right()
+        .text_color(rgb(color))
+        .child(
+            div()
+                .mr(px(14.0))
+                .child(no.map(|n| n.to_string()).unwrap_or_default()),
+        )
+}
+
+/// Background + inset mark for an added/removed diff row. GPUI has no
+/// inset-shadow primitive, so the mock's 3px mark renders as a 2px left
+/// border (recorded 1px delta); context rows stay transparent.
+fn diff_row_decor(kind: omaterm_core::DiffLineKind) -> Div {
+    match kind {
+        omaterm_core::DiffLineKind::Addition => div()
+            .bg(rgb(crate::ui::theme::DIFF_ADD_BG))
+            .border_l_2()
+            .border_color(rgb(crate::ui::theme::DIFF_ADD_MARK)),
+        omaterm_core::DiffLineKind::Deletion => div()
+            .bg(rgb(crate::ui::theme::DIFF_DEL_BG))
+            .border_l_2()
+            .border_color(rgb(crate::ui::theme::DIFF_DEL_MARK)),
+        omaterm_core::DiffLineKind::Context => div(),
+    }
+}
+
+/// One Split cell: gutter + code when the aligned row belongs to this
+/// side, otherwise a blank spacer that preserves row alignment.
+fn split_cell(row: &diff_panel::AlignedRow, old_side: bool, mono: &str) -> Div {
+    let (no, present) = if old_side {
+        (
+            row.old_no,
+            matches!(
+                row.kind,
+                omaterm_core::DiffLineKind::Context | omaterm_core::DiffLineKind::Deletion
+            ),
+        )
+    } else {
+        (
+            row.new_no,
+            matches!(
+                row.kind,
+                omaterm_core::DiffLineKind::Context | omaterm_core::DiffLineKind::Addition
+            ),
+        )
+    };
+    if !present {
+        return div().flex_1().min_w(px(0.0)).h(px(22.0));
+    }
+    let no_color = match row.kind {
+        omaterm_core::DiffLineKind::Addition => crate::ui::theme::LINE_NO_ADD,
+        omaterm_core::DiffLineKind::Deletion => crate::ui::theme::LINE_NO_DEL,
+        omaterm_core::DiffLineKind::Context => crate::ui::theme::LINE_NO,
+    };
+    div()
+        .flex_1()
+        .min_w(px(0.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .min_h(px(22.0))
+        .font_family(mono.to_string())
+        .text_size(px(12.0))
+        .text_color(rgb(crate::ui::theme::TEXT))
+        .child(
+            diff_row_decor(row.kind)
+                .flex_1()
+                .flex_row()
+                .child(diff_gutter(no, no_color))
+                .child(div().flex_1().min_w(px(0.0)).child(row.text.clone())),
+        )
+}
+
+/// One Inline row: old + new gutters followed by code.
+fn inline_row(row: &diff_panel::AlignedRow, mono: &str) -> Div {
+    let no_color = match row.kind {
+        omaterm_core::DiffLineKind::Addition => crate::ui::theme::LINE_NO_ADD,
+        omaterm_core::DiffLineKind::Deletion => crate::ui::theme::LINE_NO_DEL,
+        omaterm_core::DiffLineKind::Context => crate::ui::theme::LINE_NO,
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_shrink_0()
+        .min_h(px(21.0))
+        .font_family(mono.to_string())
+        .text_size(px(12.0))
+        .text_color(rgb(crate::ui::theme::TEXT))
+        .child(
+            diff_row_decor(row.kind)
+                .flex_1()
+                .flex_row()
+                .child(diff_gutter(row.old_no, {
+                    if row.old_no.is_some() {
+                        no_color
+                    } else {
+                        crate::ui::theme::EDITOR_BG
+                    }
+                }))
+                .child(diff_gutter(row.new_no, {
+                    if row.new_no.is_some() {
+                        no_color
+                    } else {
+                        crate::ui::theme::EDITOR_BG
+                    }
+                }))
+                .child(div().flex_1().min_w(px(0.0)).child(row.text.clone())),
+        )
+}
+
+/// Shorten `$HOME`-prefixed paths with `~` for pane chrome labels.
+fn short_home_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    if let Ok(home) = std::env::var("HOME")
+        && let Some(rest) = text.strip_prefix(&home)
+    {
+        return format!("~{rest}");
+    }
+    text
+}
+
+/// Vertical chrome inside every terminal leaf: 31px header + 1px border +
+/// 27px footer + 1px border. Subtracted from the leaf height before grid
+/// sizing so PTY rows match the visible canvas exactly.
+const LEAF_CHROME_H: f32 = 60.0;
+
+/// Git row action behind an inspector icon. Kept next to the renderer so
+/// the icon → dispatch mapping needs no string matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitRowAction {
+    Stage,
+    Unstage,
+    Discard,
+    Open,
+}
+
+/// Toast-sized summary of staged/unstaged paths: the file name for a
+/// single path, otherwise the count (`3 files`).
+fn summarize_paths(paths: &[std::path::PathBuf]) -> String {
+    if paths.len() == 1 {
+        return paths[0]
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_string());
+    }
+    format!("{} files", paths.len())
 }
 
 /// Map a Ctrl+Shift+<n> key name to a 0-based project index.
@@ -6716,46 +8431,48 @@ fn paint_terminal(
 
 fn main() {
     omaterm_logging::init_logging();
-    Application::new().run(|cx: &mut App| {
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
+    Application::new()
+        .with_assets(crate::ui::assets::OmaAssets)
+        .run(|cx: &mut App| {
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
 
-        let bounds = Bounds::centered(None, size(px(960.0), px(640.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |window, cx| {
-                window.set_window_title("OmaTerm");
-                let view = cx.new(|cx| WorkspaceView::new(window, cx));
-                let weak = view.downgrade();
-                let window_handle = window.window_handle();
-                window.on_window_should_close(cx, move |_, cx| {
-                    let _ = weak.update(cx, |view, cx| view.begin_shutdown(window_handle, cx));
-                    false
-                });
-                view
-            },
-        )
-        .expect("failed to open OmaTerm window");
+            let bounds = Bounds::centered(None, size(px(960.0), px(640.0)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    window.set_window_title("OmaTerm");
+                    let view = cx.new(|cx| WorkspaceView::new(window, cx));
+                    let weak = view.downgrade();
+                    let window_handle = window.window_handle();
+                    window.on_window_should_close(cx, move |_, cx| {
+                        let _ = weak.update(cx, |view, cx| view.begin_shutdown(window_handle, cx));
+                        false
+                    });
+                    view
+                },
+            )
+            .expect("failed to open OmaTerm window");
 
-        cx.activate(true);
-    });
+            cx.activate(true);
+        });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SidebarTab, project_jump_index, select_mono_family};
+    use super::{InspectorTab, project_jump_index, select_mono_family};
 
     #[test]
-    fn sidebar_tab_defaults_to_files() {
-        assert_eq!(SidebarTab::default(), SidebarTab::Files);
-        assert_ne!(SidebarTab::Files, SidebarTab::Git);
+    fn inspector_tab_defaults_to_info() {
+        assert_eq!(InspectorTab::default(), InspectorTab::Info);
+        assert_ne!(InspectorTab::Files, InspectorTab::Git);
     }
 
     #[test]

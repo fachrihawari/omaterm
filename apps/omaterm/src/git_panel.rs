@@ -13,7 +13,7 @@
 //! Status payloads are `omaterm_core::GitStatusInfo` (root-relative paths,
 //! bounded entries, accurate `truncated`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -42,36 +42,6 @@ pub struct GitRefresh {
 
 /// Arm window for the two-step discard confirm (paste/history precedent).
 pub const DISCARD_ARM_WINDOW: Duration = Duration::from_secs(8);
-
-/// Nerd Font action glyphs (Font Awesome: plus/minus/undo/refresh/check
-/// — covered by the files icon-coverage test, same family the terminal
-/// grid already resolves, so no font dependency is added). All render in
-/// the row color (monochrome, VSCode-style); no per-action hues.
-pub const STAGE_ICON: char = '\u{f067}';
-pub const UNSTAGE_ICON: char = '\u{f068}';
-pub const DISCARD_ICON: char = '\u{f0e2}';
-pub const REFRESH_ICON: char = '\u{f021}';
-pub const COMMIT_ICON: char = '\u{f00c}';
-
-/// Per-file mutation behind a panel action icon. Kept next to the state
-/// so the render layer maps icon → dispatch without string matching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GitAction {
-    Stage,
-    Unstage,
-    Discard,
-}
-
-impl GitAction {
-    /// Icon glyph for the action (row-colored, never a custom hue).
-    pub const fn icon(self) -> char {
-        match self {
-            Self::Stage => STAGE_ICON,
-            Self::Unstage => UNSTAGE_ICON,
-            Self::Discard => DISCARD_ICON,
-        }
-    }
-}
 
 /// Largest commit message the panel input accepts (mirrors core
 /// validation; the router re-validates).
@@ -102,6 +72,12 @@ pub struct GitPanel {
     empties: HashMap<ProjectId, GitEmpty>,
     selected: HashMap<ProjectId, PathBuf>,
     discard_arm: Option<(ProjectId, PathBuf, Instant)>,
+    /// Bulk-discard arm: (project, captured target paths, armed-at).
+    /// Arming a single path clears this and vice versa.
+    discard_all_arm: Option<(ProjectId, Vec<PathBuf>, Instant)>,
+    /// Collapsed change groups per project (`true` = staged group,
+    /// `false` = working-tree group). View-local, never persisted.
+    collapsed: HashSet<(ProjectId, bool)>,
     /// Commit message drafts, one per project so switching never loses
     /// typed text. Single-line (the desktop input submits on Enter).
     commit_drafts: HashMap<ProjectId, String>,
@@ -153,10 +129,99 @@ impl GitPanel {
         {
             self.discard_arm = None;
         }
+        if self
+            .discard_all_arm
+            .as_ref()
+            .is_some_and(|(armed_project, _, _)| *armed_project == project)
+        {
+            self.discard_all_arm = None;
+        }
+        self.collapsed.retain(|(owner, _)| *owner != project);
+    }
+
+    /// Whether a change group is collapsed (`staged` selects the staged
+    /// group, otherwise the working-tree group).
+    pub fn is_collapsed(&self, project: ProjectId, staged: bool) -> bool {
+        self.collapsed.contains(&(project, staged))
+    }
+
+    /// Toggle a change group's collapse. Returns the new collapsed state.
+    pub fn toggle_collapsed(&mut self, project: ProjectId, staged: bool) -> bool {
+        if self.collapsed.remove(&(project, staged)) {
+            false
+        } else {
+            self.collapsed.insert((project, staged));
+            true
+        }
+    }
+
+    /// Arm bulk discard for captured paths. Returns true when a live arm
+    /// for the same project+paths already exists (the caller then dispatches
+    /// one `GitCommand::Discard` per path); otherwise arms and returns
+    /// false (the caller shows the banner). Arming a single path clears
+    /// this arm and vice versa.
+    pub fn arm_discard_all(&mut self, project: ProjectId, paths: &[PathBuf]) -> bool {
+        self.discard_arm = None;
+        if paths.is_empty() {
+            self.discard_all_arm = None;
+            return false;
+        }
+        if let Some((armed_project, armed_paths, at)) = &self.discard_all_arm
+            && *armed_project == project
+            && armed_paths.as_slice() == paths
+            && at.elapsed() < DISCARD_ARM_WINDOW
+        {
+            self.discard_all_arm = None;
+            return true;
+        }
+        self.discard_all_arm = Some((project, paths.to_vec(), Instant::now()));
+        false
+    }
+
+    /// Live bulk-arm text for the banner, if the arm is for this project
+    /// and still inside the window.
+    pub fn armed_all_text(&self, project: ProjectId) -> Option<String> {
+        let (armed_project, paths, at) = self.discard_all_arm.as_ref()?;
+        if *armed_project != project || at.elapsed() >= DISCARD_ARM_WINDOW {
+            return None;
+        }
+        Some(format!(
+            "Discard {} file{}? click discard-all again within 8s to confirm.",
+            paths.len(),
+            if paths.len() == 1 { "" } else { "s" }
+        ))
     }
 
     pub fn select(&mut self, project: ProjectId, path: PathBuf) {
         self.selected.insert(project, path);
+    }
+
+    /// Move the row selection by `delta` (clamped, no wrap). Selects the
+    /// first row when nothing is selected. Returns the newly selected row,
+    /// if any. Drives Alt+Up/Down keyboard navigation.
+    pub fn move_selection(&mut self, project: ProjectId, delta: i32) -> Option<GitRow> {
+        let rows = self.rows_for(project);
+        if rows.is_empty() {
+            return None;
+        }
+        let next = match self
+            .selected
+            .get(&project)
+            .and_then(|selected| rows.iter().position(|row| &row.path == selected))
+        {
+            // Nothing (or stale) selected: land on the leading edge.
+            None => {
+                if delta >= 0 {
+                    0
+                } else {
+                    rows.len() - 1
+                }
+            }
+            Some(at) => (at as i32 + delta).clamp(0, rows.len() as i32 - 1) as usize,
+        };
+        let row = rows[next].clone();
+        self.selected.insert(project, row.path.clone());
+        Some(row)
     }
 
     /// Flat render rows in group order (staged, unstaged, untracked).
@@ -194,6 +259,7 @@ impl GitPanel {
     /// `GitCommand::Discard`); otherwise arms and returns false (the
     /// caller shows the banner). Anything else disarms.
     pub fn arm_discard(&mut self, project: ProjectId, path: &PathBuf) -> bool {
+        self.discard_all_arm = None;
         if let Some((armed_project, armed_path, at)) = &self.discard_arm
             && *armed_project == project
             && armed_path == path
@@ -467,6 +533,81 @@ mod tests {
         }
         assert!(!panel.arm_discard(project, &PathBuf::from("other.txt")));
         assert!(panel.armed_text(project).is_some());
+    }
+
+    #[test]
+    fn move_selection_walks_flat_rows_clamped() {
+        let project = ProjectId::new();
+        let mut panel = GitPanel::default();
+        assert_eq!(panel.move_selection(project, 1), None);
+        panel.apply_refresh(
+            project,
+            GitRefresh {
+                worker: std::thread::current().id(),
+                result: Ok(status_with(1, 1, 1)),
+            },
+        );
+        // Nothing selected: positive lands first, negative lands last.
+        assert_eq!(
+            panel.move_selection(project, 1).map(|row| row.path),
+            Some(PathBuf::from("s0"))
+        );
+        panel.selected.remove(&project);
+        assert_eq!(
+            panel.move_selection(project, -1).map(|row| row.path),
+            Some(PathBuf::from("n0"))
+        );
+        // Walk and clamp at both ends.
+        panel.selected.remove(&project);
+        panel.move_selection(project, 1);
+        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("s0")));
+        panel.move_selection(project, 1);
+        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("u0")));
+        panel.move_selection(project, 1);
+        panel.move_selection(project, 1);
+        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("n0")));
+        panel.move_selection(project, -10);
+        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("s0")));
+    }
+
+    #[test]
+    fn group_collapse_toggles_per_project_and_side() {
+        let project = ProjectId::new();
+        let other = ProjectId::new();
+        let mut panel = GitPanel::default();
+        assert!(!panel.is_collapsed(project, true));
+        assert!(panel.toggle_collapsed(project, true));
+        assert!(panel.is_collapsed(project, true));
+        assert!(!panel.is_collapsed(project, false));
+        assert!(!panel.is_collapsed(other, true));
+        assert!(!panel.toggle_collapsed(project, true));
+        assert!(!panel.is_collapsed(project, true));
+        panel.toggle_collapsed(project, false);
+        panel.clear_project(project);
+        assert!(!panel.is_collapsed(project, false));
+    }
+
+    #[test]
+    fn bulk_discard_arm_confirms_matching_paths_inside_the_window() {
+        let project = ProjectId::new();
+        let mut panel = GitPanel::default();
+        let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
+        assert!(!panel.arm_discard_all(project, &paths));
+        let banner = panel.armed_all_text(project).expect("armed banner");
+        assert!(banner.contains("2 files"));
+        // Same paths confirm and disarm.
+        assert!(panel.arm_discard_all(project, &paths));
+        assert!(panel.armed_all_text(project).is_none());
+        // Different paths re-arm; single-path arm clears the bulk arm.
+        assert!(!panel.arm_discard_all(project, &[PathBuf::from("c.txt")]));
+        assert!(!panel.arm_discard(project, &PathBuf::from("c.txt")));
+        assert!(panel.armed_all_text(project).is_none());
+        assert!(panel.armed_text(project).is_some());
+        // Bulk arm clears the single arm.
+        assert!(!panel.arm_discard_all(project, &paths));
+        assert!(panel.armed_text(project).is_none());
+        // Empty paths never confirm.
+        assert!(!panel.arm_discard_all(project, &[]));
     }
 
     #[test]

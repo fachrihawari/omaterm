@@ -40,6 +40,69 @@ pub struct DiffRefresh {
     pub result: Result<DiffInfo, DiffEmpty>,
 }
 
+/// Detail-view mode. Split is the mock default; both modes render from
+/// the same bounded unified hunks (no full-file fetch, no syntax
+/// highlighting in v0.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffMode {
+    #[default]
+    Split,
+    Inline,
+}
+
+/// One aligned body row for Split/Inline rendering: exactly one of the
+/// line numbers is present on add/delete-only rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlignedRow {
+    pub old_no: Option<u32>,
+    pub new_no: Option<u32>,
+    pub kind: omaterm_core::DiffLineKind,
+    pub text: String,
+}
+
+/// Align one hunk's unified lines into old/new rows. Context lines pair
+/// both sides; deletions occupy the old side only; additions the new
+/// side only. Line numbers derive from the hunk starts; blank spacer
+/// rows are the renderer's job (it sees `None` on the missing side).
+pub fn align_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<AlignedRow> {
+    let mut rows = Vec::with_capacity(hunk.lines.len());
+    let mut old_no = hunk.old_start;
+    let mut new_no = hunk.new_start;
+    for line in &hunk.lines {
+        match line.kind {
+            omaterm_core::DiffLineKind::Context => {
+                rows.push(AlignedRow {
+                    old_no: Some(old_no),
+                    new_no: Some(new_no),
+                    kind: line.kind,
+                    text: line.text.clone(),
+                });
+                old_no += 1;
+                new_no += 1;
+            }
+            omaterm_core::DiffLineKind::Deletion => {
+                rows.push(AlignedRow {
+                    old_no: Some(old_no),
+                    new_no: None,
+                    kind: line.kind,
+                    text: line.text.clone(),
+                });
+                old_no += 1;
+            }
+            omaterm_core::DiffLineKind::Addition => {
+                rows.push(AlignedRow {
+                    old_no: None,
+                    new_no: Some(new_no),
+                    kind: line.kind,
+                    text: line.text.clone(),
+                });
+                new_no += 1;
+            }
+        }
+    }
+    rows
+}
+
 /// Hunks rendered per selected file at most; prev/next navigation cycles
 /// within the rendered window.
 pub const MAX_DIFF_RENDER_HUNKS: usize = 32;
@@ -64,6 +127,9 @@ pub struct DiffPanel {
     preview_open: HashMap<ProjectId, bool>,
     /// Top hunk of the preview viewport, per project.
     hunk_offset: HashMap<ProjectId, usize>,
+    /// Split/Inline detail mode per project. Split by default (mock);
+    /// view-local, never persisted.
+    diff_mode: HashMap<ProjectId, DiffMode>,
 }
 
 impl DiffPanel {
@@ -79,6 +145,16 @@ impl DiffPanel {
     /// Unstaged by default, every launch (view chrome, never persisted).
     pub fn show_staged(&self, project: ProjectId) -> bool {
         self.show_staged.get(&project).copied().unwrap_or(false)
+    }
+
+    /// Detail-view mode for a project. Split by default, every launch
+    /// (view chrome, never persisted).
+    pub fn diff_mode(&self, project: ProjectId) -> DiffMode {
+        self.diff_mode.get(&project).copied().unwrap_or_default()
+    }
+
+    pub fn set_diff_mode(&mut self, project: ProjectId, mode: DiffMode) {
+        self.diff_mode.insert(project, mode);
     }
 
     pub fn set_show_staged(&mut self, project: ProjectId, staged: bool) {
@@ -167,6 +243,7 @@ impl DiffPanel {
         self.show_staged.remove(&project);
         self.preview_open.remove(&project);
         self.hunk_offset.remove(&project);
+        self.diff_mode.remove(&project);
     }
 
     /// Select a file and reset its hunk cursor. Called by file-row clicks
@@ -379,6 +456,53 @@ mod tests {
             },
         );
         panel
+    }
+
+    #[test]
+    fn align_hunk_pairs_context_and_splits_add_delete() {
+        use omaterm_core::{DiffLineInfo, DiffLineKind};
+        let hunk = DiffHunkInfo {
+            old_start: 10,
+            old_lines: 3,
+            new_start: 20,
+            new_lines: 3,
+            lines: vec![
+                DiffLineInfo {
+                    kind: DiffLineKind::Context,
+                    text: "keep".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Deletion,
+                    text: "old".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Addition,
+                    text: "new".into(),
+                },
+            ],
+            truncated: false,
+        };
+        let rows = align_hunk(&hunk);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].old_no, Some(10));
+        assert_eq!(rows[0].new_no, Some(20));
+        assert_eq!(rows[0].kind, DiffLineKind::Context);
+        assert_eq!(rows[1].old_no, Some(11));
+        assert_eq!(rows[1].new_no, None);
+        assert_eq!(rows[2].old_no, None);
+        assert_eq!(rows[2].new_no, Some(21));
+        assert_eq!(rows[2].text, "new");
+    }
+
+    #[test]
+    fn diff_mode_defaults_split_and_clears_with_project() {
+        let project = ProjectId::new();
+        let mut panel = DiffPanel::default();
+        assert_eq!(panel.diff_mode(project), DiffMode::Split);
+        panel.set_diff_mode(project, DiffMode::Inline);
+        assert_eq!(panel.diff_mode(project), DiffMode::Inline);
+        panel.clear_project(project);
+        assert_eq!(panel.diff_mode(project), DiffMode::Split);
     }
 
     #[test]

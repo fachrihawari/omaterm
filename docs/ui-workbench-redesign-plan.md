@@ -1,5 +1,11 @@
 # VS Code Workbench UI Redesign Plan
 
+> **Superseded visual direction:** the user's exact-design requirement for
+> `omaterm_mock_ui_v5.html` is now specified by the
+> [UI v5 pixel-perfect rewrite plan](ui-v5-pixel-perfect-plan.md). Retain this
+> document as the history of the existing VS Code-style implementation; use
+> the v5 plan for subsequent visual work.
+
 > Make OmaTerm feel like a polished VS Code workbench while preserving its
 > terminal-first identity: terminals remain the primary work surface, and no
 > editor, debugger, extension marketplace, or browser pane is introduced.
