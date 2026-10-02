@@ -60,6 +60,23 @@ pub struct AlignedRow {
     pub text: String,
 }
 
+/// One present side of a Split diff row. Split presentation deliberately keeps
+/// old/new text independent so replacement pairs never repeat one side's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitCell {
+    pub line_no: u32,
+    pub kind: omaterm_core::DiffLineKind,
+    pub text: String,
+}
+
+/// A visual row in a Split diff. Edit runs pair deletions with additions by
+/// position; an unmatched edit has one absent side and renders as a spacer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitRow {
+    pub old: Option<SplitCell>,
+    pub new: Option<SplitCell>,
+}
+
 /// Align one hunk's unified lines into old/new rows. Context lines pair
 /// both sides; deletions occupy the old side only; additions the new
 /// side only. Line numbers derive from the hunk starts; blank spacer
@@ -98,6 +115,71 @@ pub fn align_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<AlignedRow> {
                 });
                 new_no += 1;
             }
+        }
+    }
+    rows
+}
+
+/// Convert a unified hunk to paired Split rows without changing its Inline
+/// order. Context lines pair directly. Each consecutive edit run is collected
+/// first, then deletions/additions pair by position through the longer side.
+pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
+    use omaterm_core::DiffLineKind;
+
+    let mut rows = Vec::with_capacity(hunk.lines.len());
+    let mut old_no = hunk.old_start;
+    let mut new_no = hunk.new_start;
+    let mut index = 0;
+    while index < hunk.lines.len() {
+        let line = &hunk.lines[index];
+        if line.kind == DiffLineKind::Context {
+            rows.push(SplitRow {
+                old: Some(SplitCell {
+                    line_no: old_no,
+                    kind: line.kind,
+                    text: line.text.clone(),
+                }),
+                new: Some(SplitCell {
+                    line_no: new_no,
+                    kind: line.kind,
+                    text: line.text.clone(),
+                }),
+            });
+            old_no += 1;
+            new_no += 1;
+            index += 1;
+            continue;
+        }
+
+        let mut deletions = Vec::new();
+        let mut additions = Vec::new();
+        while let Some(line) = hunk.lines.get(index) {
+            match line.kind {
+                DiffLineKind::Context => break,
+                DiffLineKind::Deletion => {
+                    deletions.push(SplitCell {
+                        line_no: old_no,
+                        kind: line.kind,
+                        text: line.text.clone(),
+                    });
+                    old_no += 1;
+                }
+                DiffLineKind::Addition => {
+                    additions.push(SplitCell {
+                        line_no: new_no,
+                        kind: line.kind,
+                        text: line.text.clone(),
+                    });
+                    new_no += 1;
+                }
+            }
+            index += 1;
+        }
+        for pair in 0..deletions.len().max(additions.len()) {
+            rows.push(SplitRow {
+                old: deletions.get(pair).cloned(),
+                new: additions.get(pair).cloned(),
+            });
         }
     }
     rows
@@ -185,6 +267,7 @@ impl DiffPanel {
     /// Scroll the preview viewport by `steps` hunks (positive scrolls
     /// toward later hunks), clamped so the last hunk can sit at the
     /// viewport bottom. No-op without a selection. Returns the new offset.
+    #[cfg(test)]
     pub fn scroll_preview(&mut self, project: ProjectId, steps: i32) -> usize {
         let max = self
             .hunk_count_for(project)
@@ -492,6 +575,75 @@ mod tests {
         assert_eq!(rows[2].old_no, None);
         assert_eq!(rows[2].new_no, Some(21));
         assert_eq!(rows[2].text, "new");
+    }
+
+    #[test]
+    fn split_hunk_pairs_replacements_and_preserves_unmatched_edits() {
+        let hunk = DiffHunkInfo {
+            old_start: 10,
+            old_lines: 4,
+            new_start: 20,
+            new_lines: 5,
+            lines: vec![
+                DiffLineInfo {
+                    kind: DiffLineKind::Context,
+                    text: "keep before".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Deletion,
+                    text: "old first".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Deletion,
+                    text: "old second".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Addition,
+                    text: "new first".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Addition,
+                    text: "new second".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Addition,
+                    text: "new third".into(),
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Context,
+                    text: "keep after".into(),
+                },
+            ],
+            truncated: false,
+        };
+
+        let rows = split_hunk(&hunk);
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].old.as_ref().map(|cell| cell.line_no), Some(10));
+        assert_eq!(rows[0].new.as_ref().map(|cell| cell.line_no), Some(20));
+        assert_eq!(
+            rows[1].old.as_ref().map(|cell| cell.text.as_str()),
+            Some("old first")
+        );
+        assert_eq!(
+            rows[1].new.as_ref().map(|cell| cell.text.as_str()),
+            Some("new first")
+        );
+        assert_eq!(
+            rows[2].old.as_ref().map(|cell| cell.text.as_str()),
+            Some("old second")
+        );
+        assert_eq!(
+            rows[2].new.as_ref().map(|cell| cell.text.as_str()),
+            Some("new second")
+        );
+        assert!(rows[3].old.is_none());
+        assert_eq!(
+            rows[3].new.as_ref().map(|cell| cell.text.as_str()),
+            Some("new third")
+        );
+        assert_eq!(rows[4].old.as_ref().map(|cell| cell.line_no), Some(13));
+        assert_eq!(rows[4].new.as_ref().map(|cell| cell.line_no), Some(24));
     }
 
     #[test]

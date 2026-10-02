@@ -149,13 +149,12 @@ struct WorkspaceView {
     /// Wheel scroll offset into the tree rows (row-granular, clamped every
     /// render). Reset on project switch.
     files_scroll_rows: usize,
-    /// Horizontal tree offset in pixels (Shift+wheel or bar drag, clamped
-    /// to `MAX_SCROLL_COLS_PX`). Zero renders the classic ellipsis path.
-    files_scroll_cols: f32,
+    /// Fractional wheel/trackpad remainder in row units. Retains small native
+    /// deltas until a complete row can be shown instead of forcing a jump.
+    files_scroll_remainder: f32,
     /// Thumb drag in flight: (last pointer position, sub-row accumulator).
     /// Cleared on release, pane clicks, and tab switches (no stuck drags).
     files_vdrag: Option<(f32, f32)>,
-    files_hdrag: Option<(f32, f32)>,
     files_last_resolve: Instant,
     files_poller_active: bool,
     /// `Ctrl+P` fuzzy finder overlay state.
@@ -381,9 +380,8 @@ impl WorkspaceView {
             files_search: String::new(),
             files_search_focused: false,
             files_scroll_rows: 0,
-            files_scroll_cols: 0.0,
+            files_scroll_remainder: 0.0,
             files_vdrag: None,
-            files_hdrag: None,
             files_last_resolve: Instant::now()
                 .checked_sub(Duration::from_secs(60))
                 .unwrap_or_else(Instant::now),
@@ -2081,6 +2079,7 @@ impl WorkspaceView {
             self.files_event.store(false, Ordering::Release);
             self.files_last_resolve = Instant::now();
             self.files_scroll_rows = 0;
+            self.files_scroll_remainder = 0.0;
             // New generation retires in-flight fetches; other projects'
             // caches drop so memory stays bounded by one project.
             self.files_generation = self.files_generation.wrapping_add(1);
@@ -2452,46 +2451,6 @@ impl WorkspaceView {
             }
             Err(error) => {
                 self.input_notice = Some(format!("Unstage: {error}"));
-                cx.notify();
-            }
-        }
-    }
-
-    /// Copy a diff file's absolute path, Bourne shell-escaped (§47
-    /// policy reuse), to the clipboard.
-    fn diff_copy_path(
-        &mut self,
-        project: ProjectId,
-        relative: &std::path::Path,
-        cx: &mut Context<Self>,
-    ) {
-        if self.shutting_down {
-            return;
-        }
-        self.copy_path(project, relative, cx);
-    }
-
-    /// Jump to a diff file through `FileCommand::Open` (terminal-routed,
-    /// v0.3-editor-compatible). Failures surface as notices, never silent.
-    fn diff_open_file(
-        &mut self,
-        project: ProjectId,
-        relative: std::path::PathBuf,
-        cx: &mut Context<Self>,
-    ) {
-        if self.shutting_down {
-            return;
-        }
-        match self.dispatch_command(
-            OmaCommand::File(FileCommand::Open {
-                project,
-                path: relative,
-            }),
-            cx,
-        ) {
-            Ok(_) => {}
-            Err(error) => {
-                self.input_notice = Some(format!("Open: {error}"));
                 cx.notify();
             }
         }
@@ -3065,6 +3024,7 @@ impl WorkspaceView {
                 self.files_search.clear();
                 self.files_search_focused = false;
                 self.files_scroll_rows = 0;
+                self.files_scroll_remainder = 0.0;
                 cx.notify();
             }
             "enter" | "return" | "kpenter" => {
@@ -3096,6 +3056,7 @@ impl WorkspaceView {
             "backspace" => {
                 self.files_search.pop();
                 self.files_scroll_rows = 0;
+                self.files_scroll_remainder = 0.0;
                 cx.notify();
             }
             _ => {
@@ -3110,6 +3071,7 @@ impl WorkspaceView {
                 {
                     self.files_search.push(ch);
                     self.files_scroll_rows = 0;
+                    self.files_scroll_remainder = 0.0;
                     cx.notify();
                 }
             }
@@ -3271,7 +3233,6 @@ impl WorkspaceView {
                 self.git_panel.set_commit_focused(false);
                 self.files_search_focused = false;
                 self.files_vdrag = None;
-                self.files_hdrag = None;
                 cx.notify();
                 return;
             }
@@ -4407,6 +4368,8 @@ impl WorkspaceView {
             .max(files::MIN_THUMB_PX)
             .min(track_h);
         let top_px = top_frac * (track_h - thumb_h);
+        let max_start = total.saturating_sub(visible) as f32;
+        let travel = (track_h - thumb_h).max(1.0);
         div()
             .w(px(files::SCROLLBAR_WIDTH_PX))
             .h(px(track_h))
@@ -4433,7 +4396,7 @@ impl WorkspaceView {
                             cx.notify();
                         }),
                     )
-                    .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
+                    .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
                         let Some((last_y, mut acc)) = view.files_vdrag else {
                             return;
                         };
@@ -4441,9 +4404,8 @@ impl WorkspaceView {
                             view.files_vdrag = None;
                             return;
                         }
-                        let row_height = files::TREE_ROW_H;
                         let y = f32::from(event.position.y);
-                        acc += (y - last_y) / row_height;
+                        acc += (y - last_y) / travel * max_start;
                         let step = acc.trunc() as i32;
                         acc -= step as f32;
                         view.files_scroll_rows =
@@ -4463,79 +4425,6 @@ impl WorkspaceView {
                         div()
                             .w_full()
                             .h(px(thumb_h))
-                            .rounded_full()
-                            .bg(rgb(0x52525B)),
-                    )
-                    .child(div().flex_1()),
-            )
-    }
-
-    /// Horizontal tree scrollbar: position nub over the measured inspector
-    /// width minus padding, row gutters, and the vertical rail. Content
-    /// width is unmeasured; a few px off either way is invisible on an 8px
-    /// chrome element. Shift+wheel, native x deltas, or press-and-slide.
-    fn render_tree_hscrollbar(&mut self, cx: &mut Context<Self>) -> Div {
-        let track_w =
-            crate::ui::geometry::clamp_inspector_width(self.inspector_width) - 16.0 - 12.0 - 12.0;
-        const THUMB_W: f32 = 48.0;
-        let track_w = track_w.max(THUMB_W + 1.0);
-        let pos = (self.files_scroll_cols / files::MAX_SCROLL_COLS_PX).clamp(0.0, 1.0);
-        let left_px = pos * (track_w - THUMB_W);
-        div()
-            .h(px(10.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .px_2()
-            .child(
-                div()
-                    .w(px(track_w))
-                    .h(px(6.0))
-                    .rounded_full()
-                    .bg(rgb(0x1F1F23))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, event: &MouseDownEvent, _, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            view.files_hdrag = Some((f32::from(event.position.x), 0.0));
-                            cx.notify();
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, cx| {
-                        let Some((last_x, mut acc)) = view.files_hdrag else {
-                            return;
-                        };
-                        if view.shutting_down {
-                            view.files_hdrag = None;
-                            return;
-                        }
-                        let x = f32::from(event.position.x);
-                        acc += x - last_x;
-                        let step = acc.trunc();
-                        acc -= step;
-                        view.files_scroll_cols =
-                            (view.files_scroll_cols + step).clamp(0.0, files::MAX_SCROLL_COLS_PX);
-                        view.files_hdrag = Some((x, acc));
-                        cx.notify();
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            view.files_hdrag = None;
-                            cx.notify();
-                        }),
-                    )
-                    .child(div().w(px(left_px)))
-                    .child(
-                        div()
-                            .w(px(THUMB_W))
-                            .h_full()
                             .rounded_full()
                             .bg(rgb(0x52525B)),
                     )
@@ -4640,7 +4529,6 @@ impl WorkspaceView {
         // Rows render into their own column so the vertical scrollbar
         // rail can sit beside them (footers stay full-width below).
         let mut rows_col = div().flex().flex_col().flex_1().min_w(px(0.0));
-        let h_offset = self.files_scroll_cols;
         let rows_shown = rows.len();
         let rows_total = all_rows.len();
         // Git decorations for tree rows (mock M/U marks): untracked → U,
@@ -4676,24 +4564,10 @@ impl WorkspaceView {
             };
             let path = row.path.clone();
             let dimmed = row.loading && !is_selected;
-            // Horizontal scroll: at rest the classic ellipsis path renders;
-            // once shifted, the full relative path lays out nowrap inside
-            // an overflow-hidden viewport and slides under a negative margin.
-            let full_path = row.path.to_string_lossy().into_owned();
-            let label_view = if h_offset <= 0.0 {
-                div().flex_1().min_w(px(0.0)).truncate().child(label)
-            } else {
-                div().flex_1().min_w(px(0.0)).overflow_hidden().child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .ml(px(-h_offset))
-                        .child(full_path),
-                )
-            };
+            // Keep the file identity stable. The prior pseudo-horizontal
+            // scroll swapped this basename for a full path and left icons
+            // behind; a true whole-row horizontal viewport comes in U4.
+            let label_view = div().flex_1().min_w(px(0.0)).truncate().child(label);
             // Leading marker: explicit chevron for directories (mock),
             // 14px spacer for files. Badge: TS/{ } text marks, else the
             // file-type glyph.
@@ -4777,7 +4651,6 @@ impl WorkspaceView {
                             window.focus(&view.focus_handle);
                             view.files_search_focused = false;
                             view.files_vdrag = None;
-                            view.files_hdrag = None;
                             if is_dir {
                                 view.toggle_file_row(project, path.clone(), true, cx);
                             } else {
@@ -4819,89 +4692,9 @@ impl WorkspaceView {
                     .child("(truncated: bounded tree)"),
             );
         }
-        // Mouse-friendly actions for the selected file row.
-        if let Some(path) = selected
-            && let Some(row) = self
-                .files_panel
-                .rows_for(project)
-                .unwrap_or_default()
-                .iter()
-                .find(|row| row.path == path)
-            && row.kind != omaterm_core::FileKind::Directory
-        {
-            let open_path = path.clone();
-            let bar_with_actions = bar.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(0x71717A))
-                    .child(
-                        div()
-                            .px_1()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.open_file_path(project, open_path.clone(), cx);
-                                }),
-                            )
-                            .child("open"),
-                    )
-                    .child(
-                        div()
-                            .px_1()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.copy_selected_path(cx);
-                                }),
-                            )
-                            .child("copy"),
-                    )
-                    .child(
-                        div()
-                            .px_1()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.reveal_selected_in_terminal(cx);
-                                }),
-                            )
-                            .child("reveal"),
-                    ),
-            );
-            bar = bar_with_actions.child(
-                div()
-                    .px_2()
-                    .text_color(rgb(0x52525B))
-                    .child("Ctrl+P find · ^⇧Y copy · ^⇧U reveal"),
-            );
-        } else {
-            bar = bar.child(
-                div()
-                    .px_2()
-                    .text_color(rgb(0x52525B))
-                    .child("Ctrl+P find · ^⇧Y copy · ^⇧U reveal"),
-            );
-        }
-        bar = bar.child(self.render_tree_hscrollbar(cx));
+        // File actions stay available through their real keyboard bindings.
+        // A selected row no longer grows the tree with a duplicate action/help
+        // strip; the contextual menu lands with the Files viewport rebuild.
         bar
     }
 
@@ -5498,6 +5291,10 @@ impl WorkspaceView {
                         .child(match files::file_badge(&entry.path) {
                             Some((text, color)) => div()
                                 .w(px(20.0))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
                                 .flex_shrink_0()
                                 .text_size(px(10.0))
                                 .font_weight(crate::ui::metrics::BADGE_600)
@@ -5505,23 +5302,44 @@ impl WorkspaceView {
                                 .child(text),
                             None => div()
                                 .w(px(20.0))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
                                 .flex_shrink_0()
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .child("···"),
+                                .child(crate::ui::assets::icon(
+                                    crate::ui::assets::FILE_TEXT,
+                                    16.0,
+                                    crate::ui::theme::MUTED,
+                                )),
                         })
                         .child(
                             div()
+                                .flex()
                                 .flex_1()
                                 .flex_col()
+                                .justify_center()
                                 .min_w(px(0.0))
-                                .child(div().truncate().child(name))
                                 .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(9.0))
+                                    crate::ui::metrics::text_role(
+                                        div().truncate(),
+                                        crate::ui::metrics::BODY_11,
+                                    )
+                                    .child(name),
+                                )
+                                // Root-level files have no parent label. An
+                                // empty text element still reserves line height
+                                // and lifts the filename above the icon center.
+                                .when(!dir.is_empty(), |column| {
+                                    column.child(
+                                        crate::ui::metrics::text_role(
+                                            div().truncate(),
+                                            crate::ui::metrics::META_9,
+                                        )
                                         .text_color(rgb(crate::ui::theme::MUTED))
                                         .child(dir),
-                                ),
+                                    )
+                                }),
                         ),
                 )
                 .child(
@@ -5573,27 +5391,8 @@ impl WorkspaceView {
             .flex_col()
             .flex_1()
             .size_full()
-            .bg(rgb(0x18181B))
-            .on_scroll_wheel(cx.listener(move |view, event: &ScrollWheelEvent, _, cx| {
-                if view.shutting_down {
-                    return;
-                }
-                // Hunk-granularity scroll with the files-tree sign
-                // convention: positive deltas move toward earlier hunks.
-                let dy: f32 = match event.delta {
-                    ScrollDelta::Pixels(point) => f32::from(point.y),
-                    ScrollDelta::Lines(point) => point.y,
-                };
-                let mut steps = (dy / 24.0).round() as i32;
-                if steps == 0 && dy != 0.0 {
-                    steps = dy.signum() as i32;
-                }
-                if steps == 0 {
-                    return;
-                }
-                view.diff_panel.scroll_preview(project, -steps);
-                cx.notify();
-            }));
+            .min_h(px(0.0))
+            .bg(rgb(crate::ui::theme::EDITOR_BG));
         let Some(path) = self
             .git_panel
             .selected_path(project)
@@ -5842,118 +5641,6 @@ impl WorkspaceView {
                 .diff_panel
                 .selected_hunk(project)
                 .min(count.saturating_sub(1));
-            let offset = self.diff_panel.hunk_offset(project).min(count);
-            let shown = file
-                .hunks
-                .iter()
-                .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
-                .skip(offset)
-                .take(diff_panel::MAX_DIFF_PREVIEW_HUNKS)
-                .count();
-            // Slim position line: file progress plus the file actions that
-            // the v5 file header omits (open/copy/refresh) and hunk nav.
-            // Per-hunk stage buttons are intentionally gone: staging acts
-            // on the whole file from the header, so a per-hunk affordance
-            // would misrepresent its scope (true partial-hunk staging is a
-            // recorded M15 gap).
-            let nav = |label: &'static str, next: bool| {
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(0x71717A))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            if next {
-                                view.diff_panel.next_hunk(project);
-                            } else {
-                                view.diff_panel.prev_hunk(project);
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .child(label)
-            };
-            let open_hunk_path = path.clone();
-            let copy_hunk_path = path.clone();
-            bar = bar.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .text_size(px(10.0))
-                    .text_color(rgb(crate::ui::theme::MUTED))
-                    .child(format!(
-                        "hunks {}–{} of {}",
-                        if count == 0 { 0 } else { offset + 1 },
-                        offset + shown,
-                        file.hunk_count,
-                    ))
-                    .child(nav("‹ prev", false))
-                    .child(nav("next ›", true))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .px_1()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.diff_open_file(project, open_hunk_path.clone(), cx);
-                                }),
-                            )
-                            .child("open"),
-                    )
-                    .child(
-                        div()
-                            .px_1()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.diff_copy_path(project, &copy_hunk_path, cx);
-                                }),
-                            )
-                            .child("copy"),
-                    )
-                    .child(
-                        div()
-                            .px_1()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.diff_dirty_hint = true;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(crate::ui::primitives::cmd_icon(
-                                crate::ui::assets::REFRESH,
-                                14.0,
-                                crate::ui::theme::MUTED,
-                            )),
-                    ),
-            );
             let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
             let mode = self.diff_panel.diff_mode(project);
             // Split side headers identify the compared revisions once per
@@ -5998,20 +5685,21 @@ impl WorkspaceView {
                         .child(side_header(right_rev)),
                 );
             }
+            let mut body = div()
+                .id("diff-body")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_y_scroll();
             for (index, hunk) in file
                 .hunks
                 .iter()
                 .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
                 .enumerate()
-                .skip(offset)
-                .take(diff_panel::MAX_DIFF_PREVIEW_HUNKS)
             {
                 let current = index == cursor;
-                let rows: Vec<diff_panel::AlignedRow> = diff_panel::align_hunk(hunk)
-                    .into_iter()
-                    .take(diff_panel::MAX_DIFF_RENDER_LINES)
-                    .collect();
-                bar = bar.child(
+                body = body.child(
                     div()
                         .px_2()
                         .py(px(2.0))
@@ -6031,29 +5719,35 @@ impl WorkspaceView {
                         )),
                 );
                 if mode == diff_panel::DiffMode::Split {
-                    for row in &rows {
-                        bar = bar.child(
+                    for row in diff_panel::split_hunk(hunk)
+                        .iter()
+                        .take(diff_panel::MAX_DIFF_RENDER_LINES)
+                    {
+                        body = body.child(
                             div()
                                 .flex()
                                 .flex_row()
                                 .flex_shrink_0()
-                                .child(split_cell(row, true, &mono))
+                                .child(split_cell(row.old.as_ref(), &mono))
                                 .child(
                                     div()
                                         .w(px(1.0))
                                         .flex_shrink_0()
                                         .bg(rgb(crate::ui::theme::BORDER)),
                                 )
-                                .child(split_cell(row, false, &mono)),
+                                .child(split_cell(row.new.as_ref(), &mono)),
                         );
                     }
                 } else {
-                    for row in &rows {
-                        bar = bar.child(inline_row(row, &mono));
+                    for row in diff_panel::align_hunk(hunk)
+                        .iter()
+                        .take(diff_panel::MAX_DIFF_RENDER_LINES)
+                    {
+                        body = body.child(inline_row(row, &mono));
                     }
                 }
                 if hunk.truncated || hunk.lines.len() > diff_panel::MAX_DIFF_RENDER_LINES {
-                    bar = bar.child(
+                    body = body.child(
                         div()
                             .px_2()
                             .py_1()
@@ -6063,7 +5757,7 @@ impl WorkspaceView {
                 }
             }
             if file.truncated || file.hunks.len() > diff_panel::MAX_DIFF_RENDER_HUNKS {
-                bar = bar.child(
+                body = body.child(
                     div()
                         .px_2()
                         .py_1()
@@ -6071,18 +5765,8 @@ impl WorkspaceView {
                         .child("… (file truncated)"),
                 );
             }
+            bar = bar.child(body);
         }
-        bar = bar.child(
-            div()
-                .px_2()
-                .py_1()
-                .text_color(rgb(0x52525B))
-                .child(if staged {
-                    "Unstage acts on the whole file · open/copy path · Alt+N/P hunk · wheel scrolls hunks"
-                } else {
-                    "Stage acts on the whole file · open/copy path · Alt+N/P hunk · wheel scrolls hunks"
-                }),
-        );
         bar
     }
 
@@ -6094,7 +5778,6 @@ impl WorkspaceView {
         self.git_panel.set_commit_focused(false);
         self.files_search_focused = false;
         self.files_vdrag = None;
-        self.files_hdrag = None;
         cx.notify();
     }
 
@@ -7081,32 +6764,17 @@ impl WorkspaceView {
             let row_height = files::TREE_ROW_H;
             let dy_lines: f32 = match event.delta {
                 ScrollDelta::Pixels(point) => f32::from(point.y) / row_height,
-                ScrollDelta::Lines(point) => point.y,
+                // One wheel detent should cover a useful number of compact
+                // 28px tree rows; touchpads retain their pixel precision.
+                ScrollDelta::Lines(point) => point.y * 3.0,
             };
-            let mut steps = dy_lines.round() as i32;
-            if steps == 0 && dy_lines != 0.0 {
-                steps = dy_lines.signum() as i32;
-            }
-            let dx_px: f32 = match event.delta {
-                ScrollDelta::Pixels(point) => f32::from(point.x),
-                ScrollDelta::Lines(point) => point.x * row_height,
-            };
-            let dy_px: f32 = match event.delta {
-                ScrollDelta::Pixels(point) => f32::from(point.y),
-                ScrollDelta::Lines(point) => point.y * row_height,
-            };
-            let mut sideways = dx_px;
-            if event.modifiers.shift {
-                sideways += dy_px;
-            }
-            if steps == 0 && sideways == 0.0 {
+            view.files_scroll_remainder -= dy_lines;
+            let steps = view.files_scroll_remainder.trunc() as i32;
+            view.files_scroll_remainder -= steps as f32;
+            if steps == 0 {
                 return;
             }
-            view.files_scroll_rows = (view.files_scroll_rows as i32 - steps).max(0) as usize;
-            if sideways != 0.0 {
-                view.files_scroll_cols =
-                    (view.files_scroll_cols + sideways).clamp(0.0, files::MAX_SCROLL_COLS_PX);
-            }
+            view.files_scroll_rows = (view.files_scroll_rows as i32 + steps).max(0) as usize;
             cx.notify();
         }))
     }
@@ -7964,6 +7632,11 @@ fn diff_gutter(no: Option<u32>, color: u32) -> Div {
 fn diff_gutter_w(no: Option<u32>, color: u32, width: f32) -> Div {
     div()
         .w(px(width))
+        .h_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_end()
         .flex_shrink_0()
         .text_right()
         .text_color(rgb(color))
@@ -7982,41 +7655,30 @@ fn diff_gutter_w(no: Option<u32>, color: u32, width: f32) -> Div {
 fn diff_row_decor(kind: omaterm_core::DiffLineKind) -> Div {
     match kind {
         omaterm_core::DiffLineKind::Addition => div()
+            .flex()
+            .flex_row()
+            .items_center()
             .bg(rgba(crate::ui::theme::DIFF_ADD_BG))
             .border_l_2()
             .border_color(rgba(crate::ui::theme::DIFF_ADD_MARK)),
         omaterm_core::DiffLineKind::Deletion => div()
+            .flex()
+            .flex_row()
+            .items_center()
             .bg(rgba(crate::ui::theme::DIFF_DEL_BG))
             .border_l_2()
             .border_color(rgba(crate::ui::theme::DIFF_DEL_MARK)),
-        omaterm_core::DiffLineKind::Context => div(),
+        omaterm_core::DiffLineKind::Context => div().flex().flex_row().items_center(),
     }
 }
 
-/// One Split cell: gutter + code when the aligned row belongs to this
-/// side, otherwise a blank spacer that preserves row alignment.
-fn split_cell(row: &diff_panel::AlignedRow, old_side: bool, mono: &str) -> Div {
-    let (no, present) = if old_side {
-        (
-            row.old_no,
-            matches!(
-                row.kind,
-                omaterm_core::DiffLineKind::Context | omaterm_core::DiffLineKind::Deletion
-            ),
-        )
-    } else {
-        (
-            row.new_no,
-            matches!(
-                row.kind,
-                omaterm_core::DiffLineKind::Context | omaterm_core::DiffLineKind::Addition
-            ),
-        )
-    };
-    if !present {
+/// One Split cell: gutter + its own code/text, or a blank spacer when the
+/// paired edit has no line on this side.
+fn split_cell(cell: Option<&diff_panel::SplitCell>, mono: &str) -> Div {
+    let Some(cell) = cell else {
         return div().flex_1().min_w(px(0.0)).h(px(22.0));
-    }
-    let no_color = match row.kind {
+    };
+    let no_color = match cell.kind {
         omaterm_core::DiffLineKind::Addition => crate::ui::theme::LINE_NO_ADD,
         omaterm_core::DiffLineKind::Deletion => crate::ui::theme::LINE_NO_DEL,
         omaterm_core::DiffLineKind::Context => crate::ui::theme::LINE_NO,
@@ -8027,16 +7689,24 @@ fn split_cell(row: &diff_panel::AlignedRow, old_side: bool, mono: &str) -> Div {
         .flex()
         .flex_row()
         .items_center()
-        .min_h(px(22.0))
+        .h(px(22.0))
         .font_family(mono.to_string())
         .text_size(px(12.0))
         .text_color(rgb(crate::ui::theme::TEXT))
         .child(
-            diff_row_decor(row.kind)
+            diff_row_decor(cell.kind)
                 .flex_1()
-                .flex_row()
-                .child(diff_gutter(no, no_color))
-                .child(div().flex_1().min_w(px(0.0)).child(row.text.clone())),
+                .h_full()
+                .min_w(px(0.0))
+                .child(diff_gutter(Some(cell.line_no), no_color))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(cell.text.clone()),
+                ),
         )
 }
 
@@ -8051,15 +7721,16 @@ fn inline_row(row: &diff_panel::AlignedRow, mono: &str) -> Div {
         .flex()
         .flex_row()
         .items_center()
-        .flex_shrink_0()
-        .min_h(px(21.0))
+        .w_full()
+        .h(px(21.0))
         .font_family(mono.to_string())
         .text_size(px(12.0))
         .text_color(rgb(crate::ui::theme::TEXT))
         .child(
             diff_row_decor(row.kind)
                 .flex_1()
-                .flex_row()
+                .h_full()
+                .min_w(px(0.0))
                 .child(diff_gutter_w(
                     row.old_no,
                     {
@@ -8082,7 +7753,14 @@ fn inline_row(row: &diff_panel::AlignedRow, mono: &str) -> Div {
                     },
                     46.0,
                 ))
-                .child(div().flex_1().min_w(px(0.0)).child(row.text.clone())),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(row.text.clone()),
+                ),
         )
 }
 

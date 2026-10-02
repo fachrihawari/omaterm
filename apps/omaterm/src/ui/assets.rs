@@ -23,6 +23,7 @@ pub const INFO: &str = "info";
 pub const FOLDER: &str = "folder";
 pub const FOLDER_OPEN: &str = "folder-open";
 pub const FOLDER_GIT: &str = "folder-git-2";
+pub const FILE_TEXT: &str = "file-text";
 pub const GIT_BRANCH: &str = "git-branch";
 pub const GIT_COMPARE: &str = "git-compare-arrows";
 pub const EXTERNAL: &str = "external-link";

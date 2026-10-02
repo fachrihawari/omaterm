@@ -44,6 +44,131 @@ tests in milestone documents are not evidence of implemented application behavio
 The [M5–M8 closure plan](m5-m8-closure-plan.md) orders the remaining blockers;
 it records intended work, not completed validation.
 
+## Diff and Files/Git UX correction planning — 2026-10-02
+
+User feedback and screenshot identify unreadable diff rows, unnatural/slow Files
+scrolling, label-only horizontal movement, off-center Git file marks, and a
+persistent unusable Files shortcut strip. The
+[detailed correction plan](diff-files-ux-correction-plan.md) expands R4/R5 into
+U0–U5 deliveries with measured row/viewport contracts and live acceptance gates.
+
+Source audit confirms missing `.flex()` on diff decoration and Git name/path
+wrappers, hunk-granular diff scrolling, viewport estimates based on full window
+height, row-rounded Files deltas, fixed horizontal thumb/range, and label text
+that changes to a full path while horizontally scrolled. The plan requires
+separate Inline/Split models, viewport-sized virtualization, float-pixel scroll
+offsets, full-content-plane Files horizontal movement, accurate thumb geometry,
+centered file marks and contextual help instead of persistent hint rows.
+
+This is documentation-only: no application behavior changed or UI acceptance
+claimed. Native reproduction and the GPUI scroll specimen are the first next
+actions. Existing M15 capability gaps remain distinct from presentation repair.
+
+Documentation checks: `python3 scripts/check-docs.py` passed (31 Markdown files,
+95 local link targets, 256 numbered blueprint references; 33 CLI mappings);
+`git diff --check` and `git diff --no-index --check /dev/null
+docs/diff-files-ux-correction-plan.md` passed. Cargo checks are unnecessary for
+this documentation-only change.
+
+### Diff and Files/Git UX U1 — 2026-10-02
+
+Started the immediate rendering pass from the Diff and Files/Git UX plan.
+`split_cell()`, `inline_row()` and the line-number gutter now establish actual
+flex rows with measured 22px/21px heights and no-wrap clipped code, preventing
+line numbers and code from stacking. The diff body now uses `#101318`. Git file
+marks have fixed full-row centered slots; the name/path wrapper is a real flex
+column; generic files use the vendored 16px `file-text` SVG rather than `···`.
+The persistent selected-Files open/copy/reveal controls and unreadable shortcut
+strip are gone; supported keyboard bindings remain while contextual menu work is
+deferred to the viewport rebuild.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 87 tests |
+| `cargo clippy -p omaterm --all-targets -- -D warnings` | PASS; dependency future-incompatibility notice for `proc-macro-error2 v2.0.1` only |
+| `git diff --check` | PASS |
+
+No native screenshot or scroll interaction pass is claimed. U2 still needs the
+pure Split replacement-pairing model; U3/U4 still need virtualized pixel
+viewports and natural two-axis scrolling.
+
+### Diff U2 Split pairing — 2026-10-02
+
+`diff_panel.rs` now exposes a separate pure `SplitRow`/`SplitCell` presentation
+model. Inline continues to preserve unified-diff order. For Split, context lines
+pair directly and every consecutive edit run pairs deletion/addition lines by
+position through the longer side, retaining each side's own line number, kind
+and text. The renderer consumes those independent cells, so replacements no
+longer repeat one side's code or create sequential blank blocks.
+
+The new `split_hunk_pairs_replacements_and_preserves_unmatched_edits` test covers
+context, a 2-to-3 replacement and the unmatched added spacer. `cargo fmt --all
+--check`, `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1`
+(88 tests), `cargo clippy -p omaterm --all-targets -- -D warnings`, and `git
+diff --check` passed. Native Split capture and the U3 pixel viewport remain
+pending; U2 is not visual acceptance.
+
+### Diff U3 continuous body scroll (interim) — 2026-10-02
+
+The diff preview now has a fixed 40px action header and Split side headers above
+one identified native GPUI vertical scroll body. The prior manual wheel handler
+rounded events into hunk jumps and displayed only an eight-hunk window; it is
+removed. All bounded hunks now render in that continuous body, including a long
+single hunk, while hunk cursor state remains for the existing keyboard controls.
+The permanent hunk progress/open/copy/refresh strip and bottom shortcut sentence
+were removed from default chrome. The unused open/copy helpers were removed;
+those actions return only with an implemented contextual menu.
+
+This is intentionally an interim U3 step, not the plan's final virtualized
+pixel-offset viewport: rendering is still capped by the existing 32 hunks × 200
+lines but is not yet viewport-row virtualized, and horizontal diff scrolling is
+still pending. `cargo fmt --all --check`, targeted desktop tests (88), targeted
+Clippy and `git diff --check` passed. Native Wayland scrolling validation is
+pending.
+
+### Files U4 scroll interaction interim — 2026-10-02
+
+Removed the broken horizontal tree rail and Shift/pointer horizontal path: it
+only translated labels, changed filenames to full paths and left indentation,
+icons and status marks stationary. File rows now keep a stable basename until a
+true whole-content horizontal viewport is implemented. The Files row window now
+uses the estimated inspector body after global/header/search chrome rather than
+the full window height. Wheel/trackpad deltas accumulate fractional row movement
+instead of forcing each nonzero delta to jump; wheel line deltas cover three
+compact rows. The vertical rail is the measured 9px width, and thumb dragging
+maps pointer travel proportionally to actual scrollable row range instead of
+one pointer row equaling one content row.
+
+This is an interim interaction correction, not U4 closure. The tree remains the
+existing bounded manual row viewport; a `uniform_list`/native two-axis viewport,
+whole-content horizontal movement, actual text-width extents and native Wayland
+gesture validation remain pending. `cargo fmt --all --check`, targeted desktop
+tests (88), targeted Clippy and `git diff --check` passed.
+
+### Git filename vertical alignment — 2026-10-02
+
+The reported Git filename misalignment was text geometry, not the centered icon
+slot: the filename/path column inherited a larger line height than its measured
+11px/9px roles. It now applies `BODY_11` (16.5px line height) and `META_9`
+(13.5px), inside the already centered flex column. The two-line block is 30px
+inside the 40px row and therefore centers with the mark. `cargo fmt --all
+--check`, targeted desktop tests (88), targeted Clippy and `git diff --check`
+passed. Native visual confirmation remains pending.
+
+### Git root-level filename alignment follow-up — 2026-10-03
+
+The user's follow-up screenshot of `eslint.config.js` shows why the prior
+line-height change was insufficient: root-level files still reserved an empty
+parent-path line below the filename. The Git label column now renders its path
+line only when the parent is nonempty. Root filenames center as a single line;
+nested files retain the measured name/path block. This supersedes the earlier
+assumption that a two-line block was appropriate for every file.
+
+`cargo fmt --all --check`, `cargo clippy -p omaterm --all-targets -- -D warnings`
+and `git diff --check` passed. Native visual confirmation of the current build
+remains pending.
+
 ## UI v5 correction audit and plan — 2026-10-02
 
 User feedback: both sidebars, icons and numerous details still differ from

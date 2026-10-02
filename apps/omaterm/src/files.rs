@@ -22,11 +22,8 @@ use omaterm_core::{FileEntry, FileKind, ProjectId};
 pub const MAX_TREE_ROWS: usize = 2_000;
 /// Rows rendered at most; the footer names the truncation.
 pub const MAX_RENDER_ROWS: usize = 400;
-/// Vertical scrollbar width: thin VSCode-style rail beside the rows.
-pub const SCROLLBAR_WIDTH_PX: f32 = 12.0;
-/// Horizontal scroll clamp in pixels: far past any plausible filename at
-/// the tree font, tight enough to keep the offset state honest.
-pub const MAX_SCROLL_COLS_PX: f32 = 1600.0;
+/// Vertical scrollbar width, measured from the frozen v5 reference.
+pub const SCROLLBAR_WIDTH_PX: f32 = 9.0;
 /// Thumbs never shrink past this: still grabbable at the bottom of deep
 /// trees.
 pub const MIN_THUMB_PX: f32 = 14.0;
