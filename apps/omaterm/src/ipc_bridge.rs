@@ -495,10 +495,10 @@ fn output_json(output: CommandOutput) -> Value {
                                         truncated = true;
                                         hunk_truncated = true;
                                     }
-                                    json!({"kind":line.kind.as_str(),"text":line.text.chars().take(MAX_BRIDGE_LINE_CHARS).collect::<String>()})
+                                    json!({"kind":line.kind.as_str(),"text":line.text.chars().take(MAX_BRIDGE_LINE_CHARS).collect::<String>(),"no_newline_at_end":line.no_newline_at_end})
                                 })
                                 .collect::<Vec<_>>();
-                            json!({"old_start":hunk.old_start,"old_lines":hunk.old_lines,"new_start":hunk.new_start,"new_lines":hunk.new_lines,"lines":lines,"truncated":hunk_truncated})
+                            json!({"id":hunk.id,"old_start":hunk.old_start,"old_lines":hunk.old_lines,"new_start":hunk.new_start,"new_lines":hunk.new_lines,"lines":lines,"truncated":hunk_truncated})
                         })
                         .collect::<Vec<_>>();
                     json!({"path":file.path,"old_path":file.old_path,"status":file.status.as_str(),"binary":file.binary,"hunks":hunks,"hunk_count":file.hunk_count,"truncated":file.truncated})
@@ -784,6 +784,7 @@ mod tests {
         let line = |kind, text: &str| omaterm_core::DiffLineInfo {
             kind,
             text: text.into(),
+            no_newline_at_end: false,
         };
         let info = omaterm_core::DiffInfo {
             files: vec![omaterm_core::DiffFileInfo {
@@ -792,6 +793,7 @@ mod tests {
                 status: omaterm_core::DiffFileStatus::Modified,
                 binary: false,
                 hunks: vec![omaterm_core::DiffHunkInfo {
+                    id: 1,
                     old_start: 1,
                     old_lines: 2,
                     new_start: 1,
@@ -827,6 +829,7 @@ mod tests {
                 status: omaterm_core::DiffFileStatus::Modified,
                 binary: false,
                 hunks: vec![omaterm_core::DiffHunkInfo {
+                    id: 2,
                     old_start: 1,
                     old_lines: 1,
                     new_start: 1,

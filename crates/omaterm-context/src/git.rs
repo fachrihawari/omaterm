@@ -19,7 +19,7 @@
 //! directory and `-c status.relativePaths=true`, so porcelain paths land
 //! root-relative even when user config says otherwise.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -402,7 +402,28 @@ pub(crate) fn run_git(
     timeout: Duration,
     stdout_cap: usize,
 ) -> Result<GitOutput, GitError> {
-    run_git_with("git", root, extra_env, args, timeout, stdout_cap)
+    run_git_with("git", root, extra_env, args, None, timeout, stdout_cap)
+}
+
+/// Bounded Git mutation with internally generated stdin. Callers pass only
+/// trusted context-owned bytes; IPC/UI never expose a generic patch channel.
+pub(crate) fn run_git_input(
+    root: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+    input: &[u8],
+    timeout: Duration,
+    stdout_cap: usize,
+) -> Result<GitOutput, GitError> {
+    run_git_with(
+        "git",
+        root,
+        extra_env,
+        args,
+        Some(input),
+        timeout,
+        stdout_cap,
+    )
 }
 
 /// Same spawn with an explicit binary path. Production always passes
@@ -414,6 +435,7 @@ fn run_git_with(
     root: &Path,
     extra_env: &[(&str, &str)],
     args: &[&str],
+    input: Option<&[u8]>,
     timeout: Duration,
     stdout_cap: usize,
 ) -> Result<GitOutput, GitError> {
@@ -423,7 +445,11 @@ fn run_git_with(
         .args(args)
         .current_dir(root)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in extra_env {
@@ -432,6 +458,11 @@ fn run_git_with(
     let mut child = command
         .spawn()
         .map_err(|error| GitError::GitUnavailable(format!("cannot spawn git: {error}")))?;
+    if let Some(input) = input
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        stdin.write_all(input)?;
+    }
     // The reader thread owns only the pipes; the caller keeps the child
     // handle so every path below reaps it (no orphans, no leaked waiter
     // threads), mirroring `resolve.rs`. Output is capped before
@@ -851,6 +882,7 @@ mod tests {
             std::env::temp_dir().as_path(),
             &[],
             &["status"],
+            None,
             Duration::from_secs(5),
             1024,
         );

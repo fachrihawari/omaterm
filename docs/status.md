@@ -27,7 +27,79 @@ M4 evidence below.
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
-| 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, Git-row selection opens the diff as a main-area preview tab (file diff, never a terminal); focused tests green (see M15 progress below) | Wayland click/render proof pending; workspace serial suite timed out at the pre-existing terminal four-pane test | Finish live proof, close any M15 acceptance gaps |
+| 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, Git-row selection opens the diff as a main-area preview tab (file diff, never a terminal); focused tests green (see M15 progress below) | True hunk staging, final virtualization/actions and Wayland proof pending; recorded workspace serial timeout unresolved | Follow [M15 completion plan](m15-completion-plan.md), beginning with fixtures and contract tests |
+
+## M15 comprehensive completion planning — 2026-10-03
+
+Created the [M15 completion plan](m15-completion-plan.md) after auditing the
+milestone, blueprint references, parser/repository tests, DTOs, CLI mapping,
+preview state/rendering and existing UX correction records. The clean working
+tree was inspected before edits.
+
+The plan orders six deliveries: fixtures/contracts/baseline; bounded parser and
+query metadata; shared true partial-hunk staging with IPC/CLI parity; cached
+presentation and guarded async lifecycle; virtualized two-axis preview with
+navigation/context actions; final workspace and release Wayland acceptance.
+It identifies inconsistent truncation semantics, discarded no-newline metadata,
+legacy render caps/navigation state and removed copy/open actions. The milestone
+now records the approved v5 Split-mode extension explicitly.
+
+Documentation-only verification: `python3 scripts/check-docs.py` passed (32
+Markdown files, 103 local link targets, 265 numbered blueprint references; all
+33 CLI methods mapped); `git diff --check` and `git diff --no-index --check
+/dev/null docs/m15-completion-plan.md` passed. Local consistency review
+keeps planned tests separate from evidence and whole-file staging separate from
+true hunk staging. Cargo and native desktop checks are not applicable to this
+planning change. No application capability or M15 completion is claimed.
+
+Next action: phase A disposable two-hunk/long-hunk fixtures and contract tests,
+then parser/query hardening and shared partial-hunk staging.
+
+### M15 parser/query contract increment — 2026-10-03
+
+Started plan phases A/B without changing preview behavior. The bounded diff
+envelope now marks `truncated` whenever a nested file or hunk cap loses data,
+matching its public DTO contract. `DiffLineInfo` retains Git's no-final-newline
+marker on the preceding source line and the IPC result exposes it as
+`no_newline_at_end`. `git diff` now starts with `--literal-pathspecs`, so an
+authorized selected filename containing Git pathspec magic is queried as a
+filename rather than interpreted as a pattern.
+
+Added parser coverage for both no-newline markers and aggregate hunk/line-cap
+truncation. The disposable repository integration suite now proves a changed
+`:(top,literal)draft.txt` is filtered literally. This is not partial-hunk
+staging, preview virtualization or desktop acceptance; those M15 gates remain
+open.
+
+| Command | Result |
+|---|---|
+| `cargo test -p omaterm-context -- --test-threads=1` | PASS: 45 unit, 6 diff integration, 1 git-root integration, 8 git-status integration tests |
+| `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1` | PASS: 88 tests |
+| `cargo fmt --all --check` | PASS |
+| `cargo test -p omaterm-core -p omaterm-protocol -p omaterm-cli` | PASS: 17 core, 6 protocol, 38 CLI tests |
+| `cargo clippy -p omaterm-context -p omaterm -p omaterm-core -p omaterm-protocol -p omaterm-cli --all-targets -- -D warnings` | PASS; transitive `proc-macro-error2 v2.0.1` future-incompatibility notice only |
+
+No Wayland or full-workspace check is claimed for this increment. Next: add a
+bounded-stdin Git patch runner plus a stable hunk selector for shared
+partial-hunk staging.
+
+### M15 shared hunk-stage foundation — 2026-10-03
+
+`DiffHunkInfo` now includes an FNV-derived ID over its parsed spans/body;
+`diff.show` exposes it without exposing a patch channel. The context crate
+re-reads the selected current file diff, rejects capped/binary/incomplete/stale
+hunks, extracts the one matching raw hunk with its Git file headers, and sends
+only that internally generated patch to bounded `git apply --cached` stdin.
+The `StageHunk` semantic `GitCommand`, pure validation and router dispatch now
+use this same operation with normal project scope/root checks. The UI, protocol
+method and CLI mapping remain pending, so this is not end-to-end M15 staging.
+
+`stage_hunk_updates_only_the_selected_index_change` proves in a disposable
+20-line repository that staging one of two hunks updates only that index hunk
+and leaves the other working-tree hunk unstaged. `cargo fmt --all` and `cargo
+test -p omaterm-core -p omaterm --bin omaterm-desktop -- --test-threads=1`
+passed (17 core, 88 desktop tests; known transitive future-incompatibility
+notice only). No IPC/CLI, full-workspace or Wayland result is claimed.
 
 ## Handoff rules
 

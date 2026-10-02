@@ -23,7 +23,9 @@ use omaterm_core::{
     DiffFileInfo, DiffFileStatus, DiffHunkInfo, DiffInfo, DiffLineInfo, DiffLineKind,
 };
 
-use super::git::{GIT_STATUS_TIMEOUT, GitError, join_under_root, run_git};
+use super::git::{
+    GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, join_under_root, run_git, run_git_input,
+};
 
 /// Largest `git diff` stdout kept in memory. Beyond this the parse still
 /// succeeds over the kept prefix (the torn tail line is dropped) and the
@@ -75,6 +77,7 @@ pub fn git_diff(root: &Path, request: &DiffRequest) -> Result<DiffInfo, GitError
     let context = request.context_lines.min(MAX_DIFF_CONTEXT_LINES);
     let context_arg = format!("-U{}", context);
     let mut args = vec![
+        "--literal-pathspecs".to_owned(),
         "--no-optional-locks".to_owned(),
         "-c".to_owned(),
         "status.relativePaths=true".to_owned(),
@@ -117,6 +120,91 @@ pub fn git_diff(root: &Path, request: &DiffRequest) -> Result<DiffInfo, GitError
         }
         Err(error) => Err(error),
     }
+}
+
+/// Stage one complete, current unstaged hunk. The caller supplies only the
+/// root-contained path and a hunk ID returned by [`git_diff`]; this function
+/// re-reads the raw authoritative diff and generates the exact patch itself.
+/// Capped, missing, or changed hunks are rejected rather than approximated.
+pub fn git_stage_hunk(root: &Path, path: &Path, hunk_id: u64) -> Result<(), GitError> {
+    let joined = join_under_root(root, path)?;
+    let canonical_root = std::fs::canonicalize(root)?;
+    let relative = joined
+        .strip_prefix(&canonical_root)
+        .map_err(|_| GitError::PathOutsideRoot)?;
+    if relative.as_os_str().is_empty() {
+        return Err(GitError::PathOutsideRoot);
+    }
+    let path = relative.to_string_lossy().into_owned();
+    let args = [
+        "--literal-pathspecs",
+        "--no-optional-locks",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "-U3",
+        "--",
+        &path,
+    ];
+    let output = run_git(root, &[], &args, GIT_STATUS_TIMEOUT, MAX_DIFF_BYTES)?;
+    if output.stdout_capped {
+        return Err(GitError::GitFailed(
+            "diff is too large to stage a hunk safely".into(),
+        ));
+    }
+    let info = parse_diff(&output.stdout, false, false);
+    let Some(file) = info
+        .files
+        .iter()
+        .find(|file| file.path == PathBuf::from(&path))
+    else {
+        return Err(GitError::GitFailed(
+            "selected hunk is no longer available".into(),
+        ));
+    };
+    if file.truncated || file.binary {
+        return Err(GitError::GitFailed(
+            "selected hunk is not safe to stage".into(),
+        ));
+    }
+    let Some(index) = file.hunks.iter().position(|hunk| hunk.id == hunk_id) else {
+        return Err(GitError::GitFailed("selected hunk is stale".into()));
+    };
+    if file.hunks[index].truncated {
+        return Err(GitError::GitFailed("selected hunk is not complete".into()));
+    }
+    let patch = extract_hunk_patch(&output.stdout, index)
+        .ok_or_else(|| GitError::GitFailed("selected hunk cannot be reconstructed".into()))?;
+    run_git_input(
+        root,
+        &[],
+        &["apply", "--cached", "--whitespace=nowarn"],
+        &patch,
+        GIT_MUTATION_TIMEOUT,
+        64 * 1024,
+    )?;
+    Ok(())
+}
+
+/// Keep the file headers plus exactly one raw `@@` block. This only accepts
+/// raw Git output generated immediately above; it never consumes UI/IPC text.
+fn extract_hunk_patch(raw: &[u8], selected: usize) -> Option<Vec<u8>> {
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for line in raw.split_inclusive(|byte| *byte == b'\n') {
+        if line.starts_with(b"@@ ") {
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+    let start = *starts.get(selected)?;
+    let end = starts.get(selected + 1).copied().unwrap_or(raw.len());
+    let mut patch = Vec::with_capacity(start + end - start);
+    patch.extend_from_slice(&raw[..starts[0]]);
+    patch.extend_from_slice(&raw[start..end]);
+    Some(patch)
 }
 
 /// Parse unified-diff bytes into the bounded envelope. Unknown or
@@ -167,7 +255,15 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
             if builder.line_total > kept.len() {
                 file.truncated = true;
             }
+            let id = DiffHunkInfo::id_for(
+                builder.old_start,
+                builder.old_lines,
+                builder.new_start,
+                builder.new_lines,
+                &kept,
+            );
             file.hunks.push(DiffHunkInfo {
+                id,
                 old_start: builder.old_start,
                 old_lines: builder.old_lines,
                 new_start: builder.new_start,
@@ -224,8 +320,14 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
             }
             continue;
         }
-        if line.starts_with("\\ ") {
-            // `\ No newline at end of file`: marker, never content.
+        if line == "\\ No newline at end of file" {
+            // The marker belongs to the preceding source line. Retaining it
+            // is required for a truthful preview and exact future patch use.
+            if let Some(body) = hunk.as_mut()
+                && let Some(previous) = body.lines.last_mut()
+            {
+                previous.no_newline_at_end = true;
+            }
             continue;
         }
         if hunk.is_some() {
@@ -237,6 +339,7 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
                         body.lines.push(DiffLineInfo {
                             kind,
                             text: truncate_str(content, MAX_DIFF_LINE_BYTES),
+                            no_newline_at_end: false,
                         });
                     }
                 }
@@ -321,6 +424,9 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
             files.push(builder.finish());
         }
     }
+    truncated |= files
+        .iter()
+        .any(|file| file.truncated || file.hunks.iter().any(|hunk| hunk.truncated));
     DiffInfo {
         files,
         truncated,
@@ -648,6 +754,7 @@ mod tests {
             ]
         );
         assert_eq!(hunk.lines[1].text, "let y = 2;");
+        assert!(hunk.lines[3].no_newline_at_end);
     }
 
     #[test]
@@ -766,7 +873,7 @@ mod tests {
         }
 
         let info = parse_diff(raw.as_bytes(), false, false);
-        assert!(!info.truncated);
+        assert!(info.truncated);
         assert_eq!(info.files.len(), 2);
         let file = &info.files[0];
         assert_eq!(file.hunk_count, MAX_DIFF_HUNKS_PER_FILE + 1);
@@ -779,6 +886,22 @@ mod tests {
         assert_eq!(capped_lines.hunks.len(), 1);
         assert_eq!(capped_lines.hunks[0].lines.len(), MAX_DIFF_LINES_PER_HUNK);
         assert!(capped_lines.hunks[0].truncated);
+    }
+
+    #[test]
+    fn no_newline_marker_is_attached_to_its_preceding_line() {
+        let raw = "diff --git a/a.txt b/a.txt\n\
+            --- a/a.txt\n\
+            +++ b/a.txt\n\
+            @@ -1 +1 @@\n\
+            -old\n\
+            \\ No newline at end of file\n\
+            +new\n\
+            \\ No newline at end of file\n";
+        let info = parse(raw);
+        let lines = &info.files[0].hunks[0].lines;
+        assert!(lines[0].no_newline_at_end);
+        assert!(lines[1].no_newline_at_end);
     }
 
     #[test]

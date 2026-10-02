@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use omaterm_context::{DiffRequest, MAX_DIFF_FILES, git_diff};
+use omaterm_context::{DiffRequest, MAX_DIFF_FILES, git_diff, git_stage_hunk};
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -110,6 +110,48 @@ fn path_traversal_is_rejected_before_git_runs() {
     git(&repo, &["commit", "-qm", "init"]);
     let error = git_diff(&repo, &show_request(false, Some("../outside.txt"))).unwrap_err();
     assert_eq!(error.code(), "path_outside_root");
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn path_filter_treats_git_pathspec_magic_as_a_literal_filename() {
+    let repo = fixture("literal-pathspec");
+    let path = ":(top,literal)draft.txt";
+    std::fs::write(repo.join(path), b"before\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "init"]);
+    std::fs::write(repo.join(path), b"after\n").unwrap();
+
+    let info = git_diff(&repo, &show_request(false, Some(path))).unwrap();
+    assert_eq!(info.files.len(), 1);
+    assert_eq!(info.files[0].path, PathBuf::from(path));
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn stage_hunk_updates_only_the_selected_index_change() {
+    let repo = fixture("stage-hunk");
+    let original = (1..=20)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(repo.join("tracked.txt"), &original).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "init"]);
+    let changed = original
+        .replace("line 2\n", "line two\n")
+        .replace("line 18\n", "line eighteen\n");
+    std::fs::write(repo.join("tracked.txt"), changed).unwrap();
+
+    let before = git_diff(&repo, &show_request(false, Some("tracked.txt"))).unwrap();
+    assert_eq!(before.files[0].hunks.len(), 2);
+    git_stage_hunk(&repo, Path::new("tracked.txt"), before.files[0].hunks[0].id).unwrap();
+
+    let cached = git(&repo, &["diff", "--cached", "--", "tracked.txt"]);
+    assert!(cached.contains("-line 2\n") && cached.contains("+line two\n"));
+    assert!(!cached.contains("line eighteen"));
+    let unstaged = git(&repo, &["diff", "--", "tracked.txt"]);
+    assert!(unstaged.contains("-line 18\n") && unstaged.contains("+line eighteen\n"));
+    assert!(!unstaged.contains("line two"));
     let _ = std::fs::remove_dir_all(&repo);
 }
 

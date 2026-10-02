@@ -498,6 +498,7 @@ mod tests {
 
     fn hunk(lines: usize) -> DiffHunkInfo {
         DiffHunkInfo {
+            id: 0,
             old_start: 1,
             old_lines: lines as u32,
             new_start: 1,
@@ -506,6 +507,7 @@ mod tests {
                 .map(|i| DiffLineInfo {
                     kind: DiffLineKind::Context,
                     text: format!("line {i}"),
+                    no_newline_at_end: false,
                 })
                 .collect(),
             truncated: false,
@@ -545,6 +547,7 @@ mod tests {
     fn align_hunk_pairs_context_and_splits_add_delete() {
         use omaterm_core::{DiffLineInfo, DiffLineKind};
         let hunk = DiffHunkInfo {
+            id: 0,
             old_start: 10,
             old_lines: 3,
             new_start: 20,
@@ -553,14 +556,17 @@ mod tests {
                 DiffLineInfo {
                     kind: DiffLineKind::Context,
                     text: "keep".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Deletion,
                     text: "old".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Addition,
                     text: "new".into(),
+                    no_newline_at_end: false,
                 },
             ],
             truncated: false,
@@ -580,6 +586,7 @@ mod tests {
     #[test]
     fn split_hunk_pairs_replacements_and_preserves_unmatched_edits() {
         let hunk = DiffHunkInfo {
+            id: 0,
             old_start: 10,
             old_lines: 4,
             new_start: 20,
@@ -588,30 +595,37 @@ mod tests {
                 DiffLineInfo {
                     kind: DiffLineKind::Context,
                     text: "keep before".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Deletion,
                     text: "old first".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Deletion,
                     text: "old second".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Addition,
                     text: "new first".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Addition,
                     text: "new second".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Addition,
                     text: "new third".into(),
+                    no_newline_at_end: false,
                 },
                 DiffLineInfo {
                     kind: DiffLineKind::Context,
                     text: "keep after".into(),
+                    no_newline_at_end: false,
                 },
             ],
             truncated: false,

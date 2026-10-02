@@ -186,6 +186,13 @@ pub enum GitCommand {
         project: ProjectId,
         paths: Vec<PathBuf>,
     },
+    /// Stage one current, complete unstaged hunk. `hunk_id` originates from
+    /// `diff.show`; the backend re-reads and generates the patch itself.
+    StageHunk {
+        project: ProjectId,
+        path: PathBuf,
+        hunk_id: u64,
+    },
     Unstage {
         project: ProjectId,
         paths: Vec<PathBuf>,

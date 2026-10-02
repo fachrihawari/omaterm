@@ -520,6 +520,7 @@ impl CommandRouter {
             | OmaCommand::File(FileCommand::Open { project, .. }) => Some(*project),
             OmaCommand::Git(GitCommand::Status { project })
             | OmaCommand::Git(GitCommand::Stage { project, .. })
+            | OmaCommand::Git(GitCommand::StageHunk { project, .. })
             | OmaCommand::Git(GitCommand::Unstage { project, .. })
             | OmaCommand::Git(GitCommand::Discard { project, .. })
             | OmaCommand::Git(GitCommand::Commit { project, .. }) => Some(*project),
@@ -1243,6 +1244,29 @@ impl CommandRouter {
             }
             OmaCommand::Git(GitCommand::Stage { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Stage)
+            }
+            OmaCommand::Git(GitCommand::StageHunk {
+                project,
+                path,
+                hunk_id,
+            }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return err(
+                            ErrorCode::NotARepo,
+                            "project is not inside a git repository",
+                        );
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_stage_hunk(&root, &path, hunk_id) {
+                    Ok(()) => {
+                        tracing::debug!(target: "omaterm::git", project_id = %project.0, operation = "stage_hunk", "git hunk staged");
+                        ok(CommandOutput::Unit)
+                    }
+                    Err(error) => git_error(error),
+                }
             }
             OmaCommand::Git(GitCommand::Unstage { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Unstage)

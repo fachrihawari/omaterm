@@ -39,6 +39,15 @@ the view.
 
 - M12–M14 complete (root, boundary, git mutations).
 
+## Completion execution plan
+
+Follow the [M15 completion plan](m15-completion-plan.md) for the audited gaps,
+dependency-ordered deliveries, true partial-hunk staging, viewport virtualization,
+and automated/live acceptance gates. M15 remains in progress until those gates
+have evidence. The approved UI v5 extends the original presentation scope with
+Split mode; both Split and Inline must be verified. Whole-file staging does not
+satisfy the per-hunk staging contract.
+
 ## Deliverables
 
 - Diff parser: `Diff → Files[] → Hunks[] → Lines[]` with strict caps,
@@ -69,7 +78,8 @@ the view.
 
 ## Non-Goals
 
-- No side-by-side view, no highlighting, no word-diff (later).
+- Split mode is an approved UI v5 presentation extension; no highlighting or
+  word-diff in M15.
 - No commit UI. No editor (v0.3). No `terminal wait` (v0.4).
 
 ## References

@@ -406,6 +406,10 @@ impl DiffFileStatus {
 /// One `@@` hunk with its bounded body lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffHunkInfo {
+    /// Stable identity for this complete parsed hunk. It is derived from the
+    /// hunk's spans and body, so callers can request a hunk without sending a
+    /// patch or relying on its visible screen position.
+    pub id: u64,
     pub old_start: u32,
     pub old_lines: u32,
     pub new_start: u32,
@@ -414,12 +418,48 @@ pub struct DiffHunkInfo {
     pub truncated: bool,
 }
 
+impl DiffHunkInfo {
+    /// Deterministic FNV-1a identity over the exact parsed hunk structure.
+    /// This is an optimistic freshness selector, not a cryptographic digest.
+    pub fn id_for(
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+        lines: &[DiffLineInfo],
+    ) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for value in [old_start, old_lines, new_start, new_lines] {
+            for byte in value.to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        for line in lines {
+            hash = (hash
+                ^ match line.kind {
+                    DiffLineKind::Context => 0,
+                    DiffLineKind::Addition => 1,
+                    DiffLineKind::Deletion => 2,
+                })
+            .wrapping_mul(0x0000_0100_0000_01b3);
+            for byte in line.text.as_bytes() {
+                hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            hash = (hash ^ u64::from(line.no_newline_at_end)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+}
+
 /// One hunk body line. The marker is structural (`kind`); `text` never
 /// carries the leading ` `/`+`/`-`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLineInfo {
     pub kind: DiffLineKind,
     pub text: String,
+    /// Git reported that this source line has no trailing newline. The marker
+    /// belongs to the preceding body line, not to a synthetic display row.
+    pub no_newline_at_end: bool,
 }
 
 /// Hunk line kind for the `±` coloring (no highlighting in v0.2).
@@ -442,7 +482,8 @@ impl DiffLineKind {
 
 /// Bounded diff envelope (M15). `staged` records which side was read
 /// (`git diff` vs `git diff --cached`); `truncated` is accurate whenever
-/// any cap dropped files, hunks, lines, or bytes.
+/// any cap dropped files, hunks, lines, or bytes. Nested flags identify the
+/// precise loss location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffInfo {
     pub files: Vec<DiffFileInfo>,

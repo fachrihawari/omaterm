@@ -152,6 +152,19 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
                 );
             }
         }
+        OmaCommand::Git(GitCommand::StageHunk { path, hunk_id, .. }) => {
+            if path.as_os_str().is_empty()
+                || path.as_os_str().len() > MAX_GIT_PATH_BYTES
+                || path.to_string_lossy().chars().any(char::is_control)
+            {
+                return invalid(
+                    "git hunk path must be non-empty, at most 4096 bytes, with no control characters",
+                );
+            }
+            if *hunk_id == 0 {
+                return invalid("git hunk id must be non-zero");
+            }
+        }
         OmaCommand::Git(GitCommand::Commit { message, .. })
             if message.is_empty()
                 || message.len() > MAX_GIT_MESSAGE_BYTES
