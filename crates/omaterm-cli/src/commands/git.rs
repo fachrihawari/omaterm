@@ -9,6 +9,14 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum GitCmd {
+    /// Stage one current unstaged hunk using its diff.show ID.
+    StageHunk {
+        #[arg(long)]
+        project: Option<String>,
+        path: PathBuf,
+        #[arg(long)]
+        hunk: u64,
+    },
     /// Show branch + staged/unstaged/untracked groups for the project root.
     Status {
         /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
@@ -78,6 +86,24 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
             .collect::<Vec<_>>()
     };
     match cmd {
+        GitCmd::StageHunk {
+            project,
+            path,
+            hunk,
+        } => {
+            check_paths(std::slice::from_ref(path), "stage-hunk")?;
+            if *hunk == 0 {
+                return Err("git hunk id must be non-zero".into());
+            }
+            Ok(WireCall {
+                method: "git.stage-hunk".into(),
+                params: json!({
+                    "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                    "path": path.to_string_lossy(),
+                    "hunk_id": hunk,
+                }),
+            })
+        }
         GitCmd::Status { project } => Ok(WireCall {
             method: "git.status".into(),
             params: json!({
@@ -140,6 +166,27 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hunk_stage_maps_selector_and_rejects_zero() {
+        let command = GitCmd::StageHunk {
+            project: Some("project".into()),
+            path: PathBuf::from("name with spaces.txt"),
+            hunk: 42,
+        };
+        let call = build(&command).unwrap();
+        assert_eq!(call.method, "git.stage-hunk");
+        assert_eq!(call.params["hunk_id"], 42);
+        assert_eq!(call.params["path"], "name with spaces.txt");
+        assert!(
+            build(&GitCmd::StageHunk {
+                project: None,
+                path: PathBuf::from("a"),
+                hunk: 0
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn status_stage_unstage_and_discard_map_to_wire() {

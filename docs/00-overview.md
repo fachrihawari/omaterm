@@ -112,6 +112,7 @@ If this works, OmaTerm has proven the architecture for future agent control.
 - [UI v5 Pixel-Perfect Rewrite Plan](ui-v5-pixel-perfect-plan.md) — exact mockup reproduction, assets/measurements, phased delivery, and screenshot acceptance
 - [Diff and Files/Git UX Correction Plan](diff-files-ux-correction-plan.md) — diff row alignment and virtualization, natural two-axis scrolling, centered Git icons, and contextual Files help
 - [M15 Completion Plan](m15-completion-plan.md) — audited capability gaps, true hunk staging, bounded queries, virtualized preview, and release acceptance gates
+- [M15 Full Resolution Plan](m15-full-resolution-plan.md) — current-tree inventory and remaining end-to-end closure sequence
 - [VS Code Workbench UI Redesign Plan](ui-workbench-redesign-plan.md) — superseded visual direction; retained implementation history
 - Blueprint §22 — First-Run Product Scope
 - Blueprint §23 — Suggested Version Progression

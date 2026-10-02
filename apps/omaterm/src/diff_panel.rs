@@ -426,6 +426,7 @@ impl DiffPanel {
 /// entry under the argument-count lint.
 pub struct DiffSpawn {
     pub project: ProjectId,
+    pub path: Option<PathBuf>,
     pub staged: bool,
     pub generation: u64,
     pub pinned: Option<PathBuf>,
@@ -448,6 +449,7 @@ pub fn spawn_diff_thread(caller: ThreadId, spawn: DiffSpawn) {
             spawn.active_cwd.as_deref(),
             spawn.staged,
             spawn.context_lines,
+            spawn.path,
         );
         let _ = spawn.tx.send((
             spawn.generation,
@@ -463,6 +465,7 @@ fn refresh_off_thread(
     active_cwd: Option<&std::path::Path>,
     staged: bool,
     context_lines: u8,
+    path: Option<PathBuf>,
 ) -> Result<DiffInfo, DiffEmpty> {
     let resolved = omaterm_context::resolve_root(pinned, active_cwd);
     let Some(root) = resolved.root else {
@@ -470,7 +473,7 @@ fn refresh_off_thread(
     };
     let request = omaterm_context::DiffRequest {
         staged,
-        path: None,
+        path,
         context_lines,
         files_only: false,
     };
@@ -843,6 +846,7 @@ mod tests {
             caller,
             DiffSpawn {
                 project,
+                path: None,
                 staged: false,
                 generation: 7,
                 pinned: Some(std::env::temp_dir()),

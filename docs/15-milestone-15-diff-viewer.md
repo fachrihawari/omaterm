@@ -43,7 +43,9 @@ the view.
 
 Follow the [M15 completion plan](m15-completion-plan.md) for the audited gaps,
 dependency-ordered deliveries, true partial-hunk staging, viewport virtualization,
-and automated/live acceptance gates. M15 remains in progress until those gates
+and automated/live acceptance gates. Use the
+[M15 full resolution plan](m15-full-resolution-plan.md) as the current-tree
+remaining-work sequence. M15 remains in progress until those gates
 have evidence. The approved UI v5 extends the original presentation scope with
 Split mode; both Split and Inline must be verified. Whole-file staging does not
 satisfy the per-hunk staging contract.

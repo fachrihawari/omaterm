@@ -27,7 +27,7 @@ M4 evidence below.
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
-| 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, Git-row selection opens the diff as a main-area preview tab (file diff, never a terminal); focused tests green (see M15 progress below) | True hunk staging, final virtualization/actions and Wayland proof pending; recorded workspace serial timeout unresolved | Follow [M15 completion plan](m15-completion-plan.md), beginning with fixtures and contract tests |
+ | 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, Git-row selection opens the diff as a main-area preview tab (file diff, never a terminal); focused tests green (see M15 progress below) | True hunk staging, final virtualization/actions and Wayland proof pending; recorded workspace serial timeout unresolved | Follow [M15 full resolution plan](m15-full-resolution-plan.md) for the remaining end-to-end sequence |
 
 ## M15 comprehensive completion planning — 2026-10-03
 
@@ -102,6 +102,50 @@ passed (17 core, 88 desktop tests; known transitive future-incompatibility
 notice only). No IPC/CLI, full-workspace or Wayland result is claimed.
 
 ## Handoff rules
+
+### M15 hunk-stage entry points and Git runner hardening — 2026-10-03
+
+Added strict `git.stage-hunk` method decoding/bridge mapping and the thin
+`omaterm git stage-hunk <path> --hunk <id>` CLI mapping with human confirmation.
+The preview exposes a distinct Stage Hunk control for complete modified-text
+hunks; it dispatches `GitCommand::StageHunk`, retains the selected side and
+invalidates both comparison refresh timestamps after success or failure.
+Added selected-path worker queries and selection generation invalidation.
+This does not establish full root-generation guarding, worker cancellation,
+virtualization, keyboard actions or native acceptance.
+
+The Git runner writes stdin off-thread under the same process deadline, drains
+stdout/stderr concurrently beyond their storage caps, and waits for real child
+exit rather than killing Git as soon as output pipes close. Exact-at-cap output
+is now distinguished from over-cap output. Tests cover blocked stdin and cap
+boundaries. Query and staging commands disable textconv; staging rejects
+non-modified files, multi-file patch extraction and mode-change headers.
+The repository staging test additionally checks unchanged worktree bytes and
+duplicate rejection without index changes.
+
+Verification:
+
+- `cargo check -p omaterm`: PASS.
+- Final `cargo test -p omaterm-context -p omaterm-core -p omaterm-protocol -p
+  omaterm-cli`: PASS (47 context unit + 16 integration, 17 core, 6 protocol,
+  39 CLI tests).
+- Final `cargo test -p omaterm --bin omaterm-desktop -- --test-threads=1`:
+  PASS (89 tests).
+- `cargo clippy --workspace --all-targets -- -D warnings`: PASS; known transitive
+  future-incompatibility notice only.
+- `cargo test --workspace -- --test-threads=1`: TIMEOUT at 120s in PTY
+  `exited_shells_close_only_their_panes_for_exit_and_ctrl_d`, after preceding
+  crate/unit targets passed. The exact test passed in isolation (0.27s).
+- Final `cargo test --workspace`: TIMEOUT at 120s in terminal registry
+  `inserts_a_worker_spawned_session_with_its_preallocated_id`. Desktop 89,
+  CLI 39, context 47 plus repository suites, core 17, IPC 11, logging 3,
+  protocol 6 and state 44 passed before the hang. No full-workspace pass claimed.
+- `cargo fmt --all --check`, `python3 scripts/check-docs.py` and
+  `git diff --check`: PASS.
+
+No release Wayland acceptance claimed. M15 remains in progress: viewport,
+keyboard/context actions, stronger freshness/scope/error coverage, lifecycle
+and live evidence remain. Intermittent terminal-suite hangs remain unresolved.
 
 Use `not_started`, `in_progress`, `blocked`, or `complete`. Record exact commands,
 results, platform/toolchain, and relevant commit or files. Record manual desktop

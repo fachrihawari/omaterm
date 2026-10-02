@@ -458,11 +458,17 @@ fn run_git_with(
     let mut child = command
         .spawn()
         .map_err(|error| GitError::GitUnavailable(format!("cannot spawn git: {error}")))?;
-    if let Some(input) = input
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        stdin.write_all(input)?;
-    }
+    let deadline = std::time::Instant::now() + timeout;
+    let stdin = child.stdin.take();
+    let input = input.map(<[u8]>::to_vec);
+    let (input_tx, input_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = match (stdin, input) {
+            (Some(mut pipe), Some(bytes)) => pipe.write_all(&bytes),
+            _ => Ok(()),
+        };
+        let _ = input_tx.send(result);
+    });
     // The reader thread owns only the pipes; the caller keeps the child
     // handle so every path below reaps it (no orphans, no leaked waiter
     // threads), mirroring `resolve.rs`. Output is capped before
@@ -470,29 +476,40 @@ fn run_git_with(
     // `MAX_STDERR_BYTES`.
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut stdout = Vec::new();
-        if let Some(pipe) = stdout_pipe {
-            let _ = pipe.take(stdout_cap as u64).read_to_end(&mut stdout);
-        }
-        let mut stderr = Vec::new();
-        if let Some(pipe) = stderr_pipe {
-            let _ = pipe.take(MAX_STDERR_BYTES as u64).read_to_end(&mut stderr);
-        }
-        let _ = done_tx.send((stdout, stderr));
+        let _ = stdout_tx.send(read_capped(stdout_pipe, stdout_cap));
     });
-    let (stdout, stderr) = done_rx.recv_timeout(timeout).map_err(|_| {
-        // Wedged git: terminate and reap before reporting, so the timeout
-        // bounds the whole call including cleanup.
-        let _ = child.kill();
-        let _ = child.wait();
-        GitError::Timeout
-    })?;
-    // Output arrived: reap promptly. `kill` is a no-op when git already
-    // exited; `wait` then collects the zombie without blocking.
-    let _ = child.kill();
-    let status = child.wait()?;
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stderr_tx.send(read_capped(stderr_pipe, MAX_STDERR_BYTES));
+    });
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return match result {
+                    Err(error) => Err(GitError::Io(error)),
+                    _ => Err(GitError::Timeout),
+                };
+            }
+        }
+    };
+    let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
+    let (stdout, capped) = stdout_rx
+        .recv_timeout(remaining())
+        .map_err(|_| GitError::Timeout)?;
+    let (stderr, _) = stderr_rx
+        .recv_timeout(remaining())
+        .map_err(|_| GitError::Timeout)?;
+    let input_result = input_rx
+        .recv_timeout(remaining())
+        .map_err(|_| GitError::Timeout)?;
     if !status.success() {
         let text = String::from_utf8_lossy(&stderr);
         let trimmed = text.trim();
@@ -509,11 +526,31 @@ fn run_git_with(
             trimmed.to_owned()
         }));
     }
-    let capped = stdout.len() >= stdout_cap;
+    input_result?;
     Ok(GitOutput {
         stdout,
         stdout_capped: capped,
     })
+}
+
+/// Drain both pipes concurrently even after reaching the storage cap. Closing
+/// a capped pipe early can SIGPIPE Git and turn valid truncated queries into
+/// failures; sequential reads can deadlock on a full stderr pipe.
+fn read_capped(pipe: Option<impl Read>, cap: usize) -> (Vec<u8>, bool) {
+    let mut bytes = Vec::new();
+    let mut capped = false;
+    if let Some(mut pipe) = pipe {
+        let mut buffer = [0_u8; 8192];
+        while let Ok(count) = pipe.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            let keep = count.min(cap.saturating_sub(bytes.len()));
+            bytes.extend_from_slice(&buffer[..keep]);
+            capped |= keep < count;
+        }
+    }
+    (bytes, capped)
 }
 
 /// Read-only status over `root` (M14 product contract). Runs
@@ -686,6 +723,39 @@ fn tracked_contains(tracked: &[String], path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capped_reader_drains_and_distinguishes_exact_limit() {
+        assert_eq!(
+            read_capped(Some(&b"1234"[..]), 4),
+            (b"1234".to_vec(), false)
+        );
+        assert_eq!(
+            read_capped(Some(&b"12345"[..]), 4),
+            (b"1234".to_vec(), true)
+        );
+    }
+
+    #[test]
+    fn blocked_stdin_is_covered_by_process_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("omaterm-git-stdin-{}", std::process::id()));
+        std::fs::write(&path, "#!/usr/bin/python3\nimport time\ntime.sleep(60)\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let start = std::time::Instant::now();
+        let result = run_git_with(
+            path.to_str().unwrap(),
+            std::env::temp_dir().as_path(),
+            &[],
+            &[],
+            Some(&vec![b'x'; 1024 * 1024]),
+            Duration::from_millis(100),
+            1024,
+        );
+        std::fs::remove_file(path).unwrap();
+        assert!(matches!(result, Err(GitError::Timeout)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
 
     fn entry(path: &str, x: char, y: char) -> GitEntry {
         GitEntry {

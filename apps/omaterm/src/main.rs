@@ -2381,6 +2381,7 @@ impl WorkspaceView {
             std::thread::current().id(),
             diff_panel::DiffSpawn {
                 project,
+                path: self.diff_panel.selected_file(project).cloned(),
                 staged,
                 generation: self.diff_generation,
                 pinned,
@@ -2393,7 +2394,7 @@ impl WorkspaceView {
         self.diff_dirty_hint = false;
     }
 
-    /// Stage one file from a diff hunk button through the dispatcher
+    /// Stage one whole file through the dispatcher
     /// (same path as the Source Control panel and IPC/CLI), then hint
     /// both refreshers. Visible only for unstaged-side files.
     fn diff_stage_file(
@@ -2423,6 +2424,37 @@ impl WorkspaceView {
                 cx.notify();
             }
         }
+    }
+
+    fn diff_stage_hunk(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        hunk_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::StageHunk {
+                project,
+                path,
+                hunk_id,
+            }),
+            cx,
+        ) {
+            Ok(_) => {}
+            Err(error) => self.input_notice = Some(format!("Stage Hunk: {error}")),
+        }
+        // Invalidate both cached comparisons, including after a stale request.
+        self.diff_generation = self.diff_generation.wrapping_add(1);
+        self.diff_in_flight = None;
+        self.diff_refreshed_at.remove(&(project, false));
+        self.diff_refreshed_at.remove(&(project, true));
+        self.git_dirty_hint = true;
+        self.diff_dirty_hint = true;
+        cx.notify();
     }
 
     /// Unstage one file from the staged diff side (whole-file scope,
@@ -2625,6 +2657,8 @@ impl WorkspaceView {
     /// unstaged diff side. The preview is view-local: core tabs stay
     /// terminal-only (M13/M17 scope).
     fn git_select_path(&mut self, project: ProjectId, path: std::path::PathBuf, staged: bool) {
+        self.diff_generation = self.diff_generation.wrapping_add(1);
+        self.diff_in_flight = None;
         self.git_panel.select(project, path.clone());
         self.diff_panel.select_file(project, path);
         self.diff_panel.set_show_staged(project, staged);
@@ -5699,6 +5733,29 @@ impl WorkspaceView {
                 .enumerate()
             {
                 let current = index == cursor;
+                if !staged
+                    && !file.truncated
+                    && !hunk.truncated
+                    && file.status == omaterm_core::DiffFileStatus::Modified
+                {
+                    let stage_path = path.clone();
+                    let hunk_id = hunk.id;
+                    body = body.child(
+                        div()
+                            .id(("stage-hunk", index))
+                            .text_size(px(10.0))
+                            .text_color(rgb(crate::ui::theme::TEXT2))
+                            .child("Stage Hunk")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.diff_stage_hunk(project, stage_path.clone(), hunk_id, cx);
+                                }),
+                            ),
+                    );
+                }
                 body = body.child(
                     div()
                         .px_2()

@@ -135,6 +135,13 @@ pub struct GitCommit {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitStageHunk {
+    pub project_id: Option<String>,
+    pub path: String,
+    pub hunk_id: u64,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiffShow {
     pub project_id: Option<String>,
     pub path: Option<String>,
@@ -183,6 +190,7 @@ pub enum Method {
     FileOpen(FileOpen),
     GitStatus(GitStatus),
     GitStage(GitPaths),
+    GitStageHunk(GitStageHunk),
     GitUnstage(GitPaths),
     GitDiscard(GitPaths),
     GitCommit(GitCommit),
@@ -238,6 +246,7 @@ impl Method {
             "file.open" => decode!(FileOpen, FileOpen),
             "git.status" => decode!(GitStatus, GitStatus),
             "git.stage" => decode!(GitPaths, GitStage),
+            "git.stage-hunk" => decode!(GitStageHunk, GitStageHunk),
             "git.unstage" => decode!(GitPaths, GitUnstage),
             "git.discard" => decode!(GitPaths, GitDiscard),
             "git.commit" => decode!(GitCommit, GitCommit),
@@ -256,6 +265,10 @@ mod tests {
     fn all_methods_decode_and_reject_unknown_parameters() {
         let cases = [
             ("project.list", serde_json::json!({})),
+            (
+                "git.stage-hunk",
+                serde_json::json!({"path":"a.txt","hunk_id":42}),
+            ),
             ("project.create", serde_json::json!({"directory":"/tmp"})),
             ("project.select", serde_json::json!({"project_id":"id"})),
             (
@@ -318,7 +331,7 @@ mod tests {
             ),
             ("diff.list-files", serde_json::json!({"staged": false})),
         ];
-        assert_eq!(cases.len(), 38);
+        assert_eq!(cases.len(), 39);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

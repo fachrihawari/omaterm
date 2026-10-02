@@ -144,7 +144,15 @@ fn stage_hunk_updates_only_the_selected_index_change() {
 
     let before = git_diff(&repo, &show_request(false, Some("tracked.txt"))).unwrap();
     assert_eq!(before.files[0].hunks.len(), 2);
+    let worktree_before = std::fs::read(repo.join("tracked.txt")).unwrap();
     git_stage_hunk(&repo, Path::new("tracked.txt"), before.files[0].hunks[0].id).unwrap();
+    assert_eq!(
+        std::fs::read(repo.join("tracked.txt")).unwrap(),
+        worktree_before
+    );
+    let index_before_retry = git(&repo, &["show", ":tracked.txt"]);
+    assert!(git_stage_hunk(&repo, Path::new("tracked.txt"), before.files[0].hunks[0].id).is_err());
+    assert_eq!(git(&repo, &["show", ":tracked.txt"]), index_before_retry);
 
     let cached = git(&repo, &["diff", "--cached", "--", "tracked.txt"]);
     assert!(cached.contains("-line 2\n") && cached.contains("+line two\n"));

@@ -68,6 +68,7 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "file.open" => "Submitted open to shell.".into(),
         "git.status" => render_git_status(&result),
         "git.stage" => "Staged paths.".into(),
+        "git.stage-hunk" => "Staged hunk.".into(),
         "git.unstage" => "Unstaged paths.".into(),
         "git.discard" => "Discarded paths.".into(),
         "git.commit" => format!("Committed {}.", string(&result, "oid")),

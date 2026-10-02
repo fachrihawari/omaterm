@@ -84,6 +84,7 @@ pub fn git_diff(root: &Path, request: &DiffRequest) -> Result<DiffInfo, GitError
         "diff".to_owned(),
         "--no-color".to_owned(),
         "--no-ext-diff".to_owned(),
+        "--no-textconv".to_owned(),
         "--src-prefix=a/".to_owned(),
         "--dst-prefix=b/".to_owned(),
         context_arg,
@@ -142,6 +143,7 @@ pub fn git_stage_hunk(root: &Path, path: &Path, hunk_id: u64) -> Result<(), GitE
         "diff",
         "--no-color",
         "--no-ext-diff",
+        "--no-textconv",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "-U3",
@@ -155,16 +157,12 @@ pub fn git_stage_hunk(root: &Path, path: &Path, hunk_id: u64) -> Result<(), GitE
         ));
     }
     let info = parse_diff(&output.stdout, false, false);
-    let Some(file) = info
-        .files
-        .iter()
-        .find(|file| file.path == PathBuf::from(&path))
-    else {
+    let Some(file) = info.files.iter().find(|file| file.path == Path::new(&path)) else {
         return Err(GitError::GitFailed(
             "selected hunk is no longer available".into(),
         ));
     };
-    if file.truncated || file.binary {
+    if file.truncated || file.binary || file.status != DiffFileStatus::Modified {
         return Err(GitError::GitFailed(
             "selected hunk is not safe to stage".into(),
         ));
@@ -194,6 +192,14 @@ fn extract_hunk_patch(raw: &[u8], selected: usize) -> Option<Vec<u8>> {
     let mut starts = Vec::new();
     let mut offset = 0;
     for line in raw.split_inclusive(|byte| *byte == b'\n') {
+        // A directory path or rename can produce multiple files or extended
+        // metadata. Never accidentally stage another file or mode change.
+        if (offset > 0 && line.starts_with(b"diff --git "))
+            || line.starts_with(b"old mode ")
+            || line.starts_with(b"new mode ")
+        {
+            return None;
+        }
         if line.starts_with(b"@@ ") {
             starts.push(offset);
         }
@@ -324,6 +330,7 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
             // The marker belongs to the preceding source line. Retaining it
             // is required for a truthful preview and exact future patch use.
             if let Some(body) = hunk.as_mut()
+                && body.line_total == body.lines.len()
                 && let Some(previous) = body.lines.last_mut()
             {
                 previous.no_newline_at_end = true;

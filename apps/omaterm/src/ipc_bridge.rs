@@ -320,6 +320,17 @@ pub fn map_request(
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,
             }),
+            Method::GitStageHunk(p) => {
+                let paths = git_paths(&[p.path])?;
+                if p.hunk_id == 0 {
+                    return Err("git hunk id must be non-zero");
+                }
+                OmaCommand::Git(GitCommand::StageHunk {
+                    project: resolve_project(p.project_id)?,
+                    path: paths[0].clone(),
+                    hunk_id: p.hunk_id,
+                })
+            }
             Method::GitUnstage(p) => OmaCommand::Git(GitCommand::Unstage {
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,
@@ -512,6 +523,30 @@ fn output_json(output: CommandOutput) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_hunk_bridge_preserves_selection_and_rejects_invalid_fields() {
+        assert!(
+            Method::decode(
+                "git.stage-hunk",
+                json!({"path":"a","hunk_id":1,"patch":"arbitrary"})
+            )
+            .is_err()
+        );
+        assert!(Method::decode("git.stage-hunk", json!({"path":"a","hunk_id":-1})).is_err());
+        match Method::decode(
+            "git.stage-hunk",
+            json!({"path":"name with spaces","hunk_id":42}),
+        )
+        .unwrap()
+        {
+            Method::GitStageHunk(params) => {
+                assert_eq!(params.path, "name with spaces");
+                assert_eq!(params.hunk_id, 42);
+            }
+            _ => panic!("wrong method"),
+        }
+    }
     use omaterm_terminal::WorkspaceCoordinator;
 
     fn router() -> CommandRouter {
