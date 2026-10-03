@@ -3270,13 +3270,10 @@ impl WorkspaceView {
     fn editor_drain_highlights(&mut self, cx: &mut Context<Self>) {
         let mut landed = false;
         while let Some(result) = self.editor_highlight_worker.take_result() {
-            if self.coordinator.documents_mut().set_tokens(
-                result.document,
-                result.generation,
-                result.spans,
-            ) {
-                self.editor_highlight_widths
-                    .insert(result.document, result.max_cols);
+            let document = result.document;
+            let max_cols = result.max_cols();
+            if self.coordinator.documents_mut().set_highlight(result) {
+                self.editor_highlight_widths.insert(document, max_cols);
                 landed = true;
             }
         }
@@ -4112,7 +4109,7 @@ impl WorkspaceView {
         let Some(snapshot) = self.coordinator.documents().render_snapshot(document) else {
             return div().child("Document closed");
         };
-        let info = self.coordinator.documents().document_info(document);
+        let path = self.coordinator.documents().relative_path(document);
         let dirty = self
             .coordinator
             .documents()
@@ -4145,19 +4142,17 @@ impl WorkspaceView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0));
-        let filename = info
+        let filename = path
             .as_ref()
-            .and_then(|info| {
-                info.path
-                    .file_name()
+            .and_then(|path| {
+                path.file_name()
                     .map(|name| name.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "untitled".into());
-        let parent = info
+        let parent = path
             .as_ref()
-            .and_then(|info| {
-                info.path
-                    .parent()
+            .and_then(|path| {
+                path.parent()
                     .map(|parent| parent.to_string_lossy().into_owned())
             })
             .unwrap_or_default();
@@ -9565,12 +9560,11 @@ impl WorkspaceView {
             // new-tab controls return to the terminal surface without
             // closing documents.
             for document in self.coordinator.documents().project_documents(project.id) {
-                let info = self.coordinator.documents().document_info(document);
-                let name = info
+                let path = self.coordinator.documents().relative_path(document);
+                let name = path
                     .as_ref()
-                    .and_then(|info| {
-                        info.path
-                            .file_name()
+                    .and_then(|path| {
+                        path.file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                     })
                     .unwrap_or_else(|| "untitled".into());

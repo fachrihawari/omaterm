@@ -47,6 +47,12 @@ pub const MAX_RETAINED_TEXT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_RETAINED_HISTORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RETAINED_TOKEN_BYTES: usize = 64 * 1024 * 1024;
 
+/// Hard ceiling on highlight spans for one document. A tokenizer that would
+/// exceed it publishes no spans at all (explicit plain fallback) rather than
+/// a truncated partial list: an indexed renderer must never paint a span set
+/// that disagrees with the installed document version.
+pub const MAX_HIGHLIGHT_SPANS: usize = 131_072;
+
 /// One reversible text replacement: `removed.len()` bytes at `start` were
 /// replaced, and `added_len` bytes now occupy that span.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,12 +98,9 @@ pub struct Document {
     undo_bytes: usize,
     redo: Vec<TextEdit>,
     redo_bytes: usize,
-    tokens: Arc<[TokenSpan]>,
-    /// Per-line slices into `token_indices`; this prevents a renderer from
-    /// scanning every document token for each visible row.
-    token_line_ranges: Arc<[Range<usize>]>,
-    token_indices: Arc<[usize]>,
-    token_bytes: usize,
+    /// Landed highlight state, shared by every render snapshot. The per-line
+    /// index lives here so a visible row never scans the full span list.
+    highlight: Arc<DocHighlight>,
 }
 
 impl Document {
@@ -126,14 +129,11 @@ impl Document {
     fn replace_text(&mut self, text: String) {
         self.text = Arc::from(text);
         self.line_starts = line_starts(&self.text).into();
-        self.clear_tokens();
+        self.clear_highlight();
     }
 
-    fn clear_tokens(&mut self) {
-        self.tokens = Arc::from([]);
-        self.token_line_ranges = Arc::from([]);
-        self.token_indices = Arc::from([]);
-        self.token_bytes = 0;
+    fn clear_highlight(&mut self) {
+        self.highlight = Arc::new(DocHighlight::default());
     }
 
     fn advance_generation(&mut self) {
@@ -168,9 +168,7 @@ pub struct DocumentRenderSnapshot {
     generation: u64,
     text: Arc<str>,
     line_starts: Arc<[usize]>,
-    tokens: Arc<[TokenSpan]>,
-    token_line_ranges: Arc<[Range<usize>]>,
-    token_indices: Arc<[usize]>,
+    highlight: Arc<DocHighlight>,
 }
 
 impl DocumentRenderSnapshot {
@@ -209,14 +207,21 @@ impl DocumentRenderSnapshot {
 
     pub fn tokens_for_line(&self, line: usize) -> LineTokens<'_> {
         let indexes = self
-            .token_line_ranges
+            .highlight
+            .line_ranges
             .get(line)
-            .map(|range| &self.token_indices[range.clone()])
+            .map(|range| &self.highlight.line_indices[range.clone()])
             .unwrap_or_default();
         LineTokens {
-            tokens: &self.tokens,
+            tokens: &self.highlight.spans,
             indexes,
         }
+    }
+
+    /// Landed highlight state for this generation (spans, per-line index,
+    /// memory accounting, cap/fallback flags).
+    pub fn highlight(&self) -> &DocHighlight {
+        &self.highlight
     }
 }
 
@@ -350,10 +355,7 @@ impl DocumentStore {
                 undo_bytes: 0,
                 redo: Vec::new(),
                 redo_bytes: 0,
-                tokens: Arc::from([]),
-                token_line_ranges: Arc::from([]),
-                token_indices: Arc::from([]),
-                token_bytes: 0,
+                highlight: Arc::new(DocHighlight::default()),
             },
         );
         id
@@ -411,9 +413,7 @@ impl DocumentStore {
             generation: doc.generation,
             text: Arc::clone(&doc.text),
             line_starts: Arc::clone(&doc.line_starts),
-            tokens: Arc::clone(&doc.tokens),
-            token_line_ranges: Arc::clone(&doc.token_line_ranges),
-            token_indices: Arc::clone(&doc.token_indices),
+            highlight: Arc::clone(&doc.highlight),
         })
     }
 
@@ -451,9 +451,11 @@ impl DocumentStore {
         Some(line_col_to_offset(&doc.text, &doc.line_starts, line, col))
     }
 
-    /// Install token spans for exactly the current buffer generation. Spans are
-    /// indexed by intersecting lines, so a visible row reads a bounded slice.
-    /// Returns `false` for stale or invalid results without changing the store.
+    /// Install raw token spans for exactly the current buffer generation,
+    /// building the per-line index here. Convenience/simple-callers path; the
+    /// highlight worker uses [`Self::set_highlight`] with its prebuilt index.
+    /// Returns `false` for stale, invalid or over-cap results without changing
+    /// the store.
     pub fn set_tokens(
         &mut self,
         document: DocumentId,
@@ -463,25 +465,59 @@ impl DocumentStore {
         let Some(doc) = self.docs.get(&document) else {
             return false;
         };
-        if doc.generation != generation || !valid_tokens(&doc.text, &tokens) {
+        if doc.generation != generation {
             return false;
         }
-        let Some((ranges, indices, token_bytes)) = token_line_index(&doc.line_starts, &tokens)
-        else {
+        let highlight = build_highlight(generation, &doc.line_starts, &doc.text, 0, tokens);
+        if highlight.capped {
+            return false;
+        }
+        self.install_highlight(document, &highlight)
+    }
+
+    /// Install a highlight result already tokenized and line-indexed on the
+    /// highlight worker. The generation must still be current and the index
+    /// must agree with the installed line map; a stale result is rejected
+    /// without mutating the store. Cancelled results are never installed.
+    pub fn set_highlight(&mut self, result: HighlightResult) -> bool {
+        if result.cancelled {
+            return false;
+        }
+        let Some(doc) = self.docs.get(&result.document) else {
             return false;
         };
-        let retained_without_document = self.retained_token_bytes().saturating_sub(doc.token_bytes);
-        if retained_without_document.saturating_add(token_bytes) > MAX_RETAINED_TOKEN_BYTES {
+        if doc.generation != result.generation {
+            return false;
+        }
+        if result.highlight.requested != result.generation
+            || result.highlight.span_count != result.highlight.spans.len()
+            || result.highlight.span_count > MAX_HIGHLIGHT_SPANS
+            || (!result.highlight.capped
+                && (result.highlight.line_ranges.len() != doc.line_starts.len()
+                    || !valid_tokens(&doc.text, &result.highlight.spans)))
+        {
+            return false;
+        }
+        self.install_highlight(result.document, &result.highlight)
+    }
+
+    /// Shared install path: capacity-checked, Arc-swapped, no text copy.
+    fn install_highlight(&mut self, document: DocumentId, highlight: &DocHighlight) -> bool {
+        let Some(doc) = self.docs.get(&document) else {
+            return false;
+        };
+        let retained_without_document = self
+            .retained_token_bytes()
+            .saturating_sub(doc.highlight.span_bytes);
+        if retained_without_document.saturating_add(highlight.span_bytes) > MAX_RETAINED_TOKEN_BYTES
+        {
             return false;
         }
         let doc = self
             .docs
             .get_mut(&document)
             .expect("document was checked above");
-        doc.tokens = tokens.into();
-        doc.token_line_ranges = ranges.into();
-        doc.token_indices = indices.into();
-        doc.token_bytes = token_bytes;
+        doc.highlight = Arc::new(highlight.clone());
         true
     }
 
@@ -497,7 +533,7 @@ impl DocumentStore {
     }
 
     pub fn retained_token_bytes(&self) -> usize {
-        self.docs.values().map(|doc| doc.token_bytes).sum()
+        self.docs.values().map(|doc| doc.highlight.span_bytes).sum()
     }
 
     pub fn is_dirty(&self, document: DocumentId) -> Option<bool> {
@@ -530,7 +566,7 @@ impl DocumentStore {
         if let Some(doc) = self.docs.get_mut(&document) {
             doc.text = Arc::clone(&doc.saved_text);
             doc.line_starts = line_starts(&doc.text).into();
-            doc.clear_tokens();
+            doc.clear_highlight();
             doc.dirty = false;
             doc.undo.clear();
             doc.redo.clear();
@@ -786,7 +822,7 @@ impl DocumentStore {
             doc.saved_text = Arc::clone(&text);
             doc.text = text;
             doc.line_starts = line_starts(&doc.text).into();
-            doc.clear_tokens();
+            doc.clear_highlight();
             doc.history_cursor = None;
             doc.revision = file.revision;
             doc.language = file.language;
@@ -1219,9 +1255,13 @@ fn tokenize_markdown(
             }
         }
         // Backtick pairs on the same line; the indent offset keeps spans
-        // absolute without re-scanning.
+        // absolute without re-scanning. Check cancellation inside the loop so
+        // a backtick-dense line cannot monopolize the worker.
         let mut search = indent;
         while let Some(open) = line[search..].find('`') {
+            if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+                return spans;
+            }
             let open = search + open;
             let after = open + 1;
             if let Some(close) = line[after..].find('`') {
@@ -1240,14 +1280,92 @@ fn tokenize_markdown(
     spans
 }
 
-/// Landed highlight state per document: the requested generation it belongs
-/// to, token spans over that generation's text, and max display columns
-/// for horizontal extents.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Landed highlight state per document: the generation it belongs to, shared
+/// token spans over that generation's text, a compact per-line index into
+/// those spans, exact memory accounting, and the cap/fallback flags.
+///
+/// Cloning this value is Arc-cheap; it never copies spans or the index. The
+/// per-line index (`line_ranges` + `line_indices`) lets a renderer consult
+/// only the spans intersecting one visible row.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocHighlight {
+    /// Buffer generation the spans were tokenized from.
     pub requested: u64,
-    pub spans: Vec<TokenSpan>,
+    pub spans: Arc<[TokenSpan]>,
+    /// For each line, the slice of `line_indices` holding its span indexes.
+    pub line_ranges: Arc<[Range<usize>]>,
+    /// Flattened span indexes, grouped by line via `line_ranges`.
+    pub line_indices: Arc<[usize]>,
+    /// Number of installed spans; always `spans.len()` on a valid value.
+    pub span_count: usize,
+    /// Retained bytes (spans + index) for aggregate budget accounting.
+    pub span_bytes: usize,
     pub max_cols: usize,
+    /// True when the document exceeded [`MAX_HIGHLIGHT_SPANS`] and was
+    /// deliberately left un-highlighted (explicit plain fallback).
+    pub capped: bool,
+}
+
+impl Default for DocHighlight {
+    fn default() -> Self {
+        Self {
+            requested: 0,
+            spans: Arc::from([]),
+            line_ranges: Arc::from([]),
+            line_indices: Arc::from([]),
+            span_count: 0,
+            span_bytes: 0,
+            max_cols: 0,
+            capped: false,
+        }
+    }
+}
+
+/// Build landed highlight state from raw, validated spans and the document's
+/// line starts. Enforces [`MAX_HIGHLIGHT_SPANS`] by publishing an explicit
+/// plain fallback (no spans, `capped = true`) rather than a partial list.
+fn build_highlight(
+    requested: u64,
+    starts: &[usize],
+    text: &str,
+    max_cols: usize,
+    spans: Vec<TokenSpan>,
+) -> DocHighlight {
+    if spans.len() > MAX_HIGHLIGHT_SPANS {
+        return DocHighlight {
+            requested,
+            max_cols,
+            capped: true,
+            ..DocHighlight::default()
+        };
+    }
+    if !valid_tokens(text, &spans) {
+        return DocHighlight {
+            requested,
+            max_cols,
+            capped: true,
+            ..DocHighlight::default()
+        };
+    }
+    let Some((ranges, indices, span_bytes)) = token_line_index(starts, &spans) else {
+        return DocHighlight {
+            requested,
+            max_cols,
+            capped: true,
+            ..DocHighlight::default()
+        };
+    };
+    let span_count = spans.len();
+    DocHighlight {
+        requested,
+        spans: spans.into(),
+        line_ranges: ranges.into(),
+        line_indices: indices.into(),
+        span_count,
+        span_bytes,
+        max_cols,
+        capped: false,
+    }
 }
 
 /// Byte offset where every line starts. Line `i` covers
@@ -1940,12 +2058,31 @@ pub struct HighlightRequest {
     pub cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// A completed tokenize attempt. It carries the shared Arc spans and the
+/// per-line index built on the worker, exact span accounting, and the
+/// cap/fallback state. `cancelled` marks a cooperative abort whose spans are
+/// partial and must never be installed.
 #[derive(Debug)]
 pub struct HighlightResult {
     pub document: omaterm_core::DocumentId,
     pub generation: u64,
-    pub spans: Vec<TokenSpan>,
-    pub max_cols: usize,
+    pub highlight: DocHighlight,
+    pub cancelled: bool,
+}
+
+impl HighlightResult {
+    /// Shared spans over the tokenized generation.
+    pub fn spans(&self) -> &[TokenSpan] {
+        &self.highlight.spans
+    }
+
+    pub fn max_cols(&self) -> usize {
+        self.highlight.max_cols
+    }
+
+    pub fn capped(&self) -> bool {
+        self.highlight.capped
+    }
 }
 
 #[derive(Default)]
@@ -1971,6 +2108,7 @@ impl HighlightWorker {
             |request: HighlightRequest| {
                 let spans =
                     tokenize_cancellable(request.language, &request.text, Some(&request.cancelled));
+                let cancelled = request.cancelled.load(std::sync::atomic::Ordering::Acquire);
                 let mut max_cols = 0;
                 for line in request.text.split('\n') {
                     if request.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1978,11 +2116,21 @@ impl HighlightWorker {
                     }
                     max_cols = max_cols.max(line_display_width(line));
                 }
+                // Build the per-line index on the worker so the owner thread
+                // and the paint path never scan the full span list. A cancelled
+                // tokenize keeps `cancelled = true`; `with_runner` discards it.
+                let highlight = build_highlight(
+                    request.generation,
+                    &line_starts(&request.text),
+                    &request.text,
+                    max_cols,
+                    spans,
+                );
                 HighlightResult {
                     document: request.document,
                     generation: request.generation,
-                    spans,
-                    max_cols,
+                    highlight,
+                    cancelled,
                 }
             },
             notify,
@@ -2403,7 +2551,9 @@ mod tests {
                 && result.generation == 2
             {
                 assert_eq!(result.document, document);
-                assert!(!result.spans.is_empty());
+                assert!(!result.spans().is_empty());
+                assert!(!result.cancelled);
+                assert!(!result.capped());
                 break;
             }
             assert!(start.elapsed() < std::time::Duration::from_secs(5));
@@ -2611,6 +2761,205 @@ mod tests {
         assert_eq!(updated.line(1), Some("界"));
         assert!(updated.tokens_for_line(1).next().is_none());
         assert!(!store.set_tokens(document, generation, Vec::new()));
+    }
+
+    #[test]
+    fn highlight_over_span_cap_publishes_plain_fallback_not_partial_spans() {
+        // One past the ceiling: the builder must drop every span and mark the
+        // document as an explicit plain fallback. Partial spans never leak.
+        let spans: Vec<TokenSpan> = (0..=MAX_HIGHLIGHT_SPANS)
+            .map(|index| TokenSpan {
+                start: index,
+                len: 1,
+                kind: TokenKind::Keyword,
+            })
+            .collect();
+        let text = "a".repeat(spans.len() + 1);
+        let highlight = build_highlight(7, &line_starts(&text), &text, 0, spans);
+        assert!(highlight.capped);
+        assert_eq!(highlight.requested, 7);
+        assert!(highlight.spans.is_empty());
+        assert_eq!(highlight.span_count, 0);
+        assert!(highlight.line_ranges.is_empty());
+        assert_eq!(highlight.span_bytes, 0);
+
+        // Exactly at the ceiling still publishes the full indexed set.
+        let spans: Vec<TokenSpan> = (0..MAX_HIGHLIGHT_SPANS)
+            .map(|index| TokenSpan {
+                start: index,
+                len: 1,
+                kind: TokenKind::Keyword,
+            })
+            .collect();
+        let text = "a".repeat(spans.len() + 1);
+        let highlight = build_highlight(8, &line_starts(&text), &text, 0, spans);
+        assert!(!highlight.capped);
+        assert_eq!(highlight.span_count, MAX_HIGHLIGHT_SPANS);
+        assert_eq!(highlight.spans.len(), MAX_HIGHLIGHT_SPANS);
+        assert!(highlight.span_bytes > 0);
+    }
+
+    #[test]
+    fn store_installs_worker_capped_fallback_as_empty_highlight() {
+        let mut store = DocumentStore::default();
+        let document = open_doc(&mut store, ProjectId::new(), "dense.rs", "fn a() {}\n");
+        let generation = store.generation(document).unwrap();
+        // Build a capped fallback directly, as the worker would after seeing
+        // more spans than the ceiling allows.
+        let spans: Vec<TokenSpan> = (0..=MAX_HIGHLIGHT_SPANS)
+            .map(|index| TokenSpan {
+                start: index,
+                len: 1,
+                kind: TokenKind::Keyword,
+            })
+            .collect();
+        let text = "a".repeat(MAX_HIGHLIGHT_SPANS + 2);
+        let highlight = build_highlight(generation, &line_starts(&text), &text, 0, spans);
+        assert!(highlight.capped);
+        assert!(store.set_highlight(HighlightResult {
+            document,
+            generation,
+            highlight,
+            cancelled: false,
+        }));
+        let snapshot = store.render_snapshot(document).unwrap();
+        assert!(snapshot.highlight().capped);
+        assert_eq!(snapshot.highlight().span_count, 0);
+        assert!(snapshot.tokens_for_line(0).next().is_none());
+    }
+
+    #[test]
+    fn highlight_line_index_is_built_on_worker_and_read_per_visible_row() {
+        use omaterm_context::EditorLanguage as Lang;
+        let worker = HighlightWorker::new();
+        let document = DocumentId::new();
+        let text = "fn a() {}\nlet b = 2;\n// c\n";
+        worker.submit(HighlightRequest {
+            document,
+            generation: 5,
+            language: Lang::Rust,
+            text: text.into(),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        let start = std::time::Instant::now();
+        let result = loop {
+            if let Some(result) = worker.take_result() {
+                break result;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(!result.cancelled);
+        assert!(!result.capped());
+        assert_eq!(result.generation, 5);
+        assert_eq!(result.highlight.requested, 5);
+        assert_eq!(result.highlight.span_count, result.highlight.spans.len());
+        // The index has one (possibly empty) range per line.
+        assert_eq!(result.highlight.line_ranges.len(), line_starts(text).len());
+        // Row 0 (`fn a() {}`) holds only its own spans.
+        let line0: Vec<_> = {
+            let range = result.highlight.line_ranges[0].clone();
+            result.highlight.line_indices[range]
+                .iter()
+                .map(|index| result.highlight.spans[*index])
+                .collect()
+        };
+        assert!(line0.iter().all(|span| span.start < "fn a() {}\n".len()));
+        assert!(line0.iter().any(|span| { span_text(text, span) == "fn" }));
+        // Row 2 holds the comment only.
+        let line2_range = result.highlight.line_ranges[2].clone();
+        let line2: Vec<_> = result.highlight.line_indices[line2_range]
+            .iter()
+            .map(|index| result.highlight.spans[*index])
+            .collect();
+        assert_eq!(line2.len(), 1);
+        assert_eq!(span_text(text, &line2[0]), "// c");
+    }
+
+    #[test]
+    fn markdown_backtick_loop_honors_cooperative_cancellation() {
+        // A backtick-dense line: cancellation is observed inside the inner
+        // loop, so tokenizing stops without publishing a partial span list.
+        let dense = "`a`".repeat(50_000);
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let spans = tokenize_cancellable(
+            omaterm_context::EditorLanguage::Markdown,
+            &dense,
+            Some(&cancel),
+        );
+        assert!(spans.is_empty());
+        // The builder then reports a fallback-free empty highlight.
+        let highlight = build_highlight(1, &line_starts(&dense), &dense, 0, spans);
+        assert!(!highlight.capped);
+        assert_eq!(highlight.span_count, 0);
+    }
+
+    #[test]
+    fn stale_or_cancelled_highlight_results_never_install() {
+        let mut store = DocumentStore::default();
+        let document = open_doc(&mut store, ProjectId::new(), "a.rs", "fn a() {}\n");
+        let generation = store.generation(document).unwrap();
+        let spans = vec![TokenSpan {
+            start: 0,
+            len: 2,
+            kind: TokenKind::Keyword,
+        }];
+        let highlight = |requested: u64| {
+            build_highlight(
+                requested,
+                &line_starts("fn a() {}\n"),
+                "fn a() {}\n",
+                4,
+                spans.clone(),
+            )
+        };
+
+        // Stale generation: the buffer has not moved but the result claims a
+        // later one, so the store refuses it.
+        assert!(!store.set_highlight(HighlightResult {
+            document,
+            generation: generation + 1,
+            highlight: highlight(generation + 1),
+            cancelled: false,
+        }));
+        assert!(
+            store
+                .render_snapshot(document)
+                .unwrap()
+                .tokens_for_line(0)
+                .next()
+                .is_none()
+        );
+
+        // Cancelled result: explicit abort is never installed even when the
+        // generation matches.
+        assert!(!store.set_highlight(HighlightResult {
+            document,
+            generation,
+            highlight: highlight(generation),
+            cancelled: true,
+        }));
+        assert!(
+            store
+                .render_snapshot(document)
+                .unwrap()
+                .tokens_for_line(0)
+                .next()
+                .is_none()
+        );
+
+        // Fresh, complete result installs and is visible by line.
+        assert!(store.set_highlight(HighlightResult {
+            document,
+            generation,
+            highlight: highlight(generation),
+            cancelled: false,
+        }));
+        let snapshot = store.render_snapshot(document).unwrap();
+        assert_eq!(snapshot.highlight().span_count, 1);
+        assert!(!snapshot.highlight().capped);
+        assert_eq!(snapshot.tokens_for_line(0).collect::<Vec<_>>().len(), 1);
+        assert!(snapshot.tokens_for_line(1).next().is_none());
     }
 
     #[test]
