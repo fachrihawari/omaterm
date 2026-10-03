@@ -15,9 +15,10 @@ use gpui::{
     hsla, prelude::*, px, relative, rgb, rgba, size, uniform_list,
 };
 use omaterm_core::{
-    CommandContext, CommandOutput, CommandResult, DiffCommand, FileCommand, FileEntry, GitCommand,
-    OmaCommand, Pane, PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId,
-    SessionId, SplitAxis, SplitDirection, TabCommand, TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
+    FileCommand, FileEntry, GitCommand, OmaCommand, Pane, PaneCommand, PaneContent, PaneId,
+    PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis, SplitDirection, TabCommand,
+    TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -242,7 +243,35 @@ struct WorkspaceView {
     diff_dirty_hint: bool,
     /// Last project the diff poller served (switch detection).
     diff_last_project: Option<ProjectId>,
+    /// Native editor documents (M19 Phase D): view-local activation per
+    /// project. Buffers live in the router-owned `DocumentStore`; these
+    /// maps hold caret, scroll, and presentation state only.
+    editor_active: HashMap<ProjectId, DocumentId>,
+    editor_carets: HashMap<DocumentId, editor::EditorCaret>,
+    editor_rows_handles: HashMap<DocumentId, UniformListScrollHandle>,
+    editor_x_handles: HashMap<DocumentId, ScrollHandle>,
+    /// Landed highlights per document: requested generation, spans, and
+    /// max display columns. `editor_text_gen` counts buffer mutations so
+    /// stale worker results drop instead of painting old text.
+    editor_highlights: HashMap<DocumentId, editor::DocHighlight>,
+    editor_text_gen: HashMap<DocumentId, u64>,
+    /// Cached line-start maps keyed by text generation: line math without
+    /// re-scanning the buffer on every keystroke render.
+    editor_line_cache: HashMap<DocumentId, (u64, Rc<Vec<usize>>)>,
+    editor_highlight_worker: editor::HighlightWorker,
+    /// Body origin per document for click-to-caret mapping, recorded by a
+    /// paint-time canvas like the terminal grid origins. Rebuilt every frame.
+    editor_body_origins: HashMap<DocumentId, Rc<Cell<gpui::Point<Pixels>>>>,
+    /// Active pointer drag: document plus the press-point anchor offset.
+    /// Cleared on release.
+    editor_selecting: Option<(DocumentId, usize)>,
 }
+
+/// Editor geometry and type in logical pixels (plan §14: 54px gutter,
+/// 22px lines, 12.5px monospace).
+const EDITOR_GUTTER_W: f32 = 54.0;
+const EDITOR_ROW_H: f32 = 22.0;
+const EDITOR_FONT_SIZE: f32 = 12.5;
 
 #[derive(Default)]
 struct DiffPreviewScroll {
@@ -760,6 +789,16 @@ impl WorkspaceView {
             diff_refreshed_at: HashMap::new(),
             diff_dirty_hint: true,
             diff_last_project: None,
+            editor_active: HashMap::new(),
+            editor_carets: HashMap::new(),
+            editor_rows_handles: HashMap::new(),
+            editor_x_handles: HashMap::new(),
+            editor_highlights: HashMap::new(),
+            editor_text_gen: HashMap::new(),
+            editor_line_cache: HashMap::new(),
+            editor_highlight_worker: editor::HighlightWorker::new(),
+            editor_body_origins: HashMap::new(),
+            editor_selecting: None,
         };
         view.start_ipc(cx);
         view.restore_or_initialize(cx);
@@ -1222,6 +1261,7 @@ impl WorkspaceView {
         }
         self.shutting_down = true;
         let diff_thread = self.diff_worker.take_shutdown_thread();
+        let highlight_thread = self.editor_highlight_worker.take_shutdown_thread();
         self.palette_search_worker.shutdown();
         if let Some(receiver) = self.ipc_receiver.take() {
             receiver.close();
@@ -1254,6 +1294,9 @@ impl WorkspaceView {
         let (done_tx, done_rx) = async_channel::bounded::<Result<(), String>>(1);
         std::thread::spawn(move || {
             if let Some(thread) = diff_thread {
+                let _ = thread.join();
+            }
+            if let Some(thread) = highlight_thread {
                 let _ = thread.join();
             }
             if let Some(mut server) = ipc_server {
@@ -3014,6 +3057,1386 @@ impl WorkspaceView {
         }
     }
 
+    /// Native editor documents (M19 Phase D). Activation is view-local per
+    /// project like the diff preview, but buffers persist in the
+    /// router-owned store across tab switches and preview changes. Only
+    /// lifecycle/save travel through the dispatcher; keystrokes edit the
+    /// store directly and never touch terminal sessions.
+    /// Active document for a project, dropping handles whose document
+    /// closed underneath (project delete retires buffers).
+    fn editor_active_doc(&self, project: ProjectId) -> Option<DocumentId> {
+        self.editor_active
+            .get(&project)
+            .copied()
+            .filter(|doc| self.coordinator.documents().project_of(*doc) == Some(project))
+    }
+
+    /// Dispatch `EditorCommand::Open` and activate the document on success.
+    /// Phase D trigger: palette file results with Ctrl+Enter/Ctrl+click.
+    /// Failures surface as an input notice; no terminal is disturbed.
+    fn editor_open_document(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::Editor(EditorCommand::Open { project, path }),
+            cx,
+        ) {
+            Ok(CommandOutput::EditorOpened(info)) => {
+                self.editor_activate(project, info.document, cx)
+            }
+            Ok(_) => {
+                self.input_notice = Some("Open: unexpected editor result.".into());
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Open: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Show a document: mark active, ensure caret/scroll state, request
+    /// fresh highlights, and reveal the caret line.
+    fn editor_activate(
+        &mut self,
+        project: ProjectId,
+        document: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor_active.insert(project, document);
+        self.editor_carets.entry(document).or_default();
+        self.editor_submit_highlight(document);
+        self.editor_reveal_caret(document);
+        cx.notify();
+    }
+
+    /// Queue a background tokenize of the live buffer. Generations retire
+    /// superseded keystrokes; the worker cancels the active job on submit.
+    fn editor_submit_highlight(&mut self, document: DocumentId) {
+        let generation = self.editor_text_gen.get(&document).copied().unwrap_or(0) + 1;
+        self.editor_text_gen.insert(document, generation);
+        let store = self.coordinator.documents();
+        let (Some(text), Some(language)) = (store.buffer_text(document), store.language(document))
+        else {
+            return;
+        };
+        self.editor_highlight_worker
+            .submit(editor::HighlightRequest {
+                document,
+                generation,
+                language,
+                text,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            });
+    }
+
+    /// Apply landed highlights whose generation still matches the buffer.
+    /// Called from the editor render path; notifies only on real updates.
+    fn editor_drain_highlights(&mut self, cx: &mut Context<Self>) {
+        let mut landed = false;
+        while let Some(result) = self.editor_highlight_worker.take_result() {
+            if self.editor_text_gen.get(&result.document) == Some(&result.generation) {
+                self.editor_highlights.insert(
+                    result.document,
+                    editor::DocHighlight {
+                        requested: result.generation,
+                        spans: result.spans,
+                        max_cols: result.max_cols,
+                    },
+                );
+                landed = true;
+            }
+        }
+        if landed {
+            cx.notify();
+        }
+    }
+
+    /// Forget view-local state for a document (close/project switch).
+    /// Buffer lifetime is owned by the store, not this map.
+    fn editor_forget_view(&mut self, document: DocumentId) {
+        self.editor_carets.remove(&document);
+        self.editor_rows_handles.remove(&document);
+        self.editor_x_handles.remove(&document);
+        self.editor_highlights.remove(&document);
+        self.editor_text_gen.remove(&document);
+        self.editor_line_cache.remove(&document);
+        self.editor_body_origins.remove(&document);
+        if self
+            .editor_selecting
+            .is_some_and(|(selecting, _)| selecting == document)
+        {
+            self.editor_selecting = None;
+        }
+    }
+
+    /// Close a document through the dispatcher. Dirty buffers refuse with
+    /// an explicit notice — close never discards text implicitly.
+    fn editor_close_document(
+        &mut self,
+        project: ProjectId,
+        document: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        if self.coordinator.documents().is_dirty(document) == Some(true) {
+            self.input_notice = Some("Unsaved changes — save (Ctrl+S) or revert first.".into());
+            cx.notify();
+            return;
+        }
+        match self.dispatch_command(OmaCommand::Editor(EditorCommand::Close { document }), cx) {
+            Ok(_) => {
+                self.editor_forget_view(document);
+                if self.editor_active.get(&project) == Some(&document) {
+                    self.editor_active.remove(&project);
+                }
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Close: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Save the active buffer through the dispatcher. Success toasts;
+    /// conflicts and I/O failures surface as notices with the buffer kept
+    /// dirty and intact.
+    fn editor_save_document(
+        &mut self,
+        _project: ProjectId,
+        document: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(OmaCommand::Editor(EditorCommand::Save { document }), cx) {
+            Ok(CommandOutput::EditorSaved(_)) => self.show_toast("Saved".into(), cx),
+            Ok(_) => {
+                self.input_notice = Some("Save: unexpected editor result.".into());
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Save: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Reload the buffer from disk, discarding unsaved changes. The caret
+    /// clamps into the fresh text; highlights regenerate from it.
+    fn editor_revert_document(
+        &mut self,
+        _project: ProjectId,
+        document: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        match self.dispatch_command(OmaCommand::Editor(EditorCommand::Revert { document }), cx) {
+            Ok(CommandOutput::EditorOpened(_)) => {
+                if let Some(caret) = self.editor_carets.get(&document).copied() {
+                    self.editor_set_caret(document, caret.cursor, false);
+                }
+                self.editor_after_edit(document, cx);
+                self.show_toast("Reverted to disk".into(), cx);
+            }
+            Ok(_) => {
+                self.input_notice = Some("Revert: unexpected editor result.".into());
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Revert: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Cached line starts for the live buffer, keyed by text generation.
+    fn editor_line_starts(&mut self, document: DocumentId) -> Rc<Vec<usize>> {
+        let generation = self.editor_text_gen.get(&document).copied().unwrap_or(0);
+        if let Some((cached, starts)) = self.editor_line_cache.get(&document)
+            && *cached == generation
+        {
+            return Rc::clone(starts);
+        }
+        let text = self
+            .coordinator
+            .documents()
+            .buffer_text(document)
+            .unwrap_or_default();
+        let starts = Rc::new(editor::line_starts(&text));
+        self.editor_line_cache
+            .insert(document, (generation, Rc::clone(&starts)));
+        starts
+    }
+
+    /// Scroll the caret line into view (non-strict: no jump when visible).
+    fn editor_reveal_caret(&mut self, document: DocumentId) {
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        let starts = editor::line_starts(&text);
+        let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
+        if let Some(handle) = self.editor_rows_handles.get(&document) {
+            handle.scroll_to_item(line, ScrollStrategy::Center);
+        }
+    }
+
+    /// Set the caret, extending the selection when requested. Offsets clamp
+    /// into the buffer on char boundaries; the caret line is revealed.
+    fn editor_set_caret(&mut self, document: DocumentId, offset: usize, extend: bool) {
+        let Some(text) = self.coordinator.documents().buffer_text(document) else {
+            return;
+        };
+        let mut offset = offset.min(text.len());
+        while offset > 0 && !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let caret = self.editor_carets.entry(document).or_default();
+        if extend {
+            if caret.anchor.is_none() {
+                caret.anchor = Some(caret.cursor);
+            }
+            caret.cursor = offset;
+            if caret.anchor == Some(caret.cursor) {
+                caret.anchor = None;
+            }
+        } else {
+            caret.collapse_to(offset);
+        }
+        self.editor_reveal_caret(document);
+    }
+
+    /// Shared post-edit bookkeeping: fresh highlights, caret reveal, repaint.
+    fn editor_after_edit(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        self.editor_submit_highlight(document);
+        self.editor_reveal_caret(document);
+        cx.notify();
+    }
+
+    /// Insert text at the caret, replacing any selection. Control chars
+    /// (except newline/tab) are filtered so pasted terminal output cannot
+    /// inject control sequences into the buffer.
+    fn editor_insert_text(&mut self, document: DocumentId, text: &str, cx: &mut Context<Self>) {
+        let clean: String = text
+            .chars()
+            .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+            .collect();
+        if clean.is_empty() {
+            return;
+        }
+        let caret = self
+            .editor_carets
+            .get(&document)
+            .copied()
+            .unwrap_or_default();
+        let (start, end) = caret
+            .selection_range()
+            .unwrap_or((caret.cursor, caret.cursor));
+        match self
+            .coordinator
+            .documents_mut()
+            .apply_edit(document, start, end - start, &clean)
+        {
+            Ok(()) => {
+                self.editor_carets
+                    .entry(document)
+                    .or_default()
+                    .collapse_to(start + clean.len());
+                self.editor_after_edit(document, cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Edit: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Delete the selection; returns whether anything was deleted.
+    fn editor_delete_selection(&mut self, document: DocumentId, cx: &mut Context<Self>) -> bool {
+        let caret = self
+            .editor_carets
+            .get(&document)
+            .copied()
+            .unwrap_or_default();
+        let Some((start, end)) = caret.selection_range() else {
+            return false;
+        };
+        match self
+            .coordinator
+            .documents_mut()
+            .apply_edit(document, start, end - start, "")
+        {
+            Ok(()) => {
+                self.editor_carets
+                    .entry(document)
+                    .or_default()
+                    .collapse_to(start);
+                self.editor_after_edit(document, cx);
+                true
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Edit: {error}"));
+                cx.notify();
+                false
+            }
+        }
+    }
+
+    /// Map a window point to a buffer offset: body origin plus native
+    /// scroll offsets, fixed 22px rows, then shaped-prefix binary search
+    /// for the column. Wide/tab text maps through display columns.
+    fn editor_offset_at_point(
+        &mut self,
+        document: DocumentId,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let origin = self.editor_body_origins.get(&document)?.get();
+        let scroll_y: f32 = self
+            .editor_rows_handles
+            .get(&document)
+            .map(|handle| handle.0.borrow().base_handle.offset().y.into())
+            .unwrap_or(0.0);
+        let scroll_x: f32 = self
+            .editor_x_handles
+            .get(&document)
+            .map(|handle| handle.offset().x.into())
+            .unwrap_or(0.0);
+        let text = self.coordinator.documents().buffer_text(document)?;
+        let starts = self.editor_line_starts(document);
+        let rel_y: f32 = (position.y - origin.y).into();
+        let line = ((rel_y - scroll_y) / EDITOR_ROW_H).floor() as usize;
+        let line = line.min(starts.len().saturating_sub(1));
+        let line_start = starts[line];
+        let line_end = starts
+            .get(line + 1)
+            .map(|end| end.saturating_sub(1))
+            .unwrap_or(text.len());
+        let line_text = text.get(line_start..line_end.min(text.len())).unwrap_or("");
+        let display = editor::display_line(line_text);
+        let rel_x: f32 = (position.x - origin.x).into();
+        let target_x = (rel_x - EDITOR_GUTTER_W - scroll_x).max(0.0);
+        let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
+        // Nearest display-byte column by shaped prefix width.
+        let (mut lo, mut hi) = (0usize, display.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let mut mid = mid;
+            while mid > lo && !display.is_char_boundary(mid) {
+                mid -= 1;
+            }
+            if mid == lo {
+                break;
+            }
+            if Self::editor_shape_width(&display[..mid], &mono, window) <= target_x {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+            if hi - lo <= 1 {
+                break;
+            }
+        }
+        let mut best = lo;
+        let mut best_dist =
+            (Self::editor_shape_width(&display[..lo], &mono, window) - target_x).abs();
+        for candidate in [lo, hi.min(display.len())] {
+            let mut candidate = candidate;
+            while candidate > 0 && !display.is_char_boundary(candidate) {
+                candidate -= 1;
+            }
+            let dist =
+                (Self::editor_shape_width(&display[..candidate], &mono, window) - target_x).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best = candidate;
+            }
+        }
+        let buffer_col = editor::display_col_to_buffer_col(line_text, best);
+        Some(editor::line_col_to_offset(&text, &starts, line, buffer_col).min(text.len()))
+    }
+
+    /// Undo the newest buffer edit. Dirty state stays dirty: undo history
+    /// is not a clean-revision tracker in first delivery.
+    fn editor_undo(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        match self.coordinator.documents_mut().undo(document) {
+            Ok(applied) => {
+                if applied {
+                    self.editor_after_edit(document, cx);
+                }
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Undo: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    fn editor_redo(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        match self.coordinator.documents_mut().redo(document) {
+            Ok(applied) => {
+                if applied {
+                    self.editor_after_edit(document, cx);
+                }
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Redo: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Copy the selection, or the caret line when there is none.
+    fn editor_copy(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        let payload = match caret.selection_range() {
+            Some((start, end)) => text.get(start..end).unwrap_or("").to_owned(),
+            None => {
+                let starts = editor::line_starts(&text);
+                let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
+                let start = starts[line];
+                let end = starts.get(line + 1).copied().unwrap_or(text.len());
+                text.get(start..end).unwrap_or("").to_owned()
+            }
+        };
+        if !payload.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(payload));
+        }
+    }
+
+    /// Cut the selection, or the caret line when there is none: copy to
+    /// the clipboard first, then delete.
+    fn editor_cut(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        let caret = self
+            .editor_carets
+            .get(&document)
+            .copied()
+            .unwrap_or_default();
+        if caret.selection_range().is_none() {
+            let Some(text) = self.coordinator.documents().buffer_text(document) else {
+                return;
+            };
+            let starts = editor::line_starts(&text);
+            let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
+            let start = starts[line];
+            let end = starts.get(line + 1).copied().unwrap_or(text.len());
+            if start < end {
+                let payload = text.get(start..end).unwrap_or("").to_owned();
+                if self
+                    .coordinator
+                    .documents_mut()
+                    .apply_edit(document, start, end - start, "")
+                    .is_ok()
+                {
+                    cx.write_to_clipboard(ClipboardItem::new_string(payload));
+                    self.editor_carets
+                        .entry(document)
+                        .or_default()
+                        .collapse_to(start);
+                    self.editor_after_edit(document, cx);
+                }
+            }
+            return;
+        }
+        self.editor_copy(document, cx);
+        self.editor_delete_selection(document, cx);
+    }
+
+    /// Pointer press on a code row: focus, place the caret, begin a drag.
+    /// Shift+press extends the selection from the existing anchor.
+    fn editor_mouse_down(
+        &mut self,
+        document: DocumentId,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        window.focus(&self.focus_handle);
+        let Some(offset) = self.editor_offset_at_point(document, event.position, window, cx) else {
+            return;
+        };
+        let caret = self.editor_carets.entry(document).or_default();
+        if event.modifiers.shift {
+            if caret.anchor.is_none() {
+                caret.anchor = Some(caret.cursor);
+            }
+            caret.cursor = offset;
+            if caret.anchor == Some(caret.cursor) {
+                caret.anchor = None;
+            }
+        } else {
+            caret.collapse_to(offset);
+        }
+        self.editor_selecting = Some((document, offset));
+        cx.notify();
+    }
+
+    /// Pointer drag: extend the selection from the press point.
+    fn editor_mouse_move(
+        &mut self,
+        document: DocumentId,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((selecting, anchor)) = self.editor_selecting else {
+            return;
+        };
+        if selecting != document {
+            return;
+        }
+        let Some(offset) = self.editor_offset_at_point(document, event.position, window, cx) else {
+            return;
+        };
+        let caret = self.editor_carets.entry(document).or_default();
+        caret.anchor = Some(anchor);
+        caret.cursor = offset;
+        if caret.anchor == Some(caret.cursor) {
+            caret.anchor = None;
+        }
+        cx.notify();
+    }
+
+    /// Pointer release: end the drag, publishing non-empty selections to
+    /// the primary clipboard like terminal drag selection.
+    fn editor_mouse_up(
+        &mut self,
+        document: DocumentId,
+        _event: &MouseUpEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((selecting, _)) = self.editor_selecting else {
+            return;
+        };
+        if selecting != document {
+            return;
+        }
+        self.editor_selecting = None;
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        if let Some((start, end)) = caret.selection_range()
+            && let Some(payload) = text.get(start..end)
+            && !payload.is_empty()
+        {
+            cx.write_to_primary(ClipboardItem::new_string(payload.to_owned()));
+        }
+        cx.notify();
+    }
+
+    /// Keyboard while a document is active. Global chrome chords (palette,
+    /// panel toggles, workspace splits, inspector inputs) are consumed
+    /// before this point, so everything arriving here belongs to the
+    /// editor — except nothing: unhandled keys are swallowed rather than
+    /// forwarded to a terminal that does not own input.
+    #[allow(clippy::too_many_lines)]
+    fn on_editor_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        let Some(document) = self.editor_active_doc(project) else {
+            return;
+        };
+        let modifiers = &event.keystroke.modifiers;
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+
+        // Editing chords. Plain Ctrl+C/X/V/A/S/Z and Ctrl+Shift+Z / Ctrl+Y
+        // are editor-owned here; the Ctrl+Shift terminal clipboard chords
+        // keep their global behavior above.
+        if modifiers.control && !modifiers.alt {
+            match (modifiers.shift, key_name.as_str()) {
+                (false, "s") => {
+                    self.editor_save_document(project, document, cx);
+                    return;
+                }
+                (false, "z") => {
+                    self.editor_undo(document, cx);
+                    return;
+                }
+                (true, "z") => {
+                    self.editor_redo(document, cx);
+                    return;
+                }
+                (false, "y") => {
+                    self.editor_redo(document, cx);
+                    return;
+                }
+                (false, "a") => {
+                    if let Some(text) = self.coordinator.documents().buffer_text(document) {
+                        let caret = self.editor_carets.entry(document).or_default();
+                        caret.anchor = Some(0);
+                        caret.cursor = text.len();
+                        cx.notify();
+                    }
+                    return;
+                }
+                (false, "c") => {
+                    self.editor_copy(document, cx);
+                    return;
+                }
+                (false, "x") => {
+                    self.editor_cut(document, cx);
+                    return;
+                }
+                (false, "v") => {
+                    if let Some(paste) = cx
+                        .read_from_clipboard()
+                        .and_then(|item| item.text().map(|text| text.to_string()))
+                    {
+                        self.editor_insert_text(document, &paste, cx);
+                    }
+                    return;
+                }
+                (false, "home") => {
+                    self.editor_set_caret(document, 0, false);
+                    cx.notify();
+                    return;
+                }
+                (false, "end") => {
+                    if let Some(text) = self.coordinator.documents().buffer_text(document) {
+                        let end = text.len();
+                        self.editor_set_caret(document, end, false);
+                        cx.notify();
+                    }
+                    return;
+                }
+                (true, "home") => {
+                    self.editor_set_caret(document, 0, true);
+                    cx.notify();
+                    return;
+                }
+                (true, "end") => {
+                    if let Some(text) = self.coordinator.documents().buffer_text(document) {
+                        let end = text.len();
+                        self.editor_set_caret(document, end, true);
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ => return,
+            }
+        }
+        if modifiers.alt {
+            return;
+        }
+        match key_name.as_str() {
+            "escape" => {
+                self.editor_active.remove(&project);
+                cx.notify();
+            }
+            "enter" | "return" | "kpenter" => self.editor_insert_newline(document, cx),
+            "backspace" => self.editor_backspace(document, cx),
+            "delete" => self.editor_delete_forward(document, cx),
+            "tab" => self.editor_insert_text(document, "    ", cx),
+            "left" => self.editor_move_char(document, -1, modifiers.shift, cx),
+            "right" => self.editor_move_char(document, 1, modifiers.shift, cx),
+            "up" => self.editor_move_line(document, -1, modifiers.shift, cx),
+            "down" => self.editor_move_line(document, 1, modifiers.shift, cx),
+            "home" => self.editor_move_line_bound(document, true, modifiers.shift, cx),
+            "end" => self.editor_move_line_bound(document, false, modifiers.shift, cx),
+            "pageup" => self.editor_move_page(document, -1, cx),
+            "pagedown" => self.editor_move_page(document, 1, cx),
+            _ => {
+                if let Some(text) = event.keystroke.key_char.as_ref() {
+                    self.editor_insert_text(document, text, cx);
+                }
+            }
+        }
+    }
+
+    /// Move one char, extending the selection with Shift.
+    fn editor_move_char(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        // A selection collapses toward the motion before stepping.
+        let base = match caret.selection_range() {
+            Some((start, end)) if !extend => {
+                if delta < 0 {
+                    start
+                } else {
+                    end
+                }
+            }
+            _ => caret.cursor,
+        };
+        let mut offset = base;
+        if delta < 0 {
+            for _ in delta..0 {
+                if offset == 0 {
+                    break;
+                }
+                offset -= 1;
+                while offset > 0 && !text.is_char_boundary(offset) {
+                    offset -= 1;
+                }
+            }
+        } else {
+            for _ in 0..delta {
+                if offset >= text.len() {
+                    break;
+                }
+                offset += 1;
+                while offset < text.len() && !text.is_char_boundary(offset) {
+                    offset += 1;
+                }
+            }
+        }
+        self.editor_set_caret(document, offset, extend);
+        cx.notify();
+    }
+
+    /// Move vertically, preserving the byte column across lines.
+    fn editor_move_line(
+        &mut self,
+        document: DocumentId,
+        delta: i32,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        let starts = editor::line_starts(&text);
+        let (line, col) = editor::offset_to_line_col(&starts, &text, caret.cursor);
+        let next = (line as i32 + delta).clamp(0, starts.len() as i32 - 1) as usize;
+        let offset = editor::line_col_to_offset(&text, &starts, next, col);
+        self.editor_set_caret(document, offset, extend);
+        cx.notify();
+    }
+
+    /// Line start/end, extending with Shift.
+    fn editor_move_line_bound(
+        &mut self,
+        document: DocumentId,
+        home: bool,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        let starts = editor::line_starts(&text);
+        let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
+        let offset = if home {
+            starts[line]
+        } else {
+            starts
+                .get(line + 1)
+                .map(|end| end.saturating_sub(1))
+                .unwrap_or(text.len())
+        };
+        self.editor_set_caret(document, offset, extend);
+        cx.notify();
+    }
+
+    /// Page motion: twenty lines, caret-centered reveal.
+    fn editor_move_page(&mut self, document: DocumentId, delta: i32, cx: &mut Context<Self>) {
+        self.editor_move_line(document, delta * 20, false, cx);
+    }
+
+    /// Enter: replace any selection, then newline plus the current line's
+    /// leading whitespace (spaces and tabs preserved verbatim).
+    fn editor_insert_newline(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        let (start, end) = caret
+            .selection_range()
+            .unwrap_or((caret.cursor, caret.cursor));
+        let starts = editor::line_starts(&text);
+        let (line, _) = editor::offset_to_line_col(&starts, &text, start);
+        let line_start = starts[line];
+        let line_text = text.get(line_start..start.min(text.len())).unwrap_or("");
+        let indent: String = line_text
+            .chars()
+            .take_while(|ch| *ch == ' ' || *ch == '\t')
+            .collect();
+        let insert = format!("\n{indent}");
+        match self
+            .coordinator
+            .documents_mut()
+            .apply_edit(document, start, end - start, &insert)
+        {
+            Ok(()) => {
+                self.editor_carets
+                    .entry(document)
+                    .or_default()
+                    .collapse_to(start + insert.len());
+                self.editor_after_edit(document, cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Edit: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Backspace: delete the selection, join with the previous line at
+    /// column zero, or delete the previous char.
+    fn editor_backspace(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        if self.editor_delete_selection(document, cx) {
+            return;
+        }
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        if caret.cursor == 0 {
+            return;
+        }
+        let mut start = caret.cursor - 1;
+        while start > 0 && !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        match self
+            .coordinator
+            .documents_mut()
+            .apply_edit(document, start, caret.cursor - start, "")
+        {
+            Ok(()) => {
+                self.editor_carets
+                    .entry(document)
+                    .or_default()
+                    .collapse_to(start);
+                self.editor_after_edit(document, cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Edit: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Delete forward: selection, line join at end of line, or next char.
+    fn editor_delete_forward(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        if self.editor_delete_selection(document, cx) {
+            return;
+        }
+        let (Some(text), Some(caret)) = (
+            self.coordinator.documents().buffer_text(document),
+            self.editor_carets.get(&document).copied(),
+        ) else {
+            return;
+        };
+        if caret.cursor >= text.len() {
+            return;
+        }
+        let mut end = caret.cursor + 1;
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
+        match self.coordinator.documents_mut().apply_edit(
+            document,
+            caret.cursor,
+            end - caret.cursor,
+            "",
+        ) {
+            Ok(()) => self.editor_after_edit(document, cx),
+            Err(error) => {
+                self.input_notice = Some(format!("Edit: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Render one open document: breadcrumb header, virtualized code rows
+    /// with gutter + token/selection highlights + caret, and a status
+    /// footer. Only visible rows enter the element tree; horizontal reach
+    /// comes from the measured max display width.
+    fn render_editor(
+        &mut self,
+        project: ProjectId,
+        document: DocumentId,
+        main_view_width: f32,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.editor_drain_highlights(cx);
+        let Some(text) = self.coordinator.documents().buffer_text(document) else {
+            return div().child("Document closed");
+        };
+        let info = self.coordinator.documents().document_info(document);
+        let dirty = self
+            .coordinator
+            .documents()
+            .is_dirty(document)
+            .unwrap_or(false);
+        let language = self
+            .coordinator
+            .documents()
+            .language(document)
+            .unwrap_or(omaterm_context::EditorLanguage::Plain);
+        let caret = self
+            .editor_carets
+            .get(&document)
+            .copied()
+            .unwrap_or_default();
+        let selection = caret.selection_range();
+        let starts = self.editor_line_starts(document);
+        let highlight = self
+            .editor_highlights
+            .get(&document)
+            .cloned()
+            .unwrap_or_default();
+        let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
+        let cell_width: f32 = self.fonts(&*cx).cell_width.into();
+        let row_width =
+            main_view_width.max(highlight.max_cols as f32 * cell_width + EDITOR_GUTTER_W + 16.0);
+
+        // Header: breadcrumb path, dirty marker, document actions.
+        let mut bar = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0));
+        let filename = info
+            .as_ref()
+            .and_then(|info| {
+                info.path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "untitled".into());
+        let parent = info
+            .as_ref()
+            .and_then(|info| {
+                info.path
+                    .parent()
+                    .map(|parent| parent.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default();
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .h(px(36.0))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .bg(rgb(crate::ui::theme::PANEL))
+            .text_size(px(10.0))
+            .text_color(rgb(crate::ui::theme::MUTED));
+        if !parent.is_empty() {
+            header = header.child(parent).child("›");
+        }
+        header = header
+            .child(
+                div()
+                    .text_color(rgb(crate::ui::theme::TEXT2))
+                    .child(filename),
+            )
+            .child(div().flex_1());
+        if dirty {
+            header = header.child(div().text_color(rgb(crate::ui::theme::YELLOW)).child("M"));
+        }
+        for (label, action) in [("Save", 0u8), ("Revert", 1u8), ("Close", 2u8)] {
+            header = header.child(
+                div()
+                    .cursor_pointer()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .text_color(rgb(crate::ui::theme::TEXT2))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            match action {
+                                0 => view.editor_save_document(project, document, cx),
+                                1 => view.editor_revert_document(project, document, cx),
+                                _ => view.editor_close_document(project, document, cx),
+                            }
+                        }),
+                    )
+                    .child(label),
+            );
+        }
+        bar = bar.child(header);
+
+        // Body: origin recorder behind natively scrolled virtual rows.
+        let origin = self
+            .editor_body_origins
+            .entry(document)
+            .or_insert_with(|| {
+                Rc::new(Cell::new(gpui::Point {
+                    x: px(0.0),
+                    y: px(0.0),
+                }))
+            })
+            .clone();
+        let rows_handle = self
+            .editor_rows_handles
+            .entry(document)
+            .or_default()
+            .clone();
+        let x_handle = self.editor_x_handles.entry(document).or_default().clone();
+        let text_shared = Arc::new(text);
+        let starts_shared = Arc::new((*starts).clone());
+        let spans_shared = Arc::new(highlight.spans);
+        let row_mono = mono.clone();
+        let (caret_line, caret_col) = {
+            let caret_text = text_shared.clone();
+            let caret_starts = starts_shared.clone();
+            let (line, col) = editor::offset_to_line_col(&caret_starts, &caret_text, caret.cursor);
+            (line, col)
+        };
+        let rows = uniform_list(
+            "editor-lines",
+            starts_shared.len(),
+            cx.processor({
+                let text_shared = Arc::clone(&text_shared);
+                let starts_shared = Arc::clone(&starts_shared);
+                let spans_shared = Arc::clone(&spans_shared);
+                move |_view, range: std::ops::Range<usize>, window, _cx| {
+                    range
+                        .map(|line| {
+                            let line_start = starts_shared[line];
+                            let line_end = starts_shared
+                                .get(line + 1)
+                                .map(|end| end.saturating_sub(1))
+                                .unwrap_or(text_shared.len());
+                            let line_text = text_shared
+                                .get(line_start..line_end.min(text_shared.len()))
+                                .unwrap_or("");
+                            let display = editor::display_line(line_text);
+                            // Token + selection highlights merged into
+                            // non-overlapping segments (no cascade ambiguity).
+                            let mut cuts = vec![0usize, display.len()];
+                            let mut token_at: Vec<(usize, usize, editor::TokenKind)> = Vec::new();
+                            for span in spans_shared.iter() {
+                                let end = span.start + span.len;
+                                if end <= line_start || span.start >= line_end {
+                                    continue;
+                                }
+                                let (from, to) = editor::buffer_range_to_display_range(
+                                    line_text,
+                                    span.start.saturating_sub(line_start),
+                                    end.saturating_sub(line_start),
+                                );
+                                if from < to {
+                                    token_at.push((from, to, span.kind));
+                                    cuts.push(from);
+                                    cuts.push(to);
+                                }
+                            }
+                            // Selection in display coordinates for this row.
+                            let sel_display = selection.and_then(|(sel_start, sel_end)| {
+                                if sel_end > line_start && sel_start < line_end {
+                                    let (from, to) = editor::buffer_range_to_display_range(
+                                        line_text,
+                                        sel_start.saturating_sub(line_start),
+                                        sel_end.saturating_sub(line_start),
+                                    );
+                                    (from < to).then_some((from, to))
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some((from, to)) = sel_display {
+                                cuts.push(from);
+                                cuts.push(to);
+                            }
+                            cuts.sort_unstable();
+                            cuts.dedup();
+                            let mut styles = Vec::new();
+                            for window_ in cuts.windows(2) {
+                                let (from, to) = (window_[0], window_[1]);
+                                if from >= to {
+                                    continue;
+                                }
+                                let in_selection = sel_display.is_some_and(|(sel_from, sel_to)| {
+                                    from < sel_to && to > sel_from
+                                });
+                                let fg = token_at
+                                    .iter()
+                                    .find_map(|(tok_from, tok_to, kind)| {
+                                        (*tok_from <= from && from < *tok_to).then_some(*kind)
+                                    })
+                                    .map(Self::editor_token_color)
+                                    .unwrap_or(crate::ui::theme::TEXT);
+                                styles.push((
+                                    from..to,
+                                    HighlightStyle {
+                                        color: Some(rgb(fg).into()),
+                                        background_color: if in_selection {
+                                            Some(hsla(0.591, 0.92, 0.578, 0.35))
+                                        } else {
+                                            None
+                                        },
+                                        ..Default::default()
+                                    },
+                                ));
+                            }
+                            let mut row = div()
+                                .id(line)
+                                .relative()
+                                .h(px(EDITOR_ROW_H))
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .font_family(row_mono.clone())
+                                .text_size(px(EDITOR_FONT_SIZE))
+                                .text_color(rgb(crate::ui::theme::TEXT));
+                            if line == caret_line {
+                                row = row.bg(rgb(0x141A21));
+                            }
+                            row = row
+                                .child(
+                                    div()
+                                        .w(px(EDITOR_GUTTER_W))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .flex_row()
+                                        .justify_end()
+                                        .pr(px(14.0))
+                                        .text_size(px(10.0))
+                                        .text_color(rgb(if line == caret_line {
+                                            0x768193
+                                        } else {
+                                            0x515D6D
+                                        }))
+                                        .child(format!("{}", line + 1)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .whitespace_nowrap()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            _cx.listener(move |view, event, window, cx| {
+                                                view.editor_mouse_down(document, event, window, cx);
+                                            }),
+                                        )
+                                        .child(
+                                            StyledText::new(display.clone().into_owned())
+                                                .with_highlights(styles),
+                                        ),
+                                );
+                            if line == caret_line && selection.is_none() {
+                                let display_col =
+                                    editor::buffer_col_to_display_col(line_text, caret_col);
+                                let prefix = display.get(..display_col.min(display.len()));
+                                let mut prefix_len = prefix.map(str::len).unwrap_or(0);
+                                while prefix_len > 0 && !display.is_char_boundary(prefix_len) {
+                                    prefix_len -= 1;
+                                }
+                                let caret_x = Self::editor_shape_width(
+                                    &display[..prefix_len],
+                                    &row_mono,
+                                    window,
+                                );
+                                row = row.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(EDITOR_GUTTER_W + caret_x))
+                                        .top(px(3.0))
+                                        .w(px(1.0))
+                                        .h(px(16.0))
+                                        .bg(rgb(crate::ui::theme::TEXT)),
+                                );
+                            }
+                            row.w(px(row_width))
+                        })
+                        .collect::<Vec<_>>()
+                }
+            }),
+        )
+        .track_scroll(rows_handle)
+        .w(px(row_width))
+        .h_full()
+        .flex_shrink_0()
+        .map(|mut list| {
+            list.style().restrict_scroll_to_axis = Some(true);
+            list
+        });
+        let body = div()
+            .relative()
+            .flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .child(
+                canvas(
+                    move |bounds, _, _| bounds,
+                    move |_, bounds_prepaint: Bounds<Pixels>, _, _| {
+                        origin.set(bounds_prepaint.origin);
+                    },
+                )
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0)),
+            )
+            .child(
+                div()
+                    .id("editor-horizontal")
+                    .flex()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .overflow_x_scroll()
+                    .track_scroll(&x_handle)
+                    .map(|mut horizontal| {
+                        horizontal.style().restrict_scroll_to_axis = Some(true);
+                        horizontal
+                    })
+                    .on_mouse_move(cx.listener(move |view, event, window, cx| {
+                        view.editor_mouse_move(document, event, window, cx);
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |view, event, _, cx| {
+                            view.editor_mouse_up(document, event, cx);
+                        }),
+                    )
+                    .child(rows),
+            );
+        bar = bar.child(body);
+
+        // Footer: cursor (1-based display column), indentation,
+        // encoding, language.
+        let caret_display_col = {
+            let line_text = text_shared.split('\n').nth(caret_line).unwrap_or("");
+            let mut cols = 0;
+            let mut bytes = 0;
+            for ch in line_text.chars() {
+                if bytes >= caret_col {
+                    break;
+                }
+                bytes += ch.len_utf8();
+                cols += if ch == '\t' {
+                    4 - (cols % 4)
+                } else {
+                    editor::char_display_width(ch)
+                };
+            }
+            cols
+        };
+        let footer = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_4()
+            .px_3()
+            .h(px(28.0))
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .bg(rgb(0x0F1216))
+            .text_size(px(10.0))
+            .text_color(rgb(crate::ui::theme::MUTED))
+            .child(format!(
+                "Ln {}, Col {}",
+                caret_line + 1,
+                caret_display_col + 1
+            ))
+            .child("Spaces: 4")
+            .child("UTF-8")
+            .child(div().flex_1())
+            .child(language.as_str());
+        if dirty {
+            bar = bar.child(
+                footer.child(
+                    div()
+                        .text_color(rgb(crate::ui::theme::YELLOW))
+                        .child("unsaved changes"),
+                ),
+            );
+        } else {
+            bar = bar.child(footer);
+        }
+        bar.font_family(mono)
+            .bg(rgb(crate::ui::theme::EDITOR_BG))
+            .text_color(rgb(crate::ui::theme::TEXT))
+    }
+
+    /// Token foregrounds: plan palette hues; comments use a muted green
+    /// first-delivery approximation until a full token palette lands.
+    fn editor_token_color(kind: editor::TokenKind) -> u32 {
+        match kind {
+            editor::TokenKind::Comment => 0x6A9955,
+            editor::TokenKind::String => crate::ui::theme::ORANGE,
+            editor::TokenKind::Number => crate::ui::theme::CYAN,
+            editor::TokenKind::Keyword => crate::ui::theme::PURPLE,
+        }
+    }
+
+    /// Shaped pixel width of a display-expanded prefix in the editor face.
+    fn editor_shape_width(prefix: &str, mono: &str, window: &Window) -> f32 {
+        window
+            .text_system()
+            .shape_line(
+                SharedString::from(prefix.to_owned()),
+                px(EDITOR_FONT_SIZE),
+                &[TextRun {
+                    len: prefix.len(),
+                    font: font(mono.to_owned()),
+                    color: rgb(crate::ui::theme::TEXT).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+            .into()
+    }
+
     /// Unstage one file from the staged diff side (whole-file scope,
     /// same path as the Source Control panel).
     fn diff_unstage_file(
@@ -3883,6 +5306,26 @@ impl WorkspaceView {
         });
     }
 
+    /// Open the highlighted file result in the native editor (M19 Phase D
+    /// interim trigger: Ctrl+Enter / Ctrl+click). Closes the palette and
+    /// activates the document; non-file results report a notice instead of
+    /// falling back to terminal submission.
+    fn ctrlp_open_in_editor(&mut self, cx: &mut Context<Self>) {
+        let Some((project, path)) = self
+            .ctrlp_results
+            .get(self.ctrlp_selected)
+            .cloned()
+            .and_then(|entry| entry.file_target())
+        else {
+            self.input_notice = Some("No file result selected.".into());
+            cx.notify();
+            return;
+        };
+        self.ctrlp_open = false;
+        self.palette_search_worker.cancel_current();
+        self.editor_open_document(project, path, cx);
+    }
+
     fn ctrlp_confirm(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self.ctrlp_results.get(self.ctrlp_selected).cloned() else {
             return;
@@ -4220,6 +5663,11 @@ impl WorkspaceView {
             "enter" | "return" | "kpenter" => {
                 let project = self.coordinator.selected_project_id();
                 let query = self.files_search.clone();
+                // M19 Phase E: Ctrl+Enter opens the first file match in
+                // the native editor; plain Enter keeps terminal routing.
+                let to_editor = event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.shift
+                    && !event.keystroke.modifiers.alt;
                 if let Some(project) = project
                     && let Some(row) = self
                         .files_panel
@@ -4233,6 +5681,9 @@ impl WorkspaceView {
                     self.files_search_focused = false;
                     if is_dir {
                         self.toggle_file_row(project, row.path, true, cx);
+                    } else if to_editor {
+                        self.files_panel.select(project, row.path.clone());
+                        self.editor_open_document(project, row.path, cx);
                     } else {
                         self.files_panel.select(project, row.path.clone());
                         self.open_file_path(project, row.path, cx);
@@ -4325,7 +5776,19 @@ impl WorkspaceView {
                 self.restore_palette_origin(cx);
                 cx.notify();
             }
-            "enter" | "return" | "kpenter" => self.ctrlp_confirm(cx),
+            // M19 Phase D interim: Ctrl+Enter opens the highlighted
+            // file result in the native editor instead of submitting it
+            // to a terminal. Plain Enter keeps terminal-routed behavior.
+            "enter" | "return" | "kpenter" => {
+                if event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.shift
+                    && !event.keystroke.modifiers.alt
+                {
+                    self.ctrlp_open_in_editor(cx);
+                } else {
+                    self.ctrlp_confirm(cx);
+                }
+            }
             "backspace" => {
                 if self.ctrlp_caret_byte > 0 {
                     let previous = self.ctrlp_query[..self.ctrlp_caret_byte]
@@ -4753,6 +6216,20 @@ impl WorkspaceView {
                 }
                 _ => {}
             }
+        }
+
+        // M19 editor: an active document owns keystrokes after global
+        // chrome shortcuts and inspector inputs, before terminal
+        // forwarding. Workspace splits, palette toggles, and the Ctrl+Shift
+        // clipboard chords keep their global behavior; everything else
+        // belongs to the document. Unhandled keys are swallowed rather than
+        // forwarded to a terminal that does not own input.
+        if self
+            .coordinator
+            .selected_project_id()
+            .is_some_and(|project| self.editor_active_doc(project).is_some())
+        {
+            return self.on_editor_key(event, cx);
         }
 
         let Some(session_id) = self.focused_session_id() else {
@@ -5932,7 +7409,7 @@ impl WorkspaceView {
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
+                        cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                             if view.shutting_down {
                                 return;
                             }
@@ -5941,6 +7418,12 @@ impl WorkspaceView {
                             view.files_vdrag = None;
                             if is_dir {
                                 view.toggle_file_row(project, path.clone(), true, cx);
+                            } else if event.modifiers.control {
+                                // M19 Phase E: Ctrl+click opens files in the
+                                // native editor; plain click keeps the
+                                // terminal-routed open (M13 contract).
+                                view.files_panel.select(project, path.clone());
+                                view.editor_open_document(project, path.clone(), cx);
                             } else {
                                 view.files_panel.select(project, path.clone());
                                 view.open_file_path(project, path.clone(), cx);
@@ -6558,13 +8041,19 @@ impl WorkspaceView {
                 }))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                         if view.shutting_down {
                             return;
                         }
                         window.focus(&view.focus_handle);
                         view.files_search_focused = false;
-                        view.git_select_path(project, path.clone(), staged_group);
+                        // M19 Phase E: Ctrl+click opens the path in the
+                        // native editor; plain click keeps diff-on-select.
+                        if event.modifiers.control {
+                            view.editor_open_document(project, path.clone(), cx);
+                        } else {
+                            view.git_select_path(project, path.clone(), staged_group);
+                        }
                         cx.notify();
                     }),
                 )
@@ -7816,6 +9305,7 @@ impl WorkspaceView {
                         }
                         window.focus(&view.focus_handle);
                         view.diff_panel.close_preview(project_id);
+                        view.editor_active.remove(&project_id);
                         let _ = view.dispatch_command(
                             OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
                             cx,
@@ -7879,6 +9369,7 @@ impl WorkspaceView {
                             window.focus(&view.focus_handle);
                             if let Some(project) = view.coordinator.selected_project_id() {
                                 view.diff_panel.close_preview(project);
+                                view.editor_active.remove(&project);
                             }
                             view.create_tab(cx);
                         }),
@@ -7938,6 +9429,100 @@ impl WorkspaceView {
                                         window.focus(&view.focus_handle);
                                         view.diff_panel.close_preview(preview_id);
                                         cx.notify();
+                                    }),
+                                )
+                                .child(crate::ui::assets::icon(
+                                    crate::ui::assets::CLOSE,
+                                    14.0,
+                                    crate::ui::theme::MUTED,
+                                )),
+                        ),
+                );
+            }
+            // M19 editor document chips: view-local activation over
+            // router-owned buffers. Click activates; the terminal-tab and
+            // new-tab controls return to the terminal surface without
+            // closing documents.
+            for document in self.coordinator.documents().project_documents(project.id) {
+                let info = self.coordinator.documents().document_info(document);
+                let name = info
+                    .as_ref()
+                    .and_then(|info| {
+                        info.path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                    })
+                    .unwrap_or_else(|| "untitled".into());
+                let dirty = self
+                    .coordinator
+                    .documents()
+                    .is_dirty(document)
+                    .unwrap_or(false);
+                let active = self.editor_active.get(&project.id) == Some(&document);
+                let open_project = project.id;
+                tabs = tabs.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .h(px(36.0))
+                        .rounded_t_md()
+                        .border_t_2()
+                        .border_color(rgb(if active {
+                            crate::ui::theme::BLUE
+                        } else {
+                            crate::ui::theme::BORDER
+                        }))
+                        .bg(rgb(if active {
+                            crate::ui::theme::ACTIVE_TAB_BG
+                        } else {
+                            crate::ui::theme::PANEL
+                        }))
+                        .text_color(rgb(if active {
+                            0xFFFFFF
+                        } else {
+                            crate::ui::theme::TEXT2
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                window.focus(&view.focus_handle);
+                                view.editor_activate(open_project, document, cx);
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::FILE_TEXT,
+                            14.0,
+                            crate::ui::theme::BLUE,
+                        ))
+                        .child(name)
+                        .child(
+                            div()
+                                .text_color(rgb(if dirty {
+                                    crate::ui::theme::YELLOW
+                                } else {
+                                    crate::ui::theme::MUTED
+                                }))
+                                .child(if dirty { "M" } else { "" }),
+                        )
+                        .child(
+                            div()
+                                .px_1()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.editor_close_document(open_project, document, cx);
                                     }),
                                 )
                                 .child(crate::ui::assets::icon(
@@ -8723,13 +10308,19 @@ impl WorkspaceView {
                         }
                         row.on_mouse_down(
                             MouseButton::Left,
-                            _cx.listener(move |view, _, window, cx| {
+                            _cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                                 if view.shutting_down {
                                     return;
                                 }
                                 window.focus(&view.focus_handle);
                                 view.palette_select(index);
-                                view.ctrlp_confirm(cx);
+                                // M19 Phase D interim: Ctrl+click opens file
+                                // results in the native editor.
+                                if event.modifiers.control {
+                                    view.ctrlp_open_in_editor(cx);
+                                } else {
+                                    view.ctrlp_confirm(cx);
+                                }
                             }),
                         )
                         .child(
@@ -8995,6 +10586,14 @@ impl Render for WorkspaceView {
                     ),
             );
         }
+        // M19 editor surface: an active document replaces the main area
+        // like the diff preview, with priority over it. Buffers survive
+        // tab switches and preview changes in the router-owned store;
+        // only this view-local activation is cleared by terminal tabs.
+        let editor_surface = self.coordinator.selected_project_id().and_then(|project| {
+            self.editor_active_doc(project)
+                .map(|document| (project, document))
+        });
         // M15 diff preview tab: when open for the selected project, the
         // main area shows the file diff instead of the terminal pane tree.
         // Core tabs are untouched — selecting a terminal tab closes this.
@@ -9002,7 +10601,10 @@ impl Render for WorkspaceView {
             .coordinator
             .selected_project_id()
             .filter(|project| self.diff_panel.preview_open(*project));
-        if let Some(project) = preview_project {
+        if let Some((project, document)) = editor_surface {
+            pane_area =
+                pane_area.child(self.render_editor(project, document, main_view_width, window, cx));
+        } else if let Some(project) = preview_project {
             pane_area =
                 pane_area.child(self.render_diff_preview(project, main_view_width, window, cx));
         } else {

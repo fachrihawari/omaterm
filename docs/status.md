@@ -3821,3 +3821,89 @@ Phase D: editing surface, caret/selection/clipboard/undo wiring,
 background highlight pipeline with cancellation, and input ownership.
 Uncommitted work: `apps/omaterm/src/{editor.rs,router.rs,main.rs}`,
 this status record.
+
+## M19 Phase D — editing surface, highlight pipeline, input ownership — 2026-10-04
+
+Implemented the plan's Phase D without new dependencies. Uncommitted work:
+`apps/omaterm/src/{editor.rs,main.rs}`, this status record.
+
+### What changed
+
+- `apps/omaterm/src/editor.rs` (pure, tested): single-pass tokenizer for
+  Rust/Markdown/TOML/JSON/Bash (keywords, strings with escapes, line/block
+  comments, numbers, Rust char-vs-lifetime disambiguation, Markdown
+  headings/code spans, `$#` guard, unclosed-runs-to-EOF, UTF-8-safe
+  offsets); `EditorCaret` with ordered selection ranges; tab/wide-char
+  display widths plus buffer/display column mappers; line-map helpers;
+  `HighlightWorker` (latest-only, cancellable, shutdown-joined).
+- `apps/omaterm/src/main.rs`: per-project view-local activation over the
+  router-owned store; document chips with dirty markers; breadcrumb header
+  with Save/Revert/Close; virtualized 22px rows (gutter + token/selection
+  highlights + shaped caret + current-line treatment); Ln/Col footer with
+  display columns; native vertical + horizontal scrolling; click/drag
+  selection via paint-time body origins and shaped-prefix binary search;
+  full keyboard model (caret/selection/edit/clipboard/undo/redo/save/
+  auto-indent/auto-indent Enter/4-space Tab/Escape-to-terminal); editor
+  owns keystrokes after global chrome shortcuts, before terminal
+  forwarding. Interim triggers: palette Ctrl+Enter / Ctrl+click on file
+  results (plain Enter keeps terminal routing per Option A).
+
+### Automated verification
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace --quiet` | PASS: 489 tests (121 desktop incl. 13 editor, 54 context, 21 core, 33 PTY integration) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` / `git diff --check` | PASS |
+
+### Live validation: blocked (not passed)
+
+Release instance (`/tmp/opencode/m19-live/`, isolated HOME/XDG paths,
+Hyprland, PID 404753) launched and opened the fixture project over IPC.
+Screenshots prove the palette opens and filters to the `notes.md` file
+result. The open/edit/save flow could **not** be exercised: the machine
+is in active user use (ongoing Meet call, Docs/WhatsApp windows), focus
+competed with live windows, and an overlapping Chromium window covers the
+OmaTerm header/tab strip. Ctrl+Enter with the file selected left the
+palette open — undiagnosed (possible focus loss to another window at the
+keystroke moment, or a real key-delivery gap). No validation is claimed
+for: palette-to-editor open, typing, caret/selection rendering, save
+bytes, clipboard, focus leaks, or input ownership.
+
+### Next action
+
+Re-run the Phase D Wayland script on a quiet session (or an isolated
+compositor seat): palette Ctrl+Enter open, type/edit/save with on-disk
+byte proof, click/drag selection, clipboard round-trip, Escape focus
+return, dirty-close guard, and a terminal sentinel proving no keystroke
+leaks. Then Phase E entry-point integration. Known gaps carried forward:
+no caret blink, no gutter line-select, `\r\n` displays raw, shutdown
+silently discards dirty buffers, tree/palette full entry integration.
+
+## M19 Phase E — entry-point integration (partial, code-only) — 2026-10-04
+
+Added explicit native-editor open triggers alongside unchanged
+terminal-routed behavior (Option A frozen contract holds; no new wire
+method). Uncommitted work: `apps/omaterm/src/main.rs`, this record.
+
+- Files tree file-row Ctrl+click → `editor_open_document`; plain click
+  keeps terminal-routed open, directories keep toggle.
+- Git row Ctrl+click → `editor_open_document`; plain click keeps
+  diff-on-select.
+- Files search box Ctrl+Enter → editor open of the first file match;
+  plain Enter keeps terminal routing. Keyboard-accessible without the
+  palette.
+- Palette Ctrl+Enter / Ctrl+click from Phase D unchanged (interim).
+
+`cargo fmt --all --check`, `cargo test --workspace --quiet` (489 green),
+`cargo clippy --workspace --all-targets -- -D warnings`, docs checker,
+and `git diff --check` pass. No behavior change to existing triggers;
+no new tests (wiring-only branches over covered dispatch paths).
+
+Live validation remains blocked by the shared-session focus competition
+reported under Phase D; entry triggers join the same quiet-session
+re-run script. Remaining Phase E/F: full interaction proof, resource
+evidence, dirty-shutdown semantics, open-document persistence decision,
+and milestone/acceptance doc updates.
