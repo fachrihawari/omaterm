@@ -489,3 +489,30 @@ commands.
 **Next action:** freeze the Phase A contracts — especially document surface,
 snapshot impact, and the `file.open` compatibility decision — then create
 fixtures and run buffer/highlighter/GPUI spikes.
+
+## 12. Phase A frozen contracts (2026-10-04)
+
+Frozen before any editor code:
+
+- **Automation contract:** Option A. `file.open` keeps terminal-routing
+  semantics; editor lifecycle stays UI-local in first delivery. No new wire
+  method until an automation need is proven.
+- **Document surface:** open documents live alongside terminal tabs, not in
+  `PaneContent`. Splits remain terminal-only in first delivery.
+- **Persistence:** persist the open-document list per project, never dirty
+  contents. Unsaved changes require an explicit user decision on close and
+  shutdown. Restart reopens clean on-disk content.
+- **Bounds:** 1 MiB file cap, 20,000-line cap, enforced before allocation.
+- **Encoding:** invalid UTF-8 is rejected with a reason; never silently
+  converted. Binary content is refused as text.
+- **First languages:** Rust, Markdown, TOML, JSON, Bash; everything else is
+  plain text until the pipeline is proven.
+- **Fixtures:** `/tmp/opencode/m19-editor-fixtures/` (`proj-a`, `proj-b` with
+  the same relative path): small per-language files, Unicode/combining/tab/
+  long-line cases, binary, invalid-UTF-8, 1 MiB oversize, duplicate-path
+  project pair. Temporary artifacts, not acceptance records.
+- **Spike findings so far:** no editor/highlighter buffer exists in-tree;
+  GPUI 0.2.2 exposes `shape_line`/`resolve_font` but no text-field widget in
+  `elements/`, so multiline editing extends the existing commit-input/palette
+  caret patterns. Highlighter implementation (Tree-sitter vs. fallback) is
+  still open pending version/license verification; permissive licenses only.
