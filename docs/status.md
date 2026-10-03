@@ -3719,3 +3719,56 @@ input/focus control (Source Control render, Git-row-to-diff-preview,
 standing M15 gaps (partial-hunk staging, full live proof). Uncommitted
 work: `apps/omaterm/src/{main,workbench}.rs`,
 `docs/{ui-workbench-redesign-plan.md,00-overview.md,status.md}`.
+
+## M19 Phase B — document domain and bounded I/O — 2026-10-04
+
+Implemented the plan's Phase B (domain types + bounded I/O, no UI, no
+dispatcher wiring yet). Uncommitted work listed below.
+
+### What changed
+
+- `crates/omaterm-core`: `DocumentId` typed ID; `EditorCommand`
+  (`Open`/`Close`/`Save`/`Revert`) on `OmaCommand`; `EditorDocumentInfo`
+  result DTO (`document`, `project`, `path`, `bytes`, `lines` — metadata
+  only, never buffer contents); `DocumentNotOpen`/`DocumentConflict`/
+  `DocumentTooLarge`/`NotTextFile` error codes with stable wire strings;
+  `MAX_EDITOR_PATH_BYTES` (4096), `MAX_EDITOR_BYTES` (1 MiB),
+  `MAX_EDITOR_LINES` (20,000) validation plus open-path checks.
+- `crates/omaterm-context/src/editor.rs` (new): `EditorLanguage`
+  (Rust/Markdown/TOML/JSON/Bash/Plain) with extension detection;
+  `read_text_file` (boundary resolve → regular-file check → pre-read size
+  cap → post-read re-check → NUL/binary reject → UTF-8 reject → line-cap
+  check → revision + language); `write_text_file` (byte/line caps →
+  boundary → regular-file check → expected-revision conflict check →
+  same-dir temp + permission-preserving atomic rename); `FileRevision`
+  (size + mtime) for external-change detection.
+- `apps/omaterm/src/router.rs`: `OmaCommand::Editor` explicitly rejected
+  with `unsupported_operation` until the Phase C DocumentStore lands
+  (stable, effect-free gate, covered by a router test).
+- `apps/omaterm/src/ipc_bridge.rs`: `EditorOpened`/`EditorSaved`
+  metadata JSON rendering (identity + sizes only; no contents logged).
+
+### Automated verification
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace --quiet` | PASS: 475 tests (107 desktop + 54 context + 21 core + 33 PTY integration, rest unchanged) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `python3 scripts/check-docs.py` | PASS (36 files; no doc changes required — plan already references §34) |
+| `git diff --check` | PASS |
+
+New coverage: editor open-path validation (empty/oversize/control),
+lifecycle acceptance without existence checks, wire-string stability,
+language table, small/Unicode reads, binary/invalid-UTF-8/oversize/
+line-cap/directory/missing/escape rejection, save round-trip with stale
+revision conflict and no temp-file leakage, cap parity between core and
+context constants.
+
+### Next action
+
+Phase C: desktop `DocumentStore` (buffers, dirty state, undo, cursors),
+dispatcher open/close/save/revert wiring with scope/root checks, and
+DocumentStore lifecycle tests. Uncommitted work:
+`crates/omaterm-{core/src/{ids,command,result,validation,lib}.rs,context/src/{editor,lib}.rs}`,
+`apps/omaterm/src/{router,ipc_bridge}.rs`, this status record.

@@ -1,6 +1,6 @@
 use crate::{
-    CommandError, DiffCommand, ErrorCode, FileCommand, GitCommand, HistoryCommand, OmaCommand,
-    PaneCommand, ProjectCommand, TabCommand, TerminalCommand,
+    CommandError, DiffCommand, EditorCommand, ErrorCode, FileCommand, GitCommand, HistoryCommand,
+    OmaCommand, PaneCommand, ProjectCommand, TabCommand, TerminalCommand,
 };
 
 pub const MAX_READ_LINES: usize = 1_000;
@@ -30,6 +30,16 @@ pub const MAX_GIT_MESSAGE_BYTES: usize = 4 * 1024;
 /// Largest accepted `diff.show` context size (`-U` lines). Generous for
 /// review, small enough to keep one wire response bounded.
 pub const MAX_DIFF_CONTEXT_LINES: u8 = 10;
+/// Largest accepted editor document path in bytes (M19). Matches the git
+/// path ceiling: generous for deep trees, small enough to keep argv bounded.
+pub const MAX_EDITOR_PATH_BYTES: usize = 4 * 1024;
+/// Largest accepted editor document in bytes (M19, blueprint §64). Checked
+/// before allocation on both read and save; oversize files are rejected
+/// with `document_too_large`, never partially loaded.
+pub const MAX_EDITOR_BYTES: usize = 1024 * 1024;
+/// Largest accepted editor document in lines (M19). Checked while splitting
+/// on `\n` so a many-short-line file cannot exhaust memory line by line.
+pub const MAX_EDITOR_LINES: usize = 20_000;
 
 /// Pure field validation. Target existence and authorization are checked by
 /// the application owner immediately before dispatch effects are applied.
@@ -135,6 +145,16 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
         }
         OmaCommand::File(FileCommand::Open { path, .. }) if path.as_os_str().is_empty() => {
             return invalid("file path must not be empty");
+        }
+        OmaCommand::Editor(EditorCommand::Open { path, .. }) => {
+            if path.as_os_str().is_empty()
+                || path.as_os_str().len() > MAX_EDITOR_PATH_BYTES
+                || path.to_string_lossy().chars().any(char::is_control)
+            {
+                return invalid(
+                    "editor path must be non-empty, at most 4096 bytes, with no control characters",
+                );
+            }
         }
         OmaCommand::Git(GitCommand::Stage { paths, .. })
         | OmaCommand::Git(GitCommand::Unstage { paths, .. })
@@ -395,6 +415,55 @@ mod tests {
             }))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn editor_open_rejects_empty_oversize_and_control_paths() {
+        let project = ProjectId::new();
+        assert!(
+            validate(&OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: std::path::PathBuf::new(),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: std::path::PathBuf::from("bad\npath"),
+            }))
+            .is_err()
+        );
+        let mut oversize = String::from("a");
+        oversize.push_str(&"b".repeat(MAX_EDITOR_PATH_BYTES));
+        assert!(
+            validate(&OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: std::path::PathBuf::from(oversize),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: std::path::PathBuf::from("src/main.rs"),
+            }))
+            .is_ok()
+        );
+        // Lifecycle variants address a document ID; existence is
+        // owner-checked, so validation accepts them unconditionally.
+        let document = crate::DocumentId::new();
+        assert!(validate(&OmaCommand::Editor(EditorCommand::Close { document })).is_ok());
+        assert!(validate(&OmaCommand::Editor(EditorCommand::Save { document })).is_ok());
+        assert!(validate(&OmaCommand::Editor(EditorCommand::Revert { document })).is_ok());
+    }
+
+    #[test]
+    fn editor_error_codes_have_stable_wire_strings() {
+        assert_eq!(ErrorCode::DocumentNotOpen.as_str(), "document_not_open");
+        assert_eq!(ErrorCode::DocumentConflict.as_str(), "document_conflict");
+        assert_eq!(ErrorCode::DocumentTooLarge.as_str(), "document_too_large");
+        assert_eq!(ErrorCode::NotTextFile.as_str(), "not_text_file");
     }
 
     #[test]

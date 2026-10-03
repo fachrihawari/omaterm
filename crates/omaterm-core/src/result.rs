@@ -46,6 +46,18 @@ pub enum ErrorCode {
     /// blueprint §32). Distinct from `GitFailed`: the tool is absent, not
     /// the repository.
     GitUnavailable,
+    /// No open document has the requested ID (M19). Stale document handles
+    /// fail with this code and no effects, never a fallback document.
+    DocumentNotOpen,
+    /// The file changed on disk since the document was opened or last saved
+    /// (M19). Save is refused until the caller reloads or explicitly reverts.
+    DocumentConflict,
+    /// The file exceeds the editor byte/line caps (M19). Listing/searching
+    /// never returns contents, so this only surfaces on explicit open/save.
+    DocumentTooLarge,
+    /// The file is not openable as text: binary content or invalid UTF-8
+    /// (M19). Rejected with a reason rather than lossy silent conversion.
+    NotTextFile,
 }
 
 impl ErrorCode {
@@ -74,6 +86,10 @@ impl ErrorCode {
             Self::NotARepo => "not_a_repo",
             Self::GitFailed => "git_failed",
             Self::GitUnavailable => "git_unavailable",
+            Self::DocumentNotOpen => "document_not_open",
+            Self::DocumentConflict => "document_conflict",
+            Self::DocumentTooLarge => "document_too_large",
+            Self::NotTextFile => "not_text_file",
         }
     }
 }
@@ -162,6 +178,8 @@ pub enum CommandOutput {
     },
     ProjectRoot(ProjectRootInfo),
     FileList(FileListInfo),
+    EditorOpened(EditorDocumentInfo),
+    EditorSaved(EditorDocumentInfo),
     GitStatus(GitStatusInfo),
     GitCommitted {
         oid: String,
@@ -295,6 +313,19 @@ impl FileKind {
 pub struct FileListInfo {
     pub entries: Vec<FileEntry>,
     pub truncated: bool,
+}
+
+/// Owned snapshot of an open editor document (M19, blueprint §34). Carries
+/// identity and size metadata only — never buffer contents — so list-style
+/// responses stay bounded. Contents live in the desktop `DocumentStore`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorDocumentInfo {
+    pub document: crate::DocumentId,
+    pub project: ProjectId,
+    /// Root-relative path, as supplied on open.
+    pub path: PathBuf,
+    pub bytes: usize,
+    pub lines: usize,
 }
 
 /// One changed path from `git status --porcelain=v2 -z` (M14, blueprint

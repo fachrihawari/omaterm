@@ -1162,6 +1162,14 @@ impl CommandRouter {
                     source: resolved.source,
                 }))
             }
+            // Phase B owns domain types plus bounded I/O only; the
+            // DocumentStore and owner coordination land in Phase C.
+            // Validation still accepts well-formed editor commands so the
+            // rejection below is a stable explicit gate, not a parse gap.
+            OmaCommand::Editor(_) => err(
+                ErrorCode::UnsupportedOperation,
+                "editor dispatch is not implemented yet (M19 Phase C)",
+            ),
             OmaCommand::File(FileCommand::List {
                 project,
                 dir,
@@ -2704,6 +2712,25 @@ mod tests {
         else {
             panic!("project creation");
         };
+
+        // Phase B gate: editor dispatch is explicitly unsupported until
+        // the Phase C DocumentStore lands. Rejection is stable and
+        // effect-free even for well-formed commands.
+        let gated = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(omaterm_core::EditorCommand::Open {
+                project,
+                path: std::path::PathBuf::from("notes.txt"),
+            }),
+        );
+        assert!(matches!(
+            gated.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::UnsupportedOperation,
+                ..
+            })
+        ));
+        assert!(gated.effects.is_empty());
 
         // Missing $EDITOR fails before any shell interaction.
         let unconfigured = router.dispatch(

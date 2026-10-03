@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{PaneId, ProjectId, SessionId, SplitDirection, SplitId, TabId};
+use crate::{DocumentId, PaneId, ProjectId, SessionId, SplitDirection, SplitId, TabId};
 
 /// Semantic operations accepted by every in-process and future IPC caller.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,6 +11,7 @@ pub enum OmaCommand {
     Terminal(TerminalCommand),
     History(HistoryCommand),
     File(FileCommand),
+    Editor(EditorCommand),
     Git(GitCommand),
     Diff(DiffCommand),
     Process(ProcessCommand),
@@ -168,6 +169,20 @@ pub enum FileCommand {
         project: ProjectId,
         path: PathBuf,
     },
+}
+
+/// Native built-in editor document lifecycle (M19, blueprint §34). Only
+/// document open/close and explicit save/revert mutations travel through the
+/// dispatcher; keystroke-level editing is UI text-input state, not a command.
+/// `Open` names a root-relative path and yields a `DocumentId`; the remaining
+/// variants address that ID so a root replacement can never silently retarget
+/// a buffer. Terminal-routed `FileCommand::Open` keeps its existing contract.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EditorCommand {
+    Open { project: ProjectId, path: PathBuf },
+    Close { document: DocumentId },
+    Save { document: DocumentId },
+    Revert { document: DocumentId },
 }
 
 /// VSCode-Source-Control-style git operations over the system git binary

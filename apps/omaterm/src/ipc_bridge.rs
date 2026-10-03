@@ -435,6 +435,9 @@ fn output_json(output: CommandOutput) -> Value {
         CommandOutput::HistoryCleared { removed_files } => {
             json!({"removed_files":removed_files})
         }
+        CommandOutput::EditorOpened(info) | CommandOutput::EditorSaved(info) => {
+            json!({"document_id":info.document.0.to_string(),"project_id":info.project.0.to_string(),"path":info.path,"bytes":info.bytes,"lines":info.lines})
+        }
         CommandOutput::ProjectRoot(info) => {
             json!({"root":info.root,"source":info.source.as_str()})
         }
