@@ -1,6 +1,7 @@
 # M19 — Basic Built-in Editor Implementation Plan
 
-**Date:** 2026-10-04. **Status:** planned; no implementation claimed.
+**Plan date:** 2026-10-04. **Status:** in progress; document/editor implementation
+and partial Phase F acceptance landed. Latest verification: 2026-10-03.
 **Scope:** open file + syntax highlight + save. No LSP, autocomplete,
 refactoring, debugger, extensions, or cloud.
 
@@ -481,21 +482,25 @@ commands.
 - [ ] M15/M17 prerequisites closed or explicitly re-sequenced.
 - [x] Document identity, persistence, IPC/CLI, and focus contracts frozen
   (Phase A, 2026-10-04; see §12).
-- [x] Bounded I/O, language/highlight pipeline, and buffer behavior proven
-  (Phases B–C automated; 489-test suite green).
+- [ ] Complete bounded I/O, language/highlight pipeline, and buffer acceptance
+  (bounded reads/saves, savepoints, Unicode and cancellation regressions pass;
+  asynchronous file I/O and stronger root identity/race handling remain).
 - [x] Dispatcher-integrated lifecycle with stable errors and no-effect
   failures (Phase C automated).
-- [ ] Native editing/highlight/save/conflict/focus flows proven on Wayland
-  (Phase D/E implemented; live run blocked — see status).
+- [ ] Full native editing/highlight/save/conflict/focus matrix proven on Wayland
+  (pointer/clipboard/undo/conflict/dirty-close/shutdown now have evidence;
+  remaining language, Unicode/long-line and entry-point matrix still open).
 - [ ] Quality gates green; resource/redaction evidence recorded (gates
   green; live resource proof pending).
 - [x] Milestone, overview, acceptance matrix, dependencies, and status updated
   (overview index + acceptance row; dependency deltas: none — no new crates).
 
-**Next action:** re-run the Wayland script (§9 steps 1–8) on a quiet
-session and record evidence in `docs/status.md`; remaining gaps are entry
-triggers beyond the four interim ones, resource trends, dirty-shutdown
-semantics, and the open-document persistence decision.
+**Next action:** implement the frozen open-document registry persistence and
+asynchronous, cancellable document I/O; strengthen root identity/race guards.
+Then finish the native language/Unicode/long-line/error/entry-point matrix.
+See `docs/status.md` for the successful pointer, conflict, shutdown and
+ten-cycle resource evidence. M19 is not complete; frozen persistence is an
+implementation gap, not an undecided product contract.
 
 ## 12. Phase A frozen contracts (2026-10-04)
 
@@ -530,3 +535,24 @@ Frozen before any editor code:
   triggers cover palette Ctrl+Enter/Ctrl+click, tree Ctrl+click, Git-row
   Ctrl+click, and Files-search Ctrl+Enter. Automated phases B–E check out;
   live proof and the persistence/shutdown/resource decisions remain.
+
+### Acceptance hardening — 2026-10-03
+
+- Undo/redo tracks saved text and supplies a valid caret endpoint. Movement,
+  deletion and selection clamp to grapheme boundaries; tab-expanded shaping
+  indices map as display **bytes**, with Unicode widths supplied by the
+  existing locked Unicode crates.
+- Dirty close/revert/shutdown presents Cancel / Save / Discard; failed saves
+  retain the pending action and buffer. Shared dispatch rejects dirty close
+  and project deletion before effects. Revert validates the captured root path.
+- Highlight jobs cooperate with cancellation, notify completion through a
+  bounded wakeup channel, and clear obsolete spans on edit. Negative JSON
+  numbers always advance the tokenizer; escaped Unicode/char literals remain
+  boundary aligned.
+- Reads enforce a cap while reading. Atomic saves exclusively create a 0600
+  sidecar, propagate permission failures, sync data, recheck revision/path,
+  rename and sync the directory. Device/inode identity detects same-tick
+  atomic file replacement. Full descriptor-relative ancestor-race protection
+  remains open.
+- Native entry still uses explicit Ctrl gestures. No editor IPC method or
+  dirty-content persistence was added.

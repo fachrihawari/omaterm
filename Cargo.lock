@@ -3956,6 +3956,8 @@ dependencies = [
  "serde_json",
  "tracing",
  "ttf-parser 0.25.1",
+ "unicode-segmentation",
+ "unicode-width",
  "uuid",
  "zeroize",
 ]
@@ -3981,6 +3983,7 @@ version = "0.1.0"
 dependencies = [
  "fuzzy-matcher",
  "ignore",
+ "libc",
  "notify",
  "omaterm-core",
  "thiserror 2.0.21",

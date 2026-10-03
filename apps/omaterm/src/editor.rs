@@ -26,6 +26,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthChar;
 
 use omaterm_core::{CommandError, DocumentId, EditorDocumentInfo, ErrorCode, ProjectId};
 
@@ -64,6 +66,8 @@ pub struct Document {
     /// and refuse on mismatch instead of writing into a replaced tree.
     root: PathBuf,
     text: String,
+    saved_text: String,
+    history_cursor: Option<usize>,
     dirty: bool,
     revision: omaterm_context::FileRevision,
     language: omaterm_context::EditorLanguage,
@@ -124,7 +128,9 @@ impl DocumentStore {
                 path,
                 absolute,
                 root,
+                saved_text: file.text.clone(),
                 text: file.text,
+                history_cursor: None,
                 dirty: false,
                 revision,
                 language,
@@ -174,6 +180,34 @@ impl DocumentStore {
 
     pub fn is_dirty(&self, document: DocumentId) -> Option<bool> {
         self.docs.get(&document).map(|doc| doc.dirty)
+    }
+
+    pub fn has_dirty_documents(&self) -> bool {
+        self.docs.values().any(|doc| doc.dirty)
+    }
+
+    pub fn dirty_documents(&self) -> Vec<DocumentId> {
+        self.docs
+            .iter()
+            .filter(|(_, doc)| doc.dirty)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    pub fn history_cursor(&self, document: DocumentId) -> Option<usize> {
+        self.docs.get(&document)?.history_cursor
+    }
+
+    /// Called only after an explicit discard decision. Does not touch disk.
+    pub fn discard_changes(&mut self, document: DocumentId) {
+        if let Some(doc) = self.docs.get_mut(&document) {
+            doc.text.clone_from(&doc.saved_text);
+            doc.dirty = false;
+            doc.undo.clear();
+            doc.redo.clear();
+            doc.undo_bytes = 0;
+            doc.history_cursor = None;
+        }
     }
 
     pub fn language(&self, document: DocumentId) -> Option<omaterm_context::EditorLanguage> {
@@ -245,7 +279,17 @@ impl DocumentStore {
         {
             return Err(invalid("edit range is outside the document text"));
         }
-        let mut next = String::with_capacity(doc.text.len() - remove_len + insert.len());
+        let next_len = (doc.text.len() - remove_len).checked_add(insert.len());
+        if next_len.is_none_or(|len| len > omaterm_core::validation::MAX_EDITOR_BYTES) {
+            return Err(CommandError::new(
+                ErrorCode::DocumentTooLarge,
+                "edit would exceed the 1 MiB document cap",
+            ));
+        }
+        if remove_len == 0 && insert.is_empty() || doc.text[start..end] == *insert {
+            return Ok(());
+        }
+        let mut next = String::with_capacity(next_len.unwrap());
         next.push_str(&doc.text[..start]);
         next.push_str(insert);
         next.push_str(&doc.text[end..]);
@@ -277,7 +321,8 @@ impl DocumentStore {
         }
         doc.redo.clear();
         doc.text = next;
-        doc.dirty = true;
+        doc.dirty = doc.text != doc.saved_text;
+        doc.history_cursor = None;
         Ok(())
     }
 
@@ -305,7 +350,8 @@ impl DocumentStore {
         };
         doc.redo.push(redo);
         doc.text = next;
-        doc.dirty = true;
+        doc.history_cursor = Some(edit.start + edit.removed.len());
+        doc.dirty = doc.text != doc.saved_text;
         Ok(true)
     }
 
@@ -339,7 +385,8 @@ impl DocumentStore {
             doc.undo.remove(0);
         }
         doc.text = next;
-        doc.dirty = true;
+        doc.history_cursor = Some(edit.start + edit.removed.len());
+        doc.dirty = doc.text != doc.saved_text;
         Ok(true)
     }
 
@@ -347,7 +394,9 @@ impl DocumentStore {
     /// undo/redo, clears dirty, adopts the new revision.
     pub fn adopt_disk_text(&mut self, document: DocumentId, file: omaterm_context::EditorFile) {
         if let Some(doc) = self.docs.get_mut(&document) {
+            doc.saved_text.clone_from(&file.text);
             doc.text = file.text;
+            doc.history_cursor = None;
             doc.revision = file.revision;
             doc.language = file.language;
             doc.undo.clear();
@@ -362,6 +411,7 @@ impl DocumentStore {
     pub fn mark_saved(&mut self, document: DocumentId, revision: omaterm_context::FileRevision) {
         if let Some(doc) = self.docs.get_mut(&document) {
             doc.revision = revision;
+            doc.saved_text.clone_from(&doc.text);
             doc.dirty = false;
         }
     }
@@ -394,21 +444,7 @@ pub struct TokenSpan {
 /// 0 for control chars, 1 otherwise. An estimate — the renderer shapes the
 /// caret line exactly; this only sizes scroll extents and offsets.
 pub fn char_display_width(ch: char) -> usize {
-    let code = ch as u32;
-    if ch.is_control() {
-        return 0;
-    }
-    match code {
-        0x1100..=0x115F
-        | 0x2E80..=0xA4CF
-        | 0xAC00..=0xD7A3
-        | 0xF900..=0xFAFF
-        | 0xFE30..=0xFE4F
-        | 0xFF00..=0xFF60
-        | 0xFFE0..=0xFFE6
-        | 0x1F300..=0x1FAFF => 2,
-        _ => 1,
-    }
+    ch.width().unwrap_or(0)
 }
 
 /// Display columns for a line with tabs expanded to `TAB_WIDTH` stops.
@@ -448,6 +484,38 @@ impl EditorCaret {
         self.cursor = offset;
         self.anchor = None;
     }
+
+    pub fn clamp(&mut self, text: &str) {
+        self.cursor = clamp_grapheme_offset(text, self.cursor);
+        self.anchor = self
+            .anchor
+            .map(|offset| clamp_grapheme_offset(text, offset))
+            .filter(|anchor| *anchor != self.cursor);
+    }
+}
+
+fn clamp_grapheme_offset(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+        .take_while(|index| *index <= offset.min(text.len()))
+        .last()
+        .unwrap_or(0)
+}
+
+pub fn previous_grapheme(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .take_while(|index| *index < offset.min(text.len()))
+        .last()
+        .unwrap_or(0)
+}
+
+pub fn next_grapheme(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(index, _)| index)
+        .find(|index| *index > offset)
+        .unwrap_or(text.len())
 }
 
 const RUST_KEYWORDS: &[&str] = &[
@@ -486,15 +554,22 @@ struct Scanner<'a> {
     bytes: &'a [u8],
     pos: usize,
     spans: Vec<TokenSpan>,
+    cancelled: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 impl<'a> Scanner<'a> {
-    fn new(text: &'a str) -> Self {
+    fn new(text: &'a str, cancelled: Option<&'a std::sync::atomic::AtomicBool>) -> Self {
         Self {
             bytes: text.as_bytes(),
             pos: 0,
             spans: Vec::new(),
+            cancelled,
         }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     fn rest_starts_with(&self, pattern: &[u8]) -> bool {
@@ -514,13 +589,16 @@ impl<'a> Scanner<'a> {
     fn string(&mut self, kind: TokenKind) {
         let start = self.pos;
         self.pos += 1;
-        while self.pos < self.bytes.len() {
+        while self.pos < self.bytes.len() && !self.is_cancelled() {
             let byte = self.bytes[self.pos];
             if byte == b'\\' {
-                self.pos += 2.min(self.bytes.len() - self.pos);
+                self.pos += 1;
+                if self.pos < self.bytes.len() {
+                    self.pos += utf8_len(self.bytes[self.pos]);
+                }
                 continue;
             }
-            self.pos += 1;
+            self.pos += utf8_len(byte);
             if byte == b'"' {
                 break;
             }
@@ -532,7 +610,7 @@ impl<'a> Scanner<'a> {
     fn single_string(&mut self) {
         let start = self.pos;
         self.pos += 1;
-        while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\'' {
+        while self.pos < self.bytes.len() && !self.is_cancelled() && self.bytes[self.pos] != b'\'' {
             self.pos += utf8_len(self.bytes[self.pos]);
         }
         self.pos = (self.pos + 1).min(self.bytes.len());
@@ -542,7 +620,7 @@ impl<'a> Scanner<'a> {
     /// Consume a line comment through (not including) the newline.
     fn line_comment(&mut self) {
         let start = self.pos;
-        while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
+        while self.pos < self.bytes.len() && !self.is_cancelled() && self.bytes[self.pos] != b'\n' {
             self.pos += utf8_len(self.bytes[self.pos]);
         }
         self.push(start, TokenKind::Comment);
@@ -552,7 +630,10 @@ impl<'a> Scanner<'a> {
     /// the tables are tiny and this avoids any sorted-order invariant.
     fn word(&mut self, keywords: &[&str]) {
         let start = self.pos;
-        while self.pos < self.bytes.len() && is_ident_continue(self.bytes[self.pos]) {
+        while self.pos < self.bytes.len()
+            && !self.is_cancelled()
+            && is_ident_continue(self.bytes[self.pos])
+        {
             self.pos += 1;
         }
         // Identifier bytes are ASCII alphanumerics by construction.
@@ -566,7 +647,11 @@ impl<'a> Scanner<'a> {
     /// Consume a number literal from a leading digit.
     fn number(&mut self) {
         let start = self.pos;
+        if self.bytes[self.pos] == b'-' {
+            self.pos += 1;
+        }
         while self.pos < self.bytes.len()
+            && !self.is_cancelled()
             && (self.bytes[self.pos].is_ascii_alphanumeric()
                 || matches!(self.bytes[self.pos], b'_' | b'.'))
         {
@@ -596,14 +681,22 @@ fn is_comment_hash(scan: &Scanner<'_>) -> bool {
 /// implicitly plain. Fast single pass — safe to rerun per keystroke on a
 /// background thread for bounded documents.
 pub fn tokenize(language: omaterm_context::EditorLanguage, text: &str) -> Vec<TokenSpan> {
+    tokenize_cancellable(language, text, None)
+}
+
+fn tokenize_cancellable(
+    language: omaterm_context::EditorLanguage,
+    text: &str,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Vec<TokenSpan> {
     use omaterm_context::EditorLanguage as Lang;
     if matches!(language, Lang::Plain) {
         return Vec::new();
     }
     if matches!(language, Lang::Markdown) {
-        return tokenize_markdown(text);
+        return tokenize_markdown(text, cancelled);
     }
-    let mut scan = Scanner::new(text);
+    let mut scan = Scanner::new(text, cancelled);
     let keywords: &[&str] = match language {
         Lang::Rust => RUST_KEYWORDS,
         Lang::Bash => BASH_KEYWORDS,
@@ -614,7 +707,7 @@ pub fn tokenize(language: omaterm_context::EditorLanguage, text: &str) -> Vec<To
     let bash = matches!(language, Lang::Bash);
     let hash_comment = !matches!(language, Lang::Json);
     let block_comment = matches!(language, Lang::Rust);
-    while scan.pos < scan.bytes.len() {
+    while scan.pos < scan.bytes.len() && !scan.is_cancelled() {
         let byte = scan.bytes[scan.pos];
         if byte == b'"' {
             scan.string(TokenKind::String);
@@ -624,13 +717,12 @@ pub fn tokenize(language: omaterm_context::EditorLanguage, text: &str) -> Vec<To
             // Rust char literal `'x'` / `'\n'` versus lifetime `'a`:
             // only the exact literal shape becomes a string span.
             let rest = &scan.bytes[scan.pos..];
-            let literal = rest.len() >= 3
-                && rest[2] == b'\''
-                && (rest[1] != b'\\' || rest.len() >= 4 && rest[3] == b'\'');
-            if literal {
-                let end = if rest[1] == b'\\' { 4 } else { 3 };
-                scan.pos += end.min(rest.len());
-                scan.push(scan.pos - end.min(rest.len()), TokenKind::String);
+            let content = if rest.get(1) == Some(&b'\\') { 2 } else { 1 };
+            let end = rest.get(content).map(|first| content + utf8_len(*first));
+            if let Some(end) = end.filter(|end| rest.get(*end) == Some(&b'\'')) {
+                let start = scan.pos;
+                scan.pos += end + 1;
+                scan.push(start, TokenKind::String);
             } else {
                 scan.pos += 1;
             }
@@ -642,7 +734,7 @@ pub fn tokenize(language: omaterm_context::EditorLanguage, text: &str) -> Vec<To
             let start = scan.pos;
             scan.pos += 2;
             let mut depth = 1;
-            while scan.pos < scan.bytes.len() && depth > 0 {
+            while scan.pos < scan.bytes.len() && depth > 0 && !scan.is_cancelled() {
                 if scan.rest_starts_with(b"/*") {
                     depth += 1;
                     scan.pos += 2;
@@ -672,10 +764,16 @@ pub fn tokenize(language: omaterm_context::EditorLanguage, text: &str) -> Vec<To
 
 /// Markdown subset: `#`-led headings (whole line) and same-line `` `code` ``
 /// spans. Emphasis/link markup stays plain in first delivery.
-fn tokenize_markdown(text: &str) -> Vec<TokenSpan> {
+fn tokenize_markdown(
+    text: &str,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Vec<TokenSpan> {
     let mut spans = Vec::new();
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
+        if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+            break;
+        }
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
         if trimmed.starts_with('#') {
@@ -815,6 +913,29 @@ pub fn display_col_to_buffer_col(line: &str, display_col: usize) -> usize {
     buf
 }
 
+/// Shaping returns byte indices in the tab-expanded line, not display cells.
+pub fn display_byte_to_buffer_col(line: &str, display_byte: usize) -> usize {
+    let mut display = 0;
+    let mut cols = 0;
+    for (index, ch) in line.char_indices() {
+        let bytes = if ch == '\t' {
+            TAB_WIDTH - cols % TAB_WIDTH
+        } else {
+            ch.len_utf8()
+        };
+        if display + bytes > display_byte {
+            return index;
+        }
+        display += bytes;
+        cols += if ch == '\t' {
+            bytes
+        } else {
+            char_display_width(ch)
+        };
+    }
+    line.len()
+}
+
 /// Map a buffer byte range within one line to display byte coordinates
 /// (tabs expand; everything else is byte-identical). Clamps onto char
 /// boundaries; empty when the range misses the line.
@@ -926,23 +1047,35 @@ pub struct HighlightWorker {
 
 impl HighlightWorker {
     pub fn new() -> Self {
-        Self::with_runner(|request: HighlightRequest| {
-            let spans = tokenize(request.language, &request.text);
-            let mut max_cols = 0;
-            for line in request.text.split('\n') {
-                max_cols = max_cols.max(line_display_width(line));
-            }
-            HighlightResult {
-                document: request.document,
-                generation: request.generation,
-                spans,
-                max_cols,
-            }
-        })
+        Self::with_notifier(|| {})
+    }
+
+    pub fn with_notifier(notify: impl Fn() + Send + 'static) -> Self {
+        Self::with_runner(
+            |request: HighlightRequest| {
+                let spans =
+                    tokenize_cancellable(request.language, &request.text, Some(&request.cancelled));
+                let mut max_cols = 0;
+                for line in request.text.split('\n') {
+                    if request.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    max_cols = max_cols.max(line_display_width(line));
+                }
+                HighlightResult {
+                    document: request.document,
+                    generation: request.generation,
+                    spans,
+                    max_cols,
+                }
+            },
+            notify,
+        )
     }
 
     fn with_runner(
         mut run: impl FnMut(HighlightRequest) -> HighlightResult + Send + 'static,
+        notify: impl Fn() + Send + 'static,
     ) -> Self {
         let state = std::sync::Arc::new((
             std::sync::Mutex::new(HighlightWorkerState::default()),
@@ -980,6 +1113,7 @@ impl HighlightWorker {
                     }
                     if !state.shutdown && !cancel.load(std::sync::atomic::Ordering::Acquire) {
                         state.result = Some(landed);
+                        notify();
                     }
                 }
             }
@@ -1068,6 +1202,8 @@ mod tests {
             size: text.len() as u64,
             mtime_secs: 1,
             mtime_nanos: 0,
+            device: 0,
+            inode: 0,
         };
         store.open(
             project,
@@ -1082,6 +1218,71 @@ mod tests {
                 language: omaterm_context::EditorLanguage::Plain,
             },
         )
+    }
+
+    #[test]
+    fn undo_tracks_savepoints_and_returns_a_valid_caret() {
+        let mut store = DocumentStore::default();
+        let id = open_doc(&mut store, ProjectId::new(), "a.txt", "界");
+        store.apply_edit(id, 3, 0, "e\u{301}").unwrap();
+        assert!(store.undo(id).unwrap());
+        assert_eq!(store.is_dirty(id), Some(false));
+        assert_eq!(store.history_cursor(id), Some(3));
+        assert!(store.redo(id).unwrap());
+        assert_eq!(store.history_cursor(id), Some(6));
+        store.mark_saved(id, store.revision(id).unwrap());
+        assert!(store.undo(id).unwrap());
+        assert_eq!(store.is_dirty(id), Some(true));
+        assert!(store.redo(id).unwrap());
+        assert_eq!(store.is_dirty(id), Some(false));
+        store.apply_edit(id, 0, 0, "").unwrap();
+        assert_eq!(store.is_dirty(id), Some(false));
+        store.apply_edit(id, 0, 0, "x").unwrap();
+        store.discard_changes(id);
+        assert_eq!(store.text(id), Some("界e\u{301}"));
+        assert!(!store.has_dirty_documents());
+        assert!(!store.undo(id).unwrap());
+    }
+
+    #[test]
+    fn unicode_shaping_offsets_and_grapheme_motion_do_not_split_text() {
+        let line = "界\te\u{301}🙂x";
+        for (buffer, _) in line.char_indices() {
+            let display = buffer_col_to_display_col(line, buffer);
+            assert_eq!(display_byte_to_buffer_col(line, display), buffer);
+        }
+        assert_eq!(
+            display_byte_to_buffer_col(line, display_line(line).len()),
+            line.len()
+        );
+        assert_eq!(line_display_width("e\u{301}"), 1);
+        let text = "e\u{301}👩‍💻界";
+        assert_eq!(next_grapheme(text, 0), "e\u{301}".len());
+        assert_eq!(next_grapheme(text, 3), "e\u{301}👩‍💻".len());
+        assert_eq!(previous_grapheme(text, text.len()), "e\u{301}👩‍💻".len());
+        let mut caret = EditorCaret {
+            cursor: usize::MAX,
+            anchor: Some(1),
+        };
+        caret.clamp(text);
+        assert_eq!(caret.cursor, text.len());
+        assert_eq!(caret.anchor, Some(0));
+    }
+
+    #[test]
+    fn tokenizer_negative_numbers_escaped_unicode_and_cancellation() {
+        use omaterm_context::EditorLanguage as Lang;
+        let text = "{\"n\": -12, \"s\": \"\\界\"}";
+        let spans = tokenize(Lang::Json, text);
+        assert!(spans.iter().any(|span| span_text(text, span) == "-12"));
+        let text = "let x = '\\n'; let y = '界'; let s = \"\\界\";";
+        let spans = tokenize(Lang::Rust, text);
+        assert!(spans.iter().any(|span| span_text(text, span) == "'\\n'"));
+        assert!(spans.iter().any(|span| span_text(text, span) == "'界'"));
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        for lang in [Lang::Rust, Lang::Json, Lang::Markdown] {
+            assert!(tokenize_cancellable(lang, text, Some(&cancel)).is_empty());
+        }
     }
 
     #[test]

@@ -3950,3 +3950,117 @@ pass. These paths join the quiet-session re-run.
 Remaining M19 gaps unchanged: quiet-session pointer proof, resource
 trends, dirty-shutdown semantics, open-document persistence decision,
 find/replace and further languages as follow-ups.
+
+## M19 acceptance hardening and resumed Phase F — 2026-10-03
+
+This record supersedes the previous pointer-blocker and dirty-shutdown
+statements. M19 remains **in progress**, with prerequisite implementation
+gaps identified below; the successful flows do not close the full matrix.
+
+### Implementation
+
+- Undo/redo restores a valid endpoint and dirty state relative to saved text.
+  No-op replacements do not create history. Edits reject oversize inserts
+  before allocating the candidate buffer; caret/anchor clamp after mutation.
+- Grapheme-aware motion/deletion/selection and Unicode character widths use
+  the already-locked Unicode crates. Pointer hit-testing now shapes a complete
+  line and translates display byte indices back to buffer bytes; vertical
+  movement preserves visual columns. Shift-drag retains its original anchor.
+- Dirty close/revert/window shutdown has explicit Cancel / Save / Discard
+  choices. Save failure keeps the buffer and pending action. Shared router
+  operations reject dirty close/project deletion without effects. Revert and
+  clean Save validate the captured canonical root path. Native activation
+  releases inspector field focus; both clipboard shortcut forms target the
+  editor, rather than a hidden terminal. Successful actions clear stale notices.
+- Negative JSON numbers no longer stall tokenization. Escaped Unicode and
+  Rust character literals have valid span boundaries. Tokenization checks
+  cancellation cooperatively, superseded spans clear on edit, and completion
+  sends a bounded wakeup (no idle highlight polling/repaint loop).
+- Context reads cap actual bytes consumed despite concurrent growth and open
+  the final component with Unix `O_NOFOLLOW` / `O_NONBLOCK`. Saves use exclusive
+  0600 sidecars, checked permission preservation, data sync, final path/revision
+  revalidation, atomic rename and directory sync. File revision includes Unix
+  device/inode, catching same-size, same-timestamp atomic replacements.
+
+### Automated verification
+
+All Cargo commands below ran with `RUSTUP_TOOLCHAIN=1.99.0` (existing environment
+override; repository toolchain pin unchanged), reliable command exit codes and
+no output-filtering pipelines. Final source checked before documentation-only
+updates:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace --quiet` | PASS: 494 tests, 0 failed |
+| `cargo test --workspace --quiet -- --test-threads=1` | PASS: 494 tests, 0 failed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS; existing transitive `proc-macro-error2` future-incompatibility notice only |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+
+New regressions cover savepoints/caret endpoints/discard, grapheme motion and
+display-byte mapping, negative numbers/escaped Unicode/cancellation, capped
+readers, preserved permissions and symlink escapes. Existing dispatcher lifecycle
+coverage now asserts dirty close/project deletion rejection and empty effects.
+During verification, a stale-revision test exposed same-tick atomic replacement;
+device/inode tracking fixed it. A later serial run exposed the pre-existing
+credential test's immediate `/proc/<pid>/environ` sampling race; the test now
+waits at most two seconds for the child token environment before all original
+identity/revocation assertions. Both full suites passed after those fixes.
+Documentation checks after the evidence update: `python3 scripts/check-docs.py`
+PASS (36 files, 128 local targets, 295 blueprint references, all 34 CLI mappings);
+`git diff --check` PASS.
+
+### Release Wayland evidence
+
+Hyprland 0.56.2, `wayland-1`, eDP-1 1920×1200 at scale 1.25; isolated
+HOME/config/state/cache/runtime under `/tmp/opencode/m19-live/`, fixture repo,
+`EDITOR=/usr/bin/true`. First hardening run: service `omaterm-m19-h`, desktop
+PID 633343, viewport 1445×924 logical. Final-source smoke: `omaterm-m19-final`,
+PID 704122, viewport 1526×924 logical. Pointer helper uses the MIT wlr protocol
+v2 `create_virtual_pointer_with_output`, tied explicitly to eDP-1 with
+1536×960 logical extents; the earlier global-extent hypothesis was incorrect.
+
+| Flow | Observed result / capture under `/tmp/opencode/m19-live/` |
+|---|---|
+| Palette Ctrl+Enter | Opened `notes.md` after the asynchronous result arrived (`h-open.png`). An early Enter correctly reports no selected result; this is not a focus-loss diagnosis. |
+| Pointer selection, copy/paste | Drag selected exact `M19 live edit.`; clipboard equality checked after event delivery; Ctrl+V inserted that payload (`h-selection.png`, `h-paste.png`). |
+| Dirty chip close, Cancel | Close click produced explicit choices; pointer Cancel retained the dirty buffer (`h-close-prompt.png`). |
+| Undo/redo + toolbar Save | Undo returned to clean text/caret (`h-undo-clean.png`); redo restored insertion; Save wrote matching bytes. |
+| Dirty close, Discard | `XYZ` edit discarded by explicit choice; chip removed and existing terminal restored (`h-discard-closed.png`); saved bytes retained. |
+| External modification | Save refused, preserving both the local dirty buffer and external disk text (`h-conflict.png`); Revert + explicit Discard loaded the external text cleanly (`h-reverted.png`). |
+| Files Ctrl+click | Native document opened and focused (`h-tree-open.png`). |
+| Files search Ctrl+Enter (final source) | Opened `main.rs` with Rust keyword/string colors (`final-search-open.png`); validates the corrected input guard. |
+| Ctrl+Shift+C/V (final source) | Select-all copy, collapse, paste duplicated the Rust buffer (`final-editor-clipboard.png`); CLI bounded `terminal.read` showed only the unchanged shell prompt, no editor payload. |
+| Dirty shutdown | Compositor `hl.dispatch(hl.dsp.window.close())` prompted before teardown. Cancel kept the service active; Save persisted all dirty text and exited. Final-source run prompted again (`final-shutdown.png`); Discard exited without changing `main.rs`. |
+
+Resource loop: ten checked Files Ctrl+click → insert → Save → header Close
+cycles; each iteration asserted exact on-disk bytes. Warm baseline 45 FDs /
+30 threads / 99,568 KiB RSS; all cycles retained 45 FDs / 30 threads; RSS range
+99,512–99,740 KiB, final 99,692 KiB. Each scripted cycle took ~3.05s including
+intentional input waits (not an operation-latency benchmark). Temporary harness:
+`cycles.py`; no monotonic growth observed for this small fixture. Earlier
+palette-driven loops stopped on focus/readiness guards and are not passes.
+
+Both units exited through normal window shutdown; desktop/observed shell PIDs
+were gone, socket/credential removed (only normal lock remained), workspace 5
+restored. Screenshots and disposable fixtures remain outside the repository.
+Redaction review: added code logs no text, clipboard contents or capability tokens.
+
+### Remaining work and next action
+
+1. Implement the frozen open-document registry persistence (metadata only;
+   never dirty text) and bounded restart restore. The decision is already
+   frozen in the M19 plan; it is not deferred or reopened here.
+2. Move editor lifecycle file I/O off the owner/UI thread with cancellation,
+   bounded pending work and project/root/document generation guards.
+3. Strengthen root identity and descriptor-relative ancestor-race protection;
+   same canonical pathname alone does not detect replacement of the root.
+   Metadata conflict detection is not a content digest or atomic compare/rename.
+4. Finish language/Unicode/tab/long-line/binary/oversize/Git-entry, narrow-layout,
+   project-switch and multi-document acceptance; deadline caret blink/gutter
+   selection/CRLF presentation and explicit conflict-overwrite flow remain open.
+5. Repeat resource observation at file/line caps and measure actual operation
+   latency/idle behavior. Existing small-fixture resource proof is bounded evidence.
+
+M15/M16/M17 closure remains separate. Find/replace and additional languages stay
+follow-ups under the existing M19 scope.

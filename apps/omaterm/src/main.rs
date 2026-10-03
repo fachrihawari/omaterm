@@ -248,6 +248,7 @@ struct WorkspaceView {
     /// maps hold caret, scroll, and presentation state only.
     editor_active: HashMap<ProjectId, DocumentId>,
     editor_carets: HashMap<DocumentId, editor::EditorCaret>,
+    editor_pending_action: Option<EditorPendingAction>,
     editor_rows_handles: HashMap<DocumentId, UniformListScrollHandle>,
     editor_x_handles: HashMap<DocumentId, ScrollHandle>,
     /// Landed highlights per document: requested generation, spans, and
@@ -301,6 +302,13 @@ enum InspectorTab {
     Info,
     Files,
     Git,
+}
+
+#[derive(Clone, Copy)]
+enum EditorPendingAction {
+    Close(ProjectId, DocumentId),
+    Revert(DocumentId),
+    Shutdown(gpui::AnyWindowHandle),
 }
 
 /// Arm window for two-step history controls.
@@ -791,6 +799,7 @@ impl WorkspaceView {
             diff_last_project: None,
             editor_active: HashMap::new(),
             editor_carets: HashMap::new(),
+            editor_pending_action: None,
             editor_rows_handles: HashMap::new(),
             editor_x_handles: HashMap::new(),
             editor_highlights: HashMap::new(),
@@ -805,6 +814,21 @@ impl WorkspaceView {
         view.warm_history_journals();
         view.start_history_timer(cx);
         view.start_files_poller(cx);
+        let (highlight_tx, highlight_rx) = async_channel::bounded(1);
+        view.editor_highlight_worker = editor::HighlightWorker::with_notifier(move || {
+            let _ = highlight_tx.try_send(());
+        });
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            while highlight_rx.recv().await.is_ok() {
+                if weak
+                    .update(cx, |view, cx| view.editor_drain_highlights(cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         view
     }
 
@@ -1257,6 +1281,11 @@ impl WorkspaceView {
 
     fn begin_shutdown(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
         if self.shutting_down {
+            return;
+        }
+        if self.coordinator.documents().has_dirty_documents() {
+            self.editor_pending_action = Some(EditorPendingAction::Shutdown(window));
+            cx.notify();
             return;
         }
         self.shutting_down = true;
@@ -3071,6 +3100,51 @@ impl WorkspaceView {
             .filter(|doc| self.coordinator.documents().project_of(*doc) == Some(project))
     }
 
+    fn editor_resolve_pending(&mut self, choice: u8, cx: &mut Context<Self>) {
+        let Some(action) = self.editor_pending_action else {
+            return;
+        };
+        if choice == 0 {
+            self.editor_pending_action = None;
+            cx.notify();
+            return;
+        }
+        let documents = match action {
+            EditorPendingAction::Close(_, document) | EditorPendingAction::Revert(document) => {
+                vec![document]
+            }
+            EditorPendingAction::Shutdown(_) => self.coordinator.documents().dirty_documents(),
+        };
+        for document in documents {
+            if choice == 1 {
+                if let Err(error) =
+                    self.dispatch_command(OmaCommand::Editor(EditorCommand::Save { document }), cx)
+                {
+                    self.input_notice =
+                        Some(format!("Save: {error}. Action cancelled; buffer retained."));
+                    cx.notify();
+                    return;
+                }
+            } else {
+                self.coordinator.documents_mut().discard_changes(document);
+            }
+        }
+        self.editor_pending_action = None;
+        match action {
+            EditorPendingAction::Close(project, document) => {
+                self.editor_close_document(project, document, cx)
+            }
+            EditorPendingAction::Revert(document) => {
+                self.editor_after_edit(document, cx);
+                if let Some(project) = self.coordinator.documents().project_of(document) {
+                    self.editor_revert_document(project, document, cx);
+                }
+            }
+            EditorPendingAction::Shutdown(window) => self.begin_shutdown(window, cx),
+        }
+        cx.notify();
+    }
+
     /// Dispatch `EditorCommand::Open` and activate the document on success.
     /// Phase D trigger: palette file results with Ctrl+Enter/Ctrl+click.
     /// Failures surface as an input notice; no terminal is disturbed.
@@ -3088,6 +3162,7 @@ impl WorkspaceView {
             cx,
         ) {
             Ok(CommandOutput::EditorOpened(info)) => {
+                self.input_notice = None;
                 self.editor_activate(project, info.document, cx)
             }
             Ok(_) => {
@@ -3110,6 +3185,8 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.editor_active.insert(project, document);
+        self.files_search_focused = false;
+        self.git_panel.set_commit_focused(false);
         self.editor_carets.entry(document).or_default();
         self.editor_submit_highlight(document);
         self.editor_reveal_caret(document);
@@ -3121,6 +3198,7 @@ impl WorkspaceView {
     fn editor_submit_highlight(&mut self, document: DocumentId) {
         let generation = self.editor_text_gen.get(&document).copied().unwrap_or(0) + 1;
         self.editor_text_gen.insert(document, generation);
+        self.editor_highlights.remove(&document);
         let store = self.coordinator.documents();
         let (Some(text), Some(language)) = (store.buffer_text(document), store.language(document))
         else {
@@ -3188,7 +3266,7 @@ impl WorkspaceView {
             return;
         }
         if self.coordinator.documents().is_dirty(document) == Some(true) {
-            self.input_notice = Some("Unsaved changes — save (Ctrl+S) or revert first.".into());
+            self.editor_pending_action = Some(EditorPendingAction::Close(project, document));
             cx.notify();
             return;
         }
@@ -3220,7 +3298,10 @@ impl WorkspaceView {
             return;
         }
         match self.dispatch_command(OmaCommand::Editor(EditorCommand::Save { document }), cx) {
-            Ok(CommandOutput::EditorSaved(_)) => self.show_toast("Saved".into(), cx),
+            Ok(CommandOutput::EditorSaved(_)) => {
+                self.input_notice = None;
+                self.show_toast("Saved".into(), cx);
+            }
             Ok(_) => {
                 self.input_notice = Some("Save: unexpected editor result.".into());
                 cx.notify();
@@ -3243,8 +3324,14 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
+        if self.coordinator.documents().is_dirty(document) == Some(true) {
+            self.editor_pending_action = Some(EditorPendingAction::Revert(document));
+            cx.notify();
+            return;
+        }
         match self.dispatch_command(OmaCommand::Editor(EditorCommand::Revert { document }), cx) {
             Ok(CommandOutput::EditorOpened(_)) => {
+                self.input_notice = None;
                 if let Some(caret) = self.editor_carets.get(&document).copied() {
                     self.editor_set_caret(document, caret.cursor, false);
                 }
@@ -3318,11 +3405,15 @@ impl WorkspaceView {
         } else {
             caret.collapse_to(offset);
         }
+        caret.clamp(&text);
         self.editor_reveal_caret(document);
     }
 
     /// Shared post-edit bookkeeping: fresh highlights, caret reveal, repaint.
     fn editor_after_edit(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        if let Some(text) = self.coordinator.documents().text(document) {
+            self.editor_carets.entry(document).or_default().clamp(text);
+        }
         self.editor_submit_highlight(document);
         self.editor_reveal_caret(document);
         cx.notify();
@@ -3433,51 +3524,37 @@ impl WorkspaceView {
         let rel_x: f32 = (position.x - origin.x).into();
         let target_x = (rel_x - EDITOR_GUTTER_W - scroll_x).max(0.0);
         let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
-        // Nearest display-byte column by shaped prefix width.
-        let (mut lo, mut hi) = (0usize, display.len());
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let mut mid = mid;
-            while mid > lo && !display.is_char_boundary(mid) {
-                mid -= 1;
-            }
-            if mid == lo {
-                break;
-            }
-            if Self::editor_shape_width(&display[..mid], &mono, window) <= target_x {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-            if hi - lo <= 1 {
-                break;
-            }
-        }
-        let mut best = lo;
-        let mut best_dist =
-            (Self::editor_shape_width(&display[..lo], &mono, window) - target_x).abs();
-        for candidate in [lo, hi.min(display.len())] {
-            let mut candidate = candidate;
-            while candidate > 0 && !display.is_char_boundary(candidate) {
-                candidate -= 1;
-            }
-            let dist =
-                (Self::editor_shape_width(&display[..candidate], &mono, window) - target_x).abs();
-            if dist < best_dist {
-                best_dist = dist;
-                best = candidate;
-            }
-        }
-        let buffer_col = editor::display_col_to_buffer_col(line_text, best);
-        Some(editor::line_col_to_offset(&text, &starts, line, buffer_col).min(text.len()))
+        let shaped = window.text_system().shape_line(
+            SharedString::from(display.into_owned()),
+            px(EDITOR_FONT_SIZE),
+            &[TextRun {
+                len: editor::display_line(line_text).len(),
+                font: font(mono),
+                color: rgb(crate::ui::theme::TEXT).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        let best = shaped.closest_index_for_x(px(target_x));
+        let buffer_col = editor::display_byte_to_buffer_col(line_text, best);
+        let mut caret = editor::EditorCaret {
+            cursor: line_start + buffer_col,
+            anchor: None,
+        };
+        caret.clamp(&text);
+        Some(caret.cursor)
     }
 
-    /// Undo the newest buffer edit. Dirty state stays dirty: undo history
-    /// is not a clean-revision tracker in first delivery.
+    /// Undo the newest buffer edit and restore its valid caret endpoint.
     fn editor_undo(&mut self, document: DocumentId, cx: &mut Context<Self>) {
         match self.coordinator.documents_mut().undo(document) {
             Ok(applied) => {
                 if applied {
+                    if let Some(offset) = self.coordinator.documents().history_cursor(document) {
+                        self.editor_set_caret(document, offset, false);
+                    }
                     self.editor_after_edit(document, cx);
                 }
             }
@@ -3492,6 +3569,9 @@ impl WorkspaceView {
         match self.coordinator.documents_mut().redo(document) {
             Ok(applied) => {
                 if applied {
+                    if let Some(offset) = self.coordinator.documents().history_cursor(document) {
+                        self.editor_set_caret(document, offset, false);
+                    }
                     self.editor_after_edit(document, cx);
                 }
             }
@@ -3591,7 +3671,7 @@ impl WorkspaceView {
         } else {
             caret.collapse_to(offset);
         }
-        self.editor_selecting = Some((document, offset));
+        self.editor_selecting = Some((document, caret.anchor.unwrap_or(offset)));
         cx.notify();
     }
 
@@ -3797,32 +3877,31 @@ impl WorkspaceView {
             _ => caret.cursor,
         };
         let mut offset = base;
+        if caret.selection_range().is_some() && !extend {
+            self.editor_set_caret(document, base, false);
+            cx.notify();
+            return;
+        }
         if delta < 0 {
             for _ in delta..0 {
                 if offset == 0 {
                     break;
                 }
-                offset -= 1;
-                while offset > 0 && !text.is_char_boundary(offset) {
-                    offset -= 1;
-                }
+                offset = editor::previous_grapheme(&text, offset);
             }
         } else {
             for _ in 0..delta {
                 if offset >= text.len() {
                     break;
                 }
-                offset += 1;
-                while offset < text.len() && !text.is_char_boundary(offset) {
-                    offset += 1;
-                }
+                offset = editor::next_grapheme(&text, offset);
             }
         }
         self.editor_set_caret(document, offset, extend);
         cx.notify();
     }
 
-    /// Move vertically, preserving the byte column across lines.
+    /// Move vertically, preserving the visual column across tabs/Unicode.
     fn editor_move_line(
         &mut self,
         document: DocumentId,
@@ -3839,7 +3918,13 @@ impl WorkspaceView {
         let starts = editor::line_starts(&text);
         let (line, col) = editor::offset_to_line_col(&starts, &text, caret.cursor);
         let next = (line as i32 + delta).clamp(0, starts.len() as i32 - 1) as usize;
-        let offset = editor::line_col_to_offset(&text, &starts, next, col);
+        let visual_col = editor::line_display_width(&text[starts[line]..starts[line] + col]);
+        let next_end = starts
+            .get(next + 1)
+            .map(|end| end - 1)
+            .unwrap_or(text.len());
+        let next_col = editor::display_col_to_buffer_col(&text[starts[next]..next_end], visual_col);
+        let offset = editor::line_col_to_offset(&text, &starts, next, next_col);
         self.editor_set_caret(document, offset, extend);
         cx.notify();
     }
@@ -3932,10 +4017,7 @@ impl WorkspaceView {
         if caret.cursor == 0 {
             return;
         }
-        let mut start = caret.cursor - 1;
-        while start > 0 && !text.is_char_boundary(start) {
-            start -= 1;
-        }
+        let start = editor::previous_grapheme(&text, caret.cursor);
         match self
             .coordinator
             .documents_mut()
@@ -3969,10 +4051,7 @@ impl WorkspaceView {
         if caret.cursor >= text.len() {
             return;
         }
-        let mut end = caret.cursor + 1;
-        while end < text.len() && !text.is_char_boundary(end) {
-            end += 1;
-        }
+        let end = editor::next_grapheme(&text, caret.cursor);
         match self.coordinator.documents_mut().apply_edit(
             document,
             caret.cursor,
@@ -5878,6 +5957,15 @@ impl WorkspaceView {
         }
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
+        if self.editor_pending_action.is_some() {
+            match key_name.as_str() {
+                "escape" => self.editor_resolve_pending(0, cx),
+                "s" => self.editor_resolve_pending(1, cx),
+                "d" => self.editor_resolve_pending(2, cx),
+                _ => {}
+            }
+            return;
+        }
         // The active overlay owns keyboard input before any global command,
         // picker, focused inspector field, or terminal forwarding.
         if self.ctrlp_open {
@@ -5920,7 +6008,8 @@ impl WorkspaceView {
         if self.files_search_focused
             && self.inspector_tab == InspectorTab::Files
             && self.inspector_visible
-            && !event.keystroke.modifiers.control
+            && (!event.keystroke.modifiers.control
+                || matches!(key_name.as_str(), "enter" | "return" | "kpenter"))
             && !event.keystroke.modifiers.alt
         {
             return self.on_files_search_key(event, cx);
@@ -6117,13 +6206,29 @@ impl WorkspaceView {
 
         // Clipboard paste: Ctrl+Shift+V.
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "v" {
-            self.paste(cx);
+            if let Some(document) = self
+                .coordinator
+                .selected_project_id()
+                .and_then(|project| self.editor_active_doc(project))
+            {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    self.editor_insert_text(document, &text, cx);
+                }
+            } else {
+                self.paste(cx);
+            }
             return;
         }
 
         // Explicit clipboard copy of the drag selection: Ctrl+Shift+C.
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "c" {
-            if let Some(project) = self.coordinator.selected_project_id()
+            if let Some(document) = self
+                .coordinator
+                .selected_project_id()
+                .and_then(|project| self.editor_active_doc(project))
+            {
+                self.editor_copy(document, cx);
+            } else if let Some(project) = self.coordinator.selected_project_id()
                 && self.diff_panel.preview_open(project)
             {
                 self.copy_current_diff_hunk(project, cx);
@@ -6220,8 +6325,9 @@ impl WorkspaceView {
 
         // M19 editor: an active document owns keystrokes after global
         // chrome shortcuts and inspector inputs, before terminal
-        // forwarding. Workspace splits, palette toggles, and the Ctrl+Shift
-        // clipboard chords keep their global behavior; everything else
+        // forwarding. Workspace splits and palette toggles keep their
+        // global behavior; clipboard chords target the visible surface.
+        // Everything else
         // belongs to the document. Unhandled keys are swallowed rather than
         // forwarded to a terminal that does not own input.
         if self
@@ -10502,6 +10608,36 @@ impl Render for WorkspaceView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .relative();
+        if self.editor_pending_action.is_some() {
+            let mut prompt = div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .bg(rgb(workbench::WARN_BG))
+                .text_color(rgb(workbench::WARN_TEXT))
+                .child("Unsaved changes. Choose explicitly:");
+            for (choice, label) in [(0, "Cancel (Esc)"), (1, "Save (S)"), (2, "Discard (D)")] {
+                prompt = prompt.child(
+                    div()
+                        .cursor_pointer()
+                        .px_2()
+                        .py_1()
+                        .border_1()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.editor_resolve_pending(choice, cx);
+                            }),
+                        )
+                        .child(label),
+                );
+            }
+            pane_area = pane_area.child(prompt);
+        }
         if let Some((arm, at)) = self.history_arm
             && at.elapsed() < HISTORY_ARM_WINDOW
         {

@@ -4,8 +4,8 @@
 //! Every path resolves through the M12 boundary seam before touching disk,
 //! so traversal, absolute, and symlink escapes fail with `PathOutsideRoot`
 //! exactly like file/git/diff reads. Size and line caps are enforced
-//! **before** allocation: `metadata.len` gates the read, and the byte/line
-//! counts are re-checked after the read in case the file grew concurrently.
+//! using a metadata precheck and a capped reader, including files growing
+//! concurrently. Line counts are checked on the bounded UTF-8 text.
 //! Binary content (NUL byte) and invalid UTF-8 are rejected with a reason
 //! rather than lossy silent conversion. Saves are atomic (same-directory
 //! temp file + rename, preserving the existing permission bits) and carry
@@ -16,6 +16,7 @@
 //! scope. No GPUI dependency; no UI-thread blocking beyond one bounded
 //! read/write per call (callers run this off-thread with cancellation).
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -77,17 +78,26 @@ pub fn detect_language(path: &Path) -> EditorLanguage {
 }
 
 /// On-disk revision captured on read and re-checked on save. Carries size
-/// plus wall-clock mtime so an external change of identical size still
-/// conflicts when the filesystem timestamp granularity allows it.
+/// plus wall-clock mtime and Unix device/inode identity. Atomic replacement
+/// conflicts even for same-size files sharing a filesystem timestamp tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileRevision {
     pub size: u64,
     pub mtime_secs: u64,
     pub mtime_nanos: u32,
+    pub device: u64,
+    pub inode: u64,
 }
 
 impl FileRevision {
     fn of(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        let (device, inode) = {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        };
+        #[cfg(not(unix))]
+        let (device, inode) = (0, 0);
         let (secs, nanos) = metadata
             .modified()
             .ok()
@@ -98,6 +108,8 @@ impl FileRevision {
             size: metadata.len(),
             mtime_secs: secs,
             mtime_nanos: nanos,
+            device,
+            inode,
         }
     }
 }
@@ -180,15 +192,22 @@ pub fn read_text_file(root: &Path, user_path: &Path) -> Result<EditorFile, Edito
 }
 
 fn read_canonical_file(absolute: &Path, user_path: &Path) -> Result<EditorFile, EditorError> {
-    let metadata = std::fs::symlink_metadata(absolute)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(absolute)?;
+    let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
         return Err(EditorError::NotRegularFile);
     }
     if metadata.len() > MAX_EDITOR_BYTES as u64 {
         return Err(EditorError::TooLarge);
     }
-    let bytes = std::fs::read(absolute)?;
-    // TOCTOU re-check: the file may have grown between metadata and read.
+    let bytes = read_bounded(&file)?;
     if bytes.len() > MAX_EDITOR_BYTES {
         return Err(EditorError::TooLarge);
     }
@@ -200,7 +219,10 @@ fn read_canonical_file(absolute: &Path, user_path: &Path) -> Result<EditorFile, 
     if lines > MAX_EDITOR_LINES {
         return Err(EditorError::TooLarge);
     }
-    let revision = FileRevision::of(&std::fs::symlink_metadata(absolute)?);
+    let revision = FileRevision::of(&file.metadata()?);
+    if revision != FileRevision::of(&metadata) {
+        return Err(EditorError::Conflict);
+    }
     Ok(EditorFile {
         bytes: text.len(),
         lines,
@@ -208,6 +230,17 @@ fn read_canonical_file(absolute: &Path, user_path: &Path) -> Result<EditorFile, 
         text,
         revision,
     })
+}
+
+fn read_bounded(reader: impl Read) -> Result<Vec<u8>, EditorError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_EDITOR_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_EDITOR_BYTES {
+        return Err(EditorError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 /// Atomically replace one existing text file under `root`. `expected` is the
@@ -235,22 +268,37 @@ pub fn write_text_file(
     }
     let parent = absolute.parent().ok_or(EditorError::NotFound)?;
     let temp = unique_sibling(parent);
-    std::fs::write(&temp, text).map_err(|error| {
-        let _ = std::fs::remove_file(&temp);
-        EditorError::Io(error)
-    })?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = metadata.permissions().mode();
-        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    if let Err(error) = std::fs::rename(&temp, &absolute) {
+    // Only unlink a sidecar after we successfully create it exclusively.
+    let mut file = options.open(&temp)?;
+    let result = (|| {
+        file.write_all(text.as_bytes())?;
+        file.set_permissions(metadata.permissions())?;
+        file.sync_all()?;
+        if canonical_document_path(root, user_path)? != absolute {
+            return Err(EditorError::Conflict);
+        }
+        let current = std::fs::symlink_metadata(&absolute)?;
+        if !current.file_type().is_file()
+            || FileRevision::of(&current) != FileRevision::of(&metadata)
+        {
+            return Err(EditorError::Conflict);
+        }
+        let revision = FileRevision::of(&file.metadata()?);
+        std::fs::rename(&temp, &absolute)?;
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(revision)
+    })();
+    if result.is_err() {
         let _ = std::fs::remove_file(&temp);
-        return Err(EditorError::Io(error));
     }
-    let fresh = std::fs::symlink_metadata(&absolute)?;
-    Ok(FileRevision::of(&fresh))
+    result
 }
 
 fn unique_sibling(dir: &Path) -> PathBuf {
@@ -289,6 +337,46 @@ mod tests {
         }
         std::fs::write(&path, bytes).unwrap();
         path
+    }
+
+    #[test]
+    fn read_cap_is_enforced_even_if_a_reader_grows_after_metadata() {
+        let mut source = std::io::repeat(b'x');
+        assert!(matches!(
+            read_bounded(&mut source),
+            Err(EditorError::TooLarge)
+        ));
+        assert_eq!(
+            read_bounded(std::io::repeat(b'x').take(MAX_EDITOR_BYTES as u64))
+                .unwrap()
+                .len(),
+            MAX_EDITOR_BYTES
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn saves_preserve_permissions_and_outside_symlinks_are_rejected() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = fixture_root("permissions");
+        let path = write_fixture(&root, "doc.txt", b"before");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let opened = read_text_file(&root, Path::new("doc.txt")).unwrap();
+        write_text_file(&root, Path::new("doc.txt"), "after", Some(&opened.revision)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        symlink("/etc/passwd", root.join("outside")).unwrap();
+        assert!(matches!(
+            read_text_file(&root, Path::new("outside")),
+            Err(EditorError::PathOutsideRoot)
+        ));
+        assert!(matches!(
+            write_text_file(&root, Path::new("outside"), "no", None),
+            Err(EditorError::PathOutsideRoot)
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

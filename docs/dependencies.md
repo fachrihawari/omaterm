@@ -19,6 +19,23 @@ with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
 
 ## Selection record
 
+### M19 acceptance hardening — 2026-10-03
+
+- Desktop promotes already-locked `unicode-segmentation` =1.13.3 and
+  `unicode-width` =0.2.2 to direct dependencies for grapheme-safe editor
+  motion/deletion and combining/wide-character presentation. Sources:
+  <https://crates.io/crates/unicode-segmentation/1.13.3> and
+  <https://crates.io/crates/unicode-width/0.2.2>. Both selected package
+  `Cargo.toml` manifests declare `MIT OR Apache-2.0`, with packaged
+  `LICENSE-MIT` / `LICENSE-APACHE` evidence. No grammar runtime is added.
+- Context adds direct `libc` 0.2 (existing locked 0.2.189, MIT OR Apache-2.0)
+  for Unix `O_NOFOLLOW` / `O_NONBLOCK` when opening editor files; no unsafe
+  calls are needed. Existing workspace/native-platform requirements apply.
+- `Cargo.lock` direct-dependency edges change; no new package/version is
+  resolved. Verification uses the existing 1.99.0 environment override, not
+  a changed repository pin or a new MSRV claim. Exact commands/results are
+  recorded in `docs/status.md`.
+
 M15/M16 checkpoint verification on 2026-10-03 used the environment-selected
 `rustc 1.99.0 (b940084d7 2026-09-28)` and
 `cargo 1.99.0 (5f94df478 2026-08-27)`. `rustup show active-toolchain` reports

@@ -281,6 +281,12 @@ impl CommandRouter {
                 ok(Out::EditorOpened(info))
             }
             EditorCommand::Close { document } => {
+                if self.documents.is_dirty(document) == Some(true) {
+                    return err(
+                        ErrorCode::DocumentConflict,
+                        "unsaved changes; save or explicitly discard before closing",
+                    );
+                }
                 if self.documents.remove(document) {
                     ok(Out::Unit)
                 } else {
@@ -293,12 +299,6 @@ impl CommandRouter {
                         Some(buffer) => buffer,
                         None => return err(ErrorCode::DocumentNotOpen, "document is not open"),
                     };
-                if !dirty {
-                    let Some(info) = self.documents.document_info(document) else {
-                        return err(ErrorCode::DocumentNotOpen, "document is not open");
-                    };
-                    return ok(Out::EditorSaved(info));
-                }
                 let root = match self.file_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
@@ -323,6 +323,15 @@ impl CommandRouter {
                         "project root changed since open; reopen the document",
                     );
                 }
+                if !dirty {
+                    if let Err(error) = omaterm_context::read_text_file(&root, &relative) {
+                        return editor_error(error, ErrorCode::DocumentConflict);
+                    }
+                    let Some(info) = self.documents.document_info(document) else {
+                        return err(ErrorCode::DocumentNotOpen, "document is not open");
+                    };
+                    return ok(Out::EditorSaved(info));
+                }
                 let saved = match omaterm_context::write_text_file(
                     &root,
                     &relative,
@@ -345,7 +354,7 @@ impl CommandRouter {
                 ok(Out::EditorSaved(info))
             }
             EditorCommand::Revert { document } => {
-                let (project, relative, _, _, _, _) = match self.editor_buffer(document) {
+                let (project, relative, open_root, _, _, _) = match self.editor_buffer(document) {
                     Some(buffer) => buffer,
                     None => return err(ErrorCode::DocumentNotOpen, "document is not open"),
                 };
@@ -356,6 +365,12 @@ impl CommandRouter {
                     }
                     Err(error) => return CommandResult::Err(error),
                 };
+                if std::fs::canonicalize(&root).ok().as_ref() != Some(&open_root) {
+                    return err(
+                        ErrorCode::DocumentConflict,
+                        "project root changed since open; reopen the document",
+                    );
+                }
                 let file = match omaterm_context::read_text_file(&root, &relative) {
                     Ok(file) => file,
                     Err(error) => return editor_error(error, ErrorCode::FileNotFound),
@@ -1299,6 +1314,17 @@ impl CommandRouter {
                 )
             }
             OmaCommand::Project(ProjectCommand::Delete { project }) => {
+                if self
+                    .documents
+                    .project_documents(project)
+                    .iter()
+                    .any(|document| self.documents.is_dirty(*document) == Some(true))
+                {
+                    return err(
+                        ErrorCode::DocumentConflict,
+                        "project has unsaved documents; save or close them first",
+                    );
+                }
                 match self.coordinator.close_project(project) {
                     Ok(closed) => {
                         close_effects(effects, closed);
@@ -2395,6 +2421,7 @@ mod tests {
 
     #[test]
     fn credentialed_launch_injects_child_env_and_revokes_on_owner_close() {
+        use std::time::Duration;
         let root = std::env::temp_dir().join(format!("omaterm-router-cred-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir(&root).unwrap();
@@ -2425,7 +2452,23 @@ mod tests {
             .lock()
             .unwrap()
             .child_pid();
-        let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
+        // The spawn receipt precedes shell exec on some runs. Wait for the
+        // child-specific environment, then assert the complete contract.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let environ = loop {
+            let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
+            if environ
+                .split(|byte| *byte == 0)
+                .any(|entry| entry.starts_with(b"OMATERM_TOKEN="))
+            {
+                break environ;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child never installed its credential environment"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
         let vars: std::collections::HashMap<_, _> = environ
             .split(|b| *b == 0)
             .filter_map(|entry| {
@@ -3098,6 +3141,21 @@ mod tests {
             .apply_edit(document, 4, 0, " wonderful")
             .unwrap();
         assert_eq!(router.documents().is_dirty(document), Some(true));
+        for command in [
+            OmaCommand::Editor(EditorCommand::Close { document }),
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        ] {
+            let rejected = router.dispatch(CommandContext::LocalUser, command);
+            assert!(matches!(
+                rejected.result,
+                CommandResult::Err(CommandError {
+                    code: ErrorCode::DocumentConflict,
+                    ..
+                })
+            ));
+            assert!(rejected.effects.is_empty());
+            assert!(router.documents().text(document).is_some());
+        }
         let saved = router.dispatch(
             CommandContext::LocalUser,
             OmaCommand::Editor(EditorCommand::Save { document }),
