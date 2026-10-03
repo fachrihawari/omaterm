@@ -3907,3 +3907,46 @@ reported under Phase D; entry triggers join the same quiet-session
 re-run script. Remaining Phase E/F: full interaction proof, resource
 evidence, dirty-shutdown semantics, open-document persistence decision,
 and milestone/acceptance doc updates.
+
+## M19 Phase F — live validation (partial pass) — 2026-10-04
+
+Release instance `/tmp/opencode/m19-live/` (isolated HOME/XDG paths,
+Hyprland, release build `8599c1c`-plus-status, fixture repo with
+`notes.md`/`main.rs`/`data.json`). Workspace switch to the test
+workspace was done through the compositor bridge and reversed
+afterwards; no user windows were touched.
+
+### Proven live (screenshots + on-disk bytes)
+
+- Palette `Ctrl+P` → `notes.md` filters to the file result.
+- Palette `Ctrl+Enter` opens the native editor: document chip, breadcrumb
+  with Save/Revert/Close, gutter + code rows, Markdown heading highlight,
+  caret, and `Ln 1, Col 1 … markdown` footer all render.
+- Typing, caret motion (`Down`, `End`), dirty `M` markers (chip + header)
+  and `unsaved changes` footer all behave.
+- `Ctrl+S` saves byte-exact content (`cat` ground truth), shows the
+  `Saved` toast, and clears dirty markers.
+- `ZZZ` + `Ctrl+Z` leaves on-disk bytes untouched; reopen shows the live
+  buffer (store dedup across deactivate/reactivate).
+- `Escape` returns to the terminal; `echo SENTINEL_OK` executes with
+  output — no keystroke leaks in either direction.
+- CLI `project open` on the same instance works alongside the UI.
+
+Captures under `/tmp/opencode/m19-live/`: `f-palette.png`,
+`f-editor.png`, `f-edited.png`, `f-saved.png`, `f-terminal.png`,
+`f-reopen.png`, `f-guard7.png`.
+
+### Blocked (not passed, no code change justified)
+
+Pointer paths — chip activate/close (dirty-guard notice), row
+click/drag selection — could not be validated: the shared session is in
+active use (Meet call, competing windows/focus), the virtual-pointer
+coordinate mapping proved unreliable across the two-monitor layout, and
+cursorpos readings were confounded by physical mouse movement. Earlier
+misses were coordinate errors, not app defects: keyboard-driven flows
+through the same handlers (`editor_activate`, dispatcher lifecycle)
+pass. These paths join the quiet-session re-run.
+
+Remaining M19 gaps unchanged: quiet-session pointer proof, resource
+trends, dirty-shutdown semantics, open-document persistence decision,
+find/replace and further languages as follow-ups.
