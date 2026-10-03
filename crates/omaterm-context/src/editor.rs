@@ -89,6 +89,110 @@ pub struct FileRevision {
     pub inode: u64,
 }
 
+/// Stable identity of the root directory captured for an editor operation.
+/// A pathname is presentation/debug information only: device and inode are
+/// what let later slices distinguish a replacement at the same pathname.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootIdentity {
+    pub device: u64,
+    pub inode: u64,
+}
+
+/// Owned Linux project-root descriptor for secure editor I/O. All descendant
+/// opening goes through this descriptor, never a re-resolved root pathname.
+/// The caller retains the handle for the operation's lifetime so a renamed or
+/// replaced root cannot retarget an already prepared operation.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct EditorRoot {
+    canonical_path: PathBuf,
+    identity: RootIdentity,
+    directory: std::fs::File,
+}
+
+#[cfg(target_os = "linux")]
+impl EditorRoot {
+    /// Capture a root directory and its descriptor. The initial canonicalize
+    /// only resolves the configured root once; descendant access uses the FD.
+    pub fn open(root: &Path) -> Result<Self, EditorError> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let canonical_path = std::fs::canonicalize(root).map_err(map_not_found)?;
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        let directory = options.open(&canonical_path).map_err(map_not_found)?;
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() {
+            return Err(EditorError::NotRegularFile);
+        }
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            canonical_path,
+            identity: RootIdentity {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            },
+            directory,
+        })
+    }
+
+    pub fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+
+    pub const fn identity(&self) -> RootIdentity {
+        self.identity
+    }
+
+    /// Open a relative descendant beneath the captured descriptor. Linux's
+    /// `openat2` resolves all components under this root, allows contained
+    /// symlink aliases, and rejects escapes/magic links atomically. There is
+    /// intentionally no canonicalize/open fallback on unsupported kernels.
+    pub fn open_descendant(&self, path: &Path) -> Result<std::fs::File, EditorError> {
+        use std::ffi::CString;
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+
+        if path.as_os_str().is_empty() || path.is_absolute() {
+            return Err(EditorError::PathOutsideRoot);
+        }
+        let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+            EditorError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "editor path contains a NUL byte",
+            ))
+        })?;
+        // SAFETY: `open_how` must be zero-initialized so future kernel fields
+        // are zero; we immediately set the supported fields below.
+        let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+        how.flags = (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK) as u64;
+        how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS;
+        let raw = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                self.directory.as_raw_fd(),
+                path.as_ptr(),
+                &how,
+                std::mem::size_of::<libc::open_how>(),
+            )
+        };
+        if raw < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::EXDEV) => Err(EditorError::PathOutsideRoot),
+                // An unavailable or incompatible syscall must fail closed.
+                Some(libc::ENOSYS | libc::E2BIG) => Err(EditorError::SecureResolutionUnavailable),
+                Some(libc::ENOENT) => Err(EditorError::NotFound),
+                _ => Err(EditorError::Io(error)),
+            };
+        }
+        // The successful raw descriptor is owned exclusively by this File.
+        Ok(unsafe { std::fs::File::from_raw_fd(raw as std::os::fd::RawFd) })
+    }
+}
+
 impl FileRevision {
     fn of(metadata: &std::fs::Metadata) -> Self {
         #[cfg(unix)]
@@ -142,6 +246,8 @@ pub enum EditorError {
     NotTextFile,
     #[error("file changed on disk since it was opened")]
     Conflict,
+    #[error("secure descriptor-relative path resolution is unavailable")]
+    SecureResolutionUnavailable,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -155,8 +261,17 @@ impl EditorError {
             Self::TooLarge => "document_too_large",
             Self::NotTextFile => "not_text_file",
             Self::Conflict => "document_conflict",
+            Self::SecureResolutionUnavailable => "runtime_failure",
             Self::Io(_) => "io_error",
         }
+    }
+}
+
+fn map_not_found(error: std::io::Error) -> EditorError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        EditorError::NotFound
+    } else {
+        EditorError::Io(error)
     }
 }
 
@@ -523,7 +638,71 @@ mod tests {
         assert_eq!(EditorError::TooLarge.code(), "document_too_large");
         assert_eq!(EditorError::NotTextFile.code(), "not_text_file");
         assert_eq!(EditorError::Conflict.code(), "document_conflict");
+        assert_eq!(
+            EditorError::SecureResolutionUnavailable.code(),
+            "runtime_failure"
+        );
         assert_eq!(MAX_EDITOR_BYTES, omaterm_core::validation::MAX_EDITOR_BYTES);
         assert_eq!(MAX_EDITOR_LINES, omaterm_core::validation::MAX_EDITOR_LINES);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_root_keeps_original_tree_and_rejects_escaping_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("descriptor-root");
+        write_fixture(&root, "inside/doc.txt", b"original root\n");
+        let outside =
+            root.with_file_name(format!("omaterm-m19-editor-outside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"outside\n").unwrap();
+        symlink("inside", root.join("contained")).unwrap();
+        symlink(
+            format!("../{}", outside.file_name().unwrap().to_string_lossy()),
+            root.join("escape"),
+        )
+        .unwrap();
+
+        let captured = EditorRoot::open(&root).unwrap();
+        let mut contained = captured
+            .open_descendant(Path::new("contained/doc.txt"))
+            .unwrap();
+        let mut text = String::new();
+        contained.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "original root\n");
+        assert!(matches!(
+            captured.open_descendant(Path::new("escape/secret.txt")),
+            Err(EditorError::PathOutsideRoot)
+        ));
+        assert!(matches!(
+            captured.open_descendant(Path::new("../outside.txt")),
+            Err(EditorError::PathOutsideRoot)
+        ));
+
+        let moved = root.with_file_name(format!(
+            "omaterm-m19-editor-captured-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&moved);
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir_all(root.join("inside")).unwrap();
+        std::fs::write(root.join("inside/doc.txt"), b"replacement root\n").unwrap();
+        assert_ne!(
+            EditorRoot::open(&root).unwrap().identity(),
+            captured.identity(),
+            "replacement root must have a distinct identity"
+        );
+        let mut original = captured
+            .open_descendant(Path::new("inside/doc.txt"))
+            .unwrap();
+        text.clear();
+        original.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "original root\n");
+
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&moved).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
     }
 }

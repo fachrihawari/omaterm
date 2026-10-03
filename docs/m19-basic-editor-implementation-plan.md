@@ -5,6 +5,10 @@ and partial Phase F acceptance landed. Latest verification: 2026-10-03.
 **Scope:** open file + syntax highlight + save. No LSP, autocomplete,
 refactoring, debugger, extensions, or cloud.
 
+**Current execution:** follow the [M19 comprehensive completion plan](m19-completion-plan.md)
+for the dependency-ordered S0–S9 slices, audited gaps and closure gates. This
+document retains the product contracts and original A–F delivery history.
+
 ## 1. Objective and authority
 
 Deliver a native built-in editor so files open **inside OmaTerm** instead of
@@ -42,8 +46,11 @@ IPC/CLI, or project-root/boundary semantics.
 | M17 v0.2 closure | open | Editor lands as M19 after M17, or explicitly re-sequences v0.2 scope |
 | M18 query slice | partial | Editor file I/O must reuse bounded context helpers, not add a parallel FS stack |
 
-Smallest entry is Phase A after M15 closure. Planning may proceed now;
-implementation must not start a multi-thousand-line coordinator rewrite.
+The original entry order placed Phase A after M15 closure. The user subsequently
+directed continued M19 implementation while M15/M16/M17 remain open; execution
+is re-sequenced accordingly in the completion plan. This does not close their
+acceptance gates. Keep changes in reviewable slices rather than a large
+coordinator rewrite.
 
 ## 3. Product contract
 
@@ -479,7 +486,8 @@ commands.
 
 ## 11. Completion checklist and next action
 
-- [ ] M15/M17 prerequisites closed or explicitly re-sequenced.
+- [x] Execution explicitly re-sequenced by the user's continued-M19 direction;
+  M15/M16/M17 completion is still tracked separately.
 - [x] Document identity, persistence, IPC/CLI, and focus contracts frozen
   (Phase A, 2026-10-04; see §12).
 - [ ] Complete bounded I/O, language/highlight pipeline, and buffer acceptance
@@ -490,14 +498,18 @@ commands.
 - [ ] Full native editing/highlight/save/conflict/focus matrix proven on Wayland
   (pointer/clipboard/undo/conflict/dirty-close/shutdown now have evidence;
   remaining language, Unicode/long-line and entry-point matrix still open).
-- [ ] Quality gates green; resource/redaction evidence recorded (gates
-  green; live resource proof pending).
+- [ ] Final-revision quality gates and complete resource/redaction evidence
+  recorded (494-test baseline and small-fixture resource proof pass;
+  cap/aggregate/idle/latency acceptance remains).
 - [x] Milestone, overview, acceptance matrix, dependencies, and status updated
-  (overview index + acceptance row; dependency deltas: none — no new crates).
+  (overview index + acceptance row; hardening promotes locked Unicode/libc
+  dependencies without resolving new packages).
 
-**Next action:** implement the frozen open-document registry persistence and
-asynchronous, cancellable document I/O; strengthen root identity/race guards.
-Then finish the native language/Unicode/long-line/error/entry-point matrix.
+**Next action:** follow completion-plan S0 → S1 → S2: remaining API/fixture
+contracts, descriptor-root identity/I/O correctness, then asynchronous,
+cancellable document operations. Add indexed/aggregate-bounded store behavior
+and registry persistence after that foundation; finish the native acceptance
+matrix in S5–S9.
 See `docs/status.md` for the successful pointer, conflict, shutdown and
 ten-cycle resource evidence. M19 is not complete; frozen persistence is an
 implementation gap, not an undecided product contract.
@@ -533,8 +545,10 @@ Frozen before any editor code:
   follow-up). Editing surface, caret/selection/clipboard/undo wiring,
   background highlight worker, and input ownership are implemented; entry
   triggers cover palette Ctrl+Enter/Ctrl+click, tree Ctrl+click, Git-row
-  Ctrl+click, and Files-search Ctrl+Enter. Automated phases B–E check out;
-  live proof and the persistence/shutdown/resource decisions remain.
+  Ctrl+click, and Files-search Ctrl+Enter. Automated checks at that checkpoint
+  passed; live proof and persistence/shutdown/resource work remained. The
+  acceptance-hardening record below and completion plan supersede that progress
+  summary without claiming full phase acceptance.
 
 ### Acceptance hardening — 2026-10-03
 

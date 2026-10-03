@@ -4064,3 +4064,97 @@ Redaction review: added code logs no text, clipboard contents or capability toke
 
 M15/M16/M17 closure remains separate. Find/replace and additional languages stay
 follow-ups under the existing M19 scope.
+
+## M19 comprehensive completion planning — 2026-10-03
+
+Audited committed baseline `719926b` against the M19 contract, editor/router/UI
+code, schema-2 snapshot/migration, blueprint and UI v5 editor roles. Added the
+[comprehensive completion plan](m19-completion-plan.md) as the current execution
+sequence; the original implementation plan remains the product contract and
+A–F history. This is documentation-only work and makes no new implementation
+or native-pass claim.
+
+The ordered slices are S0 remaining contracts/reproducible fixtures; S1 root
+identity/descriptor I/O/write outcomes; S2 async prepare/work/commit; S3 bounded
+indexed store/render snapshots; S4 schema-3 registry/restore; S5 dirty/conflict/
+project/shutdown state machines; S6 native text/IME/focus/caret/viewport;
+S7 default native entry points and explicit terminal parity; S8 highlighting/
+cap/aggregate/idle/latency resources; S9 final verification and E01–E10 evidence.
+
+This ordering supersedes the earlier remaining-work list's ordering: root/I/O
+and async foundations come before registry restoration, avoiding new UI-thread
+disk reads during restart. Frozen metadata-only persistence, terminal-only pane
+content and Option A wire semantics stay intact. Continued M19 execution was
+user-directed; M15/M16/M17 have independent unfinished acceptance gates.
+
+**Next action:** execute completion-plan S0, then S1's deterministic identity/
+filesystem tests and context helpers. Proposed aggregate limits, exact DTOs
+and worker APIs must be verified and recorded before implementation.
+
+Documentation verification: `python3 scripts/check-docs.py` PASS (37 Markdown
+files, 138 local targets, 301 blueprint references, all 34 CLI mappings);
+`git diff --check` PASS. Reviewed local references and consistency of baseline,
+schema versions, frozen contracts and remaining-work ordering. Cargo/native
+checks were not rerun for this documentation-only change.
+
+## M19 S0 contracts and fixtures — 2026-10-03
+
+Completed S0's remaining contract record and reproducible fixture work. The
+completion plan now fixes the behavioral contracts for document/root/save/
+operation identity, buffer versions, commit outcomes, active surface/input
+ownership, typed dirty actions and the metadata-only schema-3 registry. Exact
+Rust DTOs and worker APIs remain deliberately deferred to their implementation
+slices; S0 does not assert that the existing synchronous router satisfies the
+async contract.
+
+Added `scripts/generate-m19-fixtures.py`, a standard-library-only generator for
+a new or empty disposable directory. It creates `proj-a`/`proj-b`, initial
+language/plain/empty files, Unicode/grapheme/tab/newline/long-line content,
+byte/line caps, token-dense input, binary/invalid-UTF-8/unreadable/directory/
+FIFO cases, contained/escaping symlinks, mutable/replacement/root-replacement
+material and a Linux non-UTF-8 filename. It emits `manifest.json` with exact
+paths and limits; 4097-byte-path, save-failure and race cases are explicitly
+synthetic/injected rather than unreliable filesystem artifacts.
+
+Fixture verification: `python3 scripts/generate-m19-fixtures.py --output
+/tmp/opencode/m19-fixtures-v4` PASS. The script self-verified byte/line limits,
+FIFO, symlinks, fixed same-size mtime and the non-UTF-8 path. The earlier v1
+generator run failed before completion because it did not create symlink parent
+directories; that defect was fixed, then v2/v3/v4 runs passed using fresh
+directories. These `/tmp/opencode` trees are disposable evidence, not tracked
+release artifacts.
+
+**Next action:** start S1 with a Linux `openat2` capability/API spike and a
+context-owned root identity/descriptor seam. Add deterministic barrier tests
+before replacing canonicalize-then-open editor access. Do not add persistence or
+async router work until the root/I/O contract is executable.
+
+## M19 S1 descriptor-root foundation — 2026-10-03
+
+Started S1 in `omaterm-context` without adding a dependency. Locked `libc`
+0.2.189 exposes `open_how`, `SYS_openat2`, `RESOLVE_BENEATH` and
+`RESOLVE_NO_MAGICLINKS`; the verification host is Linux 7.2.5-3-omarchy with
+glibc 2.44. Added Linux-only `EditorRoot`, which captures canonical root display
+path, device/inode `RootIdentity` and an owned directory descriptor. Its
+`open_descendant` uses the descriptor with `openat2`, permits contained symlink
+aliases, rejects traversal/escaping and magic-link resolution atomically, and
+fails closed with `SecureResolutionUnavailable` rather than falling back to an
+unguarded canonicalize-then-open sequence.
+
+The new deterministic context test proves a captured descriptor continues to
+read the original tree after the same root pathname is replaced, while an
+escaping symlink and `..` traversal are rejected. This is a foundation only:
+the existing `read_text_file`/`write_text_file` and desktop router still use
+the prior pathname path. Content fingerprints, descriptor-relative saves,
+failure seams and lifecycle wiring remain required before S1 closes.
+
+Verification with `RUSTUP_TOOLCHAIN=1.99.0`: `cargo fmt --all` PASS;
+`cargo test -p omaterm-context` PASS (57 unit, 16 integration, 0 doc tests);
+`cargo clippy -p omaterm-context --all-targets -- -D warnings` PASS;
+`python3 scripts/check-docs.py` PASS; `git diff --check` PASS. Full workspace
+and native checks were not rerun for this partial context slice.
+
+**Next action:** migrate bounded editor reads to `EditorRoot` and make the
+opened file identity available to the store, then add deterministic
+root/ancestor/final-component swap barriers. Do not wire the synchronous router
+to an incomplete write path or claim S1 complete.

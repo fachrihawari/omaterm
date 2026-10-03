@@ -23,9 +23,11 @@ pub use diff::{
     MAX_DIFF_FILES, MAX_DIFF_HUNKS_PER_FILE, MAX_DIFF_LINE_BYTES, MAX_DIFF_LINES_PER_HUNK,
     git_diff, git_diff_cancellable, git_stage_hunk, parse_diff,
 };
+#[cfg(target_os = "linux")]
+pub use editor::EditorRoot;
 pub use editor::{
     EditorError, EditorFile, EditorLanguage, FileRevision, MAX_EDITOR_BYTES, MAX_EDITOR_LINES,
-    canonical_document_path, detect_language, read_text_file, write_text_file,
+    RootIdentity, canonical_document_path, detect_language, read_text_file, write_text_file,
 };
 pub use files::{
     FileSearchIndex, FileWatcher, MAX_SEARCH_INDEX_BYTES, MAX_SEARCH_SCAN, WatchError,
