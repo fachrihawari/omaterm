@@ -10,7 +10,7 @@ use gpui::{
     App, Application, AsyncApp, Bounds, ClipboardItem, Context, Div, ExternalPaths, FocusHandle,
     Font, FontFallbacks, HighlightStyle, Hsla, KeyDownEvent, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, ScrollDelta,
-    ScrollStrategy, ScrollWheelEvent, SharedString, StyledText, TextRun, Timer,
+    ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, StyledText, TextRun, Timer,
     UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, font,
     hsla, prelude::*, px, relative, rgb, rgba, size, uniform_list,
 };
@@ -226,10 +226,8 @@ struct WorkspaceView {
     diff_panel: diff_panel::DiffPanel,
     /// Native virtual-list positions keyed by project/side/path/mode so a
     /// different preview cannot inherit another file's scroll offset.
-    diff_scroll_handles: HashMap<
-        (ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode),
-        UniformListScrollHandle,
-    >,
+    diff_scroll_handles:
+        HashMap<(ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode), DiffPreviewScroll>,
     /// Single background Git worker with one replaceable pending selected diff.
     diff_worker: diff_panel::DiffWorker,
     diff_generation: u64,
@@ -243,6 +241,15 @@ struct WorkspaceView {
     diff_dirty_hint: bool,
     /// Last project the diff poller served (switch detection).
     diff_last_project: Option<ProjectId>,
+}
+
+#[derive(Default)]
+struct DiffPreviewScroll {
+    rows: UniformListScrollHandle,
+    old: ScrollHandle,
+    new: ScrollHandle,
+    inline: ScrollHandle,
+    widths: Option<(Arc<[diff_panel::PreviewRow]>, String, f32)>,
 }
 
 /// Two-step destructive-or-sensitive history control: the first press arms
@@ -1515,10 +1522,6 @@ impl WorkspaceView {
             &command,
             OmaCommand::Terminal(TerminalCommand::RunCommand { .. })
         );
-        let root_change = match &command {
-            OmaCommand::Project(ProjectCommand::SetDirectory { project, .. }) => Some(*project),
-            _ => None,
-        };
         let outcome = self
             .coordinator
             .dispatch_async(CommandContext::LocalUser, command);
@@ -1534,28 +1537,6 @@ impl WorkspaceView {
         if output.is_ok() && submitted_run {
             self.git_dirty_hint = true;
             self.diff_dirty_hint = true;
-        }
-        if output.is_ok()
-            && let Some(project) = root_change
-        {
-            self.files_generation = self.files_generation.wrapping_add(1);
-            self.files_watcher = None;
-            self.files_watched = None;
-            self.files_arming = None;
-            self.files_last_resolve = Instant::now()
-                .checked_sub(Duration::from_secs(6))
-                .unwrap_or_else(Instant::now);
-            self.files_panel.clear_project(project);
-            self.invalidate_palette_file_index();
-            self.git_dirty_hint = true;
-            self.diff_generation = self.diff_generation.wrapping_add(1);
-            self.diff_worker.cancel();
-            self.diff_panel.invalidate_data(project);
-            self.diff_in_flight = None;
-            self.diff_dirty_hint = true;
-            if self.ctrlp_open && self.coordinator.selected_project_id() == Some(project) {
-                self.ctrlp_search(cx);
-            }
         }
         output
     }
@@ -1590,6 +1571,48 @@ impl WorkspaceView {
                 router::CommandEffect::SessionClosed(closed) => self.finish_close(closed),
                 router::CommandEffect::PersistenceDirty => self.mark_persistence_dirty(cx),
                 router::CommandEffect::WorkspaceChanged => cx.notify(),
+                router::CommandEffect::FileOpened(project) => {
+                    self.diff_panel.close_preview(project);
+                    cx.notify();
+                }
+                router::CommandEffect::ProjectDirectoryChanged(project) => {
+                    self.files_panel.clear_project(project);
+                    self.diff_panel.invalidate_data(project);
+                    if self.coordinator.selected_project_id() == Some(project) {
+                        self.files_generation = self.files_generation.wrapping_add(1);
+                        self.files_watcher = None;
+                        self.files_watched = None;
+                        self.files_arming = None;
+                        self.files_last_resolve = Instant::now()
+                            .checked_sub(Duration::from_secs(6))
+                            .unwrap_or_else(Instant::now);
+                        self.invalidate_palette_file_index();
+                        self.diff_scroll_handles.clear();
+                        self.apply_command_effects(
+                            vec![router::CommandEffect::GitChanged(project)],
+                            cx,
+                        );
+                        if self.ctrlp_open {
+                            self.ctrlp_search(cx);
+                        }
+                    }
+                    cx.notify();
+                }
+                router::CommandEffect::GitChanged(project) => {
+                    self.diff_panel.invalidate_data(project);
+                    self.diff_refreshed_at.remove(&(project, false));
+                    self.diff_refreshed_at.remove(&(project, true));
+                    if self.coordinator.selected_project_id() == Some(project) {
+                        self.diff_generation = self.diff_generation.wrapping_add(1);
+                        self.diff_worker.cancel();
+                        self.diff_in_flight = None;
+                        self.diff_dirty_hint = true;
+                        self.git_generation = self.git_generation.wrapping_add(1);
+                        self.git_in_flight = None;
+                        self.git_dirty_hint = true;
+                    }
+                    cx.notify();
+                }
             }
         }
     }
@@ -2906,7 +2929,39 @@ impl WorkspaceView {
             self.diff_scroll_handles
                 .entry((project, staged, path, mode))
                 .or_default()
+                .rows
                 .scroll_to_item(row, ScrollStrategy::Center);
+        }
+    }
+
+    fn switch_diff_mode(&mut self, project: ProjectId, next: diff_panel::DiffMode) {
+        let staged = self.diff_panel.show_staged(project);
+        let path = self.diff_panel.selected_file(project).cloned();
+        let previous_mode = self.diff_panel.diff_mode(project);
+        let previous_rows = self.diff_panel.preview_rows_for(project, staged);
+        let previous_offset = path
+            .as_ref()
+            .and_then(|path| {
+                self.diff_scroll_handles
+                    .get(&(project, staged, path.clone(), previous_mode))
+            })
+            .map(|scroll| f32::from(scroll.rows.0.borrow().base_handle.offset().y))
+            .unwrap_or(0.0);
+        self.diff_panel.set_diff_mode(project, next);
+        if let (Some(path), Some(previous), Some(rows)) = (
+            path,
+            previous_rows,
+            self.diff_panel.preview_rows_for(project, staged),
+        ) {
+            let offset = diff_panel::remap_preview_offset(&previous, &rows, previous_offset);
+            self.diff_scroll_handles
+                .entry((project, staged, path, next))
+                .or_default()
+                .rows
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(gpui::point(px(0.0), px(offset)));
         }
     }
 
@@ -6620,6 +6675,7 @@ impl WorkspaceView {
         &mut self,
         project: ProjectId,
         main_view_width: f32,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let staged = self.diff_panel.show_staged(project);
@@ -6750,8 +6806,7 @@ impl WorkspaceView {
                                 }
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
-                                view.diff_panel.set_diff_mode(project, next);
-                                view.reveal_current_diff_hunk(project);
+                                view.switch_diff_mode(project, next);
                                 cx.notify();
                             }),
                         )
@@ -6931,30 +6986,37 @@ impl WorkspaceView {
                 .preview_rows_for(project, staged)
                 .unwrap_or_else(|| std::sync::Arc::from([]));
             let row_count = rows.len();
-            let cell_width = f32::from(self.fonts(&*cx).cell_width);
-            let max_chars = self
-                .diff_panel
-                .preview_max_columns_for(project, staged)
-                .unwrap_or(0) as f32;
-            let code_width = max_chars * cell_width;
-            let row_width = match mode {
-                // Split cells share the row width equally. Reserve one full
-                // longest-line width per side so either side's text remains
-                // reachable through the enclosing horizontal viewport.
-                diff_panel::DiffMode::Split => {
-                    main_view_width.max(2.0 * code_width + 2.0 * 48.0 + 1.0 + 16.0)
-                }
-                diff_panel::DiffMode::Inline => main_view_width.max(code_width + 2.0 * 46.0 + 16.0),
-            };
             let stage_path = path.clone();
             let copy_info = Arc::clone(&info);
             let copy_path = path.clone();
             let row_mono = mono.clone();
-            let diff_scroll = self
+            let scroll = self
                 .diff_scroll_handles
                 .entry((project, staged, path.clone(), mode))
-                .or_default()
-                .clone();
+                .or_default();
+            if !scroll
+                .widths
+                .as_ref()
+                .is_some_and(|(source, family, _)| Arc::ptr_eq(source, &rows) && family == &mono)
+            {
+                if let Some((previous, _, _)) = &scroll.widths {
+                    let base = scroll.rows.0.borrow().base_handle.clone();
+                    let offset =
+                        diff_panel::remap_preview_offset(previous, &rows, base.offset().y.into());
+                    base.set_offset(gpui::point(px(0.0), px(offset)));
+                }
+                let width = measured_diff_width(&rows, &mono, window);
+                scroll.widths = Some((Arc::clone(&rows), mono.clone(), width));
+            }
+            let code_width = scroll.widths.as_ref().unwrap().2;
+            let row_width = match mode {
+                diff_panel::DiffMode::Split => main_view_width,
+                diff_panel::DiffMode::Inline => main_view_width.max(code_width + 92.0 + 16.0),
+            };
+            let diff_scroll = scroll.rows.clone();
+            let old_scroll = scroll.old.clone();
+            let new_scroll = scroll.new.clone();
+            let inline_scroll = scroll.inline.clone();
             let rows = uniform_list(
                 "diff-preview-rows",
                 row_count,
@@ -7078,14 +7140,14 @@ impl WorkspaceView {
                                     .flex_shrink_0()
                                     .flex()
                                     .flex_row()
-                                    .child(split_cell(row.old.as_ref(), &row_mono))
+                                    .child(split_cell(row.old.as_ref(), &row_mono, &old_scroll, code_width).id("diff-old-side"))
                                     .child(
                                         div()
                                             .w(px(1.0))
                                             .flex_shrink_0()
                                             .bg(rgb(crate::ui::theme::BORDER)),
                                     )
-                                    .child(split_cell(row.new.as_ref(), &row_mono)),
+                                    .child(split_cell(row.new.as_ref(), &row_mono, &new_scroll, code_width).id("diff-new-side")),
                                 diff_panel::PreviewRow::Inline(row) => inline_row(&row, &row_mono)
                                     .id(row_index)
                                     .flex_shrink_0(),
@@ -7138,7 +7200,12 @@ impl WorkspaceView {
             )
             .track_scroll(diff_scroll)
             .w(px(row_width))
-            .h_full();
+            .flex_shrink_0()
+            .h_full()
+            .map(|mut list| {
+                list.style().restrict_scroll_to_axis = Some(true);
+                list
+            });
             let body = div()
                 .id("diff-preview-horizontal")
                 .flex()
@@ -7146,6 +7213,11 @@ impl WorkspaceView {
                 .min_w(px(0.0))
                 .min_h(px(0.0))
                 .overflow_x_scroll()
+                .track_scroll(&inline_scroll)
+                .map(|mut body| {
+                    body.style().restrict_scroll_to_axis = Some(true);
+                    body
+                })
                 .child(rows);
             bar = bar.child(body);
         }
@@ -8930,7 +9002,8 @@ impl Render for WorkspaceView {
             .selected_project_id()
             .filter(|project| self.diff_panel.preview_open(*project));
         if let Some(project) = preview_project {
-            pane_area = pane_area.child(self.render_diff_preview(project, main_view_width, cx));
+            pane_area =
+                pane_area.child(self.render_diff_preview(project, main_view_width, window, cx));
         } else {
             pane_area = pane_area.child(
                 div()
@@ -9158,7 +9231,12 @@ fn diff_row_decor(kind: omaterm_core::DiffLineKind) -> Div {
 
 /// One Split cell: gutter + its own code/text, or a blank spacer when the
 /// paired edit has no line on this side.
-fn split_cell(cell: Option<&diff_panel::SplitCell>, mono: &str) -> Div {
+fn split_cell(
+    cell: Option<&diff_panel::SplitCell>,
+    mono: &str,
+    scroll: &ScrollHandle,
+    content_width: f32,
+) -> Div {
     let Some(cell) = cell else {
         return div().flex_1().min_w(px(0.0)).h(px(21.0));
     };
@@ -9185,13 +9263,62 @@ fn split_cell(cell: Option<&diff_panel::SplitCell>, mono: &str) -> Div {
                 .child(diff_gutter(cell.line_no, no_color))
                 .child(
                     div()
+                        .id("diff-code-x")
                         .flex_1()
                         .min_w(px(0.0))
-                        .overflow_hidden()
+                        .overflow_x_scroll()
+                        .track_scroll(scroll)
+                        .map(|mut code| {
+                            code.style().restrict_scroll_to_axis = Some(true);
+                            code
+                        })
                         .whitespace_nowrap()
-                        .child(cell.text.clone()),
+                        .child(
+                            div()
+                                .w(px(content_width + 8.0))
+                                .flex_shrink_0()
+                                .child(cell.text.clone()),
+                        ),
                 ),
         )
+}
+
+/// Measured once per presentation/font identity, using the same font and size
+/// as the code cells. Fallback glyphs and combining/wide text go through GPUI's
+/// shaper instead of terminal-cell or character-count estimates.
+fn measured_diff_width(rows: &[diff_panel::PreviewRow], mono: &str, window: &Window) -> f32 {
+    let measure = |text: &str| -> f32 {
+        window
+            .text_system()
+            .shape_line(
+                SharedString::from(text.to_owned()),
+                px(12.0),
+                &[TextRun {
+                    len: text.len(),
+                    font: font(mono.to_owned()),
+                    color: rgb(crate::ui::theme::TEXT).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+            .into()
+    };
+    rows.iter()
+        .map(|row| match row {
+            diff_panel::PreviewRow::Inline(line) => measure(&line.text),
+            diff_panel::PreviewRow::Split(line) => line
+                .old
+                .iter()
+                .chain(line.new.iter())
+                .map(|cell| measure(&cell.text))
+                .fold(0.0, f32::max),
+            diff_panel::PreviewRow::HunkHeader { header, .. } => measure(header),
+            _ => 0.0,
+        })
+        .fold(0.0, f32::max)
 }
 
 /// One Inline row: old + new gutters followed by code.

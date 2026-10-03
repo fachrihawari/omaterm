@@ -201,6 +201,19 @@ pub fn preview_rows(
     if file.truncated {
         rows.push(PreviewRow::FileTruncated);
     }
+    // Read-only presentation uses four spaces per tab. Copy/stage still read
+    // the untouched source DTO, preserving the exact Git bytes.
+    for row in &mut rows {
+        match row {
+            PreviewRow::Inline(line) => line.text = line.text.replace('\t', "    "),
+            PreviewRow::Split(line) => {
+                for cell in line.old.iter_mut().chain(line.new.iter_mut()) {
+                    cell.text = cell.text.replace('\t', "    ");
+                }
+            }
+            _ => {}
+        }
+    }
     rows
 }
 
@@ -209,6 +222,55 @@ pub fn preview_rows(
 pub fn hunk_row_index(rows: &[PreviewRow], hunk_index: usize) -> Option<usize> {
     rows.iter()
         .position(|row| matches!(row, PreviewRow::HunkHeader { hunk, .. } if *hunk == hunk_index))
+}
+
+pub const PREVIEW_ROW_HEIGHT: f32 = 21.0;
+
+/// Map a pixel offset through a mode switch/refresh by source side and line,
+/// preferring the same hunk identity when it survives. Keep the fractional
+/// intra-row position instead of converting smooth scrolling to whole rows.
+pub fn remap_preview_offset(previous: &[PreviewRow], next: &[PreviewRow], offset: f32) -> f32 {
+    if previous.is_empty() || next.is_empty() || !offset.is_finite() {
+        return 0.0;
+    }
+    let top = (-offset).max(0.0);
+    let index = ((top / PREVIEW_ROW_HEIGHT).floor() as usize).min(previous.len() - 1);
+    let fraction = top % PREVIEW_ROW_HEIGHT;
+    let source_line = |row: &PreviewRow| match row {
+        PreviewRow::Inline(line) => (line.old_no, line.new_no),
+        PreviewRow::Split(line) => (
+            line.old.as_ref().and_then(|cell| cell.line_no),
+            line.new.as_ref().and_then(|cell| cell.line_no),
+        ),
+        _ => (None, None),
+    };
+    let hunk_id = |rows: &[PreviewRow], index: usize| {
+        rows[..=index].iter().rev().find_map(|row| match row {
+            PreviewRow::HunkActions { id, .. } => Some(*id),
+            _ => None,
+        })
+    };
+    let (old, new) = source_line(&previous[index]);
+    let id = hunk_id(previous, index);
+    let matches_source = |row: &PreviewRow| {
+        let (candidate_old, candidate_new) = source_line(row);
+        if let Some(new) = new {
+            candidate_new == Some(new)
+        } else if let Some(old) = old {
+            candidate_old == Some(old)
+        } else {
+            matches!(row, PreviewRow::HunkActions { id: candidate, .. } if Some(*candidate) == id)
+        }
+    };
+    let destination = next
+        .iter()
+        .enumerate()
+        .find_map(|(index, row)| {
+            (matches_source(row) && hunk_id(next, index) == id).then_some(index)
+        })
+        .or_else(|| next.iter().position(matches_source))
+        .unwrap_or(index.min(next.len() - 1));
+    -(destination as f32 * PREVIEW_ROW_HEIGHT + fraction)
 }
 
 /// Align one hunk's unified lines into old/new rows. Context lines pair
@@ -328,7 +390,6 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
 
 struct CachedPreviewRows {
     rows: Arc<[PreviewRow]>,
-    max_columns: usize,
 }
 
 #[derive(Default)]
@@ -512,32 +573,14 @@ impl DiffPanel {
             .files
             .iter()
             .find(|file| file.path == path)?;
-        let max_columns = file
-            .hunks
-            .iter()
-            .flat_map(|hunk| {
-                std::iter::once(hunk.header.chars().count())
-                    .chain(hunk.lines.iter().map(|line| line.text.chars().count()))
-            })
-            .max()
-            .unwrap_or(0);
         let rows: Arc<[PreviewRow]> = preview_rows(file, mode, staged).into();
         self.preview_rows.insert(
             key,
             CachedPreviewRows {
                 rows: Arc::clone(&rows),
-                max_columns,
             },
         );
         Some(rows)
-    }
-
-    pub fn preview_max_columns_for(&mut self, project: ProjectId, staged: bool) -> Option<usize> {
-        self.preview_rows_for(project, staged)?;
-        let path = self.selected_file.get(&project)?;
-        self.preview_rows
-            .get(&(project, staged, path.clone(), self.diff_mode(project)))
-            .map(|rows| rows.max_columns)
     }
 
     /// Advance the hunk cursor, wrapping across all parsed hunks so
@@ -1209,6 +1252,59 @@ mod tests {
             unified_hunk_text(&hunk),
             "@@ -4,2 +4,2 @@ impl Example\n-old\n\\ No newline at end of file\n+new\n"
         );
+    }
+
+    #[test]
+    fn tab_expansion_is_presentation_only_and_preserves_unicode_and_copy_bytes() {
+        let mut file = file("tabs.rs", 1);
+        file.hunks[0].lines[0].text = "\t界e\u{301}\tend".into();
+        let original = unified_hunk_text(&file.hunks[0]);
+        for mode in [DiffMode::Inline, DiffMode::Split] {
+            let rows = preview_rows(&file, mode, false);
+            match &rows[2] {
+                PreviewRow::Inline(line) => assert_eq!(line.text, "    界e\u{301}    end"),
+                PreviewRow::Split(line) => {
+                    assert_eq!(line.old.as_ref().unwrap().text, "    界e\u{301}    end");
+                    assert_eq!(line.new.as_ref().unwrap().text, "    界e\u{301}    end");
+                }
+                _ => panic!("expected code row"),
+            }
+        }
+        assert_eq!(unified_hunk_text(&file.hunks[0]), original);
+        assert!(original.contains("\t界e\u{301}\tend"));
+    }
+
+    #[test]
+    fn mode_and_refresh_anchors_preserve_source_line_and_fractional_offset() {
+        let mut file = file("anchor.rs", 1);
+        file.hunks[0].id = 42;
+        file.hunks[0].lines = vec![
+            DiffLineInfo {
+                kind: DiffLineKind::Deletion,
+                text: "old".into(),
+                no_newline_at_end: false,
+            },
+            DiffLineInfo {
+                kind: DiffLineKind::Addition,
+                text: "new".into(),
+                no_newline_at_end: false,
+            },
+            DiffLineInfo {
+                kind: DiffLineKind::Context,
+                text: "tail".into(),
+                no_newline_at_end: false,
+            },
+        ];
+        let split = preview_rows(&file, DiffMode::Split, false);
+        let inline = preview_rows(&file, DiffMode::Inline, false);
+        // Tail is row 3 in Split and row 4 in Inline.
+        assert_eq!(remap_preview_offset(&split, &inline, -66.5), -87.5);
+        assert_eq!(remap_preview_offset(&inline, &split, -87.5), -66.5);
+        // A changed hunk hash does not discard a surviving source-line anchor.
+        file.hunks[0].id = 43;
+        let refreshed = preview_rows(&file, DiffMode::Inline, false);
+        assert_eq!(remap_preview_offset(&split, &refreshed, -66.5), -87.5);
+        assert_eq!(remap_preview_offset(&split, &[], -66.5), 0.0);
     }
 
     #[test]

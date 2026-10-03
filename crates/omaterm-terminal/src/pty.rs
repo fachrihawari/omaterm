@@ -171,6 +171,36 @@ impl PtyProcess {
         Ok(())
     }
 
+    /// Escalate only while this PID is still our unreaped child. `WNOWAIT`
+    /// leaves reaping to Alacritty's `Child`, avoiding PID reuse and a second
+    /// owner of the child's exit status.
+    pub fn terminate_force(&self) {
+        if !self.child_exit_ready() {
+            // SAFETY: the unreaped child retains its PID; kill touches no memory.
+            unsafe { libc::kill(self.child_pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+
+    fn child_exit_ready(&self) -> bool {
+        // SAFETY: zero initialization is valid for siginfo_t and waitid fills
+        // the valid pointer. WNOWAIT observes exit without reaping the child.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                self.child_pid,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            // SAFETY: waitid initializes the SIGCHLD payload; zero PID means
+            // the child has not exited yet under WNOHANG.
+            return unsafe { info.si_pid() } != 0;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
+    }
+
     pub fn child_pid(&self) -> u32 {
         self.child_pid
     }
@@ -218,11 +248,17 @@ pub fn poll_fd_readable(fd: RawFd, timeout_ms: i32) -> std::io::Result<bool> {
 
 impl Drop for PtyProcess {
     fn drop(&mut self) {
+        let _ = self.terminate();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        while !self.child_exit_ready() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        self.terminate_force();
         if let Some(path) = self.bash_rc_file.take() {
             let _ = std::fs::remove_file(path);
         }
-        // `Pty::drop` sends SIGHUP and reaps the child. Nothing extra needed;
-        // this impl exists to document the guarantee.
+        // Alacritty's drop owns reaping; the fallback above prevents its
+        // unbounded wait from hanging on shells that ignored the hangup.
     }
 }
 

@@ -559,8 +559,8 @@ impl TerminalSession {
 
     /// Explicit shutdown: SIGHUP the child, then wait bounded for exit
     /// and reap. Returns `true` when the child is confirmed gone.
-    /// Never blocks indefinitely (2s cap); the `PtyProcess` drop path
-    /// still guarantees SIGHUP even if this is never called.
+    /// Allows 2s for hangup then 250ms for forced termination; `PtyProcess`
+    /// also escalates before the dependency's reaping drop if never called.
     pub fn shutdown(&mut self) -> bool {
         if self.exited.is_some() {
             return true;
@@ -572,6 +572,14 @@ impl TerminalSession {
                 return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        self.pty.terminate_force();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        while std::time::Instant::now() < deadline {
+            if self.poll_child() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         self.poll_child()
     }

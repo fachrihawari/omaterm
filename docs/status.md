@@ -27,7 +27,7 @@ M4 evidence below.
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
-| 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk IPC/CLI parity, one-active/one-pending cancellable Git worker, full request-key validation, cached all-row `uniform_list`, `Ctrl+Shift+S` selected-hunk stage, `Ctrl+Shift+C` full hunk copy; two-hunk release fixture proves only the chosen index hunk stages | Measured two-axis viewport/anchors and final clipboard/pointer/Wayland acceptance gates remain; see M15 progress below | Close [M15 full resolution plan](m15-full-resolution-plan.md) acceptance before M16 completion |
+| 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk parity, cancellable latest-only worker, shared mutation invalidation, cached virtual rows, independent Split X/Inline X, source anchors; release Wayland direct Git click, long-row/character reach, exact copy, one-hunk stage, IPC refresh and terminal open | Rails/paging/drag, rendered-range instrumentation and full metadata/stale/scope/refresh-anchor matrix remain; see current M15 evidence | Finish D2/D3 in the [remaining-work plan](m15-m16-remaining-work-plan.md) before M16 completion |
 | 16 — Command Palette | in_progress | Dual-mode overlay, fuzzy ranked command/workspace/file/Git candidates, one latest-only source worker, bounded root index, core ranking, root-aware File MRU and origin restoration; release Wayland command/file/project/split/focus/process refresh proof and CLI spot-checks recorded below | M15 not closed; M18 process query still synchronous and CPU/RSS absent; rapid-search worker/resource measurements and full stale/focus/error/argument matrix pending | Finish M15 and M18 query gates, then close M16 implementation/acceptance gaps |
 | 18 — Process Panel | in_progress (query slice only) | Bounded `ProcessCommand::List`, IPC/CLI `process.list`, Info process/port sections; router scope/no-effect test and same-instance CLI query passed | No off-thread query lifecycle, CPU/RSS sampler, scoped kill, resource proof or complete M18 acceptance | Move the query off the owner/UI thread and complete M18 contract before claiming the M16 prerequisite |
 
@@ -140,6 +140,98 @@ capture terminal hang thread/child/wait evidence, centralize Git mutation
 invalidation in dispatcher effects (including IPC mutations), then continue
 M15 measured viewport/anchors and native interaction acceptance before M18
 off-thread queries and M16 completion.
+
+## M15 lifecycle/viewport implementation and native validation — 2026-10-03
+
+Continued from `ba7aa33` with shared dispatcher effects for successful Git
+mutations and project-directory changes. UI and IPC now retire both diff
+comparisons and active query generations through the same owner coordination;
+failed validation/operations publish no refresh effect. Successful `file.open`
+emits a view effect that closes the preview and exposes the target terminal.
+Repository-backed router tests cover local/scoped mutations and failed commands.
+
+Reproduced the terminal-suite hang under a diagnostic watchdog: test PID 141392
+had two threads in `do_wait`, with live `/bin/sh` children 141538/141553 sleeping
+in `poll_schedule_timeout`. GDB attachment was denied by ptrace policy. The
+dependency's PTY destructor sends SIGHUP and calls an unbounded child wait.
+Added a 250ms drop grace followed by SIGKILL for an unreaped, still-live child;
+`waitid(WNOWAIT)` leaves status/reaping ownership with Alacritty and avoids PID
+reuse. Explicit shutdown similarly escalates after its 2s hangup grace. A real
+shell that explicitly ignores SIGHUP now has a bounded/reaped-drop regression;
+ten subsequent parallel terminal-unit runs (139 tests each) passed. The exact
+reason those original shells survived their first SIGHUP was not determined.
+
+Diff code widths are now font-shaped and cached by presentation/font identity.
+Split has independent old/new X handles with shared virtual-list Y; Inline has
+its own X handle. Native verification exposed two bugs and drove fixes: Y-only
+lists remapped horizontal input to Y, and flex shrinking suppressed Inline X
+overflow. Axis restriction and a nonshrinking virtual list fix both. Tab
+presentation expands to four spaces without changing copied/staged source.
+Mode/refresh anchors map source side/line, prefer surviving hunk identity and
+retain fractional intra-row offset; tests cover replacement pairing and a
+changed hunk ID.
+
+The final parallel gate exposed a separate Ctrl+C-test synchronization defect:
+it matched `SLEEPING` in the echoed command before `sleep` started. The test now
+requires the exact output line and a foreground process group distinct from
+the shell before sending SIGINT. The targeted test and final parallel/serial
+workspace runs passed after this correction.
+
+Current-revision automated checks (environment-selected Rust/Cargo 1.99.0;
+repository pin and dependency resolution unchanged):
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace --quiet` | PASS: 468 unit/integration tests, including 107 desktop and 33 PTY integration |
+| `cargo test --workspace --quiet -- --test-threads=1` | PASS: 468 unit/integration tests |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS; transitive future-incompatibility notice only |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS: 35 Markdown files, 126 local links, 282 blueprint refs, all 34 CLI mappings |
+| `git diff --check` | PASS |
+
+### Release Wayland evidence
+
+Isolated instance: `/tmp/opencode/m15-live/`, with explicit HOME and all
+XDG config/state/cache/runtime paths; runtime permissions 0700, history disabled,
+`EDITOR=/usr/bin/true`, absolute compositor socket `/run/user/1000/wayland-1`.
+Omarchy/Hyprland 0.56.2 (`efb50993780079460b0cbed1363e2166a2de1d9f`), 1536×960
+logical monitor, app bounds 1526×924 at (5,31), 1.25 scale. Release app was
+restarted after renderer corrections; final validation PID 181047. No user
+compositor configuration was changed. Keyboard input uses `wtype`; a temporary
+Wayland virtual-pointer client uses the MIT wlr protocol for clicks and axes.
+
+Verified flows:
+
+- Direct Git-row click opens the preview, confirmed with window captures.
+- Exact keyboard copy of the selected second hunk matched raw `git diff -U3`,
+  including original header suffix and Unicode.
+- Keyboard staging of the second of two hunks changed only `omega` in the
+  index; `alpha` remained unstaged. CLI unstage refreshed the visible preview
+  and Source Control through shared mutation effects.
+- On the long fixture, old X alone revealed `OLDEND` while new X stayed at
+  `NEWSTART`; independent new X then revealed `NEWEND`. Both gutters/Y stayed
+  fixed. Inline X also reached both long-line end markers.
+- Split and Inline Y reached line 327 / `row-300-LAST` in a 303-line hunk.
+- Switching modes at the bottom retained the source-line neighborhood rather
+  than jumping to the keyboard-selected first hunk; source-anchor test also
+  verifies fractional offset retention.
+- Pointer Copy Hunk on the second hunk copied its entire 303-line body, exactly
+  matching raw Git while the keyboard cursor was still on the first hunk.
+- Open in Terminal closed the preview and submitted the isolated editor command
+  into the existing shell; capture shows the same live PID and returned prompt.
+
+Captures (temporary artifacts; durable summaries are this record):
+`direct-git-click.png`, `after-ipc-unstage.png`,
+`final-split-x-ends.png`, `final-inline-x-end.png`,
+`final-inline-last-row.png`, `final-split-last-row.png`,
+`final-mode-anchor.png`, `final-open-terminal.png` under that directory.
+
+M15 remains in progress: proportional rails/paging/drag, full metadata/stale/
+scope interaction matrix, rendered-range instrumentation and refresh-anchor
+native coverage still need closure. M16 still requires off-thread bounded
+process queries, full argument/catalog/focus/selection semantics and resource
+acceptance. These results do not mark either milestone complete.
 
 ## M16 comprehensive implementation planning — 2026-10-03
 

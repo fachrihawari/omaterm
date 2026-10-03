@@ -252,6 +252,34 @@ fn drop_reaps_child_without_explicit_shutdown() {
 }
 
 #[test]
+fn drop_escalates_and_reaps_a_shell_that_ignores_hangup() {
+    let mut session =
+        TerminalSession::new(std::env::temp_dir(), Some("/bin/sh"), 80, 24).expect("spawn sh");
+    wait_for_prompt(&mut session);
+    session
+        .write_input(b"trap '' HUP; printf 'HUP_IGNORED_READY\\n'\n")
+        .unwrap();
+    let ready = |viewport: &TerminalViewport| {
+        viewport_text(viewport)
+            .lines()
+            .any(|line| line == "HUP_IGNORED_READY")
+    };
+    let viewport = pump_until(&mut session, Duration::from_secs(5), ready);
+    assert!(
+        ready(&viewport),
+        "shell must install its ignored hangup before dropping"
+    );
+    let pid = session.child_pid();
+    let start = Instant::now();
+    drop(session);
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(
+        child_gone(pid),
+        "ignoring shell must be reaped, not left as a zombie"
+    );
+}
+
+#[test]
 fn child_cwd_matches_spawn_directory() {
     let dir = std::env::temp_dir();
     let session = TerminalSession::new(dir.clone(), Some("/bin/sh"), 80, 24).expect("spawn sh");
@@ -995,11 +1023,24 @@ fn bash_lifecycle_ctrl_c_reports_130() {
     session
         .write_input(b"echo SLEEPING; sleep 10\n")
         .expect("write sleep");
-    // SLEEPING in the viewport proves `sleep` is the foreground job, so
-    // SIGINT deterministically lands on it instead of the prompt.
-    pump_until(&mut session, Duration::from_secs(5), |viewport| {
-        viewport_text(viewport).contains("SLEEPING")
-    });
+    // Match the actual output line, not the echoed command. The echo precedes
+    // `sleep`, so also wait for a foreground group distinct from the shell.
+    let fd = session.pty_fd();
+    let shell_pid = session.child_pid() as libc::pid_t;
+    let ready = |viewport: &TerminalViewport| {
+        // SAFETY: fd is the live session's PTY master; tcgetpgrp touches no memory.
+        let foreground = unsafe { libc::tcgetpgrp(fd) };
+        foreground > 0
+            && foreground != shell_pid
+            && viewport_text(viewport)
+                .lines()
+                .any(|line| line == "SLEEPING")
+    };
+    let viewport = pump_until(&mut session, Duration::from_secs(5), ready);
+    assert!(
+        ready(&viewport),
+        "sleep must own the foreground before SIGINT"
+    );
     session.write_input(b"\x03").expect("write ctrl-c");
     let records = wait_for_records(&mut session, Duration::from_secs(10), 2);
     let sleep = records

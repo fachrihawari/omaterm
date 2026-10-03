@@ -110,12 +110,21 @@ not establish worker counts, restore focus, prove exact copy or close M15/M16.
   to background cleanup. Deterministic tests cover full stale-key rejection,
   100 queued supersessions while an active job is blocked, and active/queued
   shutdown. Dispatcher-wide Git-mutation invalidation, including IPC, remains.
+  **Follow-up:** shared Git/directory-change effects now cover UI and IPC
+  invalidation; failed commands have tested no-effect behavior. The reproduced
+  PTY cleanup wait is guarded by bounded termination escalation, with a real
+  ignored-SIGHUP regression and ten post-fix parallel terminal-unit passes.
 - **D2 partial:** display rows now have a uniform 21px pitch, checked line-number
   overflow, cached content-width estimates and a native horizontal scroll
   container. Per-project/side/path/mode scroll handles do not leak offsets
   between files; mode switches reveal the selected hunk. Independent Split-side
   X offsets, font/tab/Unicode text measurement, rails and source-anchor
   retention across refresh are still open.
+  **Follow-up:** independent Split X, font-shaped width caching, axis-specific
+  input handling and source-line/fractional mode/refresh anchors are implemented.
+  Release Wayland proves independent long-line ends and long-hunk last rows in
+  both modes. Rails/paging/drag, range instrumentation and the full refresh
+  anchor matrix remain open; see the current status evidence.
 - **D3 partial:** original unified hunk headers are retained through DTO/bridge;
   Copy Hunk / `Ctrl+Shift+C` generate header/body/no-newline text on demand.
   Row actions bind to their hunk rather than the cursor. `Ctrl+Shift+S` stages
@@ -411,7 +420,7 @@ to M17 explicitly, not as substitutes for these milestones' acceptance.
 - [ ] V1 final required checks and Wayland matrix pass on delivered revision.
 - [ ] M16 checkboxes/status/acceptance updated with evidence; M17 handoff recorded.
 
-**First remaining implementation action:** diagnose the recurring terminal-suite
-hang and centralize mutation-triggered diff invalidation for UI/IPC parity, then
-continue D2 and D3. The full stale-key and blocked supersession/shutdown
-regressions are implemented; they do not close the broader D1 acceptance gate.
+**First remaining implementation action:** finish D2 rails/paging/drag and
+render-range instrumentation, then complete D3's metadata/stale/scope/native
+matrix. Shared invalidation and the bounded PTY cleanup correction have current
+evidence; they do not close the broader M15/M16 acceptance gates.

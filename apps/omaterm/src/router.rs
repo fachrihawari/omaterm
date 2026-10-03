@@ -70,6 +70,9 @@ pub enum CommandEffect {
     SessionClosed(ClosedPane),
     PersistenceDirty,
     WorkspaceChanged,
+    GitChanged(ProjectId),
+    ProjectDirectoryChanged(ProjectId),
+    FileOpened(ProjectId),
 }
 
 pub struct DispatchOutcome {
@@ -648,7 +651,31 @@ impl CommandRouter {
             return self.prepare_launch(context, command);
         }
         let mut effects = Vec::new();
+        let file_opened = match &command {
+            OmaCommand::File(FileCommand::Open { project, .. }) => Some(*project),
+            _ => None,
+        };
+        let git_changed = match &command {
+            OmaCommand::Git(
+                GitCommand::Stage { project, .. }
+                | GitCommand::StageHunk { project, .. }
+                | GitCommand::Unstage { project, .. }
+                | GitCommand::Discard { project, .. }
+                | GitCommand::Commit { project, .. },
+            ) => Some(*project),
+            _ => None,
+        };
         let result = self.dispatch_valid(context, command, &mut effects);
+        if matches!(result, CommandResult::Ok(_))
+            && let Some(project) = file_opened
+        {
+            effects.push(CommandEffect::FileOpened(project));
+        }
+        if matches!(result, CommandResult::Ok(_))
+            && let Some(project) = git_changed
+        {
+            effects.push(CommandEffect::GitChanged(project));
+        }
         if matches!(result, CommandResult::Ok(_))
             && effects
                 .iter()
@@ -1104,7 +1131,10 @@ impl CommandRouter {
             }
             OmaCommand::Project(ProjectCommand::SetDirectory { project, directory }) => {
                 match self.coordinator.set_project_directory(project, directory) {
-                    Ok(()) => changed(effects, Out::Unit),
+                    Ok(()) => {
+                        effects.push(CommandEffect::ProjectDirectoryChanged(project));
+                        changed(effects, Out::Unit)
+                    }
                     Err(e) => coordinator_error(e),
                 }
             }
@@ -2346,9 +2376,10 @@ mod tests {
         assert!(matches!(
             updated.effects.as_slice(),
             [
+                CommandEffect::ProjectDirectoryChanged(owner),
                 CommandEffect::WorkspaceChanged,
                 CommandEffect::PersistenceDirty,
-            ]
+            ] if *owner == project
         ));
         assert_eq!(
             router.window().project(project).unwrap().pinned_directory,
@@ -2760,7 +2791,9 @@ mod tests {
             opened.result,
             CommandResult::Ok(CommandOutput::RunSubmitted)
         );
-        assert!(opened.effects.is_empty());
+        assert!(
+            matches!(opened.effects.as_slice(), [CommandEffect::FileOpened(owner)] if *owner == project)
+        );
 
         let _ = router.dispatch(
             CommandContext::LocalUser,
@@ -2852,7 +2885,9 @@ mod tests {
             staged_outcome.result,
             CommandResult::Ok(CommandOutput::Unit)
         );
-        assert!(staged_outcome.effects.is_empty());
+        assert!(
+            matches!(staged_outcome.effects.as_slice(), [CommandEffect::GitChanged(owner)] if *owner == project)
+        );
         let status = router.dispatch(
             CommandContext::LocalUser,
             OmaCommand::Git(GitCommand::Status { project }),
@@ -2864,13 +2899,16 @@ mod tests {
         assert!(info.unstaged.is_empty());
 
         let unstage = router.dispatch(
-            CommandContext::LocalUser,
+            CommandContext::Project(project),
             OmaCommand::Git(GitCommand::Unstage {
                 project,
                 paths: paths.clone(),
             }),
         );
         assert_eq!(unstage.result, CommandResult::Ok(CommandOutput::Unit));
+        assert!(
+            matches!(unstage.effects.as_slice(), [CommandEffect::GitChanged(owner)] if *owner == project)
+        );
 
         // Untracked discard deletes from disk; missing paths are success.
         std::fs::write(root.join("scratch.txt"), b"drop\n").unwrap();
@@ -2882,6 +2920,9 @@ mod tests {
             }),
         );
         assert_eq!(discard.result, CommandResult::Ok(CommandOutput::Unit));
+        assert!(
+            matches!(discard.effects.as_slice(), [CommandEffect::GitChanged(owner)] if *owner == project)
+        );
         assert!(!root.join("scratch.txt").exists());
 
         // Traversal is rejected before git runs; empty paths fail
@@ -2900,6 +2941,7 @@ mod tests {
                 ..
             })
         ));
+        assert!(evil.effects.is_empty());
         let empty = router.dispatch(
             CommandContext::LocalUser,
             OmaCommand::Git(GitCommand::Stage {
@@ -2914,6 +2956,7 @@ mod tests {
                 ..
             })
         ));
+        assert!(empty.effects.is_empty());
         let stale = router.dispatch(
             CommandContext::LocalUser,
             OmaCommand::Git(GitCommand::Status {
@@ -3040,7 +3083,9 @@ mod tests {
             panic!("git commit");
         };
         assert!(!oid.is_empty());
-        assert!(committed.effects.is_empty());
+        assert!(
+            matches!(committed.effects.as_slice(), [CommandEffect::GitChanged(owner)] if *owner == project)
+        );
         assert_eq!(git(&root, &["log", "-1", "--format=%s"]), "add b");
         assert_eq!(git(&root, &["rev-parse", "--short", "HEAD"]), oid);
         let status = router.dispatch(
