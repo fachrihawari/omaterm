@@ -479,16 +479,23 @@ commands.
 ## 11. Completion checklist and next action
 
 - [ ] M15/M17 prerequisites closed or explicitly re-sequenced.
-- [ ] Document identity, persistence, IPC/CLI, and focus contracts frozen.
-- [ ] Bounded I/O, language/highlight pipeline, and buffer behavior proven.
-- [ ] Dispatcher-integrated lifecycle with stable errors and no-effect failures.
-- [ ] Native editing/highlight/save/conflict/focus flows proven on Wayland.
-- [ ] Quality gates green; resource/redaction evidence recorded.
-- [ ] Milestone, overview, acceptance matrix, dependencies, and status updated.
+- [x] Document identity, persistence, IPC/CLI, and focus contracts frozen
+  (Phase A, 2026-10-04; see §12).
+- [x] Bounded I/O, language/highlight pipeline, and buffer behavior proven
+  (Phases B–C automated; 489-test suite green).
+- [x] Dispatcher-integrated lifecycle with stable errors and no-effect
+  failures (Phase C automated).
+- [ ] Native editing/highlight/save/conflict/focus flows proven on Wayland
+  (Phase D/E implemented; live run blocked — see status).
+- [ ] Quality gates green; resource/redaction evidence recorded (gates
+  green; live resource proof pending).
+- [x] Milestone, overview, acceptance matrix, dependencies, and status updated
+  (overview index + acceptance row; dependency deltas: none — no new crates).
 
-**Next action:** freeze the Phase A contracts — especially document surface,
-snapshot impact, and the `file.open` compatibility decision — then create
-fixtures and run buffer/highlighter/GPUI spikes.
+**Next action:** re-run the Wayland script (§9 steps 1–8) on a quiet
+session and record evidence in `docs/status.md`; remaining gaps are entry
+triggers beyond the four interim ones, resource trends, dirty-shutdown
+semantics, and the open-document persistence decision.
 
 ## 12. Phase A frozen contracts (2026-10-04)
 
@@ -516,3 +523,10 @@ Frozen before any editor code:
   `elements/`, so multiline editing extends the existing commit-input/palette
   caret patterns. Highlighter implementation (Tree-sitter vs. fallback) is
   still open pending version/license verification; permissive licenses only.
+- **Phase D/E progress (2026-10-04):** highlighter decision settled on the
+  built-in single-pass tokenizer (no new dependencies; Tree-sitter stays a
+  follow-up). Editing surface, caret/selection/clipboard/undo wiring,
+  background highlight worker, and input ownership are implemented; entry
+  triggers cover palette Ctrl+Enter/Ctrl+click, tree Ctrl+click, Git-row
+  Ctrl+click, and Files-search Ctrl+Enter. Automated phases B–E check out;
+  live proof and the persistence/shutdown/resource decisions remain.
