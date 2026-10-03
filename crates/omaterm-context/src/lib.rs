@@ -25,7 +25,7 @@ pub use diff::{
 };
 pub use editor::{
     EditorError, EditorFile, EditorLanguage, FileRevision, MAX_EDITOR_BYTES, MAX_EDITOR_LINES,
-    detect_language, read_text_file, write_text_file,
+    canonical_document_path, detect_language, read_text_file, write_text_file,
 };
 pub use files::{
     FileSearchIndex, FileWatcher, MAX_SEARCH_INDEX_BYTES, MAX_SEARCH_SCAN, WatchError,

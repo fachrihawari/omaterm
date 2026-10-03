@@ -32,6 +32,7 @@ use omaterm_terminal::{
 };
 mod credentials;
 mod diff_panel;
+mod editor;
 mod files;
 mod git_panel;
 mod history;

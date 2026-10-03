@@ -156,21 +156,26 @@ fn count_lines(text: &str) -> usize {
     }
 }
 
-/// Read and validate one existing text file under `root`. Rejects
-/// directories, escapes, oversize, binary, and non-UTF-8 inputs.
-pub fn read_text_file(root: &Path, user_path: &Path) -> Result<EditorFile, EditorError> {
-    let absolute = match super::boundary::canonicalize_under_root(root, user_path) {
-        Ok(path) => path,
-        Err(super::boundary::ContextError::PathOutsideRoot) => {
-            return Err(EditorError::PathOutsideRoot);
-        }
+/// Resolve a user-supplied document path to its canonical absolute form.
+/// Shared by reads, writes, and owner-side dedup identity so all three
+/// agree on one resolution.
+pub fn canonical_document_path(root: &Path, user_path: &Path) -> Result<PathBuf, EditorError> {
+    match super::boundary::canonicalize_under_root(root, user_path) {
+        Ok(path) => Ok(path),
+        Err(super::boundary::ContextError::PathOutsideRoot) => Err(EditorError::PathOutsideRoot),
         Err(super::boundary::ContextError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>
         {
-            return Err(EditorError::NotFound);
+            Err(EditorError::NotFound)
         }
-        Err(super::boundary::ContextError::Io(error)) => return Err(EditorError::Io(error)),
-    };
+        Err(super::boundary::ContextError::Io(error)) => Err(EditorError::Io(error)),
+    }
+}
+
+/// Read and validate one existing text file under `root`. Rejects
+/// directories, escapes, oversize, binary, and non-UTF-8 inputs.
+pub fn read_text_file(root: &Path, user_path: &Path) -> Result<EditorFile, EditorError> {
+    let absolute = canonical_document_path(root, user_path)?;
     read_canonical_file(&absolute, user_path)
 }
 
@@ -218,18 +223,7 @@ pub fn write_text_file(
     if text.len() > MAX_EDITOR_BYTES || count_lines(text) > MAX_EDITOR_LINES {
         return Err(EditorError::TooLarge);
     }
-    let absolute = match super::boundary::canonicalize_under_root(root, user_path) {
-        Ok(path) => path,
-        Err(super::boundary::ContextError::PathOutsideRoot) => {
-            return Err(EditorError::PathOutsideRoot);
-        }
-        Err(super::boundary::ContextError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
-            return Err(EditorError::NotFound);
-        }
-        Err(super::boundary::ContextError::Io(error)) => return Err(EditorError::Io(error)),
-    };
+    let absolute = canonical_document_path(root, user_path)?;
     let metadata = std::fs::symlink_metadata(&absolute)?;
     if !metadata.file_type().is_file() {
         return Err(EditorError::NotRegularFile);

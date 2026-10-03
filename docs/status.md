@@ -3772,3 +3772,52 @@ dispatcher open/close/save/revert wiring with scope/root checks, and
 DocumentStore lifecycle tests. Uncommitted work:
 `crates/omaterm-{core/src/{ids,command,result,validation,lib}.rs,context/src/{editor,lib}.rs}`,
 `apps/omaterm/src/{router,ipc_bridge}.rs`, this status record.
+
+## M19 Phase C — DocumentStore and dispatcher wiring — 2026-10-04
+
+Implemented the plan's Phase C (owner-side store + dispatch; no editing
+surface yet — keystrokes arrive in Phase D). Uncommitted work listed below.
+
+### What changed
+
+- `apps/omaterm/src/editor.rs` (new, GPUI-free): `DocumentStore` owns one
+  buffer per (project, canonical path) — reopen returns the live document.
+  Dirty tracking, bounded undo/redo (100 entries / 8 MiB, oldest drops
+  first, redo clears on edit), delta-based inverse edits with UTF-8
+  boundary and cap checks, save/revert generation handling. Editing API is
+  test-exercised; `dead_code` is explicitly allowed until Phase D wires
+  the surface (theme-token precedent).
+- `apps/omaterm/src/router.rs`: `CommandRouter` owns the store (history
+  precedent) with `documents()`/`documents_mut()` for the Phase D UI.
+  `EditorCommand::{Open,Close,Save,Revert}` dispatch with project scope,
+  root resolution, open-time canonical-root capture, save-time root
+  revalidation (refuse on replacement), clean-save fast path without
+  I/O, stale-revision conflicts, and revert-from-disk. No persistence
+  effects; `ProjectCommand::Delete` retires owned buffers. Scope
+  authorization covers `Open` by project and lifecycle variants by live
+  document ownership; foreign scopes deny with `cross_project_denied`.
+- `apps/omaterm/src/ipc_bridge.rs`: metadata-only JSON for
+  `EditorOpened`/`EditorSaved` (identity + sizes, never contents).
+
+### Automated verification
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace --quiet` | PASS: 481 tests (112 desktop + 54 context + 21 core + 33 PTY integration, rest unchanged) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS (known transitive `proc-macro-error2` notice only) |
+| `python3 scripts/check-docs.py` | PASS (no doc-contract change: Option A keeps `file.open` terminal routing) |
+| `git diff --check` | PASS |
+
+New coverage: store dedup/reopen identity, cross-project isolation,
+delta undo/redo with redo-clear, invalid ranges, undo-cap eviction,
+multibyte boundaries, project-scoped close; dispatcher open/save/
+conflict/revert/close lifecycle, clean-save fast path, stale-document
+and foreign-scope denial with empty effects, delete retires buffers.
+
+### Next action
+
+Phase D: editing surface, caret/selection/clipboard/undo wiring,
+background highlight pipeline with cancellation, and input ownership.
+Uncommitted work: `apps/omaterm/src/{editor.rs,router.rs,main.rs}`,
+this status record.
