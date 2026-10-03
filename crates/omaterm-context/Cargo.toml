@@ -10,4 +10,5 @@ notify = "=8.2.0"
 fuzzy-matcher = "=0.3.7"
 libc = "0.2"
 omaterm-core = { path = "../omaterm-core" }
+sha2 = "=0.10.9"
 thiserror = "=2.0.21"

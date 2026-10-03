@@ -248,26 +248,21 @@ impl CommandRouter {
                     }
                     Err(error) => return CommandResult::Err(error),
                 };
-                let file = match omaterm_context::read_text_file(&root, &path) {
+                let root_handle = match omaterm_context::EditorRoot::open(&root) {
+                    Ok(root) => root,
+                    Err(error) => return editor_error(error, ErrorCode::FileNotFound),
+                };
+                let file = match omaterm_context::read_text_file_from_root(&root_handle, &path) {
                     Ok(file) => file,
                     Err(error) => return editor_error(error, ErrorCode::FileNotFound),
                 };
-                let canonical_root = match std::fs::canonicalize(&root) {
-                    Ok(root) => root,
-                    Err(error) => {
-                        return err(
-                            ErrorCode::RuntimeFailure,
-                            format!("project root is unreadable: {error}"),
-                        );
-                    }
-                };
-                let absolute = match omaterm_context::canonical_document_path(&root, &path) {
-                    Ok(path) => path,
-                    Err(error) => return editor_error(error, ErrorCode::FileNotFound),
-                };
-                let id = self
-                    .documents
-                    .open(project, path, absolute, canonical_root, file);
+                let id = self.documents.open(
+                    project,
+                    path,
+                    root_handle.canonical_path().to_path_buf(),
+                    root_handle.identity(),
+                    file,
+                );
                 let Some(info) = self.documents.document_info(id) else {
                     return err(ErrorCode::RuntimeFailure, "document vanished after open");
                 };
@@ -294,7 +289,7 @@ impl CommandRouter {
                 }
             }
             EditorCommand::Save { document } => {
-                let (project, relative, open_root, revision, dirty, text) =
+                let (project, relative, open_root_identity, revision, dirty, text) =
                     match self.editor_buffer(document) {
                         Some(buffer) => buffer,
                         None => return err(ErrorCode::DocumentNotOpen, "document is not open"),
@@ -306,25 +301,27 @@ impl CommandRouter {
                     }
                     Err(error) => return CommandResult::Err(error),
                 };
-                // The root may have been replaced since open; refuse rather
-                // than writing into an unrelated tree.
-                let live_root = match std::fs::canonicalize(&root) {
+                // Capture the live root once. A replacement at the same path
+                // must not retarget this document's read or write operation.
+                let live_root = match omaterm_context::EditorRoot::open(&root) {
                     Ok(root) => root,
-                    Err(_) => {
+                    Err(error) => {
                         return err(
                             ErrorCode::DocumentConflict,
-                            "project root changed on disk; reopen the document",
+                            format!("project root is unavailable: {error}"),
                         );
                     }
                 };
-                if live_root != open_root {
+                if live_root.identity() != open_root_identity {
                     return err(
                         ErrorCode::DocumentConflict,
                         "project root changed since open; reopen the document",
                     );
                 }
                 if !dirty {
-                    if let Err(error) = omaterm_context::read_text_file(&root, &relative) {
+                    if let Err(error) =
+                        omaterm_context::read_text_file_from_root(&live_root, &relative)
+                    {
                         return editor_error(error, ErrorCode::DocumentConflict);
                     }
                     let Some(info) = self.documents.document_info(document) else {
@@ -354,10 +351,11 @@ impl CommandRouter {
                 ok(Out::EditorSaved(info))
             }
             EditorCommand::Revert { document } => {
-                let (project, relative, open_root, _, _, _) = match self.editor_buffer(document) {
-                    Some(buffer) => buffer,
-                    None => return err(ErrorCode::DocumentNotOpen, "document is not open"),
-                };
+                let (project, relative, open_root_identity, _, _, _) =
+                    match self.editor_buffer(document) {
+                        Some(buffer) => buffer,
+                        None => return err(ErrorCode::DocumentNotOpen, "document is not open"),
+                    };
                 let root = match self.file_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
@@ -365,13 +363,17 @@ impl CommandRouter {
                     }
                     Err(error) => return CommandResult::Err(error),
                 };
-                if std::fs::canonicalize(&root).ok().as_ref() != Some(&open_root) {
+                let live_root = match omaterm_context::EditorRoot::open(&root) {
+                    Ok(root) => root,
+                    Err(error) => return editor_error(error, ErrorCode::DocumentConflict),
+                };
+                if live_root.identity() != open_root_identity {
                     return err(
                         ErrorCode::DocumentConflict,
                         "project root changed since open; reopen the document",
                     );
                 }
-                let file = match omaterm_context::read_text_file(&root, &relative) {
+                let file = match omaterm_context::read_text_file_from_root(&live_root, &relative) {
                     Ok(file) => file,
                     Err(error) => return editor_error(error, ErrorCode::FileNotFound),
                 };
@@ -385,7 +387,7 @@ impl CommandRouter {
     }
 
     /// Owned snapshot of a live buffer for save/revert paths: project,
-    /// supplied relative path, open-time canonical root, on-disk revision,
+    /// supplied relative path, open-time root identity, on-disk revision,
     /// dirty flag, and buffer text.
     fn editor_buffer(
         &self,
@@ -393,7 +395,7 @@ impl CommandRouter {
     ) -> Option<(
         ProjectId,
         PathBuf,
-        PathBuf,
+        omaterm_context::RootIdentity,
         omaterm_context::FileRevision,
         bool,
         String,
@@ -402,7 +404,7 @@ impl CommandRouter {
         Some((
             store.project_of(document)?,
             store.relative_path(document)?,
-            store.open_root(document)?,
+            store.open_root_identity(document)?,
             store.revision(document)?,
             store.is_dirty(document)?,
             store.buffer_text(document)?,
@@ -2151,6 +2153,7 @@ fn editor_error(error: omaterm_context::EditorError, missing: ErrorCode) -> Comm
         Context::TooLarge => err(ErrorCode::DocumentTooLarge, error.to_string()),
         Context::NotTextFile => err(ErrorCode::NotTextFile, error.to_string()),
         Context::Conflict => err(ErrorCode::DocumentConflict, error.to_string()),
+        Context::SecureResolutionUnavailable => err(ErrorCode::RuntimeFailure, error.to_string()),
         Context::Io(_) => err(ErrorCode::RuntimeFailure, error.to_string()),
     }
 }

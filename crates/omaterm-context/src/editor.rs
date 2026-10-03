@@ -20,6 +20,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use sha2::{Digest, Sha256};
+
 /// Largest accepted editor document in bytes. Mirrors
 /// `omaterm_core::validation::MAX_EDITOR_BYTES`; enforced before allocation.
 pub const MAX_EDITOR_BYTES: usize = 1024 * 1024;
@@ -77,9 +79,9 @@ pub fn detect_language(path: &Path) -> EditorLanguage {
     }
 }
 
-/// On-disk revision captured on read and re-checked on save. Carries size
-/// plus wall-clock mtime and Unix device/inode identity. Atomic replacement
-/// conflicts even for same-size files sharing a filesystem timestamp tick.
+/// On-disk revision captured on read and re-checked on save. Carries metadata
+/// plus a SHA-256 digest of the validated bytes, so same-size in-place edits
+/// with restored timestamps are detectable as observable conflicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileRevision {
     pub size: u64,
@@ -87,12 +89,13 @@ pub struct FileRevision {
     pub mtime_nanos: u32,
     pub device: u64,
     pub inode: u64,
+    pub content_digest: [u8; 32],
 }
 
 /// Stable identity of the root directory captured for an editor operation.
 /// A pathname is presentation/debug information only: device and inode are
 /// what let later slices distinguish a replacement at the same pathname.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RootIdentity {
     pub device: u64,
     pub inode: u64,
@@ -194,7 +197,7 @@ impl EditorRoot {
 }
 
 impl FileRevision {
-    fn of(metadata: &std::fs::Metadata) -> Self {
+    fn of(metadata: &std::fs::Metadata, bytes: &[u8]) -> Self {
         #[cfg(unix)]
         let (device, inode) = {
             use std::os::unix::fs::MetadataExt;
@@ -214,6 +217,7 @@ impl FileRevision {
             mtime_nanos: nanos,
             device,
             inode,
+            content_digest: Sha256::digest(bytes).into(),
         }
     }
 }
@@ -299,13 +303,33 @@ pub fn canonical_document_path(root: &Path, user_path: &Path) -> Result<PathBuf,
     }
 }
 
-/// Read and validate one existing text file under `root`. Rejects
-/// directories, escapes, oversize, binary, and non-UTF-8 inputs.
+/// Read and validate one existing text file under `root`. Linux captures the
+/// root descriptor once and resolves the descendant beneath it; other targets
+/// retain the existing boundary implementation until their secure equivalent
+/// is introduced.
+#[cfg(target_os = "linux")]
+pub fn read_text_file(root: &Path, user_path: &Path) -> Result<EditorFile, EditorError> {
+    let root = EditorRoot::open(root)?;
+    read_text_file_from_root(&root, user_path)
+}
+
+/// Read through an already captured Linux root descriptor. This is the S1
+/// worker-facing API: a root replacement after capture cannot retarget it.
+#[cfg(target_os = "linux")]
+pub fn read_text_file_from_root(
+    root: &EditorRoot,
+    user_path: &Path,
+) -> Result<EditorFile, EditorError> {
+    read_open_file(root.open_descendant(user_path)?, user_path)
+}
+
+#[cfg(not(target_os = "linux"))]
 pub fn read_text_file(root: &Path, user_path: &Path) -> Result<EditorFile, EditorError> {
     let absolute = canonical_document_path(root, user_path)?;
     read_canonical_file(&absolute, user_path)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn read_canonical_file(absolute: &Path, user_path: &Path) -> Result<EditorFile, EditorError> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -314,7 +338,10 @@ fn read_canonical_file(absolute: &Path, user_path: &Path) -> Result<EditorFile, 
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let file = options.open(absolute)?;
+    read_open_file(options.open(absolute)?, user_path)
+}
+
+fn read_open_file(file: std::fs::File, user_path: &Path) -> Result<EditorFile, EditorError> {
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
         return Err(EditorError::NotRegularFile);
@@ -334,8 +361,8 @@ fn read_canonical_file(absolute: &Path, user_path: &Path) -> Result<EditorFile, 
     if lines > MAX_EDITOR_LINES {
         return Err(EditorError::TooLarge);
     }
-    let revision = FileRevision::of(&file.metadata()?);
-    if revision != FileRevision::of(&metadata) {
+    let revision = FileRevision::of(&file.metadata()?, text.as_bytes());
+    if revision != FileRevision::of(&metadata, text.as_bytes()) {
         return Err(EditorError::Conflict);
     }
     Ok(EditorFile {
@@ -371,15 +398,16 @@ pub fn write_text_file(
     if text.len() > MAX_EDITOR_BYTES || count_lines(text) > MAX_EDITOR_LINES {
         return Err(EditorError::TooLarge);
     }
+    let opened = read_text_file(root, user_path)?;
+    if let Some(expected) = expected
+        && opened.revision != *expected
+    {
+        return Err(EditorError::Conflict);
+    }
     let absolute = canonical_document_path(root, user_path)?;
     let metadata = std::fs::symlink_metadata(&absolute)?;
     if !metadata.file_type().is_file() {
         return Err(EditorError::NotRegularFile);
-    }
-    if let Some(expected) = expected
-        && FileRevision::of(&metadata) != *expected
-    {
-        return Err(EditorError::Conflict);
     }
     let parent = absolute.parent().ok_or(EditorError::NotFound)?;
     let temp = unique_sibling(parent);
@@ -399,13 +427,11 @@ pub fn write_text_file(
         if canonical_document_path(root, user_path)? != absolute {
             return Err(EditorError::Conflict);
         }
-        let current = std::fs::symlink_metadata(&absolute)?;
-        if !current.file_type().is_file()
-            || FileRevision::of(&current) != FileRevision::of(&metadata)
-        {
+        let current = read_text_file(root, user_path)?;
+        if current.revision != opened.revision {
             return Err(EditorError::Conflict);
         }
-        let revision = FileRevision::of(&file.metadata()?);
+        let revision = FileRevision::of(&file.metadata()?, text.as_bytes());
         std::fs::rename(&temp, &absolute)?;
         std::fs::File::open(parent)?.sync_all()?;
         Ok(revision)
@@ -630,6 +656,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn same_size_preserved_timestamp_change_conflicts_by_digest() {
+        let root = fixture_root("same-size-digest");
+        let path = write_fixture(&root, "doc.txt", b"before!\n");
+        let opened = read_text_file(&root, Path::new("doc.txt")).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        // Preserve the observed timestamp and byte count to prove metadata
+        // alone would miss this external mutation.
+        std::fs::write(&path, b"after!!\n").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let current = read_text_file(&root, Path::new("doc.txt")).unwrap();
+        assert_eq!(current.revision.size, opened.revision.size);
+        assert_eq!(current.revision.mtime_secs, opened.revision.mtime_secs);
+        assert_eq!(current.revision.mtime_nanos, opened.revision.mtime_nanos);
+        assert_ne!(
+            current.revision.content_digest,
+            opened.revision.content_digest
+        );
+        assert!(matches!(
+            write_text_file(
+                &root,
+                Path::new("doc.txt"),
+                "local!!!\n",
+                Some(&opened.revision)
+            ),
+            Err(EditorError::Conflict)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"after!!\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn stable_codes_match_the_core_wire_strings() {
         assert_eq!(EditorError::PathOutsideRoot.code(), "path_outside_root");
@@ -666,12 +727,12 @@ mod tests {
         .unwrap();
 
         let captured = EditorRoot::open(&root).unwrap();
-        let mut contained = captured
-            .open_descendant(Path::new("contained/doc.txt"))
-            .unwrap();
-        let mut text = String::new();
-        contained.read_to_string(&mut text).unwrap();
-        assert_eq!(text, "original root\n");
+        assert_eq!(
+            read_text_file_from_root(&captured, Path::new("contained/doc.txt"))
+                .unwrap()
+                .text,
+            "original root\n"
+        );
         assert!(matches!(
             captured.open_descendant(Path::new("escape/secret.txt")),
             Err(EditorError::PathOutsideRoot)
@@ -694,12 +755,12 @@ mod tests {
             captured.identity(),
             "replacement root must have a distinct identity"
         );
-        let mut original = captured
-            .open_descendant(Path::new("inside/doc.txt"))
-            .unwrap();
-        text.clear();
-        original.read_to_string(&mut text).unwrap();
-        assert_eq!(text, "original root\n");
+        assert_eq!(
+            read_text_file_from_root(&captured, Path::new("inside/doc.txt"))
+                .unwrap()
+                .text,
+            "original root\n"
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&moved).unwrap();

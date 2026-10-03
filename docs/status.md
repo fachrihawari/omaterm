@@ -4158,3 +4158,33 @@ and native checks were not rerun for this partial context slice.
 opened file identity available to the store, then add deterministic
 root/ancestor/final-component swap barriers. Do not wire the synchronous router
 to an incomplete write path or claim S1 complete.
+
+## M19 S1 rooted reads and content revisions — 2026-10-03
+
+Linux `read_text_file` now captures an `EditorRoot` and resolves the requested
+relative descendant through its owned descriptor. `read_text_file_from_root`
+is the worker-facing form for a previously captured root. Router open/revert
+and clean-save validation use it; dirty saves remain on the earlier atomic
+pathname write path and therefore S1 is still open. `DocumentStore` now keys a
+live buffer by project, captured `RootIdentity`, and opened file device/inode,
+so contained symlink aliases deduplicate while a root replacement at the same
+pathname cannot merge its documents with the earlier root.
+
+`FileRevision` now includes a SHA-256 digest of validated file bytes. Context
+adds the already locked and license-reviewed `sha2` =0.10.9 as a direct edge;
+no package/version resolution changed. A new test changes a file to different
+same-size bytes, restores its mtime, and proves a stale save returns
+`document_conflict` without overwriting those bytes.
+
+Verification with `RUSTUP_TOOLCHAIN=1.99.0`: `cargo fmt --all --check` PASS;
+`cargo test -p omaterm-context` PASS (58 unit, 16 integration, 0 doc tests);
+`cargo test -p omaterm` PASS (124 tests); `cargo clippy -p omaterm
+--all-targets -- -D warnings` PASS; `python3 scripts/check-docs.py` PASS and
+`git diff --check` PASS. Desktop test/Clippy output reports the pre-existing
+transitive `proc-macro-error2` future-incompatibility warning. Full workspace
+and native checks remain pending this in-progress S1 revision.
+
+**Next action:** replace `write_text_file`'s canonicalize/rename path with
+descriptor-relative parent sidecar creation, revalidation, rename and directory
+sync outcomes. Add injected failure and root/ancestor/final-component swap
+barriers before moving to S2 async lifecycle work.

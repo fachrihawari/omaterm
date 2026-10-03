@@ -9,8 +9,8 @@
 //! router revalidates project scope and root identity before touching disk.
 //!
 //! Invariants:
-//! - One buffer per (project, canonical path); reopening returns the live
-//!   document instead of forking a second buffer.
+//! - One buffer per (project, root identity, opened-file identity); reopening
+//!   a contained symlink alias returns the live document instead of forking it.
 //! - Dirty text is never persisted except through an explicit save.
 //! - Undo history is bounded by entry count and retained bytes; the oldest
 //!   entries drop first and redo clears on every new edit.
@@ -60,11 +60,12 @@ pub struct Document {
     project: ProjectId,
     /// Root-relative path as supplied on open (display/identity form).
     path: PathBuf,
-    /// Canonical absolute path at open time (dedup form).
-    absolute: PathBuf,
-    /// Canonical project root at open time. Saves re-resolve the live root
-    /// and refuse on mismatch instead of writing into a replaced tree.
+    /// Canonical project root at open time, retained for diagnostics and
+    /// descriptor capture. Identity, not this pathname, guards later I/O.
     root: PathBuf,
+    root_identity: omaterm_context::RootIdentity,
+    file_device: u64,
+    file_inode: u64,
     text: String,
     saved_text: String,
     history_cursor: Option<usize>,
@@ -99,35 +100,44 @@ fn count_lines(text: &str) -> usize {
 #[derive(Debug, Default)]
 pub struct DocumentStore {
     docs: HashMap<DocumentId, Document>,
-    by_path: HashMap<(ProjectId, PathBuf), DocumentId>,
+    by_file: HashMap<(ProjectId, omaterm_context::RootIdentity, u64, u64), DocumentId>,
 }
 
 impl DocumentStore {
-    /// Open a buffer over an already-validated read. Returns the live
-    /// document when the same (project, canonical path) is already open.
+    /// Open a buffer over an already-validated read. Returns the live document
+    /// when the same opened file (including a contained symlink alias) is open
+    /// beneath the same captured root identity.
     pub fn open(
         &mut self,
         project: ProjectId,
         path: PathBuf,
-        absolute: PathBuf,
         root: PathBuf,
+        root_identity: omaterm_context::RootIdentity,
         file: omaterm_context::EditorFile,
     ) -> DocumentId {
-        if let Some(id) = self.by_path.get(&(project, absolute.clone())) {
+        let file_key = (
+            project,
+            root_identity,
+            file.revision.device,
+            file.revision.inode,
+        );
+        if let Some(id) = self.by_file.get(&file_key) {
             return *id;
         }
         let id = DocumentId::new();
         let language = file.language;
         let revision = file.revision;
-        self.by_path.insert((project, absolute.clone()), id);
+        self.by_file.insert(file_key, id);
         self.docs.insert(
             id,
             Document {
                 id,
                 project,
                 path,
-                absolute,
                 root,
+                root_identity,
+                file_device: revision.device,
+                file_inode: revision.inode,
                 saved_text: file.text.clone(),
                 text: file.text,
                 history_cursor: None,
@@ -162,6 +172,14 @@ impl DocumentStore {
     /// Canonical project root captured at open time.
     pub fn open_root(&self, document: DocumentId) -> Option<PathBuf> {
         self.docs.get(&document).map(|doc| doc.root.clone())
+    }
+
+    /// Device/inode identity of the root captured when the document opened.
+    pub fn open_root_identity(
+        &self,
+        document: DocumentId,
+    ) -> Option<omaterm_context::RootIdentity> {
+        self.docs.get(&document).map(|doc| doc.root_identity)
     }
 
     pub fn revision(&self, document: DocumentId) -> Option<omaterm_context::FileRevision> {
@@ -218,7 +236,12 @@ impl DocumentStore {
         let Some(doc) = self.docs.remove(&document) else {
             return false;
         };
-        self.by_path.remove(&(doc.project, doc.absolute));
+        self.by_file.remove(&(
+            doc.project,
+            doc.root_identity,
+            doc.file_device,
+            doc.file_inode,
+        ));
         true
     }
 
@@ -393,27 +416,69 @@ impl DocumentStore {
     /// Replace buffer text from a fresh disk read (revert path): clears
     /// undo/redo, clears dirty, adopts the new revision.
     pub fn adopt_disk_text(&mut self, document: DocumentId, file: omaterm_context::EditorFile) {
-        if let Some(doc) = self.docs.get_mut(&document) {
+        let Some((old_key, new_key)) = self.docs.get_mut(&document).map(|doc| {
+            let old_key = (
+                doc.project,
+                doc.root_identity,
+                doc.file_device,
+                doc.file_inode,
+            );
             doc.saved_text.clone_from(&file.text);
             doc.text = file.text;
             doc.history_cursor = None;
             doc.revision = file.revision;
             doc.language = file.language;
+            doc.file_device = file.revision.device;
+            doc.file_inode = file.revision.inode;
             doc.undo.clear();
             doc.undo_bytes = 0;
             doc.redo.clear();
             doc.dirty = false;
-        }
+            (
+                old_key,
+                (
+                    doc.project,
+                    doc.root_identity,
+                    doc.file_device,
+                    doc.file_inode,
+                ),
+            )
+        }) else {
+            return;
+        };
+        self.by_file.remove(&old_key);
+        self.by_file.insert(new_key, document);
     }
 
     /// Record a successful save: clear dirty, adopt the post-write revision.
     /// Undo history survives save so edits remain reversible afterwards.
     pub fn mark_saved(&mut self, document: DocumentId, revision: omaterm_context::FileRevision) {
-        if let Some(doc) = self.docs.get_mut(&document) {
+        let Some((old_key, new_key)) = self.docs.get_mut(&document).map(|doc| {
+            let old_key = (
+                doc.project,
+                doc.root_identity,
+                doc.file_device,
+                doc.file_inode,
+            );
             doc.revision = revision;
+            doc.file_device = revision.device;
+            doc.file_inode = revision.inode;
             doc.saved_text.clone_from(&doc.text);
             doc.dirty = false;
-        }
+            (
+                old_key,
+                (
+                    doc.project,
+                    doc.root_identity,
+                    doc.file_device,
+                    doc.file_inode,
+                ),
+            )
+        }) else {
+            return;
+        };
+        self.by_file.remove(&old_key);
+        self.by_file.insert(new_key, document);
     }
 }
 
@@ -1198,18 +1263,25 @@ mod tests {
         name: &str,
         text: &str,
     ) -> DocumentId {
+        let file_inode = name.as_bytes().iter().fold(0_u64, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(u64::from(*byte))
+        });
         let revision = omaterm_context::FileRevision {
             size: text.len() as u64,
             mtime_secs: 1,
             mtime_nanos: 0,
-            device: 0,
-            inode: 0,
+            device: 1,
+            inode: file_inode,
+            content_digest: [0; 32],
         };
         store.open(
             project,
             PathBuf::from(name),
-            PathBuf::from(format!("/repo/{name}")),
             PathBuf::from("/repo"),
+            omaterm_context::RootIdentity {
+                device: 1,
+                inode: 1,
+            },
             omaterm_context::EditorFile {
                 text: text.into(),
                 bytes: text.len(),

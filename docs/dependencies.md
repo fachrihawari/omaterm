@@ -29,8 +29,16 @@ with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
   `Cargo.toml` manifests declare `MIT OR Apache-2.0`, with packaged
   `LICENSE-MIT` / `LICENSE-APACHE` evidence. No grammar runtime is added.
 - Context adds direct `libc` 0.2 (existing locked 0.2.189, MIT OR Apache-2.0)
-  for Unix `O_NOFOLLOW` / `O_NONBLOCK` when opening editor files; no unsafe
-  calls are needed. Existing workspace/native-platform requirements apply.
+  for Unix open flags and Linux `openat2` descriptor-relative editor reads.
+  The raw syscall is isolated in `EditorRoot::open_descendant`, zero-initializes
+  `open_how` as required by the kernel ABI, and transfers only a successful FD
+  into `File`; no unguarded fallback is used. Existing workspace/native-platform
+  requirements apply.
+- Context promotes existing `sha2` =0.10.9 (`MIT OR Apache-2.0`, selected
+  manifest and packaged dual license evidence recorded in the M10 entry) to a
+  direct dependency for `FileRevision` SHA-256 fingerprints. This detects
+  same-size external edits with restored timestamps; it introduces no new
+  package or version in `Cargo.lock`.
 - `Cargo.lock` direct-dependency edges change; no new package/version is
   resolved. Verification uses the existing 1.99.0 environment override, not
   a changed repository pin or a new MSRV claim. Exact commands/results are
