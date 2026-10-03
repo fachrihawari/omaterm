@@ -413,6 +413,9 @@ fn refresh_off_thread(
         Err(omaterm_context::GitError::Timeout) => {
             Err(GitEmpty::Failed("git status timed out".into()))
         }
+        Err(omaterm_context::GitError::Cancelled) => {
+            Err(GitEmpty::Failed("git status cancelled".into()))
+        }
         Err(omaterm_context::GitError::GitFailed(message)) => Err(GitEmpty::Failed(message)),
         Err(omaterm_context::GitError::PathOutsideRoot) => {
             Err(GitEmpty::Failed("path escapes the project root".into()))

@@ -23,6 +23,7 @@ use commands::file::FileCmd;
 use commands::git::GitCmd;
 use commands::history::HistoryCmd;
 use commands::pane::PaneCmd;
+use commands::process::ProcessCmd;
 use commands::project::ProjectCmd;
 use commands::tab::TabCmd;
 use commands::terminal::TerminalCmd;
@@ -93,6 +94,11 @@ enum Commands {
     Diff {
         #[command(subcommand)]
         cmd: DiffCmd,
+    },
+    /// Inspect processes owned by terminal sessions.
+    Process {
+        #[command(subcommand)]
+        cmd: ProcessCmd,
     },
 }
 
@@ -173,6 +179,10 @@ fn build_wire_call(command: &Commands) -> Result<(WireCall, String), String> {
         }
         Commands::Diff { cmd } => {
             commands::diff::build(cmd).map(|call| (call.clone(), call.method.clone()))
+        }
+        Commands::Process { cmd } => {
+            let call = commands::process::build(cmd);
+            Ok((call.clone(), call.method.clone()))
         }
     }
 }

@@ -74,6 +74,7 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "git.commit" => format!("Committed {}.", string(&result, "oid")),
         "diff.show" => render_diff(&result),
         "diff.list-files" => render_diff_files(&result),
+        "process.list" => render_process_list(&result),
         _ => result.to_string(),
     }
 }
@@ -567,6 +568,44 @@ fn render_diff_files(result: &Value) -> String {
     out.trim_end().to_owned()
 }
 
+fn render_process_list(result: &Value) -> String {
+    let entries = result
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return "No live terminal processes.".into();
+    }
+    let mut out = String::new();
+    for entry in &entries {
+        let pid = entry.get("pid").and_then(Value::as_u64).unwrap_or(0);
+        let name = entry.get("name").and_then(Value::as_str).unwrap_or("?");
+        let pane = entry.get("pane_id").and_then(Value::as_str).unwrap_or("?");
+        let ports = entry
+            .get("ports")
+            .and_then(Value::as_array)
+            .map(|ports| {
+                ports
+                    .iter()
+                    .filter_map(Value::as_u64)
+                    .map(|port| port.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        out.push_str(&format!("{pid}\t{name}\tpane={pane}\tports={ports}\n"));
+    }
+    if result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(truncated: bounded process list)\n");
+    }
+    out.trim_end().to_owned()
+}
+
 fn render_read(result: &Value) -> String {
     let text = result.get("text").and_then(Value::as_str).unwrap_or("");
     let truncated = result
@@ -604,6 +643,19 @@ mod tests {
         );
         assert!(empty.contains("No project root"));
         assert!(empty.contains("none"));
+    }
+
+    #[test]
+    fn human_process_list_renders_identity_and_truncation() {
+        let text = human_success(
+            "process.list",
+            &ok(serde_json::json!({
+                "entries": [{"pid":42,"name":"sleep","pane_id":"pane-a","ports":[8080]}],
+                "truncated": true,
+            })),
+        );
+        assert!(text.contains("42\tsleep\tpane=pane-a\tports=8080"));
+        assert!(text.contains("truncated"));
     }
 
     #[test]

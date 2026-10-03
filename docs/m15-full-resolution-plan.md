@@ -2,6 +2,11 @@
 
 **Date:** 2026-10-03. **Status:** planned; M15 remains `in_progress`.
 
+**Current execution:** use the [M15 + M16 remaining-work
+plan](m15-m16-remaining-work-plan.md), audited after the uncommitted virtual-row,
+copy/stage action and palette increments. The baseline and “not landed” inventory
+below are historical; settled contracts remain applicable.
+
 This is the complete end-to-end plan for closing M15 from the exact current
 baseline. It supersedes the delivery checklist order in
 [m15-completion-plan.md](m15-completion-plan.md) only where that plan's phase
@@ -219,9 +224,10 @@ Dependencies: Phases 3–4 model/lifecycle stable.
    - Measured X extents from rendered content, not fixed assumptions.
    - Anchor retained across refresh/mode switch.
 4. Connect Alt+N/P from hunk cursor to actual row reveal. Focus-gate shortcuts
-   so terminal input is unaffected.
+   so terminal input is unaffected. `Ctrl+Shift+S` stages only the selected
+   eligible unstaged hunk through `GitCommand::StageHunk`.
 5. Add keyboard- and mouse-accessible context actions:
-   - Copy exact unified hunk text.
+   - Copy exact unified hunk text (`Ctrl+Shift+C`).
    - Open path via shared command.
    - Refresh current request.
    - Next/previous hunk.

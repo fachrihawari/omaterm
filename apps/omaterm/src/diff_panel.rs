@@ -3,11 +3,11 @@
 //!
 //! GPUI-free. Rendering and key/mouse wiring live in `main.rs`, which owns
 //! the worker threads: root resolution plus `git diff` run on a background
-//! worker spawned through [`spawn_diff_thread`], never on the UI thread
+//! worker owned by [`DiffWorker`], never on the UI thread
 //! (M14 off-thread precedent). This panel only tracks last-good diffs,
 //! explicit empty/error states, the selected file/hunk, and the
 //! staged/unstaged view toggle. Mutations (hunk stage buttons) go through
-//! `GitCommand::Stage` — the same path as the Source Control panel and
+//! `GitCommand::StageHunk` — the same path as
 //! IPC/CLI (blueprint §62) — and set a refresh hint the poller consumes.
 //!
 //! Payloads are `omaterm_core::DiffInfo` (root-relative paths, bounded
@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 
 use omaterm_core::{DiffInfo, ProjectId};
@@ -27,6 +28,7 @@ use omaterm_core::{DiffInfo, ProjectId};
 pub enum DiffEmpty {
     NoRoot,
     NotRepo,
+    Cancelled,
     Unavailable(String),
     Failed(String),
 }
@@ -43,7 +45,7 @@ pub struct DiffRefresh {
 /// Detail-view mode. Split is the mock default; both modes render from
 /// the same bounded unified hunks (no full-file fetch, no syntax
 /// highlighting in v0.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DiffMode {
     #[default]
     Split,
@@ -58,15 +60,17 @@ pub struct AlignedRow {
     pub new_no: Option<u32>,
     pub kind: omaterm_core::DiffLineKind,
     pub text: String,
+    pub no_newline_at_end: bool,
 }
 
 /// One present side of a Split diff row. Split presentation deliberately keeps
 /// old/new text independent so replacement pairs never repeat one side's text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitCell {
-    pub line_no: u32,
+    pub line_no: Option<u32>,
     pub kind: omaterm_core::DiffLineKind,
     pub text: String,
+    pub no_newline_at_end: bool,
 }
 
 /// A visual row in a Split diff. Edit runs pair deletions with additions by
@@ -77,43 +81,176 @@ pub struct SplitRow {
     pub new: Option<SplitCell>,
 }
 
+/// One fixed-height presentation row. The diff preview flattens the selected
+/// file once per render generation and feeds these rows to GPUI's virtual list
+/// so a long hunk does not create a correspondingly large element tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewRow {
+    HunkHeader {
+        hunk: usize,
+        header: String,
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+    },
+    HunkActions {
+        hunk: usize,
+        id: u64,
+        can_stage: bool,
+        can_open: bool,
+        can_copy: bool,
+    },
+    Split(SplitRow),
+    Inline(AlignedRow),
+    NoNewline {
+        old: bool,
+        new: bool,
+    },
+    HunkTruncated,
+    FileTruncated,
+}
+
+pub fn can_stage_hunk(
+    file: &omaterm_core::DiffFileInfo,
+    hunk: &omaterm_core::DiffHunkInfo,
+    staged: bool,
+) -> bool {
+    !staged
+        && !file.binary
+        && !file.truncated
+        && !hunk.truncated
+        && file.status == omaterm_core::DiffFileStatus::Modified
+}
+
+pub fn unified_hunk_text(hunk: &omaterm_core::DiffHunkInfo) -> String {
+    use omaterm_core::DiffLineKind;
+
+    let mut text = String::with_capacity(hunk.header.len());
+    text.push_str(&hunk.header);
+    text.push('\n');
+    for line in &hunk.lines {
+        text.push(match line.kind {
+            DiffLineKind::Context => ' ',
+            DiffLineKind::Addition => '+',
+            DiffLineKind::Deletion => '-',
+        });
+        text.push_str(&line.text);
+        text.push('\n');
+        if line.no_newline_at_end {
+            text.push_str("\\ No newline at end of file\n");
+        }
+    }
+    text
+}
+
+/// Flatten every parsed hunk and line in source order. Parser bounds remain
+/// authoritative; the row cap belongs to `uniform_list`'s viewport, not a
+/// second, invisible presentation limit.
+pub fn preview_rows(
+    file: &omaterm_core::DiffFileInfo,
+    mode: DiffMode,
+    staged: bool,
+) -> Vec<PreviewRow> {
+    let mut rows = Vec::new();
+    for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+        rows.push(PreviewRow::HunkHeader {
+            hunk: hunk_index,
+            header: hunk.header.clone(),
+            old_start: hunk.old_start,
+            old_lines: hunk.old_lines,
+            new_start: hunk.new_start,
+            new_lines: hunk.new_lines,
+        });
+        rows.push(PreviewRow::HunkActions {
+            hunk: hunk_index,
+            id: hunk.id,
+            can_stage: can_stage_hunk(file, hunk, staged),
+            can_open: file.status != omaterm_core::DiffFileStatus::Deleted,
+            can_copy: !file.binary && !file.truncated && !hunk.truncated,
+        });
+        match mode {
+            DiffMode::Split => {
+                for row in split_hunk(hunk) {
+                    let no_newline = row.old.as_ref().is_some_and(|cell| cell.no_newline_at_end)
+                        || row.new.as_ref().is_some_and(|cell| cell.no_newline_at_end);
+                    let old = row.old.as_ref().is_some_and(|cell| cell.no_newline_at_end);
+                    let new = row.new.as_ref().is_some_and(|cell| cell.no_newline_at_end);
+                    rows.push(PreviewRow::Split(row));
+                    if no_newline {
+                        rows.push(PreviewRow::NoNewline { old, new });
+                    }
+                }
+            }
+            DiffMode::Inline => {
+                for row in align_hunk(hunk) {
+                    let no_newline = row.no_newline_at_end;
+                    let old = no_newline && row.kind != omaterm_core::DiffLineKind::Addition;
+                    let new = no_newline && row.kind != omaterm_core::DiffLineKind::Deletion;
+                    rows.push(PreviewRow::Inline(row));
+                    if no_newline {
+                        rows.push(PreviewRow::NoNewline { old, new });
+                    }
+                }
+            }
+        }
+        if hunk.truncated {
+            rows.push(PreviewRow::HunkTruncated);
+        }
+    }
+    if file.truncated {
+        rows.push(PreviewRow::FileTruncated);
+    }
+    rows
+}
+
+/// Row index for a hunk header, used to reveal the keyboard-selected hunk in
+/// a virtualized list.
+pub fn hunk_row_index(rows: &[PreviewRow], hunk_index: usize) -> Option<usize> {
+    rows.iter()
+        .position(|row| matches!(row, PreviewRow::HunkHeader { hunk, .. } if *hunk == hunk_index))
+}
+
 /// Align one hunk's unified lines into old/new rows. Context lines pair
 /// both sides; deletions occupy the old side only; additions the new
 /// side only. Line numbers derive from the hunk starts; blank spacer
 /// rows are the renderer's job (it sees `None` on the missing side).
 pub fn align_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<AlignedRow> {
     let mut rows = Vec::with_capacity(hunk.lines.len());
-    let mut old_no = hunk.old_start;
-    let mut new_no = hunk.new_start;
+    let mut old_no = Some(hunk.old_start);
+    let mut new_no = Some(hunk.new_start);
     for line in &hunk.lines {
         match line.kind {
             omaterm_core::DiffLineKind::Context => {
                 rows.push(AlignedRow {
-                    old_no: Some(old_no),
-                    new_no: Some(new_no),
+                    old_no,
+                    new_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    no_newline_at_end: line.no_newline_at_end,
                 });
-                old_no += 1;
-                new_no += 1;
+                old_no = old_no.and_then(|number| number.checked_add(1));
+                new_no = new_no.and_then(|number| number.checked_add(1));
             }
             omaterm_core::DiffLineKind::Deletion => {
                 rows.push(AlignedRow {
-                    old_no: Some(old_no),
+                    old_no,
                     new_no: None,
                     kind: line.kind,
                     text: line.text.clone(),
+                    no_newline_at_end: line.no_newline_at_end,
                 });
-                old_no += 1;
+                old_no = old_no.and_then(|number| number.checked_add(1));
             }
             omaterm_core::DiffLineKind::Addition => {
                 rows.push(AlignedRow {
                     old_no: None,
-                    new_no: Some(new_no),
+                    new_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    no_newline_at_end: line.no_newline_at_end,
                 });
-                new_no += 1;
+                new_no = new_no.and_then(|number| number.checked_add(1));
             }
         }
     }
@@ -127,8 +264,8 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
     use omaterm_core::DiffLineKind;
 
     let mut rows = Vec::with_capacity(hunk.lines.len());
-    let mut old_no = hunk.old_start;
-    let mut new_no = hunk.new_start;
+    let mut old_no = Some(hunk.old_start);
+    let mut new_no = Some(hunk.new_start);
     let mut index = 0;
     while index < hunk.lines.len() {
         let line = &hunk.lines[index];
@@ -138,15 +275,17 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
                     line_no: old_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    no_newline_at_end: line.no_newline_at_end,
                 }),
                 new: Some(SplitCell {
                     line_no: new_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    no_newline_at_end: line.no_newline_at_end,
                 }),
             });
-            old_no += 1;
-            new_no += 1;
+            old_no = old_no.and_then(|number| number.checked_add(1));
+            new_no = new_no.and_then(|number| number.checked_add(1));
             index += 1;
             continue;
         }
@@ -161,16 +300,18 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
                         line_no: old_no,
                         kind: line.kind,
                         text: line.text.clone(),
+                        no_newline_at_end: line.no_newline_at_end,
                     });
-                    old_no += 1;
+                    old_no = old_no.and_then(|number| number.checked_add(1));
                 }
                 DiffLineKind::Addition => {
                     additions.push(SplitCell {
                         line_no: new_no,
                         kind: line.kind,
                         text: line.text.clone(),
+                        no_newline_at_end: line.no_newline_at_end,
                     });
-                    new_no += 1;
+                    new_no = new_no.and_then(|number| number.checked_add(1));
                 }
             }
             index += 1;
@@ -185,20 +326,14 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
     rows
 }
 
-/// Hunks rendered per selected file at most; prev/next navigation cycles
-/// within the rendered window.
-pub const MAX_DIFF_RENDER_HUNKS: usize = 32;
-/// Body lines rendered per hunk at most.
-pub const MAX_DIFF_RENDER_LINES: usize = 200;
-/// Hunks visible at once in the main-area preview tab. The cursor can
-/// range over the full render window; this viewport follows it, and the
-/// wheel scrolls it. Keeps huge diffs off the GPUI tree (M15 virtualized
-/// rendering goal) without per-line geometry math.
-pub const MAX_DIFF_PREVIEW_HUNKS: usize = 8;
+struct CachedPreviewRows {
+    rows: Arc<[PreviewRow]>,
+    max_columns: usize,
+}
 
 #[derive(Default)]
 pub struct DiffPanel {
-    diffs: HashMap<(ProjectId, bool), DiffInfo>,
+    diffs: HashMap<(ProjectId, bool), Arc<DiffInfo>>,
     empties: HashMap<(ProjectId, bool), DiffEmpty>,
     selected_file: HashMap<ProjectId, PathBuf>,
     selected_hunk: HashMap<ProjectId, usize>,
@@ -207,16 +342,21 @@ pub struct DiffPanel {
     /// the diff preview open. Never persisted, never on the wire — the
     /// core tab model stays terminal-only (M13/M17 scope).
     preview_open: HashMap<ProjectId, bool>,
-    /// Top hunk of the preview viewport, per project.
-    hunk_offset: HashMap<ProjectId, usize>,
     /// Split/Inline detail mode per project. Split by default (mock);
     /// view-local, never persisted.
     diff_mode: HashMap<ProjectId, DiffMode>,
+    /// Flattened presentation rows are immutable and reused across GPUI
+    /// frames. Invalidated only when the source side, selection, or mode changes.
+    preview_rows: HashMap<(ProjectId, bool, PathBuf, DiffMode), CachedPreviewRows>,
 }
 
 impl DiffPanel {
     pub fn diff_for(&self, project: ProjectId, staged: bool) -> Option<&DiffInfo> {
-        self.diffs.get(&(project, staged))
+        self.diffs.get(&(project, staged)).map(Arc::as_ref)
+    }
+
+    pub fn diff_shared_for(&self, project: ProjectId, staged: bool) -> Option<Arc<DiffInfo>> {
+        self.diffs.get(&(project, staged)).cloned()
     }
 
     pub fn empty_for(&self, project: ProjectId, staged: bool) -> Option<&DiffEmpty> {
@@ -237,6 +377,8 @@ impl DiffPanel {
 
     pub fn set_diff_mode(&mut self, project: ProjectId, mode: DiffMode) {
         self.diff_mode.insert(project, mode);
+        self.preview_rows
+            .retain(|(owner, _, _, _), _| *owner != project);
     }
 
     pub fn set_show_staged(&mut self, project: ProjectId, staged: bool) {
@@ -259,45 +401,50 @@ impl DiffPanel {
         self.preview_open.get(&project).copied().unwrap_or(false)
     }
 
-    /// Top hunk of the preview viewport for a project.
-    pub fn hunk_offset(&self, project: ProjectId) -> usize {
-        self.hunk_offset.get(&project).copied().unwrap_or(0)
-    }
-
-    /// Scroll the preview viewport by `steps` hunks (positive scrolls
-    /// toward later hunks), clamped so the last hunk can sit at the
-    /// viewport bottom. No-op without a selection. Returns the new offset.
-    #[cfg(test)]
-    pub fn scroll_preview(&mut self, project: ProjectId, steps: i32) -> usize {
-        let max = self
-            .hunk_count_for(project)
-            .saturating_sub(MAX_DIFF_PREVIEW_HUNKS) as i32;
-        let next = (self.hunk_offset(project) as i32 + steps).clamp(0, max.max(0)) as usize;
-        self.hunk_offset.insert(project, next);
-        next
-    }
-
-    /// Keep the cursor inside the preview viewport after cursor moves.
-    fn ensure_cursor_visible(&mut self, project: ProjectId) {
-        let cursor = self.selected_hunk(project);
-        let mut offset = self.hunk_offset(project);
-        if cursor < offset {
-            offset = cursor;
-        } else if cursor >= offset + MAX_DIFF_PREVIEW_HUNKS {
-            offset = cursor + 1 - MAX_DIFF_PREVIEW_HUNKS;
-        }
-        let max = self
-            .hunk_count_for(project)
-            .saturating_sub(MAX_DIFF_PREVIEW_HUNKS);
-        self.hunk_offset.insert(project, offset.min(max));
-    }
-
     /// Record a landed refresh: diffs replace any error and vice versa.
+    pub fn apply_current_refresh(
+        &mut self,
+        result: DiffWorkerResult,
+        pending: Option<&DiffRequestKey>,
+        current: Option<&DiffRequestKey>,
+    ) -> bool {
+        if pending != Some(&result.key) || current != Some(&result.key) {
+            return false;
+        }
+        self.apply_refresh(result.key.project, result.key.staged, result.refresh);
+        true
+    }
+
+    /// Retire both comparisons without losing the user's file/hunk intent.
+    pub fn invalidate_data(&mut self, project: ProjectId) {
+        self.diffs.retain(|(owner, _), _| *owner != project);
+        self.empties.retain(|(owner, _), _| *owner != project);
+        self.preview_rows
+            .retain(|(owner, _, _, _), _| *owner != project);
+    }
+
+    /// Includes closed projects, which no longer appear in the workspace.
+    pub fn retain_project(&mut self, project: Option<ProjectId>) {
+        self.diffs.retain(|(owner, _), _| Some(*owner) == project);
+        self.empties.retain(|(owner, _), _| Some(*owner) == project);
+        self.selected_file
+            .retain(|owner, _| Some(*owner) == project);
+        self.selected_hunk
+            .retain(|owner, _| Some(*owner) == project);
+        self.show_staged.retain(|owner, _| Some(*owner) == project);
+        self.preview_open.retain(|owner, _| Some(*owner) == project);
+        self.diff_mode.retain(|owner, _| Some(*owner) == project);
+        self.preview_rows
+            .retain(|(owner, _, _, _), _| Some(*owner) == project);
+    }
+
     pub fn apply_refresh(&mut self, project: ProjectId, staged: bool, refresh: DiffRefresh) {
+        self.preview_rows
+            .retain(|(owner, side, _, _), _| *owner != project || *side != staged);
         match refresh.result {
             Ok(info) => {
                 self.empties.remove(&(project, staged));
-                self.diffs.insert((project, staged), info);
+                self.diffs.insert((project, staged), Arc::new(info));
                 self.prune_selection(project, staged);
             }
             Err(empty) => {
@@ -308,33 +455,18 @@ impl DiffPanel {
                 if self.show_staged(project) == staged {
                     self.selected_file.remove(&project);
                     self.selected_hunk.remove(&project);
-                    self.hunk_offset.remove(&project);
                 }
             }
         }
     }
 
-    /// Drop cached state for a project (switch-away memory bound is owned
-    /// by the caller, like the git panel).
-    pub fn clear_project(&mut self, project: ProjectId) {
-        self.diffs.remove(&(project, false));
-        self.diffs.remove(&(project, true));
-        self.empties.remove(&(project, false));
-        self.empties.remove(&(project, true));
-        self.selected_file.remove(&project);
-        self.selected_hunk.remove(&project);
-        self.show_staged.remove(&project);
-        self.preview_open.remove(&project);
-        self.hunk_offset.remove(&project);
-        self.diff_mode.remove(&project);
-    }
-
     /// Select a file and reset its hunk cursor. Called by file-row clicks
     /// and by diff-on-select from the Source Control panel.
     pub fn select_file(&mut self, project: ProjectId, path: PathBuf) {
+        self.preview_rows
+            .retain(|(owner, _, cached, _), _| *owner != project || cached == &path);
         self.selected_file.insert(project, path);
         self.selected_hunk.insert(project, 0);
-        self.hunk_offset.insert(project, 0);
     }
 
     pub fn selected_file(&self, project: ProjectId) -> Option<&PathBuf> {
@@ -345,7 +477,8 @@ impl DiffPanel {
         self.selected_hunk.get(&project).copied().unwrap_or(0)
     }
 
-    /// Renderable hunks for the selected file (bounded window).
+    /// Parsed hunk count for the selected file; presentation virtualization
+    /// controls the number of rows laid out in any one frame.
     pub fn hunk_count_for(&self, project: ProjectId) -> usize {
         let staged = self.show_staged(project);
         let selected = self.selected_file.get(&project);
@@ -356,13 +489,58 @@ impl DiffPanel {
                     info.files
                         .iter()
                         .find(|file| &file.path == path)
-                        .map(|file| file.hunks.len().min(MAX_DIFF_RENDER_HUNKS))
+                        .map(|file| file.hunks.len())
                 })
             })
             .unwrap_or(0)
     }
 
-    /// Advance the hunk cursor, wrapping within the rendered window so
+    pub fn preview_rows_for(
+        &mut self,
+        project: ProjectId,
+        staged: bool,
+    ) -> Option<Arc<[PreviewRow]>> {
+        let path = self.selected_file.get(&project)?.clone();
+        let mode = self.diff_mode(project);
+        let key = (project, staged, path.clone(), mode);
+        if let Some(rows) = self.preview_rows.get(&key) {
+            return Some(Arc::clone(&rows.rows));
+        }
+        let file = self
+            .diffs
+            .get(&(project, staged))?
+            .files
+            .iter()
+            .find(|file| file.path == path)?;
+        let max_columns = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| {
+                std::iter::once(hunk.header.chars().count())
+                    .chain(hunk.lines.iter().map(|line| line.text.chars().count()))
+            })
+            .max()
+            .unwrap_or(0);
+        let rows: Arc<[PreviewRow]> = preview_rows(file, mode, staged).into();
+        self.preview_rows.insert(
+            key,
+            CachedPreviewRows {
+                rows: Arc::clone(&rows),
+                max_columns,
+            },
+        );
+        Some(rows)
+    }
+
+    pub fn preview_max_columns_for(&mut self, project: ProjectId, staged: bool) -> Option<usize> {
+        self.preview_rows_for(project, staged)?;
+        let path = self.selected_file.get(&project)?;
+        self.preview_rows
+            .get(&(project, staged, path.clone(), self.diff_mode(project)))
+            .map(|rows| rows.max_columns)
+    }
+
+    /// Advance the hunk cursor, wrapping across all parsed hunks so
     /// keyboard navigation never walks off the end. Empty selection is a
     /// no-op. The preview viewport follows the cursor. Returns the new
     /// cursor.
@@ -374,11 +552,10 @@ impl DiffPanel {
             (self.selected_hunk(project) + 1) % count
         };
         self.selected_hunk.insert(project, next);
-        self.ensure_cursor_visible(project);
         next
     }
 
-    /// Move the hunk cursor back, wrapping to the last rendered hunk.
+    /// Move the hunk cursor back, wrapping to the last parsed hunk.
     /// The preview viewport follows the cursor. Returns the new cursor.
     pub fn prev_hunk(&mut self, project: ProjectId) -> usize {
         let count = self.hunk_count_for(project);
@@ -389,12 +566,11 @@ impl DiffPanel {
             cursor.checked_sub(1).unwrap_or(count - 1)
         };
         self.selected_hunk.insert(project, next);
-        self.ensure_cursor_visible(project);
         next
     }
 
     /// Drop the file selection when it leaves the refreshed side, and
-    /// clamp the hunk cursor into the rendered window.
+    /// clamp the hunk cursor into the parsed hunk range.
     fn prune_selection(&mut self, project: ProjectId, staged: bool) {
         if self.show_staged(project) != staged {
             return;
@@ -411,53 +587,199 @@ impl DiffPanel {
         if !visible {
             self.selected_file.remove(&project);
             self.selected_hunk.remove(&project);
-            self.hunk_offset.remove(&project);
             return;
         }
         let count = self.hunk_count_for(project);
         if self.selected_hunk(project) >= count.max(1) {
             self.selected_hunk.insert(project, 0);
         }
-        self.ensure_cursor_visible(project);
     }
 }
 
-/// Spawn parameters for [`spawn_diff_thread`]: bundling keeps the worker
-/// entry under the argument-count lint.
-pub struct DiffSpawn {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffRequestKey {
+    pub generation: u64,
+    pub root_generation: u64,
     pub project: ProjectId,
     pub path: Option<PathBuf>,
-    pub staged: bool,
-    pub generation: u64,
-    pub pinned: Option<PathBuf>,
+    pub pinned_root: Option<PathBuf>,
     pub active_cwd: Option<PathBuf>,
+    pub staged: bool,
     pub context_lines: u8,
-    pub tx: std::sync::mpsc::Sender<(u64, ProjectId, bool, DiffRefresh)>,
 }
 
-/// Spawn the background diff worker. The worker resolves the M12 root
-/// off-thread and runs `git diff` (or `--cached`); the result carries the
-/// worker thread id so tests pin the off-UI-thread contract without timing
-/// flakes. Cancelled by generation on project switch (caller drops
-/// landings, like the git poller).
-pub fn spawn_diff_thread(caller: ThreadId, spawn: DiffSpawn) {
+/// Spawn parameters for one selected diff. It is sent through a single worker
+/// with one replaceable pending slot rather than one detached thread per query.
+pub struct DiffSpawn {
+    pub key: DiffRequestKey,
+    pub cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug)]
+pub struct DiffWorkerResult {
+    pub key: DiffRequestKey,
+    pub refresh: DiffRefresh,
+}
+
+#[derive(Default)]
+struct DiffWorkerState {
+    pending: Option<DiffSpawn>,
+    active_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    result: Option<DiffWorkerResult>,
+    shutdown: bool,
+}
+
+/// One actual Git worker and one latest-only pending request. Superseding a
+/// selection cannot create another process/thread; the active Git operation
+/// remains governed by its bounded runner deadline and reaping.
+pub struct DiffWorker {
+    state: Arc<(Mutex<DiffWorkerState>, Condvar)>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DiffWorker {
+    pub fn new() -> Self {
+        Self::with_runner(run_diff_spawn)
+    }
+
+    fn with_runner(mut run: impl FnMut(DiffSpawn) -> DiffWorkerResult + Send + 'static) -> Self {
+        let state = Arc::new((Mutex::new(DiffWorkerState::default()), Condvar::new()));
+        let worker_state = Arc::clone(&state);
+        let thread = std::thread::spawn(move || {
+            loop {
+                let spawn = {
+                    let (lock, ready) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    while state.pending.is_none() && !state.shutdown {
+                        state = ready
+                            .wait(state)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                    if state.shutdown {
+                        return;
+                    }
+                    let spawn = state.pending.take().expect("pending diff request exists");
+                    state.active_cancel = Some(Arc::clone(&spawn.cancelled));
+                    spawn
+                };
+                let cancel = Arc::clone(&spawn.cancelled);
+                let landed = run(spawn);
+                {
+                    let (lock, _) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if state
+                        .active_cancel
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &cancel))
+                    {
+                        state.active_cancel = None;
+                    }
+                    // Publication and supersession share a lock. A cancelled
+                    // request cannot refill the mailbox after cancel/close.
+                    if !state.shutdown && !cancel.load(std::sync::atomic::Ordering::Acquire) {
+                        state.result = Some(landed);
+                    }
+                }
+            }
+        });
+        Self {
+            state,
+            thread: Some(thread),
+        }
+    }
+
+    pub fn submit(&self, spawn: DiffSpawn) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutdown {
+            return;
+        }
+        if let Some(active) = &state.active_cancel {
+            active.store(true, std::sync::atomic::Ordering::Release);
+        }
+        let mut spawn = spawn;
+        spawn.cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state.pending = Some(spawn);
+        state.result = None;
+        ready.notify_one();
+    }
+
+    pub fn cancel(&self) {
+        let (lock, _) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(active) = &state.active_cancel {
+            active.store(true, std::sync::atomic::Ordering::Release);
+        }
+        state.pending = None;
+        state.result = None;
+    }
+
+    pub fn shutdown(&self) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutdown = true;
+        if let Some(active) = &state.active_cancel {
+            active.store(true, std::sync::atomic::Ordering::Release);
+        }
+        state.pending = None;
+        state.result = None;
+        ready.notify_one();
+    }
+
+    /// Transfer the join to desktop shutdown's background cleanup thread.
+    pub fn take_shutdown_thread(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.shutdown();
+        self.thread.take()
+    }
+
+    pub fn take_result(&self) -> Option<DiffWorkerResult> {
+        self.state
+            .0
+            .lock()
+            .ok()
+            .and_then(|mut state| state.result.take())
+    }
+}
+
+impl Default for DiffWorker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for DiffWorker {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// One-off worker entry retained for focused tests.
+#[cfg(test)]
+pub fn spawn_diff_thread(
+    caller: ThreadId,
+    spawn: DiffSpawn,
+    tx: std::sync::mpsc::Sender<DiffWorkerResult>,
+) {
     std::thread::spawn(move || {
-        let worker = std::thread::current().id();
-        debug_assert_ne!(worker, caller, "diff worker must not be the caller");
-        let result = refresh_off_thread(
-            spawn.pinned.as_deref(),
-            spawn.active_cwd.as_deref(),
-            spawn.staged,
-            spawn.context_lines,
-            spawn.path,
-        );
-        let _ = spawn.tx.send((
-            spawn.generation,
-            spawn.project,
-            spawn.staged,
-            DiffRefresh { worker, result },
-        ));
+        debug_assert_ne!(std::thread::current().id(), caller);
+        let _ = tx.send(run_diff_spawn(spawn));
     });
+}
+
+fn run_diff_spawn(spawn: DiffSpawn) -> DiffWorkerResult {
+    let worker = std::thread::current().id();
+    let result = refresh_off_thread(
+        spawn.key.pinned_root.as_deref(),
+        spawn.key.active_cwd.as_deref(),
+        spawn.key.staged,
+        spawn.key.context_lines,
+        spawn.key.path.clone(),
+        &spawn.cancelled,
+    );
+    DiffWorkerResult {
+        key: spawn.key,
+        refresh: DiffRefresh { worker, result },
+    }
 }
 
 fn refresh_off_thread(
@@ -466,8 +788,12 @@ fn refresh_off_thread(
     staged: bool,
     context_lines: u8,
     path: Option<PathBuf>,
+    cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<DiffInfo, DiffEmpty> {
     let resolved = omaterm_context::resolve_root(pinned, active_cwd);
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(DiffEmpty::Cancelled);
+    }
     let Some(root) = resolved.root else {
         return Err(DiffEmpty::NoRoot);
     };
@@ -477,7 +803,7 @@ fn refresh_off_thread(
         context_lines,
         files_only: false,
     };
-    match omaterm_context::git_diff(&root, &request) {
+    match omaterm_context::git_diff_cancellable(&root, &request, cancelled) {
         Ok(info) => Ok(info),
         Err(omaterm_context::GitError::NotARepo) => Err(DiffEmpty::NotRepo),
         Err(omaterm_context::GitError::GitUnavailable(message)) => {
@@ -486,6 +812,7 @@ fn refresh_off_thread(
         Err(omaterm_context::GitError::Timeout) => {
             Err(DiffEmpty::Failed("git diff timed out".into()))
         }
+        Err(omaterm_context::GitError::Cancelled) => Err(DiffEmpty::Cancelled),
         Err(omaterm_context::GitError::GitFailed(message)) => Err(DiffEmpty::Failed(message)),
         Err(omaterm_context::GitError::PathOutsideRoot) => {
             Err(DiffEmpty::Failed("path escapes the project root".into()))
@@ -502,6 +829,7 @@ mod tests {
     fn hunk(lines: usize) -> DiffHunkInfo {
         DiffHunkInfo {
             id: 0,
+            header: format!("@@ -1,{lines} +1,{lines} @@"),
             old_start: 1,
             old_lines: lines as u32,
             new_start: 1,
@@ -546,11 +874,149 @@ mod tests {
         panel
     }
 
+    fn request_key(project: ProjectId, generation: u64) -> DiffRequestKey {
+        DiffRequestKey {
+            generation,
+            root_generation: 1,
+            project,
+            path: Some(PathBuf::from("a.txt")),
+            pinned_root: Some(PathBuf::from("/repo")),
+            active_cwd: None,
+            staged: false,
+            context_lines: 3,
+        }
+    }
+
+    fn empty_result(key: DiffRequestKey) -> DiffWorkerResult {
+        DiffWorkerResult {
+            key,
+            refresh: DiffRefresh {
+                worker: std::thread::current().id(),
+                result: Err(DiffEmpty::NoRoot),
+            },
+        }
+    }
+
+    #[test]
+    fn stale_completions_cannot_replace_the_visible_diff() {
+        let project = ProjectId::new();
+        let mut panel = panel_with(project, vec![file("a.txt", 1)]);
+        panel.select_file(project, PathBuf::from("a.txt"));
+        let key = request_key(project, 1);
+        let changed = [
+            DiffRequestKey {
+                generation: 2,
+                ..key.clone()
+            },
+            DiffRequestKey {
+                root_generation: 2,
+                ..key.clone()
+            },
+            DiffRequestKey {
+                project: ProjectId::new(),
+                ..key.clone()
+            },
+            DiffRequestKey {
+                path: Some(PathBuf::from("b.txt")),
+                ..key.clone()
+            },
+            DiffRequestKey {
+                pinned_root: Some(PathBuf::from("/other")),
+                ..key.clone()
+            },
+            DiffRequestKey {
+                active_cwd: Some(PathBuf::from("/other")),
+                ..key.clone()
+            },
+            DiffRequestKey {
+                staged: true,
+                ..key.clone()
+            },
+            DiffRequestKey {
+                context_lines: 0,
+                ..key.clone()
+            },
+        ];
+        for current in &changed {
+            assert!(!panel.apply_current_refresh(
+                empty_result(key.clone()),
+                Some(&key),
+                Some(current)
+            ));
+            assert!(panel.diff_for(project, false).is_some());
+        }
+        assert!(!panel.apply_current_refresh(empty_result(key.clone()), Some(&key), None));
+        assert!(!panel.apply_current_refresh(empty_result(key.clone()), None, Some(&key)));
+        assert!(panel.apply_current_refresh(empty_result(key.clone()), Some(&key), Some(&key)));
+        assert!(panel.diff_for(project, false).is_none());
+        assert_eq!(panel.empty_for(project, false), Some(&DiffEmpty::NoRoot));
+    }
+
+    #[test]
+    fn invalidation_releases_data_but_retains_selection_until_project_retirement() {
+        let project = ProjectId::new();
+        let mut panel = panel_with(project, vec![file("a.txt", 3)]);
+        panel.select_file(project, PathBuf::from("a.txt"));
+        panel.open_preview(project);
+        panel.next_hunk(project);
+        assert!(panel.preview_rows_for(project, false).is_some());
+        panel.invalidate_data(project);
+        assert!(panel.preview_rows_for(project, false).is_none());
+        assert_eq!(panel.selected_file(project), Some(&PathBuf::from("a.txt")));
+        assert_eq!(panel.selected_hunk(project), 1);
+        assert!(panel.preview_open(project));
+        panel.retain_project(Some(ProjectId::new()));
+        assert!(panel.selected_file(project).is_none());
+        assert!(!panel.preview_open(project));
+    }
+
+    #[test]
+    fn supersession_retires_active_work_before_starting_only_the_latest_pending_job() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut worker = DiffWorker::with_runner(move |spawn| {
+            started_tx
+                .send((spawn.key.generation, Arc::clone(&spawn.cancelled)))
+                .unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            empty_result(spawn.key)
+        });
+        let project = ProjectId::new();
+        let submit = |generation| {
+            worker.submit(DiffSpawn {
+                key: request_key(project, generation),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })
+        };
+        submit(0);
+        let (generation, cancel) = started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(generation, 0);
+        for generation in 1..=100 {
+            submit(generation);
+        }
+        assert!(cancel.load(Ordering::Acquire));
+        assert!(started_rx.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        let (generation, _) = started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(generation, 100);
+        assert!(worker.take_result().is_none());
+        // Close with the latest job active and another request queued.
+        submit(101);
+        let thread = worker.take_shutdown_thread().unwrap();
+        release_tx.send(()).unwrap();
+        thread.join().unwrap();
+        assert!(worker.take_result().is_none());
+        assert!(started_rx.try_recv().is_err());
+    }
+
     #[test]
     fn align_hunk_pairs_context_and_splits_add_delete() {
         use omaterm_core::{DiffLineInfo, DiffLineKind};
         let hunk = DiffHunkInfo {
             id: 0,
+            header: "@@ -10,3 +20,3 @@".into(),
             old_start: 10,
             old_lines: 3,
             new_start: 20,
@@ -590,6 +1056,7 @@ mod tests {
     fn split_hunk_pairs_replacements_and_preserves_unmatched_edits() {
         let hunk = DiffHunkInfo {
             id: 0,
+            header: "@@ -10,4 +20,5 @@".into(),
             old_start: 10,
             old_lines: 4,
             new_start: 20,
@@ -636,8 +1103,14 @@ mod tests {
 
         let rows = split_hunk(&hunk);
         assert_eq!(rows.len(), 5);
-        assert_eq!(rows[0].old.as_ref().map(|cell| cell.line_no), Some(10));
-        assert_eq!(rows[0].new.as_ref().map(|cell| cell.line_no), Some(20));
+        assert_eq!(
+            rows[0].old.as_ref().map(|cell| cell.line_no),
+            Some(Some(10))
+        );
+        assert_eq!(
+            rows[0].new.as_ref().map(|cell| cell.line_no),
+            Some(Some(20))
+        );
         assert_eq!(
             rows[1].old.as_ref().map(|cell| cell.text.as_str()),
             Some("old first")
@@ -659,8 +1132,114 @@ mod tests {
             rows[3].new.as_ref().map(|cell| cell.text.as_str()),
             Some("new third")
         );
-        assert_eq!(rows[4].old.as_ref().map(|cell| cell.line_no), Some(13));
-        assert_eq!(rows[4].new.as_ref().map(|cell| cell.line_no), Some(24));
+        assert_eq!(
+            rows[4].old.as_ref().map(|cell| cell.line_no),
+            Some(Some(13))
+        );
+        assert_eq!(
+            rows[4].new.as_ref().map(|cell| cell.line_no),
+            Some(Some(24))
+        );
+    }
+
+    #[test]
+    fn preview_rows_preserve_all_hunks_and_long_hunk_lines() {
+        let mut long = hunk(300);
+        long.id = 41;
+        long.lines[0].no_newline_at_end = true;
+        let mut second = hunk(1);
+        second.id = 42;
+        let file = DiffFileInfo {
+            path: PathBuf::from("long.rs"),
+            old_path: None,
+            status: DiffFileStatus::Modified,
+            binary: false,
+            hunks: vec![long, second],
+            hunk_count: 2,
+            truncated: false,
+        };
+        let rows = preview_rows(&file, DiffMode::Inline, false);
+        assert_eq!(rows.len(), 1 + 1 + 300 + 1 + 1 + 1 + 1);
+        assert_eq!(hunk_row_index(&rows, 0), Some(0));
+        assert_eq!(hunk_row_index(&rows, 1), Some(303));
+        assert!(matches!(rows[2], PreviewRow::Inline(_)));
+        assert_eq!(
+            rows[3],
+            PreviewRow::NoNewline {
+                old: true,
+                new: true
+            }
+        );
+        assert!(matches!(rows[303], PreviewRow::HunkHeader { hunk: 1, .. }));
+        assert!(matches!(rows.last(), Some(PreviewRow::Inline(_))));
+    }
+
+    #[test]
+    fn hunk_stage_eligibility_requires_current_complete_unstaged_text() {
+        let file = file("a.rs", 1);
+        let hunk = &file.hunks[0];
+        assert!(can_stage_hunk(&file, hunk, false));
+        assert!(!can_stage_hunk(&file, hunk, true));
+        let mut truncated_file = file.clone();
+        truncated_file.truncated = true;
+        assert!(!can_stage_hunk(&truncated_file, hunk, false));
+        let mut truncated_hunk = hunk.clone();
+        truncated_hunk.truncated = true;
+        assert!(!can_stage_hunk(&file, &truncated_hunk, false));
+        let mut binary = file.clone();
+        binary.binary = true;
+        assert!(!can_stage_hunk(&binary, hunk, false));
+    }
+
+    #[test]
+    fn copy_text_preserves_original_header_body_and_no_newline_marker() {
+        let mut hunk = hunk(2);
+        hunk.header = "@@ -4,2 +4,2 @@ impl Example".into();
+        hunk.lines[0] = DiffLineInfo {
+            kind: DiffLineKind::Deletion,
+            text: "old".into(),
+            no_newline_at_end: true,
+        };
+        hunk.lines[1] = DiffLineInfo {
+            kind: DiffLineKind::Addition,
+            text: "new".into(),
+            no_newline_at_end: false,
+        };
+        assert_eq!(
+            unified_hunk_text(&hunk),
+            "@@ -4,2 +4,2 @@ impl Example\n-old\n\\ No newline at end of file\n+new\n"
+        );
+    }
+
+    #[test]
+    fn overflowing_source_line_numbers_are_omitted_not_wrapped() {
+        let hunk = DiffHunkInfo {
+            id: 0,
+            header: "@@ -4294967295,2 +4294967295,2 @@".into(),
+            old_start: u32::MAX,
+            old_lines: 2,
+            new_start: u32::MAX,
+            new_lines: 2,
+            lines: vec![
+                DiffLineInfo {
+                    kind: DiffLineKind::Context,
+                    text: "last representable".into(),
+                    no_newline_at_end: false,
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Context,
+                    text: "overflow".into(),
+                    no_newline_at_end: false,
+                },
+            ],
+            truncated: false,
+        };
+        let inline = align_hunk(&hunk);
+        assert_eq!(inline[0].old_no, Some(u32::MAX));
+        assert_eq!(inline[1].old_no, None);
+        let split = split_hunk(&hunk);
+        assert_eq!(split[0].old.as_ref().unwrap().line_no, Some(u32::MAX));
+        assert_eq!(split[1].old.as_ref().unwrap().line_no, None);
     }
 
     #[test]
@@ -670,7 +1249,7 @@ mod tests {
         assert_eq!(panel.diff_mode(project), DiffMode::Split);
         panel.set_diff_mode(project, DiffMode::Inline);
         assert_eq!(panel.diff_mode(project), DiffMode::Inline);
-        panel.clear_project(project);
+        panel.retain_project(None);
         assert_eq!(panel.diff_mode(project), DiffMode::Split);
     }
 
@@ -805,36 +1384,25 @@ mod tests {
         // Clearing the project closes its preview and viewport.
         panel.open_preview(project);
         panel.select_file(project, PathBuf::from("a.txt"));
-        panel.clear_project(project);
+        panel.retain_project(None);
         assert!(!panel.preview_open(project));
-        assert_eq!(panel.hunk_offset(project), 0);
     }
 
     #[test]
-    fn preview_viewport_follows_cursor_and_wheel() {
+    fn navigation_tracks_all_hunks_and_scroll_range() {
         let project = ProjectId::new();
-        // 10 hunks render (under the 32 cap); viewport shows 8.
+        // Cursor and scroll range cover every source hunk.
         let mut panel = panel_with(project, vec![file("a.txt", 10)]);
         panel.select_file(project, PathBuf::from("a.txt"));
         panel.open_preview(project);
-        assert_eq!(panel.hunk_offset(project), 0);
         for _ in 0..8 {
             panel.next_hunk(project);
         }
-        // Cursor 8 sits outside [0, 8): viewport slides to [1, 9).
         assert_eq!(panel.selected_hunk(project), 8);
-        assert_eq!(panel.hunk_offset(project), 1);
         panel.prev_hunk(project);
         panel.prev_hunk(project);
-        // Cursor 6 is inside [1, 9): viewport stays.
-        assert_eq!(panel.hunk_offset(project), 1);
-        // Wheel clamps at both ends.
-        assert_eq!(panel.scroll_preview(project, 100), 2);
-        assert_eq!(panel.scroll_preview(project, -100), 0);
-        assert_eq!(panel.scroll_preview(project, 1), 1);
         // Cursor wrap keeps the viewport valid.
         panel.select_file(project, PathBuf::from("a.txt"));
-        assert_eq!(panel.hunk_offset(project), 0);
     }
 
     #[test]
@@ -842,25 +1410,77 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let project = ProjectId::new();
         let caller = std::thread::current().id();
+        let key = DiffRequestKey {
+            generation: 7,
+            root_generation: 3,
+            project,
+            path: None,
+            pinned_root: Some(std::env::temp_dir()),
+            active_cwd: None,
+            staged: false,
+            context_lines: 3,
+        };
         spawn_diff_thread(
             caller,
             DiffSpawn {
-                project,
-                path: None,
-                staged: false,
-                generation: 7,
-                pinned: Some(std::env::temp_dir()),
-                active_cwd: None,
-                context_lines: 3,
-                tx,
+                key: key.clone(),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
+            tx,
         );
-        let (generation, landed_project, staged, refresh) = rx
+        let result = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("diff worker must answer");
-        assert_eq!((generation, landed_project, staged), (7, project, false));
-        assert_ne!(refresh.worker, caller);
+        assert_eq!(result.key, key);
+        assert_ne!(result.refresh.worker, caller);
         // A plain temp dir resolves (pinned) but is not a repo.
-        assert_eq!(refresh.result.unwrap_err(), DiffEmpty::NotRepo);
+        assert_eq!(result.refresh.result.unwrap_err(), DiffEmpty::NotRepo);
+    }
+
+    #[test]
+    fn latest_diff_worker_keeps_only_one_pending_request() {
+        let caller = std::thread::current().id();
+        let worker = DiffWorker::new();
+        let project = ProjectId::new();
+        let root = std::env::temp_dir();
+        for generation in 0..64 {
+            let key = DiffRequestKey {
+                generation,
+                root_generation: generation + 1,
+                project,
+                path: Some(PathBuf::from(format!("file-{generation}.rs"))),
+                pinned_root: Some(root.clone()),
+                active_cwd: Some(root.clone()),
+                staged: generation % 2 == 1,
+                context_lines: generation as u8,
+            };
+            worker.submit(DiffSpawn {
+                key,
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+        }
+        let expected_latest_key = DiffRequestKey {
+            generation: 63,
+            root_generation: 64,
+            project,
+            path: Some(PathBuf::from("file-63.rs")),
+            pinned_root: Some(root.clone()),
+            active_cwd: Some(root),
+            staged: true,
+            context_lines: 63,
+        };
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(result) = worker.take_result()
+                && result.key.generation == 63
+            {
+                assert_ne!(result.refresh.worker, caller);
+                assert_eq!(result.key, expected_latest_key);
+                assert_eq!(result.refresh.result.unwrap_err(), DiffEmpty::NotRepo);
+                break;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 }

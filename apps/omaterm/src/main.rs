@@ -3,20 +3,21 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
     App, Application, AsyncApp, Bounds, ClipboardItem, Context, Div, ExternalPaths, FocusHandle,
     Font, FontFallbacks, HighlightStyle, Hsla, KeyDownEvent, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, ScrollDelta,
-    ScrollWheelEvent, SharedString, StyledText, TextRun, Timer, WeakEntity, Window, WindowBounds,
-    WindowOptions, canvas, div, font, hsla, prelude::*, px, relative, rgb, rgba, size,
+    ScrollStrategy, ScrollWheelEvent, SharedString, StyledText, TextRun, Timer,
+    UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, font,
+    hsla, prelude::*, px, relative, rgb, rgba, size, uniform_list,
 };
 use omaterm_core::{
-    CommandContext, CommandOutput, CommandResult, FileCommand, FileEntry, GitCommand, OmaCommand,
-    Pane, PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId,
-    SplitAxis, SplitDirection, TabCommand, TerminalCommand,
+    CommandContext, CommandOutput, CommandResult, DiffCommand, FileCommand, FileEntry, GitCommand,
+    OmaCommand, Pane, PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId,
+    SessionId, SplitAxis, SplitDirection, TabCommand, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -35,6 +36,7 @@ mod files;
 mod git_panel;
 mod history;
 mod ipc_bridge;
+mod palette;
 mod router;
 mod ui;
 mod workbench;
@@ -160,11 +162,30 @@ struct WorkspaceView {
     /// `Ctrl+P` fuzzy finder overlay state.
     ctrlp_open: bool,
     ctrlp_query: String,
-    ctrlp_results: Vec<FileEntry>,
+    ctrlp_caret_byte: usize,
+    ctrlp_results: Vec<palette::PaletteCandidate>,
+    ctrlp_static_results: Vec<palette::PaletteCandidate>,
     ctrlp_selected: usize,
     ctrlp_truncated: bool,
+    ctrlp_source_error: Option<String>,
     ctrlp_generation: u64,
-    ctrlp_rx: Option<std::sync::mpsc::Receiver<(u64, Vec<FileEntry>, bool)>>,
+    palette_search_worker: PaletteSearchWorker,
+    files_show_hidden: bool,
+    ctrlp_project: Option<ProjectId>,
+    ctrlp_origin: Option<PaletteOrigin>,
+    ctrlp_search_root: Option<std::path::PathBuf>,
+    palette_file_index: Arc<PaletteFileIndexCache>,
+    palette_scroll_handle: UniformListScrollHandle,
+    /// Successful palette actions, newest first; session-local and bounded.
+    palette_mru: Vec<String>,
+    /// Recent file targets are retained only in memory, scoped to the active
+    /// project/root and revalidated again on execution.
+    palette_recent_files: Vec<palette::PaletteCandidate>,
+    /// Candidate keys whose async create/split launch must commit before
+    /// the action is eligible for MRU promotion.
+    pending_palette_mru: HashMap<u64, String>,
+    pending_palette_origins: HashMap<u64, PaletteOrigin>,
+    process_list: Option<(ProjectId, omaterm_core::ProcessListInfo)>,
     ctrlp_caret_on: bool,
     ctrlp_blink_active: bool,
     /// M14 Source Control panel: last-good statuses, explicit empty/error
@@ -203,15 +224,18 @@ struct WorkspaceView {
     /// M15 unified-diff panel: last-good diffs per project+side, explicit
     /// empty/error states, file/hunk selection, staged toggle (GPUI-free).
     diff_panel: diff_panel::DiffPanel,
-    /// Background diff-refresh completions `(generation, project, staged,
-    /// outcome)`. Root resolution and `git diff` both run on the worker
-    /// (never the UI thread); stale generations drop on project switch.
-    diff_tx: std::sync::mpsc::Sender<(u64, ProjectId, bool, diff_panel::DiffRefresh)>,
-    diff_rx: std::sync::mpsc::Receiver<(u64, ProjectId, bool, diff_panel::DiffRefresh)>,
+    /// Native virtual-list positions keyed by project/side/path/mode so a
+    /// different preview cannot inherit another file's scroll offset.
+    diff_scroll_handles: HashMap<
+        (ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode),
+        UniformListScrollHandle,
+    >,
+    /// Single background Git worker with one replaceable pending selected diff.
+    diff_worker: diff_panel::DiffWorker,
     diff_generation: u64,
     /// Project+side with a refresh in flight, if any (one diff call at a
     /// time; the rest wait for the next poller tick).
-    diff_in_flight: Option<(ProjectId, bool)>,
+    diff_in_flight: Option<diff_panel::DiffRequestKey>,
     /// Last landed refresh per project+side (interval source).
     diff_refreshed_at: HashMap<(ProjectId, bool), Instant>,
     /// Set by manual refresh, staged-toggle, git mutations, and
@@ -256,6 +280,302 @@ struct IpcWork {
     reply: std::sync::mpsc::SyncSender<IpcResponse>,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PaletteOrigin {
+    project: Option<ProjectId>,
+    tab: Option<omaterm_core::TabId>,
+    pane: Option<PaneId>,
+    session: Option<SessionId>,
+}
+
+struct PaletteSearchResult {
+    generation: u64,
+    entries: Vec<palette::PaletteCandidate>,
+    truncated: bool,
+    error: Option<String>,
+    root: Option<std::path::PathBuf>,
+}
+
+struct PaletteSearchRequest {
+    generation: u64,
+    project: ProjectId,
+    query: String,
+    show_hidden: bool,
+    pinned: Option<std::path::PathBuf>,
+    active_cwd: Option<std::path::PathBuf>,
+    watched_root: Option<std::path::PathBuf>,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct CachedPaletteFileIndex {
+    project: ProjectId,
+    root: std::path::PathBuf,
+    show_hidden: bool,
+    index: Arc<omaterm_context::FileSearchIndex>,
+}
+
+#[derive(Default)]
+struct PaletteFileIndexState {
+    entry: Option<CachedPaletteFileIndex>,
+    building: bool,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct PaletteFileIndexCache {
+    state: Mutex<PaletteFileIndexState>,
+    ready: Condvar,
+}
+
+impl PaletteFileIndexCache {
+    fn get_or_build(
+        &self,
+        project: ProjectId,
+        root: &std::path::Path,
+        show_hidden: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Arc<omaterm_context::FileSearchIndex>>, omaterm_context::ContextError> {
+        let canonical = std::fs::canonicalize(root)?;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(entry) = &state.entry
+                && entry.project == project
+                && entry.root == canonical
+                && entry.show_hidden == show_hidden
+            {
+                return Ok(Some(Arc::clone(&entry.index)));
+            }
+            if !state.building {
+                state.building = true;
+                let generation = state.generation;
+                drop(state);
+                let built = omaterm_context::FileSearchIndex::build(
+                    &canonical,
+                    show_hidden,
+                    Some(cancelled),
+                );
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.building = false;
+                match built {
+                    Ok(Some(index)) => {
+                        let index = Arc::new(index);
+                        let still_current = state.generation == generation;
+                        if still_current {
+                            state.entry = Some(CachedPaletteFileIndex {
+                                project,
+                                root: index.root.clone(),
+                                show_hidden,
+                                index: Arc::clone(&index),
+                            });
+                        }
+                        self.ready.notify_all();
+                        return Ok(still_current.then_some(index));
+                    }
+                    Ok(None) => {
+                        self.ready.notify_all();
+                        return Ok(None);
+                    }
+                    Err(error) => {
+                        self.ready.notify_all();
+                        return Err(error);
+                    }
+                }
+            }
+            let waited = self
+                .ready
+                .wait_timeout(state, Duration::from_millis(20))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = waited.0;
+            drop(state);
+        }
+    }
+
+    fn invalidate(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.generation = state.generation.wrapping_add(1);
+        state.entry = None;
+        self.ready.notify_all();
+    }
+}
+
+#[derive(Default)]
+struct PaletteSearchWorkerState {
+    pending: Option<PaletteSearchRequest>,
+    active_cancel: Option<Arc<AtomicBool>>,
+    shutdown: bool,
+}
+
+struct PaletteSearchWorker {
+    state: Arc<(Mutex<PaletteSearchWorkerState>, Condvar)>,
+    result: Arc<Mutex<Option<PaletteSearchResult>>>,
+}
+
+impl PaletteSearchWorker {
+    fn new(cache: Arc<PaletteFileIndexCache>) -> Self {
+        let state = Arc::new((
+            Mutex::new(PaletteSearchWorkerState::default()),
+            Condvar::new(),
+        ));
+        let result = Arc::new(Mutex::new(None));
+        let worker_state = Arc::clone(&state);
+        let worker_result = Arc::clone(&result);
+        std::thread::spawn(move || {
+            loop {
+                let request = {
+                    let (lock, ready) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    while state.pending.is_none() && !state.shutdown {
+                        state = ready
+                            .wait(state)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                    if state.shutdown {
+                        return;
+                    }
+                    let request = state.pending.take().expect("palette request exists");
+                    state.active_cancel = Some(Arc::clone(&request.cancelled));
+                    request
+                };
+                let cancellation = Arc::clone(&request.cancelled);
+                let response = run_palette_search(request, &cache);
+                {
+                    let (lock, _) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if state
+                        .active_cancel
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &cancellation))
+                    {
+                        state.active_cancel = None;
+                    }
+                }
+                if let Ok(mut result) = worker_result.lock() {
+                    *result = Some(response);
+                }
+            }
+        });
+        Self { state, result }
+    }
+
+    fn submit(&self, mut request: PaletteSearchRequest) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutdown {
+            return;
+        }
+        if let Some(active) = &state.active_cancel {
+            active.store(true, Ordering::Release);
+        }
+        if let Some(pending) = state.pending.take() {
+            pending.cancelled.store(true, Ordering::Release);
+        }
+        request.cancelled = Arc::new(AtomicBool::new(false));
+        state.pending = Some(request);
+        if let Ok(mut result) = self.result.lock() {
+            *result = None;
+        }
+        ready.notify_one();
+    }
+
+    fn take_result(&self) -> Option<PaletteSearchResult> {
+        self.result.lock().ok().and_then(|mut result| result.take())
+    }
+
+    fn cancel_current(&self) {
+        let (lock, _) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(active) = &state.active_cancel {
+            active.store(true, Ordering::Release);
+        }
+        if let Some(pending) = state.pending.take() {
+            pending.cancelled.store(true, Ordering::Release);
+        }
+        if let Ok(mut result) = self.result.lock() {
+            *result = None;
+        }
+    }
+
+    fn shutdown(&self) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutdown = true;
+        if let Some(active) = &state.active_cancel {
+            active.store(true, Ordering::Release);
+        }
+        if let Some(pending) = state.pending.take() {
+            pending.cancelled.store(true, Ordering::Release);
+        }
+        ready.notify_one();
+    }
+}
+
+fn run_palette_search(
+    request: PaletteSearchRequest,
+    cache: &PaletteFileIndexCache,
+) -> PaletteSearchResult {
+    let PaletteSearchRequest {
+        generation,
+        project,
+        query,
+        show_hidden,
+        pinned,
+        active_cwd,
+        watched_root,
+        cancelled,
+    } = request;
+    let root = watched_root
+        .or_else(|| omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref()).root);
+    let (entries, truncated, error, root) = match root {
+        Some(root) => match cache.get_or_build(project, &root, show_hidden, &cancelled) {
+            Ok(Some(index)) => match index.search(&query, 100, Some(&cancelled)) {
+                Some(list) => {
+                    let entries = list
+                        .entries
+                        .into_iter()
+                        .map(|entry| {
+                            palette::file_candidate(
+                                project,
+                                &index.root,
+                                entry.path.clone(),
+                                entry.path.to_string_lossy().into_owned(),
+                            )
+                        })
+                        .collect();
+                    (entries, list.truncated, None, Some(index.root.clone()))
+                }
+                None => (Vec::new(), false, None, Some(index.root.clone())),
+            },
+            Ok(None) => (Vec::new(), false, None, Some(root)),
+            Err(error) => (Vec::new(), false, Some(error.to_string()), Some(root)),
+        },
+        None => (
+            Vec::new(),
+            false,
+            Some("Project has no file root.".into()),
+            None,
+        ),
+    };
+    PaletteSearchResult {
+        generation,
+        entries,
+        truncated,
+        error,
+        root,
+    }
 }
 
 enum PendingUiLaunch {
@@ -322,8 +642,8 @@ impl WorkspaceView {
         // Background git-status channel (M14): root resolution and the
         // status subprocess both run on the worker, never the UI thread.
         let (git_tx, git_rx) = std::sync::mpsc::channel();
-        // Background diff channel (M15): same contract for `git diff`.
-        let (diff_tx, diff_rx) = std::sync::mpsc::channel();
+        let palette_file_index = Arc::new(PaletteFileIndexCache::default());
+        let palette_search_worker = PaletteSearchWorker::new(Arc::clone(&palette_file_index));
         let mut view = Self {
             focus_handle,
             coordinator: router::CommandRouter::new(coordinator),
@@ -388,11 +708,25 @@ impl WorkspaceView {
             files_poller_active: false,
             ctrlp_open: false,
             ctrlp_query: String::new(),
+            ctrlp_caret_byte: 0,
             ctrlp_results: Vec::new(),
+            ctrlp_static_results: Vec::new(),
             ctrlp_selected: 0,
             ctrlp_truncated: false,
+            ctrlp_source_error: None,
             ctrlp_generation: 0,
-            ctrlp_rx: None,
+            palette_search_worker,
+            files_show_hidden: app_config.show_hidden(),
+            ctrlp_project: None,
+            ctrlp_origin: None,
+            ctrlp_search_root: None,
+            palette_file_index,
+            palette_scroll_handle: UniformListScrollHandle::new(),
+            palette_mru: Vec::new(),
+            palette_recent_files: Vec::new(),
+            pending_palette_mru: HashMap::new(),
+            pending_palette_origins: HashMap::new(),
+            process_list: None,
             ctrlp_caret_on: true,
             ctrlp_blink_active: false,
             git_panel: git_panel::GitPanel::default(),
@@ -411,8 +745,8 @@ impl WorkspaceView {
             inspector_resize: None,
             inspector_tab: InspectorTab::Info,
             diff_panel: diff_panel::DiffPanel::default(),
-            diff_tx,
-            diff_rx,
+            diff_scroll_handles: HashMap::new(),
+            diff_worker: diff_panel::DiffWorker::new(),
             diff_generation: 0,
             diff_in_flight: None,
             diff_refreshed_at: HashMap::new(),
@@ -879,6 +1213,8 @@ impl WorkspaceView {
             return;
         }
         self.shutting_down = true;
+        let diff_thread = self.diff_worker.take_shutdown_thread();
+        self.palette_search_worker.shutdown();
         if let Some(receiver) = self.ipc_receiver.take() {
             receiver.close();
         }
@@ -893,6 +1229,8 @@ impl WorkspaceView {
         let ipc_server = self.ipc_server.take();
         self.coordinator.cancel_launches();
         self.pending_ui_launches.clear();
+        self.pending_palette_mru.clear();
+        self.pending_palette_origins.clear();
         self.save_revision = self.save_revision.wrapping_add(1);
         let revision = self.save_revision;
         let snapshot = self.snapshot();
@@ -907,6 +1245,9 @@ impl WorkspaceView {
             .collect::<Vec<_>>();
         let (done_tx, done_rx) = async_channel::bounded::<Result<(), String>>(1);
         std::thread::spawn(move || {
+            if let Some(thread) = diff_thread {
+                let _ = thread.join();
+            }
             if let Some(mut server) = ipc_server {
                 let _ = server.shutdown();
             }
@@ -1174,6 +1515,10 @@ impl WorkspaceView {
             &command,
             OmaCommand::Terminal(TerminalCommand::RunCommand { .. })
         );
+        let root_change = match &command {
+            OmaCommand::Project(ProjectCommand::SetDirectory { project, .. }) => Some(*project),
+            _ => None,
+        };
         let outcome = self
             .coordinator
             .dispatch_async(CommandContext::LocalUser, command);
@@ -1189,6 +1534,28 @@ impl WorkspaceView {
         if output.is_ok() && submitted_run {
             self.git_dirty_hint = true;
             self.diff_dirty_hint = true;
+        }
+        if output.is_ok()
+            && let Some(project) = root_change
+        {
+            self.files_generation = self.files_generation.wrapping_add(1);
+            self.files_watcher = None;
+            self.files_watched = None;
+            self.files_arming = None;
+            self.files_last_resolve = Instant::now()
+                .checked_sub(Duration::from_secs(6))
+                .unwrap_or_else(Instant::now);
+            self.files_panel.clear_project(project);
+            self.invalidate_palette_file_index();
+            self.git_dirty_hint = true;
+            self.diff_generation = self.diff_generation.wrapping_add(1);
+            self.diff_worker.cancel();
+            self.diff_panel.invalidate_data(project);
+            self.diff_in_flight = None;
+            self.diff_dirty_hint = true;
+            if self.ctrlp_open && self.coordinator.selected_project_id() == Some(project) {
+                self.ctrlp_search(cx);
+            }
         }
         output
     }
@@ -1265,6 +1632,14 @@ impl WorkspaceView {
                 continue;
             }
             let ui = self.pending_ui_launches.remove(&operation_id);
+            let palette_key = self.pending_palette_mru.remove(&operation_id);
+            if matches!(&outcome.result, CommandResult::Ok(_))
+                && let Some(key) = palette_key
+            {
+                self.palette_mru.retain(|existing| existing != &key);
+                self.palette_mru.insert(0, key);
+                self.palette_mru.truncate(100);
+            }
             match (&outcome.result, ui) {
                 (CommandResult::Ok(_), Some(PendingUiLaunch::Restore { pane, .. })) => {
                     self.restored_failures.remove(&pane);
@@ -1792,6 +2167,20 @@ impl WorkspaceView {
         }
     }
 
+    fn refresh_process_list(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        match self.dispatch_command(
+            OmaCommand::Process(omaterm_core::ProcessCommand::List { project }),
+            cx,
+        ) {
+            Ok(CommandOutput::ProcessList(info)) => self.process_list = Some((project, info)),
+            Ok(_) => {
+                self.input_notice = Some("Process query returned an unexpected result.".into())
+            }
+            Err(error) => self.input_notice = Some(format!("Process refresh: {error}")),
+        }
+        cx.notify();
+    }
+
     /// Effective top-level cap for a project: the `Show more` paging
     /// override or the configured file default.
     fn files_root_cap(&self, project: ProjectId) -> usize {
@@ -1981,25 +2370,41 @@ impl WorkspaceView {
         // M14 status refresh rides the same 250ms poller: drains landed
         // workers and spawns at most one fetch per tick. M15 diff rides
         // along with the same one-fetch-per-tick bound per surface.
-        self.git_tick(cx);
+        let git_landed = self.git_tick(cx);
         self.diff_tick(cx);
-        // Latest `Ctrl+P` result wins; stale generations are dropped.
-        if let Some(rx) = self.ctrlp_rx.as_ref() {
-            let mut latest = None;
-            while let Ok(result) = rx.try_recv() {
-                latest = Some(result);
+        if self.ctrlp_open
+            && (git_landed || self.coordinator.selected_project_id() != self.ctrlp_project)
+        {
+            self.ctrlp_search(cx);
+        }
+        // The latest-source worker owns one active request and one replaceable
+        // pending request; each completion is tagged by query generation.
+        if let Some(result) = self.palette_search_worker.take_result()
+            && result.generation == self.ctrlp_generation
+            && self.ctrlp_open
+        {
+            let query = self.ctrlp_query.trim_start_matches('>').trim();
+            let (ranked, merged_truncated) = palette::rank_with_truncation(
+                self.ctrlp_static_results
+                    .iter()
+                    .cloned()
+                    .chain(result.entries),
+                query,
+                palette::MAX_PALETTE_RESULTS,
+            );
+            self.ctrlp_results = ranked;
+            self.ctrlp_selected = 0;
+            if !self.ctrlp_results.is_empty() {
+                self.palette_scroll_handle
+                    .scroll_to_item(0, ScrollStrategy::Top);
             }
-            if let Some((generation, entries, truncated)) = latest
-                && generation == self.ctrlp_generation
-                && self.ctrlp_open
-            {
-                self.ctrlp_results = entries;
-                self.ctrlp_selected = 0;
-                self.ctrlp_truncated = truncated;
-                cx.notify();
-            }
+            self.ctrlp_truncated |= result.truncated || merged_truncated;
+            self.ctrlp_source_error = result.error;
+            self.ctrlp_search_root = result.root;
+            cx.notify();
         }
         let project = self.coordinator.selected_project_id();
+        self.ctrlp_project = project;
         let switched = project != self.files_panel.rows_project_for_tick();
         let event_due = self.files_event.load(Ordering::Acquire)
             && self
@@ -2083,6 +2488,7 @@ impl WorkspaceView {
             // New generation retires in-flight fetches; other projects'
             // caches drop so memory stays bounded by one project.
             self.files_generation = self.files_generation.wrapping_add(1);
+            self.invalidate_palette_file_index();
             self.files_panel.unpend_all(project);
             self.files_arming = None;
             for other in self
@@ -2115,8 +2521,15 @@ impl WorkspaceView {
                 (Some(_), None) => true,
                 (None, _) => false,
             };
+            if self.ctrlp_open && self.files_watched.is_none() && !changed {
+                // Without a live watcher, periodically retire the cached
+                // filename snapshot so palette results still converge.
+                self.invalidate_palette_file_index();
+                self.ctrlp_search(cx);
+            }
             if changed {
                 self.files_generation = self.files_generation.wrapping_add(1);
+                self.invalidate_palette_file_index();
                 self.files_panel.clear_project(project);
                 self.files_arming = None;
                 self.refresh_files(cx);
@@ -2141,6 +2554,7 @@ impl WorkspaceView {
         // moves) and coalesces to ~1Hz, so a busy filesystem can never
         // keep the UI thread hot.
         if event_due && self.files_last_event_refresh.elapsed() >= Duration::from_secs(1) {
+            self.invalidate_palette_file_index();
             self.files_event.store(false, Ordering::Release);
             self.files_last_event_refresh = Instant::now();
             let paths = self
@@ -2157,6 +2571,9 @@ impl WorkspaceView {
                 );
             }
             self.refresh_files_events(project, paths, cx);
+            if self.ctrlp_open {
+                self.ctrlp_search(cx);
+            }
         }
         true
     }
@@ -2233,9 +2650,9 @@ impl WorkspaceView {
     /// project is new, dirty-hinted, or past its refresh interval. Only
     /// cheap clones happen on this thread (pinned dir, shell CWD path);
     /// root resolution and `git status` run on the worker.
-    fn git_tick(&mut self, cx: &mut Context<Self>) {
+    fn git_tick(&mut self, cx: &mut Context<Self>) -> bool {
         if self.shutting_down {
-            return;
+            return false;
         }
         let mut landed = false;
         while let Ok((generation, project, refresh)) = self.git_rx.try_recv() {
@@ -2255,7 +2672,7 @@ impl WorkspaceView {
             cx.notify();
         }
         let Some(project) = self.coordinator.selected_project_id() else {
-            return;
+            return landed;
         };
         // A switch retires in-flight work (landings drop by generation)
         // and bounds memory to one project (files panel precedent).
@@ -2277,7 +2694,7 @@ impl WorkspaceView {
             }
         }
         if self.git_in_flight.is_some() {
-            return;
+            return landed;
         }
         let config = omaterm_state::AppConfig::load().unwrap_or_default();
         let interval = Duration::from_secs(config.resolved_git_refresh_secs().clamp(1, 300));
@@ -2290,7 +2707,7 @@ impl WorkspaceView {
             interval,
             Instant::now(),
         ) {
-            return;
+            return landed;
         }
         let pinned = self.coordinator.pinned_for(project);
         let active_cwd = self.coordinator.shell_cwd_for(project);
@@ -2308,6 +2725,7 @@ impl WorkspaceView {
         );
         self.git_in_flight = Some(project);
         self.git_dirty_hint = false;
+        landed
     }
 
     /// M15 diff refresh on the same 250ms poller: drains landed workers
@@ -2318,79 +2736,94 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
+        let current_project = self.coordinator.selected_project_id();
+        let current_diff_key = current_project.map(|project| diff_panel::DiffRequestKey {
+            generation: self.diff_generation,
+            root_generation: self.files_generation,
+            project,
+            path: self.diff_panel.selected_file(project).cloned(),
+            pinned_root: self.coordinator.pinned_for(project),
+            active_cwd: self.coordinator.cached_shell_cwd_for(project),
+            staged: self.diff_panel.show_staged(project),
+            context_lines: 3,
+        });
         let mut landed = false;
-        while let Ok((generation, project, staged, refresh)) = self.diff_rx.try_recv() {
-            if generation != self.diff_generation {
+        while let Some(result) = self.diff_worker.take_result() {
+            let key = result.key.clone();
+            debug_assert_ne!(result.refresh.worker, std::thread::current().id());
+            if !self.diff_panel.apply_current_refresh(
+                result,
+                self.diff_in_flight.as_ref(),
+                current_diff_key.as_ref(),
+            ) {
                 continue;
             }
-            // Landed work ran off this thread by construction; pin it.
-            debug_assert_ne!(refresh.worker, std::thread::current().id());
-            if self.diff_in_flight == Some((project, staged)) {
-                self.diff_in_flight = None;
-            }
-            self.diff_panel.apply_refresh(project, staged, refresh);
+            self.diff_in_flight = None;
             self.diff_refreshed_at
-                .insert((project, staged), Instant::now());
+                .insert((key.project, key.staged), Instant::now());
             landed = true;
         }
         if landed {
             cx.notify();
         }
         let Some(project) = self.coordinator.selected_project_id() else {
+            self.diff_worker.cancel();
+            self.diff_panel.retain_project(None);
+            self.diff_scroll_handles.clear();
+            self.diff_refreshed_at.clear();
+            self.diff_in_flight = None;
+            self.diff_last_project = None;
             return;
         };
         if self.diff_last_project != Some(project) {
             self.diff_last_project = Some(project);
             self.diff_generation = self.diff_generation.wrapping_add(1);
             self.diff_in_flight = None;
-            for other in self
-                .coordinator
-                .projects()
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>()
-            {
-                if other != project {
-                    self.diff_panel.clear_project(other);
-                    self.diff_refreshed_at.remove(&(other, false));
-                    self.diff_refreshed_at.remove(&(other, true));
-                }
-            }
-        }
-        if self.diff_in_flight.is_some() {
-            return;
+            self.diff_worker.cancel();
+            self.diff_panel.retain_project(Some(project));
+            self.diff_refreshed_at
+                .retain(|(owner, _), _| *owner == project);
+            self.diff_scroll_handles
+                .retain(|(owner, _, _, _), _| *owner == project);
         }
         let staged = self.diff_panel.show_staged(project);
+        let path = self.diff_panel.selected_file(project).cloned();
+        let pinned_root = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.cached_shell_cwd_for(project);
+        let key = diff_panel::DiffRequestKey {
+            generation: self.diff_generation,
+            root_generation: self.files_generation,
+            project,
+            path: path.clone(),
+            pinned_root,
+            active_cwd,
+            staged,
+            context_lines: 3,
+        };
+        if self.diff_in_flight.as_ref() == Some(&key) {
+            return;
+        }
+        let supersedes = self.diff_in_flight.is_some();
         let config = omaterm_state::AppConfig::load().unwrap_or_default();
         let interval = Duration::from_secs(config.resolved_git_refresh_secs().clamp(1, 300));
         let known = self.diff_panel.diff_for(project, staged).is_some()
             || self.diff_panel.empty_for(project, staged).is_some();
-        if !git_panel::should_refresh(
-            known,
-            self.diff_dirty_hint,
-            self.diff_refreshed_at.get(&(project, staged)).copied(),
-            interval,
-            Instant::now(),
-        ) {
+        if !supersedes
+            && !git_panel::should_refresh(
+                known,
+                self.diff_dirty_hint,
+                self.diff_refreshed_at.get(&(project, staged)).copied(),
+                interval,
+                Instant::now(),
+            )
+        {
             return;
         }
-        let pinned = self.coordinator.pinned_for(project);
-        let active_cwd = self.coordinator.shell_cwd_for(project);
-        let tx = self.diff_tx.clone();
-        diff_panel::spawn_diff_thread(
-            std::thread::current().id(),
-            diff_panel::DiffSpawn {
-                project,
-                path: self.diff_panel.selected_file(project).cloned(),
-                staged,
-                generation: self.diff_generation,
-                pinned,
-                active_cwd,
-                context_lines: 3,
-                tx,
-            },
-        );
-        self.diff_in_flight = Some((project, staged));
+        self.diff_worker.submit(diff_panel::DiffSpawn {
+            key: key.clone(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        });
+        self.diff_in_flight = Some(key);
         self.diff_dirty_hint = false;
     }
 
@@ -2449,12 +2882,80 @@ impl WorkspaceView {
         }
         // Invalidate both cached comparisons, including after a stale request.
         self.diff_generation = self.diff_generation.wrapping_add(1);
+        self.diff_worker.cancel();
+        self.diff_panel.invalidate_data(project);
         self.diff_in_flight = None;
         self.diff_refreshed_at.remove(&(project, false));
         self.diff_refreshed_at.remove(&(project, true));
         self.git_dirty_hint = true;
         self.diff_dirty_hint = true;
         cx.notify();
+    }
+
+    fn reveal_current_diff_hunk(&mut self, project: ProjectId) {
+        let staged = self.diff_panel.show_staged(project);
+        let Some(path) = self.diff_panel.selected_file(project).cloned() else {
+            return;
+        };
+        let mode = self.diff_panel.diff_mode(project);
+        let Some(rows) = self.diff_panel.preview_rows_for(project, staged) else {
+            return;
+        };
+        if let Some(row) = diff_panel::hunk_row_index(&rows, self.diff_panel.selected_hunk(project))
+        {
+            self.diff_scroll_handles
+                .entry((project, staged, path, mode))
+                .or_default()
+                .scroll_to_item(row, ScrollStrategy::Center);
+        }
+    }
+
+    fn stage_current_diff_hunk(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        let staged = self.diff_panel.show_staged(project);
+        let selected = self.diff_panel.selected_file(project).cloned();
+        let hunk_index = self.diff_panel.selected_hunk(project);
+        let target = selected.and_then(|path| {
+            let file = self
+                .diff_panel
+                .diff_for(project, staged)?
+                .files
+                .iter()
+                .find(|file| file.path == path)?;
+            let hunk = file.hunks.get(hunk_index)?;
+            diff_panel::can_stage_hunk(file, hunk, staged).then_some((path, hunk.id))
+        });
+        if let Some((path, id)) = target {
+            self.diff_stage_hunk(project, path, id, cx);
+        } else {
+            self.input_notice = Some("Selected hunk cannot be staged.".into());
+            cx.notify();
+        }
+    }
+
+    fn copy_current_diff_hunk(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        let staged = self.diff_panel.show_staged(project);
+        let selected = self.diff_panel.selected_file(project);
+        let hunk_index = self.diff_panel.selected_hunk(project);
+        let text = selected.and_then(|path| {
+            let file = self
+                .diff_panel
+                .diff_for(project, staged)?
+                .files
+                .iter()
+                .find(|file| &file.path == path)?;
+            if file.binary || file.truncated {
+                return None;
+            }
+            let hunk = file.hunks.get(hunk_index)?;
+            (!hunk.truncated).then(|| diff_panel::unified_hunk_text(hunk))
+        });
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.show_toast("Copied hunk".into(), cx);
+        } else {
+            self.input_notice = Some("Selected hunk cannot be copied completely.".into());
+            cx.notify();
+        }
     }
 
     /// Unstage one file from the staged diff side (whole-file scope,
@@ -2658,7 +3159,10 @@ impl WorkspaceView {
     /// terminal-only (M13/M17 scope).
     fn git_select_path(&mut self, project: ProjectId, path: std::path::PathBuf, staged: bool) {
         self.diff_generation = self.diff_generation.wrapping_add(1);
+        self.diff_worker.cancel();
         self.diff_in_flight = None;
+        self.diff_scroll_handles
+            .retain(|(owner, _, selected, _), _| *owner != project || selected == &path);
         self.git_panel.select(project, path.clone());
         self.diff_panel.select_file(project, path);
         self.diff_panel.set_show_staged(project, staged);
@@ -2879,23 +3383,351 @@ impl WorkspaceView {
         }
     }
 
-    fn toggle_ctrlp(&mut self, cx: &mut Context<Self>) {
+    fn open_palette(&mut self, command_mode: bool, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
         }
-        self.ctrlp_open = !self.ctrlp_open;
-        if self.ctrlp_open {
-            self.ctrlp_query.clear();
-            self.ctrlp_results.clear();
-            self.ctrlp_selected = 0;
-            self.ctrlp_truncated = false;
-            self.ctrlp_caret_on = true;
-            self.ensure_ctrlp_blink(cx);
-            self.ctrlp_search(cx);
+        self.ctrlp_open = true;
+        self.ctrlp_origin = Some(PaletteOrigin {
+            project: self.coordinator.selected_project_id(),
+            tab: self.coordinator.selected_tab_id(),
+            pane: self.coordinator.focused(),
+            session: self.coordinator.focused_session_id(),
+        });
+        self.ctrlp_query = if command_mode {
+            ">".into()
         } else {
-            self.ctrlp_rx = None;
-        }
+            String::new()
+        };
+        self.ctrlp_caret_byte = self.ctrlp_query.len();
+        self.ctrlp_results.clear();
+        self.ctrlp_static_results.clear();
+        self.ctrlp_selected = 0;
+        self.palette_scroll_handle
+            .scroll_to_item(0, ScrollStrategy::Top);
+        self.ctrlp_truncated = false;
+        self.ctrlp_source_error = None;
+        self.ctrlp_search_root = None;
+        self.ctrlp_caret_on = true;
+        self.ensure_ctrlp_blink(cx);
+        self.ctrlp_search(cx);
         cx.notify();
+    }
+
+    fn palette_static_candidates(
+        &self,
+        command_mode: bool,
+    ) -> (Vec<palette::PaletteCandidate>, bool) {
+        use palette::{PaletteCandidate as Candidate, PaletteKind as Kind, PaletteTarget};
+
+        let mut candidates = Vec::new();
+        let mut candidate_keys = std::collections::HashSet::new();
+        let mut source_truncated = false;
+        let mut add = |candidate: Candidate| {
+            if !candidate_keys.insert(candidate.key.clone()) {
+                return;
+            }
+            if candidates.len() >= palette::MAX_PALETTE_SOURCE_CANDIDATES {
+                source_truncated = true;
+                return;
+            }
+            candidates.push(candidate);
+        };
+        let projects = self.coordinator.projects();
+        let selected_project = self.coordinator.selected_project_id();
+        let active_pane = self.coordinator.focused();
+
+        if command_mode {
+            let mut command = |key: &str, label: &str, aliases: &[&str], value: OmaCommand| {
+                add(palette::semantic_candidate(
+                    key,
+                    label,
+                    "Command",
+                    aliases.iter().copied(),
+                    Kind::Command,
+                    value,
+                ));
+            };
+            command(
+                "command.project.new",
+                "New Project",
+                &["project create", "open project"],
+                OmaCommand::Project(ProjectCommand::Create {
+                    name: None,
+                    directory: None,
+                }),
+            );
+            if let Some(project) = selected_project {
+                if let Some(tab) = self.coordinator.selected_tab_id() {
+                    command(
+                        "command.tab.close",
+                        "Close Current Tab",
+                        &["tab close", "close tab"],
+                        OmaCommand::Tab(TabCommand::Close { tab }),
+                    );
+                }
+                command(
+                    "command.tab.new",
+                    "New Tab",
+                    &["tab create"],
+                    OmaCommand::Tab(TabCommand::Create {
+                        project,
+                        name: None,
+                    }),
+                );
+                command(
+                    "command.terminal.new",
+                    "New Terminal Tab",
+                    &["terminal create", "new shell"],
+                    OmaCommand::Terminal(TerminalCommand::Create {
+                        project,
+                        directory: None,
+                    }),
+                );
+                command(
+                    "command.git.refresh",
+                    "Refresh Git Changes",
+                    &["git refresh", "source control refresh"],
+                    OmaCommand::Git(GitCommand::Status { project }),
+                );
+                command(
+                    "command.process.refresh",
+                    "Refresh Process List",
+                    &["process list", "refresh processes"],
+                    OmaCommand::Process(omaterm_core::ProcessCommand::List { project }),
+                );
+                let diff_path = self
+                    .diff_panel
+                    .selected_file(project)
+                    .or_else(|| self.git_panel.selected_path(project))
+                    .cloned();
+                if let Some(path) = diff_path {
+                    command(
+                        "command.diff.refresh",
+                        "Refresh Selected Diff",
+                        &["diff refresh", "refresh diff"],
+                        OmaCommand::Diff(DiffCommand::Show {
+                            project,
+                            path: Some(path),
+                            staged: self.diff_panel.show_staged(project),
+                            context_lines: 3,
+                        }),
+                    );
+                }
+                if let Some(pane) = active_pane {
+                    for (label, key, direction) in [
+                        ("Split Left", "left", SplitDirection::Left),
+                        ("Split Right", "right", SplitDirection::Right),
+                        ("Split Up", "up", SplitDirection::Up),
+                        ("Split Down", "down", SplitDirection::Down),
+                    ] {
+                        command(
+                            &format!("command.pane.split.{key}"),
+                            label,
+                            &["split", key],
+                            OmaCommand::Pane(PaneCommand::Split {
+                                target: pane,
+                                direction,
+                            }),
+                        );
+                    }
+                    command(
+                        "command.pane.close",
+                        "Close Focused Pane",
+                        &["pane close", "close pane"],
+                        OmaCommand::Pane(PaneCommand::Close { pane }),
+                    );
+                    command(
+                        "command.pane.resize.grow",
+                        "Grow Focused Pane",
+                        &["pane resize", "grow pane"],
+                        OmaCommand::Pane(PaneCommand::ResizeFocused { amount: 0.1 }),
+                    );
+                    command(
+                        "command.pane.resize.shrink",
+                        "Shrink Focused Pane",
+                        &["pane resize", "shrink pane"],
+                        OmaCommand::Pane(PaneCommand::ResizeFocused { amount: -0.1 }),
+                    );
+                }
+                for (label, key, direction) in [
+                    ("Focus Left", "left", SplitDirection::Left),
+                    ("Focus Right", "right", SplitDirection::Right),
+                    ("Focus Up", "up", SplitDirection::Up),
+                    ("Focus Down", "down", SplitDirection::Down),
+                ] {
+                    command(
+                        &format!("command.pane.focus.{key}"),
+                        label,
+                        &["focus", key],
+                        OmaCommand::Pane(PaneCommand::FocusDirection { direction }),
+                    );
+                }
+                command(
+                    "command.pane.equalize",
+                    "Equalize Panes",
+                    &["pane equalize", "equalize"],
+                    OmaCommand::Pane(PaneCommand::EqualizeSelected),
+                );
+            }
+        } else {
+            for (project_index, project) in projects.iter().enumerate() {
+                let name = project.display_name(project_index + 1);
+                let project_short = project.id.0.simple().to_string();
+                add(palette::semantic_candidate(
+                    format!("project:{}", project.id.0),
+                    format!("{name} · {}", &project_short[..8]),
+                    format!("Project · {}", project.id.0),
+                    [project.id.0.to_string()],
+                    Kind::Project,
+                    OmaCommand::Project(ProjectCommand::Select {
+                        project: project.id,
+                    }),
+                ));
+                for (tab_index, tab) in project.tabs.iter().enumerate() {
+                    let tab_name = tab.display_name(tab_index + 1);
+                    let tab_short = tab.id.0.simple().to_string();
+                    add(palette::semantic_candidate(
+                        format!("tab:{}", tab.id.0),
+                        format!("{tab_name} · {}", &tab_short[..8]),
+                        format!("{name} · Tab · {}", tab.id.0),
+                        [tab.id.0.to_string()],
+                        Kind::Tab,
+                        OmaCommand::Tab(TabCommand::Select { tab: tab.id }),
+                    ));
+                    for pane in tab.tree.panes() {
+                        let pane_short = pane.id.0.simple().to_string();
+                        let expected_session = match &pane.content {
+                            PaneContent::Terminal(session) => Some(*session),
+                            PaneContent::Empty => None,
+                        };
+                        let pane_title = expected_session.map_or_else(
+                            || "Empty pane".to_owned(),
+                            |session| format!("Pane · session {}", session.0),
+                        );
+                        add(Candidate {
+                            key: format!("pane:{}", pane.id.0),
+                            label: format!("{pane_title} · {}", &pane_short[..8]),
+                            detail: format!("{name} · {tab_name} · {}", pane.id.0),
+                            aliases: vec![pane.id.0.to_string()],
+                            kind: Kind::Pane,
+                            target: PaletteTarget::PaneFocus {
+                                pane: pane.id,
+                                expected_session,
+                            },
+                            file_root: None,
+                            mru_rank: None,
+                        });
+                        if let PaneContent::Terminal(session) = &pane.content {
+                            add(Candidate {
+                                key: format!("session:{}", session.0),
+                                label: format!("Session · {}", session.0),
+                                detail: format!("{name} · {tab_name} · pane {}", pane.id.0),
+                                aliases: vec![session.0.to_string()],
+                                kind: Kind::Session,
+                                target: PaletteTarget::PaneFocus {
+                                    pane: pane.id,
+                                    expected_session: Some(*session),
+                                },
+                                file_root: None,
+                                mru_rank: None,
+                            });
+                        }
+                    }
+                }
+            }
+            if let Some(project) = selected_project
+                && let Some(status) = self.git_panel.status_for(project)
+            {
+                for (staged, entries) in [
+                    (true, status.staged.as_slice()),
+                    (false, status.unstaged.as_slice()),
+                    (false, status.untracked.as_slice()),
+                ] {
+                    for entry in entries {
+                        let path = entry.path.clone();
+                        let path_display = path.to_string_lossy().into_owned();
+                        let suffix = if staged { "staged" } else { "working" };
+                        let display = format!(
+                            "{} · {}",
+                            path_display,
+                            if staged { "Staged" } else { "Working Tree" }
+                        );
+                        add(Candidate {
+                            key: format!(
+                                "git:{}:{suffix}:{}",
+                                project.0,
+                                palette::path_identity(&path)
+                            ),
+                            label: display,
+                            detail: path_display,
+                            aliases: Vec::new(),
+                            kind: Kind::GitPath,
+                            file_root: None,
+                            target: PaletteTarget::GitDiff {
+                                project,
+                                path,
+                                staged,
+                            },
+                            mru_rank: None,
+                        });
+                    }
+                }
+            }
+            if let Some(project) = selected_project
+                && let Some((watched_project, root)) = &self.files_watched
+                && *watched_project == project
+                && let Ok(cache) = self.palette_file_index.state.lock()
+                && let Some(index) = cache
+                    .entry
+                    .as_ref()
+                    .filter(|entry| entry.project == project && entry.root == *root)
+            {
+                for recent in &self.palette_recent_files {
+                    let Some((owner, path)) = recent.file_target() else {
+                        continue;
+                    };
+                    if owner == project
+                        && recent.file_root.as_deref() == Some(root.as_path())
+                        && index.index.contains(&path)
+                    {
+                        add(recent.clone());
+                    }
+                }
+            }
+        }
+        for candidate in &mut candidates {
+            candidate.mru_rank = self
+                .palette_mru
+                .iter()
+                .position(|key| key == &candidate.key);
+        }
+        (candidates, source_truncated)
+    }
+
+    fn palette_query(&self) -> &str {
+        self.ctrlp_query.trim_start_matches('>').trim()
+    }
+
+    fn invalidate_palette_file_index(&self) {
+        self.palette_file_index.invalidate();
+    }
+
+    fn palette_insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let available = palette::MAX_PALETTE_QUERY_BYTES.saturating_sub(self.ctrlp_query.len());
+        let mut inserted = String::new();
+        for ch in text.chars() {
+            if !ch.is_control() && inserted.len() + ch.len_utf8() <= available {
+                inserted.push(ch);
+            }
+        }
+        self.ctrlp_query
+            .insert_str(self.ctrlp_caret_byte, &inserted);
+        self.ctrlp_caret_byte += inserted.len();
+        if !inserted.is_empty() {
+            self.ctrlp_search(cx);
+            cx.notify();
+        }
     }
 
     /// Drives the finder caret blink (~530ms, VSCode-like rate). One task
@@ -2932,33 +3764,66 @@ impl WorkspaceView {
     /// Run the fuzzy search on a background thread against a
     /// router-resolved root; results land via the files poller keyed by
     /// generation (stale keystrokes never overwrite newer ones).
-    fn ctrlp_search(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.coordinator.selected_project_id() else {
-            self.ctrlp_results.clear();
-            return;
-        };
-        let query = self.ctrlp_query.clone();
-        if query.is_empty() {
-            self.ctrlp_results.clear();
-            self.ctrlp_selected = 0;
-            self.ctrlp_truncated = false;
-            return;
-        }
-        let root = self.files_project_root(project, cx);
-        let config = omaterm_state::AppConfig::load().unwrap_or_default();
-        let show_hidden = config.show_hidden();
+    fn ctrlp_search(&mut self, _cx: &mut Context<Self>) {
+        let project = self.coordinator.selected_project_id();
+        let command_mode = self.ctrlp_query.starts_with('>');
+        let query = self.palette_query().to_owned();
+        let (static_results, source_truncated) = self.palette_static_candidates(command_mode);
+        self.ctrlp_static_results = static_results;
+        let (ranked, rank_truncated) = palette::rank_with_truncation(
+            self.ctrlp_static_results.clone(),
+            &query,
+            palette::MAX_PALETTE_RESULTS,
+        );
+        self.ctrlp_results = ranked;
+        self.ctrlp_selected = 0;
+        self.palette_scroll_handle
+            .scroll_to_item(0, ScrollStrategy::Top);
+        self.ctrlp_truncated = source_truncated || rank_truncated;
+        self.ctrlp_source_error = None;
+        self.ctrlp_search_root = None;
         self.ctrlp_generation = self.ctrlp_generation.wrapping_add(1);
         let generation = self.ctrlp_generation;
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.ctrlp_rx = Some(rx);
-        std::thread::spawn(move || {
-            let (entries, truncated) = match root {
-                Some(root) => omaterm_context::search_files(&root, &query, 100, show_hidden)
-                    .map(|list| (list.entries, list.truncated))
-                    .unwrap_or_default(),
-                None => (Vec::new(), false),
-            };
-            let _ = tx.send((generation, entries, truncated));
+        if command_mode || query.is_empty() {
+            self.palette_search_worker.cancel_current();
+            if !command_mode && let Some(project) = project {
+                self.ctrlp_search_root = self
+                    .files_watched
+                    .as_ref()
+                    .filter(|(owner, _)| *owner == project)
+                    .map(|(_, root)| root.clone());
+            }
+            return;
+        }
+        let Some(project) = project else {
+            self.palette_search_worker.cancel_current();
+            return;
+        };
+        let pinned = self
+            .coordinator
+            .projects()
+            .iter()
+            .find(|candidate| candidate.id == project)
+            .and_then(|candidate| candidate.pinned_directory.clone());
+        let active_cwd = self
+            .coordinator
+            .focused_session_id()
+            .and_then(|session| self.coordinator.registry().get(session))
+            .and_then(|handle| handle.lock().ok().map(|session| session.cwd().path.clone()));
+        let watched_root = self
+            .files_watched
+            .as_ref()
+            .filter(|(watched_project, _)| *watched_project == project)
+            .map(|(_, root)| root.clone());
+        self.palette_search_worker.submit(PaletteSearchRequest {
+            generation,
+            project,
+            query,
+            show_hidden: self.files_show_hidden,
+            pinned,
+            active_cwd,
+            watched_root,
+            cancelled: Arc::new(AtomicBool::new(false)),
         });
     }
 
@@ -2966,14 +3831,249 @@ impl WorkspaceView {
         let Some(entry) = self.ctrlp_results.get(self.ctrlp_selected).cloned() else {
             return;
         };
-        let Some(project) = self.coordinator.selected_project_id() else {
+        self.ctrlp_open = false;
+        self.palette_search_worker.cancel_current();
+        let outcome = match entry.target.clone() {
+            palette::PaletteTarget::Semantic(command) => {
+                if let Some((project, path)) = entry.file_target() {
+                    let current_origin = PaletteOrigin {
+                        project: self.coordinator.selected_project_id(),
+                        tab: self.coordinator.selected_tab_id(),
+                        pane: self.coordinator.focused(),
+                        session: self.coordinator.focused_session_id(),
+                    };
+                    let current_root = self.files_project_root(project, cx);
+                    if self.coordinator.selected_project_id() != Some(project)
+                        || self.ctrlp_origin != Some(current_origin)
+                        || self.ctrlp_search_root != current_root
+                    {
+                        self.input_notice = Some("Palette target changed; search again.".into());
+                        self.restore_palette_origin(cx);
+                        cx.notify();
+                        return;
+                    }
+                    self.files_panel.select(project, path.clone());
+                    Some(self.dispatch_command(
+                        OmaCommand::File(FileCommand::Open { project, path }),
+                        cx,
+                    ))
+                } else {
+                    let requires_origin = matches!(
+                        &command,
+                        OmaCommand::Pane(
+                            PaneCommand::FocusDirection { .. }
+                                | PaneCommand::ResizeFocused { .. }
+                                | PaneCommand::EqualizeSelected
+                        )
+                    );
+                    let current_origin = PaletteOrigin {
+                        project: self.coordinator.selected_project_id(),
+                        tab: self.coordinator.selected_tab_id(),
+                        pane: self.coordinator.focused(),
+                        session: self.coordinator.focused_session_id(),
+                    };
+                    if requires_origin && self.ctrlp_origin != Some(current_origin) {
+                        self.input_notice = Some("Palette origin changed; search again.".into());
+                        self.restore_palette_origin(cx);
+                        cx.notify();
+                        return;
+                    }
+                    let refresh_git =
+                        matches!(&command, OmaCommand::Git(GitCommand::Status { .. }));
+                    let refresh_diff = matches!(
+                        &command,
+                        OmaCommand::Diff(DiffCommand::Show { .. } | DiffCommand::ListFiles { .. })
+                    );
+                    let process_project = match &command {
+                        OmaCommand::Process(omaterm_core::ProcessCommand::List { project }) => {
+                            Some(*project)
+                        }
+                        _ => None,
+                    };
+                    let outcome = self.dispatch_command(command, cx);
+                    if outcome.is_ok() {
+                        self.git_dirty_hint |= refresh_git;
+                        self.diff_dirty_hint |= refresh_diff;
+                    }
+                    if let (Some(project), Ok(CommandOutput::ProcessList(info))) =
+                        (process_project, &outcome)
+                    {
+                        self.process_list = Some((project, info.clone()));
+                        self.select_inspector_tab(InspectorTab::Info, cx);
+                    }
+                    Some(outcome)
+                }
+            }
+            palette::PaletteTarget::PaneFocus {
+                pane,
+                expected_session,
+            } => {
+                let exists =
+                    self.coordinator.projects().iter().any(|project| {
+                        project.tabs.iter().any(|tab| tab.tree.find(pane).is_some())
+                    });
+                if !exists || self.coordinator.session_id_for_pane(pane) != expected_session {
+                    self.input_notice =
+                        Some("Palette pane/session target changed; search again.".into());
+                    self.restore_palette_origin(cx);
+                    cx.notify();
+                    return;
+                }
+                Some(self.dispatch_command(OmaCommand::Pane(PaneCommand::Focus { pane }), cx))
+            }
+            palette::PaletteTarget::GitDiff {
+                project,
+                path,
+                staged,
+            } => {
+                let still_changed = self.git_panel.status_for(project).is_some_and(|status| {
+                    if staged {
+                        status.staged.iter().any(|entry| entry.path == path)
+                    } else {
+                        status
+                            .unstaged
+                            .iter()
+                            .chain(status.untracked.iter())
+                            .any(|entry| entry.path == path)
+                    }
+                });
+                if self.coordinator.selected_project_id() != Some(project) || !still_changed {
+                    self.input_notice = Some("Palette target changed; search again.".into());
+                    self.restore_palette_origin(cx);
+                    cx.notify();
+                    return;
+                }
+                let outcome = self.dispatch_command(
+                    OmaCommand::Diff(DiffCommand::Show {
+                        project,
+                        path: Some(path.clone()),
+                        staged,
+                        context_lines: 3,
+                    }),
+                    cx,
+                );
+                if let Err(error) = &outcome {
+                    self.input_notice = Some(format!("Diff: {error}"));
+                    self.restore_palette_origin(cx);
+                    cx.notify();
+                    return;
+                }
+                self.git_select_path(project, path, staged);
+                Some(outcome)
+            }
+        };
+        if let Some(outcome) = outcome {
+            match outcome {
+                Ok(omaterm_core::CommandOutput::Pending { operation_id }) => {
+                    self.pending_palette_mru.insert(operation_id, entry.key);
+                    if let Some(origin) = self.ctrlp_origin {
+                        self.pending_palette_origins.insert(operation_id, origin);
+                    }
+                }
+                Ok(_) => {
+                    self.palette_mru.retain(|key| key != &entry.key);
+                    self.palette_mru.insert(0, entry.key.clone());
+                    self.palette_mru.truncate(100);
+                    if entry.kind == palette::PaletteKind::File {
+                        self.palette_recent_files
+                            .retain(|recent| recent.key != entry.key);
+                        self.palette_recent_files.insert(0, entry.clone());
+                        self.palette_recent_files.truncate(100);
+                    }
+                }
+                Err(error) => self.input_notice = Some(format!("Palette: {error}")),
+            }
+            if matches!(
+                &entry.target,
+                palette::PaletteTarget::Semantic(
+                    OmaCommand::File(FileCommand::Open { .. })
+                        | OmaCommand::Git(GitCommand::Status { .. })
+                        | OmaCommand::Diff(
+                            DiffCommand::Show { .. } | DiffCommand::ListFiles { .. }
+                        )
+                        | OmaCommand::Process(omaterm_core::ProcessCommand::List { .. })
+                )
+            ) {
+                self.restore_palette_origin(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn restore_palette_origin(&mut self, cx: &mut Context<Self>) {
+        if let Some(origin) = self.ctrlp_origin {
+            self.restore_palette_origin_to(origin, cx);
+        }
+    }
+
+    fn restore_palette_origin_to(&mut self, origin: PaletteOrigin, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let current = PaletteOrigin {
+            project: self.coordinator.selected_project_id(),
+            tab: self.coordinator.selected_tab_id(),
+            pane: self.coordinator.focused(),
+            session: self.coordinator.focused_session_id(),
+        };
+        if current == origin {
+            return;
+        }
+        let result = if let Some(pane) = origin.pane {
+            let location = self.coordinator.projects().iter().find_map(|project| {
+                project
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tree.find(pane).is_some())
+                    .map(|_| project.id)
+            });
+            if location.is_none()
+                || (origin.session.is_some()
+                    && self.coordinator.session_id_for_pane(pane) != origin.session)
+            {
+                self.input_notice =
+                    Some("Palette origin no longer exists; focus was not restored.".into());
+                return;
+            }
+            self.dispatch_command(OmaCommand::Pane(PaneCommand::Focus { pane }), cx)
+        } else if let Some(tab) = origin.tab {
+            let exists = self
+                .coordinator
+                .projects()
+                .iter()
+                .any(|project| project.tab(tab).is_some());
+            if !exists {
+                self.input_notice =
+                    Some("Palette origin no longer exists; focus was not restored.".into());
+                return;
+            }
+            self.dispatch_command(OmaCommand::Tab(TabCommand::Select { tab }), cx)
+        } else if let Some(project) = origin.project {
+            if !self
+                .coordinator
+                .projects()
+                .iter()
+                .any(|candidate| candidate.id == project)
+            {
+                self.input_notice =
+                    Some("Palette origin no longer exists; focus was not restored.".into());
+                return;
+            }
+            self.dispatch_command(OmaCommand::Project(ProjectCommand::Select { project }), cx)
+        } else {
             return;
         };
-        self.files_panel.select(project, entry.path.clone());
-        self.ctrlp_open = false;
-        self.ctrlp_rx = None;
-        self.open_file_path(project, entry.path, cx);
-        cx.notify();
+        if let Err(error) = result {
+            self.input_notice = Some(format!("Palette focus restore: {error}"));
+        }
+    }
+
+    fn palette_select(&mut self, selected: usize) {
+        self.ctrlp_selected = selected.min(self.ctrlp_results.len().saturating_sub(1));
+        if !self.ctrlp_results.is_empty() {
+            self.palette_scroll_handle
+                .scroll_to_item(self.ctrlp_selected, ScrollStrategy::Center);
+        }
     }
 
     /// Open the native folder picker to change a project's base directory.
@@ -3118,48 +4218,124 @@ impl WorkspaceView {
         self.ctrlp_caret_on = true;
         self.ensure_ctrlp_blink(cx);
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        if event.keystroke.modifiers.control && !event.keystroke.modifiers.alt && key_name == "p" {
+            self.ctrlp_query = if event.keystroke.modifiers.shift {
+                ">".into()
+            } else {
+                String::new()
+            };
+            self.ctrlp_caret_byte = self.ctrlp_query.len();
+            self.ctrlp_search(cx);
+            cx.notify();
+            return;
+        }
+        if event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && key_name == "v"
+        {
+            if let Some(text) = cx
+                .read_from_clipboard()
+                .and_then(|item| item.text().map(|text| text.to_string()))
+            {
+                self.palette_insert_text(&text, cx);
+            }
+            return;
+        }
         // Keyboard-only copy/reveal of the highlighted result (mirrors the
         // tree's Ctrl+Shift+Y/U); the finder stays open for further picks.
         if event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
             && !event.keystroke.modifiers.alt
             && let Some(entry) = self.ctrlp_results.get(self.ctrlp_selected).cloned()
-            && let Some(project) = self.coordinator.selected_project_id()
+            && let Some((project, path)) = entry.file_target()
+            && self.coordinator.selected_project_id() == Some(project)
         {
             if key_name == "y" {
-                self.files_panel.select(project, entry.path.clone());
-                self.copy_path(project, &entry.path, cx);
+                self.files_panel.select(project, path.clone());
+                self.copy_path(project, &path, cx);
                 return;
             }
             if key_name == "u" {
-                self.files_panel.select(project, entry.path.clone());
-                self.reveal_path(project, &entry.path, cx);
+                self.files_panel.select(project, path.clone());
+                self.reveal_path(project, &path, cx);
                 return;
             }
         }
         match key_name.as_str() {
             "escape" => {
                 self.ctrlp_open = false;
-                self.ctrlp_rx = None;
+                self.palette_search_worker.cancel_current();
+                self.restore_palette_origin(cx);
                 cx.notify();
             }
             "enter" | "return" | "kpenter" => self.ctrlp_confirm(cx),
             "backspace" => {
-                self.ctrlp_query.pop();
+                if self.ctrlp_caret_byte > 0 {
+                    let previous = self.ctrlp_query[..self.ctrlp_caret_byte]
+                        .char_indices()
+                        .next_back()
+                        .map(|(index, _)| index)
+                        .unwrap_or(0);
+                    self.ctrlp_query.drain(previous..self.ctrlp_caret_byte);
+                    self.ctrlp_caret_byte = previous;
+                }
                 self.ctrlp_search(cx);
+                cx.notify();
+            }
+            "delete" => {
+                if let Some((_, ch)) = self.ctrlp_query[self.ctrlp_caret_byte..]
+                    .char_indices()
+                    .next()
+                {
+                    let end = self.ctrlp_caret_byte + ch.len_utf8();
+                    self.ctrlp_query.drain(self.ctrlp_caret_byte..end);
+                    self.ctrlp_search(cx);
+                    cx.notify();
+                }
+            }
+            "left" => {
+                self.ctrlp_caret_byte = self.ctrlp_query[..self.ctrlp_caret_byte]
+                    .char_indices()
+                    .next_back()
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+                cx.notify();
+            }
+            "right" => {
+                self.ctrlp_caret_byte += self.ctrlp_query[self.ctrlp_caret_byte..]
+                    .chars()
+                    .next()
+                    .map_or(0, char::len_utf8);
+                cx.notify();
+            }
+            "home" => {
+                self.ctrlp_caret_byte = 0;
+                cx.notify();
+            }
+            "end" => {
+                self.ctrlp_caret_byte = self.ctrlp_query.len();
                 cx.notify();
             }
             "up" => {
                 if self.ctrlp_selected > 0 {
-                    self.ctrlp_selected -= 1;
+                    self.palette_select(self.ctrlp_selected - 1);
                     cx.notify();
                 }
             }
             "down" => {
                 if self.ctrlp_selected + 1 < self.ctrlp_results.len() {
-                    self.ctrlp_selected += 1;
+                    self.palette_select(self.ctrlp_selected + 1);
                     cx.notify();
                 }
+            }
+            "pageup" => {
+                self.palette_select(self.ctrlp_selected.saturating_sub(8));
+                cx.notify();
+            }
+            "pagedown" => {
+                self.palette_select(self.ctrlp_selected.saturating_add(8));
+                cx.notify();
             }
             _ => {
                 if event.keystroke.modifiers.control || event.keystroke.modifiers.alt {
@@ -3170,13 +4346,8 @@ impl WorkspaceView {
                     .key_char
                     .as_ref()
                     .and_then(|s| s.chars().next());
-                if let Some(ch) = ch
-                    && !ch.is_control()
-                    && self.ctrlp_query.len() < 256
-                {
-                    self.ctrlp_query.push(ch);
-                    self.ctrlp_search(cx);
-                    cx.notify();
+                if let Some(ch) = ch {
+                    self.palette_insert_text(&ch.to_string(), cx);
                 }
             }
         }
@@ -3188,6 +4359,12 @@ impl WorkspaceView {
         }
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
+        // The active overlay owns keyboard input before any global command,
+        // picker, focused inspector field, or terminal forwarding.
+        if self.ctrlp_open {
+            return self.on_ctrlp_key(event, cx);
+        }
+
         if event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
             && !event.keystroke.modifiers.alt
@@ -3196,14 +4373,17 @@ impl WorkspaceView {
             self.open_project_directory(cx);
             return;
         }
-        if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "p" {
+        if event.keystroke.modifiers.control
+            && event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.shift
+            && key_name == "n"
+        {
             self.create_project(cx);
             return;
         }
-        // M13 `Ctrl+P` file finder (plain Ctrl+P is free: Ctrl+Shift+P
-        // creates projects). While open, the overlay owns the keyboard.
-        if self.ctrlp_open {
-            return self.on_ctrlp_key(event, cx);
+        if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "p" {
+            self.open_palette(true, cx);
+            return;
         }
         // M14 commit input: while focused (Git tab), plain keys type the
         // message; Ctrl/Alt combinations fall through to global shortcuts
@@ -3231,7 +4411,7 @@ impl WorkspaceView {
             && !event.keystroke.modifiers.alt
             && key_name == "p"
         {
-            self.toggle_ctrlp(cx);
+            self.open_palette(false, cx);
             return;
         }
         // UI v5 shell: Ctrl+B toggles Projects, Ctrl+Shift+B toggles the
@@ -3271,6 +4451,16 @@ impl WorkspaceView {
                 return;
             }
         }
+        if event.keystroke.modifiers.control
+            && event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && key_name == "s"
+            && let Some(project) = self.coordinator.selected_project_id()
+            && self.diff_panel.preview_open(project)
+        {
+            self.stage_current_diff_hunk(project, cx);
+            return;
+        }
         // M15 hunk navigation: Alt+N next / Alt+P previous within the
         // main-area diff preview tab. Plain Alt+letter is otherwise free
         // (Alt only pairs with PageUp/PageDown for tab/project jumps).
@@ -3282,11 +4472,13 @@ impl WorkspaceView {
         {
             if key_name == "n" {
                 self.diff_panel.next_hunk(project);
+                self.reveal_current_diff_hunk(project);
                 cx.notify();
                 return;
             }
             if key_name == "p" {
                 self.diff_panel.prev_hunk(project);
+                self.reveal_current_diff_hunk(project);
                 cx.notify();
                 return;
             }
@@ -3412,7 +4604,13 @@ impl WorkspaceView {
 
         // Explicit clipboard copy of the drag selection: Ctrl+Shift+C.
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "c" {
-            self.copy_selection(cx);
+            if let Some(project) = self.coordinator.selected_project_id()
+                && self.diff_panel.preview_open(project)
+            {
+                self.copy_current_diff_hunk(project, cx);
+            } else {
+                self.copy_selection(cx);
+            }
             return;
         }
 
@@ -5415,10 +6613,15 @@ impl WorkspaceView {
     /// Main-area diff preview tab (M15): the selected change's unified
     /// diff, opened by clicking a Git row. The tab holds a file diff,
     /// never a terminal — core tabs stay terminal-only (M13/M17 scope).
-    /// Refreshes land via `diff_tick`; stage uses the shared GitCommand
-    /// path. Hunks render windowed (viewport follows the cursor, wheel
-    /// scrolls) so huge diffs stay off the GPUI tree.
-    fn render_diff_preview(&mut self, project: ProjectId, cx: &mut Context<Self>) -> Div {
+    /// Refreshes land via `diff_tick`; stage/open use shared semantic
+    /// operations. The bounded parsed source is flattened into a cached
+    /// virtual row list so only the visible range enters the GPUI tree.
+    fn render_diff_preview(
+        &mut self,
+        project: ProjectId,
+        main_view_width: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let staged = self.diff_panel.show_staged(project);
         let mut bar = div()
             .flex()
@@ -5548,6 +6751,7 @@ impl WorkspaceView {
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
                                 view.diff_panel.set_diff_mode(project, next);
+                                view.reveal_current_diff_hunk(project);
                                 cx.notify();
                             }),
                         )
@@ -5614,6 +6818,7 @@ impl WorkspaceView {
             let message = match &empty {
                 diff_panel::DiffEmpty::NoRoot => "No project root".to_owned(),
                 diff_panel::DiffEmpty::NotRepo => "Not a git repository".to_owned(),
+                diff_panel::DiffEmpty::Cancelled => "Diff request cancelled".to_owned(),
                 diff_panel::DiffEmpty::Unavailable(detail) => {
                     format!("Git unavailable: {}", short(detail))
                 }
@@ -5623,7 +6828,9 @@ impl WorkspaceView {
             };
             let amber = !matches!(
                 empty,
-                diff_panel::DiffEmpty::NoRoot | diff_panel::DiffEmpty::NotRepo
+                diff_panel::DiffEmpty::NoRoot
+                    | diff_panel::DiffEmpty::NotRepo
+                    | diff_panel::DiffEmpty::Cancelled
             );
             return bar.child(
                 div()
@@ -5633,7 +6840,7 @@ impl WorkspaceView {
                     .child(message),
             );
         }
-        let Some(info) = self.diff_panel.diff_for(project, staged).cloned() else {
+        let Some(info) = self.diff_panel.diff_shared_for(project, staged) else {
             return bar.child(
                 div()
                     .px_2()
@@ -5670,7 +6877,7 @@ impl WorkspaceView {
             );
         }
         {
-            let count = file.hunks.len().min(diff_panel::MAX_DIFF_RENDER_HUNKS);
+            let count = file.hunks.len();
             let cursor = self
                 .diff_panel
                 .selected_hunk(project)
@@ -5719,109 +6926,227 @@ impl WorkspaceView {
                         .child(side_header(right_rev)),
                 );
             }
-            let mut body = div()
-                .id("diff-body")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.0))
-                .overflow_y_scroll();
-            for (index, hunk) in file
-                .hunks
-                .iter()
-                .take(diff_panel::MAX_DIFF_RENDER_HUNKS)
-                .enumerate()
-            {
-                let current = index == cursor;
-                if !staged
-                    && !file.truncated
-                    && !hunk.truncated
-                    && file.status == omaterm_core::DiffFileStatus::Modified
-                {
-                    let stage_path = path.clone();
-                    let hunk_id = hunk.id;
-                    body = body.child(
-                        div()
-                            .id(("stage-hunk", index))
-                            .text_size(px(10.0))
-                            .text_color(rgb(crate::ui::theme::TEXT2))
-                            .child("Stage Hunk")
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _, window, cx| {
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.diff_stage_hunk(project, stage_path.clone(), hunk_id, cx);
-                                }),
-                            ),
-                    );
+            let rows = self
+                .diff_panel
+                .preview_rows_for(project, staged)
+                .unwrap_or_else(|| std::sync::Arc::from([]));
+            let row_count = rows.len();
+            let cell_width = f32::from(self.fonts(&*cx).cell_width);
+            let max_chars = self
+                .diff_panel
+                .preview_max_columns_for(project, staged)
+                .unwrap_or(0) as f32;
+            let code_width = max_chars * cell_width;
+            let row_width = match mode {
+                // Split cells share the row width equally. Reserve one full
+                // longest-line width per side so either side's text remains
+                // reachable through the enclosing horizontal viewport.
+                diff_panel::DiffMode::Split => {
+                    main_view_width.max(2.0 * code_width + 2.0 * 48.0 + 1.0 + 16.0)
                 }
-                body = body.child(
-                    div()
-                        .px_2()
-                        .py(px(2.0))
-                        .text_size(px(10.0))
-                        .text_color(rgb(if current {
-                            crate::ui::theme::TEXT2
-                        } else {
-                            crate::ui::theme::MUTED
-                        }))
-                        .child(format!(
-                            "@@ -{},{} +{},{} @@{}",
-                            hunk.old_start,
-                            hunk.old_lines,
-                            hunk.new_start,
-                            hunk.new_lines,
-                            if current { " ◀" } else { "" },
-                        )),
-                );
-                if mode == diff_panel::DiffMode::Split {
-                    for row in diff_panel::split_hunk(hunk)
-                        .iter()
-                        .take(diff_panel::MAX_DIFF_RENDER_LINES)
-                    {
-                        body = body.child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .flex_shrink_0()
-                                .child(split_cell(row.old.as_ref(), &mono))
-                                .child(
+                diff_panel::DiffMode::Inline => main_view_width.max(code_width + 2.0 * 46.0 + 16.0),
+            };
+            let stage_path = path.clone();
+            let copy_info = Arc::clone(&info);
+            let copy_path = path.clone();
+            let row_mono = mono.clone();
+            let diff_scroll = self
+                .diff_scroll_handles
+                .entry((project, staged, path.clone(), mode))
+                .or_default()
+                .clone();
+            let rows = uniform_list(
+                "diff-preview-rows",
+                row_count,
+                cx.processor(move |_view, range: std::ops::Range<usize>, _window, _cx| {
+                    range
+                        .map(|row_index| {
+                            let row = rows[row_index].clone();
+                            let element = match row {
+                                diff_panel::PreviewRow::HunkHeader {
+                                    hunk,
+                                    header,
+                                    ..
+                                } => {
+                                    let current = hunk == cursor;
                                     div()
-                                        .w(px(1.0))
+                                        .id(row_index)
+                                        .h(px(21.0))
                                         .flex_shrink_0()
-                                        .bg(rgb(crate::ui::theme::BORDER)),
-                                )
-                                .child(split_cell(row.new.as_ref(), &mono)),
-                        );
-                    }
-                } else {
-                    for row in diff_panel::align_hunk(hunk)
-                        .iter()
-                        .take(diff_panel::MAX_DIFF_RENDER_LINES)
-                    {
-                        body = body.child(inline_row(row, &mono));
-                    }
-                }
-                if hunk.truncated || hunk.lines.len() > diff_panel::MAX_DIFF_RENDER_LINES {
-                    body = body.child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_color(rgb(0x71717A))
-                            .child("… (hunk truncated)"),
-                    );
-                }
-            }
-            if file.truncated || file.hunks.len() > diff_panel::MAX_DIFF_RENDER_HUNKS {
-                body = body.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_color(rgb(0x71717A))
-                        .child("… (file truncated)"),
-                );
-            }
+                                        .px_2()
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(10.0))
+                                        .text_color(rgb(if current {
+                                            crate::ui::theme::TEXT2
+                                        } else {
+                                            crate::ui::theme::MUTED
+                                        }))
+                                    .child(format!("{header}{}", if current { " ◀" } else { "" }))
+                                }
+                                diff_panel::PreviewRow::HunkActions {
+                                    hunk,
+                                    id,
+                                    can_stage,
+                                    can_open,
+                                    can_copy,
+                                } => {
+                                    let mut actions = div()
+                                        .id(row_index)
+                                        .h(px(21.0))
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .text_size(px(10.0))
+                                        .text_color(rgb(crate::ui::theme::TEXT2));
+                                    if can_copy {
+                                        let copy_info = Arc::clone(&copy_info);
+                                        let copy_path = copy_path.clone();
+                                        actions = actions.child(
+                                            div()
+                                                .cursor_pointer()
+                                                .child("Copy Hunk")
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    _cx.listener(move |view, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        window.focus(&view.focus_handle);
+                                                        let text = copy_info
+                                                            .files
+                                                            .iter()
+                                                            .find(|file| file.path == copy_path)
+                                                            .and_then(|file| {
+                                                                let hunk = file.hunks.get(hunk)?;
+                                                                (!file.binary
+                                                                    && !file.truncated
+                                                                    && !hunk.truncated)
+                                                                    .then(|| diff_panel::unified_hunk_text(hunk))
+                                                            });
+                                                        if let Some(text) = text {
+                                                            cx.write_to_clipboard(
+                                                                ClipboardItem::new_string(text),
+                                                            );
+                                                            view.show_toast("Copied hunk".into(), cx);
+                                                        } else {
+                                                            view.input_notice = Some("Selected hunk cannot be copied completely.".into());
+                                                            cx.notify();
+                                                        }
+                                                    }),
+                                                ),
+                                        );
+                                    }
+                                    if can_stage {
+                                        let stage_path = stage_path.clone();
+                                        actions = actions.child(
+                                            div()
+                                                .cursor_pointer()
+                                                .child("Stage Hunk")
+                                                .on_mouse_down(
+                                            MouseButton::Left,
+                                            _cx.listener(move |view, _, window, cx| {
+                                                cx.stop_propagation();
+                                                window.focus(&view.focus_handle);
+                                                view.diff_stage_hunk(project, stage_path.clone(), id, cx);
+                                            }),
+                                                ),
+                                        );
+                                    }
+                                    if can_open {
+                                        let open_path = stage_path.clone();
+                                        actions = actions.child(
+                                            div()
+                                                .cursor_pointer()
+                                                .text_color(rgb(crate::ui::theme::BLUE))
+                                                .child("Open in Terminal")
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    _cx.listener(move |view, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        window.focus(&view.focus_handle);
+                                                        view.open_file_path(project, open_path.clone(), cx);
+                                                    }),
+                                                ),
+                                        );
+                                    }
+                                    actions
+                                }
+                                diff_panel::PreviewRow::Split(row) => div()
+                                    .id(row_index)
+                                    .h(px(21.0))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_row()
+                                    .child(split_cell(row.old.as_ref(), &row_mono))
+                                    .child(
+                                        div()
+                                            .w(px(1.0))
+                                            .flex_shrink_0()
+                                            .bg(rgb(crate::ui::theme::BORDER)),
+                                    )
+                                    .child(split_cell(row.new.as_ref(), &row_mono)),
+                                diff_panel::PreviewRow::Inline(row) => inline_row(&row, &row_mono)
+                                    .id(row_index)
+                                    .flex_shrink_0(),
+                                diff_panel::PreviewRow::NoNewline { old, new } => div()
+                                    .id(row_index)
+                                    .h(px(21.0))
+                                    .flex_shrink_0()
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
+                                    .font_family(row_mono.clone())
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(crate::ui::theme::MUTED))
+                                    .child(format!(
+                                        "\\ No newline at end of {}{}",
+                                        if old { "old" } else { "" },
+                                        if old && new {
+                                            " and new file"
+                                        } else if new {
+                                            "new file"
+                                        } else {
+                                            " file"
+                                        }
+                                    )),
+                                diff_panel::PreviewRow::HunkTruncated => div()
+                                    .id(row_index)
+                                    .h(px(21.0))
+                                    .flex_shrink_0()
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(0x71717A))
+                                    .child("… (hunk truncated)"),
+                                diff_panel::PreviewRow::FileTruncated => div()
+                                    .id(row_index)
+                                    .h(px(21.0))
+                                    .flex_shrink_0()
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(0x71717A))
+                                    .child("… (file truncated)"),
+                            };
+                            element.w(px(row_width))
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(diff_scroll)
+            .w(px(row_width))
+            .h_full();
+            let body = div()
+                .id("diff-preview-horizontal")
+                .flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .overflow_x_scroll()
+                .child(rows);
             bar = bar.child(body);
         }
         bar
@@ -6580,7 +7905,7 @@ impl WorkspaceView {
                                 }
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
-                                view.toggle_ctrlp(cx);
+                                view.open_palette(false, cx);
                             }),
                         )
                         .child(crate::ui::primitives::cmd_icon(
@@ -6734,7 +8059,7 @@ impl WorkspaceView {
             .border_color(rgb(crate::ui::theme::BORDER))
             .child(tabs);
         panel = match self.inspector_tab {
-            InspectorTab::Info => panel.child(self.render_inspector_info()),
+            InspectorTab::Info => panel.child(self.render_inspector_info(cx)),
             InspectorTab::Files => panel.child(self.render_inspector_files(viewport_h, cx)),
             InspectorTab::Git => panel
                 .child(self.render_git_panel(div().flex().flex_col().flex_1().min_h(px(0.0)), cx)),
@@ -6838,7 +8163,7 @@ impl WorkspaceView {
 
     /// Inspector Info body: real project card plus explicit M18-pending
     /// states for process/port inspection. No fabricated telemetry.
-    fn render_inspector_info(&mut self) -> Div {
+    fn render_inspector_info(&mut self, cx: &mut Context<Self>) -> Div {
         let mut body = div()
             .flex()
             .flex_col()
@@ -6947,21 +8272,122 @@ impl WorkspaceView {
                         ),
                 ),
         );
-        for (title, note) in [
-            ("PROCESSES", "Process inspection arrives with M18."),
-            ("PORTS", "Port attribution arrives with M18."),
-        ] {
-            body = body.child(
+        let focused_pane = self.coordinator.focused();
+        let process_entries = self
+            .coordinator
+            .selected_project_id()
+            .and_then(|project| {
+                self.process_list
+                    .as_ref()
+                    .filter(|(owner, _)| *owner == project)
+            })
+            .map(|(_, info)| {
+                info.entries
+                    .iter()
+                    .filter(|entry| Some(entry.pane) == focused_pane)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut process_rows = div().flex().flex_col().gap_1();
+        let mut port_rows = div().flex().flex_col().gap_1();
+        for entry in &process_entries {
+            process_rows = process_rows.child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .items_center()
                     .gap_2()
+                    .text_size(px(11.0))
                     .child(
-                        crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
-                            .text_color(rgb(crate::ui::theme::MUTED))
-                            .child(title),
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_color(rgb(crate::ui::theme::TEXT))
+                            .child(entry.name.clone()),
                     )
-                    .child(
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .child(entry.pid.to_string()),
+            );
+            for port in &entry.ports {
+                port_rows = port_rows.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .text_size(px(11.0))
+                        .text_color(rgb(crate::ui::theme::TEXT2))
+                        .child(format!("{port} · {}", entry.name)),
+                );
+            }
+        }
+        let mut process_section = div().flex().flex_col().gap_2().child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(
+                    crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(format!("PROCESSES · {}", process_entries.len())),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .cursor_pointer()
+                        .text_size(px(10.0))
+                        .text_color(rgb(crate::ui::theme::BLUE))
+                        .child("Refresh")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| {
+                                if let Some(project) = view.coordinator.selected_project_id() {
+                                    view.refresh_process_list(project, cx);
+                                }
+                            }),
+                        ),
+                ),
+        );
+        process_section = if process_entries.is_empty() {
+            process_section.child(
+                crate::ui::metrics::text_role(
+                    div()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(rgb(crate::ui::theme::BORDER))
+                        .px_3()
+                        .py_2(),
+                    crate::ui::metrics::BODY_11,
+                )
+                .text_color(rgb(crate::ui::theme::MUTED))
+                .child("No child processes"),
+            )
+        } else {
+            process_section.child(process_rows)
+        };
+        body = body.child(process_section);
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(format!(
+                            "PORTS · {}",
+                            process_entries
+                                .iter()
+                                .map(|entry| entry.ports.len())
+                                .sum::<usize>()
+                        )),
+                )
+                .child(
+                    if process_entries.iter().any(|entry| !entry.ports.is_empty()) {
+                        port_rows.into_any_element()
+                    } else {
                         crate::ui::metrics::text_role(
                             div()
                                 .rounded(px(8.0))
@@ -6972,10 +8398,11 @@ impl WorkspaceView {
                             crate::ui::metrics::BODY_11,
                         )
                         .text_color(rgb(crate::ui::theme::MUTED))
-                        .child(note),
-                    ),
-            );
-        }
+                        .child("No listening ports")
+                        .into_any_element()
+                    },
+                ),
+        );
         body
     }
 
@@ -7133,6 +8560,8 @@ impl WorkspaceView {
                 )
                 .child({
                     let caret_h = px(f32::from(self.fonts(&*cx).line_height));
+                    let before = self.ctrlp_query[..self.ctrlp_caret_byte].to_owned();
+                    let after = self.ctrlp_query[self.ctrlp_caret_byte..].to_owned();
                     let caret_bg = if self.ctrlp_caret_on {
                         rgb(0x71717A)
                     } else {
@@ -7142,8 +8571,9 @@ impl WorkspaceView {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .child(div().child(self.ctrlp_query.clone()))
+                        .child(div().child(before))
                         .child(div().w(px(2.0)).h(caret_h).bg(caret_bg))
+                        .child(div().child(after))
                 })
         };
         let mut overlay = div()
@@ -7158,127 +8588,113 @@ impl WorkspaceView {
             .child(div().px_3().py_2().child(input))
             .child(div().h(px(1.0)).w_full().bg(rgb(0x2E2E33)));
         if self.ctrlp_results.is_empty() {
-            overlay = overlay.child(div().px_3().py_2().text_color(rgb(0x71717A)).child(
-                if self.ctrlp_query.is_empty() {
-                    "Type to narrow the file list."
-                } else {
-                    "No matches."
-                },
-            ));
+            let empty_message = if self.ctrlp_source_error.is_some() {
+                "File search unavailable; workspace results may still be shown."
+            } else if self.ctrlp_query == ">" {
+                "Type a command to search actions."
+            } else if self.ctrlp_query.is_empty() {
+                "Search commands, projects, tabs, panes, files and Git paths."
+            } else {
+                "No matches."
+            };
+            overlay = overlay.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_color(rgb(if self.ctrlp_source_error.is_some() {
+                        0xFBBF24
+                    } else {
+                        0x71717A
+                    }))
+                    .child(empty_message),
+            );
             overlay = overlay.child(Self::ctrlp_hint_row());
             return self.ctrlp_frame(overlay, box_x, box_w);
         }
-        // Match indices come from the same skim scorer as the ranking, so
-        // highlights always agree with result order. Recomputed per frame
-        // over at most 100 short strings — microseconds, no caching needed.
-        let query = self.ctrlp_query.clone();
-        for (index, entry) in self.ctrlp_results.iter().take(100).cloned().enumerate() {
-            let selected = index == self.ctrlp_selected;
-            let icon = files::icon_for(&entry.path, entry.kind, false);
-            let icon_color = icon
-                .color
-                .unwrap_or(if selected { 0xFA_FA_FA } else { 0xA1_A1_AA });
-            let full = entry.path.to_string_lossy().into_owned();
-            let (name, parent) = match full.rfind('/') {
-                Some(at) => (full[at + 1..].to_owned(), full[..at].to_owned()),
-                None => (full.clone(), String::new()),
-            };
-            // Full-path char indices mapped onto each segment, then to
-            // byte ranges via highlight_ranges for StyledText.
-            let matched: Vec<usize> = omaterm_context::fuzzy_match_indices(&full, &query)
-                .map(|(_, indices)| indices)
-                .unwrap_or_default();
-            let parent_chars = parent.chars().count();
-            let name_offset = if parent.is_empty() {
-                0
-            } else {
-                parent_chars + 1
-            };
-            let name_hits: Vec<usize> = matched
-                .iter()
-                .filter_map(|index| index.checked_sub(name_offset))
-                .collect();
-            let parent_hits: Vec<usize> = matched
-                .iter()
-                .copied()
-                .filter(|index| *index < parent_chars)
-                .collect();
-            // One StyledText per row half: a single wrapping context, so
-            // long names clip instead of breaking rows apart. Ranges are
-            // byte spans from char indices (see highlight_ranges).
-            let accent = HighlightStyle {
-                // files::MATCH_ACCENT as HSL.
-                color: Some(hsla(0.594, 1.0, 0.649, 1.0)),
-                ..Default::default()
-            };
-            // truncate() cascades nowrap + ellipsis into the StyledText;
-            // overflow_hidden alone would still let it wrap.
-            let name_row = div().flex_1().min_w(px(0.0)).truncate().child(
-                StyledText::new(name.clone()).with_highlights(
-                    files::highlight_ranges(&name, &name_hits)
-                        .into_iter()
-                        .map(|range| (range, accent)),
-                ),
-            );
-            // Capped well below the filename's share: the name is the
-            // primary identifier, the parent is context.
-            let mut parent_row = div()
-                .truncate()
-                .min_w(px(0.0))
-                .text_color(rgb(0x71717A))
-                .max_w(px(140.0));
-            parent_row = parent_row.child(
-                StyledText::new(parent.clone()).with_highlights(
-                    files::highlight_ranges(&parent, &parent_hits)
-                        .into_iter()
-                        .map(|range| (range, accent)),
-                ),
-            );
-            let mut row = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .px_2()
-                .py_1()
-                .rounded_sm()
-                .bg(rgb(if selected { 0x27272A } else { 0x18181B }))
-                .text_color(rgb(if selected { 0xFAFAFA } else { 0xA1A1AA }));
-            if selected {
-                row = row.border_l_2().border_color(rgb(files::MATCH_ACCENT));
-            }
-            overlay = overlay.child(
-                row.on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
+        let query = self.palette_query().to_owned();
+        let list_entries = Arc::new(self.ctrlp_results.clone());
+        let list_count = list_entries.len().min(palette::MAX_PALETTE_RESULTS);
+        let selected = self.ctrlp_selected;
+        let result_list = uniform_list(
+            "palette-results",
+            list_count,
+            cx.processor(move |_view, range: std::ops::Range<usize>, _window, _cx| {
+                range
+                    .map(|index| {
+                        let entry = list_entries[index].clone();
+                        let selected = index == selected;
+                        let accent = HighlightStyle {
+                            color: Some(hsla(0.594, 1.0, 0.649, 1.0)),
+                            ..Default::default()
+                        };
+                        let label_hits = omaterm_context::fuzzy_match_indices(&entry.label, &query)
+                            .map(|(_, indices)| indices)
+                            .unwrap_or_default();
+                        let label = StyledText::new(entry.label.clone()).with_highlights(
+                            files::highlight_ranges(&entry.label, &label_hits)
+                                .into_iter()
+                                .map(|range| (range, accent)),
+                        );
+                        let mut row = div()
+                            .id(index)
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .px_2()
+                            .h(px(32.0))
+                            .rounded_sm()
+                            .bg(rgb(if selected { 0x27272A } else { 0x18181B }))
+                            .text_color(rgb(if selected { 0xFAFAFA } else { 0xA1A1AA }));
+                        if selected {
+                            row = row.border_l_2().border_color(rgb(files::MATCH_ACCENT));
                         }
-                        window.focus(&view.focus_handle);
-                        view.ctrlp_selected = index;
-                        view.ctrlp_confirm(cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .flex_1()
-                        .items_center()
-                        .gap_2()
-                        .overflow_hidden()
+                        row.on_mouse_down(
+                            MouseButton::Left,
+                            _cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                window.focus(&view.focus_handle);
+                                view.palette_select(index);
+                                view.ctrlp_confirm(cx);
+                            }),
+                        )
                         .child(
                             div()
-                                .w(px(18.0))
                                 .flex()
-                                .flex_shrink_0()
+                                .flex_row()
+                                .flex_1()
                                 .items_center()
-                                .justify_center()
-                                .text_color(rgb(icon_color))
-                                .child(icon.glyph.to_string()),
+                                .gap_2()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .w(px(68.0))
+                                        .flex()
+                                        .flex_shrink_0()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(crate::ui::theme::MUTED))
+                                        .child(format!("{:?}", entry.kind)),
+                                )
+                                .child(div().flex_1().min_w(px(0.0)).truncate().child(label)),
                         )
-                        .child(name_row)
-                        .child(parent_row),
-                ),
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(self.palette_scroll_handle.clone())
+        .h(px(360.0));
+        overlay = overlay.child(result_list);
+        if self.ctrlp_source_error.is_some() {
+            overlay = overlay.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(10.0))
+                    .text_color(rgb(0xFBBF24))
+                    .child("File search unavailable; other matching sources remain available."),
             );
         }
         if self.ctrlp_truncated {
@@ -7287,7 +8703,7 @@ impl WorkspaceView {
                     .px_3()
                     .py_1()
                     .text_color(rgb(0x71717A))
-                    .child("(truncated: showing first 100)"),
+                    .child("(results capped at 100; some source results omitted)"),
             );
         }
         overlay = overlay.child(Self::ctrlp_hint_row());
@@ -7301,7 +8717,7 @@ impl WorkspaceView {
             .px_3()
             .py_1()
             .text_color(rgb(0x71717A))
-            .child("up/down navigate · enter open · esc dismiss")
+            .child("up/down navigate · enter run/open · type `>` for commands · esc dismiss")
     }
 
     /// True floating layer, VSCode Quick Open style: absolutely positioned
@@ -7323,6 +8739,17 @@ impl WorkspaceView {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.resize_panes_to_window(window, cx);
+        let viewport = window.viewport_size();
+        let main_view_width = crate::ui::geometry::shell_rects(
+            viewport.width.into(),
+            viewport.height.into(),
+            self.projects_visible,
+            self.projects_width,
+            self.inspector_visible,
+            self.inspector_width,
+        )
+        .main_view
+        .2;
         let content = self
             .coordinator
             .tree()
@@ -7363,7 +8790,7 @@ impl Render for WorkspaceView {
                 let (prompt, action) = if has_project {
                     ("This project has no tabs.", "New tab (Ctrl+Shift+T)")
                 } else {
-                    ("No projects yet.", "New project (Ctrl+Shift+P)")
+                    ("No projects yet.", "New project (Ctrl+Alt+N)")
                 };
                 div()
                     .size_full()
@@ -7503,7 +8930,7 @@ impl Render for WorkspaceView {
             .selected_project_id()
             .filter(|project| self.diff_panel.preview_open(*project));
         if let Some(project) = preview_project {
-            pane_area = pane_area.child(self.render_diff_preview(project, cx));
+            pane_area = pane_area.child(self.render_diff_preview(project, main_view_width, cx));
         } else {
             pane_area = pane_area.child(
                 div()
@@ -7733,7 +9160,7 @@ fn diff_row_decor(kind: omaterm_core::DiffLineKind) -> Div {
 /// paired edit has no line on this side.
 fn split_cell(cell: Option<&diff_panel::SplitCell>, mono: &str) -> Div {
     let Some(cell) = cell else {
-        return div().flex_1().min_w(px(0.0)).h(px(22.0));
+        return div().flex_1().min_w(px(0.0)).h(px(21.0));
     };
     let no_color = match cell.kind {
         omaterm_core::DiffLineKind::Addition => crate::ui::theme::LINE_NO_ADD,
@@ -7746,7 +9173,7 @@ fn split_cell(cell: Option<&diff_panel::SplitCell>, mono: &str) -> Div {
         .flex()
         .flex_row()
         .items_center()
-        .h(px(22.0))
+        .h(px(21.0))
         .font_family(mono.to_string())
         .text_size(px(12.0))
         .text_color(rgb(crate::ui::theme::TEXT))
@@ -7755,7 +9182,7 @@ fn split_cell(cell: Option<&diff_panel::SplitCell>, mono: &str) -> Div {
                 .flex_1()
                 .h_full()
                 .min_w(px(0.0))
-                .child(diff_gutter(Some(cell.line_no), no_color))
+                .child(diff_gutter(cell.line_no, no_color))
                 .child(
                     div()
                         .flex_1()
@@ -8439,7 +9866,11 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{InspectorTab, project_jump_index, select_mono_family};
+    use super::{
+        InspectorTab, PaletteFileIndexCache, PaletteSearchRequest, PaletteSearchWorker,
+        project_jump_index, select_mono_family,
+    };
+    use std::sync::Arc;
 
     #[test]
     fn inspector_tab_defaults_to_info() {
@@ -8496,5 +9927,74 @@ mod tests {
             "JetBrainsMono Nerd Font"
         );
         assert_eq!(select_mono_family(&[], None), "monospace");
+    }
+
+    #[test]
+    fn palette_file_index_cache_reuses_and_invalidates_root_snapshot() {
+        let root = std::env::temp_dir().join(format!("omaterm-m16-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("alpha.rs"), b"alpha").unwrap();
+        let cache = PaletteFileIndexCache::default();
+        let project = omaterm_core::ProjectId::new();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let first = cache
+            .get_or_build(project, &root, false, &cancelled)
+            .unwrap()
+            .unwrap();
+        assert!(first.contains(std::path::Path::new("alpha.rs")));
+        assert!(Arc::ptr_eq(
+            &first,
+            &cache
+                .get_or_build(project, &root, false, &cancelled)
+                .unwrap()
+                .unwrap()
+        ));
+        std::fs::write(root.join("beta.rs"), b"beta").unwrap();
+        cache.invalidate();
+        let second = cache
+            .get_or_build(project, &root, false, &cancelled)
+            .unwrap()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(second.contains(std::path::Path::new("beta.rs")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn palette_search_worker_keeps_latest_request_and_bounds_pending_work() {
+        let root = std::env::temp_dir().join(format!("omaterm-m16-worker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("alpha.rs"), b"alpha").unwrap();
+        std::fs::write(root.join("beta.rs"), b"beta").unwrap();
+        let project = omaterm_core::ProjectId::new();
+        let worker = PaletteSearchWorker::new(Arc::new(PaletteFileIndexCache::default()));
+        let request = |generation, query: &str| PaletteSearchRequest {
+            generation,
+            project,
+            query: query.into(),
+            show_hidden: false,
+            pinned: Some(root.clone()),
+            active_cwd: None,
+            watched_root: Some(root.clone()),
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        worker.submit(request(1, "alpha"));
+        worker.submit(request(2, "beta"));
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(result) = worker.take_result()
+                && result.generation == 2
+            {
+                assert_eq!(result.entries.len(), 1);
+                assert_eq!(result.entries[0].detail, "beta.rs");
+                break;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(3));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        worker.shutdown();
+        let _ = std::fs::remove_dir_all(root);
     }
 }

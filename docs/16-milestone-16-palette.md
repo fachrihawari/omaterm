@@ -7,12 +7,22 @@
 
 ## Product Contract
 
+Execution is detailed in the [comprehensive M16 implementation
+plan](m16-implementation-plan.md), including the current finder audit, shortcut
+collision, typed catalog, argument flows, bounded search and acceptance phases.
+For the current partial implementation, follow the
+[M15 + M16 remaining-work plan](m15-m16-remaining-work-plan.md). Completion
+remains gated on the prerequisites below and linked acceptance evidence.
+
 A single overlay input (after Omarchy collision check; fallback shortcut
 documented) searching: OmaCommands (split/focus/resize/tab/project/git
 refresh/diff/process refresh…), projects/tabs/panes/sessions by ID and
 name, files via the M13 index, and git changed-paths. `Up/Down/Enter/Esc`,
-live filtering bounded to 100 rows with cancellation. Focus always returns
-to the originating terminal on execute or dismiss. No new wire method is
+live filtering bounded to 100 rows with cancellation. Dismissal restores the
+valid originating terminal; execution releases input capture to the terminal
+selected by the command, preserving intentional project/tab/pane navigation.
+Non-navigation actions restore the valid origin. Stale origins never become
+fallback execution targets. No new wire method is
 needed: CLI parity is provided by the underlying query commands
 (`project/tab/pane/terminal/file/git/diff/process` lists) — documented
 explicitly so the checker contract stays honest.
@@ -30,6 +40,9 @@ explicitly so the checker contract stays honest.
 ## Prerequisites
 
 - M12–M15 + M18-query complete (all searchable sources exist).
+- M18-query means the verified bounded process-list shared operation and its
+  IPC/CLI query mapping, independently deliverable under M18; it does not imply
+  process kill or complete M18 UI acceptance. See the execution plan's entry gates.
 
 ## Deliverables
 

@@ -103,6 +103,7 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `diff show` | `diff.show` | Diff Show | Bounded unified diff for unstaged/staged changes or one selected path |
 | `git stage-hunk` | `git.stage-hunk` | Git StageHunk | Stage one current unstaged hunk selected by path and diff.show hunk ID |
 | `diff list-files` | `diff.list-files` | Diff ListFiles | Bounded changed-file headers and hunk counts without bodies |
+| `process list` | `process.list` | Process List | Bounded live descendants belonging to terminal sessions in the selected project |
 
 `terminal new` deliberately creates a new tab, avoiding an unspecified split target.
 `project open` creates a project even if another project uses the same directory.

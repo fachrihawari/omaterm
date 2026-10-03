@@ -19,6 +19,14 @@ with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
 
 ## Selection record
 
+M15/M16 checkpoint verification on 2026-10-03 used the environment-selected
+`rustc 1.99.0 (b940084d7 2026-09-28)` and
+`cargo 1.99.0 (5f94df478 2026-08-27)`. `rustup show active-toolchain` reports
+`RUSTUP_TOOLCHAIN` overriding the repository's unchanged 1.98.1 pin. Formatting,
+serial workspace tests and Clippy passed; the parallel workspace test timed out
+in terminal tests (see `docs/status.md`). No dependency versions, licenses or
+`Cargo.lock` resolution changed in this checkpoint; no new MSRV is established.
+
 For each introduced dependency record package/source URL, exact version or Git
 revision, direct/transitive purpose, license expression and source license file,
 verification date, commands/results, and platform constraints. Commit `Cargo.lock`.

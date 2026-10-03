@@ -14,7 +14,7 @@
 //! filesystem work runs off the UI thread with a caller-owned generation
 //! counter for cancellation (stale generations are dropped by the caller).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -27,6 +27,116 @@ use crate::{ContextError, IgnoreFilter, canonicalize_under_root};
 /// unbounded memory interface while staying far above the 10k-file
 /// acceptance tree.
 pub const MAX_SEARCH_SCAN: usize = 100_000;
+/// Root-relative paths retained by one palette/search snapshot.
+pub const MAX_SEARCH_INDEX_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct FileSearchIndex {
+    pub root: PathBuf,
+    entries: Vec<FileEntry>,
+    truncated: bool,
+}
+
+impl FileSearchIndex {
+    pub fn contains(&self, path: &Path) -> bool {
+        self.entries.iter().any(|entry| entry.path == path)
+    }
+
+    pub fn build(
+        root: &Path,
+        show_hidden: bool,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Option<Self>, ContextError> {
+        let canonical_root = std::fs::canonicalize(root)?;
+        let filter = IgnoreFilter::new(show_hidden);
+        let walker = filter
+            .builder(&canonical_root)
+            .filter_entry(|entry| !is_skipped_dir(entry))
+            .build();
+        let mut entries = Vec::new();
+        let mut scanned = 0usize;
+        let mut bytes = 0usize;
+        let mut truncated = false;
+        for item in walker {
+            if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+                return Ok(None);
+            }
+            let item = match item {
+                Ok(item) => item,
+                Err(_) => {
+                    truncated = true;
+                    continue;
+                }
+            };
+            if item.path() == canonical_root {
+                continue;
+            }
+            scanned += 1;
+            if scanned > MAX_SEARCH_SCAN {
+                truncated = true;
+                break;
+            }
+            let kind = item.file_type();
+            if kind.is_some_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Ok(relative) = item.path().strip_prefix(&canonical_root) else {
+                continue;
+            };
+            let next_bytes = bytes.saturating_add(relative.as_os_str().len());
+            if next_bytes > MAX_SEARCH_INDEX_BYTES {
+                truncated = true;
+                break;
+            }
+            bytes = next_bytes;
+            entries.push(FileEntry {
+                path: relative.to_path_buf(),
+                kind: classify(kind),
+            });
+        }
+        Ok(Some(Self {
+            root: canonical_root,
+            entries,
+            truncated,
+        }))
+    }
+
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Option<FileListInfo> {
+        let limit = limit.max(1);
+        if query.is_empty() {
+            return Some(FileListInfo {
+                entries: Vec::new(),
+                truncated: self.truncated,
+            });
+        }
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, &FileEntry)> = Vec::new();
+        for entry in &self.entries {
+            if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+                return None;
+            }
+            let candidate = entry.path.to_string_lossy();
+            if let Some(score) = matcher.fuzzy_match(&candidate, query) {
+                scored.push((score, entry));
+            }
+        }
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+        let mut truncated = self.truncated;
+        if scored.len() > limit {
+            truncated = true;
+        }
+        scored.truncate(limit);
+        Some(FileListInfo {
+            entries: scored.into_iter().map(|(_, entry)| entry.clone()).collect(),
+            truncated,
+        })
+    }
+}
 
 /// Directory names the recursive search never descends into (build
 /// artifacts, caches, VCS internals). Matched on the single directory
@@ -155,64 +265,33 @@ pub fn search_files(
     limit: usize,
     show_hidden: bool,
 ) -> Result<FileListInfo, ContextError> {
-    let limit = limit.max(1);
-    let canonical_root = std::fs::canonicalize(root)?;
-    if query.is_empty() {
-        return Ok(FileListInfo {
+    Ok(
+        search_files_cancellable(root, query, limit, show_hidden, None)?.unwrap_or(FileListInfo {
             entries: Vec::new(),
             truncated: false,
-        });
+        }),
+    )
+}
+
+/// Cancellable form used by the live palette. `Ok(None)` means the caller
+/// invalidated the generation; it is distinct from a valid empty result.
+pub fn search_files_cancellable(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    show_hidden: bool,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Option<FileListInfo>, ContextError> {
+    if query.is_empty() {
+        return Ok(Some(FileListInfo {
+            entries: Vec::new(),
+            truncated: false,
+        }));
     }
-    let filter = IgnoreFilter::new(show_hidden);
-    let matcher = SkimMatcherV2::default();
-    let mut scored: Vec<(i64, FileEntry)> = Vec::new();
-    let mut scanned = 0usize;
-    let mut truncated = false;
-    let walker = filter
-        .builder(&canonical_root)
-        .filter_entry(|entry| !is_skipped_dir(entry))
-        .build();
-    for item in walker {
-        let item = match item {
-            Ok(item) => item,
-            Err(_) => continue,
-        };
-        if item.path() == canonical_root {
-            continue;
-        }
-        scanned += 1;
-        if scanned > MAX_SEARCH_SCAN {
-            truncated = true;
-            break;
-        }
-        let file_type = item.file_type();
-        if file_type.is_some_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let Ok(relative) = item.path().strip_prefix(&canonical_root) else {
-            continue;
-        };
-        let candidate = relative.to_string_lossy();
-        let Some(score) = matcher.fuzzy_match(&candidate, query) else {
-            continue;
-        };
-        scored.push((
-            score,
-            FileEntry {
-                path: relative.to_path_buf(),
-                kind: classify(file_type),
-            },
-        ));
-    }
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
-    if scored.len() > limit {
-        truncated = true;
-    }
-    scored.truncate(limit);
-    Ok(FileListInfo {
-        entries: scored.into_iter().map(|(_, entry)| entry).collect(),
-        truncated,
-    })
+    let Some(index) = FileSearchIndex::build(root, show_hidden, cancelled)? else {
+        return Ok(None);
+    };
+    Ok(index.search(query, limit, cancelled))
 }
 
 /// Skim score plus matched **char** indices for one candidate, using the
@@ -504,6 +583,12 @@ mod tests {
     #[test]
     fn search_ranks_exact_matches_first_and_truncates() {
         let root = fixture_tree("search");
+        let index = FileSearchIndex::build(&root, false, None).unwrap().unwrap();
+        assert_eq!(index.root, std::fs::canonicalize(&root).unwrap());
+        assert_eq!(
+            index.search("main", 100, None).unwrap().entries[0].path,
+            std::path::PathBuf::from("src/main.rs")
+        );
         let found = search_files(&root, "main", 100, false).unwrap();
         assert!(!found.entries.is_empty());
         assert_eq!(
@@ -535,6 +620,22 @@ mod tests {
         assert_eq!(shown.entries.len(), 1, "{shown:?}");
         let ignored = search_files(&root, "ignored", 10, true).unwrap();
         assert!(ignored.entries.is_empty(), "{ignored:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancelled_search_is_distinct_from_a_valid_empty_result() {
+        let root = fixture_tree("cancelled");
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert!(
+            search_files_cancellable(&root, "main", 100, false, Some(&cancelled))
+                .unwrap()
+                .is_none()
+        );
+        let live = search_files_cancellable(&root, "main", 100, false, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.entries.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

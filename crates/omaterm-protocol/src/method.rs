@@ -154,6 +154,11 @@ pub struct DiffListFiles {
     pub project_id: Option<String>,
     pub staged: Option<bool>,
 }
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessList {
+    pub project_id: Option<String>,
+}
 
 #[derive(Clone)]
 pub enum Method {
@@ -196,6 +201,7 @@ pub enum Method {
     GitCommit(GitCommit),
     DiffShow(DiffShow),
     DiffListFiles(DiffListFiles),
+    ProcessList(ProcessList),
 }
 
 impl Method {
@@ -252,6 +258,7 @@ impl Method {
             "git.commit" => decode!(GitCommit, GitCommit),
             "diff.show" => decode!(DiffShow, DiffShow),
             "diff.list-files" => decode!(DiffListFiles, DiffListFiles),
+            "process.list" => decode!(ProcessList, ProcessList),
             _ => Err(MethodError("unknown method")),
         }
     }
@@ -330,8 +337,9 @@ mod tests {
                 serde_json::json!({"path": "src/main.rs", "staged": true, "context_lines": 5}),
             ),
             ("diff.list-files", serde_json::json!({"staged": false})),
+            ("process.list", serde_json::json!({})),
         ];
-        assert_eq!(cases.len(), 39);
+        assert_eq!(cases.len(), 40);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

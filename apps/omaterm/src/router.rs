@@ -7,16 +7,18 @@ use crate::history::HistoryManager;
 use omaterm_core::{
     CommandContext, CommandError, CommandOutput, CommandResult, DiffCommand, ErrorCode,
     FileCommand, FileListInfo, GitCommand, GitStatusInfo, HistoryCommand, HistoryStatusInfo,
-    JournalEntryInfo, OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo, ProjectCommand,
-    ProjectId, ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand, TabId, TabInfo,
-    TerminalCommand, TerminalInfo,
+    JournalEntryInfo, MAX_PROCESS_ENTRIES, OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo,
+    ProcessCommand, ProcessEntryInfo, ProcessListInfo, ProjectCommand, ProjectId, ProjectInfo,
+    ProjectRootInfo, SessionId, SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand,
+    TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
 use omaterm_terminal::workspace::ClosedSessions;
 use omaterm_terminal::{
-    ClosedPane, CoordinatorError, ProjectSessionCommit, SessionSpawnQueue, SpawnCompletion,
-    SplitSessionCommit, TerminalConfig, TerminalSession, WorkspaceCoordinator,
+    ClosedPane, CoordinatorError, LinuxProcessInspector, ProcessInspector, ProjectSessionCommit,
+    SessionSpawnQueue, SpawnCompletion, SplitSessionCommit, TerminalConfig, TerminalSession,
+    WorkspaceCoordinator,
 };
 
 const MAX_PENDING_LAUNCHES: usize = 8;
@@ -246,6 +248,67 @@ impl CommandRouter {
         }
     }
 
+    fn process_list(&self, context: CommandContext, project: ProjectId) -> CommandResult {
+        let Some(owner) = self.coordinator.projects().iter().find(|p| p.id == project) else {
+            return err(ErrorCode::ProjectNotFound, "project does not exist");
+        };
+        if matches!(context, CommandContext::Project(scope) if scope != project) {
+            return err(ErrorCode::CrossProjectDenied, "outside project scope");
+        }
+        let inspector = LinuxProcessInspector;
+        let mut entries = Vec::new();
+        let mut seen = HashSet::new();
+        let mut truncated = false;
+        'tabs: for tab in &owner.tabs {
+            for pane in tab.tree.panes() {
+                let PaneContent::Terminal(session_id) = &pane.content else {
+                    continue;
+                };
+                let Some(handle) = self.coordinator.registry().get(*session_id) else {
+                    continue;
+                };
+                let Ok(session) = handle.lock() else {
+                    continue;
+                };
+                let root_pid = session.child_pid();
+                drop(session);
+                if inspector.process_info(root_pid).is_none() {
+                    continue;
+                }
+                let descendants = inspector.descendants(root_pid);
+                let ports = inspector.listening_ports(root_pid);
+                for process in descendants {
+                    if !seen.insert(process.pid) {
+                        continue;
+                    }
+                    if entries.len() == MAX_PROCESS_ENTRIES {
+                        truncated = true;
+                        break 'tabs;
+                    }
+                    entries.push(ProcessEntryInfo {
+                        pid: process.pid,
+                        ppid: process.ppid,
+                        name: process.name,
+                        pane: pane.id,
+                        session: *session_id,
+                        ports: ports
+                            .iter()
+                            .filter(|port| port.pid == process.pid)
+                            .map(|port| port.port)
+                            .collect(),
+                        cpu_percent: None,
+                        memory_bytes: None,
+                    });
+                }
+            }
+        }
+        entries.sort_by_key(|entry| entry.pid);
+        ok(CommandOutput::ProcessList(ProcessListInfo {
+            entries,
+            truncated,
+        }))
+    }
+
     /// Shared diff query path (M15): project existence plus scope check
     /// through `file_root`, then one bounded `git diff` subprocess. No
     /// root or a non-repo root renders the empty envelope (M14 product
@@ -410,6 +473,18 @@ impl CommandRouter {
         self.active_shell_cwd(project)
     }
 
+    /// Cached shell CWD for background work setup. Unlike `shell_cwd_for`,
+    /// this reads the already tracked session value and never probes `/proc`
+    /// on the caller thread.
+    pub fn cached_shell_cwd_for(&self, project: ProjectId) -> Option<PathBuf> {
+        let tab = self.coordinator.window().project(project)?.selected_tab()?;
+        let PaneContent::Terminal(session) = &tab.tree.find(tab.focused_pane)?.content else {
+            return None;
+        };
+        let handle = self.coordinator.registry().get(*session)?;
+        handle.lock().ok().map(|live| live.cwd().path.clone())
+    }
+
     fn authorize(&self, context: CommandContext, command: &OmaCommand) -> Result<(), CommandError> {
         let CommandContext::Project(scope) = context else {
             return Ok(());
@@ -526,6 +601,7 @@ impl CommandRouter {
             | OmaCommand::Git(GitCommand::Commit { project, .. }) => Some(*project),
             OmaCommand::Diff(DiffCommand::Show { project, .. })
             | OmaCommand::Diff(DiffCommand::ListFiles { project, .. }) => Some(*project),
+            OmaCommand::Process(ProcessCommand::List { project }) => Some(*project),
             OmaCommand::Pane(
                 PaneCommand::FocusDirection { .. }
                 | PaneCommand::ResizeFocused { .. }
@@ -1313,6 +1389,9 @@ impl CommandRouter {
             OmaCommand::Diff(DiffCommand::ListFiles { project, staged }) => {
                 self.diff_query(context, project, None, staged, 0, true)
             }
+            OmaCommand::Process(ProcessCommand::List { project }) => {
+                self.process_list(context, project)
+            }
             OmaCommand::Tab(TabCommand::List { project }) => {
                 let Some(p) = self.coordinator.window().project(project) else {
                     return err(ErrorCode::ProjectNotFound, "project does not exist");
@@ -1801,6 +1880,7 @@ fn git_error(error: omaterm_context::GitError) -> CommandResult {
             err(ErrorCode::PathOutsideRoot, "path escapes the project root")
         }
         Context::Timeout => err(ErrorCode::Timeout, error.to_string()),
+        Context::Cancelled => err(ErrorCode::Timeout, error.to_string()),
         Context::Io(_) => err(ErrorCode::RuntimeFailure, error.to_string()),
     }
 }
@@ -1835,6 +1915,68 @@ mod tests {
 
     fn router() -> CommandRouter {
         CommandRouter::new(WorkspaceCoordinator::new(std::env::temp_dir()))
+    }
+
+    #[test]
+    fn process_list_is_project_scoped_bounded_and_effect_free() {
+        let mut router = router();
+        let receipt = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: Some("process-list-test".into()),
+                directory: Some(std::env::temp_dir()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("expected pending project creation");
+        };
+        let start = std::time::Instant::now();
+        let project = loop {
+            if let Some((id, outcome)) = router.poll_launches().into_iter().next()
+                && id == operation_id
+            {
+                let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) =
+                    outcome.result
+                else {
+                    panic!("project should commit: {:?}", outcome.result);
+                };
+                break project;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        let result = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        assert!(result.effects.is_empty());
+        let CommandResult::Ok(CommandOutput::ProcessList(list)) = result.result else {
+            panic!("expected process list");
+        };
+        assert!(list.entries.len() <= MAX_PROCESS_ENTRIES);
+        let known_sessions: HashSet<_> = router
+            .projects()
+            .iter()
+            .find(|owner| owner.id == project)
+            .into_iter()
+            .flat_map(|owner| owner.tabs.iter())
+            .flat_map(|tab| tab.tree.panes())
+            .filter_map(|pane| match &pane.content {
+                PaneContent::Terminal(session) => Some(*session),
+                PaneContent::Empty => None,
+            })
+            .collect();
+        assert!(
+            list.entries
+                .iter()
+                .all(|entry| known_sessions.contains(&entry.session))
+        );
+        let denied = router.dispatch_async(
+            CommandContext::Project(ProjectId::new()),
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        assert!(matches!(denied.result, CommandResult::Err(_)));
+        assert!(denied.effects.is_empty());
     }
 
     #[test]

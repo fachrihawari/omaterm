@@ -27,7 +27,148 @@ M4 evidence below.
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
- | 15 — Diff Viewer | in_progress | Bounded unified diff parser/runner, dispatcher + protocol/CLI, Git-row selection opens the diff as a main-area preview tab (file diff, never a terminal); focused tests green (see M15 progress below) | True hunk staging, final virtualization/actions and Wayland proof pending; recorded workspace serial timeout unresolved | Follow [M15 full resolution plan](m15-full-resolution-plan.md) for the remaining end-to-end sequence |
+| 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk IPC/CLI parity, one-active/one-pending cancellable Git worker, full request-key validation, cached all-row `uniform_list`, `Ctrl+Shift+S` selected-hunk stage, `Ctrl+Shift+C` full hunk copy; two-hunk release fixture proves only the chosen index hunk stages | Measured two-axis viewport/anchors and final clipboard/pointer/Wayland acceptance gates remain; see M15 progress below | Close [M15 full resolution plan](m15-full-resolution-plan.md) acceptance before M16 completion |
+| 16 — Command Palette | in_progress | Dual-mode overlay, fuzzy ranked command/workspace/file/Git candidates, one latest-only source worker, bounded root index, core ranking, root-aware File MRU and origin restoration; release Wayland command/file/project/split/focus/process refresh proof and CLI spot-checks recorded below | M15 not closed; M18 process query still synchronous and CPU/RSS absent; rapid-search worker/resource measurements and full stale/focus/error/argument matrix pending | Finish M15 and M18 query gates, then close M16 implementation/acceptance gaps |
+| 18 — Process Panel | in_progress (query slice only) | Bounded `ProcessCommand::List`, IPC/CLI `process.list`, Info process/port sections; router scope/no-effect test and same-instance CLI query passed | No off-thread query lifecycle, CPU/RSS sampler, scoped kill, resource proof or complete M18 acceptance | Move the query off the owner/UI thread and complete M18 contract before claiming the M16 prerequisite |
+
+## M15 + M16 remaining-work planning — 2026-10-03
+
+Created the [remaining-work plan](m15-m16-remaining-work-plan.md) against commit
+`6d41c14` plus the existing uncommitted implementation. Inspected the working
+tree, milestone contracts, previous plans, diff row/worker/renderer code,
+palette ranking/search/cache/activation code and process-query routing.
+Existing application and documentation changes were preserved.
+
+The current execution order is R0 baseline/fixtures → D1 diff lifecycle → D2
+viewport/anchors → D3 actions/parity/Wayland and M15 closure → Q1 off-thread M18
+query prerequisite → P1 palette scheduler/freshness → P2 catalog/rank/MRU/
+arguments → P3 input/focus/layout → V1 final acceptance and M16 closure.
+
+The audit records remaining code defects alongside evidence gaps: incomplete
+diff request identity and real worker admission; 21px/22px row mismatch and
+missing independent X/anchors; synchronous process scans; per-query palette
+threads; invalidated cache results still returnable; unapplied file MRU;
+selection-dependent command retargeting and incomplete origin restoration.
+Historical plans now point to this current sequence. No milestone checkbox or
+application capability is marked complete by this planning change.
+
+Documentation verification: `python3 scripts/check-docs.py` passed (35 Markdown
+files, 126 local link targets, 282 blueprint references; all 34 CLI methods
+mapped). `git diff --check` and `git diff --no-index --check /dev/null
+docs/m15-m16-remaining-work-plan.md` passed. Consistency review separates
+implemented behavior, historical evidence and required new acceptance; M18
+query work is kept distinct from full M18 completion.
+
+Cargo/native checks are not applicable to this documentation-only increment.
+Next implementation action: R0 reproducible baseline/fixtures, then D1
+identity/admission tests.
+
+### Execution update — 2026-10-03
+
+R0 baseline inspection/fixtures had already been completed earlier in this
+working tree. Continued with D1/D2 plus partial P1/P2/P3 work and corrected the
+diff request acceptance rule to compare the complete request key against live
+project, root generation, selected path/side, pinned root and cached session CWD.
+The latest-only worker test now checks every identity field survives the
+worker/mailbox path. Split preview width reserves a full longest-line width per
+side so both text columns can be reached with horizontal scrolling. Inline
+no-final-newline context rows now assert the marker on both sides. The Git
+cancellation regression uses a helper shell that signals entry to its blocking
+operation before cancellation, eliminating a launch-timing race exposed by a
+full-workspace run.
+
+### Verification before the lifecycle checkpoint
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace` | PASS: all 462 unit/integration tests; PTY integration 32/32 |
+| `cargo test --workspace -- --test-threads=1` | PASS: all 462 unit/integration tests; PTY integration 32/32 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS; existing dependency future-incompatibility notice only |
+| `python3 scripts/check-docs.py` | PASS: 35 Markdown files, 126 local links, 282 blueprint refs, all 34 CLI method mappings |
+| `git diff --check` | PASS |
+
+The first parallel workspace run exposed a race in the cancellation test: the
+fixed 100ms timer could expire before the helper child reached its blocking
+operation. The regression now uses an explicit child-start marker. The complete
+parallel and serial workspace suites both passed after the fix. No Wayland
+acceptance was run in this increment. M15/M16 remain in progress; this update
+does not close their visual, interaction, performance or release gates.
+
+Remaining-work tracking now records D1/D2/P1/P2/P3 implementation deltas in
+`m15-m16-remaining-work-plan.md`. Next action is D1 request race coverage and
+remaining M15 D2/D3 acceptance, followed by the M18 async query prerequisite.
+
+### M15/M16 implementation checkpoint — 2026-10-03
+
+Paused feature expansion for the requested commit. The checkpoint includes the
+diff virtual rows/actions, cancellable latest-only Git worker, unified palette,
+bounded filename index/core ranking, initial process query and remaining-work
+plans accumulated since `6d41c14`.
+
+Finished the in-flight diff lifecycle edits: supersession/cancellation and
+completion publication now share one lock; cancelled jobs cannot refill the
+mailbox. Selection/root changes cancel active/pending work, empty workspaces
+retire caches (including closed projects), and normal desktop shutdown joins
+the diff worker on its background cleanup thread. Root-directory changes and
+hunk-stage refresh invalidate both cached comparisons while retaining selection
+intent. Three new regressions exercise every stale identity field, data versus
+selection retirement, and a blocked active job with 100 superseding requests,
+then shutdown with active and queued work.
+
+Checks on this checkpoint (Rust/Cargo 1.99.0, environment override of the
+repository's 1.98.1 pin; dependency resolution unchanged):
+
+- `cargo fmt --all --check`: PASS.
+- `cargo test -p omaterm --bin omaterm-desktop diff_panel::tests`: PASS, 20 tests.
+- `cargo test --workspace`: timed out at 120s in the unchanged terminal crate;
+  `cwd_refresh_uses_the_inspector_seam` and
+  `history_pause_holds_the_record_and_resume_continues` were still running.
+  This required parallel gate is **not passing** for this checkpoint. Earlier
+  passing retries do not resolve the recurring hang; no stuck-process backtrace
+  was captured before the harness terminated the run.
+- `cargo test --workspace --quiet -- --test-threads=1`: PASS, 465 tests,
+  including 105 desktop and 32 PTY integration tests. The serial pass does not
+  diagnose or erase the parallel timeout.
+- `cargo clippy --workspace --all-targets -- -D warnings`: PASS; existing
+  `proc-macro-error2` future-incompatibility notice only.
+- `python3 scripts/check-docs.py` and `git diff --check`: PASS.
+
+Manual Wayland validation and release builds were not repeated for this
+checkpoint. M15/M16 and the M18 query prerequisite remain incomplete. Next:
+capture terminal hang thread/child/wait evidence, centralize Git mutation
+invalidation in dispatcher effects (including IPC mutations), then continue
+M15 measured viewport/anchors and native interaction acceptance before M18
+off-thread queries and M16 completion.
+
+## M16 comprehensive implementation planning — 2026-10-03
+
+Created the [M16 implementation plan](m16-implementation-plan.md) after auditing
+the milestone and blueprint references, semantic commands/router, M13 finder
+and fuzzy backend, M18 process-query contract, and current verification gates.
+The working tree was clean before these documentation edits.
+
+The plan defines six ordered deliveries: contracts/fixtures/API spike; typed
+catalog/ranking; bounded unified sources; overlay/input/focus; dispatcher parity;
+release acceptance. It records the existing `Ctrl+Shift+P` project-creation
+collision, per-query detached filesystem workers, absent reusable file index,
+focus-versus-navigation semantics, implicit file-open terminal targeting and
+M18-query dependency. M15 remains the active implementation milestone; M16
+implementation and completion are not claimed.
+
+Documentation-only verification:
+
+- `python3 scripts/check-docs.py`: PASS (34 Markdown files, 111 local link
+  targets, 272 numbered blueprint references; all 33 CLI methods mapped).
+- `git diff --check` and `git diff --no-index --check /dev/null
+  docs/m16-implementation-plan.md`: PASS.
+- Local consistency review: prerequisites remain explicit; planned checks are
+  separate from evidence; navigation focus preserves semantic intent; no new
+  palette wire method or dependency is proposed.
+
+Cargo and native desktop checks are not applicable to this documentation-only
+change. Next action: close M15, then M16 phase A baseline and shortcut/API
+inventory, tracking the independently deliverable M18 query slice.
 
 ## M15 comprehensive completion planning — 2026-10-03
 
@@ -102,6 +243,76 @@ passed (17 core, 88 desktop tests; known transitive future-incompatibility
 notice only). No IPC/CLI, full-workspace or Wayland result is claimed.
 
 ## Handoff rules
+
+### M15 virtual row viewport increment — 2026-10-03
+
+Replaced the prior 32-hunk/200-line body truncation and eight-hunk window with
+an all-parsed-row presentation model consumed by GPUI 0.2.2 `uniform_list`.
+The flat row set is cached by project/side/path/mode and invalidated on source,
+selection or mode changes. Hunk navigation now covers all loaded hunks and
+scrolls the native virtual list to the selected hunk. Eligible Stage Hunk and
+terminal-routed Open in Terminal controls are emitted as hunk action rows.
+Pure coverage proves a 300-line hunk and later hunk are retained, and navigation
+uses the complete parsed range.
+
+Verification on current code: `cargo fmt --all --check`, workspace Clippy,
+`cargo test --workspace -- --test-threads=1` (453 tests) and release builds pass.
+The diff row model now retains/display-tags no-final-newline lines. On Wayland,
+the `GitPath` palette result opened a two-hunk disposable-repo diff preview.
+`Ctrl+Shift+S` staged only the selected first hunk: `git diff --cached --unified=0`
+showed `changed alpha`, while `git diff --unified=0` retained only `changed
+omega`. Capture: `/tmp/omaterm-m16-l41P/m15-diff-rebuilt.png`; the disposable
+repository is `/tmp/omaterm-m15-pj3R`.
+
+Still pending M15 proof: direct Git-list pointer selection, native vertical and
+horizontal scroll, copy/open contextual action reachability, long-diff scroll
+end and final native release acceptance. Pointer injection remains unavailable;
+Alt-arrow injection reached the isolated test shell. This is partial live proof,
+not M15 completion.
+
+### M16 palette and M18 process-query implementation progress — 2026-10-03
+
+Implemented and verified portions of the comprehensive M16 plan; M16 remains in
+progress and M15 is still the ordered gate. Added a pure fuzzy candidate ranker,
+dual-mode overlay, project/tab/pane/session IDs, command results, active-root
+filename search with cooperative cancellation, changed Git paths, semantic
+file/project/pane/tab/diff/Git/process actions, selected-result scrolling and a
+session-local MRU. `Ctrl+Shift+P` and `Ctrl+P` open/switch modes. Project create
+now uses `Ctrl+Alt+N`; a read-only `hyprctl binds -j` inspection showed no exact
+system chord collision. Captured root/origin are revalidated before file-open;
+stale file and Git targets show a notice rather than retargeting.
+
+Added M18's initial bounded project process query across core/router/IPC/CLI and
+the Info sections with Refresh. This query slice does not complete M18: it still
+runs synchronously through the dispatcher, CPU/RSS values are absent, and scan
+allocation/resource bounds have not been proven. M16 now caches an invalidatable
+root-scoped file index (100k scan / 16 MiB retained-path caps) and serializes
+first index builds. Search-worker admission and large-query lifecycle
+measurements remain open.
+
+Release Wayland evidence (Omarchy/Hyprland, isolated `HOME=/tmp/omaterm-m16-l41P`)
+was captured outside the repository. `Ctrl+Shift+P` command mode, `Ctrl+P`
+plain mode with filename + changed-Git results, split-right, focus-left,
+project selection, terminal-routed file-open with isolated
+`EDITOR=/usr/bin/true`, and process refresh were exercised. A same-instance CLI
+spot-check listed panes, focused the other pane, and queried `process.list`;
+the response was bounded and the shell sessions remained live. Selecting the
+palette's changed-path Git result opened the M15 diff preview on Wayland. Direct
+Git-list pointer selection and preview scroll/action interaction remain
+unverified. These do not prove large-query resource behavior or M15 closure.
+
+| Current verification | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace -- --test-threads=1` | PASS: 453 tests, 0 failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS; transitive `proc-macro-error2 v2.0.1` future-incompatibility notice only |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS after process method and v0.2 acceptance rows: 34 Markdown files, 115 local links, 272 blueprint references; all 34 CLI methods map to IPC |
+| `git diff --check` | PASS after the latest documentation edits |
+
+Next: finish M15 acceptance; move M18 process inspection off the owner/UI thread;
+bound concurrent file-index construction and close M16 freshness/focus/argument,
+CLI parity, and remaining Wayland evidence. No M16 or M18 completion is claimed.
 
 ### M15 hunk-stage entry points and Git runner hardening — 2026-10-03
 

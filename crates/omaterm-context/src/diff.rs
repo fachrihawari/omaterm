@@ -18,13 +18,15 @@
 //! project root: git runs with the root as its working directory.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use omaterm_core::{
     DiffFileInfo, DiffFileStatus, DiffHunkInfo, DiffInfo, DiffLineInfo, DiffLineKind,
 };
 
 use super::git::{
-    GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, join_under_root, run_git, run_git_input,
+    GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, join_under_root, run_git,
+    run_git_cancellable, run_git_input,
 };
 
 /// Largest `git diff` stdout kept in memory. Beyond this the parse still
@@ -74,6 +76,22 @@ impl DiffRequest {
 /// the explicit empty envelope (M14 product contract); traversal escapes
 /// are rejected before git ever runs.
 pub fn git_diff(root: &Path, request: &DiffRequest) -> Result<DiffInfo, GitError> {
+    git_diff_with_cancel(root, request, None)
+}
+
+pub fn git_diff_cancellable(
+    root: &Path,
+    request: &DiffRequest,
+    cancelled: &AtomicBool,
+) -> Result<DiffInfo, GitError> {
+    git_diff_with_cancel(root, request, Some(cancelled))
+}
+
+fn git_diff_with_cancel(
+    root: &Path,
+    request: &DiffRequest,
+    cancelled: Option<&AtomicBool>,
+) -> Result<DiffInfo, GitError> {
     let context = request.context_lines.min(MAX_DIFF_CONTEXT_LINES);
     let context_arg = format!("-U{}", context);
     let mut args = vec![
@@ -105,7 +123,18 @@ pub fn git_diff(root: &Path, request: &DiffRequest) -> Result<DiffInfo, GitError
         args.push(relative.to_string_lossy().into_owned());
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    match run_git(root, &[], &arg_refs, GIT_STATUS_TIMEOUT, MAX_DIFF_BYTES) {
+    let output = match cancelled {
+        Some(cancelled) => run_git_cancellable(
+            root,
+            &[],
+            &arg_refs,
+            GIT_STATUS_TIMEOUT,
+            MAX_DIFF_BYTES,
+            cancelled,
+        ),
+        None => run_git(root, &[], &arg_refs, GIT_STATUS_TIMEOUT, MAX_DIFF_BYTES),
+    };
+    match output {
         Ok(output) => {
             let mut info = parse_diff(&output.stdout, output.stdout_capped, request.files_only);
             info.staged = request.staged;
@@ -253,6 +282,9 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
                 }
                 return;
             }
+            if builder.header_truncated {
+                file.truncated = true;
+            }
             let kept = builder
                 .lines
                 .into_iter()
@@ -270,12 +302,13 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
             );
             file.hunks.push(DiffHunkInfo {
                 id,
+                header: builder.header,
                 old_start: builder.old_start,
                 old_lines: builder.old_lines,
                 new_start: builder.new_start,
                 new_lines: builder.new_lines,
                 lines: kept,
-                truncated: builder.line_total > MAX_DIFF_LINES_PER_HUNK,
+                truncated: builder.line_total > MAX_DIFF_LINES_PER_HUNK || builder.header_truncated,
             });
         };
 
@@ -322,7 +355,7 @@ pub fn parse_diff(output: &[u8], capped: bool, files_only: bool) -> DiffInfo {
         if let Some(header) = line.strip_prefix("@@ ") {
             flush_hunk(&mut hunk, &mut current, files_only);
             if let Some(span) = parse_hunk_header(header) {
-                hunk = Some(HunkBuilder::new(span));
+                hunk = Some(HunkBuilder::new(span, line));
             }
             continue;
         }
@@ -560,6 +593,8 @@ fn unquote(path: String) -> String {
 }
 
 struct HunkBuilder {
+    header: String,
+    header_truncated: bool,
     old_start: u32,
     old_lines: u32,
     new_start: u32,
@@ -569,8 +604,10 @@ struct HunkBuilder {
 }
 
 impl HunkBuilder {
-    fn new(span: (u32, u32, u32, u32)) -> Self {
+    fn new(span: (u32, u32, u32, u32), header: &str) -> Self {
         Self {
+            header: truncate_str(header, MAX_DIFF_LINE_BYTES),
+            header_truncated: header.len() > MAX_DIFF_LINE_BYTES,
             old_start: span.0,
             old_lines: span.1,
             new_start: span.2,
@@ -748,6 +785,7 @@ mod tests {
         assert!(!file.binary);
         assert_eq!(file.hunks.len(), 1);
         let hunk = &file.hunks[0];
+        assert_eq!(hunk.header, "@@ -1,3 +1,4 @@ fn main() {");
         assert_eq!((hunk.old_start, hunk.old_lines), (1, 3));
         assert_eq!((hunk.new_start, hunk.new_lines), (1, 4));
         let kinds: Vec<DiffLineKind> = hunk.lines.iter().map(|line| line.kind).collect();

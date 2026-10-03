@@ -364,6 +364,9 @@ pub fn map_request(
                 project: resolve_project(p.project_id)?,
                 staged: p.staged.unwrap_or(false),
             }),
+            Method::ProcessList(p) => OmaCommand::Process(omaterm_core::ProcessCommand::List {
+                project: resolve_project(p.project_id)?,
+            }),
         })
     })()
     .map_err(|message| invalid(id, message))?;
@@ -478,6 +481,7 @@ fn output_json(output: CommandOutput) -> Value {
             const MAX_BRIDGE_HUNKS: usize = 64;
             const MAX_BRIDGE_LINES: usize = 200;
             const MAX_BRIDGE_LINE_CHARS: usize = 2000;
+            const MAX_BRIDGE_HUNK_HEADER_CHARS: usize = 2000;
             let mut truncated = info.truncated || info.files.len() > MAX_BRIDGE_FILES;
             let files = info
                 .files
@@ -492,8 +496,11 @@ fn output_json(output: CommandOutput) -> Value {
                         .into_iter()
                         .take(MAX_BRIDGE_HUNKS)
                         .map(|hunk| {
-                            let mut hunk_truncated =
-                                hunk.truncated || hunk.lines.len() > MAX_BRIDGE_LINES;
+                            let header_truncated =
+                                hunk.header.chars().count() > MAX_BRIDGE_HUNK_HEADER_CHARS;
+                            let mut hunk_truncated = hunk.truncated
+                                || hunk.lines.len() > MAX_BRIDGE_LINES
+                                || header_truncated;
                             truncated = truncated || hunk_truncated;
                             let lines = hunk
                                 .lines
@@ -509,13 +516,17 @@ fn output_json(output: CommandOutput) -> Value {
                                     json!({"kind":line.kind.as_str(),"text":line.text.chars().take(MAX_BRIDGE_LINE_CHARS).collect::<String>(),"no_newline_at_end":line.no_newline_at_end})
                                 })
                                 .collect::<Vec<_>>();
-                            json!({"id":hunk.id,"old_start":hunk.old_start,"old_lines":hunk.old_lines,"new_start":hunk.new_start,"new_lines":hunk.new_lines,"lines":lines,"truncated":hunk_truncated})
+                            json!({"id":hunk.id,"header":hunk.header.chars().take(MAX_BRIDGE_HUNK_HEADER_CHARS).collect::<String>(),"old_start":hunk.old_start,"old_lines":hunk.old_lines,"new_start":hunk.new_start,"new_lines":hunk.new_lines,"lines":lines,"truncated":hunk_truncated})
                         })
                         .collect::<Vec<_>>();
                     json!({"path":file.path,"old_path":file.old_path,"status":file.status.as_str(),"binary":file.binary,"hunks":hunks,"hunk_count":file.hunk_count,"truncated":file.truncated})
                 })
                 .collect::<Vec<_>>();
             json!({"files":files,"truncated":truncated,"staged":info.staged})
+        }
+        CommandOutput::ProcessList(list) => {
+            let truncated = list.truncated || list.entries.len() > LIST_LIMIT;
+            json!({"entries":list.entries.into_iter().take(LIST_LIMIT).map(|entry| json!({"pid":entry.pid,"ppid":entry.ppid,"name":entry.name,"pane_id":entry.pane.0.to_string(),"session_id":entry.session.0.to_string(),"ports":entry.ports,"cpu_percent":entry.cpu_percent,"memory_bytes":entry.memory_bytes})).collect::<Vec<_>>(),"truncated":truncated})
         }
     }
 }
@@ -655,8 +666,10 @@ mod tests {
                 json!({"project_id": id, "staged": true}),
                 true,
             ),
+            ("process.list", json!({}), false),
+            ("process.list", json!({"project_id": id}), true),
         ];
-        assert_eq!(cases.len(), 52);
+        assert_eq!(cases.len(), 54);
         for (method, params, valid) in cases {
             let result = map_request(&request(method, params), CommandContext::LocalUser, &router);
             assert_eq!(result.is_ok(), valid, "{method}");
@@ -829,6 +842,7 @@ mod tests {
                 binary: false,
                 hunks: vec![omaterm_core::DiffHunkInfo {
                     id: 1,
+                    header: "@@ -1,2 +1,2 @@".into(),
                     old_start: 1,
                     old_lines: 2,
                     new_start: 1,
@@ -851,6 +865,7 @@ mod tests {
         assert_eq!(body["files"][0]["path"], "src/main.rs");
         assert_eq!(body["files"][0]["status"], "modified");
         assert_eq!(body["files"][0]["hunks"][0]["old_start"], 1);
+        assert_eq!(body["files"][0]["hunks"][0]["header"], "@@ -1,2 +1,2 @@");
         assert_eq!(body["files"][0]["hunks"][0]["lines"][1]["kind"], "deletion");
         assert_eq!(body["files"][0]["hunks"][0]["lines"][1]["text"], "old");
         assert_eq!(body["truncated"], false);
@@ -865,6 +880,7 @@ mod tests {
                 binary: false,
                 hunks: vec![omaterm_core::DiffHunkInfo {
                     id: 2,
+                    header: "@@ -1,0 +1,1 @@".into(),
                     old_start: 1,
                     old_lines: 1,
                     new_start: 1,

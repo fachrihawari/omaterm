@@ -42,6 +42,14 @@ Unit tests do not substitute for real desktop observations.
 | Formal perf/resource baseline | M11 | 100-cycle threads/FD/RSS, flood, concurrent IPC load | Release startup/idle/GPU observations with workload records | Partial 2026-09-28: 313-test serial suite green; sampled peak ~1.2 GiB RSS / 37 threads under test load (12-core/30 GiB, debug); FD stability via 100-cycle test; release idle + per-process GPU remain open |
 | Packaging and license inventory | M11 | PKGBUILD + tarball contents, cargo metadata inventory | Install/launch from package where practical | Complete with limits 2026-09-28: PKGBUILD syntax-checked + tarball procedure; 583 third-party packages inventoried with zero missing licenses (`option-ext` MPL-2.0, `self_cell` Apache/GPL noted); project license still TBD; no install-from-package run claimed |
 
+## v0.2 acceptance rows (M15–M17; pending until M17 closeout)
+
+| Requirement | Owner | Automated verification | Manual verification | Evidence |
+|---|---|---|---|---|
+| Diff preview parity, all-row virtualization, hunk actions and two-axis navigation | M15 | Parser/repository/row-model tests; full workspace gates | Release Wayland select/scroll/copy/open/stage/navigation, including long diff | In progress: partial-hunk dispatcher parity and virtual row model; preview pointer/scroll/action proof and horizontal behavior pending; see [M15 full resolution plan](m15-full-resolution-plan.md) |
+| Unified semantic command/file/Git/process palette with safe focus and stale-target handling | M16 | Ranking/cap tests, source cancellation, command mapping and no-effects tests | Wayland keyboard flow: split/focus/project/file/Git/process actions; sentinel never reaches unintended PTY | Partial Wayland flow and same-instance CLI spot-check recorded in [status](status.md); M15/M18 gates, source-cache and stale/focus/error matrix remain pending |
+| Process query is scoped, bounded, shared by dispatcher/IPC/CLI and off the UI thread | M18 query prerequisite for M16 | Project scope, cap/truncation, wire/CLI mapping, worker lifecycle and no-effects tests | Same-instance `process.list`; refresh while other terminal remains responsive | Partial query slice and live CLI result recorded in [status](status.md); synchronous dispatcher `/proc` work and CPU/RSS are open, not accepted |
+
 ## Platform evidence
 
 Omarchy/Wayland is the primary completion gate. Record X11 build evidence and

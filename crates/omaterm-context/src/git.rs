@@ -22,6 +22,7 @@
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use omaterm_core::{GitEntry, GitStatusInfo};
@@ -58,13 +59,15 @@ pub enum GitError {
     PathOutsideRoot,
     #[error("git operation timed out")]
     Timeout,
+    #[error("git operation was cancelled")]
+    Cancelled,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
 impl GitError {
     /// Stable machine code for the wire (`not_a_repo`, `git_failed`,
-    /// `git_unavailable`, `path_outside_root`, `timeout`).
+    /// `git_unavailable`, `path_outside_root`, `timeout`, `cancelled`).
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NotARepo => "not_a_repo",
@@ -72,6 +75,7 @@ impl GitError {
             Self::GitUnavailable(_) => "git_unavailable",
             Self::PathOutsideRoot => "path_outside_root",
             Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
             Self::Io(_) => "io_error",
         }
     }
@@ -402,7 +406,37 @@ pub(crate) fn run_git(
     timeout: Duration,
     stdout_cap: usize,
 ) -> Result<GitOutput, GitError> {
-    run_git_with("git", root, extra_env, args, None, timeout, stdout_cap)
+    run_git_with(
+        "git",
+        root,
+        extra_env,
+        args,
+        GitInput::default(),
+        timeout,
+        stdout_cap,
+    )
+}
+
+pub(crate) fn run_git_cancellable(
+    root: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+    timeout: Duration,
+    stdout_cap: usize,
+    cancelled: &AtomicBool,
+) -> Result<GitOutput, GitError> {
+    run_git_with(
+        "git",
+        root,
+        extra_env,
+        args,
+        GitInput {
+            cancelled: Some(cancelled),
+            ..GitInput::default()
+        },
+        timeout,
+        stdout_cap,
+    )
 }
 
 /// Bounded Git mutation with internally generated stdin. Callers pass only
@@ -420,10 +454,19 @@ pub(crate) fn run_git_input(
         root,
         extra_env,
         args,
-        Some(input),
+        GitInput {
+            bytes: Some(input),
+            ..GitInput::default()
+        },
         timeout,
         stdout_cap,
     )
+}
+
+#[derive(Default)]
+struct GitInput<'a> {
+    bytes: Option<&'a [u8]>,
+    cancelled: Option<&'a AtomicBool>,
 }
 
 /// Same spawn with an explicit binary path. Production always passes
@@ -435,7 +478,7 @@ fn run_git_with(
     root: &Path,
     extra_env: &[(&str, &str)],
     args: &[&str],
-    input: Option<&[u8]>,
+    input: GitInput<'_>,
     timeout: Duration,
     stdout_cap: usize,
 ) -> Result<GitOutput, GitError> {
@@ -445,7 +488,7 @@ fn run_git_with(
         .args(args)
         .current_dir(root)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(if input.is_some() {
+        .stdin(if input.bytes.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -460,10 +503,11 @@ fn run_git_with(
         .map_err(|error| GitError::GitUnavailable(format!("cannot spawn git: {error}")))?;
     let deadline = std::time::Instant::now() + timeout;
     let stdin = child.stdin.take();
-    let input = input.map(<[u8]>::to_vec);
+    let input_bytes = input.bytes.map(<[u8]>::to_vec);
+    let cancelled = input.cancelled;
     let (input_tx, input_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let result = match (stdin, input) {
+        let result = match (stdin, input_bytes) {
             (Some(mut pipe), Some(bytes)) => pipe.write_all(&bytes),
             _ => Ok(()),
         };
@@ -485,6 +529,11 @@ fn run_git_with(
         let _ = stderr_tx.send(read_capped(stderr_pipe, MAX_STDERR_BYTES));
     });
     let status = loop {
+        if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(GitError::Cancelled);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() < deadline => {
@@ -748,12 +797,61 @@ mod tests {
             std::env::temp_dir().as_path(),
             &[],
             &[],
-            Some(&vec![b'x'; 1024 * 1024]),
+            GitInput {
+                bytes: Some(&vec![b'x'; 1024 * 1024]),
+                ..GitInput::default()
+            },
             Duration::from_millis(100),
             1024,
         );
         std::fs::remove_file(path).unwrap();
         assert!(matches!(result, Err(GitError::Timeout)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn cancelled_git_process_is_killed_and_reaped() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("omaterm-git-cancel-{}", std::process::id()));
+        let started_path = path.with_extension("started");
+        let script = format!(
+            "#!/bin/sh\n: > '{}'\nexec sleep 60\n",
+            started_path.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_flag = std::sync::Arc::clone(&cancelled);
+        let started_path_for_task = started_path.clone();
+        let cancel_task = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !started_path_for_task.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            cancel_flag.store(true, Ordering::Release);
+        });
+        let start = std::time::Instant::now();
+        let result = run_git_with(
+            path.to_str().unwrap(),
+            std::env::temp_dir().as_path(),
+            &[],
+            &[],
+            GitInput {
+                cancelled: Some(&cancelled),
+                ..GitInput::default()
+            },
+            Duration::from_secs(10),
+            1024,
+        );
+        cancel_task.join().unwrap();
+        let child_started = started_path.exists();
+        std::fs::remove_file(path).unwrap();
+        let _ = std::fs::remove_file(started_path);
+        assert!(
+            child_started,
+            "test process never reached its blocking operation"
+        );
+        assert!(matches!(result, Err(GitError::Cancelled)));
         assert!(start.elapsed() < Duration::from_secs(5));
     }
 
@@ -952,7 +1050,7 @@ mod tests {
             std::env::temp_dir().as_path(),
             &[],
             &["status"],
-            None,
+            GitInput::default(),
             Duration::from_secs(5),
             1024,
         );
@@ -972,5 +1070,6 @@ mod tests {
         );
         assert_eq!(GitError::PathOutsideRoot.code(), "path_outside_root");
         assert_eq!(GitError::Timeout.code(), "timeout");
+        assert_eq!(GitError::Cancelled.code(), "cancelled");
     }
 }

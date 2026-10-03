@@ -20,11 +20,12 @@ pub use boundary::{ContextError, canonicalize_under_root};
 pub use diff::{
     DEFAULT_DIFF_CONTEXT_LINES, DiffRequest, MAX_DIFF_BYTES, MAX_DIFF_CONTEXT_LINES,
     MAX_DIFF_FILES, MAX_DIFF_HUNKS_PER_FILE, MAX_DIFF_LINE_BYTES, MAX_DIFF_LINES_PER_HUNK,
-    git_diff, git_stage_hunk, parse_diff,
+    git_diff, git_diff_cancellable, git_stage_hunk, parse_diff,
 };
 pub use files::{
-    FileWatcher, WatchError, fuzzy_match_indices, is_limit_exhaustion_message, list_dir,
-    search_files,
+    FileSearchIndex, FileWatcher, MAX_SEARCH_INDEX_BYTES, MAX_SEARCH_SCAN, WatchError,
+    fuzzy_match_indices, is_limit_exhaustion_message, list_dir, search_files,
+    search_files_cancellable,
 };
 pub use git::{
     GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, git_commit, git_discard, git_stage,

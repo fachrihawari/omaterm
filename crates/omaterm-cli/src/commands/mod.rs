@@ -6,6 +6,7 @@ pub mod file;
 pub mod git;
 pub mod history;
 pub mod pane;
+pub mod process;
 pub mod project;
 pub mod tab;
 pub mod terminal;

@@ -167,6 +167,7 @@ pub enum CommandOutput {
         oid: String,
     },
     Diff(DiffInfo),
+    ProcessList(ProcessListInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +411,9 @@ pub struct DiffHunkInfo {
     /// hunk's spans and body, so callers can request a hunk without sending a
     /// patch or relying on its visible screen position.
     pub id: u64,
+    /// Original unified hunk header (`@@ ... @@`), including any trailing
+    /// function/context text so copying does not reconstruct a lossy header.
+    pub header: String,
     pub old_start: u32,
     pub old_lines: u32,
     pub new_start: u32,
@@ -460,6 +464,26 @@ pub struct DiffLineInfo {
     /// Git reported that this source line has no trailing newline. The marker
     /// belongs to the preceding body line, not to a synthetic display row.
     pub no_newline_at_end: bool,
+}
+
+pub const MAX_PROCESS_ENTRIES: usize = 512;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessListInfo {
+    pub entries: Vec<ProcessEntryInfo>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessEntryInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub name: String,
+    pub pane: PaneId,
+    pub session: SessionId,
+    pub ports: Vec<u16>,
+    pub cpu_percent: Option<f32>,
+    pub memory_bytes: Option<u64>,
 }
 
 /// Hunk line kind for the `±` coloring (no highlighting in v0.2).

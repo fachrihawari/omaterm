@@ -13,6 +13,7 @@ pub enum OmaCommand {
     File(FileCommand),
     Git(GitCommand),
     Diff(DiffCommand),
+    Process(ProcessCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -229,6 +230,12 @@ pub enum DiffCommand {
     /// File headers + hunk counts without bodies (the fast 1000-file
     /// surface).
     ListFiles { project: ProjectId, staged: bool },
+}
+
+/// Bounded, project-scoped process inspection (M18 query slice).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProcessCommand {
+    List { project: ProjectId },
 }
 
 /// Authority is kept separate from command data so transport identity cannot

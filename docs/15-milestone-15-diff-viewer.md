@@ -3,9 +3,11 @@
 > Git Source Control detail view: click a changed file in the existing Git
 > panel to open its `Files → Hunks → Lines` diff as a preview tab in the
 > main area (blueprint §33). The tab holds the file diff, never a terminal.
-> Per-hunk stage buttons use M14 mutations. Single-pane hunk list first;
-> side-by-side later. No editor (v0.3); preview state is view-local and
-> never persisted.
+> Per-hunk stage buttons use M14 mutations. `Ctrl+Shift+S` stages the selected
+> eligible unstaged hunk; `Ctrl+Shift+C` copies the selected complete hunk.
+> Actions use the selected diff DTO; staging dispatches through the shared operation.
+> Split and Inline are the approved UI v5 presentation modes. No editor (v0.3);
+> preview state is view-local and never persisted.
 
 ## Product Contract
 
@@ -43,9 +45,11 @@ the view.
 
 Follow the [M15 completion plan](m15-completion-plan.md) for the audited gaps,
 dependency-ordered deliveries, true partial-hunk staging, viewport virtualization,
-and automated/live acceptance gates. Use the
-[M15 full resolution plan](m15-full-resolution-plan.md) as the current-tree
-remaining-work sequence. M15 remains in progress until those gates
+and automated/live acceptance gates. The
+[M15 + M16 remaining-work plan](m15-m16-remaining-work-plan.md) is the current
+execution sequence after virtualization, hunk-stage and copy groundwork; the
+[M15 full resolution plan](m15-full-resolution-plan.md) retains earlier contracts.
+M15 remains in progress until those gates
 have evidence. The approved UI v5 extends the original presentation scope with
 Split mode; both Split and Inline must be verified. Whole-file staging does not
 satisfy the per-hunk staging contract.

@@ -133,6 +133,7 @@ crates/omaterm-ipc/
 | `git.commit` | `GitCommand::Commit` |
 | `diff.show` | `DiffCommand::Show` |
 | `diff.list-files` | `DiffCommand::ListFiles` |
+| `process.list` | `ProcessCommand::List` |
 
 ### Socket Path
 
