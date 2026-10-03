@@ -251,14 +251,9 @@ struct WorkspaceView {
     editor_pending_action: Option<EditorPendingAction>,
     editor_rows_handles: HashMap<DocumentId, UniformListScrollHandle>,
     editor_x_handles: HashMap<DocumentId, ScrollHandle>,
-    /// Landed highlights per document: requested generation, spans, and
-    /// max display columns. `editor_text_gen` counts buffer mutations so
-    /// stale worker results drop instead of painting old text.
-    editor_highlights: HashMap<DocumentId, editor::DocHighlight>,
-    editor_text_gen: HashMap<DocumentId, u64>,
-    /// Cached line-start maps keyed by text generation: line math without
-    /// re-scanning the buffer on every keystroke render.
-    editor_line_cache: HashMap<DocumentId, (u64, Rc<Vec<usize>>)>,
+    /// Measured width from the latest accepted highlight result. Token spans
+    /// themselves live in the store's immutable render snapshot.
+    editor_highlight_widths: HashMap<DocumentId, usize>,
     editor_highlight_worker: editor::HighlightWorker,
     /// Body origin per document for click-to-caret mapping, recorded by a
     /// paint-time canvas like the terminal grid origins. Rebuilt every frame.
@@ -631,6 +626,9 @@ enum PendingUiLaunch {
         tab: omaterm_core::TabId,
         pane: PaneId,
     },
+    EditorOpen(omaterm_core::ProjectId),
+    EditorSave,
+    EditorRevert(DocumentId),
     Other,
 }
 
@@ -802,9 +800,7 @@ impl WorkspaceView {
             editor_pending_action: None,
             editor_rows_handles: HashMap::new(),
             editor_x_handles: HashMap::new(),
-            editor_highlights: HashMap::new(),
-            editor_text_gen: HashMap::new(),
-            editor_line_cache: HashMap::new(),
+            editor_highlight_widths: HashMap::new(),
             editor_highlight_worker: editor::HighlightWorker::new(),
             editor_body_origins: HashMap::new(),
             editor_selecting: None,
@@ -1297,6 +1293,7 @@ impl WorkspaceView {
         }
         for (id, work) in self.ipc_pending.drain() {
             self.coordinator.cancel_launch(id);
+            self.coordinator.cancel_editor_operation(id);
             let _ = work.reply.send(IpcResponse::failure(
                 work.request.request_id,
                 "timeout",
@@ -1305,6 +1302,7 @@ impl WorkspaceView {
         }
         let ipc_server = self.ipc_server.take();
         self.coordinator.cancel_launches();
+        self.coordinator.cancel_editor_operations();
         self.pending_ui_launches.clear();
         self.pending_palette_mru.clear();
         self.pending_palette_origins.clear();
@@ -1589,6 +1587,13 @@ impl WorkspaceView {
                 tab: *tab,
                 pane: *pane,
             },
+            OmaCommand::Editor(EditorCommand::Open { project, .. }) => {
+                PendingUiLaunch::EditorOpen(*project)
+            }
+            OmaCommand::Editor(EditorCommand::Save { .. }) => PendingUiLaunch::EditorSave,
+            OmaCommand::Editor(EditorCommand::Revert { document }) => {
+                PendingUiLaunch::EditorRevert(*document)
+            }
             _ => PendingUiLaunch::Other,
         };
         let submitted_run = matches!(
@@ -1704,9 +1709,15 @@ impl WorkspaceView {
                     .is_none()
             {
                 self.coordinator.cancel_launch(*id);
+                self.coordinator.cancel_editor_operation(*id);
             }
         }
-        for (operation_id, outcome) in self.coordinator.poll_launches() {
+        for (operation_id, outcome) in self
+            .coordinator
+            .poll_launches()
+            .into_iter()
+            .chain(self.coordinator.poll_editor_operations())
+        {
             if let Some(work) = self.ipc_pending.remove(&operation_id) {
                 if !work.cancelled.load(Ordering::Acquire) {
                     let result = if self
@@ -1737,6 +1748,43 @@ impl WorkspaceView {
                 self.palette_mru.truncate(100);
             }
             match (&outcome.result, ui) {
+                (
+                    CommandResult::Ok(CommandOutput::EditorOpened(info)),
+                    Some(PendingUiLaunch::EditorOpen(project)),
+                ) => {
+                    self.input_notice = None;
+                    self.editor_activate(project, info.document, cx);
+                }
+                (
+                    CommandResult::Ok(CommandOutput::EditorSaved(_)),
+                    Some(PendingUiLaunch::EditorSave),
+                ) => {
+                    self.input_notice = None;
+                    self.show_toast("Saved".into(), cx);
+                }
+                (
+                    CommandResult::Ok(CommandOutput::EditorOpened(_)),
+                    Some(PendingUiLaunch::EditorRevert(document)),
+                ) => {
+                    self.input_notice = None;
+                    if let Some(caret) = self.editor_carets.get(&document).copied() {
+                        self.editor_set_caret(document, caret.cursor, false);
+                    }
+                    self.editor_after_edit(document, cx);
+                    self.show_toast("Reverted to disk".into(), cx);
+                }
+                (CommandResult::Err(error), Some(PendingUiLaunch::EditorOpen(_))) => {
+                    self.input_notice = Some(format!("Open: {error}"));
+                    cx.notify();
+                }
+                (CommandResult::Err(error), Some(PendingUiLaunch::EditorSave)) => {
+                    self.input_notice = Some(format!("Save: {error}"));
+                    cx.notify();
+                }
+                (CommandResult::Err(error), Some(PendingUiLaunch::EditorRevert(_))) => {
+                    self.input_notice = Some(format!("Revert: {error}"));
+                    cx.notify();
+                }
                 (CommandResult::Ok(_), Some(PendingUiLaunch::Restore { pane, .. })) => {
                     self.restored_failures.remove(&pane);
                 }
@@ -1769,7 +1817,8 @@ impl WorkspaceView {
             }
             self.apply_command_effects(outcome.effects, cx);
         }
-        let pending = self.coordinator.has_pending_launches();
+        let pending = self.coordinator.has_pending_launches()
+            || self.coordinator.has_pending_editor_operations();
         if !pending {
             self.launch_poller_active = false;
         }
@@ -3165,6 +3214,7 @@ impl WorkspaceView {
                 self.input_notice = None;
                 self.editor_activate(project, info.document, cx)
             }
+            Ok(CommandOutput::Pending { .. }) => {}
             Ok(_) => {
                 self.input_notice = Some("Open: unexpected editor result.".into());
                 cx.notify();
@@ -3196,20 +3246,21 @@ impl WorkspaceView {
     /// Queue a background tokenize of the live buffer. Generations retire
     /// superseded keystrokes; the worker cancels the active job on submit.
     fn editor_submit_highlight(&mut self, document: DocumentId) {
-        let generation = self.editor_text_gen.get(&document).copied().unwrap_or(0) + 1;
-        self.editor_text_gen.insert(document, generation);
-        self.editor_highlights.remove(&document);
         let store = self.coordinator.documents();
-        let (Some(text), Some(language)) = (store.buffer_text(document), store.language(document))
+        let (Some(snapshot), Some(language)) =
+            (store.render_snapshot(document), store.language(document))
         else {
             return;
         };
+        self.editor_highlight_widths.remove(&document);
         self.editor_highlight_worker
             .submit(editor::HighlightRequest {
                 document,
-                generation,
+                generation: snapshot.generation(),
                 language,
-                text,
+                // The worker must own its request while the UI continues to
+                // edit. Rendering itself retains the shared snapshot text.
+                text: snapshot.text().to_owned(),
                 cancelled: Arc::new(AtomicBool::new(false)),
             });
     }
@@ -3219,15 +3270,13 @@ impl WorkspaceView {
     fn editor_drain_highlights(&mut self, cx: &mut Context<Self>) {
         let mut landed = false;
         while let Some(result) = self.editor_highlight_worker.take_result() {
-            if self.editor_text_gen.get(&result.document) == Some(&result.generation) {
-                self.editor_highlights.insert(
-                    result.document,
-                    editor::DocHighlight {
-                        requested: result.generation,
-                        spans: result.spans,
-                        max_cols: result.max_cols,
-                    },
-                );
+            if self.coordinator.documents_mut().set_tokens(
+                result.document,
+                result.generation,
+                result.spans,
+            ) {
+                self.editor_highlight_widths
+                    .insert(result.document, result.max_cols);
                 landed = true;
             }
         }
@@ -3242,9 +3291,7 @@ impl WorkspaceView {
         self.editor_carets.remove(&document);
         self.editor_rows_handles.remove(&document);
         self.editor_x_handles.remove(&document);
-        self.editor_highlights.remove(&document);
-        self.editor_text_gen.remove(&document);
-        self.editor_line_cache.remove(&document);
+        self.editor_highlight_widths.remove(&document);
         self.editor_body_origins.remove(&document);
         if self
             .editor_selecting
@@ -3302,6 +3349,7 @@ impl WorkspaceView {
                 self.input_notice = None;
                 self.show_toast("Saved".into(), cx);
             }
+            Ok(CommandOutput::Pending { .. }) => {}
             Ok(_) => {
                 self.input_notice = Some("Save: unexpected editor result.".into());
                 cx.notify();
@@ -3338,6 +3386,7 @@ impl WorkspaceView {
                 self.editor_after_edit(document, cx);
                 self.show_toast("Reverted to disk".into(), cx);
             }
+            Ok(CommandOutput::Pending { .. }) => {}
             Ok(_) => {
                 self.input_notice = Some("Revert: unexpected editor result.".into());
                 cx.notify();
@@ -3349,35 +3398,15 @@ impl WorkspaceView {
         }
     }
 
-    /// Cached line starts for the live buffer, keyed by text generation.
-    fn editor_line_starts(&mut self, document: DocumentId) -> Rc<Vec<usize>> {
-        let generation = self.editor_text_gen.get(&document).copied().unwrap_or(0);
-        if let Some((cached, starts)) = self.editor_line_cache.get(&document)
-            && *cached == generation
-        {
-            return Rc::clone(starts);
-        }
-        let text = self
-            .coordinator
-            .documents()
-            .buffer_text(document)
-            .unwrap_or_default();
-        let starts = Rc::new(editor::line_starts(&text));
-        self.editor_line_cache
-            .insert(document, (generation, Rc::clone(&starts)));
-        starts
-    }
-
     /// Scroll the caret line into view (non-strict: no jump when visible).
     fn editor_reveal_caret(&mut self, document: DocumentId) {
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
         };
-        let starts = editor::line_starts(&text);
-        let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
+        let (line, _) = snapshot.offset_to_line_col(caret.cursor);
         if let Some(handle) = self.editor_rows_handles.get(&document) {
             handle.scroll_to_item(line, ScrollStrategy::Center);
         }
@@ -3386,11 +3415,11 @@ impl WorkspaceView {
     /// Set the caret, extending the selection when requested. Offsets clamp
     /// into the buffer on char boundaries; the caret line is revealed.
     fn editor_set_caret(&mut self, document: DocumentId, offset: usize, extend: bool) {
-        let Some(text) = self.coordinator.documents().buffer_text(document) else {
+        let Some(snapshot) = self.coordinator.documents().render_snapshot(document) else {
             return;
         };
-        let mut offset = offset.min(text.len());
-        while offset > 0 && !text.is_char_boundary(offset) {
+        let mut offset = offset.min(snapshot.text().len());
+        while offset > 0 && !snapshot.text().is_char_boundary(offset) {
             offset -= 1;
         }
         let caret = self.editor_carets.entry(document).or_default();
@@ -3405,14 +3434,17 @@ impl WorkspaceView {
         } else {
             caret.collapse_to(offset);
         }
-        caret.clamp(&text);
+        caret.clamp(snapshot.text());
         self.editor_reveal_caret(document);
     }
 
     /// Shared post-edit bookkeeping: fresh highlights, caret reveal, repaint.
     fn editor_after_edit(&mut self, document: DocumentId, cx: &mut Context<Self>) {
-        if let Some(text) = self.coordinator.documents().text(document) {
-            self.editor_carets.entry(document).or_default().clamp(text);
+        if let Some(snapshot) = self.coordinator.documents().render_snapshot(document) {
+            self.editor_carets
+                .entry(document)
+                .or_default()
+                .clamp(snapshot.text());
         }
         self.editor_submit_highlight(document);
         self.editor_reveal_caret(document);
@@ -3509,17 +3541,13 @@ impl WorkspaceView {
             .get(&document)
             .map(|handle| handle.offset().x.into())
             .unwrap_or(0.0);
-        let text = self.coordinator.documents().buffer_text(document)?;
-        let starts = self.editor_line_starts(document);
+        let snapshot = self.coordinator.documents().render_snapshot(document)?;
         let rel_y: f32 = (position.y - origin.y).into();
         let line = ((rel_y - scroll_y) / EDITOR_ROW_H).floor() as usize;
-        let line = line.min(starts.len().saturating_sub(1));
-        let line_start = starts[line];
-        let line_end = starts
-            .get(line + 1)
-            .map(|end| end.saturating_sub(1))
-            .unwrap_or(text.len());
-        let line_text = text.get(line_start..line_end.min(text.len())).unwrap_or("");
+        let line = line.min(snapshot.line_count().saturating_sub(1));
+        let line_range = snapshot.line_range(line)?;
+        let line_start = line_range.start;
+        let line_text = snapshot.line(line)?;
         let display = editor::display_line(line_text);
         let rel_x: f32 = (position.x - origin.x).into();
         let target_x = (rel_x - EDITOR_GUTTER_W - scroll_x).max(0.0);
@@ -3543,7 +3571,7 @@ impl WorkspaceView {
             cursor: line_start + buffer_col,
             anchor: None,
         };
-        caret.clamp(&text);
+        caret.clamp(snapshot.text());
         Some(caret.cursor)
     }
 
@@ -3584,20 +3612,25 @@ impl WorkspaceView {
 
     /// Copy the selection, or the caret line when there is none.
     fn editor_copy(&mut self, document: DocumentId, cx: &mut Context<Self>) {
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
         };
         let payload = match caret.selection_range() {
-            Some((start, end)) => text.get(start..end).unwrap_or("").to_owned(),
+            Some((start, end)) => snapshot.text().get(start..end).unwrap_or("").to_owned(),
             None => {
-                let starts = editor::line_starts(&text);
-                let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
-                let start = starts[line];
-                let end = starts.get(line + 1).copied().unwrap_or(text.len());
-                text.get(start..end).unwrap_or("").to_owned()
+                let (line, _) = snapshot.offset_to_line_col(caret.cursor);
+                let range = snapshot.line_range(line).unwrap_or(0..0);
+                let end = range
+                    .end
+                    .saturating_add(usize::from(range.end < snapshot.text().len()));
+                snapshot
+                    .text()
+                    .get(range.start..end)
+                    .unwrap_or("")
+                    .to_owned()
             }
         };
         if !payload.is_empty() {
@@ -3614,15 +3647,17 @@ impl WorkspaceView {
             .copied()
             .unwrap_or_default();
         if caret.selection_range().is_none() {
-            let Some(text) = self.coordinator.documents().buffer_text(document) else {
+            let Some(snapshot) = self.coordinator.documents().render_snapshot(document) else {
                 return;
             };
-            let starts = editor::line_starts(&text);
-            let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
-            let start = starts[line];
-            let end = starts.get(line + 1).copied().unwrap_or(text.len());
+            let (line, _) = snapshot.offset_to_line_col(caret.cursor);
+            let range = snapshot.line_range(line).unwrap_or(0..0);
+            let start = range.start;
+            let end = range
+                .end
+                .saturating_add(usize::from(range.end < snapshot.text().len()));
             if start < end {
-                let payload = text.get(start..end).unwrap_or("").to_owned();
+                let payload = snapshot.text().get(start..end).unwrap_or("").to_owned();
                 if self
                     .coordinator
                     .documents_mut()
@@ -3716,14 +3751,14 @@ impl WorkspaceView {
             return;
         }
         self.editor_selecting = None;
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
         };
         if let Some((start, end)) = caret.selection_range()
-            && let Some(payload) = text.get(start..end)
+            && let Some(payload) = snapshot.text().get(start..end)
             && !payload.is_empty()
         {
             cx.write_to_primary(ClipboardItem::new_string(payload.to_owned()));
@@ -3769,10 +3804,10 @@ impl WorkspaceView {
                     return;
                 }
                 (false, "a") => {
-                    if let Some(text) = self.coordinator.documents().buffer_text(document) {
+                    if let Some(snapshot) = self.coordinator.documents().render_snapshot(document) {
                         let caret = self.editor_carets.entry(document).or_default();
                         caret.anchor = Some(0);
-                        caret.cursor = text.len();
+                        caret.cursor = snapshot.text().len();
                         cx.notify();
                     }
                     return;
@@ -3800,8 +3835,8 @@ impl WorkspaceView {
                     return;
                 }
                 (false, "end") => {
-                    if let Some(text) = self.coordinator.documents().buffer_text(document) {
-                        let end = text.len();
+                    if let Some(snapshot) = self.coordinator.documents().render_snapshot(document) {
+                        let end = snapshot.text().len();
                         self.editor_set_caret(document, end, false);
                         cx.notify();
                     }
@@ -3813,8 +3848,8 @@ impl WorkspaceView {
                     return;
                 }
                 (true, "end") => {
-                    if let Some(text) = self.coordinator.documents().buffer_text(document) {
-                        let end = text.len();
+                    if let Some(snapshot) = self.coordinator.documents().render_snapshot(document) {
+                        let end = snapshot.text().len();
                         self.editor_set_caret(document, end, true);
                         cx.notify();
                     }
@@ -3859,8 +3894,8 @@ impl WorkspaceView {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
@@ -3887,14 +3922,14 @@ impl WorkspaceView {
                 if offset == 0 {
                     break;
                 }
-                offset = editor::previous_grapheme(&text, offset);
+                offset = editor::previous_grapheme(snapshot.text(), offset);
             }
         } else {
             for _ in 0..delta {
-                if offset >= text.len() {
+                if offset >= snapshot.text().len() {
                     break;
                 }
-                offset = editor::next_grapheme(&text, offset);
+                offset = editor::next_grapheme(snapshot.text(), offset);
             }
         }
         self.editor_set_caret(document, offset, extend);
@@ -3909,22 +3944,19 @@ impl WorkspaceView {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
         };
-        let starts = editor::line_starts(&text);
-        let (line, col) = editor::offset_to_line_col(&starts, &text, caret.cursor);
-        let next = (line as i32 + delta).clamp(0, starts.len() as i32 - 1) as usize;
-        let visual_col = editor::line_display_width(&text[starts[line]..starts[line] + col]);
-        let next_end = starts
-            .get(next + 1)
-            .map(|end| end - 1)
-            .unwrap_or(text.len());
-        let next_col = editor::display_col_to_buffer_col(&text[starts[next]..next_end], visual_col);
-        let offset = editor::line_col_to_offset(&text, &starts, next, next_col);
+        let (line, col) = snapshot.offset_to_line_col(caret.cursor);
+        let next = (line as i32 + delta).clamp(0, snapshot.line_count() as i32 - 1) as usize;
+        let line_start = snapshot.line_range(line).map_or(0, |range| range.start);
+        let visual_col = editor::line_display_width(&snapshot.text()[line_start..line_start + col]);
+        let next_line = snapshot.line(next).unwrap_or("");
+        let next_col = editor::display_col_to_buffer_col(next_line, visual_col);
+        let offset = snapshot.line_col_to_offset(next, next_col);
         self.editor_set_caret(document, offset, extend);
         cx.notify();
     }
@@ -3937,21 +3969,17 @@ impl WorkspaceView {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
         };
-        let starts = editor::line_starts(&text);
-        let (line, _) = editor::offset_to_line_col(&starts, &text, caret.cursor);
+        let (line, _) = snapshot.offset_to_line_col(caret.cursor);
         let offset = if home {
-            starts[line]
+            snapshot.line_range(line).map_or(0, |range| range.start)
         } else {
-            starts
-                .get(line + 1)
-                .map(|end| end.saturating_sub(1))
-                .unwrap_or(text.len())
+            snapshot.line_range(line).map_or(0, |range| range.end)
         };
         self.editor_set_caret(document, offset, extend);
         cx.notify();
@@ -3965,8 +3993,8 @@ impl WorkspaceView {
     /// Enter: replace any selection, then newline plus the current line's
     /// leading whitespace (spaces and tabs preserved verbatim).
     fn editor_insert_newline(&mut self, document: DocumentId, cx: &mut Context<Self>) {
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
@@ -3974,10 +4002,12 @@ impl WorkspaceView {
         let (start, end) = caret
             .selection_range()
             .unwrap_or((caret.cursor, caret.cursor));
-        let starts = editor::line_starts(&text);
-        let (line, _) = editor::offset_to_line_col(&starts, &text, start);
-        let line_start = starts[line];
-        let line_text = text.get(line_start..start.min(text.len())).unwrap_or("");
+        let (line, _) = snapshot.offset_to_line_col(start);
+        let line_start = snapshot.line_range(line).map_or(0, |range| range.start);
+        let line_text = snapshot
+            .text()
+            .get(line_start..start.min(snapshot.text().len()))
+            .unwrap_or("");
         let indent: String = line_text
             .chars()
             .take_while(|ch| *ch == ' ' || *ch == '\t')
@@ -4008,8 +4038,8 @@ impl WorkspaceView {
         if self.editor_delete_selection(document, cx) {
             return;
         }
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
@@ -4017,7 +4047,7 @@ impl WorkspaceView {
         if caret.cursor == 0 {
             return;
         }
-        let start = editor::previous_grapheme(&text, caret.cursor);
+        let start = editor::previous_grapheme(snapshot.text(), caret.cursor);
         match self
             .coordinator
             .documents_mut()
@@ -4042,16 +4072,16 @@ impl WorkspaceView {
         if self.editor_delete_selection(document, cx) {
             return;
         }
-        let (Some(text), Some(caret)) = (
-            self.coordinator.documents().buffer_text(document),
+        let (Some(snapshot), Some(caret)) = (
+            self.coordinator.documents().render_snapshot(document),
             self.editor_carets.get(&document).copied(),
         ) else {
             return;
         };
-        if caret.cursor >= text.len() {
+        if caret.cursor >= snapshot.text().len() {
             return;
         }
-        let end = editor::next_grapheme(&text, caret.cursor);
+        let end = editor::next_grapheme(snapshot.text(), caret.cursor);
         match self.coordinator.documents_mut().apply_edit(
             document,
             caret.cursor,
@@ -4079,7 +4109,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> Div {
         self.editor_drain_highlights(cx);
-        let Some(text) = self.coordinator.documents().buffer_text(document) else {
+        let Some(snapshot) = self.coordinator.documents().render_snapshot(document) else {
             return div().child("Document closed");
         };
         let info = self.coordinator.documents().document_info(document);
@@ -4099,16 +4129,14 @@ impl WorkspaceView {
             .copied()
             .unwrap_or_default();
         let selection = caret.selection_range();
-        let starts = self.editor_line_starts(document);
-        let highlight = self
-            .editor_highlights
-            .get(&document)
-            .cloned()
-            .unwrap_or_default();
         let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
         let cell_width: f32 = self.fonts(&*cx).cell_width.into();
-        let row_width =
-            main_view_width.max(highlight.max_cols as f32 * cell_width + EDITOR_GUTTER_W + 16.0);
+        let max_cols = self
+            .editor_highlight_widths
+            .get(&document)
+            .copied()
+            .unwrap_or_default();
+        let row_width = main_view_width.max(max_cols as f32 * cell_width + EDITOR_GUTTER_W + 16.0);
 
         // Header: breadcrumb path, dirty marker, document actions.
         let mut bar = div()
@@ -4201,41 +4229,28 @@ impl WorkspaceView {
             .or_default()
             .clone();
         let x_handle = self.editor_x_handles.entry(document).or_default().clone();
-        let text_shared = Arc::new(text);
-        let starts_shared = Arc::new((*starts).clone());
-        let spans_shared = Arc::new(highlight.spans);
+        let snapshot = Arc::new(snapshot);
         let row_mono = mono.clone();
-        let (caret_line, caret_col) = {
-            let caret_text = text_shared.clone();
-            let caret_starts = starts_shared.clone();
-            let (line, col) = editor::offset_to_line_col(&caret_starts, &caret_text, caret.cursor);
-            (line, col)
-        };
+        let (caret_line, caret_col) = snapshot.offset_to_line_col(caret.cursor);
         let rows = uniform_list(
             "editor-lines",
-            starts_shared.len(),
+            snapshot.line_count(),
             cx.processor({
-                let text_shared = Arc::clone(&text_shared);
-                let starts_shared = Arc::clone(&starts_shared);
-                let spans_shared = Arc::clone(&spans_shared);
+                let snapshot = Arc::clone(&snapshot);
                 move |_view, range: std::ops::Range<usize>, window, _cx| {
                     range
                         .map(|line| {
-                            let line_start = starts_shared[line];
-                            let line_end = starts_shared
-                                .get(line + 1)
-                                .map(|end| end.saturating_sub(1))
-                                .unwrap_or(text_shared.len());
-                            let line_text = text_shared
-                                .get(line_start..line_end.min(text_shared.len()))
-                                .unwrap_or("");
+                            let line_range = snapshot.line_range(line).unwrap_or(0..0);
+                            let line_start = line_range.start;
+                            let line_end = line_range.end;
+                            let line_text = snapshot.line(line).unwrap_or("");
                             let display = editor::display_line(line_text);
                             // Token + selection highlights merged into
                             // non-overlapping segments (no cascade ambiguity).
                             let mut cuts = vec![0usize, display.len()];
                             let mut token_at: Vec<(usize, usize, editor::TokenKind)> = Vec::new();
-                            for span in spans_shared.iter() {
-                                let end = span.start + span.len;
+                            for span in snapshot.tokens_for_line(line) {
+                                let end = span.start.saturating_add(span.len);
                                 if end <= line_start || span.start >= line_end {
                                     continue;
                                 }
@@ -4430,7 +4445,7 @@ impl WorkspaceView {
         // Footer: cursor (1-based display column), indentation,
         // encoding, language.
         let caret_display_col = {
-            let line_text = text_shared.split('\n').nth(caret_line).unwrap_or("");
+            let line_text = snapshot.line(caret_line).unwrap_or("");
             let mut cols = 0;
             let mut bytes = 0;
             for ch in line_text.chars() {

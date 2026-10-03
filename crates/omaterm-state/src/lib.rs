@@ -19,8 +19,9 @@ pub use history::{
     save_history_config_toml, stale_archives, trim_events_to_limits,
 };
 pub use snapshot::{
-    CwdProvenance, PaneNodeSnapshot, PersistedCwd, ProjectSnapshot, SnapshotError, SnapshotLimits,
-    SplitAxisSnapshot, TabSnapshot, ValidatedSnapshot, WindowSnapshot, WorkspaceSnapshot,
+    CwdProvenance, DocumentDescriptor, DocumentRegistry, DocumentSnapshot, PaneNodeSnapshot,
+    PersistedCwd, ProjectSnapshot, SnapshotError, SnapshotLimits, SplitAxisSnapshot, TabSnapshot,
+    ValidatedSnapshot, WindowSnapshot, WorkspaceSnapshot,
 };
 pub use store::{
     LoadOutcome, SnapshotDestination, SnapshotStore, SnapshotWriter, StoreError,

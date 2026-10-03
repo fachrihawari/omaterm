@@ -25,6 +25,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -39,6 +40,13 @@ use omaterm_core::{CommandError, DocumentId, EditorDocumentInfo, ErrorCode, Proj
 const MAX_UNDO_ENTRIES: usize = 100;
 const MAX_UNDO_BYTES: usize = 8 * 1024 * 1024;
 
+/// Store-wide limits. Text includes the live and savepoint buffers; render
+/// snapshots only retain shared `Arc` allocations and never copy their text.
+pub const MAX_OPEN_DOCUMENTS: usize = 32;
+pub const MAX_RETAINED_TEXT_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_RETAINED_HISTORY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_RETAINED_TOKEN_BYTES: usize = 64 * 1024 * 1024;
+
 /// One reversible text replacement: `removed.len()` bytes at `start` were
 /// replaced, and `added_len` bytes now occupy that span.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +54,7 @@ struct TextEdit {
     start: usize,
     removed: String,
     added_len: usize,
+    sequence: u64,
 }
 
 impl TextEdit {
@@ -68,15 +77,27 @@ pub struct Document {
     root_identity: omaterm_context::RootIdentity,
     file_device: u64,
     file_inode: u64,
-    text: String,
-    saved_text: String,
+    text: Arc<str>,
+    saved_text: Arc<str>,
+    line_starts: Arc<[usize]>,
     history_cursor: Option<usize>,
     dirty: bool,
+    /// In-memory generation for owner-side I/O completion guards. Every
+    /// buffer mutation advances it so a completed save/revert cannot apply
+    /// over newer edits.
+    generation: u64,
     revision: omaterm_context::FileRevision,
     language: omaterm_context::EditorLanguage,
     undo: Vec<TextEdit>,
     undo_bytes: usize,
     redo: Vec<TextEdit>,
+    redo_bytes: usize,
+    tokens: Arc<[TokenSpan]>,
+    /// Per-line slices into `token_indices`; this prevents a renderer from
+    /// scanning every document token for each visible row.
+    token_line_ranges: Arc<[Range<usize>]>,
+    token_indices: Arc<[usize]>,
+    token_bytes: usize,
 }
 
 impl Document {
@@ -88,6 +109,38 @@ impl Document {
             bytes: self.text.len(),
             lines: count_lines(&self.text),
         }
+    }
+
+    fn retained_text_bytes(&self) -> usize {
+        if Arc::ptr_eq(&self.text, &self.saved_text) {
+            self.text.len()
+        } else {
+            self.text.len() + self.saved_text.len()
+        }
+    }
+
+    fn retained_history_bytes(&self) -> usize {
+        self.undo_bytes + self.redo_bytes
+    }
+
+    fn replace_text(&mut self, text: String) {
+        self.text = Arc::from(text);
+        self.line_starts = line_starts(&self.text).into();
+        self.clear_tokens();
+    }
+
+    fn clear_tokens(&mut self) {
+        self.tokens = Arc::from([]);
+        self.token_line_ranges = Arc::from([]);
+        self.token_indices = Arc::from([]);
+        self.token_bytes = 0;
+    }
+
+    fn advance_generation(&mut self) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("document buffer generation exhausted");
     }
 }
 
@@ -103,13 +156,156 @@ fn count_lines(text: &str) -> usize {
 pub struct DocumentStore {
     docs: HashMap<DocumentId, Document>,
     by_file: HashMap<(ProjectId, omaterm_context::RootIdentity, u64, u64), DocumentId>,
+    next_history_sequence: u64,
+}
+
+/// Immutable, shared data for one render generation. Cloning this value only
+/// increments `Arc` reference counts; unchanged frames do not clone document
+/// text or rebuild line/token indexes.
+#[derive(Debug, Clone)]
+pub struct DocumentRenderSnapshot {
+    document: DocumentId,
+    generation: u64,
+    text: Arc<str>,
+    line_starts: Arc<[usize]>,
+    tokens: Arc<[TokenSpan]>,
+    token_line_ranges: Arc<[Range<usize>]>,
+    token_indices: Arc<[usize]>,
+}
+
+impl DocumentRenderSnapshot {
+    pub fn document(&self) -> DocumentId {
+        self.document
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.line_starts.len()
+    }
+
+    pub fn line_range(&self, line: usize) -> Option<Range<usize>> {
+        line_range(&self.line_starts, &self.text, line)
+    }
+
+    pub fn line(&self, line: usize) -> Option<&str> {
+        let range = self.line_range(line)?;
+        Some(&self.text[range])
+    }
+
+    pub fn offset_to_line_col(&self, offset: usize) -> (usize, usize) {
+        offset_to_line_col(&self.line_starts, &self.text, offset)
+    }
+
+    pub fn line_col_to_offset(&self, line: usize, col: usize) -> usize {
+        line_col_to_offset(&self.text, &self.line_starts, line, col)
+    }
+
+    pub fn tokens_for_line(&self, line: usize) -> LineTokens<'_> {
+        let indexes = self
+            .token_line_ranges
+            .get(line)
+            .map(|range| &self.token_indices[range.clone()])
+            .unwrap_or_default();
+        LineTokens {
+            tokens: &self.tokens,
+            indexes,
+        }
+    }
+}
+
+/// Borrowed bounded token access for one line. The renderer visits only spans
+/// recorded for the requested row.
+pub struct LineTokens<'a> {
+    tokens: &'a [TokenSpan],
+    indexes: &'a [usize],
+}
+
+impl<'a> Iterator for LineTokens<'a> {
+    type Item = &'a TokenSpan;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (index, rest) = self.indexes.split_first()?;
+        self.indexes = rest;
+        self.tokens.get(*index)
+    }
 }
 
 impl DocumentStore {
+    /// Validate a prospective open without reserving it. New lifecycle callers
+    /// use [`Self::try_open`] so saturation is an explicit stable error rather
+    /// than an eviction of a live (possibly dirty) buffer.
+    pub fn can_open(&self, file: &omaterm_context::EditorFile) -> Result<(), CommandError> {
+        if self.docs.len() >= MAX_OPEN_DOCUMENTS {
+            return Err(CommandError::new(
+                ErrorCode::InvalidRequest,
+                "the 32-document editor limit is reached",
+            ));
+        }
+        if file.text.len() > omaterm_core::validation::MAX_EDITOR_BYTES
+            || count_lines(&file.text) > omaterm_core::validation::MAX_EDITOR_LINES
+        {
+            return Err(CommandError::new(
+                ErrorCode::DocumentTooLarge,
+                "document exceeds the editor size limit",
+            ));
+        }
+        if self.retained_text_bytes().saturating_add(file.text.len()) > MAX_RETAINED_TEXT_BYTES {
+            return Err(CommandError::new(
+                ErrorCode::DocumentTooLarge,
+                "opening the document would exceed the editor text budget",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checked open path for lifecycle code that has not already reserved
+    /// capacity. Reopening the same file is always accepted and returns the
+    /// existing live buffer.
+    pub fn try_open(
+        &mut self,
+        project: ProjectId,
+        path: PathBuf,
+        root: PathBuf,
+        root_identity: omaterm_context::RootIdentity,
+        file: omaterm_context::EditorFile,
+    ) -> Result<DocumentId, CommandError> {
+        let file_key = (
+            project,
+            root_identity,
+            file.revision.device,
+            file.revision.inode,
+        );
+        if let Some(id) = self.by_file.get(&file_key) {
+            return Ok(*id);
+        }
+        self.can_open(&file)?;
+        Ok(self.open_unchecked(project, path, root, root_identity, file))
+    }
+
     /// Open a buffer over an already-validated read. Returns the live document
     /// when the same opened file (including a contained symlink alias) is open
-    /// beneath the same captured root identity.
+    /// beneath the same captured root identity. Existing lifecycle callers
+    /// validate the read before this point; new callers should prefer
+    /// [`Self::try_open`] to receive an explicit capacity error.
     pub fn open(
+        &mut self,
+        project: ProjectId,
+        path: PathBuf,
+        root: PathBuf,
+        root_identity: omaterm_context::RootIdentity,
+        file: omaterm_context::EditorFile,
+    ) -> DocumentId {
+        self.open_unchecked(project, path, root, root_identity, file)
+    }
+
+    fn open_unchecked(
         &mut self,
         project: ProjectId,
         path: PathBuf,
@@ -129,6 +325,8 @@ impl DocumentStore {
         let id = DocumentId::new();
         let language = file.language;
         let revision = file.revision;
+        let text: Arc<str> = Arc::from(file.text);
+        let line_starts = line_starts(&text).into();
         self.by_file.insert(file_key, id);
         self.docs.insert(
             id,
@@ -140,15 +338,22 @@ impl DocumentStore {
                 root_identity,
                 file_device: revision.device,
                 file_inode: revision.inode,
-                saved_text: file.text.clone(),
-                text: file.text,
+                saved_text: Arc::clone(&text),
+                text,
+                line_starts,
                 history_cursor: None,
                 dirty: false,
+                generation: 0,
                 revision,
                 language,
                 undo: Vec::new(),
                 undo_bytes: 0,
                 redo: Vec::new(),
+                redo_bytes: 0,
+                tokens: Arc::from([]),
+                token_line_ranges: Arc::from([]),
+                token_indices: Arc::from([]),
+                token_bytes: 0,
             },
         );
         id
@@ -191,15 +396,117 @@ impl DocumentStore {
     /// Owned copy of the live buffer for saves. Cloned once per save;
     /// bounded by the editor byte cap.
     pub fn buffer_text(&self, document: DocumentId) -> Option<String> {
-        self.docs.get(&document).map(|doc| doc.text.clone())
+        self.docs.get(&document).map(|doc| doc.text.to_string())
     }
 
     pub fn text(&self, document: DocumentId) -> Option<&str> {
-        self.docs.get(&document).map(|doc| doc.text.as_str())
+        self.docs.get(&document).map(|doc| &*doc.text)
+    }
+
+    /// Shared immutable text/index snapshot for an unchanged render frame.
+    pub fn render_snapshot(&self, document: DocumentId) -> Option<DocumentRenderSnapshot> {
+        let doc = self.docs.get(&document)?;
+        Some(DocumentRenderSnapshot {
+            document,
+            generation: doc.generation,
+            text: Arc::clone(&doc.text),
+            line_starts: Arc::clone(&doc.line_starts),
+            tokens: Arc::clone(&doc.tokens),
+            token_line_ranges: Arc::clone(&doc.token_line_ranges),
+            token_indices: Arc::clone(&doc.token_indices),
+        })
+    }
+
+    pub fn line_count(&self, document: DocumentId) -> Option<usize> {
+        self.docs.get(&document).map(|doc| doc.line_starts.len())
+    }
+
+    pub fn line_range(&self, document: DocumentId, line: usize) -> Option<Range<usize>> {
+        let doc = self.docs.get(&document)?;
+        line_range(&doc.line_starts, &doc.text, line)
+    }
+
+    pub fn line(&self, document: DocumentId, line: usize) -> Option<&str> {
+        let doc = self.docs.get(&document)?;
+        let range = line_range(&doc.line_starts, &doc.text, line)?;
+        Some(&doc.text[range])
+    }
+
+    pub fn offset_to_line_col(
+        &self,
+        document: DocumentId,
+        offset: usize,
+    ) -> Option<(usize, usize)> {
+        let doc = self.docs.get(&document)?;
+        Some(offset_to_line_col(&doc.line_starts, &doc.text, offset))
+    }
+
+    pub fn line_col_to_offset(
+        &self,
+        document: DocumentId,
+        line: usize,
+        col: usize,
+    ) -> Option<usize> {
+        let doc = self.docs.get(&document)?;
+        Some(line_col_to_offset(&doc.text, &doc.line_starts, line, col))
+    }
+
+    /// Install token spans for exactly the current buffer generation. Spans are
+    /// indexed by intersecting lines, so a visible row reads a bounded slice.
+    /// Returns `false` for stale or invalid results without changing the store.
+    pub fn set_tokens(
+        &mut self,
+        document: DocumentId,
+        generation: u64,
+        tokens: Vec<TokenSpan>,
+    ) -> bool {
+        let Some(doc) = self.docs.get(&document) else {
+            return false;
+        };
+        if doc.generation != generation || !valid_tokens(&doc.text, &tokens) {
+            return false;
+        }
+        let Some((ranges, indices, token_bytes)) = token_line_index(&doc.line_starts, &tokens)
+        else {
+            return false;
+        };
+        let retained_without_document = self.retained_token_bytes().saturating_sub(doc.token_bytes);
+        if retained_without_document.saturating_add(token_bytes) > MAX_RETAINED_TOKEN_BYTES {
+            return false;
+        }
+        let doc = self
+            .docs
+            .get_mut(&document)
+            .expect("document was checked above");
+        doc.tokens = tokens.into();
+        doc.token_line_ranges = ranges.into();
+        doc.token_indices = indices.into();
+        doc.token_bytes = token_bytes;
+        true
+    }
+
+    pub fn retained_text_bytes(&self) -> usize {
+        self.docs.values().map(Document::retained_text_bytes).sum()
+    }
+
+    pub fn retained_history_bytes(&self) -> usize {
+        self.docs
+            .values()
+            .map(Document::retained_history_bytes)
+            .sum()
+    }
+
+    pub fn retained_token_bytes(&self) -> usize {
+        self.docs.values().map(|doc| doc.token_bytes).sum()
     }
 
     pub fn is_dirty(&self, document: DocumentId) -> Option<bool> {
         self.docs.get(&document).map(|doc| doc.dirty)
+    }
+
+    /// In-memory mutation generation captured before asynchronous editor I/O.
+    pub fn generation(&self, document: DocumentId) -> Option<u64> {
+        self.docs.get(&document).map(|doc| doc.generation)
     }
 
     pub fn has_dirty_documents(&self) -> bool {
@@ -221,12 +528,16 @@ impl DocumentStore {
     /// Called only after an explicit discard decision. Does not touch disk.
     pub fn discard_changes(&mut self, document: DocumentId) {
         if let Some(doc) = self.docs.get_mut(&document) {
-            doc.text.clone_from(&doc.saved_text);
+            doc.text = Arc::clone(&doc.saved_text);
+            doc.line_starts = line_starts(&doc.text).into();
+            doc.clear_tokens();
             doc.dirty = false;
             doc.undo.clear();
             doc.redo.clear();
             doc.undo_bytes = 0;
+            doc.redo_bytes = 0;
             doc.history_cursor = None;
+            doc.advance_generation();
         }
     }
 
@@ -277,6 +588,25 @@ impl DocumentStore {
         count
     }
 
+    /// Retire the oldest reversible entries across documents until the shared
+    /// budget holds. Only the front of an undo stack is removed, preserving
+    /// each document's valid redo chain.
+    fn enforce_history_budget(&mut self) {
+        while self.retained_history_bytes() > MAX_RETAINED_HISTORY_BYTES {
+            let oldest = self
+                .docs
+                .iter()
+                .filter_map(|(id, doc)| doc.undo.first().map(|edit| (*id, edit.sequence)))
+                .min_by_key(|(_, sequence)| *sequence);
+            let Some((document, _)) = oldest else {
+                break;
+            };
+            let doc = self.docs.get_mut(&document).expect("document was indexed");
+            let dropped = doc.undo.remove(0);
+            doc.undo_bytes = doc.undo_bytes.saturating_sub(dropped.retained_bytes());
+        }
+    }
+
     /// Apply one text replacement to a buffer. Byte offsets must be UTF-8
     /// char boundaries inside the current text; the result stays within the
     /// editor byte/line caps. Records the inverse delta, clears redo, and
@@ -289,6 +619,13 @@ impl DocumentStore {
         insert: &str,
     ) -> Result<(), CommandError> {
         let invalid = |message: &str| CommandError::new(ErrorCode::InvalidRequest, message);
+        let retained_text_without_document = self.retained_text_bytes().saturating_sub(
+            self.docs
+                .get(&document)
+                .map_or(0, Document::retained_text_bytes),
+        );
+        self.next_history_sequence = self.next_history_sequence.wrapping_add(1);
+        let sequence = self.next_history_sequence;
         let Some(doc) = self.docs.get_mut(&document) else {
             return Err(CommandError::new(
                 ErrorCode::DocumentNotOpen,
@@ -330,24 +667,38 @@ impl DocumentStore {
                 "edit would exceed the 20000-line document cap",
             ));
         }
+        if retained_text_without_document
+            .saturating_add(next.len())
+            .saturating_add(doc.saved_text.len())
+            > MAX_RETAINED_TEXT_BYTES
+        {
+            return Err(CommandError::new(
+                ErrorCode::DocumentTooLarge,
+                "edit would exceed the aggregate editor text budget",
+            ));
+        }
         let removed = doc.text[start..end].to_owned();
         let edit = TextEdit {
             start,
             removed,
             added_len: insert.len(),
+            sequence,
         };
         doc.undo_bytes += edit.retained_bytes();
         doc.undo.push(edit);
-        while doc.undo.len() > MAX_UNDO_ENTRIES || doc.undo_bytes > MAX_UNDO_BYTES {
+        doc.redo.clear();
+        doc.redo_bytes = 0;
+        while doc.undo.len() > MAX_UNDO_ENTRIES || doc.retained_history_bytes() > MAX_UNDO_BYTES {
             if let Some(dropped) = doc.undo.first() {
                 doc.undo_bytes = doc.undo_bytes.saturating_sub(dropped.retained_bytes());
             }
             doc.undo.remove(0);
         }
-        doc.redo.clear();
-        doc.text = next;
+        doc.replace_text(next);
         doc.dirty = doc.text != doc.saved_text;
         doc.history_cursor = None;
+        doc.advance_generation();
+        self.enforce_history_budget();
         Ok(())
     }
 
@@ -372,11 +723,14 @@ impl DocumentStore {
             start: edit.start,
             removed: doc.text[edit.start..end].to_owned(),
             added_len: edit.removed.len(),
+            sequence: edit.sequence,
         };
+        doc.redo_bytes += redo.retained_bytes();
         doc.redo.push(redo);
-        doc.text = next;
+        doc.replace_text(next);
         doc.history_cursor = Some(edit.start + edit.removed.len());
         doc.dirty = doc.text != doc.saved_text;
+        doc.advance_generation();
         Ok(true)
     }
 
@@ -400,18 +754,21 @@ impl DocumentStore {
             start: edit.start,
             removed: doc.text[edit.start..end].to_owned(),
             added_len: edit.removed.len(),
+            sequence: edit.sequence,
         };
         doc.undo_bytes += undo.retained_bytes();
+        doc.redo_bytes = doc.redo_bytes.saturating_sub(edit.retained_bytes());
         doc.undo.push(undo);
-        while doc.undo.len() > MAX_UNDO_ENTRIES || doc.undo_bytes > MAX_UNDO_BYTES {
+        while doc.undo.len() > MAX_UNDO_ENTRIES || doc.retained_history_bytes() > MAX_UNDO_BYTES {
             if let Some(dropped) = doc.undo.first() {
                 doc.undo_bytes = doc.undo_bytes.saturating_sub(dropped.retained_bytes());
             }
             doc.undo.remove(0);
         }
-        doc.text = next;
+        doc.replace_text(next);
         doc.history_cursor = Some(edit.start + edit.removed.len());
         doc.dirty = doc.text != doc.saved_text;
+        doc.advance_generation();
         Ok(true)
     }
 
@@ -425,8 +782,11 @@ impl DocumentStore {
                 doc.file_device,
                 doc.file_inode,
             );
-            doc.saved_text.clone_from(&file.text);
-            doc.text = file.text;
+            let text: Arc<str> = Arc::from(file.text);
+            doc.saved_text = Arc::clone(&text);
+            doc.text = text;
+            doc.line_starts = line_starts(&doc.text).into();
+            doc.clear_tokens();
             doc.history_cursor = None;
             doc.revision = file.revision;
             doc.language = file.language;
@@ -435,7 +795,9 @@ impl DocumentStore {
             doc.undo.clear();
             doc.undo_bytes = 0;
             doc.redo.clear();
+            doc.redo_bytes = 0;
             doc.dirty = false;
+            doc.advance_generation();
             (
                 old_key,
                 (
@@ -453,7 +815,8 @@ impl DocumentStore {
     }
 
     /// Record a successful save: clear dirty, adopt the post-write revision.
-    /// Undo history survives save so edits remain reversible afterwards.
+    /// This changes the savepoint, not buffer content, so the buffer generation
+    /// remains stable. Undo history survives save so edits remain reversible.
     pub fn mark_saved(&mut self, document: DocumentId, revision: omaterm_context::FileRevision) {
         let Some((old_key, new_key)) = self.docs.get_mut(&document).map(|doc| {
             let old_key = (
@@ -465,7 +828,7 @@ impl DocumentStore {
             doc.revision = revision;
             doc.file_device = revision.device;
             doc.file_inode = revision.inode;
-            doc.saved_text.clone_from(&doc.text);
+            doc.saved_text = Arc::clone(&doc.text);
             doc.dirty = false;
             (
                 old_key,
@@ -898,6 +1261,81 @@ pub fn line_starts(text: &str) -> Vec<usize> {
         }
     }
     starts
+}
+
+fn line_range(starts: &[usize], text: &str, line: usize) -> Option<Range<usize>> {
+    let start = *starts.get(line)?;
+    let end = starts
+        .get(line + 1)
+        .map(|end| end.saturating_sub(1))
+        .unwrap_or(text.len());
+    Some(start..end)
+}
+
+fn valid_tokens(text: &str, tokens: &[TokenSpan]) -> bool {
+    let mut previous_end = 0;
+    tokens.iter().all(|token| {
+        let Some(end) = token.start.checked_add(token.len) else {
+            return false;
+        };
+        let valid = token.len > 0
+            && token.start >= previous_end
+            && end <= text.len()
+            && text.is_char_boundary(token.start)
+            && text.is_char_boundary(end);
+        previous_end = end;
+        valid
+    })
+}
+
+/// Build a compact per-line index. Non-overlapping spans can intersect at
+/// most `spans + lines` rows, keeping this bounded for validated documents.
+fn token_line_index(
+    starts: &[usize],
+    tokens: &[TokenSpan],
+) -> Option<(Vec<Range<usize>>, Vec<usize>, usize)> {
+    if tokens.is_empty() {
+        return Some((Vec::new(), Vec::new(), 0));
+    }
+    let mut lines = vec![Vec::new(); starts.len()];
+    let mut entries = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        let end = token.start + token.len;
+        let first = starts
+            .partition_point(|start| *start <= token.start)
+            .saturating_sub(1);
+        let last = starts
+            .partition_point(|start| *start < end)
+            .saturating_sub(1)
+            .min(starts.len().saturating_sub(1));
+        for entry in lines.iter_mut().take(last + 1).skip(first) {
+            entries = entries.checked_add(1)?;
+            let bytes = tokens
+                .len()
+                .checked_mul(std::mem::size_of::<TokenSpan>())?
+                .checked_add(
+                    starts
+                        .len()
+                        .checked_mul(std::mem::size_of::<Range<usize>>())?,
+                )?
+                .checked_add(entries.checked_mul(std::mem::size_of::<usize>())?)?;
+            if bytes > MAX_RETAINED_TOKEN_BYTES {
+                return None;
+            }
+            entry.push(index);
+        }
+    }
+    let mut ranges = Vec::with_capacity(lines.len());
+    let mut indices = Vec::with_capacity(entries);
+    for line in lines {
+        let start = indices.len();
+        indices.extend(line);
+        ranges.push(start..indices.len());
+    }
+    let bytes = std::mem::size_of_val(tokens)
+        + std::mem::size_of_val(ranges.as_slice())
+        + std::mem::size_of_val(indices.as_slice());
+    Some((ranges, indices, bytes))
 }
 
 /// `(line, column-bytes)` for a buffer offset, clamped into the text and
@@ -1687,22 +2125,24 @@ mod tests {
             inode: file_inode,
             content_digest: [0; 32],
         };
-        store.open(
-            project,
-            PathBuf::from(name),
-            PathBuf::from("/repo"),
-            omaterm_context::RootIdentity {
-                device: 1,
-                inode: 1,
-            },
-            omaterm_context::EditorFile {
-                text: text.into(),
-                bytes: text.len(),
-                lines: count_lines(text),
-                revision,
-                language: omaterm_context::EditorLanguage::Plain,
-            },
-        )
+        store
+            .try_open(
+                project,
+                PathBuf::from(name),
+                PathBuf::from("/repo"),
+                omaterm_context::RootIdentity {
+                    device: 1,
+                    inode: 1,
+                },
+                omaterm_context::EditorFile {
+                    text: text.into(),
+                    bytes: text.len(),
+                    lines: count_lines(text),
+                    revision,
+                    language: omaterm_context::EditorLanguage::Plain,
+                },
+            )
+            .unwrap()
     }
 
     #[test]
@@ -2039,6 +2479,164 @@ mod tests {
         assert!(store.get(second).is_none());
         assert!(store.get(other).is_some());
         assert!(!store.remove(first));
+    }
+
+    #[test]
+    fn checked_open_enforces_the_aggregate_document_cap_without_eviction() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let mut documents = Vec::new();
+        for index in 0..MAX_OPEN_DOCUMENTS {
+            documents.push(open_doc(
+                &mut store,
+                project,
+                &format!("document-{index}.txt"),
+                "text",
+            ));
+        }
+        let rejected = store.try_open(
+            project,
+            PathBuf::from("overflow.txt"),
+            PathBuf::from("/repo"),
+            omaterm_context::RootIdentity {
+                device: 1,
+                inode: 1,
+            },
+            omaterm_context::EditorFile {
+                text: "overflow".into(),
+                bytes: 8,
+                lines: 1,
+                revision: omaterm_context::FileRevision {
+                    size: 8,
+                    mtime_secs: 1,
+                    mtime_nanos: 0,
+                    device: 1,
+                    inode: u64::MAX,
+                    content_digest: [0; 32],
+                },
+                language: omaterm_context::EditorLanguage::Plain,
+            },
+        );
+        assert!(matches!(
+            rejected,
+            Err(error) if error.code == ErrorCode::InvalidRequest
+        ));
+        assert_eq!(store.project_documents(project).len(), MAX_OPEN_DOCUMENTS);
+        assert!(
+            documents
+                .into_iter()
+                .all(|document| store.text(document) == Some("text"))
+        );
+    }
+
+    #[test]
+    fn aggregate_history_cap_retires_oldest_undo_entries_first() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let documents: Vec<_> = (0..9)
+            .map(|index| open_doc(&mut store, project, &format!("{index}.txt"), "x"))
+            .collect();
+        for (sequence, document) in documents.iter().copied().enumerate() {
+            let edit = TextEdit {
+                start: 0,
+                removed: "x".into(),
+                added_len: MAX_UNDO_BYTES - 1,
+                sequence: sequence as u64,
+            };
+            let doc = store.docs.get_mut(&document).unwrap();
+            doc.undo_bytes = edit.retained_bytes();
+            doc.undo.push(edit);
+        }
+        store.enforce_history_budget();
+        assert!(store.retained_history_bytes() <= MAX_RETAINED_HISTORY_BYTES);
+        assert!(store.docs[&documents[0]].undo.is_empty());
+        assert_eq!(store.docs[&documents[8]].undo.len(), 1);
+    }
+
+    #[test]
+    fn render_snapshots_share_unchanged_text_and_track_generation() {
+        let mut store = DocumentStore::default();
+        let document = open_doc(&mut store, ProjectId::new(), "a.txt", "one\ntwo");
+        let first = store.render_snapshot(document).unwrap();
+        let same = store.render_snapshot(document).unwrap();
+        assert_eq!(first.generation(), 0);
+        assert!(Arc::ptr_eq(&first.text, &same.text));
+        assert!(Arc::ptr_eq(&first.line_starts, &same.line_starts));
+
+        store.apply_edit(document, 0, 3, "ONE").unwrap();
+        let second = store.render_snapshot(document).unwrap();
+        assert_eq!(second.generation(), 1);
+        assert_eq!(first.text(), "one\ntwo");
+        assert_eq!(second.text(), "ONE\ntwo");
+        assert!(!Arc::ptr_eq(&first.text, &second.text));
+        assert!(store.undo(document).unwrap());
+        assert_eq!(store.generation(document), Some(2));
+        assert!(store.redo(document).unwrap());
+        assert_eq!(store.generation(document), Some(3));
+        store.discard_changes(document);
+        assert_eq!(store.generation(document), Some(4));
+    }
+
+    #[test]
+    fn cached_line_and_token_indexes_update_with_buffer_mutations() {
+        let mut store = DocumentStore::default();
+        let document = open_doc(&mut store, ProjectId::new(), "a.rs", "one\n界\nthree");
+        let generation = store.generation(document).unwrap();
+        assert!(store.set_tokens(
+            document,
+            generation,
+            vec![
+                TokenSpan {
+                    start: 0,
+                    len: 3,
+                    kind: TokenKind::Keyword,
+                },
+                TokenSpan {
+                    start: 4,
+                    len: "界".len(),
+                    kind: TokenKind::String,
+                },
+            ],
+        ));
+        let snapshot = store.render_snapshot(document).unwrap();
+        assert_eq!(snapshot.line_count(), 3);
+        assert_eq!(snapshot.line(1), Some("界"));
+        assert_eq!(snapshot.offset_to_line_col(5), (1, 0));
+        assert_eq!(snapshot.line_col_to_offset(2, 2), "one\n界\n".len() + 2);
+        assert_eq!(snapshot.tokens_for_line(1).collect::<Vec<_>>().len(), 1);
+
+        store.apply_edit(document, 0, 4, "zero\n").unwrap();
+        let updated = store.render_snapshot(document).unwrap();
+        assert_eq!(updated.line(0), Some("zero"));
+        assert_eq!(updated.line(1), Some("界"));
+        assert!(updated.tokens_for_line(1).next().is_none());
+        assert!(!store.set_tokens(document, generation, Vec::new()));
+    }
+
+    #[test]
+    fn closing_retires_buffer_history_and_indexes() {
+        let mut store = DocumentStore::default();
+        let document = open_doc(&mut store, ProjectId::new(), "a.txt", "text");
+        store.apply_edit(document, 4, 0, "!").unwrap();
+        let generation = store.generation(document).unwrap();
+        assert!(store.set_tokens(
+            document,
+            generation,
+            vec![TokenSpan {
+                start: 0,
+                len: 4,
+                kind: TokenKind::Keyword,
+            }],
+        ));
+        assert!(store.retained_text_bytes() > 0);
+        assert!(store.retained_history_bytes() > 0);
+        assert!(store.retained_token_bytes() > 0);
+
+        assert!(store.remove(document));
+        assert_eq!(store.retained_text_bytes(), 0);
+        assert_eq!(store.retained_history_bytes(), 0);
+        assert_eq!(store.retained_token_bytes(), 0);
+        assert!(store.render_snapshot(document).is_none());
     }
 
     fn io_request(generation: u64, job: EditorIoJob) -> EditorIoRequest {

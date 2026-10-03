@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use omaterm_core::{
-    Pane, PaneContent, PaneId, PaneNode, PaneTree, Project, ProjectId, SplitAxis, SplitId, Tab,
-    TabId, WindowId, WorkspaceWindow,
+    DocumentId, Pane, PaneContent, PaneId, PaneNode, PaneTree, Project, ProjectId, SplitAxis,
+    SplitId, Tab, TabId, WindowId, WorkspaceWindow,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -61,6 +61,7 @@ pub struct WindowSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectSnapshot {
     pub id: String,
     pub custom_name: Option<String>,
@@ -72,6 +73,42 @@ pub struct ProjectSnapshot {
     /// absent in schema v1 (defaults to empty on migration).
     #[serde(default)]
     pub expanded_dirs: Vec<PathBuf>,
+    /// Open editor documents. This deliberately stores metadata only: no text,
+    /// cursor, history, clipboard, or runtime handles.
+    #[serde(default)]
+    pub documents: Vec<DocumentSnapshot>,
+    /// The selected editor document, independent from the selected terminal tab.
+    #[serde(default)]
+    pub active_document: Option<String>,
+}
+
+/// Lossless, root-scoped identity for one open editor document.
+///
+/// `path_bytes` is a root-relative Unix path encoded as JSON numeric bytes so
+/// non-UTF-8 filenames never pass through a lossy display string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentSnapshot {
+    pub id: String,
+    pub path_bytes: Vec<u8>,
+    pub root_device: u64,
+    pub root_inode: u64,
+}
+
+/// A validated document descriptor safe to hand to restart restoration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentDescriptor {
+    pub id: DocumentId,
+    pub path_bytes: Vec<u8>,
+    pub root_device: u64,
+    pub root_inode: u64,
+}
+
+/// The validated, metadata-only editor registry belonging to one project.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DocumentRegistry {
+    pub documents: Vec<DocumentDescriptor>,
+    pub active_document: Option<DocumentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,10 +120,12 @@ pub struct TabSnapshot {
 }
 
 impl WorkspaceSnapshot {
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
     /// Previous schema version (M13 migration source). v1 snapshots carry
     /// no `expanded_dirs` and decode with an empty expansion set.
     pub const V1_SCHEMA_VERSION: u32 = 1;
+    /// Previous schema version. v2 snapshots carry no document registry.
+    pub const V2_SCHEMA_VERSION: u32 = 2;
 
     pub fn capture(window: &WorkspaceWindow, pane_cwds: &HashMap<PaneId, PersistedCwd>) -> Self {
         Self::capture_with_expanded(window, pane_cwds, &HashMap::new())
@@ -100,39 +139,78 @@ impl WorkspaceSnapshot {
         pane_cwds: &HashMap<PaneId, PersistedCwd>,
         expanded: &HashMap<ProjectId, Vec<PathBuf>>,
     ) -> Self {
+        Self::capture_with_expanded_and_documents(window, pane_cwds, expanded, &HashMap::new())
+    }
+
+    /// Capture terminal workspace state together with bounded, metadata-only
+    /// editor registries. Registries for unknown projects are ignored.
+    pub fn capture_with_expanded_and_documents(
+        window: &WorkspaceWindow,
+        pane_cwds: &HashMap<PaneId, PersistedCwd>,
+        expanded: &HashMap<ProjectId, Vec<PathBuf>>,
+        document_registries: &HashMap<ProjectId, DocumentRegistry>,
+    ) -> Self {
         let projects = window
             .projects
             .iter()
-            .map(|project| ProjectSnapshot {
-                id: project.id.0.to_string(),
-                custom_name: project.custom_name.clone(),
-                pinned_directory: project.pinned_directory.clone(),
-                selected_tab: project.selected_tab.map(|id| id.0.to_string()),
-                expanded_dirs: expanded
-                    .get(&project.id)
-                    .map(|dirs| {
-                        dirs.iter()
-                            .filter(|dir| !dir.as_os_str().is_empty())
-                            .take(SnapshotLimits::default().max_expanded_dirs)
-                            .cloned()
-                            .collect()
+            .map(|project| {
+                let registry = document_registries.get(&project.id);
+                let documents = registry
+                    .map(|registry| {
+                        registry
+                            .documents
+                            .iter()
+                            .take(SnapshotLimits::default().max_documents_per_project)
+                            .map(|document| DocumentSnapshot {
+                                id: document.id.0.to_string(),
+                                path_bytes: document.path_bytes.clone(),
+                                root_device: document.root_device,
+                                root_inode: document.root_inode,
+                            })
+                            .collect::<Vec<_>>()
                     })
-                    .unwrap_or_default(),
-                tabs: project
-                    .tabs
-                    .iter()
-                    .map(|tab| TabSnapshot {
-                        id: tab.id.0.to_string(),
-                        custom_name: tab.custom_name.clone(),
-                        focused_pane: tab.focused_pane.0.to_string(),
-                        root: capture_node(
-                            tab.tree
-                                .root()
-                                .expect("validated tabs always contain a pane"),
-                            pane_cwds,
-                        ),
+                    .unwrap_or_default();
+                let active_document = registry
+                    .and_then(|registry| registry.active_document)
+                    .filter(|active| {
+                        documents
+                            .iter()
+                            .any(|document| document.id == active.0.to_string())
                     })
-                    .collect(),
+                    .map(|id| id.0.to_string());
+                ProjectSnapshot {
+                    id: project.id.0.to_string(),
+                    custom_name: project.custom_name.clone(),
+                    pinned_directory: project.pinned_directory.clone(),
+                    selected_tab: project.selected_tab.map(|id| id.0.to_string()),
+                    expanded_dirs: expanded
+                        .get(&project.id)
+                        .map(|dirs| {
+                            dirs.iter()
+                                .filter(|dir| !dir.as_os_str().is_empty())
+                                .take(SnapshotLimits::default().max_expanded_dirs)
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    documents,
+                    active_document,
+                    tabs: project
+                        .tabs
+                        .iter()
+                        .map(|tab| TabSnapshot {
+                            id: tab.id.0.to_string(),
+                            custom_name: tab.custom_name.clone(),
+                            focused_pane: tab.focused_pane.0.to_string(),
+                            root: capture_node(
+                                tab.tree
+                                    .root()
+                                    .expect("validated tabs always contain a pane"),
+                                pane_cwds,
+                            ),
+                        })
+                        .collect(),
+                }
             })
             .collect();
         Self {
@@ -146,6 +224,9 @@ impl WorkspaceSnapshot {
     }
 
     pub fn validate(&self, limits: SnapshotLimits) -> Result<ValidatedSnapshot, SnapshotError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(SnapshotError::UnsupportedVersion(self.schema_version));
+        }
         if self.windows.len() != 1 {
             return Err(SnapshotError::Invalid(
                 "M6 supports exactly one window".into(),
@@ -162,6 +243,7 @@ impl WorkspaceSnapshot {
             check_name(project.custom_name.as_deref(), limits)?;
             check_path(project.pinned_directory.as_deref(), limits)?;
             let project_id = ProjectId(parse_uuid(&project.id, &mut ids)?);
+            let documents = validate_document_registry(project, limits, &mut ids)?;
             if project.expanded_dirs.len() > limits.max_expanded_dirs {
                 return Err(SnapshotError::Invalid(
                     "too many expanded directories".into(),
@@ -231,6 +313,7 @@ impl WorkspaceSnapshot {
                     .flat_map(|(_, cwd)| cwd)
                     .collect::<Vec<_>>(),
                 expanded_dirs,
+                documents,
             ));
         }
         let selected_project = window
@@ -243,7 +326,7 @@ impl WorkspaceSnapshot {
             id: window_id,
             projects: projects
                 .iter()
-                .map(|(project, _, _)| project.clone())
+                .map(|(project, _, _, _)| project.clone())
                 .collect(),
             selected_project,
         };
@@ -251,10 +334,12 @@ impl WorkspaceSnapshot {
             .validate()
             .map_err(|error| SnapshotError::Invalid(error.to_string()))?;
         let mut expanded_out = Vec::with_capacity(projects.len());
+        let mut document_registries = Vec::with_capacity(projects.len());
         let pane_cwds = projects
             .into_iter()
-            .flat_map(|(project, cwds, expanded)| {
+            .flat_map(|(project, cwds, expanded, documents)| {
                 expanded_out.push((project.id, expanded));
+                document_registries.push((project.id, documents));
                 cwds
             })
             .collect();
@@ -262,8 +347,99 @@ impl WorkspaceSnapshot {
             window: core_window,
             pane_cwds,
             expanded_dirs: expanded_out,
+            document_registries,
         })
     }
+}
+
+fn validate_document_registry(
+    project: &ProjectSnapshot,
+    limits: SnapshotLimits,
+    ids: &mut HashSet<Uuid>,
+) -> Result<DocumentRegistry, SnapshotError> {
+    if project.documents.len() > limits.max_documents_per_project {
+        return Err(SnapshotError::Invalid(
+            "too many documents in project".into(),
+        ));
+    }
+    if document_registry_bytes(project)? > limits.max_document_registry_bytes {
+        return Err(SnapshotError::Invalid(
+            "document registry exceeds serialized-byte limit".into(),
+        ));
+    }
+
+    let mut keys = HashSet::with_capacity(project.documents.len());
+    let mut documents = Vec::with_capacity(project.documents.len());
+    for document in &project.documents {
+        let id = DocumentId(parse_uuid(&document.id, ids)?);
+        check_document_path(&document.path_bytes, limits)?;
+        if document.root_device == 0 || document.root_inode == 0 {
+            return Err(SnapshotError::Invalid(
+                "document root identity must be nonzero".into(),
+            ));
+        }
+        let key = (
+            document.root_device,
+            document.root_inode,
+            document.path_bytes.clone(),
+        );
+        if !keys.insert(key) {
+            return Err(SnapshotError::Invalid(
+                "duplicate document descriptor".into(),
+            ));
+        }
+        documents.push(DocumentDescriptor {
+            id,
+            path_bytes: document.path_bytes.clone(),
+            root_device: document.root_device,
+            root_inode: document.root_inode,
+        });
+    }
+
+    let active_document = project
+        .active_document
+        .as_deref()
+        .map(reference)
+        .transpose()?
+        .map(DocumentId);
+    if active_document.is_some_and(|active| !documents.iter().any(|document| document.id == active))
+    {
+        return Err(SnapshotError::Invalid(
+            "active document does not exist in project registry".into(),
+        ));
+    }
+    Ok(DocumentRegistry {
+        documents,
+        active_document,
+    })
+}
+
+fn document_registry_bytes(project: &ProjectSnapshot) -> Result<usize, SnapshotError> {
+    serde_json::to_vec(&(&project.documents, &project.active_document))
+        .map(|bytes| bytes.len())
+        .map_err(|error| SnapshotError::Invalid(error.to_string()))
+}
+
+fn check_document_path(path: &[u8], limits: SnapshotLimits) -> Result<(), SnapshotError> {
+    if path.is_empty() || path.len() > limits.max_path_bytes {
+        return Err(SnapshotError::Invalid(
+            "document path exceeds limit or is empty".into(),
+        ));
+    }
+    if path.contains(&0) || path.starts_with(b"/") {
+        return Err(SnapshotError::Invalid(
+            "document path must be relative and contain no NUL".into(),
+        ));
+    }
+    if path
+        .split(|byte| *byte == b'/')
+        .any(|component| component.is_empty() || matches!(component, b"." | b".."))
+    {
+        return Err(SnapshotError::Invalid(
+            "document path must not contain empty or traversal components".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn capture_node(node: &PaneNode, cwds: &HashMap<PaneId, PersistedCwd>) -> PaneNodeSnapshot {
@@ -404,6 +580,10 @@ pub struct SnapshotLimits {
     pub max_path_bytes: usize,
     /// Bounded expanded file-tree directories per project (M13).
     pub max_expanded_dirs: usize,
+    /// Bounded metadata-only open-document descriptors per project (M19).
+    pub max_documents_per_project: usize,
+    /// Maximum serialized JSON bytes for one project's document registry.
+    pub max_document_registry_bytes: usize,
 }
 impl Default for SnapshotLimits {
     fn default() -> Self {
@@ -416,6 +596,9 @@ impl Default for SnapshotLimits {
             max_name_bytes: 256,
             max_path_bytes: 4096,
             max_expanded_dirs: 128,
+            max_documents_per_project: 32,
+            // JSON encodes each path byte as up to three digits plus a comma.
+            max_document_registry_bytes: 32 * (4 * 4096 + 256),
         }
     }
 }
@@ -426,6 +609,9 @@ pub struct ValidatedSnapshot {
     pub pane_cwds: Vec<(PaneId, PersistedCwd)>,
     /// Per-project expanded file-tree directories (relative to root).
     pub expanded_dirs: Vec<(ProjectId, Vec<PathBuf>)>,
+    /// Per-project validated open-document metadata. Desktop restore installs
+    /// this logical state before separately scheduling bounded disk reads.
+    pub document_registries: Vec<(ProjectId, DocumentRegistry)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -468,6 +654,15 @@ mod tests {
             Some(tab_id)
         );
         (window, cwd)
+    }
+
+    fn document_snapshot(path_bytes: Vec<u8>) -> DocumentSnapshot {
+        DocumentSnapshot {
+            id: Uuid::new_v4().to_string(),
+            path_bytes,
+            root_device: 7,
+            root_inode: 11,
+        }
     }
 
     #[test]
@@ -685,6 +880,89 @@ mod tests {
     }
 
     #[test]
+    fn document_registry_round_trips_lossless_path_bytes_and_active_selection() {
+        let (window, cwd) = sample();
+        let project_id = window.projects[0].id;
+        let document = DocumentDescriptor {
+            id: DocumentId::new(),
+            path_bytes: b"src/non-utf8-\xff.rs".to_vec(),
+            root_device: 7,
+            root_inode: 11,
+        };
+        let registries = HashMap::from([(
+            project_id,
+            DocumentRegistry {
+                active_document: Some(document.id),
+                documents: vec![document.clone()],
+            },
+        )]);
+        let snapshot = WorkspaceSnapshot::capture_with_expanded_and_documents(
+            &window,
+            &cwd,
+            &HashMap::new(),
+            &registries,
+        );
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let project = &value["windows"][0]["projects"][0];
+        assert!(project.get("dirty_text").is_none());
+        assert!(project.get("clipboard").is_none());
+        assert!(project.get("undo_history").is_none());
+        assert!(project.get("operation_id").is_none());
+        let document_value = project["documents"][0].as_object().unwrap();
+        assert_eq!(document_value.len(), 4);
+        for key in ["id", "path_bytes", "root_device", "root_inode"] {
+            assert!(document_value.contains_key(key));
+        }
+
+        let restored = snapshot.validate(SnapshotLimits::default()).unwrap();
+        assert_eq!(
+            restored.document_registries,
+            vec![(
+                project_id,
+                DocumentRegistry {
+                    documents: vec![document],
+                    active_document: registries[&project_id].active_document,
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn document_capture_caps_entries_and_drops_truncated_active_selection() {
+        let (window, cwd) = sample();
+        let project_id = window.projects[0].id;
+        let documents = (0..=SnapshotLimits::default().max_documents_per_project)
+            .map(|index| DocumentDescriptor {
+                id: DocumentId::new(),
+                path_bytes: format!("src/{index}.rs").into_bytes(),
+                root_device: 7,
+                root_inode: 11,
+            })
+            .collect::<Vec<_>>();
+        let active_document = documents.last().map(|document| document.id);
+        let snapshot = WorkspaceSnapshot::capture_with_expanded_and_documents(
+            &window,
+            &cwd,
+            &HashMap::new(),
+            &HashMap::from([(
+                project_id,
+                DocumentRegistry {
+                    documents,
+                    active_document,
+                },
+            )]),
+        );
+        let project = &snapshot.windows[0].projects[0];
+        assert_eq!(
+            project.documents.len(),
+            SnapshotLimits::default().max_documents_per_project
+        );
+        assert_eq!(project.active_document, None);
+        snapshot.validate(SnapshotLimits::default()).unwrap();
+    }
+
+    #[test]
     fn v1_snapshot_without_expanded_dirs_migrates_cleanly() {
         let (window, cwd) = sample();
         let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
@@ -705,6 +983,7 @@ mod tests {
         value["schema_version"] = serde_json::json!(1);
         let bytes = serde_json::to_vec(&value).unwrap();
         let decoded = crate::migration::decode(&bytes, SnapshotLimits::default()).unwrap();
+        assert_eq!(decoded.schema_version, WorkspaceSnapshot::SCHEMA_VERSION);
         let restored = decoded.validate(SnapshotLimits::default()).unwrap();
         assert_eq!(restored.window, window);
         assert!(
@@ -713,6 +992,9 @@ mod tests {
                 .iter()
                 .all(|(_, dirs)| dirs.is_empty())
         );
+        assert!(restored.document_registries.iter().all(|(_, registry)| {
+            registry.documents.is_empty() && registry.active_document.is_none()
+        }));
     }
 
     #[test]
@@ -738,6 +1020,120 @@ mod tests {
         assert!(matches!(
             snapshot.validate(SnapshotLimits::default()),
             Err(SnapshotError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_document_paths_root_identities_duplicates_and_active_selection() {
+        for path_bytes in [
+            vec![],
+            b"/absolute.rs".to_vec(),
+            b"src/../escape.rs".to_vec(),
+            b"src//empty.rs".to_vec(),
+            b"src/./current.rs".to_vec(),
+            b"src/nul\0.rs".to_vec(),
+        ] {
+            let (window, cwd) = sample();
+            let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+            snapshot.windows[0].projects[0].documents = vec![document_snapshot(path_bytes)];
+            assert!(matches!(
+                snapshot.validate(SnapshotLimits::default()),
+                Err(SnapshotError::Invalid(_))
+            ));
+        }
+
+        for root_identity in [(0, 11), (7, 0)] {
+            let (window, cwd) = sample();
+            let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+            let mut document = document_snapshot(b"src/main.rs".to_vec());
+            document.root_device = root_identity.0;
+            document.root_inode = root_identity.1;
+            snapshot.windows[0].projects[0].documents = vec![document];
+            assert!(matches!(
+                snapshot.validate(SnapshotLimits::default()),
+                Err(SnapshotError::Invalid(_))
+            ));
+        }
+
+        let (window, cwd) = sample();
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        let first = document_snapshot(b"src/main.rs".to_vec());
+        let mut duplicate = document_snapshot(b"src/main.rs".to_vec());
+        duplicate.root_device = first.root_device;
+        duplicate.root_inode = first.root_inode;
+        snapshot.windows[0].projects[0].documents = vec![first, duplicate];
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits::default()),
+            Err(SnapshotError::Invalid(_))
+        ));
+
+        let (window, cwd) = sample();
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        let first = document_snapshot(b"src/first.rs".to_vec());
+        let mut duplicate_id = document_snapshot(b"src/second.rs".to_vec());
+        duplicate_id.id = first.id.clone();
+        snapshot.windows[0].projects[0].documents = vec![first, duplicate_id];
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits::default()),
+            Err(SnapshotError::Invalid(_))
+        ));
+
+        let (window, cwd) = sample();
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        snapshot.windows[0].projects[0].documents =
+            vec![document_snapshot(b"src/main.rs".to_vec())];
+        snapshot.windows[0].projects[0].active_document = Some(Uuid::new_v4().to_string());
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits::default()),
+            Err(SnapshotError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn enforces_document_count_path_and_registry_byte_caps() {
+        let (window, cwd) = sample();
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        let document = document_snapshot(b"src/main.rs".to_vec());
+        snapshot.windows[0].projects[0].active_document = Some(document.id.clone());
+        snapshot.windows[0].projects[0].documents = vec![document];
+        let registry_bytes = document_registry_bytes(&snapshot.windows[0].projects[0]).unwrap();
+        snapshot
+            .validate(SnapshotLimits {
+                max_document_registry_bytes: registry_bytes,
+                ..SnapshotLimits::default()
+            })
+            .unwrap();
+        for limits in [
+            SnapshotLimits {
+                max_documents_per_project: 0,
+                ..SnapshotLimits::default()
+            },
+            SnapshotLimits {
+                max_path_bytes: 3,
+                ..SnapshotLimits::default()
+            },
+            SnapshotLimits {
+                max_document_registry_bytes: registry_bytes - 1,
+                ..SnapshotLimits::default()
+            },
+        ] {
+            assert!(matches!(
+                snapshot.validate(limits),
+                Err(SnapshotError::Invalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn direct_validation_requires_the_current_schema() {
+        let (window, cwd) = sample();
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        snapshot.schema_version = WorkspaceSnapshot::V2_SCHEMA_VERSION;
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits::default()),
+            Err(SnapshotError::UnsupportedVersion(
+                WorkspaceSnapshot::V2_SCHEMA_VERSION
+            ))
         ));
     }
 

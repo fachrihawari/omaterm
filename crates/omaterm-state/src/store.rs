@@ -494,6 +494,30 @@ mod tests {
     }
 
     #[test]
+    fn invalid_or_future_primary_is_retained_when_recovery_snapshot_is_saved() {
+        for bytes in [
+            br#"{"schema_version":77,"future_shape":true}"#.to_vec(),
+            br#"{"schema_version":3,"windows":[{"id":"00000000-0000-0000-0000-000000000001","selected_project":null,"projects":[{"id":"00000000-0000-0000-0000-000000000002","custom_name":null,"pinned_directory":null,"selected_tab":null,"tabs":[],"expanded_dirs":[],"documents":[],"active_document":null,"dirty_text":"must never be persisted"}]}]}"#.to_vec(),
+        ] {
+            let store = store();
+            fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+            fs::write(store.path(), &bytes).unwrap();
+            assert!(matches!(
+                store.load().unwrap(),
+                LoadOutcome::RecoveryRequired(SnapshotError::UnsupportedVersion(77))
+                    | LoadOutcome::RecoveryRequired(SnapshotError::Corrupt(_))
+            ));
+            store.save(&snapshot(), true).unwrap();
+            assert_eq!(fs::read(store.path()).unwrap(), bytes);
+            assert!(matches!(
+                store.load_recovery().unwrap(),
+                LoadOutcome::ValidRecovery(_, SnapshotDestination::RecoveryFile(_))
+            ));
+            let _ = fs::remove_dir_all(store.path().parent().unwrap());
+        }
+    }
+
+    #[test]
     fn invalid_recovery_file_is_preserved_and_new_recovery_uses_an_alternate_path() {
         let store = store();
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();

@@ -479,10 +479,18 @@ pub fn write_text_file_from_root(
     }
 
     let temp_name = unique_sidecar_name();
+    #[cfg(test)]
+    write_hook(WriteHookPoint::TempCreate, &temp_name)?;
     let mut temp = create_sidecar(&parent, &temp_name)?;
     let result = (|| {
+        #[cfg(test)]
+        write_hook(WriteHookPoint::AfterTempCreate, &temp_name)?;
+        #[cfg(test)]
+        write_hook(WriteHookPoint::Write, &temp_name)?;
         temp.write_all(text.as_bytes())?;
         temp.set_permissions(std::fs::Permissions::from_mode(metadata.mode()))?;
+        #[cfg(test)]
+        write_hook(WriteHookPoint::FileSync, &temp_name)?;
         temp.sync_all()?;
 
         // This detects observable changes before commit. It is intentionally
@@ -491,6 +499,8 @@ pub fn write_text_file_from_root(
             return Err(EditorError::Conflict);
         }
         let revision = FileRevision::of(&temp.metadata()?, text.as_bytes());
+        #[cfg(test)]
+        write_hook(WriteHookPoint::Rename, &temp_name)?;
         let renamed = unsafe {
             libc::renameat(
                 parent.as_raw_fd(),
@@ -502,7 +512,12 @@ pub fn write_text_file_from_root(
         if renamed != 0 {
             return Err(EditorError::Io(std::io::Error::last_os_error()));
         }
-        match parent.sync_all() {
+        #[cfg(test)]
+        let directory_sync =
+            write_hook(WriteHookPoint::DirectorySync, &temp_name).and_then(|()| parent.sync_all());
+        #[cfg(not(test))]
+        let directory_sync = parent.sync_all();
+        match directory_sync {
             Ok(()) => Ok(WriteTextOutcome::CommittedDurable { revision }),
             Err(error) => Ok(WriteTextOutcome::CommittedDurabilityWarning { revision, error }),
         }
@@ -513,6 +528,35 @@ pub fn write_text_file_from_root(
         let _ = unsafe { libc::unlinkat(parent.as_raw_fd(), temp_name.as_ptr(), 0) };
     }
     result
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteHookPoint {
+    TempCreate,
+    AfterTempCreate,
+    Write,
+    FileSync,
+    Rename,
+    DirectorySync,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+type WriteHook = std::sync::Arc<
+    dyn Fn(WriteHookPoint, &std::ffi::CStr) -> std::io::Result<()> + Send + Sync + 'static,
+>;
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static WRITE_HOOK: std::cell::RefCell<Option<WriteHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn write_hook(point: WriteHookPoint, name: &std::ffi::CStr) -> std::io::Result<()> {
+    WRITE_HOOK.with(|hook| match hook.borrow().as_ref() {
+        Some(hook) => hook(point, name),
+        None => Ok(()),
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -686,6 +730,42 @@ fn unique_sibling(dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    struct WriteHookReset;
+
+    #[cfg(target_os = "linux")]
+    impl Drop for WriteHookReset {
+        fn drop(&mut self) {
+            WRITE_HOOK.with(|hook| {
+                hook.borrow_mut().take();
+            });
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_write_hook(hook: WriteHook) -> WriteHookReset {
+        WRITE_HOOK.with(|installed| {
+            assert!(
+                installed.borrow().is_none(),
+                "a test write hook is already installed"
+            );
+            *installed.borrow_mut() = Some(hook);
+        });
+        WriteHookReset
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sidecars(directory: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".omaterm-editor-"))
+            })
+            .collect()
+    }
 
     fn fixture_root(name: &str) -> PathBuf {
         let root =
@@ -1054,5 +1134,124 @@ mod tests {
 
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&moved).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn injected_pre_rename_failures_keep_old_bytes_and_clean_owned_sidecars() {
+        let root = fixture_root("save-failures");
+        let target = write_fixture(&root, "doc.txt", b"old bytes\n");
+
+        for point in [
+            WriteHookPoint::TempCreate,
+            WriteHookPoint::Write,
+            WriteHookPoint::FileSync,
+            WriteHookPoint::Rename,
+        ] {
+            let hook = install_write_hook(std::sync::Arc::new(move |seen, _| {
+                if seen == point {
+                    Err(std::io::Error::other("injected write failure"))
+                } else {
+                    Ok(())
+                }
+            }));
+            let captured = EditorRoot::open(&root).unwrap();
+            assert!(matches!(
+                write_text_file_from_root(&captured, Path::new("doc.txt"), "new bytes\n", None),
+                Err(EditorError::Io(_))
+            ));
+            drop(hook);
+
+            assert_eq!(std::fs::read(&target).unwrap(), b"old bytes\n", "{point:?}");
+            assert!(sidecars(&root).is_empty(), "{point:?} leaked a sidecar");
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn injected_directory_sync_failure_reports_warning_after_commit() {
+        let root = fixture_root("save-directory-sync");
+        let target = write_fixture(&root, "doc.txt", b"old bytes\n");
+        let captured = EditorRoot::open(&root).unwrap();
+        let hook = install_write_hook(std::sync::Arc::new(|point, _| {
+            if point == WriteHookPoint::DirectorySync {
+                Err(std::io::Error::other("injected directory sync failure"))
+            } else {
+                Ok(())
+            }
+        }));
+
+        let outcome =
+            write_text_file_from_root(&captured, Path::new("doc.txt"), "new bytes\n", None)
+                .unwrap();
+        drop(hook);
+
+        assert!(!outcome.is_durable());
+        let revision = match outcome {
+            WriteTextOutcome::CommittedDurabilityWarning { revision, error } => {
+                assert_eq!(error.kind(), std::io::ErrorKind::Other);
+                revision
+            }
+            WriteTextOutcome::CommittedDurable { .. } => panic!("directory sync should warn"),
+        };
+        let saved = read_text_file_from_root(&captured, Path::new("doc.txt")).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new bytes\n");
+        assert_eq!(saved.revision, revision);
+        assert!(sidecars(&root).is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn save_barrier_keeps_writes_under_the_captured_root() {
+        let root = fixture_root("save-barrier");
+        write_fixture(&root, "doc.txt", b"old bytes\n");
+        let captured = EditorRoot::open(&root).unwrap();
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_entered = std::sync::Arc::clone(&entered);
+        let writer = std::thread::spawn(move || {
+            let hook = install_write_hook(std::sync::Arc::new(move |point, _| {
+                if point == WriteHookPoint::AfterTempCreate {
+                    writer_entered.wait();
+                    writer_entered.wait();
+                }
+                Ok(())
+            }));
+            let result = write_text_file_from_root(
+                &captured,
+                Path::new("doc.txt"),
+                "captured bytes\n",
+                None,
+            );
+            drop(hook);
+            result
+        });
+
+        entered.wait();
+        let moved = root.with_file_name(format!(
+            "omaterm-m19-editor-save-barrier-moved-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&moved);
+        std::fs::rename(&root, &moved).unwrap();
+        write_fixture(&root, "doc.txt", b"replacement bytes\n");
+        entered.wait();
+
+        assert!(writer.join().unwrap().unwrap().is_durable());
+        assert_eq!(
+            std::fs::read(moved.join("doc.txt")).unwrap(),
+            b"captured bytes\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("doc.txt")).unwrap(),
+            b"replacement bytes\n"
+        );
+        assert!(sidecars(&moved).is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(moved).unwrap();
     }
 }
