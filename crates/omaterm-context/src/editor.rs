@@ -154,6 +154,14 @@ impl EditorRoot {
     /// symlink aliases, and rejects escapes/magic links atomically. There is
     /// intentionally no canonicalize/open fallback on unsupported kernels.
     pub fn open_descendant(&self, path: &Path) -> Result<std::fs::File, EditorError> {
+        self.open_descendant_with_flags(path, libc::O_RDONLY | libc::O_NONBLOCK)
+    }
+
+    fn open_descendant_with_flags(
+        &self,
+        path: &Path,
+        flags: libc::c_int,
+    ) -> Result<std::fs::File, EditorError> {
         use std::ffi::CString;
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::ffi::OsStrExt;
@@ -170,7 +178,7 @@ impl EditorRoot {
         // SAFETY: `open_how` must be zero-initialized so future kernel fields
         // are zero; we immediately set the supported fields below.
         let mut how: libc::open_how = unsafe { std::mem::zeroed() };
-        how.flags = (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK) as u64;
+        how.flags = (flags | libc::O_CLOEXEC) as u64;
         how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS;
         let raw = unsafe {
             libc::syscall(
@@ -193,6 +201,32 @@ impl EditorRoot {
         }
         // The successful raw descriptor is owned exclusively by this File.
         Ok(unsafe { std::fs::File::from_raw_fd(raw as std::os::fd::RawFd) })
+    }
+
+    fn open_parent(&self, path: &Path) -> Result<(std::fs::File, std::ffi::CString), EditorError> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        if path.as_os_str().is_empty() || path.is_absolute() {
+            return Err(EditorError::PathOutsideRoot);
+        }
+        let leaf = path.file_name().ok_or(EditorError::PathOutsideRoot)?;
+        let leaf = CString::new(leaf.as_bytes()).map_err(|_| {
+            EditorError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "editor path contains a NUL byte",
+            ))
+        })?;
+        let parent = path.parent().unwrap_or_else(|| Path::new(""));
+        let directory = if parent.as_os_str().is_empty() {
+            self.directory.try_clone()?
+        } else {
+            self.open_descendant_with_flags(parent, libc::O_RDONLY | libc::O_DIRECTORY)?
+        };
+        if !directory.metadata()?.is_dir() {
+            return Err(EditorError::NotRegularFile);
+        }
+        Ok((directory, leaf))
     }
 }
 
@@ -231,6 +265,33 @@ pub struct EditorFile {
     pub lines: usize,
     pub revision: FileRevision,
     pub language: EditorLanguage,
+}
+
+/// Exact result of an atomic descriptor-relative save. A directory-sync
+/// failure occurs after rename: the new bytes committed, but their directory
+/// metadata durability could not be confirmed.
+#[derive(Debug)]
+pub enum WriteTextOutcome {
+    CommittedDurable {
+        revision: FileRevision,
+    },
+    CommittedDurabilityWarning {
+        revision: FileRevision,
+        error: std::io::Error,
+    },
+}
+
+impl WriteTextOutcome {
+    pub const fn revision(&self) -> FileRevision {
+        match self {
+            Self::CommittedDurable { revision }
+            | Self::CommittedDurabilityWarning { revision, .. } => *revision,
+        }
+    }
+
+    pub const fn is_durable(&self) -> bool {
+        matches!(self, Self::CommittedDurable { .. })
+    }
 }
 
 /// Bounded editor I/O failures. Every variant carries a stable machine code
@@ -385,10 +446,172 @@ fn read_bounded(reader: impl Read) -> Result<Vec<u8>, EditorError> {
     Ok(bytes)
 }
 
-/// Atomically replace one existing text file under `root`. `expected` is the
-/// revision captured on open or last save; a mismatch refuses the write with
-/// `Conflict` instead of clobbering external changes. Preserves the existing
-/// permission bits across the rename.
+/// Atomically replace an existing text file using a freshly captured Linux
+/// root descriptor. The final component must be a regular file, not a
+/// symlink: renaming over a symlink would replace the alias rather than its
+/// referent. Contained ancestor aliases remain supported.
+#[cfg(target_os = "linux")]
+pub fn write_text_file_from_root(
+    root: &EditorRoot,
+    user_path: &Path,
+    text: &str,
+    expected: Option<&FileRevision>,
+) -> Result<WriteTextOutcome, EditorError> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if text.len() > MAX_EDITOR_BYTES || count_lines(text) > MAX_EDITOR_LINES {
+        return Err(EditorError::TooLarge);
+    }
+    // This follows a contained alias but rejects an escaping one before the
+    // no-follow target open below decides whether replacement is safe.
+    let opened = read_text_file_from_root(root, user_path)?;
+    let (parent, leaf) = root.open_parent(user_path)?;
+    if let Some(expected) = expected
+        && opened.revision != *expected
+    {
+        return Err(EditorError::Conflict);
+    }
+    let target = open_parent_file(&parent, &leaf, libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let metadata = target.metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(EditorError::NotRegularFile);
+    }
+
+    let temp_name = unique_sidecar_name();
+    let mut temp = create_sidecar(&parent, &temp_name)?;
+    let result = (|| {
+        temp.write_all(text.as_bytes())?;
+        temp.set_permissions(std::fs::Permissions::from_mode(metadata.mode()))?;
+        temp.sync_all()?;
+
+        // This detects observable changes before commit. It is intentionally
+        // not described as a compare-and-swap against arbitrary writers.
+        if read_parent_file(&parent, &leaf, user_path)?.revision != opened.revision {
+            return Err(EditorError::Conflict);
+        }
+        let revision = FileRevision::of(&temp.metadata()?, text.as_bytes());
+        let renamed = unsafe {
+            libc::renameat(
+                parent.as_raw_fd(),
+                temp_name.as_ptr(),
+                parent.as_raw_fd(),
+                leaf.as_ptr(),
+            )
+        };
+        if renamed != 0 {
+            return Err(EditorError::Io(std::io::Error::last_os_error()));
+        }
+        match parent.sync_all() {
+            Ok(()) => Ok(WriteTextOutcome::CommittedDurable { revision }),
+            Err(error) => Ok(WriteTextOutcome::CommittedDurabilityWarning { revision, error }),
+        }
+    })();
+    if result.is_err() {
+        // The sidecar name is private and was created with O_EXCL. Cleanup is
+        // descriptor-relative; never re-resolve a potentially replaced path.
+        let _ = unsafe { libc::unlinkat(parent.as_raw_fd(), temp_name.as_ptr(), 0) };
+    }
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn open_parent_file(
+    parent: &std::fs::File,
+    name: &std::ffi::CStr,
+    flags: libc::c_int,
+) -> Result<std::fs::File, EditorError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let raw = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if raw < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOENT) => Err(EditorError::NotFound),
+            // A final symlink cannot be atomically replaced without changing
+            // alias semantics, so fail explicitly rather than replace it.
+            Some(libc::ELOOP) => Err(EditorError::Conflict),
+            _ => Err(EditorError::Io(error)),
+        };
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(raw) })
+}
+
+#[cfg(target_os = "linux")]
+fn read_parent_file(
+    parent: &std::fs::File,
+    name: &std::ffi::CStr,
+    user_path: &Path,
+) -> Result<EditorFile, EditorError> {
+    read_open_file(
+        open_parent_file(parent, name, libc::O_RDONLY | libc::O_NONBLOCK)?,
+        user_path,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn create_sidecar(
+    parent: &std::fs::File,
+    name: &std::ffi::CStr,
+) -> Result<std::fs::File, EditorError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let raw = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if raw < 0 {
+        return Err(EditorError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(raw) })
+}
+
+#[cfg(target_os = "linux")]
+fn unique_sidecar_name() -> std::ffi::CString {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|span| span.subsec_nanos())
+        .unwrap_or(0);
+    let slot = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::ffi::CString::new(format!(
+        ".omaterm-editor-{}.{}.tmp",
+        std::process::id(),
+        (nonce as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(slot),
+    ))
+    .expect("generated sidecar name contains no NUL")
+}
+
+/// Atomically replace one existing text file under `root`. On Linux this
+/// captures one descriptor and delegates to the secure rooted implementation.
+#[cfg(target_os = "linux")]
+pub fn write_text_file(
+    root: &Path,
+    user_path: &Path,
+    text: &str,
+    expected: Option<&FileRevision>,
+) -> Result<FileRevision, EditorError> {
+    let root = EditorRoot::open(root)?;
+    Ok(write_text_file_from_root(&root, user_path, text, expected)?.revision())
+}
+
+/// Non-Linux fallback retained until a descriptor-relative implementation is
+/// available for that target.
+#[cfg(not(target_os = "linux"))]
 pub fn write_text_file(
     root: &Path,
     user_path: &Path,
@@ -442,6 +665,7 @@ pub fn write_text_file(
     result
 }
 
+#[cfg(not(target_os = "linux"))]
 fn unique_sibling(dir: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -765,5 +989,70 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&moved).unwrap();
         std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_root_saves_contained_ancestors_without_retargeting_a_replaced_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("descriptor-save");
+        write_fixture(&root, "nested/doc.txt", b"before\n");
+        symlink("nested", root.join("contained")).unwrap();
+        symlink("nested/doc.txt", root.join("final-link.txt")).unwrap();
+        let captured = EditorRoot::open(&root).unwrap();
+
+        let opened = read_text_file_from_root(&captured, Path::new("contained/doc.txt")).unwrap();
+        let outcome = write_text_file_from_root(
+            &captured,
+            Path::new("contained/doc.txt"),
+            "ancestor save\n",
+            Some(&opened.revision),
+        )
+        .unwrap();
+        assert!(outcome.is_durable());
+        assert_eq!(
+            std::fs::read(root.join("nested/doc.txt")).unwrap(),
+            b"ancestor save\n"
+        );
+
+        let linked = read_text_file_from_root(&captured, Path::new("final-link.txt")).unwrap();
+        assert!(matches!(
+            write_text_file_from_root(
+                &captured,
+                Path::new("final-link.txt"),
+                "must not replace alias\n",
+                Some(&linked.revision),
+            ),
+            Err(EditorError::Conflict)
+        ));
+        assert!(root.join("final-link.txt").is_symlink());
+
+        let moved = root.with_file_name(format!(
+            "omaterm-m19-editor-captured-save-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&moved);
+        std::fs::rename(&root, &moved).unwrap();
+        write_fixture(&root, "nested/doc.txt", b"replacement root\n");
+        let opened = read_text_file_from_root(&captured, Path::new("nested/doc.txt")).unwrap();
+        write_text_file_from_root(
+            &captured,
+            Path::new("nested/doc.txt"),
+            "captured root\n",
+            Some(&opened.revision),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(moved.join("nested/doc.txt")).unwrap(),
+            b"captured root\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("nested/doc.txt")).unwrap(),
+            b"replacement root\n"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&moved).unwrap();
     }
 }

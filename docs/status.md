@@ -4188,3 +4188,29 @@ and native checks remain pending this in-progress S1 revision.
 descriptor-relative parent sidecar creation, revalidation, rename and directory
 sync outcomes. Add injected failure and root/ancestor/final-component swap
 barriers before moving to S2 async lifecycle work.
+
+## M19 S1 descriptor-rooted save path — 2026-10-03
+
+Linux dirty saves now use `write_text_file_from_root` with the router's already
+captured `EditorRoot`; there is no second root capture between the root-identity
+check and write. The context operation resolves the parent beneath that root,
+opens the final target with `O_NOFOLLOW`, writes an exclusive same-directory
+sidecar, preserves permission bits, syncs it, re-reads/rechecks the digest,
+renames with `renameat`, then syncs the captured directory. `WriteTextOutcome`
+distinguishes durable commit from the post-rename directory-sync warning. The
+current UI logs that warning and adopts the saved baseline; S2/S5 must retain
+and present the typed committed-warning outcome rather than relying on logs.
+
+Contained **ancestor** symlink aliases are supported. A final symlink is
+explicitly refused with `document_conflict`, because atomic rename would replace
+the alias rather than its referent; this is intentional until a separately
+reviewed referent-parent resolver exists. Escaping aliases continue to fail at
+rooted read resolution. The remaining pre-rename recheck is observable-change
+detection, not a compare-and-swap guarantee against an external writer.
+
+New regression: captured-root save writes the original moved tree after a
+same-path replacement, saves through a contained ancestor alias, and leaves a
+final symlink untouched. Focused context and desktop lifecycle tests pass with
+the 1.99.0 override; package/full checks for this increment follow. S1 remains
+open for injected failure/cancellation barriers, explicit UI warning state and
+the final filesystem matrix.

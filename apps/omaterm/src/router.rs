@@ -329,13 +329,22 @@ impl CommandRouter {
                     };
                     return ok(Out::EditorSaved(info));
                 }
-                let saved = match omaterm_context::write_text_file(
-                    &root,
+                let saved = match omaterm_context::write_text_file_from_root(
+                    &live_root,
                     &relative,
                     &text,
                     Some(&revision),
                 ) {
-                    Ok(revision) => revision,
+                    Ok(outcome) => {
+                        if !outcome.is_durable() {
+                            tracing::warn!(
+                                target: "omaterm::editor",
+                                project_id = %project.0,
+                                "editor save committed without directory-sync confirmation"
+                            );
+                        }
+                        outcome.revision()
+                    }
                     Err(error) => return editor_error(error, ErrorCode::DocumentConflict),
                 };
                 self.documents.mark_saved(document, saved);

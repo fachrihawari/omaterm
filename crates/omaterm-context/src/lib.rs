@@ -28,7 +28,9 @@ pub use editor::{
     RootIdentity, canonical_document_path, detect_language, read_text_file, write_text_file,
 };
 #[cfg(target_os = "linux")]
-pub use editor::{EditorRoot, read_text_file_from_root};
+pub use editor::{
+    EditorRoot, WriteTextOutcome, read_text_file_from_root, write_text_file_from_root,
+};
 pub use files::{
     FileSearchIndex, FileWatcher, MAX_SEARCH_INDEX_BYTES, MAX_SEARCH_SCAN, WatchError,
     fuzzy_match_indices, is_limit_exhaustion_message, list_dir, search_files,
