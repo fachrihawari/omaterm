@@ -25,14 +25,17 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsString;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 use omaterm_core::{CommandError, DocumentId, EditorDocumentInfo, ErrorCode, ProjectId};
+use omaterm_state::{DocumentDescriptor, DocumentRegistry};
 
 /// Bounded undo history: at most this many edits plus this many retained
 /// bytes per document. A 1 MiB buffer with pathological 1-byte edits stays
@@ -152,11 +155,123 @@ fn count_lines(text: &str) -> usize {
     }
 }
 
+/// Lifecycle state of a metadata-only document entry that has no live buffer
+/// yet: a restart read is in flight, or it failed and needs Retry/Close.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaceholderState {
+    /// A bounded restore read is queued or running.
+    Loading,
+    /// The document could not be opened (missing, replaced root, binary,
+    /// oversize, inaccessible); no text is exposed.
+    Unavailable(String),
+}
+
+/// Metadata-only entry for a document whose text has not been loaded. It keeps
+/// the persisted `DocumentId` and root-scoped identity so a restore can commit
+/// under the original identity, while never exposing any stale text.
+#[derive(Debug, Clone)]
+pub struct DocumentPlaceholder {
+    id: DocumentId,
+    project: ProjectId,
+    path_bytes: Vec<u8>,
+    root_identity: omaterm_context::RootIdentity,
+    state: PlaceholderState,
+}
+
+impl DocumentPlaceholder {
+    pub fn id(&self) -> DocumentId {
+        self.id
+    }
+
+    pub fn project(&self) -> ProjectId {
+        self.project
+    }
+
+    /// Root-relative path as supplied on save (decoded from raw bytes).
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from(OsString::from_vec(self.path_bytes.clone()))
+    }
+
+    pub fn path_bytes(&self) -> &[u8] {
+        &self.path_bytes
+    }
+
+    pub fn root_identity(&self) -> omaterm_context::RootIdentity {
+        self.root_identity
+    }
+
+    pub fn state(&self) -> &PlaceholderState {
+        &self.state
+    }
+
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self.state, PlaceholderState::Unavailable(_))
+    }
+}
+
+/// One accepted restore reservation. Its `DocumentId` is the persisted snapshot
+/// id; committing a successful read must reuse it, not mint a new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreReservation {
+    pub id: DocumentId,
+    pub project: ProjectId,
+    pub path_bytes: Vec<u8>,
+    pub root_identity: omaterm_context::RootIdentity,
+}
+
+/// Why a restore reservation (or its commit) was refused. Every variant is a
+/// stable, testable condition; none of them creates a partial buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreReserveError {
+    /// The persisted id is already live or reserved.
+    IdCollision,
+    /// No free document slot remains (cap counts live buffers + placeholders).
+    Capacity,
+    /// The path bytes are empty, absolute, NUL-bearing or contain traversal.
+    InvalidPath,
+}
+
+/// Why a reserved restore could not be committed. The placeholder is retained
+/// (or explicitly unavailable) so the failure stays reachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreCommitError {
+    /// No reservation remains: the document was closed or already retired.
+    NotReserved,
+    /// The persisted id was taken by a different live buffer.
+    IdCollision,
+    /// The opened file is a contained alias already owned by another id.
+    DuplicateLive(DocumentId),
+}
+
 #[derive(Debug, Default)]
 pub struct DocumentStore {
     docs: HashMap<DocumentId, Document>,
     by_file: HashMap<(ProjectId, omaterm_context::RootIdentity, u64, u64), DocumentId>,
+    /// Metadata-only entries with no live buffer (loading/unavailable).
+    placeholders: HashMap<DocumentId, DocumentPlaceholder>,
     next_history_sequence: u64,
+}
+
+/// Validate raw root-relative path bytes before reserving a restore. Mirrors
+/// the snapshot validator so a broadcast descriptor cannot reserve an escaping
+/// or malformed path; decoding stays lossless via `OsString::from_vec`.
+fn validate_restore_path(path_bytes: &[u8]) -> Result<(), RestoreReserveError> {
+    if path_bytes.is_empty() || path_bytes.contains(&0) || path_bytes.starts_with(b"/") {
+        return Err(RestoreReserveError::InvalidPath);
+    }
+    if path_bytes
+        .split(|byte| *byte == b'/')
+        .any(|component| component.is_empty() || matches!(component, b"." | b".."))
+    {
+        return Err(RestoreReserveError::InvalidPath);
+    }
+    Ok(())
+}
+
+/// Root-relative path bytes from a decoded `Path`, for the rare caller that
+/// has a path rather than a persisted descriptor.
+fn path_bytes_of(path: &Path) -> Vec<u8> {
+    path.as_os_str().as_encoded_bytes().to_vec()
 }
 
 /// Immutable, shared data for one render generation. Cloning this value only
@@ -328,6 +443,28 @@ impl DocumentStore {
             return *id;
         }
         let id = DocumentId::new();
+        self.insert_live(id, project, path, root, root_identity, file);
+        id
+    }
+
+    /// Insert a live buffer under an explicit id (restore commit only). The
+    /// caller has already rejected collisions and deduplicated on file
+    /// identity, so this method trusts its inputs.
+    fn insert_live(
+        &mut self,
+        id: DocumentId,
+        project: ProjectId,
+        path: PathBuf,
+        root: PathBuf,
+        root_identity: omaterm_context::RootIdentity,
+        file: omaterm_context::EditorFile,
+    ) {
+        let file_key = (
+            project,
+            root_identity,
+            file.revision.device,
+            file.revision.inode,
+        );
         let language = file.language;
         let revision = file.revision;
         let text: Arc<str> = Arc::from(file.text);
@@ -358,7 +495,6 @@ impl DocumentStore {
                 highlight: Arc::new(DocHighlight::default()),
             },
         );
-        id
     }
 
     pub fn get(&self, document: DocumentId) -> Option<&Document> {
@@ -594,6 +730,179 @@ impl DocumentStore {
         true
     }
 
+    /// Drop a metadata-only placeholder (close/retry-close). Returns whether
+    /// one existed. Never touches a live buffer.
+    pub fn release_placeholder(&mut self, document: DocumentId) -> bool {
+        self.placeholders.remove(&document).is_some()
+    }
+
+    pub fn placeholder(&self, document: DocumentId) -> Option<&DocumentPlaceholder> {
+        self.placeholders.get(&document)
+    }
+
+    pub fn is_placeholder(&self, document: DocumentId) -> bool {
+        self.placeholders.contains_key(&document)
+    }
+
+    /// Metadata-only placeholders owned by `project`, stable-sorted by path so
+    /// chips render in the same deterministic order as live buffers.
+    pub fn project_placeholders(&self, project: ProjectId) -> Vec<DocumentId> {
+        let mut entries: Vec<(PathBuf, DocumentId)> = self
+            .placeholders
+            .iter()
+            .filter(|(_, entry)| entry.project == project)
+            .map(|(id, entry)| (entry.path(), *id))
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Total document slots occupied: live buffers plus metadata-only
+    /// placeholders. Used by the cap check so an in-flight restore cannot
+    /// over-subscribe the editor.
+    fn occupied_slots(&self) -> usize {
+        self.docs.len() + self.placeholders.len()
+    }
+
+    /// Reserve a metadata-only restore entry under the persisted id. Rejects
+    /// id collisions and cap saturation before any filesystem work starts, and
+    /// validates the raw path bytes so a corrupt descriptor cannot reserve.
+    /// Re-reserving the same id is idempotent (a retry after failure).
+    pub fn reserve_restore(
+        &mut self,
+        reservation: &RestoreReservation,
+    ) -> Result<(), RestoreReserveError> {
+        validate_restore_path(&reservation.path_bytes)?;
+        if self.placeholders.contains_key(&reservation.id) {
+            return Ok(());
+        }
+        if self.docs.contains_key(&reservation.id) {
+            return Err(RestoreReserveError::IdCollision);
+        }
+        if self.occupied_slots() >= MAX_OPEN_DOCUMENTS {
+            return Err(RestoreReserveError::Capacity);
+        }
+        self.placeholders.insert(
+            reservation.id,
+            DocumentPlaceholder {
+                id: reservation.id,
+                project: reservation.project,
+                path_bytes: reservation.path_bytes.clone(),
+                root_identity: reservation.root_identity,
+                state: PlaceholderState::Loading,
+            },
+        );
+        Ok(())
+    }
+
+    /// Mark a reserved entry unavailable after a failed restore read. The id
+    /// stays reserved so Retry keeps the same persisted identity; no text is
+    /// ever exposed for this entry.
+    pub fn mark_restore_unavailable(&mut self, document: DocumentId, reason: impl Into<String>) {
+        if let Some(placeholder) = self.placeholders.get_mut(&document) {
+            placeholder.state = PlaceholderState::Unavailable(reason.into());
+        }
+    }
+
+    /// Return an unavailable placeholder to the loading state for a retry.
+    pub fn retry_restore(&mut self, document: DocumentId) -> bool {
+        let Some(placeholder) = self.placeholders.get_mut(&document) else {
+            return false;
+        };
+        placeholder.state = PlaceholderState::Loading;
+        true
+    }
+
+    /// Commit a successful restore read through the checked restore path.
+    /// The reservation must still exist (a closed/late completion is rejected
+    /// and can never recreate a retired document), the persisted id is reused,
+    /// and the opened file is deduplicated on (project, root identity, file
+    /// identity) against live buffers.
+    pub fn commit_restore(
+        &mut self,
+        document: DocumentId,
+        root_path: PathBuf,
+        file: omaterm_context::EditorFile,
+    ) -> Result<DocumentId, RestoreCommitError> {
+        let Some(placeholder) = self.placeholders.remove(&document) else {
+            return Err(RestoreCommitError::NotReserved);
+        };
+        if self.docs.contains_key(&document) {
+            self.placeholders.insert(document, placeholder);
+            return Err(RestoreCommitError::IdCollision);
+        }
+        let file_key = (
+            placeholder.project,
+            placeholder.root_identity,
+            file.revision.device,
+            file.revision.inode,
+        );
+        if let Some(existing) = self.by_file.get(&file_key) {
+            // A contained alias or concurrent open already owns this file:
+            // converge on one buffer and drop the redundant reservation.
+            return Err(RestoreCommitError::DuplicateLive(*existing));
+        }
+        self.insert_live(
+            document,
+            placeholder.project,
+            placeholder.path(),
+            root_path,
+            placeholder.root_identity,
+            file,
+        );
+        Ok(document)
+    }
+
+    /// Build the bounded metadata-only registry to persist, keyed by project.
+    /// Live buffers and metadata-only placeholders contribute descriptors (no
+    /// text). `active` is reported only when the selected id is a live buffer
+    /// owned by that project, so a loading/unavailable selection is never
+    /// persisted as the restored active document.
+    pub fn export_document_registry(
+        &self,
+        active: &HashMap<ProjectId, DocumentId>,
+    ) -> HashMap<ProjectId, DocumentRegistry> {
+        let cap = omaterm_state::SnapshotLimits::default().max_documents_per_project;
+        let mut registries: HashMap<ProjectId, DocumentRegistry> = HashMap::new();
+        for doc in self.docs.values() {
+            let registry = registries.entry(doc.project).or_default();
+            if registry.documents.len() >= cap {
+                continue;
+            }
+            registry.documents.push(DocumentDescriptor {
+                id: doc.id,
+                path_bytes: path_bytes_of(&doc.path),
+                root_device: doc.root_identity.device,
+                root_inode: doc.root_identity.inode,
+            });
+        }
+        for placeholder in self.placeholders.values() {
+            let registry = registries.entry(placeholder.project).or_default();
+            if registry.documents.len() >= cap {
+                continue;
+            }
+            registry.documents.push(DocumentDescriptor {
+                id: placeholder.id,
+                path_bytes: placeholder.path_bytes.clone(),
+                root_device: placeholder.root_identity.device,
+                root_inode: placeholder.root_identity.inode,
+            });
+        }
+        for (project, document) in active {
+            let Some(registry) = registries.get_mut(project) else {
+                continue;
+            };
+            let owned = self
+                .docs
+                .get(document)
+                .is_some_and(|doc| doc.project == *project);
+            if owned && registry.documents.iter().any(|entry| entry.id == *document) {
+                registry.active_document = Some(*document);
+            }
+        }
+        registries
+    }
+
     /// Open document IDs owned by `project`, stable-sorted by path for
     /// deterministic tab order.
     pub fn project_documents(&self, project: ProjectId) -> Vec<DocumentId> {
@@ -609,7 +918,8 @@ impl DocumentStore {
 
     /// Drop every document owned by `project` (project deletion). Returns
     /// the closed count; dirty buffers are discarded with the project, never
-    /// written — deletion is an explicit user action.
+    /// written — deletion is an explicit user action. Metadata-only
+    /// placeholders retire with the project too.
     pub fn close_project(&mut self, project: ProjectId) -> usize {
         let ids: Vec<DocumentId> = self
             .docs
@@ -620,6 +930,15 @@ impl DocumentStore {
         let count = ids.len();
         for id in ids {
             self.remove(id);
+        }
+        let placeholders: Vec<DocumentId> = self
+            .placeholders
+            .iter()
+            .filter(|(_, entry)| entry.project == project)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in placeholders {
+            self.placeholders.remove(&id);
         }
         count
     }
@@ -2986,6 +3305,149 @@ mod tests {
         assert_eq!(store.retained_history_bytes(), 0);
         assert_eq!(store.retained_token_bytes(), 0);
         assert!(store.render_snapshot(document).is_none());
+    }
+
+    fn restore_file(inode: u64, text: &str) -> omaterm_context::EditorFile {
+        omaterm_context::EditorFile {
+            text: text.into(),
+            bytes: text.len(),
+            lines: count_lines(text),
+            revision: omaterm_context::FileRevision {
+                size: text.len() as u64,
+                mtime_secs: 1,
+                mtime_nanos: 0,
+                device: 1,
+                inode,
+                content_digest: [0; 32],
+            },
+            language: omaterm_context::EditorLanguage::Plain,
+        }
+    }
+
+    fn reservation(id: DocumentId, project: ProjectId, path: &[u8]) -> RestoreReservation {
+        RestoreReservation {
+            id,
+            project,
+            path_bytes: path.to_vec(),
+            root_identity: omaterm_context::RootIdentity {
+                device: 1,
+                inode: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn restore_reserve_commit_preserves_id_and_dedups_on_file_identity() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let first = DocumentId::new();
+        store
+            .reserve_restore(&reservation(first, project, b"src/a.rs"))
+            .unwrap();
+        assert!(store.is_placeholder(first));
+        assert_eq!(
+            store.placeholder(first).unwrap().path(),
+            PathBuf::from("src/a.rs")
+        );
+
+        let committed = store
+            .commit_restore(
+                first,
+                PathBuf::from("/repo"),
+                restore_file(42, "fn main() {}\n"),
+            )
+            .unwrap();
+        assert_eq!(committed, first);
+        assert_eq!(store.text(first), Some("fn main() {}\n"));
+        assert_eq!(store.relative_path(first), Some(PathBuf::from("src/a.rs")));
+        assert!(!store.is_placeholder(first));
+
+        // A second reservation for the same (project, root, file) identity
+        // converges on the existing buffer instead of forking it.
+        let second = DocumentId::new();
+        store
+            .reserve_restore(&reservation(second, project, b"src/alias.rs"))
+            .unwrap();
+        let error = store
+            .commit_restore(second, PathBuf::from("/repo"), restore_file(42, "ignored"))
+            .unwrap_err();
+        assert_eq!(error, RestoreCommitError::DuplicateLive(first));
+        assert!(!store.is_placeholder(second));
+        assert_eq!(store.project_documents(project), vec![first]);
+    }
+
+    #[test]
+    fn restore_reserve_rejects_collision_capacity_and_invalid_paths() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let live = open_doc(&mut store, project, "live.txt", "live");
+
+        let collision = store.reserve_restore(&reservation(live, project, b"other.txt"));
+        assert_eq!(collision, Err(RestoreReserveError::IdCollision));
+
+        for path in [
+            &b"".to_vec(),
+            &b"/absolute.rs".to_vec(),
+            &b"src/../escape.rs".to_vec(),
+            &b"src//empty.rs".to_vec(),
+            &b"src/nul\0.rs".to_vec(),
+        ] {
+            assert_eq!(
+                store.reserve_restore(&reservation(DocumentId::new(), project, path)),
+                Err(RestoreReserveError::InvalidPath)
+            );
+        }
+
+        // Fill every remaining slot, then reject one more reservation.
+        while store.occupied_slots() < MAX_OPEN_DOCUMENTS {
+            let index = store.occupied_slots();
+            open_doc(&mut store, project, &format!("fill-{index}.txt"), "x");
+        }
+        assert_eq!(
+            store.reserve_restore(&reservation(DocumentId::new(), project, b"overflow.txt")),
+            Err(RestoreReserveError::Capacity)
+        );
+    }
+
+    #[test]
+    fn restore_commit_after_close_or_collision_is_rejected() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let id = DocumentId::new();
+        store
+            .reserve_restore(&reservation(id, project, b"closed.rs"))
+            .unwrap();
+        assert!(store.release_placeholder(id));
+        assert_eq!(
+            store.commit_restore(id, PathBuf::from("/repo"), restore_file(1, "x")),
+            Err(RestoreCommitError::NotReserved)
+        );
+        assert!(store.document_info(id).is_none());
+        assert!(!store.is_placeholder(id));
+    }
+
+    #[test]
+    fn exporter_includes_placeholders_but_active_only_when_live() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let loading = DocumentId::new();
+        store
+            .reserve_restore(&reservation(loading, project, b"pending.rs"))
+            .unwrap();
+
+        let registries = store.export_document_registry(&HashMap::from([(project, loading)]));
+        let registry = &registries[&project];
+        assert_eq!(registry.documents.len(), 1);
+        assert_eq!(registry.documents[0].id, loading);
+        assert_eq!(registry.documents[0].path_bytes, b"pending.rs".to_vec());
+        assert_eq!(registry.active_document, None);
+
+        store
+            .commit_restore(loading, PathBuf::from("/repo"), restore_file(9, "clean\n"))
+            .unwrap();
+        let registries = store.export_document_registry(&HashMap::from([(project, loading)]));
+        assert_eq!(registries[&project].active_document, Some(loading));
+        assert_eq!(registries[&project].documents.len(), 1);
     }
 
     fn io_request(generation: u64, job: EditorIoJob) -> EditorIoRequest {

@@ -246,7 +246,14 @@ struct WorkspaceView {
     /// Native editor documents (M19 Phase D): view-local activation per
     /// project. Buffers live in the router-owned `DocumentStore`; these
     /// maps hold caret, scroll, and presentation state only.
+    ///
+    /// `editor_active` is the *surface*: which document replaces the terminal
+    /// area for a project. `editor_selected` is the *selection*: the document
+    /// chip highlighted as current. Startup restore sets selection without
+    /// activating the surface, so a restored selection never steals the
+    /// terminal on launch.
     editor_active: HashMap<ProjectId, DocumentId>,
+    editor_selected: HashMap<ProjectId, DocumentId>,
     editor_carets: HashMap<DocumentId, editor::EditorCaret>,
     editor_pending_action: Option<EditorPendingAction>,
     editor_rows_handles: HashMap<DocumentId, UniformListScrollHandle>,
@@ -261,6 +268,16 @@ struct WorkspaceView {
     /// Active pointer drag: document plus the press-point anchor offset.
     /// Cleared on release.
     editor_selecting: Option<(DocumentId, usize)>,
+    /// Bounded restart restores: descriptors are scheduled one at a time, and
+    /// the next is enqueued only after the previous completes. This keeps at
+    /// most one restore read in flight without blocking terminal startup.
+    document_restore_queue: std::collections::VecDeque<router::DocumentRestoreRequest>,
+    /// Router receipt for the restore read currently in flight.
+    document_restore_in_flight: Option<u64>,
+    /// Monotonic counter bumped by any user focus action after startup. A
+    /// pending restore only activates its document when this is unchanged, so
+    /// a late restore load cannot steal focus from the user.
+    focus_epoch: u64,
 }
 
 /// Editor geometry and type in logical pixels (plan §14: 54px gutter,
@@ -629,6 +646,13 @@ enum PendingUiLaunch {
     EditorOpen(omaterm_core::ProjectId),
     EditorSave,
     EditorRevert(DocumentId),
+    /// Restart restore completion: only activates the saved active document
+    /// after a successful load, and never steals focus from a user action
+    /// taken after startup.
+    EditorRestore {
+        project: omaterm_core::ProjectId,
+        document: DocumentId,
+    },
     Other,
 }
 
@@ -796,6 +820,7 @@ impl WorkspaceView {
             diff_dirty_hint: true,
             diff_last_project: None,
             editor_active: HashMap::new(),
+            editor_selected: HashMap::new(),
             editor_carets: HashMap::new(),
             editor_pending_action: None,
             editor_rows_handles: HashMap::new(),
@@ -804,6 +829,9 @@ impl WorkspaceView {
             editor_highlight_worker: editor::HighlightWorker::new(),
             editor_body_origins: HashMap::new(),
             editor_selecting: None,
+            document_restore_queue: std::collections::VecDeque::new(),
+            document_restore_in_flight: None,
+            focus_epoch: 0,
         };
         view.start_ipc(cx);
         view.restore_or_initialize(cx);
@@ -1081,6 +1109,62 @@ impl WorkspaceView {
             }
         }
         self.observed_cwds = self.current_cwds();
+        // Terminal workspace is installed first; document restores are then
+        // scheduled one at a time so startup interaction is never blocked.
+        self.schedule_restored_documents(restored.document_registries, cx);
+    }
+
+    /// Queue bounded document restores from validated schema-3 registries.
+    /// Selection is recorded immediately (chips highlight) but the editor
+    /// surface is only activated after a successful load, and only when the
+    /// user has not taken a focus action after startup.
+    fn schedule_restored_documents(
+        &mut self,
+        registries: Vec<(ProjectId, omaterm_state::DocumentRegistry)>,
+        cx: &mut Context<Self>,
+    ) {
+        for (project, registry) in registries {
+            if let Some(active) = registry.active_document {
+                self.editor_selected.insert(project, active);
+            }
+            for descriptor in registry.documents {
+                self.document_restore_queue.push_back(
+                    router::DocumentRestoreRequest::from_descriptor(project, &descriptor),
+                );
+            }
+        }
+        self.schedule_next_document_restore(cx);
+    }
+
+    /// Start the next queued restore read, enforcing one-in-flight. Does
+    /// nothing when a read is already pending or the queue is empty.
+    fn schedule_next_document_restore(&mut self, cx: &mut Context<Self>) {
+        if self.document_restore_in_flight.is_some() {
+            return;
+        }
+        let Some(request) = self.document_restore_queue.pop_front() else {
+            return;
+        };
+        let project = request.project;
+        let document = request.document;
+        let outcome = self.coordinator.schedule_document_restore(request);
+        self.apply_command_effects(outcome.effects, cx);
+        match outcome.result {
+            CommandResult::Ok(CommandOutput::Pending { operation_id }) => {
+                self.pending_ui_launches.insert(
+                    operation_id,
+                    PendingUiLaunch::EditorRestore { project, document },
+                );
+                self.document_restore_in_flight = Some(operation_id);
+                self.ensure_launch_poller(cx);
+            }
+            // An immediately unavailable restore (missing/replaced root) still
+            // advances the queue; its Retry/Close surface is rendered from the
+            // store's placeholder.
+            _ => {
+                self.schedule_next_document_restore(cx);
+            }
+        }
     }
 
     fn initialize_default(&mut self, cx: &mut Context<Self>) {
@@ -1103,10 +1187,14 @@ impl WorkspaceView {
     }
 
     fn snapshot(&self) -> WorkspaceSnapshot {
-        WorkspaceSnapshot::capture_with_expanded(
+        let registries = self
+            .coordinator
+            .export_document_registry(&self.editor_selected);
+        WorkspaceSnapshot::capture_with_expanded_and_documents(
             self.coordinator.window(),
             &self.current_cwds(),
             &self.files_panel.expanded_snapshot(),
+            &registries,
         )
     }
 
@@ -1739,6 +1827,7 @@ impl WorkspaceView {
                 continue;
             }
             let ui = self.pending_ui_launches.remove(&operation_id);
+            let mut restore_completed = false;
             let palette_key = self.pending_palette_mru.remove(&operation_id);
             if matches!(&outcome.result, CommandResult::Ok(_))
                 && let Some(key) = palette_key
@@ -1785,6 +1874,35 @@ impl WorkspaceView {
                     self.input_notice = Some(format!("Revert: {error}"));
                     cx.notify();
                 }
+                (
+                    CommandResult::Ok(CommandOutput::EditorOpened(info)),
+                    Some(PendingUiLaunch::EditorRestore { project, document }),
+                ) => {
+                    restore_completed = true;
+                    if self.document_restore_in_flight == Some(operation_id) {
+                        self.document_restore_in_flight = None;
+                    }
+                    // Dedup may have converged on a live alias with a
+                    // different id; selection follows the real buffer.
+                    self.editor_selected.insert(project, info.document);
+                    // Activate the restored surface only when this document is
+                    // the saved active selection and the user has not taken a
+                    // focus action since startup.
+                    let is_saved_active = document == info.document;
+                    let startup_launch = self.focus_epoch == 0;
+                    if is_saved_active && startup_launch {
+                        self.editor_activate(project, info.document, cx);
+                    } else {
+                        cx.notify();
+                    }
+                }
+                (CommandResult::Err(_), Some(PendingUiLaunch::EditorRestore { .. })) => {
+                    restore_completed = true;
+                    if self.document_restore_in_flight == Some(operation_id) {
+                        self.document_restore_in_flight = None;
+                    }
+                    cx.notify();
+                }
                 (CommandResult::Ok(_), Some(PendingUiLaunch::Restore { pane, .. })) => {
                     self.restored_failures.remove(&pane);
                 }
@@ -1816,9 +1934,14 @@ impl WorkspaceView {
                 _ => {}
             }
             self.apply_command_effects(outcome.effects, cx);
+            if restore_completed {
+                self.schedule_next_document_restore(cx);
+            }
         }
         let pending = self.coordinator.has_pending_launches()
-            || self.coordinator.has_pending_editor_operations();
+            || self.coordinator.has_pending_editor_operations()
+            || self.document_restore_in_flight.is_some()
+            || !self.document_restore_queue.is_empty();
         if !pending {
             self.launch_poller_active = false;
         }
@@ -3206,6 +3329,7 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
+        self.user_focus_action();
         match self.dispatch_command(
             OmaCommand::Editor(EditorCommand::Open { project, path }),
             cx,
@@ -3226,6 +3350,13 @@ impl WorkspaceView {
         }
     }
 
+    /// Record that the user took an explicit focus/general action. Any pending
+    /// startup restore then declines to activate its saved document, so a late
+    /// restore load can never steal focus from the user.
+    fn user_focus_action(&mut self) {
+        self.focus_epoch = self.focus_epoch.saturating_add(1);
+    }
+
     /// Show a document: mark active, ensure caret/scroll state, request
     /// fresh highlights, and reveal the caret line.
     fn editor_activate(
@@ -3235,6 +3366,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         self.editor_active.insert(project, document);
+        self.editor_selected.insert(project, document);
         self.files_search_focused = false;
         self.git_panel.set_commit_focused(false);
         self.editor_carets.entry(document).or_default();
@@ -3320,12 +3452,64 @@ impl WorkspaceView {
                 if self.editor_active.get(&project) == Some(&document) {
                     self.editor_active.remove(&project);
                 }
+                if self.editor_selected.get(&project) == Some(&document) {
+                    self.editor_selected.remove(&project);
+                }
                 cx.notify();
             }
             Err(error) => {
                 self.input_notice = Some(format!("Close: {error}"));
                 cx.notify();
             }
+        }
+    }
+
+    /// Retry a failed restore read. Reuses the persisted descriptor (id,
+    /// lossless path bytes, captured root identity) and re-enqueues through the
+    /// one-in-flight restore queue; the chip returns to loading.
+    fn editor_retry_placeholder(
+        &mut self,
+        project: ProjectId,
+        document: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        let Some(entry) = self.coordinator.documents().placeholder(document) else {
+            return;
+        };
+        let request = router::DocumentRestoreRequest {
+            project: entry.project(),
+            document: entry.id(),
+            path_bytes: entry.path_bytes().to_vec(),
+            root_device: entry.root_identity().device,
+            root_inode: entry.root_identity().inode,
+        };
+        let _ = project;
+        // Resubmitting is idempotent for an existing reservation; the request
+        // goes through the same bounded one-in-flight scheduler.
+        self.document_restore_queue.push_front(request);
+        self.schedule_next_document_restore(cx);
+    }
+
+    /// Close a metadata-only placeholder (no live buffer). Used by the
+    /// unavailable chip's Close action.
+    fn editor_close_placeholder(
+        &mut self,
+        project: ProjectId,
+        document: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        if self.coordinator.close_document_placeholder(document) {
+            if self.editor_selected.get(&project) == Some(&document) {
+                self.editor_selected.remove(&project);
+            }
+            self.apply_command_effects(vec![router::CommandEffect::PersistenceDirty], cx);
+            cx.notify();
         }
     }
 
@@ -9420,6 +9604,7 @@ impl WorkspaceView {
                             return;
                         }
                         window.focus(&view.focus_handle);
+                        view.user_focus_action();
                         view.diff_panel.close_preview(project_id);
                         view.editor_active.remove(&project_id);
                         let _ = view.dispatch_command(
@@ -9483,6 +9668,7 @@ impl WorkspaceView {
                             }
                             cx.stop_propagation();
                             window.focus(&view.focus_handle);
+                            view.user_focus_action();
                             if let Some(project) = view.coordinator.selected_project_id() {
                                 view.diff_panel.close_preview(project);
                                 view.editor_active.remove(&project);
@@ -9573,7 +9759,7 @@ impl WorkspaceView {
                     .documents()
                     .is_dirty(document)
                     .unwrap_or(false);
-                let active = self.editor_active.get(&project.id) == Some(&document);
+                let active = self.editor_selected.get(&project.id) == Some(&document);
                 let open_project = project.id;
                 tabs = tabs.child(
                     div()
@@ -9607,6 +9793,7 @@ impl WorkspaceView {
                                     return;
                                 }
                                 window.focus(&view.focus_handle);
+                                view.user_focus_action();
                                 view.editor_activate(open_project, document, cx);
                             }),
                         )
@@ -9647,6 +9834,108 @@ impl WorkspaceView {
                                 )),
                         ),
                 );
+            }
+            // Metadata-only restore chips: a bounded read is loading, or it
+            // failed and offers an explicit Retry/Close path. No text is ever
+            // shown for these entries.
+            for placeholder in self
+                .coordinator
+                .documents()
+                .project_placeholders(project.id)
+            {
+                let entry = self.coordinator.documents().placeholder(placeholder);
+                let name = entry
+                    .as_ref()
+                    .and_then(|entry| {
+                        entry
+                            .path()
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                    })
+                    .unwrap_or_else(|| "untitled".into());
+                let unavailable = entry.as_ref().is_some_and(|entry| entry.is_unavailable());
+                let reason = entry.as_ref().and_then(|entry| match entry.state() {
+                    editor::PlaceholderState::Unavailable(reason) => Some(reason.clone()),
+                    editor::PlaceholderState::Loading => None,
+                });
+                let open_project = project.id;
+                let mut chip = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h(px(36.0))
+                    .rounded_t_md()
+                    .border_t_2()
+                    .border_color(rgb(if unavailable {
+                        crate::workbench::ERROR_TEXT
+                    } else {
+                        crate::ui::theme::BORDER
+                    }))
+                    .bg(rgb(crate::ui::theme::PANEL))
+                    .text_color(rgb(crate::ui::theme::TEXT2))
+                    .child(crate::ui::assets::icon(
+                        crate::ui::assets::FILE_TEXT,
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    ))
+                    .child(name)
+                    .child(
+                        div()
+                            .text_color(rgb(if unavailable {
+                                crate::workbench::ERROR_TEXT
+                            } else {
+                                crate::ui::theme::MUTED
+                            }))
+                            .child(if unavailable {
+                                "unavailable"
+                            } else {
+                                "loading"
+                            }),
+                    );
+                if let Some(reason) = reason {
+                    chip = chip.child(
+                        div()
+                            .px_1()
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.editor_retry_placeholder(open_project, placeholder, cx);
+                                }),
+                            )
+                            .child("Retry"),
+                    );
+                    let _ = reason;
+                }
+                chip = chip.child(
+                    div()
+                        .px_1()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.editor_close_placeholder(open_project, placeholder, cx);
+                            }),
+                        )
+                        .child(crate::ui::assets::icon(
+                            crate::ui::assets::CLOSE,
+                            14.0,
+                            crate::ui::theme::MUTED,
+                        )),
+                );
+                tabs = tabs.child(chip);
             }
         } else {
             tabs = tabs.child(
@@ -10592,6 +10881,7 @@ impl Render for WorkspaceView {
                                 MouseButton::Left,
                                 cx.listener(move |view, _event: &MouseDownEvent, window, cx| {
                                     window.focus(&view.focus_handle);
+                                    view.user_focus_action();
                                     if has_project {
                                         view.create_tab(cx);
                                     } else {

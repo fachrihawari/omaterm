@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
+use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::path::PathBuf;
 
 use crate::credentials::Credentials;
 use crate::editor::{
     DocumentStore, EditorIoCompletion, EditorIoError, EditorIoJob, EditorIoKind, EditorIoQueue,
-    EditorIoRequest, EditorIoSubmitError, EditorIoSuccess, EditorOperationId,
+    EditorIoRequest, EditorIoSubmitError, EditorIoSuccess, EditorOperationId, RestoreReservation,
+    RestoreReserveError,
 };
 use crate::history::HistoryManager;
 use omaterm_core::{
@@ -69,6 +71,47 @@ struct PendingLaunch {
     credential: Option<(String, ProjectId)>,
 }
 
+/// A desktop-only request to restore one persisted open document. It carries
+/// the validated schema-3 metadata: the persisted document id, lossless
+/// root-relative path bytes and the captured root device/inode. The router
+/// resolves the project's current root and refuses to load when that root's
+/// identity does not match — a replacement root cannot adopt the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentRestoreRequest {
+    pub project: ProjectId,
+    pub document: omaterm_core::DocumentId,
+    pub path_bytes: Vec<u8>,
+    pub root_device: u64,
+    pub root_inode: u64,
+}
+
+impl DocumentRestoreRequest {
+    pub fn from_descriptor(
+        project: ProjectId,
+        descriptor: &omaterm_state::DocumentDescriptor,
+    ) -> Self {
+        Self {
+            project,
+            document: descriptor.id,
+            path_bytes: descriptor.path_bytes.clone(),
+            root_device: descriptor.root_device,
+            root_inode: descriptor.root_inode,
+        }
+    }
+
+    fn reservation(&self) -> RestoreReservation {
+        RestoreReservation {
+            id: self.document,
+            project: self.project,
+            path_bytes: self.path_bytes.clone(),
+            root_identity: omaterm_context::RootIdentity {
+                device: self.root_device,
+                inode: self.root_inode,
+            },
+        }
+    }
+}
+
 /// Owner-side guard for one editor I/O request. Queue operation IDs remain
 /// internal so editor completions share the router receipt namespace without
 /// colliding with terminal launches.
@@ -82,6 +125,10 @@ struct PendingEditor {
     generation: u64,
     kind: EditorIoKind,
     cancelled: bool,
+    /// True for a restart restore: the completion must commit through the
+    /// store's checked restore path using the persisted `document` id, not
+    /// mint a new buffer identity.
+    restore: bool,
 }
 
 pub enum CommandEffect {
@@ -253,11 +300,14 @@ impl CommandRouter {
     }
 
     /// Synchronous editor lifecycle operations. Filesystem work is prepared
-    /// and enqueued by `prepare_editor`; close remains owner-local.
+    /// and enqueued by `prepare_editor`; close remains owner-local. Close
+    /// changes the persisted registry, so it emits `PersistenceDirty` on
+    /// success — unlike save/revert/edit, which never touch the registry.
     fn editor_dispatch(
         &mut self,
         _context: CommandContext,
         command: EditorCommand,
+        effects: &mut Vec<CommandEffect>,
     ) -> CommandResult {
         match command {
             EditorCommand::Close { document } => {
@@ -267,7 +317,13 @@ impl CommandRouter {
                         "unsaved changes; save or explicitly discard before closing",
                     );
                 }
+                if self.documents.is_placeholder(document) {
+                    self.documents.release_placeholder(document);
+                    effects.push(CommandEffect::PersistenceDirty);
+                    return ok(CommandOutput::Unit);
+                }
                 if self.documents.remove(document) {
+                    effects.push(CommandEffect::PersistenceDirty);
                     ok(CommandOutput::Unit)
                 } else {
                     err(ErrorCode::DocumentNotOpen, "document is not open")
@@ -472,6 +528,7 @@ impl CommandRouter {
                 generation,
                 kind,
                 cancelled: false,
+                restore: false,
             },
         );
         self.editor_receipts.insert(queue_operation, operation_id);
@@ -479,6 +536,144 @@ impl CommandRouter {
             result: ok(CommandOutput::Pending { operation_id }),
             effects: vec![],
         }
+    }
+
+    /// Desktop-only restart restore for one persisted document descriptor.
+    /// This enqueues the existing editor read job, retains the persisted
+    /// `DocumentId`, and uses the descriptor's root identity as the expected
+    /// root identity. It never touches terminal ownership or the launch queue.
+    ///
+    /// The reservation is installed first so a failure (missing root, replaced
+    /// root, queue saturation) leaves a metadata-only unavailable entry with an
+    /// explicit Retry/Close path rather than silently dropping the document.
+    pub fn schedule_document_restore(
+        &mut self,
+        request: DocumentRestoreRequest,
+    ) -> DispatchOutcome {
+        let rejected = |result| DispatchOutcome {
+            result,
+            effects: vec![],
+        };
+        if self.coordinator.window().project(request.project).is_none() {
+            return rejected(err(ErrorCode::ProjectNotFound, "project does not exist"));
+        }
+        let reservation = request.reservation();
+        if let Err(error) = self.documents.reserve_restore(&reservation) {
+            return match error {
+                RestoreReserveError::IdCollision => rejected(err(
+                    ErrorCode::InvalidRequest,
+                    "restored document id collides with an open document",
+                )),
+                RestoreReserveError::Capacity => rejected(err(
+                    ErrorCode::InvalidRequest,
+                    "the 32-document editor limit is reached",
+                )),
+                RestoreReserveError::InvalidPath => rejected(err(
+                    ErrorCode::InvalidRequest,
+                    "restored document path is invalid",
+                )),
+            };
+        }
+        let unavailable = |router: &mut Self, message: &str| {
+            router
+                .documents
+                .mark_restore_unavailable(request.document, message);
+            DispatchOutcome {
+                result: err(ErrorCode::DocumentConflict, message),
+                effects: vec![CommandEffect::PersistenceDirty],
+            }
+        };
+        // Resolve the project's current root and require its identity to match
+        // the captured descriptor: a replacement at the same pathname must
+        // never load the same relative filename from an unrelated root.
+        let root = match self.file_root(CommandContext::LocalUser, request.project) {
+            Ok(Some(root)) => root,
+            Ok(None) => {
+                return unavailable(self, "project has no filesystem root");
+            }
+            Err(error) => {
+                self.documents
+                    .mark_restore_unavailable(request.document, error.to_string());
+                return DispatchOutcome {
+                    result: CommandResult::Err(error),
+                    effects: vec![CommandEffect::PersistenceDirty],
+                };
+            }
+        };
+        let root = match omaterm_context::EditorRoot::open(&root) {
+            Ok(root) => root,
+            Err(issue) => {
+                return unavailable(self, &format!("{issue}"));
+            }
+        };
+        if root.identity() != reservation.root_identity {
+            return unavailable(
+                self,
+                "project root changed since the document was persisted",
+            );
+        }
+        let path = PathBuf::from(std::ffi::OsString::from_vec(request.path_bytes.clone()));
+        let job = EditorIoJob::Open { path: path.clone() };
+        let io_request = EditorIoRequest {
+            project: request.project,
+            root_path: root.canonical_path().to_path_buf(),
+            root_identity: root.identity(),
+            generation: 0,
+            job,
+        };
+        let Some(queue) = &self.editor_io else {
+            return unavailable(self, "editor I/O queue is closed");
+        };
+        let queue_operation = match queue.submit(io_request) {
+            Ok(operation) => operation,
+            Err(EditorIoSubmitError::QueueFull) => {
+                return unavailable(self, "editor I/O queue is full");
+            }
+            Err(EditorIoSubmitError::Shutdown) => {
+                return unavailable(self, "editor I/O queue is closed");
+            }
+            Err(EditorIoSubmitError::OperationIdExhausted) => {
+                return unavailable(self, "editor I/O operation IDs exhausted");
+            }
+        };
+        self.next_operation += 1;
+        let operation_id = self.next_operation;
+        self.pending_editors.insert(
+            operation_id,
+            PendingEditor {
+                context: CommandContext::LocalUser,
+                project: request.project,
+                root_path: root.canonical_path().to_path_buf(),
+                root_identity: root.identity(),
+                path,
+                document: Some(request.document),
+                generation: 0,
+                kind: EditorIoKind::Open,
+                cancelled: false,
+                restore: true,
+            },
+        );
+        self.editor_receipts.insert(queue_operation, operation_id);
+        DispatchOutcome {
+            result: ok(CommandOutput::Pending { operation_id }),
+            effects: vec![],
+        }
+    }
+
+    /// Bounded metadata-only registry for persistence. Live buffers and
+    /// loading/unavailable placeholders become descriptors; `active` selection
+    /// is honored only for a live, owned document. Never writes text.
+    pub fn export_document_registry(
+        &self,
+        active: &HashMap<ProjectId, omaterm_core::DocumentId>,
+    ) -> HashMap<ProjectId, omaterm_state::DocumentRegistry> {
+        self.documents.export_document_registry(active)
+    }
+
+    /// Close a metadata-only placeholder without a live buffer. Used by the
+    /// Retry/Close unavailable surface.
+    pub fn close_document_placeholder(&mut self, document: omaterm_core::DocumentId) -> bool {
+        self.documents.release_placeholder(document)
     }
 
     /// Shared stage/unstage/discard path (M14): project existence plus
@@ -1120,7 +1315,7 @@ impl CommandRouter {
         if completion.project != pending.project
             || completion.root_path != pending.root_path
             || completion.root_identity != pending.root_identity
-            || completion.document != pending.document
+            || (!pending.restore && completion.document != pending.document)
             || completion.generation != pending.generation
             || completion.kind != pending.kind
         {
@@ -1160,7 +1355,27 @@ impl CommandRouter {
                 "project root changed while editor I/O was pending",
             ));
         }
-        if let Some(document) = pending.document
+        if pending.restore {
+            // A restore completion must still find its reservation: a document
+            // closed while its read was in flight can never be recreated, and a
+            // late/stale completion must not change selection or surface.
+            let document = pending.document.expect("restore has document");
+            let Some(placeholder) = self.documents.placeholder(document) else {
+                return rejected(err(
+                    ErrorCode::DocumentConflict,
+                    "restored document was closed while its read was pending",
+                ));
+            };
+            if placeholder.project() != pending.project
+                || placeholder.root_identity() != pending.root_identity
+                || placeholder.path() != pending.path
+            {
+                return rejected(err(
+                    ErrorCode::DocumentConflict,
+                    "restored document changed while its read was pending",
+                ));
+            }
+        } else if let Some(document) = pending.document
             && (self.documents.project_of(document) != Some(pending.project)
                 || self.documents.open_root_identity(document) != Some(pending.root_identity)
                 || self.documents.relative_path(document).as_deref()
@@ -1173,6 +1388,51 @@ impl CommandRouter {
             ));
         }
         match (pending.kind, completion.result) {
+            (EditorIoKind::Open, Ok(EditorIoSuccess::Opened(file))) if pending.restore => {
+                let document = pending.document.expect("restore has document");
+                match self
+                    .documents
+                    .commit_restore(document, pending.root_path.clone(), file)
+                {
+                    Ok(document) => {
+                        let Some(info) = self.documents.document_info(document) else {
+                            return rejected(err(
+                                ErrorCode::RuntimeFailure,
+                                "document vanished after restore",
+                            ));
+                        };
+                        tracing::debug!(target: "omaterm::editor", project_id = %pending.project.0, bytes = info.bytes, lines = info.lines, "editor document restored");
+                        DispatchOutcome {
+                            result: ok(CommandOutput::EditorOpened(info)),
+                            effects: vec![CommandEffect::PersistenceDirty],
+                        }
+                    }
+                    // A live alias already owns this file or the id was taken:
+                    // converge on the existing buffer (or keep it unavailable)
+                    // without creating a second document.
+                    Err(crate::editor::RestoreCommitError::DuplicateLive(existing)) => {
+                        self.documents.release_placeholder(document);
+                        let Some(info) = self.documents.document_info(existing) else {
+                            return rejected(err(
+                                ErrorCode::RuntimeFailure,
+                                "restored document vanished after dedup",
+                            ));
+                        };
+                        DispatchOutcome {
+                            result: ok(CommandOutput::EditorOpened(info)),
+                            effects: vec![CommandEffect::PersistenceDirty],
+                        }
+                    }
+                    Err(crate::editor::RestoreCommitError::NotReserved) => rejected(err(
+                        ErrorCode::DocumentConflict,
+                        "restored document was closed while its read was pending",
+                    )),
+                    Err(crate::editor::RestoreCommitError::IdCollision) => rejected(err(
+                        ErrorCode::DocumentConflict,
+                        "restored document id collided with a live document",
+                    )),
+                }
+            }
             (EditorIoKind::Open, Ok(EditorIoSuccess::Opened(file))) => {
                 let document = self.documents.open(
                     pending.project,
@@ -1188,7 +1448,10 @@ impl CommandRouter {
                     ));
                 };
                 tracing::debug!(target: "omaterm::editor", project_id = %pending.project.0, bytes = info.bytes, lines = info.lines, "editor document opened");
-                rejected(ok(CommandOutput::EditorOpened(info)))
+                DispatchOutcome {
+                    result: ok(CommandOutput::EditorOpened(info)),
+                    effects: vec![CommandEffect::PersistenceDirty],
+                }
             }
             (EditorIoKind::Save, Ok(EditorIoSuccess::Saved(saved))) => {
                 let document = pending.document.expect("save has document");
@@ -1214,6 +1477,16 @@ impl CommandRouter {
                 ErrorCode::RuntimeFailure,
                 "editor operation kind mismatch",
             )),
+            (_, Err(EditorIoError::Cancelled)) if pending.restore => {
+                self.fail_restore(&pending, "restore read was cancelled")
+            }
+            (_, Err(EditorIoError::RootChanged)) if pending.restore => self.fail_restore(
+                &pending,
+                "project root changed since the document was persisted",
+            ),
+            (_, Err(EditorIoError::Context(issue))) if pending.restore => {
+                self.fail_restore(&pending, &issue.to_string())
+            }
             (_, Err(EditorIoError::Cancelled)) => rejected(err(
                 ErrorCode::RuntimeFailure,
                 "editor operation was cancelled",
@@ -1228,6 +1501,18 @@ impl CommandRouter {
             (_, Err(EditorIoError::Context(issue))) => {
                 rejected(editor_error(issue, ErrorCode::FileNotFound))
             }
+        }
+    }
+
+    /// Turn a failed restore read into an explicit metadata-only unavailable
+    /// state (Retry/Close), emitting `PersistenceDirty` so the registry write
+    /// records the still-open document. Never creates a terminal session.
+    fn fail_restore(&mut self, pending: &PendingEditor, reason: &str) -> DispatchOutcome {
+        let document = pending.document.expect("restore has document");
+        self.documents.mark_restore_unavailable(document, reason);
+        DispatchOutcome {
+            result: err(ErrorCode::DocumentConflict, reason),
+            effects: vec![CommandEffect::PersistenceDirty],
         }
     }
 
@@ -1675,7 +1960,7 @@ impl CommandRouter {
                     source: resolved.source,
                 }))
             }
-            OmaCommand::Editor(command) => self.editor_dispatch(context, command),
+            OmaCommand::Editor(command) => self.editor_dispatch(context, command, effects),
             OmaCommand::File(FileCommand::List {
                 project,
                 dir,
@@ -2472,13 +2757,19 @@ impl GitMutation {
 mod tests {
     use super::*;
     use omaterm_core::{
-        Pane, PaneCommand, PaneTree, Project, ProjectCommand, SessionId, SplitDirection, SplitId,
-        Tab, TerminalCommand, WorkspaceWindow,
+        DocumentId, Pane, PaneCommand, PaneTree, Project, ProjectCommand, SessionId,
+        SplitDirection, SplitId, Tab, TerminalCommand, WorkspaceWindow,
     };
     use omaterm_terminal::TerminalConfig;
 
     fn router() -> CommandRouter {
         CommandRouter::new(WorkspaceCoordinator::new(std::env::temp_dir()))
+    }
+
+    fn has_persistence_dirty(effects: &[CommandEffect]) -> bool {
+        effects
+            .iter()
+            .any(|effect| matches!(effect, CommandEffect::PersistenceDirty))
     }
 
     #[test]
@@ -3406,7 +3697,7 @@ mod tests {
             panic!("editor open: {:?}", opened.result);
         };
         assert_eq!((bytes, lines), ("# v1\n".len(), 2));
-        assert!(opened.effects.is_empty());
+        assert!(has_persistence_dirty(&opened.effects));
         assert_eq!(
             router.documents().language(document),
             Some(omaterm_context::EditorLanguage::Markdown)
@@ -3625,7 +3916,7 @@ mod tests {
         let CommandResult::Ok(CommandOutput::EditorOpened(info)) = completed.result else {
             panic!("editor open completion");
         };
-        assert!(completed.effects.is_empty());
+        assert!(has_persistence_dirty(&completed.effects));
         let document = info.document;
         assert_eq!(router.registry().list().len(), terminal_count);
 
@@ -3745,6 +4036,287 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&replacement);
+    }
+
+    fn wait_for_editor_operation(router: &mut CommandRouter, operation_id: u64) -> DispatchOutcome {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            for (id, outcome) in router.poll_editor_operations() {
+                if id == operation_id {
+                    return outcome;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "editor I/O timed out");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Create a project rooted at a fresh temp directory containing one file.
+    fn create_document_project(
+        router: &mut CommandRouter,
+        tag: &str,
+        file: &str,
+    ) -> (ProjectId, PathBuf) {
+        let root = std::env::temp_dir().join(format!("omaterm-m19-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(file), b"disk\n").unwrap();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation: {:?}", created.result);
+        };
+        (project, root)
+    }
+
+    #[test]
+    fn registry_capture_excludes_text_and_keeps_metadata_identity() {
+        use omaterm_core::EditorCommand;
+
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "registry", "notes.txt");
+        std::fs::write(root.join("notes.txt"), b"SECRET_REGISTRY_MARKER\n").unwrap();
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open: {:?}", opened.result);
+        };
+        let document = info.document;
+        let active = HashMap::from([(project, document)]);
+        let registries = router.export_document_registry(&active);
+        let registry = registries.get(&project).expect("registry for project");
+        assert_eq!(registry.documents.len(), 1);
+        assert_eq!(registry.active_document, Some(document));
+        let descriptor = &registry.documents[0];
+        assert_eq!(descriptor.id, document);
+        assert_eq!(descriptor.path_bytes, b"notes.txt".to_vec());
+        assert_ne!(descriptor.root_device, 0);
+        assert_ne!(descriptor.root_inode, 0);
+
+        // The persisted shape (DocumentSnapshot) carries metadata only.
+        let snapshots: Vec<omaterm_state::DocumentSnapshot> = registry
+            .documents
+            .iter()
+            .map(|descriptor| omaterm_state::DocumentSnapshot {
+                id: descriptor.id.0.to_string(),
+                path_bytes: descriptor.path_bytes.clone(),
+                root_device: descriptor.root_device,
+                root_inode: descriptor.root_inode,
+            })
+            .collect();
+        let bytes = serde_json::to_vec(&snapshots).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains("SECRET_REGISTRY_MARKER"));
+        assert!(!text.contains("disk"));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn restore_enqueues_through_the_editor_queue_off_thread_preserving_id() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "restore", "notes.txt");
+        std::fs::write(root.join("notes.txt"), b"restored clean text\n").unwrap();
+        let identity = omaterm_context::EditorRoot::open(&root).unwrap().identity();
+        let terminal_count = router.registry().list().len();
+        let persisted = DocumentId::new();
+        let request = DocumentRestoreRequest {
+            project,
+            document: persisted,
+            path_bytes: b"notes.txt".to_vec(),
+            root_device: identity.device,
+            root_inode: identity.inode,
+        };
+
+        let receipt = router.schedule_document_restore(request);
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("restore receipt: {:?}", receipt.result);
+        };
+        assert!(receipt.effects.is_empty());
+        assert!(router.has_pending_editor_operations());
+        assert!(!router.has_pending_launches());
+        assert_eq!(router.registry().list().len(), terminal_count);
+
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = completed.result else {
+            panic!("restore completion: {:?}", completed.result);
+        };
+        assert_eq!(info.document, persisted);
+        assert!(has_persistence_dirty(&completed.effects));
+        assert_eq!(
+            router.documents().text(persisted),
+            Some("restored clean text\n")
+        );
+        assert_eq!(router.registry().list().len(), terminal_count);
+        assert!(!router.has_pending_launches());
+        assert!(!router.documents().is_placeholder(persisted));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn restore_with_replaced_root_yields_unavailable_placeholder() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "replaced", "notes.txt");
+        let moved = root.with_extension("moved");
+        let _ = std::fs::remove_dir_all(&moved);
+        let identity = omaterm_context::EditorRoot::open(&root).unwrap().identity();
+        // Replace the root at the same pathname: the new directory has a
+        // different device/inode, so the captured descriptor must not load.
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("notes.txt"), b"unrelated replacement\n").unwrap();
+
+        let persisted = DocumentId::new();
+        let receipt = router.schedule_document_restore(DocumentRestoreRequest {
+            project,
+            document: persisted,
+            path_bytes: b"notes.txt".to_vec(),
+            root_device: identity.device,
+            root_inode: identity.inode,
+        });
+        assert!(matches!(receipt.result, CommandResult::Err(_)));
+        assert!(has_persistence_dirty(&receipt.effects));
+        assert!(router.documents().document_info(persisted).is_none());
+        let placeholder = router
+            .documents()
+            .placeholder(persisted)
+            .expect("unavailable placeholder exists");
+        assert!(placeholder.is_unavailable());
+        assert_eq!(placeholder.project(), project);
+        assert_eq!(placeholder.path_bytes(), b"notes.txt");
+
+        assert!(router.close_document_placeholder(persisted));
+        assert!(router.documents().placeholder(persisted).is_none());
+        assert!(!router.has_pending_launches());
+        assert!(!router.has_pending_editor_operations());
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&moved);
+    }
+
+    #[test]
+    fn late_restore_completion_cannot_recreate_a_closed_document() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "late", "notes.txt");
+        let identity = omaterm_context::EditorRoot::open(&root).unwrap().identity();
+        let persisted = DocumentId::new();
+        let receipt = router.schedule_document_restore(DocumentRestoreRequest {
+            project,
+            document: persisted,
+            path_bytes: b"notes.txt".to_vec(),
+            root_device: identity.device,
+            root_inode: identity.inode,
+        });
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("restore receipt: {:?}", receipt.result);
+        };
+        // Close the placeholder before the queued read completes.
+        assert!(router.close_document_placeholder(persisted));
+
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        assert!(matches!(completed.result, CommandResult::Err(_)));
+        assert!(completed.effects.is_empty());
+        // The live document was never created and the closed placeholder is
+        // not resurrected.
+        assert!(router.documents().document_info(persisted).is_none());
+        assert!(router.documents().placeholder(persisted).is_none());
+        assert!(router.documents().project_documents(project).is_empty());
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_and_close_persist_dirty_while_save_revert_and_edit_do_not() {
+        use omaterm_core::EditorCommand;
+
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "effects", "notes.txt");
+
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open: {:?}", opened.result);
+        };
+        assert!(has_persistence_dirty(&opened.effects));
+        let document = info.document;
+
+        let saved = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Save { document }),
+        );
+        assert!(matches!(
+            saved.result,
+            CommandResult::Ok(CommandOutput::EditorSaved(_))
+        ));
+        assert!(saved.effects.is_empty());
+
+        let reverted = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Revert { document }),
+        );
+        assert!(matches!(
+            reverted.result,
+            CommandResult::Ok(CommandOutput::EditorOpened(_))
+        ));
+        assert!(reverted.effects.is_empty());
+
+        router
+            .documents_mut()
+            .apply_edit(document, 4, 0, " edit")
+            .unwrap();
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+        // Edits alone never mark registry persistence dirty.
+        // Discard the edit so the document is clean before closing.
+        router.documents_mut().discard_changes(document);
+
+        let closed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Close { document }),
+        );
+        assert!(matches!(
+            closed.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+        assert!(has_persistence_dirty(&closed.effects));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
