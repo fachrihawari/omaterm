@@ -4214,3 +4214,27 @@ final symlink untouched. Focused context and desktop lifecycle tests pass with
 the 1.99.0 override; package/full checks for this increment follow. S1 remains
 open for injected failure/cancellation barriers, explicit UI warning state and
 the final filesystem matrix.
+
+## M19 S2 worker foundation — 2026-10-03
+
+Added the private desktop `EditorIoQueue`: one joined worker, one active job,
+at most 16 pending foreground jobs, monotonic `EditorOperationId`s, cancellation
+and owner-only completion messages. Every completion carries operation/project/
+root path/root identity/document/generation/kind, allowing the eventual router
+commit path to reject stale results without worker mutation of the store or UI.
+Jobs use S1 rooted open/save/revert context APIs and recheck root identity after
+the worker captures its descriptor. Queue cancellation publishes exactly one
+final cancellation completion; active work is cooperative and shutdown joins
+the worker rather than detaching it.
+
+Unit tests cover capacity, queued cancellation without execution, completion
+metadata/single delivery and active-plus-pending shutdown. Verification with
+`RUSTUP_TOOLCHAIN=1.99.0`: editor worker tests are included in `cargo test -p
+omaterm` (128 PASS); `cargo fmt --all --check` PASS; `cargo clippy -p omaterm
+--all-targets -- -D warnings` PASS; docs and diff checks PASS. The known
+transitive `proc-macro-error2` future-incompatibility notice remains.
+
+**Next action:** make router Open/Save/Revert return editor pending receipts,
+poll this queue on the owner, and apply only generation/document/root-accepted
+completions. Do not call filesystem APIs from `editor_dispatch` once that path
+lands; dirty close/shutdown must await final editor outcomes.

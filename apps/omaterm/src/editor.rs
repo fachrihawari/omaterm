@@ -24,8 +24,10 @@
 //! (theme-token precedent): removing it now would only re-add identical API.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
@@ -1078,6 +1080,417 @@ pub fn display_line(line: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Router-local identity for one accepted editor filesystem operation. This is
+/// intentionally unrelated to terminal-launch receipts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct EditorOperationId(pub u64);
+
+/// Work performed by the single editor I/O worker. All variants are explicit
+/// foreground actions and are dequeued FIFO.
+pub(crate) enum EditorIoJob {
+    Open {
+        path: PathBuf,
+    },
+    Save {
+        document: DocumentId,
+        path: PathBuf,
+        text: String,
+        expected: Option<omaterm_context::FileRevision>,
+    },
+    Revert {
+        document: DocumentId,
+        path: PathBuf,
+    },
+}
+
+impl EditorIoJob {
+    fn kind(&self) -> EditorIoKind {
+        match self {
+            Self::Open { .. } => EditorIoKind::Open,
+            Self::Save { .. } => EditorIoKind::Save,
+            Self::Revert { .. } => EditorIoKind::Revert,
+        }
+    }
+
+    fn document(&self) -> Option<DocumentId> {
+        match self {
+            Self::Open { .. } => None,
+            Self::Save { document, .. } | Self::Revert { document, .. } => Some(*document),
+        }
+    }
+}
+
+/// The operation type carried in every owner-side completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorIoKind {
+    Open,
+    Save,
+    Revert,
+}
+
+/// Metadata captured by the owner before enqueueing filesystem work. The root
+/// identity is rechecked by the worker after it captures its own descriptor,
+/// so a same-path root replacement cannot retarget an accepted operation.
+pub(crate) struct EditorIoRequest {
+    pub project: ProjectId,
+    pub root_path: PathBuf,
+    pub root_identity: omaterm_context::RootIdentity,
+    pub generation: u64,
+    pub job: EditorIoJob,
+}
+
+/// Final successful I/O payload. Revert and open stay distinct so the owner
+/// cannot accidentally apply a disk reload as a new document open.
+#[derive(Debug)]
+pub(crate) enum EditorIoSuccess {
+    Opened(omaterm_context::EditorFile),
+    Saved(omaterm_context::WriteTextOutcome),
+    Reverted(omaterm_context::EditorFile),
+}
+
+/// Final failure payload. Cancellation is an outcome, not a silently dropped
+/// request, so every accepted operation has exactly one completion.
+#[derive(Debug)]
+pub(crate) enum EditorIoError {
+    Cancelled,
+    RootChanged,
+    Context(omaterm_context::EditorError),
+}
+
+/// One final owner-side message. It contains all identity required to reject a
+/// stale completion without consulting worker-local state.
+#[derive(Debug)]
+pub(crate) struct EditorIoCompletion {
+    pub operation: EditorOperationId,
+    pub project: ProjectId,
+    pub root_path: PathBuf,
+    pub root_identity: omaterm_context::RootIdentity,
+    pub document: Option<DocumentId>,
+    pub generation: u64,
+    pub kind: EditorIoKind,
+    pub result: Result<EditorIoSuccess, EditorIoError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorIoSubmitError {
+    QueueFull,
+    Shutdown,
+    OperationIdExhausted,
+}
+
+const EDITOR_IO_QUEUE_CAPACITY: usize = 16;
+
+struct QueuedEditorIo {
+    operation: EditorOperationId,
+    request: EditorIoRequest,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct ActiveEditorIo {
+    operation: EditorOperationId,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct EditorIoState {
+    pending: VecDeque<QueuedEditorIo>,
+    active: Option<ActiveEditorIo>,
+    completions: VecDeque<EditorIoCompletion>,
+    next_operation: Option<u64>,
+    shutdown: bool,
+}
+
+impl Default for EditorIoState {
+    fn default() -> Self {
+        Self {
+            pending: VecDeque::new(),
+            active: None,
+            completions: VecDeque::new(),
+            next_operation: Some(1),
+            shutdown: false,
+        }
+    }
+}
+
+/// One bounded, app-local filesystem worker. It owns neither GPUI state nor
+/// the document store: the owner prepares immutable input and later decides
+/// whether a completion generation is still current.
+pub(crate) struct EditorIoQueue {
+    state: Arc<(Mutex<EditorIoState>, Condvar)>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl EditorIoQueue {
+    pub(crate) fn new() -> Self {
+        Self::with_runner(run_editor_io)
+    }
+
+    fn with_runner(
+        mut run: impl FnMut(&EditorIoRequest, &AtomicBool) -> Result<EditorIoSuccess, EditorIoError>
+        + Send
+        + 'static,
+    ) -> Self {
+        let state = Arc::new((Mutex::new(EditorIoState::default()), Condvar::new()));
+        let worker_state = Arc::clone(&state);
+        let thread = std::thread::spawn(move || {
+            loop {
+                let queued = {
+                    let (lock, ready) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    while state.pending.is_empty() && !state.shutdown {
+                        state = ready
+                            .wait(state)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                    if state.shutdown {
+                        return;
+                    }
+                    let queued = state
+                        .pending
+                        .pop_front()
+                        .expect("pending editor I/O exists");
+                    state.active = Some(ActiveEditorIo {
+                        operation: queued.operation,
+                        cancelled: Arc::clone(&queued.cancelled),
+                    });
+                    queued
+                };
+
+                let result = run(&queued.request, &queued.cancelled);
+                let completion = completion_for(queued.operation, queued.request, result);
+                let (lock, ready) = &*worker_state;
+                let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.operation == completion.operation)
+                {
+                    state.active = None;
+                }
+                state.completions.push_back(completion);
+                ready.notify_all();
+            }
+        });
+        Self {
+            state,
+            thread: Some(thread),
+        }
+    }
+
+    /// Reserves a foreground slot before taking ownership of the request; the
+    /// queue never copies a save payload. A full queue excludes the active job.
+    pub(crate) fn submit(
+        &self,
+        request: EditorIoRequest,
+    ) -> Result<EditorOperationId, EditorIoSubmitError> {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutdown {
+            return Err(EditorIoSubmitError::Shutdown);
+        }
+        if state.pending.len() == EDITOR_IO_QUEUE_CAPACITY {
+            return Err(EditorIoSubmitError::QueueFull);
+        }
+        let operation = EditorOperationId(
+            state
+                .next_operation
+                .ok_or(EditorIoSubmitError::OperationIdExhausted)?,
+        );
+        state.next_operation = operation.0.checked_add(1);
+        state.pending.push_back(QueuedEditorIo {
+            operation,
+            request,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        });
+        ready.notify_one();
+        Ok(operation)
+    }
+
+    /// Cancel a queued operation immediately, or request cooperative
+    /// cancellation from the active worker. Queued cancellations publish their
+    /// final result synchronously; active operations publish at their next
+    /// cancellation boundary.
+    pub(crate) fn cancel(&self, operation: EditorOperationId) -> bool {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = state
+            .pending
+            .iter()
+            .position(|queued| queued.operation == operation)
+        {
+            let queued = state
+                .pending
+                .remove(index)
+                .expect("queued editor I/O exists");
+            queued.cancelled.store(true, Ordering::Release);
+            state.completions.push_back(completion_for(
+                queued.operation,
+                queued.request,
+                Err(EditorIoError::Cancelled),
+            ));
+            ready.notify_all();
+            return true;
+        }
+        if let Some(active) = &state.active
+            && active.operation == operation
+        {
+            active.cancelled.store(true, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn take_completion(&self) -> Option<EditorIoCompletion> {
+        self.state
+            .0
+            .lock()
+            .ok()
+            .and_then(|mut state| state.completions.pop_front())
+    }
+
+    /// Stop accepting work, cancel every queued operation, request cooperative
+    /// cancellation from the active one, and wake the worker. Call
+    /// `shutdown_and_join` to wait for the final active completion.
+    pub(crate) fn shutdown(&self) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutdown {
+            return;
+        }
+        state.shutdown = true;
+        if let Some(active) = &state.active {
+            active.cancelled.store(true, Ordering::Release);
+        }
+        while let Some(queued) = state.pending.pop_front() {
+            queued.cancelled.store(true, Ordering::Release);
+            state.completions.push_back(completion_for(
+                queued.operation,
+                queued.request,
+                Err(EditorIoError::Cancelled),
+            ));
+        }
+        ready.notify_all();
+    }
+
+    /// Clean shutdown boundary: no worker is detached. A filesystem syscall
+    /// already in progress remains subject to platform blocking semantics, but
+    /// all cancellable boundaries are signalled before joining.
+    pub(crate) fn shutdown_and_join(&mut self) -> std::thread::Result<()> {
+        self.shutdown();
+        if let Some(thread) = self.thread.take() {
+            thread.join()
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    fn completion_count(&self) -> usize {
+        self.state
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .completions
+            .len()
+    }
+
+    #[cfg(test)]
+    fn wait_for_completion_count(&self, count: usize) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.completions.len() < count {
+            let (next, timeout) = ready
+                .wait_timeout(state, std::time::Duration::from_secs(5))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next;
+            assert!(
+                !timeout.timed_out(),
+                "editor I/O worker did not complete in time"
+            );
+        }
+    }
+}
+
+impl Default for EditorIoQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for EditorIoQueue {
+    fn drop(&mut self) {
+        let _ = self.shutdown_and_join();
+    }
+}
+
+fn completion_for(
+    operation: EditorOperationId,
+    request: EditorIoRequest,
+    result: Result<EditorIoSuccess, EditorIoError>,
+) -> EditorIoCompletion {
+    EditorIoCompletion {
+        operation,
+        project: request.project,
+        root_path: request.root_path,
+        root_identity: request.root_identity,
+        document: request.job.document(),
+        generation: request.generation,
+        kind: request.job.kind(),
+        result,
+    }
+}
+
+fn run_editor_io(
+    request: &EditorIoRequest,
+    cancelled: &AtomicBool,
+) -> Result<EditorIoSuccess, EditorIoError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(EditorIoError::Cancelled);
+    }
+    let root =
+        omaterm_context::EditorRoot::open(&request.root_path).map_err(EditorIoError::Context)?;
+    if root.identity() != request.root_identity {
+        return Err(EditorIoError::RootChanged);
+    }
+    if cancelled.load(Ordering::Acquire) {
+        return Err(EditorIoError::Cancelled);
+    }
+    match &request.job {
+        EditorIoJob::Open { path } => {
+            let file = omaterm_context::read_text_file_from_root(&root, path)
+                .map_err(EditorIoError::Context)?;
+            if cancelled.load(Ordering::Acquire) {
+                Err(EditorIoError::Cancelled)
+            } else {
+                Ok(EditorIoSuccess::Opened(file))
+            }
+        }
+        EditorIoJob::Save {
+            path,
+            text,
+            expected,
+            ..
+        } => {
+            // Once write begins it may pass rename; a late cancellation must
+            // not hide that durable filesystem outcome from the owner.
+            if cancelled.load(Ordering::Acquire) {
+                return Err(EditorIoError::Cancelled);
+            }
+            omaterm_context::write_text_file_from_root(&root, path, text, expected.as_ref())
+                .map(EditorIoSuccess::Saved)
+                .map_err(EditorIoError::Context)
+        }
+        EditorIoJob::Revert { path, .. } => {
+            let file = omaterm_context::read_text_file_from_root(&root, path)
+                .map_err(EditorIoError::Context)?;
+            if cancelled.load(Ordering::Acquire) {
+                Err(EditorIoError::Cancelled)
+            } else {
+                Ok(EditorIoSuccess::Reverted(file))
+            }
+        }
+    }
+}
+
 /// One background highlight job plus one replaceable pending request,
 /// mirroring the diff/palette worker pattern. Superseding keystrokes cancel
 /// the active tokenize; a cancelled job never refills the mailbox.
@@ -1626,5 +2039,276 @@ mod tests {
         assert!(store.get(second).is_none());
         assert!(store.get(other).is_some());
         assert!(!store.remove(first));
+    }
+
+    fn io_request(generation: u64, job: EditorIoJob) -> EditorIoRequest {
+        EditorIoRequest {
+            project: ProjectId::new(),
+            root_path: PathBuf::from("/test-root"),
+            root_identity: omaterm_context::RootIdentity {
+                device: 7,
+                inode: 11,
+            },
+            generation,
+            job,
+        }
+    }
+
+    fn open_job(index: u64) -> EditorIoJob {
+        EditorIoJob::Open {
+            path: PathBuf::from(format!("document-{index}.txt")),
+        }
+    }
+
+    fn test_io_success(request: &EditorIoRequest) -> Result<EditorIoSuccess, EditorIoError> {
+        let revision = omaterm_context::FileRevision {
+            size: 0,
+            mtime_secs: 0,
+            mtime_nanos: 0,
+            device: 1,
+            inode: 1,
+            content_digest: [0; 32],
+        };
+        let file = || omaterm_context::EditorFile {
+            text: String::new(),
+            bytes: 0,
+            lines: 0,
+            revision,
+            language: omaterm_context::EditorLanguage::Plain,
+        };
+        Ok(match request.job.kind() {
+            EditorIoKind::Open => EditorIoSuccess::Opened(file()),
+            EditorIoKind::Save => {
+                EditorIoSuccess::Saved(omaterm_context::WriteTextOutcome::CommittedDurable {
+                    revision,
+                })
+            }
+            EditorIoKind::Revert => EditorIoSuccess::Reverted(file()),
+        })
+    }
+
+    struct IoGate {
+        started: Mutex<bool>,
+        release: Condvar,
+    }
+
+    impl IoGate {
+        fn wait_started(&self) {
+            let mut started = self
+                .started
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while !*started {
+                started = self
+                    .release
+                    .wait(started)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        }
+
+        fn release(&self) {
+            let mut started = self
+                .started
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *started = false;
+            self.release.notify_all();
+        }
+    }
+
+    #[test]
+    fn editor_io_queue_bounds_pending_foreground_jobs() {
+        let gate = Arc::new(IoGate {
+            started: Mutex::new(false),
+            release: Condvar::new(),
+        });
+        let runner_gate = Arc::clone(&gate);
+        let mut queue = EditorIoQueue::with_runner(move |request, cancelled| {
+            let mut started = runner_gate
+                .started
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *started = true;
+            runner_gate.release.notify_all();
+            while *started {
+                started = runner_gate
+                    .release
+                    .wait(started)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            if cancelled.load(Ordering::Acquire) {
+                Err(EditorIoError::Cancelled)
+            } else {
+                test_io_success(request)
+            }
+        });
+        let first = queue.submit(io_request(1, open_job(0))).unwrap();
+        gate.wait_started();
+        for index in 1..=EDITOR_IO_QUEUE_CAPACITY {
+            queue
+                .submit(io_request(index as u64 + 1, open_job(index as u64)))
+                .unwrap();
+        }
+        assert_eq!(
+            queue.submit(io_request(99, open_job(99))),
+            Err(EditorIoSubmitError::QueueFull)
+        );
+        assert!(queue.cancel(first));
+        gate.release();
+        assert!(queue.shutdown_and_join().is_ok());
+        assert_eq!(queue.completion_count(), EDITOR_IO_QUEUE_CAPACITY + 1);
+    }
+
+    #[test]
+    fn editor_io_queue_cancels_queued_job_once_without_running_it() {
+        let gate = Arc::new(IoGate {
+            started: Mutex::new(false),
+            release: Condvar::new(),
+        });
+        let runner_gate = Arc::clone(&gate);
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let runner_ran = Arc::clone(&ran);
+        let mut queue = EditorIoQueue::with_runner(move |request, _| {
+            runner_ran
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(request.generation);
+            let mut started = runner_gate
+                .started
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *started = true;
+            runner_gate.release.notify_all();
+            while *started {
+                started = runner_gate
+                    .release
+                    .wait(started)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            test_io_success(request)
+        });
+        let first = queue.submit(io_request(1, open_job(1))).unwrap();
+        gate.wait_started();
+        let cancelled = queue.submit(io_request(2, open_job(2))).unwrap();
+        assert!(queue.cancel(cancelled));
+        assert!(!queue.cancel(cancelled));
+        gate.release();
+        queue.wait_for_completion_count(2);
+        assert!(queue.shutdown_and_join().is_ok());
+
+        let mut completions = [
+            queue.take_completion().unwrap(),
+            queue.take_completion().unwrap(),
+        ];
+        completions.sort_by_key(|completion| completion.operation);
+        assert_eq!(completions[0].operation, first);
+        assert!(matches!(
+            completions[0].result,
+            Ok(EditorIoSuccess::Opened(_))
+        ));
+        assert_eq!(completions[1].operation, cancelled);
+        assert!(matches!(
+            completions[1].result,
+            Err(EditorIoError::Cancelled)
+        ));
+        assert_eq!(
+            *ran.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![1]
+        );
+        assert!(queue.take_completion().is_none());
+    }
+
+    #[test]
+    fn editor_io_queue_delivers_latest_completion_once_with_its_metadata() {
+        let mut queue = EditorIoQueue::with_runner(|request, _| test_io_success(request));
+        let project = ProjectId::new();
+        let root = omaterm_context::RootIdentity {
+            device: 9,
+            inode: 12,
+        };
+        let first = queue
+            .submit(EditorIoRequest {
+                project,
+                root_path: PathBuf::from("/project"),
+                root_identity: root,
+                generation: 41,
+                job: open_job(1),
+            })
+            .unwrap();
+        let document = DocumentId::new();
+        let latest = queue
+            .submit(EditorIoRequest {
+                project,
+                root_path: PathBuf::from("/project"),
+                root_identity: root,
+                generation: 42,
+                job: EditorIoJob::Revert {
+                    document,
+                    path: PathBuf::from("document-2.txt"),
+                },
+            })
+            .unwrap();
+        queue.wait_for_completion_count(2);
+        assert!(queue.shutdown_and_join().is_ok());
+
+        let first_completion = queue.take_completion().unwrap();
+        let latest_completion = queue.take_completion().unwrap();
+        assert_eq!(first_completion.operation, first);
+        assert_eq!(latest_completion.operation, latest);
+        assert_eq!(latest_completion.project, project);
+        assert_eq!(latest_completion.root_path, PathBuf::from("/project"));
+        assert_eq!(latest_completion.root_identity, root);
+        assert_eq!(latest_completion.document, Some(document));
+        assert_eq!(latest_completion.generation, 42);
+        assert_eq!(latest_completion.kind, EditorIoKind::Revert);
+        assert!(matches!(
+            latest_completion.result,
+            Ok(EditorIoSuccess::Reverted(_))
+        ));
+        assert!(queue.take_completion().is_none());
+    }
+
+    #[test]
+    fn editor_io_queue_shutdown_cancels_pending_and_joins_active_worker() {
+        let started = Arc::new((Mutex::new(false), Condvar::new()));
+        let runner_started = Arc::clone(&started);
+        let mut queue = EditorIoQueue::with_runner(move |_, cancelled| {
+            let (lock, ready) = &*runner_started;
+            *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            ready.notify_all();
+            while !cancelled.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(EditorIoError::Cancelled)
+        });
+        let active = queue.submit(io_request(1, open_job(1))).unwrap();
+        let (lock, ready) = &*started;
+        let mut active_started = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*active_started {
+            active_started = ready
+                .wait(active_started)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        drop(active_started);
+        let queued = queue.submit(io_request(2, open_job(2))).unwrap();
+        assert!(queue.shutdown_and_join().is_ok());
+        assert_eq!(queue.completion_count(), 2);
+        assert_eq!(
+            queue.submit(io_request(3, open_job(3))),
+            Err(EditorIoSubmitError::Shutdown)
+        );
+
+        let mut operations = [
+            queue.take_completion().unwrap(),
+            queue.take_completion().unwrap(),
+        ];
+        operations.sort_by_key(|completion| completion.operation);
+        assert_eq!(operations[0].operation, active);
+        assert_eq!(operations[1].operation, queued);
+        assert!(
+            operations
+                .iter()
+                .all(|completion| matches!(completion.result, Err(EditorIoError::Cancelled)))
+        );
     }
 }
