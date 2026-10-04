@@ -8510,6 +8510,22 @@ impl WorkspaceView {
             }
             return;
         }
+        // An external-change decision owns the keyboard exactly like the
+        // dirty prompt above: while it is up, plain keys must resolve it
+        // instead of leaking into either surface. Without this arm the
+        // input owner stays `Confirmation` and every key is swallowed with
+        // no reachable resolution except prompt buttons.
+        if self.editor_external.as_ref().is_some_and(|decision| {
+            decision.dirty && !matches!(decision.state, ExternalState::Checking(_))
+        }) {
+            match key_name.as_str() {
+                "escape" => self.editor_resolve_external(ExternalChoice::Cancel, cx),
+                "r" => self.editor_resolve_external(ExternalChoice::Reload, cx),
+                "o" => self.editor_resolve_external(ExternalChoice::Overwrite, cx),
+                _ => {}
+            }
+            return;
+        }
         // The active overlay owns keyboard input before any global command,
         // picker, focused inspector field, or terminal forwarding.
         if self.ctrlp_open {
@@ -13720,11 +13736,10 @@ impl Render for WorkspaceView {
                 .relative_path(decision.document)
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<closed document>".into());
+            // In-flow like every other banner: an absolutely positioned
+            // prompt here would paint beneath the opaque editor surface
+            // added after it and be invisible while still owning input.
             let mut prompt = div()
-                .absolute()
-                .top_4()
-                .left_4()
-                .right_4()
                 .flex()
                 .flex_col()
                 .gap_1()
