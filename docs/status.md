@@ -2,6 +2,69 @@
 
 ## Current position
 
+### M18 correctness follow-up and release Wayland evidence — 2026-10-04
+
+Current source is **`73b3470+worktree`**, with changes in `main.rs`, `router.rs`
+and terminal `platform.rs`. The previous M18 prerequisite-complete claim was
+premature: implementation and evidence have advanced, but full Q1/M18 acceptance
+is still open. Earlier M19 source identities and test counts below are historical.
+
+Corrections implemented:
+
+- Query completion revalidates project scope and captured session/pane/root
+  ownership. Cancellation now reaches process jobs on IPC disconnect/deadline
+  and stale UI targets. Worker admission includes active, queued and unconsumed
+  results (four total); cooperative scans have a two-second submission deadline.
+- Intermediate process/socket/FD reads have explicit budgets; partial data is
+  marked truncated. Ownership is captured before response truncation, preserving
+  attribution when an ancestor falls outside the sorted output. Shell roots are
+  now included. CPU sampling uses the captured stat identity and resets on reuse.
+- PID 0/group values are refused. Kill binds a pidfd and revalidates ancestry
+  before sending SIGTERM, preventing redirection to a reused PID after binding.
+  No dependencies changed. Unsupported pidfd kernels fail with `runtime_failure`.
+- UI kill arms capture project/pane/session/PID and expire after eight seconds;
+  automatic refresh pauses during the arm window. Keyboard, other pointer
+  actions, focus loss and stale context disarm. Refresh rides the existing 250ms
+  poller rather than keeping the 20ms completion poller alive indefinitely.
+- Query states are project-bound; stale project errors cannot replace the current
+  view. Ports also distinguish loading/error from empty. The focused shell PID,
+  cached CWD/copy control, truthful truncation notice and scrolling are rendered.
+- Process-query palette receipts now retire MRU/origin bookkeeping on completion
+  or cancellation. This last UI bookkeeping correction followed the runtime run;
+  the evidence report's hashes identify the tested build, not the later rebuild.
+
+Verified commands (`RUSTUP_TOOLCHAIN=1.99.0`):
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo test --workspace` | PASS: 640 unit/integration tests, zero failures |
+| `cargo test --workspace --quiet` (after palette receipt correction) | PASS: 640 tests, zero failures |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS; existing transitive `proc-macro-error2` future-incompatibility notice |
+| `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+| `python3 scripts/check-docs.py` | PASS: 44 Markdown files, 304 local link targets, 318 blueprint references, 35 CLI mappings |
+| `git diff --check` | PASS |
+
+[Release runtime evidence](evidence/m18-runtime-current.md): two-project child/
+port attribution, null-first/finite-next CPU samples and positive RSS, foreign
+and project-scoped kill denial, 100 successful queries with FD **44→44** and
+threads **37→37**, ten executed terminal-output probes, actual Info-panel capture,
+and targeted compositor closure removing the owned socket/credential and all
+recorded test PIDs. RSS grew 1,256 KiB; this is not a leak-free claim.
+
+Limitations: native collapse/copy/manual-refresh/arm-confirm interactions remain
+unexecuted; busy CPU and owner-thread scan timings remain open. Kill ancestry
+reads are still bounded but synchronous; a PID-only row cannot identify reuse
+before request binding. Interactive Bash ignored SIGTERM until a TERM-exit trap
+was installed: successful signal delivery is not process-exit acknowledgement.
+The validator accidentally launched `omaterm-desktop --help` with inherited paths
+during preflight; that process exited, but production-path noninterference was
+not established. The incident is explicitly recorded in the evidence report.
+
+**Next action:** move kill inspection off-thread, carry process identity from
+displayed row to kill, and validate native arm/cancel/collapse/copy/refresh before
+claiming M18 complete. M15/M16/M17 and M19 native closure gates remain open.
+
 ### M19 delivered-worktree reconciliation — 2026-10-04
 
 **Delivered source: `f287991+worktree` (dirty), source parent
@@ -107,7 +170,7 @@ M4 evidence below.
 | 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk parity, cancellable latest-only worker, shared mutation invalidation, cached virtual rows, independent Split X/Inline X, source anchors; release Wayland direct Git click, long-row/character reach, exact copy, one-hunk stage, IPC refresh and terminal open | Rails/paging/drag, rendered-range instrumentation and full metadata/stale/scope/refresh-anchor matrix remain; see current M15 evidence | Finish D2/D3 in the [remaining-work plan](m15-m16-remaining-work-plan.md) before M16 completion |
 | 16 — Command Palette | in_progress | Dual-mode overlay, fuzzy ranked command/workspace/file/Git candidates, one latest-only source worker, bounded root index, core ranking, root-aware File MRU and origin restoration; release Wayland command/file/project/split/focus/process refresh proof and CLI spot-checks recorded below | M15 not closed; rapid-search worker/resource measurements and full stale/focus/error/argument matrix pending (M18 query is now off-thread, see M18 row) | Finish M15, then close M16 implementation/acceptance gaps |
 | 17 — v0.2 Closure | open | No closeout run yet; depends on M12–M16 completion | M15/M16 in progress; v0.2 acceptance rows pending | Only after M12–M16 pass; M19 re-sequencing does not close this gate |
-| 18 — Process Panel | in_progress (query + kill + panel UI) | Q01–Q03 landed 2026-10-04: bounded async `ProcessQueryWorker` (1 thread, queue cap 4, mailbox 4, joined shutdown), owner captures root PIDs/authorizes only, worker runs one `/proc` snapshot + persistent `CpuSampler` (CPU% delta + RSS), ports attributed per PID, ≤512 cap with truncation; scoped `kill` (`cross_project_denied`/`process_not_found`/`permission_denied`); Info panel shows CPU%/RSS, collapsible PROCESSES/PORTS with badges, distinct idle/loading/error/empty states, per-row two-step `×` kill arm + banner, 2s debounced auto-refresh; CPU/RSS columns in CLI/JSON; IPC `process.kill`; workspace serial suite + Clippy + fmt + release build green — see M18 record below | Release Wayland child/port attribution, kill flow and 100-query/owner-responsiveness resource proof remain | Run Wayland acceptance then close M18 |
+| 18 — Process Panel | in_progress (query + kill + panel UI) | Bounded async inspection, cancellation/deadline and completion ownership guards; CPU/RSS, shell roots, ports, pidfd-scoped SIGTERM; project-bound UI states and contextual 8s arm; 250ms timer drives 2s refresh. 640 workspace tests and full gates PASS; release Wayland child/port/scope/100-query/terminal-response/screenshot/normal-close evidence in [report](evidence/m18-runtime-current.md) | Native arm/cancel/copy/collapse/refresh, busy CPU/timing and pre-bind process identity still open; kill ancestry is synchronous; preflight isolation incident recorded | Complete remaining native and identity/async-kill gates before M18 acceptance |
 | 19 — Basic Built-in Editor | in_progress | Rooted context I/O + SHA-256 revisions, `EditorIoQueue` worker (1 active + 16 queued), bounded 32-slot store, metadata-only registry snapshots/restore, `EntityInputHandler`; 606-test suite, Clippy, release pass with `RUSTUP_TOOLCHAIN=1.99.0` — see M19 records below and the [S9 report](evidence/m19-s9-report.md) | S9/E01–E10 open: native input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit/restart, IME preedit; [milestone spec](19-milestone-19-editor.md) | Complete S9 native exit criteria; do not claim M19 complete |
 | Privacy: local-only defaults (§46) | partial | Redaction audit green; local state under `$XDG_*`; no telemetry/cloud code | No dedicated no-egress network test or user-facing privacy statement; acceptance row partial in [matrix](acceptance-matrix.md) | Add no-egress test or record explicit limit |
 

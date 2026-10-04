@@ -16,8 +16,59 @@
 //! adapter module — no `cfg` branches leak into workspace logic.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
+
+const MAX_SCANNED_PROCESSES: usize = 16_384;
+const MAX_FDS: usize = 65_536;
+const MAX_PORTS: usize = 4096;
+const MAX_PROC_BYTES: usize = 4096;
+const MAX_TCP_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ROOTS: usize = 512;
+
+/// Cooperative cancellation and a deadline shared by all stages of one scan.
+#[derive(Debug, Clone)]
+pub struct ProcessScanControl {
+    cancelled: Arc<AtomicBool>,
+    deadline: Instant,
+}
+
+impl ProcessScanControl {
+    pub fn new(timeout: std::time::Duration) -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            deadline: Instant::now() + timeout,
+        }
+    }
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+    pub fn stopped(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed) || self.expired()
+    }
+    pub fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+}
+
+fn bounded_text(path: impl AsRef<std::path::Path>, cap: usize) -> Option<String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take((cap + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > cap {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
 
 /// One inspected process.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,14 +94,19 @@ pub struct ListeningPort {
 /// Bounded one-shot view of a set of process trees.
 ///
 /// Produced by [`ProcessInspector::snapshot`]: `/proc` is scanned at most once
-/// for the whole request, ports are read once, and growth halts at `cap`.
+/// for the whole request. Table, socket, FD and byte budgets bound intermediate
+/// storage; `cap` bounds retained rows, with ownership resolved before that cap.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProcessSnapshot {
     pub processes: Vec<ProcessInfo>,
     pub ports: Vec<ListeningPort>,
-    /// Set when the owned set exceeded the requested cap and enumeration
-    /// stopped early. Also set if ports were dropped for a truncated set.
+    /// Set for any omitted data: row/scan/socket/FD/byte budget, inaccessible
+    /// proc data, identity changes, cancellation or deadline.
     pub truncated: bool,
+    /// Attribution computed from the complete bounded table BEFORE row truncation.
+    pub roots: HashMap<u32, u32>,
+    /// CPU identity/time captured in the same stat read as the row.
+    pub times: HashMap<u32, (u64, u64, u64)>,
 }
 
 /// Failure modes for [`ProcessInspector::terminate`].
@@ -59,6 +115,7 @@ pub struct ProcessSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminateError {
     NotFound,
+    NotOwned,
     PermissionDenied,
     Other(std::io::ErrorKind),
 }
@@ -108,12 +165,125 @@ pub trait NotificationProvider {
 pub struct LinuxProcessInspector;
 
 impl LinuxProcessInspector {
+    pub fn snapshot_controlled(
+        &self,
+        roots: &[u32],
+        cap: usize,
+        control: &ProcessScanControl,
+    ) -> ProcessSnapshot {
+        let roots_truncated = roots.len() > MAX_ROOTS;
+        let roots = &roots[..roots.len().min(MAX_ROOTS)];
+        let cap = cap.min(MAX_SCANNED_PROCESSES);
+        let mut processes = Vec::new();
+        let mut times = HashMap::new();
+        let mut truncated = roots_truncated;
+        if roots.is_empty() {
+            return ProcessSnapshot::default();
+        }
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for (scanned, entry) in entries.enumerate() {
+                if scanned == MAX_SCANNED_PROCESSES || control.stopped() {
+                    truncated = true;
+                    break;
+                }
+                let Ok(entry) = entry else {
+                    truncated = true;
+                    continue;
+                };
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    continue;
+                };
+                let Some(text) = bounded_text(format!("/proc/{pid}/stat"), MAX_PROC_BYTES) else {
+                    truncated = true;
+                    continue;
+                };
+                if let (Some(mut info), Some(time)) =
+                    (parse_stat(&text, pid), parse_stat_times(&text))
+                {
+                    info.memory_bytes = read_statm(pid);
+                    times.insert(pid, time);
+                    processes.push(info);
+                } else {
+                    truncated = true;
+                }
+            }
+        } else {
+            truncated = true;
+        }
+        // A parent cannot have started after its child. A reused parent PID
+        // seen later in this non-atomic scan must not adopt the old family.
+        for process in &mut processes {
+            if let (Some(parent), Some(child)) = (times.get(&process.ppid), times.get(&process.pid))
+                && parent.0 > child.0
+            {
+                process.ppid = 0;
+                truncated = true;
+            }
+        }
+        let root_times: HashMap<_, _> = roots
+            .iter()
+            .filter_map(|pid| times.get(pid).map(|t| (*pid, t.0)))
+            .collect();
+        let mut snapshot = snapshot_from(roots, cap, &processes);
+        snapshot.truncated |= truncated;
+        times.retain(|pid, _| snapshot.roots.contains_key(pid));
+        snapshot.times = times;
+        let pids = snapshot.processes.iter().map(|p| p.pid).collect();
+        let (ports, partial) = bounded_ports(&pids, control);
+        snapshot.ports = ports;
+        snapshot.truncated |= partial || control.stopped();
+        // FD/statm reads use numeric proc paths. Reject rows (and whole root
+        // families) whose identity changed while those reads were in progress.
+        let invalid_roots: HashSet<_> = root_times
+            .iter()
+            .filter_map(|(pid, start)| {
+                (control.stopped() || read_stat_times(*pid).map(|t| t.0) != Some(*start))
+                    .then_some(*pid)
+            })
+            .collect();
+        snapshot.processes.retain(|process| {
+            if control.stopped() {
+                return false;
+            }
+            let valid = snapshot.times.get(&process.pid).map(|t| t.0)
+                == read_stat_times(process.pid).map(|t| t.0)
+                && !invalid_roots.contains(&snapshot.roots[&process.pid]);
+            if !valid {
+                snapshot.truncated = true;
+            }
+            valid
+        });
+        let retained: HashSet<_> = snapshot.processes.iter().map(|p| p.pid).collect();
+        snapshot.roots.retain(|pid, _| retained.contains(pid));
+        snapshot.times.retain(|pid, _| retained.contains(pid));
+        snapshot.ports.retain(|port| retained.contains(&port.pid));
+        snapshot.truncated |= control.stopped();
+        snapshot
+    }
+
+    /// Bind the target with a pidfd before authorization; never fall back to
+    /// numeric kill. Re-read the ancestry immediately before pidfd signalling.
+    pub fn terminate_owned(&mut self, pid: u32, roots: &[u32]) -> Result<(), TerminateError> {
+        let fd = open_pidfd(pid)?;
+        let chain = ancestry(pid, roots)?;
+        for (id, parent, start) in chain.into_iter().rev() {
+            let text = bounded_text(format!("/proc/{id}/stat"), MAX_PROC_BYTES)
+                .ok_or(TerminateError::NotFound)?;
+            if parse_stat(&text, id).map(|p| p.ppid) != Some(parent)
+                || parse_stat_times(&text).map(|t| t.0) != Some(start)
+            {
+                return Err(TerminateError::NotFound);
+            }
+        }
+        signal_pidfd(&fd)
+    }
+
     fn all_processes() -> Vec<ProcessInfo> {
         let mut processes = Vec::new();
         let Ok(entries) = std::fs::read_dir("/proc") else {
             return processes;
         };
-        for entry in entries.flatten() {
+        for entry in entries.take(MAX_SCANNED_PROCESSES).flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let Ok(pid) = name.parse::<u32>() else {
                 continue;
@@ -141,16 +311,15 @@ impl ProcessInspector for LinuxProcessInspector {
     }
 
     fn listening_ports(&self, pid: u32) -> Vec<ListeningPort> {
-        let mut pids = HashSet::from([pid]);
-        for child in self.descendants(pid) {
-            pids.insert(child.pid);
-        }
-        ports_for_pids(&pids)
+        self.snapshot(&[pid], MAX_SCANNED_PROCESSES).ports
     }
 
     fn snapshot(&self, roots: &[u32], cap: usize) -> ProcessSnapshot {
-        let processes = Self::all_processes();
-        snapshot_from(roots, cap, &processes, listen_inodes)
+        self.snapshot_controlled(
+            roots,
+            cap,
+            &ProcessScanControl::new(std::time::Duration::from_secs(2)),
+        )
     }
 
     fn terminate(&mut self, pid: u32) -> Result<(), TerminateError> {
@@ -181,102 +350,62 @@ fn collect_descendants(pid: u32, processes: &[ProcessInfo]) -> Vec<ProcessInfo> 
 }
 
 /// Build a bounded snapshot from a process table already read once.
-fn snapshot_from(
-    roots: &[u32],
-    cap: usize,
-    processes: &[ProcessInfo],
-    listen: impl FnOnce() -> HashMap<u64, u16>,
-) -> ProcessSnapshot {
-    if processes.is_empty() {
+fn snapshot_from(roots: &[u32], cap: usize, processes: &[ProcessInfo]) -> ProcessSnapshot {
+    if processes.is_empty() || roots.is_empty() {
         return ProcessSnapshot::default();
     }
     let mut truncated = false;
 
-    let mut owned: HashSet<u32> = HashSet::new();
-    for &root in roots {
-        if !owned.insert(root) {
-            continue;
-        }
-        for child in collect_descendants(root, processes) {
-            if !owned.insert(child.pid) {
-                continue;
-            }
-            // Cap is enforced before unbounded growth: stop scanning the
-            // moment the owned set reaches the limit.
-            if owned.len() >= cap {
-                truncated = true;
-                break;
-            }
-        }
-        if truncated {
-            break;
-        }
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for process in processes {
+        children.entry(process.ppid).or_default().push(process.pid);
     }
-    if cap == 0 {
-        truncated = !roots.is_empty();
+    let present: HashSet<_> = processes.iter().map(|p| p.pid).collect();
+    let mut owner: HashMap<u32, u32> = roots
+        .iter()
+        .filter(|root| present.contains(root))
+        .map(|root| (*root, *root))
+        .collect();
+    truncated |= roots.iter().any(|root| !present.contains(root));
+    let mut queue: std::collections::VecDeque<u32> = owner.keys().copied().collect();
+    while let Some(parent) = queue.pop_front() {
+        if let Some(kids) = children.remove(&parent) {
+            for kid in kids {
+                let root = owner[&parent];
+                if let std::collections::hash_map::Entry::Vacant(entry) = owner.entry(kid) {
+                    entry.insert(root);
+                    queue.push_back(kid);
+                }
+            }
+        }
     }
 
-    let mut result: Vec<ProcessInfo> = processes
+    let mut selected: Vec<&ProcessInfo> = processes
         .iter()
-        .filter(|process| owned.contains(&process.pid))
-        .cloned()
+        .filter(|process| owner.contains_key(&process.pid))
         .collect();
-    if result.len() > cap {
-        result.truncate(cap);
+    selected.sort_by_key(|process| process.pid);
+    selected.dedup_by_key(|process| process.pid);
+    if selected.len() > cap {
+        selected.truncate(cap);
         truncated = true;
     }
-    result.sort_by_key(|process| process.pid);
-
-    let ports = ports_for_pids_with(&owned, listen);
+    let result: Vec<_> = selected.into_iter().cloned().collect();
+    owner.retain(|pid, _| result.iter().any(|p| p.pid == *pid));
     ProcessSnapshot {
         processes: result,
-        ports,
+        ports: Vec::new(),
         truncated,
+        roots: owner,
+        times: HashMap::new(),
     }
-}
-
-/// Listening ports for an explicit pid set, reading the TCP tables once.
-fn ports_for_pids(pids: &HashSet<u32>) -> Vec<ListeningPort> {
-    ports_for_pids_with(pids, listen_inodes)
-}
-
-fn ports_for_pids_with(
-    pids: &HashSet<u32>,
-    listen: impl FnOnce() -> HashMap<u64, u16>,
-) -> Vec<ListeningPort> {
-    let listening = listen();
-    let mut ports = Vec::new();
-    for &pid in pids {
-        let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(link) = std::fs::read_link(entry.path()) else {
-                continue;
-            };
-            let text = link.to_string_lossy();
-            let Some(inode) = text
-                .strip_prefix("socket:[")
-                .and_then(|rest| rest.strip_suffix(']'))
-                .and_then(|digits| digits.parse::<u64>().ok())
-            else {
-                continue;
-            };
-            if let Some(port) = listening.get(&inode) {
-                ports.push(ListeningPort { port: *port, pid });
-            }
-        }
-    }
-    ports.sort_by_key(|port| (port.pid, port.port));
-    ports.dedup();
-    ports
 }
 
 /// Parse `(comm)`, ppid, and memory from `/proc/<pid>/stat` + `statm`. The
 /// comm field may contain spaces and parentheses, so the split anchors on the
 /// last `)`. CPU is left `None`: one read has no delta.
 fn read_stat(pid: u32) -> Option<ProcessInfo> {
-    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let text = bounded_text(format!("/proc/{pid}/stat"), MAX_PROC_BYTES)?;
     let mut info = parse_stat(&text, pid)?;
     info.memory_bytes = read_statm(pid);
     Some(info)
@@ -301,7 +430,7 @@ fn parse_stat(text: &str, pid: u32) -> Option<ProcessInfo> {
 /// Resident set size in bytes from `/proc/<pid>/statm` (field 2 = resident
 /// pages). Returns `None` if the file is unreadable or page size is unknown.
 fn read_statm(pid: u32) -> Option<u64> {
-    let text = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+    let text = bounded_text(format!("/proc/{pid}/statm"), MAX_PROC_BYTES)?;
     let resident = parse_statm_resident(&text)?;
     let page_size = page_size()?;
     resident.checked_mul(page_size)
@@ -370,18 +499,32 @@ impl CpuSampler {
     /// Fill in `cpu_percent` for each info by diffing against the previous
     /// sample, then retain only the pids seen in `infos` (drops stale pids).
     pub fn sample(&mut self, infos: &mut [ProcessInfo]) {
+        let times = infos
+            .iter()
+            .filter_map(|info| read_stat_times(info.pid).map(|time| (info.pid, time)))
+            .collect();
+        self.sample_times(infos, &times);
+    }
+
+    pub fn sample_snapshot(&mut self, snapshot: &mut ProcessSnapshot) {
+        self.sample_times(&mut snapshot.processes, &snapshot.times);
+    }
+
+    fn sample_times(&mut self, infos: &mut [ProcessInfo], times: &HashMap<u32, (u64, u64, u64)>) {
         let now = Instant::now();
         let hertz = clock_ticks_per_second();
         let mut seen: HashSet<u32> = HashSet::with_capacity(infos.len());
         for info in infos.iter_mut() {
-            seen.insert(info.pid);
-            let Some((start_time, utime, stime)) = read_stat_times(info.pid) else {
+            let Some(&(start_time, utime, stime)) = times.get(&info.pid) else {
                 info.cpu_percent = None;
                 continue;
             };
+            seen.insert(info.pid);
             let jiffies = utime.saturating_add(stime);
             info.cpu_percent = match self.previous.get(&info.pid) {
-                Some(&(prev_start, prev_jiffies, prev_at)) if prev_start == start_time => {
+                Some(&(prev_start, prev_jiffies, prev_at))
+                    if prev_start == start_time && jiffies >= prev_jiffies =>
+                {
                     let elapsed = now.duration_since(prev_at).as_secs_f64();
                     let delta = jiffies.saturating_sub(prev_jiffies) as f64;
                     if elapsed > 0.0 {
@@ -400,55 +543,160 @@ impl CpuSampler {
 }
 
 fn read_stat_times(pid: u32) -> Option<(u64, u64, u64)> {
-    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let text = bounded_text(format!("/proc/{pid}/stat"), MAX_PROC_BYTES)?;
     parse_stat_times(&text)
 }
 
-/// Best-effort `SIGTERM` via `libc::kill`, the direct, allocation-free call
-/// already available through the crate's `libc` dependency (no shelling out to
-/// `kill(1)`, whose stderr would have to be parsed for `EPERM`/`ESRCH`).
+/// SIGTERM via a pidfd, so PID reuse cannot redirect the signal. Unsupported
+/// kernels fail closed rather than falling back to numeric/group signalling.
 ///
 /// Mapping is by `errno`: `ESRCH` → [`TerminateError::NotFound`], `EPERM` →
 /// [`TerminateError::PermissionDenied`], anything else → [`TerminateError::Other`].
 fn linux_terminate(pid: u32) -> Result<(), TerminateError> {
-    if pid == 0 {
+    signal_pidfd(&open_pidfd(pid)?)
+}
+
+fn syscall_error() -> TerminateError {
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(code) if code == libc::ESRCH => TerminateError::NotFound,
+        Some(code) if code == libc::EPERM => TerminateError::PermissionDenied,
+        _ => TerminateError::Other(std::io::Error::last_os_error().kind()),
+    }
+}
+
+fn open_pidfd(pid: u32) -> Result<OwnedFd, TerminateError> {
+    if pid == 0 || pid > i32::MAX as u32 {
         return Err(TerminateError::NotFound);
     }
-    // SAFETY: `kill` is async-signal-safe and only inspects its arguments; we
-    // pass a valid signal number and a pid the caller provided.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    // SAFETY: positive representable PID, flags=0; success owns a new fd.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if fd < 0 {
+        return Err(syscall_error());
+    }
+    // SAFETY: successful pidfd_open returns a new owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+}
+
+fn signal_pidfd(fd: &OwnedFd) -> Result<(), TerminateError> {
+    // SAFETY: fd stays live, SIGTERM is valid, null siginfo and flags=0.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            libc::SIGTERM,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
     if rc == 0 {
-        return Ok(());
+        Ok(())
+    } else {
+        Err(syscall_error())
     }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(code) if code == libc::ESRCH => Err(TerminateError::NotFound),
-        Some(code) if code == libc::EPERM => Err(TerminateError::PermissionDenied),
-        _ => Err(TerminateError::Other(
-            std::io::Error::last_os_error().kind(),
-        )),
+}
+
+fn ancestry(pid: u32, roots: &[u32]) -> Result<Vec<(u32, u32, u64)>, TerminateError> {
+    let mut chain = Vec::new();
+    let mut current = pid;
+    let mut child_start = u64::MAX;
+    for _ in 0..512 {
+        let text = bounded_text(format!("/proc/{current}/stat"), MAX_PROC_BYTES)
+            .ok_or(TerminateError::NotFound)?;
+        let info = parse_stat(&text, current).ok_or(TerminateError::NotFound)?;
+        let start = parse_stat_times(&text).ok_or(TerminateError::NotFound)?.0;
+        if start > child_start || chain.iter().any(|(id, _, _)| *id == current) {
+            break;
+        }
+        chain.push((current, info.ppid, start));
+        if roots.contains(&current) {
+            return Ok(chain);
+        }
+        if info.ppid == 0 {
+            break;
+        }
+        child_start = start;
+        current = info.ppid;
     }
+    Err(TerminateError::NotOwned)
 }
 
 /// Linux snapshot used by the trait default.
 fn linux_snapshot(roots: &[u32], cap: usize) -> ProcessSnapshot {
-    let processes = LinuxProcessInspector::all_processes();
-    snapshot_from(roots, cap, &processes, listen_inodes)
+    LinuxProcessInspector.snapshot(roots, cap)
 }
 
-/// Inode → port for TCP sockets in LISTEN state (0A), v4 and v6 tables.
-fn listen_inodes() -> HashMap<u64, u16> {
-    let mut inodes = HashMap::new();
+fn bounded_ports(pids: &HashSet<u32>, control: &ProcessScanControl) -> (Vec<ListeningPort>, bool) {
+    if pids.is_empty() {
+        return (Vec::new(), control.stopped());
+    }
+    let mut listening = HashMap::new();
+    let mut truncated = false;
+    let mut scanned_sockets = 0;
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        let Ok(text) = std::fs::read_to_string(table) else {
+        if control.stopped() {
+            return (Vec::new(), true);
+        }
+        let Some(text) = bounded_text(table, MAX_TCP_BYTES) else {
+            truncated = true;
             continue;
         };
         for line in text.lines().skip(1) {
+            if scanned_sockets == MAX_FDS || control.stopped() {
+                truncated = true;
+                break;
+            }
+            scanned_sockets += 1;
             if let Some((inode, port)) = parse_listen_line(line) {
-                inodes.insert(inode, port);
+                listening.insert(inode, port);
             }
         }
     }
-    inodes
+    let mut ports = HashSet::new();
+    let mut scanned = 0;
+    'pids: for pid in pids {
+        if control.stopped() {
+            truncated = true;
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            truncated = true;
+            continue;
+        };
+        for entry in entries {
+            if scanned == MAX_FDS || control.stopped() {
+                truncated = true;
+                break 'pids;
+            }
+            scanned += 1;
+            let Ok(entry) = entry else {
+                truncated = true;
+                continue;
+            };
+            let Ok(link) = std::fs::read_link(entry.path()) else {
+                truncated = true;
+                continue;
+            };
+            let text = link.to_string_lossy();
+            if let Some(port) = text
+                .strip_prefix("socket:[")
+                .and_then(|s| s.strip_suffix(']'))
+                .and_then(|s| s.parse::<u64>().ok())
+                .and_then(|inode| listening.get(&inode))
+            {
+                if ports.len() == MAX_PORTS && !ports.contains(&(*pid, *port)) {
+                    truncated = true;
+                    break 'pids;
+                }
+                ports.insert((*pid, *port));
+            }
+        }
+    }
+    let mut ports: Vec<_> = ports
+        .into_iter()
+        .map(|(pid, port)| ListeningPort { pid, port })
+        .collect();
+    ports.sort_by_key(|p| (p.pid, p.port));
+    (ports, truncated)
 }
 
 fn parse_listen_line(line: &str) -> Option<(u64, u16)> {
@@ -471,6 +719,172 @@ fn parse_listen_line(line: &str) -> Option<(u64, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn process(pid: u32, ppid: u32) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            ppid,
+            name: format!("p{pid}"),
+            cpu_percent: None,
+            memory_bytes: None,
+        }
+    }
+
+    #[test]
+    fn snapshot_keeps_attribution_when_sorted_cap_drops_ancestors() {
+        let table = vec![
+            process(100, 1),
+            process(200, 100),
+            process(10, 200),
+            process(11, 10),
+        ];
+        let snapshot = snapshot_from(&[100], 2, &table);
+        assert_eq!(
+            snapshot.processes.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            [10, 11]
+        );
+        assert_eq!(snapshot.roots, HashMap::from([(10, 100), (11, 100)]));
+        assert!(snapshot.truncated);
+        let exact = snapshot_from(&[100], 4, &table);
+        assert!(!exact.truncated, "exactly at cap is complete");
+        let zero = snapshot_from(&[100], 0, &table);
+        assert!(zero.processes.is_empty() && zero.roots.is_empty() && zero.truncated);
+    }
+
+    #[test]
+    fn overlapping_roots_and_cycles_have_stable_nearest_root_ownership() {
+        let table = vec![process(100, 200), process(200, 100), process(10, 200)];
+        for roots in [[100, 200], [200, 100]] {
+            let snapshot = snapshot_from(&roots, 3, &table);
+            assert_eq!(
+                snapshot.roots,
+                HashMap::from([(100, 100), (200, 200), (10, 200)])
+            );
+            assert!(!snapshot.truncated);
+        }
+    }
+
+    #[test]
+    fn absent_root_cannot_adopt_rows_from_a_truncated_table() {
+        let snapshot = snapshot_from(&[100], 512, &[process(10, 100), process(11, 10)]);
+        assert!(snapshot.processes.is_empty() && snapshot.roots.is_empty() && snapshot.truncated);
+    }
+
+    #[test]
+    fn sampler_reuse_failed_read_and_counter_regression_reset_baseline() {
+        let mut sampler = CpuSampler::new();
+        let mut infos = [process(42, 1)];
+        sampler.sample_times(&mut infos, &HashMap::from([(42, (100, 50, 0))]));
+        sampler.sample_times(&mut infos, &HashMap::from([(42, (101, 80, 0))]));
+        assert_eq!(infos[0].cpu_percent, None, "reused PID has no delta");
+        sampler.sample_times(&mut infos, &HashMap::from([(42, (101, 1, 0))]));
+        assert_eq!(
+            infos[0].cpu_percent, None,
+            "regressing counters are not zero CPU"
+        );
+        sampler.sample_times(&mut infos, &HashMap::new());
+        assert!(!sampler.previous.contains_key(&42));
+        sampler.sample_times(&mut infos, &HashMap::from([(42, (101, 2, 0))]));
+        assert_eq!(infos[0].cpu_percent, None, "failed sample retires baseline");
+    }
+
+    #[test]
+    fn sampler_delta_math_uses_clock_ticks_and_elapsed_time() {
+        let mut sampler = CpuSampler::new();
+        sampler.previous.insert(
+            42,
+            (100, 50, Instant::now() - std::time::Duration::from_secs(1)),
+        );
+        let mut infos = [process(42, 1)];
+        let ticks = clock_ticks_per_second() as u64;
+        sampler.sample_times(&mut infos, &HashMap::from([(42, (100, 50 + ticks, 0))]));
+        let cpu = infos[0].cpu_percent.unwrap();
+        assert!(
+            (90.0..=100.1).contains(&cpu),
+            "one CPU-second / one wall-second: {cpu}"
+        );
+    }
+
+    #[test]
+    fn cancelled_and_expired_scans_stop_before_proc_work() {
+        let control = ProcessScanControl::new(std::time::Duration::from_secs(2));
+        control.cancel();
+        let snapshot =
+            LinuxProcessInspector.snapshot_controlled(&[std::process::id()], 512, &control);
+        assert!(snapshot.truncated && snapshot.processes.is_empty() && snapshot.ports.is_empty());
+        let expired = ProcessScanControl::new(std::time::Duration::ZERO);
+        assert!(
+            LinuxProcessInspector
+                .snapshot_controlled(&[std::process::id()], 512, &expired)
+                .truncated
+        );
+    }
+
+    #[test]
+    fn listening_socket_is_attributed_once_even_with_duplicate_fds() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _duplicate = listener.try_clone().unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let me = std::process::id();
+        let snapshot = LinuxProcessInspector.snapshot(&[me], 512);
+        assert_eq!(
+            snapshot
+                .ports
+                .iter()
+                .filter(|p| p.pid == me && p.port == port)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn termination_rejects_group_ids_and_bound_dead_pidfd_cannot_hit_new_child() {
+        for pid in [0, i32::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(linux_terminate(pid), Err(TerminateError::NotFound));
+        }
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let fd = open_pidfd(child.id()).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let mut replacement = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert_eq!(signal_pidfd(&fd), Err(TerminateError::NotFound));
+        assert!(replacement.try_wait().unwrap().is_none());
+        replacement.kill().unwrap();
+        replacement.wait().unwrap();
+    }
+
+    #[test]
+    fn terminate_owned_denies_foreign_child_then_signals_verified_family() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut inspector = LinuxProcessInspector;
+        assert_eq!(
+            inspector.terminate_owned(child.id(), &[i32::MAX as u32]),
+            Err(TerminateError::NotOwned)
+        );
+        assert!(child.try_wait().unwrap().is_none());
+        inspector
+            .terminate_owned(child.id(), &[std::process::id()])
+            .unwrap();
+        assert!(!child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn bounded_reads_distinguish_exact_cap_from_overflow() {
+        let path = std::env::temp_dir().join(format!("omaterm-proc-bound-{}", std::process::id()));
+        std::fs::write(&path, "1234").unwrap();
+        assert_eq!(bounded_text(&path, 4).as_deref(), Some("1234"));
+        assert_eq!(bounded_text(&path, 3), None);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn stat_parses_tricky_comm() {
@@ -601,7 +1015,7 @@ mod tests {
         assert!(pids.contains(&child_b.id()));
         // Sorted ascending.
         assert!(full.processes.windows(2).all(|w| w[0].pid <= w[1].pid));
-        assert!(!full.truncated);
+        // A live table may be partial due to permissions or process/FD exit races.
         // No duplicate pids (dedup).
         assert_eq!(
             full.processes.len(),

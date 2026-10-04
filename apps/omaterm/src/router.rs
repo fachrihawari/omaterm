@@ -21,12 +21,11 @@ use omaterm_core::{
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
-use omaterm_terminal::platform::{CpuSampler, ProcessSnapshot, TerminateError};
+use omaterm_terminal::platform::{CpuSampler, ProcessScanControl, ProcessSnapshot, TerminateError};
 use omaterm_terminal::workspace::ClosedSessions;
 use omaterm_terminal::{
-    ClosedPane, CoordinatorError, LinuxProcessInspector, ProcessInspector, ProjectSessionCommit,
-    SessionSpawnQueue, SpawnCompletion, SplitSessionCommit, TerminalConfig, TerminalSession,
-    WorkspaceCoordinator,
+    ClosedPane, CoordinatorError, LinuxProcessInspector, ProjectSessionCommit, SessionSpawnQueue,
+    SpawnCompletion, SplitSessionCommit, TerminalConfig, TerminalSession, WorkspaceCoordinator,
 };
 
 const MAX_PENDING_LAUNCHES: usize = 8;
@@ -157,6 +156,13 @@ pub struct ProcessQueryCompletion {
     pub operation: u64,
     pub project: ProjectId,
     pub info: ProcessListInfo,
+    pub stopped: bool,
+    pub timed_out: bool,
+}
+
+struct PendingProcessQuery {
+    context: CommandContext,
+    request: ProcessQueryRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,16 +170,17 @@ pub enum ProcessQuerySubmitError {
     QueueFull,
     Shutdown,
     OperationIdExhausted,
+    InvalidRequest,
 }
 
 const PROCESS_QUERY_QUEUE_CAPACITY: usize = 4;
 const PROCESS_QUERY_RESULT_CAPACITY: usize = 4;
-const PROCESS_QUERY_OUTSTANDING_CAPACITY: usize =
-    PROCESS_QUERY_QUEUE_CAPACITY + PROCESS_QUERY_RESULT_CAPACITY;
+const PROCESS_QUERY_OUTSTANDING_CAPACITY: usize = PROCESS_QUERY_RESULT_CAPACITY;
 
 struct QueuedProcessQuery {
     operation: u64,
     request: ProcessQueryRequest,
+    control: ProcessScanControl,
 }
 
 struct ProcessQueryState {
@@ -181,6 +188,7 @@ struct ProcessQueryState {
     completions: std::collections::VecDeque<ProcessQueryCompletion>,
     next_operation: Option<u64>,
     shutdown: bool,
+    active: Option<(u64, ProcessScanControl)>,
 }
 
 impl Default for ProcessQueryState {
@@ -190,6 +198,7 @@ impl Default for ProcessQueryState {
             completions: std::collections::VecDeque::new(),
             next_operation: Some(1),
             shutdown: false,
+            active: None,
         }
     }
 }
@@ -204,14 +213,24 @@ struct ProcessQueryWorker {
 
 impl ProcessQueryWorker {
     fn new() -> Self {
+        let mut inspector = LinuxProcessInspector;
+        let mut sampler = CpuSampler::new();
+        Self::with_runner(move |request, control| {
+            run_process_query(&mut inspector, &mut sampler, request, control)
+        })
+    }
+
+    fn with_runner(
+        mut run: impl FnMut(&ProcessQueryRequest, &ProcessScanControl) -> ProcessListInfo
+        + Send
+        + 'static,
+    ) -> Self {
         let state = Arc::new((
             std::sync::Mutex::new(ProcessQueryState::default()),
             std::sync::Condvar::new(),
         ));
         let worker_state = Arc::clone(&state);
         let thread = std::thread::spawn(move || {
-            let mut inspector = LinuxProcessInspector;
-            let mut sampler = CpuSampler::new();
             loop {
                 let queued = {
                     let (lock, ready) = &*worker_state;
@@ -222,15 +241,23 @@ impl ProcessQueryWorker {
                     if state.shutdown {
                         return;
                     }
-                    state.pending.pop_front().expect("pending process query")
+                    let queued = state.pending.pop_front().expect("pending process query");
+                    state.active = Some((queued.operation, queued.control.clone()));
+                    queued
                 };
-                let info = run_process_query(&mut inspector, &mut sampler, &queued.request);
+                let info = run(&queued.request, &queued.control);
                 let (lock, ready) = &*worker_state;
                 let mut state = lock.lock().unwrap_or_else(|p| p.into_inner());
+                state.active = None;
+                if state.shutdown {
+                    return;
+                }
                 state.completions.push_back(ProcessQueryCompletion {
                     operation: queued.operation,
                     project: queued.request.project,
                     info,
+                    stopped: queued.control.stopped(),
+                    timed_out: queued.control.expired(),
                 });
                 ready.notify_all();
             }
@@ -246,17 +273,22 @@ impl ProcessQueryWorker {
         !state.shutdown
             && state.next_operation.is_some()
             && state.pending.len() < PROCESS_QUERY_QUEUE_CAPACITY
-            && state.pending.len() + state.completions.len() < PROCESS_QUERY_OUTSTANDING_CAPACITY
+            && state.pending.len() + state.completions.len() + usize::from(state.active.is_some())
+                < PROCESS_QUERY_OUTSTANDING_CAPACITY
     }
 
     fn submit(&self, request: ProcessQueryRequest) -> Result<u64, ProcessQuerySubmitError> {
+        if request.roots.len() > MAX_PROCESS_ENTRIES || request.cap > MAX_PROCESS_ENTRIES {
+            return Err(ProcessQuerySubmitError::InvalidRequest);
+        }
         let (lock, ready) = &*self.state;
         let mut state = lock.lock().unwrap_or_else(|p| p.into_inner());
         if state.shutdown {
             return Err(ProcessQuerySubmitError::Shutdown);
         }
         if state.pending.len() >= PROCESS_QUERY_QUEUE_CAPACITY
-            || state.pending.len() + state.completions.len() >= PROCESS_QUERY_OUTSTANDING_CAPACITY
+            || state.pending.len() + state.completions.len() + usize::from(state.active.is_some())
+                >= PROCESS_QUERY_OUTSTANDING_CAPACITY
         {
             return Err(ProcessQuerySubmitError::QueueFull);
         }
@@ -264,9 +296,11 @@ impl ProcessQueryWorker {
             .next_operation
             .ok_or(ProcessQuerySubmitError::OperationIdExhausted)?;
         state.next_operation = operation.checked_add(1);
-        state
-            .pending
-            .push_back(QueuedProcessQuery { operation, request });
+        state.pending.push_back(QueuedProcessQuery {
+            operation,
+            request,
+            control: ProcessScanControl::new(std::time::Duration::from_secs(2)),
+        });
         ready.notify_one();
         Ok(operation)
     }
@@ -295,7 +329,11 @@ impl ProcessQueryWorker {
             return;
         }
         state.shutdown = true;
+        if let Some((_, control)) = &state.active {
+            control.cancel();
+        }
         state.pending.clear();
+        state.completions.clear();
         ready.notify_all();
     }
 
@@ -305,6 +343,25 @@ impl ProcessQueryWorker {
             thread.join()
         } else {
             Ok(())
+        }
+    }
+
+    fn cancel(&self, operation: u64) {
+        let mut state = self.state.0.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((id, control)) = &state.active
+            && *id == operation
+        {
+            control.cancel();
+        }
+        if let Some(query) = state.pending.iter().find(|q| q.operation == operation) {
+            query.control.cancel();
+        }
+        if let Some(completion) = state
+            .completions
+            .iter_mut()
+            .find(|c| c.operation == operation)
+        {
+            completion.stopped = true;
         }
     }
 }
@@ -322,58 +379,44 @@ fn run_process_query(
     inspector: &mut LinuxProcessInspector,
     sampler: &mut CpuSampler,
     request: &ProcessQueryRequest,
+    control: &ProcessScanControl,
 ) -> ProcessListInfo {
     let root_pids: Vec<u32> = request.roots.iter().map(|(_, _, pid)| *pid).collect();
+    let mut snapshot =
+        inspector.snapshot_controlled(&root_pids, request.cap.min(MAX_PROCESS_ENTRIES), control);
+    sampler.sample_snapshot(&mut snapshot);
     let ProcessSnapshot {
-        mut processes,
+        processes,
         ports,
         truncated: snapshot_truncated,
-    } = inspector.snapshot(&root_pids, request.cap);
-    sampler.sample(&mut processes);
+        roots: owner_roots,
+        ..
+    } = snapshot;
 
-    // In-memory tree attribution from the snapshot's own ppid fields: no
-    // additional `/proc` scan. Each process is owned by the first root that
-    // reaches it; roots map to themselves.
-    let children: HashMap<u32, Vec<u32>> = {
-        let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
-        for process in &processes {
-            map.entry(process.ppid).or_default().push(process.pid);
-        }
-        map
-    };
-    let mut owner_of: HashMap<u32, usize> = HashMap::new();
-    for (index, (_, _, root_pid)) in request.roots.iter().enumerate() {
-        let mut stack = vec![*root_pid];
-        owner_of.entry(*root_pid).or_insert(index);
-        while let Some(parent) = stack.pop() {
-            if let Some(kids) = children.get(&parent) {
-                for kid in kids {
-                    if owner_of.insert(*kid, index).is_none() {
-                        stack.push(*kid);
-                    }
-                }
-            }
-        }
-    }
+    // Ownership was resolved before the platform's row cap. Missing ancestors
+    // in the returned rows must never erase or change that attribution.
+    let owner_of: HashMap<_, _> = request
+        .roots
+        .iter()
+        .enumerate()
+        .map(|(index, (_, _, pid))| (*pid, index))
+        .collect();
 
     let mut entries = Vec::new();
     let mut seen_pids = HashSet::new();
     let mut truncated = snapshot_truncated;
-    // The shell root itself is not listed (matching the pre-M18 behavior that
-    // listed descendants only); descendants are attributed to their root.
-    let root_set: HashSet<u32> = root_pids.iter().copied().collect();
     for process in processes {
         if !seen_pids.insert(process.pid) {
-            continue;
-        }
-        if root_set.contains(&process.pid) {
             continue;
         }
         if entries.len() == request.cap {
             truncated = true;
             break;
         }
-        let Some(&index) = owner_of.get(&process.pid) else {
+        let Some(&index) = owner_roots
+            .get(&process.pid)
+            .and_then(|root| owner_of.get(root))
+        else {
             continue;
         };
         let (session, pane, _) = request.roots[index];
@@ -450,7 +493,7 @@ pub struct CommandRouter {
     /// Bounded off-thread process query worker. Owns the `LinuxProcessInspector`
     /// and a persistent `CpuSampler`; the owner never scans `/proc` for `List`.
     process_query: Option<ProcessQueryWorker>,
-    pending_process_queries: HashMap<u64, ProjectId>,
+    pending_process_queries: HashMap<u64, PendingProcessQuery>,
     /// Worker queue operation → owner operation receipt.
     process_receipts: HashMap<u64, u64>,
     next_operation: u64,
@@ -1141,9 +1184,16 @@ impl CommandRouter {
                     continue;
                 };
                 let root_pid = session.child_pid();
+                let exited = session.exited().is_some();
                 drop(session);
-                if root_pid == 0 || !seen.insert(root_pid) {
+                if exited || root_pid == 0 || !seen.insert(root_pid) {
                     continue;
+                }
+                if roots.len() == MAX_PROCESS_ENTRIES {
+                    return Err(CommandError::new(
+                        ErrorCode::RuntimeFailure,
+                        "too many process roots",
+                    ));
                 }
                 roots.push((*session_id, pane.id, root_pid));
             }
@@ -1186,7 +1236,7 @@ impl CommandRouter {
             .process_query
             .as_ref()
             .expect("queue passed owner admission");
-        let queue_operation = match queue.submit(request) {
+        let queue_operation = match queue.submit(request.clone()) {
             Ok(operation) => operation,
             Err(ProcessQuerySubmitError::QueueFull) => {
                 return error(err(
@@ -1206,10 +1256,17 @@ impl CommandRouter {
                     "process query operation IDs exhausted",
                 ));
             }
+            Err(ProcessQuerySubmitError::InvalidRequest) => {
+                return error(err(
+                    ErrorCode::InvalidRequest,
+                    "process query exceeds bounds",
+                ));
+            }
         };
         self.next_operation += 1;
         let operation_id = self.next_operation;
-        self.pending_process_queries.insert(operation_id, project);
+        self.pending_process_queries
+            .insert(operation_id, PendingProcessQuery { context, request });
         self.process_receipts.insert(queue_operation, operation_id);
         DispatchOutcome {
             result: ok(CommandOutput::Pending { operation_id }),
@@ -1219,18 +1276,15 @@ impl CommandRouter {
 
     /// Convert a completed bounded worker result into the owner-facing
     /// `ProcessList` envelope. Pure: no effects, no coordinator mutation.
-    pub fn process_query_result(
-        &self,
-        _project: ProjectId,
-        info: ProcessListInfo,
-    ) -> CommandResult {
+    pub fn process_query_result(&self, project: ProjectId, info: ProcessListInfo) -> CommandResult {
+        if self.coordinator.window().project(project).is_none() {
+            return err(ErrorCode::ProjectNotFound, "project no longer exists");
+        }
         ok(CommandOutput::ProcessList(info))
     }
 
-    /// Scoped `SIGTERM`. Fast enough to run synchronously on the owner thread:
-    /// the project's process family is resolved once, membership is
-    /// revalidated, then `terminate(pid)` signals the single pid. No
-    /// persistence or workspace effects.
+    /// Scoped `SIGTERM`: bind a pidfd, walk bounded ancestry and revalidate its
+    /// identity before signalling. No full process/FD scan or mutation effects.
     fn process_kill(
         &mut self,
         context: CommandContext,
@@ -1242,21 +1296,11 @@ impl CommandRouter {
             Err(issue) => return CommandResult::Err(issue),
         };
         let mut inspector = LinuxProcessInspector;
-        let root_pids: Vec<u32> = roots.iter().map(|(_, _, root)| *root).collect();
-        let snapshot = inspector.snapshot(&root_pids, MAX_PROCESS_ENTRIES);
-        let owned = snapshot.processes.iter().any(|process| process.pid == pid);
-        if !owned {
-            // Distinguish "exists but foreign" from "gone": a pid outside the
-            // family is a scope violation, a pid nobody owns is absent.
-            if inspector.process_info(pid).is_some() {
-                return err(
-                    ErrorCode::CrossProjectDenied,
-                    "process does not belong to this project",
-                );
-            }
+        if pid == 0 || pid > i32::MAX as u32 {
             return err(ErrorCode::ProcessNotFound, "process does not exist");
         }
-        match inspector.terminate(pid) {
+        let root_pids: Vec<u32> = roots.iter().map(|(_, _, root)| *root).collect();
+        match inspector.terminate_owned(pid, &root_pids) {
             Ok(()) => ok(CommandOutput::ProcessKilled {
                 pid,
                 signal: "SIGTERM",
@@ -1264,6 +1308,10 @@ impl CommandRouter {
             Err(TerminateError::NotFound) => {
                 err(ErrorCode::ProcessNotFound, "process does not exist")
             }
+            Err(TerminateError::NotOwned) => err(
+                ErrorCode::CrossProjectDenied,
+                "process does not belong to this project",
+            ),
             Err(TerminateError::PermissionDenied) => {
                 err(ErrorCode::PermissionDenied, "permission denied")
             }
@@ -1817,6 +1865,29 @@ impl CommandRouter {
     /// Called only by the application owner. Completed process queries are
     /// committed here. Ephemeral queries emit no effects.
     pub fn poll_process_queries(&mut self) -> Vec<(u64, DispatchOutcome)> {
+        // Retire obsolete work as soon as the owner observes a closed/rebound
+        // session or revoked project; admission stays held until real completion.
+        let obsolete: Vec<_> = self
+            .pending_process_queries
+            .iter()
+            .filter_map(|(id, pending)| {
+                let project = pending.request.project;
+                let current = self.capture_process_roots(pending.context, project);
+                (self
+                    .authorize(
+                        pending.context,
+                        &OmaCommand::Process(ProcessCommand::List { project }),
+                    )
+                    .is_err()
+                    || current
+                        .as_ref()
+                        .map_or(true, |roots| *roots != pending.request.roots))
+                .then_some(*id)
+            })
+            .collect();
+        for id in obsolete {
+            self.cancel_process_query(id);
+        }
         let mut outcomes = Vec::new();
         while let Some(completion) = self
             .process_query
@@ -1826,10 +1897,31 @@ impl CommandRouter {
             let Some(operation_id) = self.process_receipts.remove(&completion.operation) else {
                 continue;
             };
-            let Some(project) = self.pending_process_queries.remove(&operation_id) else {
+            let Some(pending) = self.pending_process_queries.remove(&operation_id) else {
                 continue;
             };
-            let result = self.process_query_result(project, completion.info);
+            let project = pending.request.project;
+            let result = match self.authorize(
+                pending.context,
+                &OmaCommand::Process(ProcessCommand::List { project }),
+            ) {
+                Err(error) => CommandResult::Err(error),
+                Ok(()) => match self.capture_process_roots(pending.context, project) {
+                    Err(error) => CommandResult::Err(error),
+                    Ok(roots)
+                        if roots != pending.request.roots || completion.project != project =>
+                    {
+                        err(ErrorCode::RuntimeFailure, "process query ownership changed")
+                    }
+                    Ok(_) if completion.timed_out => {
+                        err(ErrorCode::Timeout, "process query deadline expired")
+                    }
+                    Ok(_) if completion.stopped => {
+                        err(ErrorCode::RuntimeFailure, "process query cancelled")
+                    }
+                    Ok(_) => self.process_query_result(project, completion.info),
+                },
+            };
             outcomes.push((
                 operation_id,
                 DispatchOutcome {
@@ -1844,10 +1936,27 @@ impl CommandRouter {
     /// Stop accepting process queries and join the worker rather than
     /// detaching it. Call during final application shutdown.
     pub fn shutdown_process_queries(&mut self) -> std::thread::Result<()> {
+        self.pending_process_queries.clear();
+        self.process_receipts.clear();
         match self.process_query.as_mut() {
             Some(worker) => worker.shutdown_and_join(),
             None => Ok(()),
         }
+    }
+
+    /// Cancellation keeps admission reserved until the worker retires the job.
+    pub fn cancel_process_query(&mut self, operation_id: u64) -> bool {
+        let Some((&worker_id, _)) = self
+            .process_receipts
+            .iter()
+            .find(|(_, id)| **id == operation_id)
+        else {
+            return false;
+        };
+        if let Some(worker) = &self.process_query {
+            worker.cancel(worker_id);
+        }
+        true
     }
 
     fn finish_editor_operation(
@@ -3419,6 +3528,175 @@ mod tests {
             .any(|effect| matches!(effect, CommandEffect::PersistenceDirty))
     }
 
+    fn await_process(router: &mut CommandRouter) -> DispatchOutcome {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some((_, outcome)) = router.poll_process_queries().into_iter().next() {
+                return outcome;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn process_worker_bounds_active_queued_and_completed_admission_together() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut worker = ProcessQueryWorker::with_runner(move |_, _| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            ProcessListInfo {
+                entries: Vec::new(),
+                truncated: false,
+            }
+        });
+        let request = ProcessQueryRequest {
+            project: ProjectId::new(),
+            roots: Vec::new(),
+            cap: 512,
+        };
+        worker.submit(request.clone()).unwrap();
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        for _ in 0..3 {
+            worker.submit(request.clone()).unwrap();
+        }
+        // A deadline includes queue wait, rather than resetting at execution.
+        worker
+            .state
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .back_mut()
+            .unwrap()
+            .control = ProcessScanControl::new(std::time::Duration::ZERO);
+        assert_eq!(
+            worker.submit(request.clone()),
+            Err(ProcessQuerySubmitError::QueueFull)
+        );
+        assert!(!worker.can_submit());
+        for _ in 0..4 {
+            release_tx.send(()).unwrap();
+        }
+        let start = std::time::Instant::now();
+        loop {
+            let state = worker.state.0.lock().unwrap();
+            if state.completions.len() == 4 {
+                assert!(state.pending.is_empty() && state.active.is_none());
+                assert!(state.completions.back().unwrap().stopped);
+                break;
+            }
+            drop(state);
+            assert!(start.elapsed() < std::time::Duration::from_secs(2));
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            worker.submit(request.clone()),
+            Err(ProcessQuerySubmitError::QueueFull)
+        );
+        worker.take_completion().unwrap();
+        assert!(worker.can_submit());
+        worker.shutdown_and_join().unwrap();
+        assert!(worker.take_completion().is_none());
+    }
+
+    #[test]
+    fn process_completion_revalidates_scope_and_live_session_ownership() {
+        for revoke_scope in [false, true] {
+            let mut router = router();
+            let (project, _) =
+                create_live_project(&mut router, if revoke_scope { "revoke" } else { "stale" });
+            let roots = router
+                .capture_process_roots(CommandContext::LocalUser, project)
+                .unwrap();
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            router.process_query = Some(ProcessQueryWorker::with_runner(move |_, _| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                ProcessListInfo {
+                    entries: Vec::new(),
+                    truncated: false,
+                }
+            }));
+            let outcome = router.dispatch_async(
+                CommandContext::Project(project),
+                OmaCommand::Process(ProcessCommand::List { project }),
+            );
+            assert!(matches!(
+                outcome.result,
+                CommandResult::Ok(CommandOutput::Pending { .. })
+            ));
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            let detached = if revoke_scope {
+                router.coordinator.close_project(project).unwrap();
+                None
+            } else {
+                router.coordinator.registry_mut().detach(roots[0].0)
+            };
+            release_tx.send(()).unwrap();
+            let completion = await_process(&mut router);
+            assert!(
+                matches!(completion.result, CommandResult::Err(ref error) if error.code == if revoke_scope { ErrorCode::PermissionDenied } else { ErrorCode::RuntimeFailure })
+            );
+            assert!(completion.effects.is_empty());
+            assert!(router.poll_process_queries().is_empty());
+            drop(detached);
+        }
+    }
+
+    #[test]
+    fn process_cancel_and_shutdown_interrupt_active_scan_and_retire_receipts() {
+        let mut router = router();
+        let (project, _) = create_live_project(&mut router, "cancel");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        router.process_query = Some(ProcessQueryWorker::with_runner(move |_, control| {
+            entered_tx.send(()).unwrap();
+            while !control.stopped() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            ProcessListInfo {
+                entries: Vec::new(),
+                truncated: true,
+            }
+        }));
+        let pending = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = pending.result else {
+            panic!("pending query");
+        };
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(router.cancel_process_query(operation_id));
+        let completion = await_process(&mut router);
+        assert!(matches!(completion.result, CommandResult::Err(_)));
+        assert!(completion.effects.is_empty());
+        assert!(!router.cancel_process_query(operation_id));
+        router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        router.shutdown_process_queries().unwrap();
+        assert!(!router.has_pending_process_queries());
+        assert!(router.process_receipts.is_empty());
+        assert!(router.poll_process_queries().is_empty());
+    }
+
     #[test]
     fn process_list_is_project_scoped_bounded_and_effect_free() {
         let mut router = router();
@@ -3563,7 +3841,7 @@ mod tests {
     #[test]
     fn process_query_worker_completes_bounded_and_effect_free_async() {
         let mut router = router();
-        let (project, _) = create_live_project(&mut router, "async");
+        let (project, root_pid) = create_live_project(&mut router, "async");
         assert_eq!(router.process_query_worker_count(), 1);
         let outcome = router.dispatch(
             CommandContext::LocalUser,
@@ -3578,6 +3856,10 @@ mod tests {
             panic!("expected process list");
         };
         assert!(info.entries.len() <= MAX_PROCESS_ENTRIES);
+        assert!(
+            info.entries.iter().any(|entry| entry.pid == root_pid),
+            "shell-family query includes its root"
+        );
         assert!(info.entries.windows(2).all(|w| w[0].pid <= w[1].pid));
         assert!(!router.has_pending_process_queries());
         assert_eq!(router.process_query_worker_count(), 1);
@@ -3638,6 +3920,41 @@ mod tests {
         );
         assert!(denied.effects.is_empty());
         router.shutdown_process_queries().unwrap();
+    }
+
+    #[test]
+    fn process_kill_cannot_signal_another_projects_shell_but_can_signal_own_shell() {
+        let mut router = router();
+        let (first, first_pid) = create_live_project(&mut router, "kill-first");
+        let (second, second_pid) = create_live_project(&mut router, "kill-second");
+        let denied = router.dispatch(
+            CommandContext::Project(second),
+            OmaCommand::Process(ProcessCommand::Kill {
+                project: second,
+                pid: first_pid,
+            }),
+        );
+        assert!(
+            matches!(denied.result, CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied)
+        );
+        assert!(denied.effects.is_empty());
+        assert!(
+            !router
+                .capture_process_roots(CommandContext::LocalUser, first)
+                .unwrap()
+                .is_empty()
+        );
+        let killed = router.dispatch(
+            CommandContext::Project(second),
+            OmaCommand::Process(ProcessCommand::Kill {
+                project: second,
+                pid: second_pid,
+            }),
+        );
+        assert!(
+            matches!(killed.result, CommandResult::Ok(CommandOutput::ProcessKilled { pid, signal: "SIGTERM" }) if pid == second_pid)
+        );
+        assert!(killed.effects.is_empty());
     }
 
     #[test]

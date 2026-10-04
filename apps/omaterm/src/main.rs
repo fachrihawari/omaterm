@@ -208,7 +208,8 @@ struct WorkspaceView {
     /// verified empty result. Collapsible PROCESSES/PORTS sections and the
     /// two-step kill arm (first press arms, second within the window signals).
     process_query: ProcessQueryView,
-    process_arm: Option<(u32, Instant)>,
+    process_query_project: Option<ProjectId>,
+    process_arm: Option<(ProcessKillTarget, Instant)>,
     /// Last automatic refresh per project (debounce interval source).
     process_refreshed_at: HashMap<ProjectId, Instant>,
     process_section_collapsed: bool,
@@ -408,7 +409,25 @@ enum ProcessQueryView {
     Idle,
     Loading,
     Failed(String),
-    Loaded(omaterm_core::ProcessListInfo),
+    Loaded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessKillTarget {
+    project: ProjectId,
+    pane: PaneId,
+    session: SessionId,
+    pid: u32,
+}
+
+fn process_kill_confirmed(
+    arm: Option<(ProcessKillTarget, Instant)>,
+    target: ProcessKillTarget,
+    now: Instant,
+) -> bool {
+    arm.is_some_and(|(armed, at)| {
+        armed == target && now.saturating_duration_since(at) < PROCESS_KILL_ARM_WINDOW
+    })
 }
 
 /// Format a resident byte count for the Info panel (`1.2 MiB`, `512 KiB`).
@@ -1586,6 +1605,7 @@ impl WorkspaceView {
             process_list: None,
             pending_process_refresh: HashMap::new(),
             process_query: ProcessQueryView::Idle,
+            process_query_project: None,
             process_arm: None,
             process_refreshed_at: HashMap::new(),
             process_section_collapsed: false,
@@ -2763,6 +2783,7 @@ impl WorkspaceView {
             {
                 self.coordinator.cancel_launch(*id);
                 self.coordinator.cancel_editor_operation(*id);
+                self.coordinator.cancel_process_query(*id);
             }
         }
         for (operation_id, outcome) in self
@@ -2798,16 +2819,31 @@ impl WorkspaceView {
             // when the query still targets the viewed project. No effects.
             if let Some(project) = self.pending_process_refresh.remove(&operation_id) {
                 self.pending_ui_launches.remove(&operation_id);
+                let palette_key = self.pending_palette_mru.remove(&operation_id);
+                let palette_origin = self.pending_palette_origins.remove(&operation_id);
+                if matches!(&outcome.result, CommandResult::Ok(_)) {
+                    if let Some(key) = palette_key {
+                        self.palette_mru.retain(|existing| existing != &key);
+                        self.palette_mru.insert(0, key);
+                        self.palette_mru.truncate(100);
+                    }
+                } else if let Some(origin) = palette_origin {
+                    self.restore_palette_origin_to(origin, cx);
+                }
                 match &outcome.result {
                     CommandResult::Ok(CommandOutput::ProcessList(info))
                         if self.coordinator.selected_project_id() == Some(project) =>
                     {
                         self.process_list = Some((project, info.clone()));
-                        self.process_query = ProcessQueryView::Loaded(info.clone());
+                        self.process_query = ProcessQueryView::Loaded;
+                        self.process_query_project = Some(project);
                         cx.notify();
                     }
-                    CommandResult::Err(error) => {
+                    CommandResult::Err(error)
+                        if self.coordinator.selected_project_id() == Some(project) =>
+                    {
                         self.process_query = ProcessQueryView::Failed(format!("{error}"));
+                        self.process_query_project = Some(project);
                         self.input_notice = Some(format!("Process refresh: {error}"));
                         cx.notify();
                     }
@@ -3045,14 +3081,11 @@ impl WorkspaceView {
             }
         }
         self.schedule_metrics_flush(cx);
-        // M18: debounced background refresh while the Info tab is visible.
-        self.poll_process_refresh(cx);
         let pending = self.coordinator.has_pending_launches()
             || self.coordinator.has_pending_editor_operations()
             || self.coordinator.has_pending_process_queries()
             || self.document_restore_in_flight.is_some()
             || !self.document_restore_queue.is_empty()
-            || self.process_refresh_tick_needed()
             || self
                 .editor_lifecycle
                 .as_ref()
@@ -3061,15 +3094,6 @@ impl WorkspaceView {
             self.launch_poller_active = false;
         }
         pending
-    }
-
-    /// Keep the 20ms poller alive while the Info panel could auto-refresh:
-    /// visible Info tab with a selected project. The debounce timer itself
-    /// prevents query storms; this only keeps the tick running.
-    fn process_refresh_tick_needed(&self) -> bool {
-        self.inspector_tab == InspectorTab::Info
-            && self.inspector_visible
-            && self.coordinator.selected_project_id().is_some()
     }
 
     /// Drop per-session UI state after its pane is gone. The PTY/session
@@ -3585,8 +3609,17 @@ impl WorkspaceView {
     }
 
     fn refresh_process_list(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        if self
+            .pending_process_refresh
+            .values()
+            .any(|owner| *owner == project)
+        {
+            return;
+        }
         // A refresh supersedes any half-armed kill: the target may disappear.
         self.process_arm = None;
+        self.process_query_project = Some(project);
+        self.process_refreshed_at.insert(project, Instant::now());
         match self.dispatch_command(
             OmaCommand::Process(omaterm_core::ProcessCommand::List { project }),
             cx,
@@ -3611,6 +3644,46 @@ impl WorkspaceView {
     /// Debounced background refresh tick (M18): at most once per interval per
     /// project while the Info tab is visible and no query is in flight.
     fn poll_process_refresh(&mut self, cx: &mut Context<Self>) {
+        let selected = self.coordinator.selected_project_id();
+        let obsolete: Vec<_> = self
+            .pending_process_refresh
+            .iter()
+            .filter(|(_, project)| {
+                Some(**project) != selected
+                    || !self.inspector_visible
+                    || self.inspector_tab != InspectorTab::Info
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in obsolete {
+            self.coordinator.cancel_process_query(id);
+            self.pending_process_refresh.remove(&id);
+            self.pending_palette_mru.remove(&id);
+            self.pending_palette_origins.remove(&id);
+            self.pending_ui_launches.remove(&id);
+        }
+        if self.process_query_project != selected {
+            self.process_query = ProcessQueryView::Idle;
+            self.process_query_project = selected;
+            self.process_list = None;
+            self.process_arm = None;
+            if let Some(project) = selected {
+                self.process_refreshed_at.remove(&project);
+            }
+            cx.notify();
+        }
+        if let Some((target, at)) = self.process_arm {
+            let valid = at.elapsed() < PROCESS_KILL_ARM_WINDOW
+                && selected == Some(target.project)
+                && self.coordinator.focused() == Some(target.pane)
+                && self.session_id_for_pane(target.pane) == Some(target.session);
+            if valid {
+                // Do not let the automatic refresh consume the user's 8s arm window.
+                return;
+            }
+            self.process_arm = None;
+            cx.notify();
+        }
         if self.inspector_tab != InspectorTab::Info || !self.inspector_visible {
             return;
         }
@@ -3633,16 +3706,21 @@ impl WorkspaceView {
     /// Two-step scoped kill: first press arms with a banner, a second press on
     /// the same PID within the window signals `SIGTERM`. Any other action
     /// disarms.
-    fn confirm_or_arm_process_kill(&mut self, pid: u32, cx: &mut Context<Self>) {
-        let confirmed = matches!(
-            self.process_arm,
-            Some((armed, at)) if armed == pid && at.elapsed() < PROCESS_KILL_ARM_WINDOW
-        );
+    fn confirm_or_arm_process_kill(&mut self, target: ProcessKillTarget, cx: &mut Context<Self>) {
+        if self.coordinator.selected_project_id() != Some(target.project)
+            || self.coordinator.focused() != Some(target.pane)
+            || self.session_id_for_pane(target.pane) != Some(target.session)
+        {
+            self.process_arm = None;
+            cx.notify();
+            return;
+        }
+        let confirmed = process_kill_confirmed(self.process_arm, target, Instant::now());
         if confirmed {
             self.process_arm = None;
-            self.kill_process(pid, cx);
+            self.kill_process(target.pid, cx);
         } else {
-            self.process_arm = Some((pid, Instant::now()));
+            self.process_arm = Some((target, Instant::now()));
             cx.notify();
         }
     }
@@ -3862,6 +3940,7 @@ impl WorkspaceView {
         if self.shutting_down {
             return false;
         }
+        self.poll_process_refresh(cx);
         // M14 status refresh rides the same 250ms poller: drains landed
         // workers and spawns at most one fetch per tick. M15 diff rides
         // along with the same one-fetch-per-tick bound per surface.
@@ -8707,6 +8786,9 @@ impl WorkspaceView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.process_arm.take().is_some() {
+            cx.notify();
+        }
         if self.shutting_down {
             return;
         }
@@ -12954,8 +13036,8 @@ impl WorkspaceView {
         }))
     }
 
-    /// Inspector Info body: real project card plus explicit M18-pending
-    /// states for process/port inspection. No fabricated telemetry.
+    /// Inspector Info body: focused shell identity, cached CWD and bounded
+    /// process/port snapshot. Loading and failed queries are not empty results.
     fn render_inspector_info(&mut self, cx: &mut Context<Self>) -> Div {
         let mut body = div()
             .flex()
@@ -13067,13 +13149,59 @@ impl WorkspaceView {
         );
         let focused_pane = self.coordinator.focused();
         let viewing_project = self.coordinator.selected_project_id();
+        let shell = focused_pane
+            .and_then(|pane| self.session_id_for_pane(pane))
+            .and_then(|session| self.coordinator.registry().get(session))
+            .and_then(|handle| {
+                handle
+                    .lock()
+                    .ok()
+                    .map(|session| (session.child_pid(), session.cwd().path.clone()))
+            });
+        if let Some((pid, cwd)) = shell {
+            let shell_label = self
+                .process_list
+                .as_ref()
+                .filter(|(owner, _)| Some(*owner) == viewing_project)
+                .and_then(|(_, list)| list.entries.iter().find(|entry| entry.pid == pid))
+                .map(|entry| entry.name.clone())
+                .unwrap_or_else(|| "Shell".into());
+            let path_label = cwd.to_string_lossy().into_owned();
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(format!("{shell_label} · PID {pid}"))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child(path_label.clone()),
+                    )
+                    .child(
+                        div()
+                            .cursor_pointer()
+                            .text_color(rgb(crate::ui::theme::BLUE))
+                            .child("Copy path")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        path_label.clone(),
+                                    ));
+                                }),
+                            ),
+                    ),
+            );
+        }
         // Only a Loaded snapshot for the viewed project is a verified result.
         let loaded = match (&self.process_query, viewing_project) {
-            (ProcessQueryView::Loaded(info), Some(project)) => self
+            (ProcessQueryView::Loaded, Some(project)) => self
                 .process_list
                 .as_ref()
                 .filter(|(owner, _)| *owner == project)
-                .map(|_| info),
+                .map(|(_, info)| info),
             _ => None,
         };
         let process_entries = loaded
@@ -13085,13 +13213,19 @@ impl WorkspaceView {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let armed_pid = self
-            .process_arm
-            .and_then(|(pid, at)| (at.elapsed() < PROCESS_KILL_ARM_WINDOW).then_some(pid));
+        let armed_pid = self.process_arm.and_then(|(target, at)| {
+            (at.elapsed() < PROCESS_KILL_ARM_WINDOW).then_some(target.pid)
+        });
         let mut process_rows = div().flex().flex_col().gap_1();
         let mut port_rows = div().flex().flex_col().gap_1();
         for entry in &process_entries {
             let pid = entry.pid;
+            let target = ProcessKillTarget {
+                project: viewing_project.expect("loaded process snapshot has a project"),
+                pane: entry.pane,
+                session: entry.session,
+                pid,
+            };
             let mut telemetry = String::new();
             if let Some(cpu) = entry.cpu_percent {
                 telemetry.push_str(&format!("{cpu:.1}%"));
@@ -13109,6 +13243,7 @@ impl WorkspaceView {
                     .items_center()
                     .gap_2()
                     .text_size(px(11.0))
+                    .child(div().text_color(rgb(crate::ui::theme::BLUE)).child("●"))
                     .child(
                         div()
                             .flex_1()
@@ -13146,7 +13281,8 @@ impl WorkspaceView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |view, _, _, cx| {
-                                    view.confirm_or_arm_process_kill(pid, cx);
+                                    cx.stop_propagation();
+                                    view.confirm_or_arm_process_kill(target, cx);
                                 }),
                             ),
                     ),
@@ -13209,10 +13345,10 @@ impl WorkspaceView {
                 ProcessQueryView::Loading => {
                     process_state_box("Querying processes…".to_string(), crate::ui::theme::MUTED)
                 }
-                ProcessQueryView::Loaded(_) if process_entries.is_empty() => {
+                ProcessQueryView::Loaded if process_entries.is_empty() => {
                     process_state_box("No child processes".to_string(), crate::ui::theme::MUTED)
                 }
-                ProcessQueryView::Loaded(_) => process_rows.into_any_element(),
+                ProcessQueryView::Loaded => process_rows.into_any_element(),
             });
             if let Some(pid) = armed_pid {
                 process_section = process_section.child(
@@ -13247,12 +13383,32 @@ impl WorkspaceView {
                 if process_entries.iter().any(|entry| !entry.ports.is_empty()) {
                     port_rows.into_any_element()
                 } else {
-                    process_state_box("No listening ports".to_string(), crate::ui::theme::MUTED)
+                    process_state_box(
+                        match &self.process_query {
+                            ProcessQueryView::Idle => "Ports have not been queried yet.".into(),
+                            ProcessQueryView::Loading => "Querying ports…".into(),
+                            ProcessQueryView::Failed(_) => {
+                                "Ports unavailable: process query failed.".into()
+                            }
+                            ProcessQueryView::Loaded => "No listening ports".into(),
+                        },
+                        crate::ui::theme::MUTED,
+                    )
                 },
             );
         }
         body = body.child(ports_section);
-        body
+        if loaded.is_some_and(|info| info.truncated) {
+            body = body.child(process_state_box(
+                "Partial process snapshot: inspection limits or unavailable entries.".into(),
+                crate::ui::theme::MUTED,
+            ));
+        }
+        div()
+            .flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .child(body.id("info-process-scroll").overflow_y_scroll())
     }
 
     /// UI v5 global status bar (24px): branch button, live process count,
@@ -13802,6 +13958,7 @@ impl Render for WorkspaceView {
         // when the window regains focus.
         let focused = self.focus_handle.is_focused(window) && window.is_window_active();
         if self.window_focused && !focused {
+            self.process_arm = None;
             self.editor_cancel_composition();
             self.editor_selecting = None;
             self.files_vdrag = None;
@@ -14297,6 +14454,11 @@ impl Render for WorkspaceView {
         let drop_weak = weak.clone();
         div()
             .track_focus(&self.focus_handle)
+            .on_any_mouse_down(cx.listener(|view, _, _, cx| {
+                if view.process_arm.take().is_some() {
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_drop(move |paths: &ExternalPaths, _, cx| {
                 let _ = drop_weak.update(cx, |view: &mut WorkspaceView, cx| {
@@ -16187,6 +16349,42 @@ mod tests {
         assert_eq!(super::format_process_memory(2048), "2 KiB");
         assert_eq!(super::format_process_memory(1024 * 1024), "1.0 MiB");
         assert_eq!(super::format_process_memory(3 * 1024 * 1024 / 2), "1.5 MiB");
+    }
+
+    #[test]
+    fn process_kill_arm_cannot_follow_focus_or_session_replacement() {
+        let target = super::ProcessKillTarget {
+            project: ProjectId::new(),
+            pane: omaterm_core::PaneId::new(),
+            session: omaterm_core::SessionId::new(),
+            pid: 42,
+        };
+        let at = std::time::Instant::now();
+        let arm = Some((target, at));
+        assert!(super::process_kill_confirmed(arm, target, at));
+        for replacement in [
+            super::ProcessKillTarget {
+                project: ProjectId::new(),
+                ..target
+            },
+            super::ProcessKillTarget {
+                pane: omaterm_core::PaneId::new(),
+                ..target
+            },
+            super::ProcessKillTarget {
+                session: omaterm_core::SessionId::new(),
+                ..target
+            },
+            super::ProcessKillTarget { pid: 43, ..target },
+        ] {
+            assert!(!super::process_kill_confirmed(arm, replacement, at));
+        }
+        assert!(!super::process_kill_confirmed(
+            arm,
+            target,
+            at + super::PROCESS_KILL_ARM_WINDOW
+        ));
+        assert!(!super::process_kill_confirmed(None, target, at));
     }
 
     #[test]
