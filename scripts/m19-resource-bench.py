@@ -77,7 +77,10 @@ class BenchError(Exception):
 def finite_number(value: object, *, non_negative: bool = True) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BenchError("metrics JSON has a non-numeric value")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise BenchError("metrics JSON has an invalid numeric value") from error
     if not math.isfinite(number) or (non_negative and number < 0):
         raise BenchError("metrics JSON has an invalid numeric value")
     return number
@@ -95,13 +98,13 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
-def summary(values: list[float]) -> dict[str, float | int]:
+def summary(values: list[float]) -> dict[str, float | int | None]:
     return {
         "sample_count": len(values),
-        "min": percentile(values, 0.0),
-        "p50": percentile(values, 0.50),
-        "p95": percentile(values, 0.95),
-        "max": percentile(values, 1.0),
+        "min": percentile(values, 0.0) if values else None,
+        "p50": percentile(values, 0.50) if values else None,
+        "p95": percentile(values, 0.95) if values else None,
+        "max": percentile(values, 1.0) if values else None,
     }
 
 
@@ -128,8 +131,8 @@ def load_metrics(path: Path) -> dict[str, dict[str, list[float]] | dict[str, flo
     parsed_timings: dict[str, list[float]] = {}
     for name in TIMING_NAMES:
         values = timings[name]
-        if not isinstance(values, list) or not values:
-            raise BenchError("metrics JSON has an empty timing series")
+        if not isinstance(values, list):
+            raise BenchError("metrics JSON timing series must be an array")
         parsed_timings[name] = [finite_number(value) for value in values]
 
     counters = document.get("counters", {})
@@ -281,11 +284,16 @@ def build_report(sampler: ProcessSampler, samples: list[dict[str, float | int | 
         "instrumentation": {
             "timings_ms": {name: summary(values) for name, values in timings.items()},
             "counters": counters,
+            "unobserved_timings": [name for name, values in timings.items() if not values],
+            "latency_status": "not_evaluated",
+            "latency_pass": None,
+            "note": "Collection is not a latency/bounds pass; no regression budgets were supplied.",
         },
     }
 
 
 def self_test() -> None:
+    assert summary([]) == {"sample_count": 0, "min": None, "p50": None, "p95": None, "max": None}
     assert percentile([1.0, 2.0, 3.0, 4.0], 0.5) == 2.5
     assert math.isclose(percentile([1.0, 2.0, 3.0, 4.0], 0.95), 3.85)
     with tempfile.TemporaryDirectory() as temporary:
@@ -317,6 +325,29 @@ def self_test() -> None:
         time.sleep(0.001)
         assert sampler.sample()["cpu_percent"] is not None
         assert load_metrics(metrics_path)["counters"] == {"worker_count": 1.0}
+        empty = {"timings_ms": {name: [] for name in TIMING_NAMES}, "counters": {}}
+        metrics_path.write_text(json.dumps(empty), encoding="utf-8")
+        parsed = load_metrics(metrics_path)
+        report = build_report(sampler, [sample], 1.0, parsed)
+        assert report["instrumentation"]["unobserved_timings"] == list(TIMING_NAMES)
+        assert report["instrumentation"]["latency_pass"] is None
+        for bad in (True, -1, float("nan"), float("inf"), "secret", 10**1000):
+            invalid = {"timings_ms": {name: [bad] for name in TIMING_NAMES}}
+            metrics_path.write_text(json.dumps(invalid), encoding="utf-8")
+            try:
+                load_metrics(metrics_path)
+            except BenchError:
+                pass
+            else:
+                raise AssertionError("invalid metric accepted")
+        fields[19] = "12346"
+        (process / "stat").write_text("4242 (test process) " + " ".join(fields), encoding="ascii")
+        try:
+            sampler.sample()
+        except BenchError:
+            pass
+        else:
+            raise AssertionError("reused PID accepted")
         report_path = root / "report.json"
         write_report(report_path, {"format": 1}, force=False)
         assert json.loads(report_path.read_text(encoding="utf-8")) == {"format": 1}

@@ -473,6 +473,57 @@ mod tests {
     }
 
     #[test]
+    fn pretty_snapshot_file_byte_cap_accepts_boundary_and_preserves_file_when_exceeded() {
+        let mut window = omaterm_core::WorkspaceWindow::new();
+        for _ in 0..2 {
+            window.add_project(Project::new(None, None)).unwrap();
+        }
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &HashMap::new());
+        for project in &mut snapshot.windows[0].projects {
+            project.documents = (0..16)
+                .map(|index| crate::DocumentSnapshot {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    path_bytes: format!("src/{index}.rs").into_bytes(),
+                    root_device: 0,
+                    root_inode: 11,
+                })
+                .collect();
+            project.active_document = project.documents.last().map(|document| document.id.clone());
+        }
+        let bytes = serde_json::to_vec_pretty(&snapshot).unwrap();
+        let base = store();
+        let limits = SnapshotLimits {
+            max_file_bytes: bytes.len(),
+            ..SnapshotLimits::default()
+        };
+        let at_cap = SnapshotStore::with_limits(base.path().to_owned(), limits);
+        at_cap.save(&snapshot, false).unwrap();
+        assert_eq!(fs::read(at_cap.path()).unwrap(), bytes);
+        let LoadOutcome::Valid(restored) = at_cap.load().unwrap() else {
+            panic!("at-cap multi-project registry should load")
+        };
+        assert_eq!(restored.document_registries.len(), 2);
+        assert!(restored.document_registries.iter().all(|(_, registry)| {
+            registry.documents.len() == 16 && registry.active_document.is_some()
+        }));
+
+        let over_cap = SnapshotStore::with_limits(
+            base.path().to_owned(),
+            SnapshotLimits {
+                max_file_bytes: bytes.len() - 1,
+                ..limits
+            },
+        );
+        assert!(over_cap.save(&snapshot, false).is_err());
+        assert_eq!(fs::read(over_cap.path()).unwrap(), bytes);
+        assert!(matches!(
+            over_cap.load().unwrap(),
+            LoadOutcome::RecoveryRequired(SnapshotError::TooLarge)
+        ));
+        fs::remove_dir_all(base.path().parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn corrupt_primary_is_retained_when_recovery_snapshot_is_saved() {
         let store = store();
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();

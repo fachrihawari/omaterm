@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,17 +8,18 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Application, AsyncApp, Bounds, ClipboardItem, Context, Div, ExternalPaths, FocusHandle,
-    Font, FontFallbacks, HighlightStyle, Hsla, KeyDownEvent, ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, ScrollDelta,
-    ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, StyledText, TextRun, Timer,
-    UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, font,
-    hsla, prelude::*, px, relative, rgb, rgba, size, uniform_list,
+    App, Application, AsyncApp, Bounds, ClipboardItem, Context, Div, ElementInputHandler,
+    EntityInputHandler, ExternalPaths, FocusHandle, Font, FontFallbacks, HighlightStyle, Hsla,
+    KeyDownEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PathPromptOptions, Pixels, ScrollDelta, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
+    SharedString, StyledText, TextRun, Timer, UTF16Selection, UniformListScrollHandle, WeakEntity,
+    Window, WindowBounds, WindowOptions, canvas, div, font, hsla, prelude::*, px, relative, rgb,
+    rgba, size, uniform_list,
 };
 use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
-    FileCommand, FileEntry, GitCommand, OmaCommand, Pane, PaneCommand, PaneContent, PaneId,
-    PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis, SplitDirection, TabCommand,
+    ErrorCode, FileCommand, FileEntry, GitCommand, OmaCommand, Pane, PaneCommand, PaneContent,
+    PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis, SplitDirection, TabCommand,
     TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
@@ -38,6 +40,7 @@ mod files;
 mod git_panel;
 mod history;
 mod ipc_bridge;
+mod metrics;
 mod palette;
 mod router;
 mod ui;
@@ -52,6 +55,7 @@ mod workbench;
 /// bounded channel; the main thread applies snapshots event-driven and
 /// repaints. Painting never holds a session lock.
 struct WorkspaceView {
+    editor_composition: Option<EditorComposition>,
     focus_handle: FocusHandle,
     coordinator: router::CommandRouter,
     snapshots: HashMap<SessionId, TerminalViewport>,
@@ -271,6 +275,7 @@ struct WorkspaceView {
     /// `EditorLifecycle::Idle`; a present value carries the typed action,
     /// captured targets and per-document outcomes.
     editor_lifecycle: Option<DirtyDecision>,
+    editor_external: Option<ExternalDecision>,
     editor_rows_handles: HashMap<DocumentId, UniformListScrollHandle>,
     editor_x_handles: HashMap<DocumentId, ScrollHandle>,
     /// Measured width from the latest accepted highlight result. Token spans
@@ -311,10 +316,28 @@ struct WorkspaceView {
     document_restore_queue: std::collections::VecDeque<router::DocumentRestoreRequest>,
     /// Router receipt for the restore read currently in flight.
     document_restore_in_flight: Option<u64>,
+    /// Saved selection is independent of load order and deduplicated live ids.
+    document_restore_active: HashMap<ProjectId, DocumentId>,
     /// Monotonic counter bumped by any user focus action after startup. A
     /// pending restore only activates its document when this is unchanged, so
     /// a late restore load cannot steal focus from the user.
     focus_epoch: u64,
+    /// S8 instrumentation: bounded, content-free resource recorder. Captured by
+    /// the render row processor via a clone (never `self`). A no-op when
+    /// `OMATERM_METRICS_PATH` is unset.
+    metrics: metrics::MetricsRecorder,
+    metrics_emitter: Option<metrics::MetricsEmitter>,
+    metrics_sampled_buffer_copies: u64,
+    /// Enqueue instants for async editor operations, keyed by router receipt.
+    /// Plain owner-thread state; only the recorder observes the elapsed times.
+    metrics_open_started: HashMap<u64, Instant>,
+    metrics_restart_started: Option<Instant>,
+    /// Latest edit awaiting a matching painted frame and a landing highlight
+    /// result. Shared with the render closure through `Arc<Mutex<..>>`.
+    metrics_pending_edit: Arc<Mutex<Option<metrics::PendingTiming>>>,
+    metrics_pending_highlight: Arc<Mutex<Option<metrics::PendingTiming>>>,
+    /// Debounced metrics write bookkeeping. `None` means no write is pending.
+    metrics_flush_deadline: Option<Instant>,
 }
 
 /// Editor geometry and type in logical pixels (plan §14: 54px gutter,
@@ -325,6 +348,10 @@ const EDITOR_FONT_SIZE: f32 = 12.5;
 
 /// Caret blink half-period: a 1000ms cycle at 50% stepped visibility.
 const CARET_BLINK_HALF_PERIOD: Duration = Duration::from_millis(500);
+
+/// S8 metrics debounce: at most one atomic write per this window, plus one at
+/// shutdown. Chosen to bound filesystem churn without losing the report.
+const METRICS_FLUSH_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// Vertical reveal margin in rows: motion within this band does not scroll,
 /// which is what makes reveal "minimal" instead of an unconditional recenter.
@@ -364,6 +391,7 @@ enum HistoryArm {
 enum InputOwner {
     Terminal(PaneId),
     Editor(DocumentId),
+    Diff,
     Palette,
     FilesFilter,
     GitCommit,
@@ -401,6 +429,159 @@ enum ActiveSurface {
     Terminal,
     Editor(DocumentId),
     Diff,
+}
+
+impl ActiveSurface {
+    fn input_owner(self, pane: Option<PaneId>) -> Option<InputOwner> {
+        match self {
+            Self::Editor(document) => Some(InputOwner::Editor(document)),
+            Self::Diff => Some(InputOwner::Diff),
+            Self::Terminal => pane.map(InputOwner::Terminal),
+        }
+    }
+}
+
+/// Preedit is provisional; cancellation restores the replaced text and selection.
+struct EditorComposition {
+    document: DocumentId,
+    range: Range<usize>,
+    original: String,
+    caret: editor::EditorCaret,
+    generation: u64,
+}
+
+impl EditorComposition {
+    fn cancel(
+        self,
+        store: &mut editor::DocumentStore,
+    ) -> Option<(DocumentId, editor::EditorCaret)> {
+        if store.generation(self.document) != Some(self.generation) {
+            return None;
+        }
+        store
+            .apply_edit(
+                self.document,
+                self.range.start,
+                self.range.len(),
+                &self.original,
+            )
+            .ok()?;
+        Some((self.document, self.caret))
+    }
+}
+
+struct NativeEditorEdit<'a> {
+    range: Option<Range<usize>>,
+    text: &'a str,
+    selected: Option<Range<usize>>,
+    mark: bool,
+}
+
+fn apply_native_editor_edit(
+    store: &mut editor::DocumentStore,
+    document: DocumentId,
+    mut caret: editor::EditorCaret,
+    composition: &mut Option<EditorComposition>,
+    edit: NativeEditorEdit<'_>,
+) -> Result<editor::EditorCaret, omaterm_core::CommandError> {
+    let snapshot = store.render_snapshot(document).ok_or_else(|| {
+        omaterm_core::CommandError::new(
+            omaterm_core::ErrorCode::DocumentNotOpen,
+            "document is not open",
+        )
+    })?;
+    caret.clamp(snapshot.text());
+    let previous = composition
+        .as_ref()
+        .filter(|c| c.document == document && c.generation == snapshot.generation());
+    let replacement = native_replacement_range(
+        snapshot.text(),
+        edit.range,
+        previous.map(|c| c.range.clone()),
+        caret,
+    );
+    let original = previous
+        .filter(|c| c.range == replacement)
+        .map(|c| (c.original.clone(), c.caret))
+        .unwrap_or_else(|| (snapshot.text()[replacement.clone()].to_owned(), caret));
+    let clean: String = edit
+        .text
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .collect();
+    store.apply_edit(document, replacement.start, replacement.len(), &clean)?;
+    let inserted = replacement.start..replacement.start + clean.len();
+    if edit.mark {
+        let selection = utf16_to_bytes(
+            &clean,
+            edit.selected.unwrap_or_else(|| {
+                let end = clean.encode_utf16().count();
+                end..end
+            }),
+        );
+        caret.cursor = inserted.start + selection.end;
+        caret.anchor =
+            (selection.start != selection.end).then_some(inserted.start + selection.start);
+    } else {
+        caret.collapse_to(inserted.end);
+    }
+    *composition = (edit.mark && !clean.is_empty()).then(|| EditorComposition {
+        document,
+        range: inserted,
+        original: original.0,
+        caret: original.1,
+        generation: store.generation(document).unwrap_or(0),
+    });
+    Ok(caret)
+}
+
+fn byte_to_utf16(text: &str, byte: usize) -> usize {
+    let mut end = byte.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].encode_utf16().count()
+}
+
+/// Clamp to scalar boundaries, expanding a nonempty range across surrogate pairs.
+/// An empty range remains a caret (rounded down), never an accidental deletion.
+fn utf16_to_bytes(text: &str, range: Range<usize>) -> Range<usize> {
+    fn offset(text: &str, target: usize, ceil: bool) -> usize {
+        let mut units = 0;
+        for (byte, ch) in text.char_indices() {
+            if target <= units {
+                return byte;
+            }
+            units += ch.len_utf16();
+            if target < units {
+                return if ceil { byte + ch.len_utf8() } else { byte };
+            }
+        }
+        text.len()
+    }
+    let start = offset(text, range.start, false);
+    if range.end <= range.start {
+        start..start
+    } else {
+        start..offset(text, range.end, true)
+    }
+}
+
+fn native_replacement_range(
+    text: &str,
+    explicit: Option<Range<usize>>,
+    marked: Option<Range<usize>>,
+    caret: editor::EditorCaret,
+) -> Range<usize> {
+    explicit
+        .map(|range| utf16_to_bytes(text, range))
+        .or(marked)
+        .unwrap_or_else(|| {
+            let (start, end) = caret
+                .selection_range()
+                .unwrap_or((caret.cursor, caret.cursor));
+            start..end
+        })
 }
 
 /// Default activation route for a primary file action (S7). Plain activation
@@ -535,6 +716,81 @@ enum DirtyChoice {
     Overwrite,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalChoice {
+    Reload,
+    Overwrite,
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalState {
+    Checking(u64),
+    AwaitingDecision,
+    Reloading(u64),
+    Overwriting(u64),
+    Failed,
+}
+
+struct ExternalDecision {
+    document: DocumentId,
+    generation: u64,
+    observed: Option<omaterm_context::FileRevision>,
+    dirty: bool,
+    state: ExternalState,
+    message: Option<String>,
+}
+
+impl ExternalDecision {
+    fn begin(&mut self, choice: ExternalChoice, operation: u64) -> bool {
+        if !self.accepts(choice) || choice == ExternalChoice::Cancel {
+            return false;
+        }
+        self.state = match choice {
+            ExternalChoice::Reload => ExternalState::Reloading(operation),
+            ExternalChoice::Overwrite => ExternalState::Overwriting(operation),
+            ExternalChoice::Cancel => unreachable!(),
+        };
+        true
+    }
+    fn accepts(&self, choice: ExternalChoice) -> bool {
+        matches!(
+            self.state,
+            ExternalState::AwaitingDecision | ExternalState::Failed
+        ) && (choice != ExternalChoice::Overwrite || (self.dirty && self.observed.is_some()))
+    }
+
+    fn receipt(&self) -> Option<u64> {
+        match self.state {
+            ExternalState::Checking(id)
+            | ExternalState::Reloading(id)
+            | ExternalState::Overwriting(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn checked(
+        &mut self,
+        generation: u64,
+        observed: omaterm_context::FileRevision,
+        changed: bool,
+        dirty: bool,
+    ) -> bool {
+        if self.generation != generation || !matches!(self.state, ExternalState::Checking(_)) {
+            return false;
+        }
+        self.observed = Some(observed);
+        self.dirty = dirty;
+        self.state = ExternalState::AwaitingDecision;
+        self.message = Some(if dirty {
+            "Changed on disk. Local edits retained; reload, overwrite this observed revision, or cancel."
+        } else {
+            "Changed on disk. Reload to view the current file."
+        }.into());
+        changed
+    }
+}
+
 /// Final outcome recorded for one document during a dirty-resolution action.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DocSaveOutcome {
@@ -588,6 +844,81 @@ impl DirtyDecision {
     fn saves_settled(&self) -> bool {
         self.pending_saves.is_empty()
     }
+
+    fn accepts_choice(&self) -> bool {
+        self.lifecycle != EditorLifecycle::Saving && self.saves_settled()
+    }
+
+    fn settle_save(&mut self, operation_id: u64, outcome: DocSaveOutcome) -> bool {
+        let Some(target) = self.pending_saves.remove(&operation_id) else {
+            return false;
+        };
+        self.outcomes.insert(target.document, outcome);
+        true
+    }
+}
+
+fn restore_selection(
+    selected: &mut HashMap<ProjectId, DocumentId>,
+    saved_active: Option<DocumentId>,
+    project: ProjectId,
+    persisted: DocumentId,
+    loaded: DocumentId,
+    focus_epoch: u64,
+) -> bool {
+    // Only translate the remembered id to its live alias. Background documents
+    // and completions after a user selection cannot replace that selection.
+    let still_selected = selected.get(&project) == Some(&persisted);
+    if still_selected {
+        selected.insert(project, loaded);
+    }
+    saved_active == Some(persisted) && still_selected && focus_epoch == 0
+}
+
+fn retain_queued_restore_descriptors(
+    registries: &mut HashMap<ProjectId, omaterm_state::DocumentRegistry>,
+    queued: &std::collections::VecDeque<router::DocumentRestoreRequest>,
+    selected: &HashMap<ProjectId, DocumentId>,
+) {
+    for request in queued {
+        let registry = registries.entry(request.project).or_default();
+        if !registry
+            .documents
+            .iter()
+            .any(|entry| entry.id == request.document)
+        {
+            registry.documents.push(omaterm_state::DocumentDescriptor {
+                id: request.document,
+                path_bytes: request.path_bytes.clone(),
+                root_device: request.root_device,
+                root_inode: request.root_inode,
+            });
+        }
+    }
+    for (project, document) in selected {
+        if let Some(registry) = registries.get_mut(project)
+            && registry.documents.iter().any(|entry| entry.id == *document)
+        {
+            registry.active_document = Some(*document);
+        }
+    }
+}
+
+/// Reload has a fallible prepare/commit boundary. Other destructive actions
+/// can discard immediately after confirmation; reload must keep its baseline,
+/// dirty text and undo history until the router adopts a successful disk read.
+fn discard_before_action(
+    store: &mut editor::DocumentStore,
+    action: DirtyAction,
+    targets: &[CapturedVersion],
+) -> Option<DocumentId> {
+    if let DirtyAction::Revert { document, .. } = action {
+        return Some(document);
+    }
+    for target in targets {
+        store.discard_changes(target.document);
+    }
+    None
 }
 
 /// True when any captured target's live generation or disk revision moved.
@@ -676,6 +1007,36 @@ fn native_open_may_activate(
     current_project == Some(captured.project)
         && current_epoch == captured.epoch
         && current_root == captured.root.as_deref()
+}
+
+/// S8: sum the live editor worker and restore-queue job counts into the two
+/// bounded counters. Pure so the event wiring is directly testable.
+fn metrics_job_counts(
+    highlight_active: usize,
+    queue_active: bool,
+    highlight_pending: usize,
+    queue_depth: usize,
+    restore_queued: usize,
+) -> (u64, u64) {
+    let active = (highlight_active + usize::from(queue_active)) as u64;
+    let pending = (highlight_pending + queue_depth + restore_queued) as u64;
+    (active, pending)
+}
+
+/// S8: elapsed time since an edit when the observed generation matches the
+/// edit's generation, consuming the pending timing so it fires once. Pure;
+/// `None` means the pending edit is absent or stale.
+fn pending_timing_elapsed(
+    pending: &mut Option<metrics::PendingTiming>,
+    document: DocumentId,
+    generation: u64,
+) -> Option<Duration> {
+    let timing = (*pending)?;
+    if timing.document != document || timing.generation != generation {
+        return None;
+    }
+    *pending = None;
+    Some(timing.started.elapsed())
 }
 
 struct PaletteSearchResult {
@@ -975,7 +1336,7 @@ enum PendingUiLaunch {
         pane: PaneId,
     },
     EditorOpen(omaterm_core::ProjectId),
-    EditorSave,
+    EditorSave(DocumentId),
     EditorRevert(DocumentId),
     /// Restart restore completion: only activates the saved active document
     /// after a successful load, and never steals focus from a user action
@@ -1018,6 +1379,8 @@ impl WorkspaceView {
     }
 
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let metrics_started = Instant::now();
+        let metrics_path = metrics::MetricsRecorder::output_path();
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
         let working_directory = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
@@ -1043,6 +1406,7 @@ impl WorkspaceView {
         let palette_file_index = Arc::new(PaletteFileIndexCache::default());
         let palette_search_worker = PaletteSearchWorker::new(Arc::clone(&palette_file_index));
         let mut view = Self {
+            editor_composition: None,
             focus_handle,
             coordinator: router::CommandRouter::new(coordinator),
             snapshots: HashMap::new(),
@@ -1157,6 +1521,7 @@ impl WorkspaceView {
             active_surface: HashMap::new(),
             editor_carets: HashMap::new(),
             editor_lifecycle: None,
+            editor_external: None,
             editor_rows_handles: HashMap::new(),
             editor_x_handles: HashMap::new(),
             editor_highlight_widths: HashMap::new(),
@@ -1172,7 +1537,20 @@ impl WorkspaceView {
             window_focused: true,
             document_restore_queue: std::collections::VecDeque::new(),
             document_restore_in_flight: None,
+            document_restore_active: HashMap::new(),
             focus_epoch: 0,
+            metrics: if metrics_path.is_some() {
+                metrics::MetricsRecorder::new()
+            } else {
+                metrics::MetricsRecorder::disabled()
+            },
+            metrics_emitter: metrics_path.map(metrics::MetricsEmitter::new),
+            metrics_sampled_buffer_copies: 0,
+            metrics_open_started: HashMap::new(),
+            metrics_restart_started: Some(metrics_started),
+            metrics_pending_edit: Arc::new(Mutex::new(None)),
+            metrics_pending_highlight: Arc::new(Mutex::new(None)),
+            metrics_flush_deadline: None,
         };
         view.start_ipc(cx);
         view.restore_or_initialize(cx);
@@ -1192,6 +1570,20 @@ impl WorkspaceView {
                     break;
                 }
             }
+        })
+        .detach();
+        view.schedule_metrics_flush(cx);
+        cx.observe_window_activation(window, |view, window, cx| {
+            if !window.is_window_active() {
+                view.editor_cancel_composition();
+                view.editor_selecting = None;
+                view.editor_cancel_disk_check();
+            } else if let Some(project) = view.coordinator.selected_project_id()
+                && let Some(document) = view.editor_active_doc(project)
+            {
+                view.editor_check_disk(document, cx);
+            }
+            cx.notify();
         })
         .detach();
         view
@@ -1467,6 +1859,7 @@ impl WorkspaceView {
         for (project, registry) in registries {
             if let Some(active) = registry.active_document {
                 self.editor_selected.insert(project, active);
+                self.document_restore_active.insert(project, active);
             }
             for descriptor in registry.documents {
                 self.document_restore_queue.push_back(
@@ -1480,7 +1873,7 @@ impl WorkspaceView {
     /// Start the next queued restore read, enforcing one-in-flight. Does
     /// nothing when a read is already pending or the queue is empty.
     fn schedule_next_document_restore(&mut self, cx: &mut Context<Self>) {
-        if self.document_restore_in_flight.is_some() {
+        if self.shutting_down || self.document_restore_in_flight.is_some() {
             return;
         }
         let Some(request) = self.document_restore_queue.pop_front() else {
@@ -1488,6 +1881,7 @@ impl WorkspaceView {
         };
         let project = request.project;
         let document = request.document;
+        self.coordinator.documents_mut().retry_restore(document);
         let outcome = self.coordinator.schedule_document_restore(request);
         self.apply_command_effects(outcome.effects, cx);
         match outcome.result {
@@ -1528,9 +1922,14 @@ impl WorkspaceView {
     }
 
     fn snapshot(&self) -> WorkspaceSnapshot {
-        let registries = self
+        let mut registries = self
             .coordinator
             .export_document_registry(&self.editor_selected);
+        retain_queued_restore_descriptors(
+            &mut registries,
+            &self.document_restore_queue,
+            &self.editor_selected,
+        );
         WorkspaceSnapshot::capture_with_expanded_and_documents(
             self.coordinator.window(),
             &self.current_cwds(),
@@ -1754,7 +2153,50 @@ impl WorkspaceView {
         }
         let ipc_server = self.ipc_server.take();
         self.coordinator.cancel_launches();
-        self.coordinator.cancel_editor_operations();
+        // Joining preserves the router mailbox, including saves that committed
+        // before cancellation. Consume it before snapshotting or retiring PTYs.
+        if self.coordinator.shutdown_editor_operations().is_err() {
+            tracing::error!(target: "omaterm::editor", "editor I/O worker panicked during shutdown");
+        }
+        for (operation_id, outcome) in self.coordinator.poll_editor_operations() {
+            self.pending_ui_launches.remove(&operation_id);
+            self.pending_native_opens.remove(&operation_id);
+            self.metrics_open_started.remove(&operation_id);
+            if let Some(decision) = self.editor_lifecycle.as_mut() {
+                let saved = matches!(
+                    outcome.result,
+                    CommandResult::Ok(CommandOutput::EditorSaved(_))
+                );
+                let warning = outcome.effects.iter().any(|effect| {
+                    matches!(
+                        effect,
+                        router::CommandEffect::EditorSaveDurabilityWarning { .. }
+                    )
+                });
+                decision.settle_save(
+                    operation_id,
+                    if saved {
+                        if warning {
+                            DocSaveOutcome::CommittedWarning
+                        } else {
+                            DocSaveOutcome::Committed
+                        }
+                    } else {
+                        DocSaveOutcome::Failed
+                    },
+                );
+            }
+            if let CommandResult::Err(error) = &outcome.result {
+                tracing::warn!(target: "omaterm::editor", operation_id, "final editor operation: {error}");
+            }
+            self.apply_command_effects(outcome.effects, cx);
+        }
+        // Include final editor receipts in the S8 shutdown emission.
+        self.flush_metrics();
+        let metrics_thread = self
+            .metrics_emitter
+            .as_mut()
+            .and_then(metrics::MetricsEmitter::take_shutdown_thread);
         self.pending_ui_launches.clear();
         self.pending_palette_mru.clear();
         self.pending_palette_origins.clear();
@@ -1772,6 +2214,9 @@ impl WorkspaceView {
             .collect::<Vec<_>>();
         let (done_tx, done_rx) = async_channel::bounded::<Result<(), String>>(1);
         std::thread::spawn(move || {
+            if let Some(thread) = metrics_thread {
+                let _ = thread.join();
+            }
             if let Some(thread) = diff_thread {
                 let _ = thread.join();
             }
@@ -2042,7 +2487,9 @@ impl WorkspaceView {
             OmaCommand::Editor(EditorCommand::Open { project, .. }) => {
                 PendingUiLaunch::EditorOpen(*project)
             }
-            OmaCommand::Editor(EditorCommand::Save { .. }) => PendingUiLaunch::EditorSave,
+            OmaCommand::Editor(EditorCommand::Save { document }) => {
+                PendingUiLaunch::EditorSave(*document)
+            }
             OmaCommand::Editor(EditorCommand::Revert { document }) => {
                 PendingUiLaunch::EditorRevert(*document)
             }
@@ -2057,6 +2504,13 @@ impl WorkspaceView {
             .dispatch_async(CommandContext::LocalUser, command);
         self.apply_command_effects(outcome.effects, cx);
         if let CommandResult::Ok(CommandOutput::Pending { operation_id }) = &outcome.result {
+            if matches!(launch, PendingUiLaunch::EditorOpen(_))
+                && self.metrics_emitter.is_some()
+                && self.metrics_open_started.len() < 64
+            {
+                self.metrics_open_started
+                    .insert(*operation_id, Instant::now());
+            }
             self.pending_ui_launches.insert(*operation_id, launch);
             self.ensure_launch_poller(cx);
         }
@@ -2097,9 +2551,29 @@ impl WorkspaceView {
     ) {
         for effect in effects {
             match effect {
+                router::CommandEffect::EditorDiskChecked {
+                    document,
+                    generation,
+                    observed,
+                    changed,
+                    dirty,
+                } => {
+                    if let Some(decision) = self.editor_external.as_mut()
+                        && decision.document == document
+                    {
+                        if !decision.checked(generation, observed, changed, dirty) {
+                            self.editor_external = None;
+                        }
+                        self.restore_input_owner();
+                        cx.notify();
+                    }
+                }
                 router::CommandEffect::SessionStarted(session) => self.start_runtime(cx, session),
                 router::CommandEffect::SessionClosed(closed) => self.finish_close(closed),
                 router::CommandEffect::PersistenceDirty => self.mark_persistence_dirty(cx),
+                router::CommandEffect::EditorSaveTiming(elapsed) => {
+                    self.metrics.record_timing("save_to_commit", elapsed)
+                }
                 router::CommandEffect::WorkspaceChanged => cx.notify(),
                 router::CommandEffect::FileOpened(project) => {
                     // Terminal-routed `file.open` reveals the terminal surface:
@@ -2195,6 +2669,8 @@ impl WorkspaceView {
             .into_iter()
             .chain(self.coordinator.poll_editor_operations())
         {
+            // Every final outcome retires the start, including failure/cancel.
+            let open_started = self.metrics_open_started.remove(&operation_id);
             if let Some(work) = self.ipc_pending.remove(&operation_id) {
                 if !work.cancelled.load(Ordering::Acquire) {
                     let result = if self
@@ -2216,6 +2692,15 @@ impl WorkspaceView {
                 continue;
             }
             let ui = self.pending_ui_launches.remove(&operation_id);
+            if self
+                .editor_external
+                .as_ref()
+                .and_then(ExternalDecision::receipt)
+                == Some(operation_id)
+            {
+                self.editor_external_completed(operation_id, outcome, cx);
+                continue;
+            }
             let mut restore_completed = false;
             let native_target = self.pending_native_opens.remove(&operation_id);
 
@@ -2236,7 +2721,7 @@ impl WorkspaceView {
                 .editor_lifecycle
                 .as_ref()
                 .and_then(|decision| decision.pending_saves.get(&operation_id).copied());
-            if let Some(target) = decision_target {
+            if decision_target.is_some() {
                 let durability_warning = outcome.effects.iter().any(|effect| {
                     matches!(
                         effect,
@@ -2264,7 +2749,12 @@ impl WorkspaceView {
                     decision.message = Some(format!("Save failed: {message}. Buffers retained."));
                 }
                 self.apply_command_effects(outcome.effects, cx);
-                self.editor_save_completed(target.document, final_outcome, cx);
+                self.editor_save_completed(operation_id, final_outcome, cx);
+                if matches!(&outcome.result, CommandResult::Err(error) if error.code == ErrorCode::DocumentConflict)
+                    && let Some(target) = decision_target
+                {
+                    self.editor_recheck_disk(target.document, cx);
+                }
                 continue;
             }
             let durability_warning = outcome.effects.iter().any(|effect| {
@@ -2279,6 +2769,10 @@ impl WorkspaceView {
                     Some(PendingUiLaunch::EditorOpen(project)),
                 ) => {
                     self.input_notice = None;
+                    if let Some(started) = open_started {
+                        self.metrics
+                            .record_timing("open_enqueue_to_ready", started.elapsed());
+                    }
                     // S7 late-completion guard: register the document, but only
                     // steal focus when the captured identity/root/epoch still
                     // matches live state. Switching targets cancels focus.
@@ -2309,7 +2803,7 @@ impl WorkspaceView {
                 }
                 (
                     CommandResult::Ok(CommandOutput::EditorSaved(_)),
-                    Some(PendingUiLaunch::EditorSave),
+                    Some(PendingUiLaunch::EditorSave(_)),
                 ) => {
                     self.input_notice = None;
                     if durability_warning {
@@ -2337,8 +2831,11 @@ impl WorkspaceView {
                     self.input_notice = Some(format!("Open: {error}"));
                     cx.notify();
                 }
-                (CommandResult::Err(error), Some(PendingUiLaunch::EditorSave)) => {
+                (CommandResult::Err(error), Some(PendingUiLaunch::EditorSave(document))) => {
                     self.input_notice = Some(format!("Save: {error}"));
+                    if error.code == ErrorCode::DocumentConflict {
+                        self.editor_recheck_disk(document, cx);
+                    }
                     cx.notify();
                 }
                 (CommandResult::Err(error), Some(PendingUiLaunch::EditorRevert(_))) => {
@@ -2353,21 +2850,34 @@ impl WorkspaceView {
                     if self.document_restore_in_flight == Some(operation_id) {
                         self.document_restore_in_flight = None;
                     }
+                    if let Some(started) = self.metrics_restart_started.take() {
+                        self.metrics
+                            .record_timing("restart_to_usable", started.elapsed());
+                    }
                     // Dedup may have converged on a live alias with a
                     // different id; selection follows the real buffer.
-                    self.editor_selected.insert(project, info.document);
-                    // Activate the restored surface only when this document is
-                    // the saved active selection and the user has not taken a
-                    // focus action since startup.
-                    let is_saved_active = document == info.document;
-                    let startup_launch = self.focus_epoch == 0;
-                    if is_saved_active && startup_launch {
+                    if restore_selection(
+                        &mut self.editor_selected,
+                        self.document_restore_active.get(&project).copied(),
+                        project,
+                        document,
+                        info.document,
+                        self.focus_epoch,
+                    ) {
                         self.editor_activate(project, info.document, cx);
                     } else {
                         cx.notify();
                     }
                 }
-                (CommandResult::Err(_), Some(PendingUiLaunch::EditorRestore { .. })) => {
+                (
+                    CommandResult::Err(error),
+                    Some(PendingUiLaunch::EditorRestore { document, .. }),
+                ) => {
+                    // Metadata survives a stale/root failure as retryable
+                    // unavailable state; never leave an endless Loading chip.
+                    self.coordinator
+                        .documents_mut()
+                        .mark_restore_unavailable(document, error.to_string());
                     restore_completed = true;
                     if self.document_restore_in_flight == Some(operation_id) {
                         self.document_restore_in_flight = None;
@@ -2409,6 +2919,7 @@ impl WorkspaceView {
                 self.schedule_next_document_restore(cx);
             }
         }
+        self.schedule_metrics_flush(cx);
         let pending = self.coordinator.has_pending_launches()
             || self.coordinator.has_pending_editor_operations()
             || self.document_restore_in_flight.is_some()
@@ -3775,9 +4286,34 @@ impl WorkspaceView {
     /// Current active editor surface for the selected project, if any.
     fn active_editor_surface(&self) -> Option<(ProjectId, DocumentId)> {
         self.coordinator.selected_project_id().and_then(|project| {
-            self.editor_active_doc(project)
-                .map(|document| (project, document))
+            match self.project_surface(project) {
+                ActiveSurface::Editor(document) => Some((project, document)),
+                _ => None,
+            }
         })
+    }
+
+    fn project_surface(&self, project: ProjectId) -> ActiveSurface {
+        match self
+            .active_surface
+            .get(&project)
+            .copied()
+            .unwrap_or(ActiveSurface::Terminal)
+        {
+            ActiveSurface::Editor(document)
+                if self.coordinator.documents().project_of(document) != Some(project) =>
+            {
+                ActiveSurface::Terminal
+            }
+            ActiveSurface::Diff if !self.diff_panel.preview_open(project) => {
+                ActiveSurface::Terminal
+            }
+            surface => surface,
+        }
+    }
+
+    fn diff_is_active(&self, project: ProjectId) -> bool {
+        self.project_surface(project) == ActiveSurface::Diff
     }
 
     /// Compute the owner that should hold typing given the current surface
@@ -3785,7 +4321,11 @@ impl WorkspaceView {
     /// editor, then the focused terminal. Pure over view flags so the routing
     /// rule is unit-testable.
     fn computed_input_owner(&self) -> Option<InputOwner> {
-        if self.editor_lifecycle.is_some() {
+        if self.editor_lifecycle.is_some()
+            || self.editor_external.as_ref().is_some_and(|decision| {
+                decision.dirty && !matches!(decision.state, ExternalState::Checking(_))
+            })
+        {
             return Some(InputOwner::Confirmation);
         }
         if self.ctrlp_open {
@@ -3803,25 +4343,47 @@ impl WorkspaceView {
         {
             return Some(InputOwner::GitCommit);
         }
-        if let Some((_, document)) = self.active_editor_surface() {
-            return Some(InputOwner::Editor(document));
-        }
-        if let Some(pane) = self.coordinator.focused() {
-            return Some(InputOwner::Terminal(pane));
-        }
-        None
+        self.coordinator.selected_project_id().and_then(|project| {
+            self.project_surface(project)
+                .input_owner(self.coordinator.focused())
+        })
     }
 
     /// Re-derive the input owner from view flags. Every surface transition
     /// that opens/closes an overlay or focuses/blurs a field calls this so the
     /// owner can never drift from the visible surface.
     fn restore_input_owner(&mut self) {
-        self.input_owner = self.computed_input_owner();
+        let owner = self.computed_input_owner();
+        if self
+            .editor_composition
+            .as_ref()
+            .is_some_and(|composition| owner != Some(InputOwner::Editor(composition.document)))
+        {
+            self.editor_cancel_composition();
+        }
+        self.input_owner = owner;
     }
 
     /// Explicitly transfer typing to `owner`.
     fn set_input_owner(&mut self, owner: InputOwner) {
+        if self
+            .editor_composition
+            .as_ref()
+            .is_some_and(|composition| owner != InputOwner::Editor(composition.document))
+        {
+            self.editor_cancel_composition();
+        }
         self.input_owner = Some(owner);
+    }
+
+    fn editor_cancel_composition(&mut self) {
+        let Some(composition) = self.editor_composition.take() else {
+            return;
+        };
+        if let Some((document, caret)) = composition.cancel(self.coordinator.documents_mut()) {
+            self.editor_carets.insert(document, caret);
+            self.editor_submit_highlight(document);
+        }
     }
 
     /// True when the editor surface currently owns typing (S6): the owner is
@@ -3953,7 +4515,12 @@ impl WorkspaceView {
         let Some(mut decision) = self.editor_lifecycle.take() else {
             return;
         };
+        if !decision.accepts_choice() {
+            self.editor_lifecycle = Some(decision);
+            return;
+        }
         if choice == DirtyChoice::Cancel {
+            self.editor_cancel_disk_check();
             self.editor_lifecycle = None;
             self.restore_input_owner();
             cx.notify();
@@ -3988,14 +4555,27 @@ impl WorkspaceView {
         decision.lifecycle = EditorLifecycle::AwaitingDecision;
         match choice {
             DirtyChoice::Cancel => unreachable!("handled above"),
-            DirtyChoice::Save | DirtyChoice::Overwrite => {
+            DirtyChoice::Save => {
                 self.editor_begin_save(decision, cx);
             }
+            DirtyChoice::Overwrite => {
+                decision.message = Some("Overwrite requires the changed-on-disk prompt and its observed revision. Choose Save, Discard or Cancel for this action.".into());
+                self.editor_lifecycle = Some(decision);
+                cx.notify();
+            }
             DirtyChoice::Discard => {
+                if let Some(document) = discard_before_action(
+                    self.coordinator.documents_mut(),
+                    decision.action,
+                    &decision.targets,
+                ) {
+                    // The router reads first, then generation-checks adoption.
+                    // Never reset dirty text or history before a fallible read.
+                    self.restore_input_owner();
+                    self.editor_reload_document(document, cx);
+                    return;
+                }
                 for target in &decision.targets {
-                    self.coordinator
-                        .documents_mut()
-                        .discard_changes(target.document);
                     decision
                         .outcomes
                         .insert(target.document, DocSaveOutcome::Discarded);
@@ -4014,8 +4594,8 @@ impl WorkspaceView {
     /// would only occur if the queue were bypassed; it is treated as a final
     /// success so no path can hang.
     fn editor_begin_save(&mut self, mut decision: DirtyDecision, cx: &mut Context<Self>) {
+        debug_assert!(decision.saves_settled());
         decision.lifecycle = EditorLifecycle::Saving;
-        decision.pending_saves.clear();
         decision.outcomes.clear();
         decision.message = None;
         let targets = decision.targets.clone();
@@ -4054,7 +4634,11 @@ impl WorkspaceView {
                     *outcome = DocSaveOutcome::Cancelled;
                 }
             }
-            decision.lifecycle = EditorLifecycle::Failed;
+            decision.lifecycle = if decision.saves_settled() {
+                EditorLifecycle::Failed
+            } else {
+                EditorLifecycle::Saving
+            };
             decision.outcomes.insert(document, DocSaveOutcome::Failed);
             decision.message = Some(format!("Save failed: {reason}. Buffers retained."));
             self.editor_lifecycle = Some(decision);
@@ -4070,21 +4654,21 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Complete a save: record the final outcome for `document` and, once all
+    /// Complete a save: record the matching receipt's final outcome and, once all
     /// receipts have landed, advance the decision.
     fn editor_save_completed(
         &mut self,
-        document: DocumentId,
+        operation_id: u64,
         outcome: DocSaveOutcome,
         cx: &mut Context<Self>,
     ) {
         let Some(mut decision) = self.editor_lifecycle.take() else {
             return;
         };
-        decision.outcomes.insert(document, outcome);
-        decision
-            .pending_saves
-            .retain(|_, target| target.document != document);
+        if !decision.settle_save(operation_id, outcome) {
+            self.editor_lifecycle = Some(decision);
+            return;
+        }
         if decision.saves_settled() {
             self.editor_finish_decision(decision, cx);
         } else {
@@ -4216,6 +4800,7 @@ impl WorkspaceView {
                 // Capture identity for the late-completion guard. Registration
                 // still happens there; only focus activation is gated.
                 self.pending_native_opens.insert(operation_id, captured);
+                self.schedule_metrics_flush(cx);
             }
             Ok(_) => {
                 self.input_notice = Some("Open: unexpected editor result.".into());
@@ -4290,6 +4875,7 @@ impl WorkspaceView {
         self.editor_reveal_caret(document);
         self.reset_editor_blink();
         self.ensure_editor_blink(cx);
+        self.editor_check_disk(document, cx);
         cx.notify();
     }
 
@@ -4462,6 +5048,8 @@ impl WorkspaceView {
             return;
         };
         self.editor_highlight_widths.remove(&document);
+        // S8: the worker request owns a private copy of the buffer text.
+        self.metrics.add_counter("buffer_copy_count", 1);
         self.editor_highlight_worker
             .submit(editor::HighlightRequest {
                 document,
@@ -4481,12 +5069,23 @@ impl WorkspaceView {
         while let Some(result) = self.editor_highlight_worker.take_result() {
             let document = result.document;
             let max_cols = result.max_cols();
+            let generation = result.generation;
             if self.coordinator.documents_mut().set_highlight(result) {
                 self.editor_highlight_widths.insert(document, max_cols);
                 landed = true;
+                // S8: an accepted result for the generation of the most recent
+                // edit closes the edit-to-highlight interval.
+                let mut pending = self
+                    .metrics_pending_highlight
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(elapsed) = pending_timing_elapsed(&mut pending, document, generation) {
+                    self.metrics.record_timing("edit_to_highlight", elapsed);
+                }
             }
         }
         if landed {
+            self.schedule_metrics_flush(cx);
             cx.notify();
         }
     }
@@ -4494,6 +5093,12 @@ impl WorkspaceView {
     /// Forget view-local state for a document (close/project switch).
     /// Buffer lifetime is owned by the store, not this map.
     fn editor_forget_view(&mut self, document: DocumentId) {
+        for pending in [&self.metrics_pending_edit, &self.metrics_pending_highlight] {
+            let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
+            if pending.is_some_and(|timing| timing.document == document) {
+                *pending = None;
+            }
+        }
         self.editor_carets.remove(&document);
         self.editor_rows_handles.remove(&document);
         self.editor_x_handles.remove(&document);
@@ -4530,6 +5135,7 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
+        let close_started = Instant::now();
         match self.dispatch_command(OmaCommand::Editor(EditorCommand::Close { document }), cx) {
             Ok(_) => {
                 self.editor_forget_view(document);
@@ -4541,6 +5147,9 @@ impl WorkspaceView {
                     self.editor_selected.remove(&project);
                 }
                 self.restore_input_owner();
+                self.metrics
+                    .record_timing("close_to_retirement", close_started.elapsed());
+                self.schedule_metrics_flush(cx);
                 cx.notify();
             }
             Err(error) => {
@@ -4565,6 +5174,15 @@ impl WorkspaceView {
         let Some(entry) = self.coordinator.documents().placeholder(document) else {
             return;
         };
+        if !entry.is_unavailable()
+            || entry.project() != project
+            || self
+                .document_restore_queue
+                .iter()
+                .any(|request| request.document == document)
+        {
+            return;
+        }
         let request = router::DocumentRestoreRequest {
             project: entry.project(),
             document: entry.id(),
@@ -4572,7 +5190,7 @@ impl WorkspaceView {
             root_device: entry.root_identity().device,
             root_inode: entry.root_identity().inode,
         };
-        let _ = project;
+        self.coordinator.documents_mut().retry_restore(document);
         // Resubmitting is idempotent for an existing reservation; the request
         // goes through the same bounded one-in-flight scheduler.
         self.document_restore_queue.push_front(request);
@@ -4591,6 +5209,11 @@ impl WorkspaceView {
             return;
         }
         if self.coordinator.close_document_placeholder(document) {
+            self.document_restore_queue
+                .retain(|request| request.document != document);
+            if self.document_restore_active.get(&project) == Some(&document) {
+                self.document_restore_active.remove(&project);
+            }
             if self.editor_selected.get(&project) == Some(&document) {
                 self.editor_selected.remove(&project);
             }
@@ -4602,6 +5225,184 @@ impl WorkspaceView {
     /// Save the active buffer through the dispatcher. Success toasts;
     /// conflicts and I/O failures surface as notices with the buffer kept
     /// dirty and intact.
+    fn editor_cancel_disk_check(&mut self) {
+        if let Some(decision) = self.editor_external.as_ref()
+            && let ExternalState::Checking(operation) = decision.state
+        {
+            self.coordinator.cancel_editor_operation(operation);
+            self.editor_external = None;
+        }
+    }
+
+    fn editor_recheck_disk(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        self.editor_cancel_disk_check();
+        if self.editor_external.as_ref().is_none_or(|decision| {
+            !matches!(
+                decision.state,
+                ExternalState::Reloading(_) | ExternalState::Overwriting(_)
+            )
+        }) {
+            self.editor_external = None;
+            self.editor_check_disk(document, cx);
+        }
+    }
+
+    fn editor_check_disk(&mut self, document: DocumentId, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        if let Some(decision) = self.editor_external.as_ref() {
+            if decision.document == document {
+                return;
+            }
+            // An explicit decision/write remains attached to its target.
+            if !matches!(decision.state, ExternalState::Checking(_)) {
+                return;
+            }
+        }
+        self.editor_cancel_disk_check();
+        let Some(generation) = self.coordinator.documents().generation(document) else {
+            return;
+        };
+        let dirty = self.coordinator.documents().is_dirty(document) == Some(true);
+        let outcome = self
+            .coordinator
+            .desktop_editor(router::DesktopEditorOperation::Check(document));
+        match outcome.result {
+            CommandResult::Ok(CommandOutput::Pending { operation_id }) => {
+                self.editor_external = Some(ExternalDecision {
+                    document,
+                    generation,
+                    observed: None,
+                    dirty,
+                    state: ExternalState::Checking(operation_id),
+                    message: None,
+                });
+                self.ensure_launch_poller(cx);
+            }
+            CommandResult::Err(error) => self.input_notice = Some(format!("Disk check: {error}")),
+            _ => {}
+        }
+    }
+
+    fn editor_resolve_external(&mut self, choice: ExternalChoice, cx: &mut Context<Self>) {
+        let Some(mut decision) = self.editor_external.take() else {
+            return;
+        };
+        if !decision.accepts(choice) {
+            self.editor_external = Some(decision);
+            return;
+        }
+        if choice == ExternalChoice::Cancel {
+            self.restore_input_owner();
+            cx.notify();
+            return;
+        }
+        if self.coordinator.documents().generation(decision.document) != Some(decision.generation) {
+            self.editor_check_disk(decision.document, cx);
+            cx.notify();
+            return;
+        }
+        let outcome = match choice {
+            ExternalChoice::Overwrite => {
+                self.coordinator
+                    .desktop_editor(router::DesktopEditorOperation::Overwrite {
+                        document: decision.document,
+                        generation: decision.generation,
+                        observed: decision
+                            .observed
+                            .expect("accepted overwrite has observed revision"),
+                    })
+            }
+            ExternalChoice::Reload => self.coordinator.dispatch_async(
+                CommandContext::LocalUser,
+                OmaCommand::Editor(EditorCommand::Revert {
+                    document: decision.document,
+                }),
+            ),
+            ExternalChoice::Cancel => unreachable!(),
+        };
+        match outcome.result {
+            CommandResult::Ok(CommandOutput::Pending { operation_id }) => {
+                decision.begin(choice, operation_id);
+                decision.message = Some(
+                    if choice == ExternalChoice::Reload {
+                        "Reloading…"
+                    } else {
+                        "Overwriting observed revision…"
+                    }
+                    .into(),
+                );
+                self.ensure_launch_poller(cx);
+            }
+            CommandResult::Err(error) => {
+                decision.state = ExternalState::Failed;
+                decision.message = Some(format!("{error}. Buffer and history retained."));
+            }
+            _ => {}
+        }
+        self.editor_external = Some(decision);
+        self.restore_input_owner();
+        cx.notify();
+    }
+
+    fn editor_external_completed(
+        &mut self,
+        operation: u64,
+        outcome: router::DispatchOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut decision) = self.editor_external.take() else {
+            return;
+        };
+        debug_assert_eq!(decision.receipt(), Some(operation));
+        if matches!(decision.state, ExternalState::Checking(_)) {
+            self.editor_external = Some(decision);
+            match outcome.result {
+                CommandResult::Err(error) => {
+                    // Stale reads never publish observations or change the buffer.
+                    self.editor_external = None;
+                    self.input_notice = Some(format!("Disk check: {error}"));
+                }
+                _ => self.apply_command_effects(outcome.effects, cx),
+            }
+        } else {
+            match outcome.result {
+                CommandResult::Ok(CommandOutput::EditorSaved(_)) => {
+                    self.input_notice = None;
+                    let warning = outcome.effects.iter().any(|effect| {
+                        matches!(
+                            effect,
+                            router::CommandEffect::EditorSaveDurabilityWarning { .. }
+                        )
+                    });
+                    self.apply_command_effects(outcome.effects, cx);
+                    if !warning {
+                        self.show_toast("Saved".into(), cx);
+                    }
+                }
+                CommandResult::Ok(CommandOutput::EditorOpened(_)) => {
+                    self.input_notice = None;
+                    self.editor_after_edit(decision.document, cx);
+                    self.show_toast("Reloaded from disk".into(), cx);
+                }
+                CommandResult::Err(error) if error.code == ErrorCode::DocumentConflict => {
+                    // A second disk edit needs a fresh observation and explicit
+                    // confirmation. Never retry with the old revision or None.
+                    self.editor_check_disk(decision.document, cx);
+                }
+                CommandResult::Err(error) => {
+                    decision.state = ExternalState::Failed;
+                    decision.message = Some(format!("{error}. Buffer and history retained."));
+                    self.editor_external = Some(decision);
+                }
+                _ => {}
+            }
+        }
+        self.restore_input_owner();
+        cx.notify();
+    }
+
     fn editor_save_document(
         &mut self,
         _project: ProjectId,
@@ -4616,7 +5417,9 @@ impl WorkspaceView {
                 self.input_notice = None;
                 self.show_toast("Saved".into(), cx);
             }
-            Ok(CommandOutput::Pending { .. }) => {}
+            Ok(CommandOutput::Pending { .. }) => {
+                self.schedule_metrics_flush(cx);
+            }
             Ok(_) => {
                 self.input_notice = Some("Save: unexpected editor result.".into());
                 cx.notify();
@@ -4648,6 +5451,12 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
+        self.editor_reload_document(document, cx);
+    }
+
+    /// Confirmed reload: disk failure or a stale generation leaves the entire
+    /// buffer/history intact; only the router's successful adoption resets it.
+    fn editor_reload_document(&mut self, document: DocumentId, cx: &mut Context<Self>) {
         match self.dispatch_command(OmaCommand::Editor(EditorCommand::Revert { document }), cx) {
             Ok(CommandOutput::EditorOpened(_)) => {
                 self.input_notice = None;
@@ -4803,6 +5612,19 @@ impl WorkspaceView {
                 .entry(document)
                 .or_default()
                 .clamp(snapshot.text());
+            // S8: the edit's generation is the key both timing events match on.
+            // One edit supersedes an earlier untimed edit.
+            let generation = snapshot.generation();
+            *self
+                .metrics_pending_edit
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(metrics::PendingTiming::new(document, generation));
+            *self
+                .metrics_pending_highlight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(metrics::PendingTiming::new(document, generation));
         }
         // Any edit ends the sticky visual column; the caret is where it is.
         self.editor_preferred_cols.remove(&document);
@@ -4811,12 +5633,89 @@ impl WorkspaceView {
         let cell_width = self.editor_cell_width(cx);
         self.editor_reveal_caret_x(document, cell_width);
         self.reset_editor_blink();
+        self.schedule_metrics_flush(cx);
         cx.notify();
     }
 
     /// Measured monospace cell width for the editor face.
     fn editor_cell_width(&mut self, cx: &Context<Self>) -> f32 {
         self.fonts(cx).cell_width.into()
+    }
+
+    /// S8: refresh sampled resource counters from live owners. Content-free:
+    /// only counts and byte totals are observed.
+    fn sample_metrics_counters(&mut self) {
+        let copies = self.coordinator.documents().buffer_copy_count();
+        self.metrics.add_counter(
+            "buffer_copy_count",
+            copies.saturating_sub(self.metrics_sampled_buffer_copies),
+        );
+        self.metrics_sampled_buffer_copies = copies;
+        self.metrics
+            .set_counter("queue_depth", self.coordinator.editor_queue_depth() as u64);
+        self.metrics.set_counter(
+            "worker_count",
+            (self.editor_highlight_worker.worker_count() + self.coordinator.editor_worker_count())
+                as u64,
+        );
+        self.metrics.set_counter(
+            "retained_document_bytes",
+            self.coordinator.retained_document_bytes() as u64,
+        );
+        self.metrics.set_counter(
+            "token_memory_bytes",
+            self.coordinator.token_memory_bytes() as u64,
+        );
+        let (active_jobs, pending_jobs) = metrics_job_counts(
+            self.editor_highlight_worker.active_jobs(),
+            self.coordinator.editor_queue_active(),
+            self.editor_highlight_worker.pending_jobs(),
+            self.coordinator.editor_queue_depth(),
+            self.document_restore_queue.len(),
+        );
+        self.metrics.set_counter("active_jobs", active_jobs);
+        self.metrics.set_counter("pending_jobs", pending_jobs);
+        self.metrics.set_counter(
+            "result_count",
+            (self.editor_highlight_worker.result_count() + self.coordinator.editor_result_count())
+                as u64,
+        );
+    }
+
+    /// S8: start a bounded, one-shot debounce that persists metrics once the
+    /// interval elapses. No per-frame writes and no idle repaint: the timer
+    /// fires exactly once per burst of activity.
+    fn schedule_metrics_flush(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down
+            || self.metrics_emitter.is_none()
+            || self.metrics_flush_deadline.is_some()
+        {
+            return;
+        }
+        let deadline = Instant::now() + METRICS_FLUSH_DEBOUNCE;
+        self.metrics_flush_deadline = Some(deadline);
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            Timer::after(METRICS_FLUSH_DEBOUNCE).await;
+            let _ = weak.update(cx, |view, _cx| {
+                if !view.shutting_down && view.metrics_flush_deadline == Some(deadline) {
+                    view.flush_metrics();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// S8: sample counters and replace the background writer's pending snapshot.
+    /// A no-op when disabled; no serialization or filesystem work on this thread.
+    fn flush_metrics(&mut self) {
+        self.metrics_flush_deadline = None;
+        if self.metrics_emitter.is_none() {
+            return;
+        }
+        self.sample_metrics_counters();
+        if let Some(emitter) = &self.metrics_emitter {
+            emitter.submit(self.metrics.snapshot());
+        }
     }
 
     /// Insert text at the caret, replacing any selection. Control chars
@@ -5115,6 +6014,9 @@ impl WorkspaceView {
             return;
         };
         // A press on the editor reassigns typing to this document.
+        if self.input_owner != Some(InputOwner::Editor(document)) {
+            self.editor_check_disk(document, cx);
+        }
         self.set_input_owner(InputOwner::Editor(document));
         let caret = self.editor_carets.entry(document).or_default();
         if event.modifiers.shift {
@@ -5266,14 +6168,48 @@ impl WorkspaceView {
     /// forwarded to a terminal that does not own input.
     #[allow(clippy::too_many_lines)]
     fn on_editor_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let Some(project) = self.coordinator.selected_project_id() else {
-            return;
-        };
-        let Some(document) = self.editor_active_doc(project) else {
+        let Some((project, document)) = self.active_editor_surface() else {
             return;
         };
         let modifiers = &event.keystroke.modifiers;
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+
+        if self.editor_external.as_ref().is_some_and(|decision| {
+            decision.dirty && !matches!(decision.state, ExternalState::Checking(_))
+        }) {
+            match key_name.as_str() {
+                "escape" => self.editor_resolve_external(ExternalChoice::Cancel, cx),
+                "r" => self.editor_resolve_external(ExternalChoice::Reload, cx),
+                "o" => self.editor_resolve_external(ExternalChoice::Overwrite, cx),
+                _ => {}
+            }
+            return;
+        }
+        // Printable text belongs exclusively to the platform input handler.
+        // Consume editing/navigation keys so the backend cannot also commit them.
+        if event.keystroke.key_char.is_none()
+            || modifiers.control
+            || modifiers.alt
+            || matches!(
+                key_name.as_str(),
+                "escape" | "enter" | "return" | "kpenter" | "tab" | "backspace" | "delete"
+            )
+        {
+            cx.stop_propagation();
+        }
+        if self.editor_composition.is_some() {
+            if key_name == "escape" {
+                self.editor_cancel_composition();
+                cx.notify();
+                return;
+            }
+            // The IME owns preedit navigation and commit. Other editor commands
+            // explicitly finish the preedit before changing selection/history.
+            if !modifiers.control && !modifiers.alt {
+                return;
+            }
+            self.editor_composition = None;
+        }
 
         // Editing chords. Plain Ctrl+C/X/V/A/S/Z and Ctrl+Shift+Z / Ctrl+Y
         // are editor-owned here; the Ctrl+Shift terminal clipboard chords
@@ -5370,11 +6306,7 @@ impl WorkspaceView {
             "end" => self.editor_move_line_bound(document, false, modifiers.shift, cx),
             "pageup" => self.editor_move_page(document, -1, cx),
             "pagedown" => self.editor_move_page(document, 1, cx),
-            _ => {
-                if let Some(text) = event.keystroke.key_char.as_ref() {
-                    self.editor_insert_text(document, text, cx);
-                }
-            }
+            _ => {}
         }
     }
 
@@ -5766,6 +6698,10 @@ impl WorkspaceView {
             .clone();
         let snapshot = Arc::new(snapshot);
         let row_mono = mono.clone();
+        // S8: capture recorder handles for the row processor. The closure is
+        // `Fn` and `'static`, so it observes counters through interior
+        // mutability rather than borrowing `self`.
+        let metrics = self.metrics.clone();
         let (caret_line, caret_col) = snapshot.offset_to_line_col(caret.cursor);
         // Blink phase paints the caret; a paused/unfocused editor leaves it
         // solid (never produces a repaint loop of its own).
@@ -5776,7 +6712,9 @@ impl WorkspaceView {
             cx.processor({
                 let snapshot = Arc::clone(&snapshot);
                 move |_view, range: std::ops::Range<usize>, window, _cx| {
-                    range
+                    let rendered_rows = range.len() as u64;
+                    let mut consulted = 0u64;
+                    let rows = range
                         .map(|line| {
                             let line_range = snapshot.line_range(line).unwrap_or(0..0);
                             let line_start = line_range.start;
@@ -5792,6 +6730,7 @@ impl WorkspaceView {
                             let mut cuts = vec![0usize, display.len()];
                             let mut token_at: Vec<(usize, usize, editor::TokenKind)> = Vec::new();
                             for span in snapshot.tokens_for_line(line) {
+                                consulted += 1;
                                 let end = span.start.saturating_add(span.len);
                                 if end <= line_start || span.start >= line_end {
                                     continue;
@@ -5934,7 +6873,11 @@ impl WorkspaceView {
                             }
                             row.w(px(row_width))
                         })
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    // S8: count actual row/span work; never emit from rendering.
+                    metrics.add_counter("rendered_rows", rendered_rows);
+                    metrics.add_counter("consulted_spans", consulted);
+                    rows
                 }
             }),
         )
@@ -5946,6 +6889,11 @@ impl WorkspaceView {
             list.style().restrict_scroll_to_axis = Some(true);
             list
         });
+        let paint_metrics = self.metrics.clone();
+        let metrics_pending_edit = Arc::clone(&self.metrics_pending_edit);
+        let frame_generation = snapshot.generation();
+        let input_view = cx.entity();
+        let input_focus = self.focus_handle.clone();
         let body = div()
             .relative()
             .flex()
@@ -5955,9 +6903,30 @@ impl WorkspaceView {
             .child(
                 canvas(
                     move |bounds, _, _| bounds,
-                    move |_, bounds_prepaint: Bounds<Pixels>, _, _| {
+                    move |_, bounds_prepaint: Bounds<Pixels>, window, cx| {
                         origin.set(bounds_prepaint.origin);
                         bounds_cell.set(bounds_prepaint);
+                        if input_view.read(cx).native_editor_document(window) == Some(document) {
+                            window.handle_input(
+                                &input_focus,
+                                ElementInputHandler::new(bounds_prepaint, input_view.clone()),
+                                cx,
+                            );
+                        }
+                        // This is GPUI's paint callback, not row construction.
+                        // It measures application paint, not compositor scanout.
+                        if bounds_prepaint.size.width > px(0.0)
+                            && bounds_prepaint.size.height > px(0.0)
+                        {
+                            let mut pending = metrics_pending_edit
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner());
+                            if let Some(elapsed) =
+                                pending_timing_elapsed(&mut pending, document, frame_generation)
+                            {
+                                paint_metrics.record_timing("edit_to_frame", elapsed);
+                            }
+                        }
                     },
                 )
                 .absolute()
@@ -6287,6 +7256,7 @@ impl WorkspaceView {
         self.editor_active.remove(&project);
         self.active_surface.insert(project, ActiveSurface::Diff);
         self.diff_dirty_hint = true;
+        self.restore_input_owner();
         tracing::debug!(
             target: "omaterm::git",
             project_id = %project.0,
@@ -7649,7 +8619,7 @@ impl WorkspaceView {
             && !event.keystroke.modifiers.alt
             && key_name == "s"
             && let Some(project) = self.coordinator.selected_project_id()
-            && self.diff_panel.preview_open(project)
+            && self.diff_is_active(project)
         {
             self.stage_current_diff_hunk(project, cx);
             return;
@@ -7661,7 +8631,7 @@ impl WorkspaceView {
             && !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
             && let Some(project) = self.coordinator.selected_project_id()
-            && self.diff_panel.preview_open(project)
+            && self.diff_is_active(project)
         {
             if key_name == "n" {
                 self.diff_panel.next_hunk(project);
@@ -7791,15 +8761,14 @@ impl WorkspaceView {
 
         // Clipboard paste: Ctrl+Shift+V.
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "v" {
-            if let Some(document) = self
-                .coordinator
-                .selected_project_id()
-                .and_then(|project| self.editor_active_doc(project))
-            {
+            if let Some(document) = self.active_editor_surface().map(|(_, document)| document) {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     self.editor_insert_text(document, &text, cx);
                 }
-            } else {
+            } else if self
+                .input_owner
+                .is_some_and(|owner| owner.terminal_pane().is_some())
+            {
                 self.paste(cx);
             }
             return;
@@ -7807,17 +8776,16 @@ impl WorkspaceView {
 
         // Explicit clipboard copy of the drag selection: Ctrl+Shift+C.
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "c" {
-            if let Some(document) = self
-                .coordinator
-                .selected_project_id()
-                .and_then(|project| self.editor_active_doc(project))
-            {
+            if let Some(document) = self.active_editor_surface().map(|(_, document)| document) {
                 self.editor_copy(document, cx);
             } else if let Some(project) = self.coordinator.selected_project_id()
-                && self.diff_panel.preview_open(project)
+                && self.diff_is_active(project)
             {
                 self.copy_current_diff_hunk(project, cx);
-            } else {
+            } else if self
+                .input_owner
+                .is_some_and(|owner| owner.terminal_pane().is_some())
+            {
                 self.copy_selection(cx);
             }
             return;
@@ -7923,8 +8891,9 @@ impl WorkspaceView {
         // other owner (editor, overlay, focused field) has already returned
         // above, and a stale owner falls through to a no-op rather than
         // leaking keys into a PTY.
-        if let Some(owner) = self.input_owner
-            && owner.terminal_pane().is_none()
+        if !self
+            .input_owner
+            .is_some_and(|owner| owner.terminal_pane().is_some())
         {
             return;
         }
@@ -11246,6 +12215,14 @@ impl WorkspaceView {
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
                                         view.diff_panel.close_preview(preview_id);
+                                        if view.diff_is_active(preview_id)
+                                            || view.active_surface.get(&preview_id)
+                                                == Some(&ActiveSurface::Diff)
+                                        {
+                                            view.active_surface
+                                                .insert(preview_id, ActiveSurface::Terminal);
+                                            view.restore_input_owner();
+                                        }
                                         cx.notify();
                                     }),
                                 )
@@ -12318,17 +13295,227 @@ impl WorkspaceView {
     }
 }
 
+impl WorkspaceView {
+    fn native_editor_document(&self, window: &Window) -> Option<DocumentId> {
+        if !window.is_window_active()
+            || !self.focus_handle.is_focused(window)
+            || !self.editor_owns_input()
+            || self.input_owner != self.computed_input_owner()
+        {
+            return None;
+        }
+        self.input_owner.and_then(InputOwner::editor_document)
+    }
+
+    fn native_editor_replace(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+        mark: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(document) = self.native_editor_document(window) else {
+            return;
+        };
+        let caret = self
+            .editor_carets
+            .get(&document)
+            .copied()
+            .unwrap_or_default();
+        match apply_native_editor_edit(
+            self.coordinator.documents_mut(),
+            document,
+            caret,
+            &mut self.editor_composition,
+            NativeEditorEdit {
+                range,
+                text,
+                selected,
+                mark,
+            },
+        ) {
+            Ok(caret) => {
+                self.editor_carets.insert(document, caret);
+                self.editor_after_edit(document, cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Edit: {error}"));
+                cx.notify();
+            }
+        }
+    }
+}
+
+impl EntityInputHandler for WorkspaceView {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        adjusted: &mut Option<Range<usize>>,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        *adjusted = None;
+        let document = self.native_editor_document(window)?;
+        let snapshot = self.coordinator.documents().render_snapshot(document)?;
+        let bytes = utf16_to_bytes(snapshot.text(), range);
+        *adjusted = Some(
+            byte_to_utf16(snapshot.text(), bytes.start)..byte_to_utf16(snapshot.text(), bytes.end),
+        );
+        Some(snapshot.text()[bytes].to_owned())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let document = self.native_editor_document(window)?;
+        let snapshot = self.coordinator.documents().render_snapshot(document)?;
+        let caret = self
+            .editor_carets
+            .get(&document)
+            .copied()
+            .unwrap_or_default();
+        let (start, end) = caret
+            .selection_range()
+            .unwrap_or((caret.cursor, caret.cursor));
+        Some(UTF16Selection {
+            range: byte_to_utf16(snapshot.text(), start)..byte_to_utf16(snapshot.text(), end),
+            reversed: caret.anchor.is_some_and(|anchor| caret.cursor < anchor),
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        let document = self.native_editor_document(window)?;
+        let composition = self
+            .editor_composition
+            .as_ref()
+            .filter(|c| c.document == document)?;
+        let snapshot = self.coordinator.documents().render_snapshot(document)?;
+        if composition.generation != snapshot.generation() {
+            return None;
+        }
+        Some(
+            byte_to_utf16(snapshot.text(), composition.range.start)
+                ..byte_to_utf16(snapshot.text(), composition.range.end),
+        )
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.native_editor_document(window).is_some() {
+            self.editor_composition = None;
+            cx.notify();
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.native_editor_replace(range, text, None, false, window, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.native_editor_replace(range, text, selected, true, window, cx);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let document = self.native_editor_document(window)?;
+        let snapshot = self.coordinator.documents().render_snapshot(document)?;
+        let bytes = utf16_to_bytes(snapshot.text(), range);
+        let (line, col) = snapshot.offset_to_line_col(bytes.start);
+        let line_text = editor::strip_trailing_cr_for_display(snapshot.line(line)?);
+        let end = if snapshot.offset_to_line_col(bytes.end).0 == line {
+            snapshot
+                .offset_to_line_col(bytes.end)
+                .1
+                .min(line_text.len())
+        } else {
+            line_text.len()
+        };
+        let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
+        let x = Self::editor_shape_width(
+            &editor::display_line(&line_text[..col.min(line_text.len())]),
+            &mono,
+            window,
+        );
+        let end_x =
+            Self::editor_shape_width(&editor::display_line(&line_text[..end]), &mono, window);
+        let scroll_x = self
+            .editor_x_handles
+            .get(&document)
+            .map(|h| h.offset().x)
+            .unwrap_or(px(0.0));
+        let scroll_y = self
+            .editor_rows_handles
+            .get(&document)
+            .map(|h| h.0.borrow().base_handle.offset().y)
+            .unwrap_or(px(0.0));
+        let origin = gpui::point(
+            bounds.origin.x + px(EDITOR_GUTTER_W + x) + scroll_x,
+            bounds.origin.y + px(line as f32 * EDITOR_ROW_H) + scroll_y,
+        );
+        let rect = Bounds::new(origin, size(px((end_x - x).max(1.0)), px(EDITOR_ROW_H)));
+        Some(rect.intersect(&bounds))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let document = self.native_editor_document(window)?;
+        if !self
+            .editor_body_bounds
+            .get(&document)?
+            .get()
+            .contains(&point)
+        {
+            return None;
+        }
+        let hit = self.editor_hit_at_point(document, point, window, cx)?;
+        let snapshot = self.coordinator.documents().render_snapshot(document)?;
+        Some(byte_to_utf16(snapshot.text(), hit.offset))
+    }
+}
+
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Sample window activation each frame. A focus loss without a matching
         // mouse-up must terminate drag capture so a stuck drag cannot continue
         // when the window regains focus.
-        let focused = self.focus_handle.is_focused(window);
+        let focused = self.focus_handle.is_focused(window) && window.is_window_active();
         if self.window_focused && !focused {
+            self.editor_cancel_composition();
             self.editor_selecting = None;
             self.files_vdrag = None;
         }
         self.window_focused = focused;
+        self.restore_input_owner();
         self.resize_panes_to_window(window, cx);
         let viewport = window.viewport_size();
         let main_view_width = crate::ui::geometry::shell_rects(
@@ -12431,6 +13618,7 @@ impl Render for WorkspaceView {
             .min_h(px(0.0))
             .relative();
         if self.editor_lifecycle_state() != EditorLifecycle::Idle
+            && self.editor_external.is_none()
             && let Some(decision) = self.editor_lifecycle.as_ref()
         {
             let (headline, choices): (String, Vec<(DirtyChoice, &str)>) = match &decision.action {
@@ -12515,6 +13703,60 @@ impl Render for WorkspaceView {
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
                                 view.editor_resolve_pending(choice, cx);
+                            }),
+                        )
+                        .child(label),
+                );
+            }
+            prompt = prompt.child(buttons);
+            pane_area = pane_area.child(prompt);
+        }
+        if let Some(decision) = self.editor_external.as_ref()
+            && !matches!(decision.state, ExternalState::Checking(_))
+        {
+            let filename = self
+                .coordinator
+                .documents()
+                .relative_path(decision.document)
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<closed document>".into());
+            let mut prompt = div()
+                .absolute()
+                .top_4()
+                .left_4()
+                .right_4()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .px_3()
+                .py_2()
+                .bg(rgb(workbench::WARN_BG))
+                .text_color(rgb(workbench::WARN_TEXT))
+                .child(format!(
+                    "{filename}: {}",
+                    decision.message.as_deref().unwrap_or("Changed on disk")
+                ));
+            let mut buttons = div().flex().gap_2();
+            for (choice, label) in [
+                (ExternalChoice::Reload, "Reload (R)"),
+                (ExternalChoice::Overwrite, "Overwrite (O)"),
+                (ExternalChoice::Cancel, "Cancel (Esc)"),
+            ] {
+                if !decision.accepts(choice) {
+                    continue;
+                }
+                buttons = buttons.child(
+                    div()
+                        .cursor_pointer()
+                        .px_2()
+                        .py_1()
+                        .border_1()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.editor_resolve_external(choice, cx);
                             }),
                         )
                         .child(label),
@@ -12621,17 +13863,14 @@ impl Render for WorkspaceView {
         // like the diff preview, with priority over it. Buffers survive
         // tab switches and preview changes in the router-owned store;
         // only this view-local activation is cleared by terminal tabs.
-        let editor_surface = self.coordinator.selected_project_id().and_then(|project| {
-            self.editor_active_doc(project)
-                .map(|document| (project, document))
-        });
+        let editor_surface = self.active_editor_surface();
         // M15 diff preview tab: when open for the selected project, the
         // main area shows the file diff instead of the terminal pane tree.
         // Core tabs are untouched — selecting a terminal tab closes this.
         let preview_project = self
             .coordinator
             .selected_project_id()
-            .filter(|project| self.diff_panel.preview_open(*project));
+            .filter(|project| self.diff_is_active(*project));
         if let Some((project, document)) = editor_surface {
             pane_area =
                 pane_area.child(self.render_editor(project, document, main_view_width, window, cx));
@@ -13631,13 +14870,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
+        ActiveSurface, ExternalChoice, ExternalDecision, ExternalState, NativeEditorEdit,
+        apply_native_editor_edit, byte_to_utf16, restore_selection,
+        retain_queued_restore_descriptors, utf16_to_bytes,
+    };
+    use super::{
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
         FileActivation, InputOwner, InspectorTab, NativeOpenTarget, PaletteFileIndexCache,
         PaletteSearchRequest, PaletteSearchWorker, SurfaceRoute, WorkspaceView,
-        captured_targets_stale, ctrl_surface_slot, file_activation, native_open_may_activate,
-        project_jump_index, revalidate_captured_targets, route_ctrl_surface, select_mono_family,
+        captured_targets_stale, ctrl_surface_slot, discard_before_action, file_activation,
+        metrics_job_counts, native_open_may_activate, pending_timing_elapsed, project_jump_index,
+        revalidate_captured_targets, route_ctrl_surface, select_mono_family,
     };
     use crate::editor::DocumentStore;
+    use crate::editor::EditorCaret;
+    use crate::metrics::PendingTiming;
     use omaterm_core::{DocumentId, FileCommand, OmaCommand, ProjectId};
     use std::sync::Arc;
 
@@ -13678,6 +14925,297 @@ mod tests {
     }
 
     #[test]
+    fn s8_edit_to_frame_fires_once_for_the_matching_generation() {
+        let document = DocumentId::new();
+        let mut pending = Some(PendingTiming::new(document, 7));
+        // Another document can have the same generation; it must not consume.
+        assert!(pending_timing_elapsed(&mut pending, DocumentId::new(), 7).is_none());
+        // A stale frame generation does not consume the pending timing.
+        assert!(pending_timing_elapsed(&mut pending, document, 6).is_none());
+        assert!(pending.is_some());
+        // The matching frame consumes it and reports an elapsed duration.
+        pending_timing_elapsed(&mut pending, document, 7).expect("matching generation");
+        assert!(pending.is_none());
+        // A second frame cannot re-fire the same edit.
+        assert!(pending_timing_elapsed(&mut pending, document, 7).is_none());
+    }
+
+    #[test]
+    fn external_conflict_ui_typed_choices_require_observation_and_final_receipts() {
+        let mut store = DocumentStore::default();
+        let (_, document) = open_store_document(&mut store, "conflict.txt", "disk\n");
+        let revision = store.revision(document).unwrap();
+        let mut decision = ExternalDecision {
+            document,
+            generation: 7,
+            observed: None,
+            dirty: true,
+            state: ExternalState::Checking(41),
+            message: None,
+        };
+        for choice in [
+            ExternalChoice::Reload,
+            ExternalChoice::Overwrite,
+            ExternalChoice::Cancel,
+        ] {
+            assert!(!decision.accepts(choice));
+        }
+        // A completion for another generation cannot arm destructive choices.
+        assert!(!decision.checked(6, revision, true, true));
+        assert_eq!(decision.state, ExternalState::Checking(41));
+        assert!(decision.observed.is_none());
+        assert!(decision.checked(7, revision, true, true));
+        assert_eq!(decision.state, ExternalState::AwaitingDecision);
+        for choice in [
+            ExternalChoice::Reload,
+            ExternalChoice::Overwrite,
+            ExternalChoice::Cancel,
+        ] {
+            assert!(decision.accepts(choice));
+        }
+        assert!(decision.begin(ExternalChoice::Overwrite, 42));
+        assert_eq!(decision.state, ExternalState::Overwriting(42));
+        assert_eq!(decision.receipt(), Some(42));
+        assert!(!decision.accepts(ExternalChoice::Reload));
+        assert!(!decision.accepts(ExternalChoice::Cancel));
+        // Failed I/O remains resolvable; a second-change conflict instead goes
+        // through Checking again before offering another overwrite.
+        decision.state = ExternalState::Checking(43);
+        assert!(!decision.begin(ExternalChoice::Overwrite, 44));
+        let mut second = revision;
+        second.content_digest = [2; 32];
+        assert!(decision.checked(7, second, true, true));
+        assert_eq!(decision.observed, Some(second));
+        assert!(decision.begin(ExternalChoice::Reload, 44));
+        assert_eq!(decision.state, ExternalState::Reloading(44));
+        decision.state = ExternalState::Failed;
+        assert!(decision.accepts(ExternalChoice::Reload));
+        assert!(decision.accepts(ExternalChoice::Cancel));
+        assert_eq!(store.text(document), Some("disk\n"));
+    }
+
+    #[test]
+    fn clean_external_status_offers_reload_and_cancel_but_never_overwrite() {
+        let mut store = DocumentStore::default();
+        let (_, document) = open_store_document(&mut store, "clean.txt", "disk\n");
+        let revision = store.revision(document).unwrap();
+        let mut decision = ExternalDecision {
+            document,
+            generation: 1,
+            observed: None,
+            dirty: false,
+            state: ExternalState::Checking(1),
+            message: None,
+        };
+        assert!(decision.checked(1, revision, true, false));
+        assert!(decision.message.as_deref().unwrap().contains("Reload"));
+        assert!(decision.accepts(ExternalChoice::Reload));
+        assert!(decision.accepts(ExternalChoice::Cancel));
+        assert!(!decision.accepts(ExternalChoice::Overwrite));
+        assert!(!decision.begin(ExternalChoice::Overwrite, 2));
+        assert_eq!(decision.state, ExternalState::AwaitingDecision);
+        assert_eq!(store.is_dirty(document), Some(false));
+        decision.state = ExternalState::Checking(3);
+        assert!(!decision.checked(1, revision, false, false));
+    }
+
+    #[test]
+    fn s8_job_counts_sum_the_worker_queue_and_restore_state() {
+        assert_eq!(metrics_job_counts(0, false, 0, 0, 0), (0, 0));
+        // Active = highlighter active + editor I/O active.
+        assert_eq!(metrics_job_counts(1, true, 0, 0, 0), (2, 0));
+        // In-flight restores already belong to the I/O queue: do not double count.
+        assert_eq!(metrics_job_counts(0, false, 1, 2, 3), (0, 6));
+    }
+
+    #[test]
+    fn native_utf16_ranges_round_trip_and_never_split_scalars() {
+        let text = "a😀e\u{301}\t界\r\n";
+        for byte in text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain([text.len()])
+        {
+            let units = byte_to_utf16(text, byte);
+            assert_eq!(utf16_to_bytes(text, units..units), byte..byte);
+        }
+        assert_eq!(utf16_to_bytes(text, 2..3), 1..5);
+        assert_eq!(utf16_to_bytes(text, 2..2), 1..1);
+        assert_eq!(
+            utf16_to_bytes(text, std::ops::Range { start: 3, end: 2 }),
+            5..5
+        );
+        assert_eq!(
+            utf16_to_bytes(text, usize::MAX..usize::MAX),
+            text.len()..text.len()
+        );
+        assert_eq!(byte_to_utf16(text, 3), 1);
+        assert_eq!(utf16_to_bytes("", 0..usize::MAX), 0..0);
+    }
+
+    #[test]
+    fn native_composition_updates_replace_preedit_then_commit_once() {
+        let mut store = DocumentStore::default();
+        let (_, document) = open_store_document(&mut store, "ime.txt", "a😀z");
+        let mut composition = None;
+        let mut caret = EditorCaret {
+            cursor: 5,
+            anchor: Some(1),
+        };
+        caret = apply_native_editor_edit(
+            &mut store,
+            document,
+            caret,
+            &mut composition,
+            NativeEditorEdit {
+                range: None,
+                text: "に",
+                selected: Some(0..1),
+                mark: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(store.text(document), Some("aにz"));
+        assert_eq!(caret.selection_range(), Some((1, 4)));
+        caret = apply_native_editor_edit(
+            &mut store,
+            document,
+            caret,
+            &mut composition,
+            NativeEditorEdit {
+                range: None,
+                text: "日本",
+                selected: None,
+                mark: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(store.text(document), Some("a日本z"));
+        assert_eq!(composition.as_ref().unwrap().original, "😀");
+        caret = apply_native_editor_edit(
+            &mut store,
+            document,
+            caret,
+            &mut composition,
+            NativeEditorEdit {
+                range: None,
+                text: "日本語",
+                selected: None,
+                mark: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(store.text(document), Some("a日本語z"));
+        assert_eq!(caret.cursor, 10);
+        assert!(composition.is_none());
+    }
+
+    #[test]
+    fn native_composition_cancel_restores_selection_and_stale_cancel_preserves_edits() {
+        let mut store = DocumentStore::default();
+        let (_, document) = open_store_document(&mut store, "cancel.txt", "a😀z");
+        let caret = EditorCaret {
+            cursor: 1,
+            anchor: Some(5),
+        };
+        let mut composition = None;
+        apply_native_editor_edit(
+            &mut store,
+            document,
+            caret,
+            &mut composition,
+            NativeEditorEdit {
+                range: None,
+                text: "候補",
+                selected: None,
+                mark: true,
+            },
+        )
+        .unwrap();
+        let (_, restored) = composition.take().unwrap().cancel(&mut store).unwrap();
+        assert_eq!(store.text(document), Some("a😀z"));
+        assert_eq!((restored.cursor, restored.anchor), (1, Some(5)));
+        apply_native_editor_edit(
+            &mut store,
+            document,
+            restored,
+            &mut composition,
+            NativeEditorEdit {
+                range: None,
+                text: "x",
+                selected: None,
+                mark: true,
+            },
+        )
+        .unwrap();
+        store.apply_edit(document, 0, 0, "new").unwrap();
+        assert!(composition.take().unwrap().cancel(&mut store).is_none());
+        assert_eq!(store.text(document), Some("newaxz"));
+    }
+
+    #[test]
+    fn native_explicit_replacement_and_empty_preedit_delete_use_valid_unicode_ranges() {
+        let mut store = DocumentStore::default();
+        let (_, document) = open_store_document(&mut store, "range.txt", "a😀z");
+        let mut composition = None;
+        let caret = apply_native_editor_edit(
+            &mut store,
+            document,
+            EditorCaret::default(),
+            &mut composition,
+            NativeEditorEdit {
+                range: Some(2..3),
+                text: "界",
+                selected: None,
+                mark: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(store.text(document), Some("a界z"));
+        let caret = apply_native_editor_edit(
+            &mut store,
+            document,
+            caret,
+            &mut composition,
+            NativeEditorEdit {
+                range: None,
+                text: "",
+                selected: None,
+                mark: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(store.text(document), Some("az"));
+        assert_eq!(caret.cursor, 1);
+        assert!(composition.is_none());
+    }
+
+    #[test]
+    fn active_diff_never_assigns_hidden_terminal_or_editor_input() {
+        let pane = omaterm_core::PaneId::new();
+        let document = DocumentId::new();
+        assert_eq!(
+            ActiveSurface::Diff.input_owner(Some(pane)),
+            Some(InputOwner::Diff)
+        );
+        assert_eq!(
+            ActiveSurface::Diff.input_owner(None),
+            Some(InputOwner::Diff)
+        );
+        assert_eq!(
+            ActiveSurface::Editor(document).input_owner(Some(pane)),
+            Some(InputOwner::Editor(document))
+        );
+        assert_eq!(
+            ActiveSurface::Terminal.input_owner(Some(pane)),
+            Some(InputOwner::Terminal(pane))
+        );
+        assert_eq!(ActiveSurface::Terminal.input_owner(None), None);
+        assert!(InputOwner::Diff.terminal_pane().is_none());
+        assert!(InputOwner::Diff.editor_document().is_none());
+    }
+
+    #[test]
     fn editor_lifecycle_states_are_typed_and_saving_is_not_settled_by_pending() {
         let mut store = DocumentStore::default();
         let (project, document) = open_store_document(&mut store, "a.txt", "disk\n");
@@ -13703,6 +15241,198 @@ mod tests {
             .insert(document, DocSaveOutcome::Committed);
         assert!(decision.saves_settled());
         assert_eq!(DirtyChoice::Overwrite, DirtyChoice::Overwrite);
+    }
+
+    #[test]
+    fn restore_only_activates_saved_selection_and_translates_deduplicated_id() {
+        let project = ProjectId::new();
+        let saved = DocumentId::new();
+        let background = DocumentId::new();
+        let alias = DocumentId::new();
+        let mut selected = std::collections::HashMap::from([(project, saved)]);
+        // A perfectly equal persisted/live id is not evidence of activation.
+        assert!(!restore_selection(
+            &mut selected,
+            Some(saved),
+            project,
+            background,
+            background,
+            0
+        ));
+        assert_eq!(selected[&project], saved);
+        // The active descriptor may deduplicate onto a different live id.
+        assert!(restore_selection(
+            &mut selected,
+            Some(saved),
+            project,
+            saved,
+            alias,
+            0
+        ));
+        assert_eq!(selected[&project], alias);
+        assert!(!restore_selection(
+            &mut selected,
+            Some(saved),
+            project,
+            background,
+            background,
+            0
+        ));
+        assert_eq!(selected[&project], alias);
+    }
+
+    #[test]
+    fn restore_preserves_user_selection_and_never_activates_after_focus_change() {
+        let project = ProjectId::new();
+        let saved = DocumentId::new();
+        let user = DocumentId::new();
+        let alias = DocumentId::new();
+        let mut selected = std::collections::HashMap::from([(project, user)]);
+        assert!(!restore_selection(
+            &mut selected,
+            Some(saved),
+            project,
+            saved,
+            alias,
+            1
+        ));
+        assert_eq!(selected[&project], user);
+        // Terminal focus leaves the chip selected: alias repair is legitimate,
+        // but must not reveal the editor over the terminal.
+        selected.insert(project, saved);
+        assert!(!restore_selection(
+            &mut selected,
+            Some(saved),
+            project,
+            saved,
+            alias,
+            1
+        ));
+        assert_eq!(selected[&project], alias);
+    }
+
+    #[test]
+    fn startup_snapshot_retains_every_unscheduled_descriptor_and_active_placeholder() {
+        let project = ProjectId::new();
+        let requests: std::collections::VecDeque<_> = (0..8)
+            .map(|index| crate::router::DocumentRestoreRequest {
+                project,
+                document: DocumentId::new(),
+                path_bytes: vec![b'f', b'0' + index, 0xff],
+                root_device: 11,
+                root_inode: 12,
+            })
+            .collect();
+        let selected = std::collections::HashMap::from([(project, requests[6].document)]);
+        let mut store = DocumentStore::default();
+        // Only the first read has been scheduled. The rest are still view-owned.
+        let first = &requests[0];
+        store
+            .reserve_restore(&crate::editor::RestoreReservation {
+                id: first.document,
+                project,
+                path_bytes: first.path_bytes.clone(),
+                root_identity: omaterm_context::RootIdentity {
+                    device: 11,
+                    inode: 12,
+                },
+            })
+            .unwrap();
+        let mut registries = store.export_document_registry(&selected);
+        retain_queued_restore_descriptors(&mut registries, &requests, &selected);
+        // Repeated snapshotting neither duplicates nor drops metadata.
+        retain_queued_restore_descriptors(&mut registries, &requests, &selected);
+        let registry = &registries[&project];
+        assert_eq!(registry.documents.len(), requests.len());
+        assert_eq!(registry.active_document, Some(requests[6].document));
+        for request in requests {
+            let descriptor = registry
+                .documents
+                .iter()
+                .find(|entry| entry.id == request.document)
+                .unwrap();
+            assert_eq!(
+                crate::router::DocumentRestoreRequest::from_descriptor(project, descriptor),
+                request
+            );
+        }
+    }
+
+    #[test]
+    fn outstanding_save_receipts_block_all_choices_until_exact_final_reports() {
+        let mut store = DocumentStore::default();
+        let (project, document) = open_store_document(&mut store, "receipts.txt", "disk");
+        let target = CapturedVersion {
+            project,
+            document,
+            generation: store.generation(document).unwrap(),
+            revision: store.revision(document).unwrap(),
+        };
+        let mut decision =
+            DirtyDecision::new(DirtyAction::Close { project, document }, vec![target]);
+        decision.lifecycle = EditorLifecycle::Saving;
+        decision.pending_saves.insert(42, target);
+        // Save/Discard/Overwrite/Cancel all enter through the same gate.
+        assert!(!decision.accepts_choice());
+        assert!(!decision.settle_save(41, DocSaveOutcome::Committed));
+        assert!(!decision.saves_settled());
+        // Even a dispatch failure must not orphan an earlier accepted save.
+        decision.lifecycle = EditorLifecycle::Failed;
+        assert!(!decision.accepts_choice());
+        assert!(decision.settle_save(42, DocSaveOutcome::CommittedWarning));
+        assert_eq!(
+            decision.outcomes[&document],
+            DocSaveOutcome::CommittedWarning
+        );
+        assert!(!decision.settle_save(42, DocSaveOutcome::Failed));
+        assert_eq!(
+            decision.outcomes[&document],
+            DocSaveOutcome::CommittedWarning
+        );
+        assert!(decision.accepts_choice());
+    }
+
+    #[test]
+    fn confirmed_revert_keeps_dirty_text_history_and_generation_until_read_commits() {
+        let mut store = DocumentStore::default();
+        let (project, document) = open_store_document(&mut store, "reload.txt", "disk");
+        store.apply_edit(document, 0, 4, "unsaved").unwrap();
+        let target = CapturedVersion {
+            project,
+            document,
+            generation: store.generation(document).unwrap(),
+            revision: store.revision(document).unwrap(),
+        };
+        let history = store.history_cursor(document);
+        assert_eq!(
+            discard_before_action(
+                &mut store,
+                DirtyAction::Revert { project, document },
+                &[target]
+            ),
+            Some(document)
+        );
+        assert_eq!(store.text(document), Some("unsaved"));
+        assert_eq!(store.is_dirty(document), Some(true));
+        assert_eq!(store.history_cursor(document), history);
+        assert_eq!(store.generation(document), Some(target.generation));
+        // Failure has nothing to roll back. Undo/redo remain usable, and an
+        // intervening edit invalidates the generation captured for the read.
+        assert!(store.undo(document).unwrap());
+        assert_eq!(store.text(document), Some("disk"));
+        assert!(store.redo(document).unwrap());
+        assert_eq!(store.text(document), Some("unsaved"));
+        assert!(captured_targets_stale(&store, &[target]));
+        // Close/Delete/Shutdown still apply an explicit destructive discard.
+        assert_eq!(
+            discard_before_action(
+                &mut store,
+                DirtyAction::Close { project, document },
+                &[target]
+            ),
+            None
+        );
+        assert_eq!(store.is_dirty(document), Some(false));
     }
 
     #[test]

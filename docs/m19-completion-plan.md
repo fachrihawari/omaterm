@@ -5,6 +5,25 @@
 **Goal:** close M19 with a reliable native open → edit → highlight → save →
 close/restart loop, without expanding into an IDE.
 
+**Current execution update — 2026-10-04:** delivered source is dirty
+`f287991+worktree`, parent `f287991f223e01a36ea5e0a60c219c824da05ba3`.
+Current format, parallel **606** tests, serial **606** tests, workspace/all-target
+Clippy and release build pass with `RUSTUP_TOOLCHAIN=1.99.0`; see the
+[S9 report](evidence/m19-s9-report.md) and [manifest](evidence/m19-s9-manifest.json).
+The baseline audit below is historical. Root resolution is now off-thread;
+I/O admission bounds one active + 16 queued jobs and a 17-result mailbox;
+32 document slots are workspace-wide including reservations/restore entries.
+Metadata-only snapshots/bounded restore/Retry, committed-save baseline
+acknowledgement and observed-revision overwrite checks are implemented.
+S6 now includes `EntityInputHandler`, marked composition and surface/input-owner
+cancellation; navigation is line-local and snapshots indexed/shared. These are
+implementation corrections, not completed native exit criteria.
+
+The [current native run](evidence/m19-native-current.md) is blocked by user-focus
+change before first input. Startup, terminal IPC and 20 real process samples
+are partial evidence only; zero editor cycles and no graceful exit/restart.
+S9, E01–E10 and the full-native checkboxes below remain open.
+
 ## 1. Authority, scope and sequencing
 
 Read this document with the [M19 implementation contract](m19-basic-editor-implementation-plan.md),
@@ -548,6 +567,13 @@ run is recorded as such; retries require diagnosis, not output filtering or skip
 
 ### Native acceptance run
 
+The harness returns `0` only for verified acceptance, `2` for blocked, `3` for
+failed and **`4` for pending partial collection**. Semantic input requires an
+explicit `--scripted-steps <flow-json>` plus `--allow-input` and a helper satisfying
+the handshake/PID/outcome contract. Merely launching/collecting is not native
+acceptance. It produces no synthetic measurement placeholders; empty timing
+arrays mean unobserved with null percentiles, never a resource/latency pass.
+
 Use release binaries with isolated HOME/XDG paths and generated disposable
 repositories. Record commit, binary build, compositor/output/scale, font,
 logical viewport, fixture sizes, commands, timing and captures. Bind the
@@ -618,7 +644,9 @@ remaining blockers and the next slice in `docs/status.md`. Commit only when
 requested, after inspecting the intended diff and checks; plans themselves
 do not authorize a milestone-complete claim.
 
-**Immediate next action:** execute S0's API/fixture contract work, then S1's
-descriptor-root/identity tests and helpers. Build S2 on those helpers before
-adding registry persistence, so restart does not introduce more synchronous
-UI-thread file reads. Keep `719926b` as the behavioral/resource baseline.
+**Immediate next action:** validate the delivered `f287991+worktree` in an
+uninterrupted target-focused native session: entry routes, text/IME/focus,
+dirty/conflict decisions, normal registry restart, both 20-cycle workloads,
+cap/aggregate/idle/timing measurements and graceful cleanup. Record any uncovered
+defect and its correction before rerunning affected gates. S0/S1/S2 foundation
+work is implemented; `719926b` remains historical behavioral/resource evidence.

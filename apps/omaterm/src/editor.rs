@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use omaterm_core::{CommandError, DocumentId, EditorDocumentInfo, ErrorCode, ProjectId};
 use omaterm_state::{DocumentDescriptor, DocumentRegistry};
@@ -235,6 +235,8 @@ pub enum RestoreReserveError {
 /// (or explicitly unavailable) so the failure stays reachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreCommitError {
+    /// The read cannot fit the bounded document/text store.
+    ResourceLimit,
     /// No reservation remains: the document was closed or already retired.
     NotReserved,
     /// The persisted id was taken by a different live buffer.
@@ -245,10 +247,14 @@ pub enum RestoreCommitError {
 
 #[derive(Debug, Default)]
 pub struct DocumentStore {
+    /// Full text snapshots materialized for lifecycle payloads, not Arc clones
+    /// or line/selection copies. Cumulative even after document retirement.
+    buffer_copy_count: std::cell::Cell<u64>,
     docs: HashMap<DocumentId, Document>,
     by_file: HashMap<(ProjectId, omaterm_context::RootIdentity, u64, u64), DocumentId>,
     /// Metadata-only entries with no live buffer (loading/unavailable).
     placeholders: HashMap<DocumentId, DocumentPlaceholder>,
+    pending_opens: usize,
     next_history_sequence: u64,
 }
 
@@ -362,7 +368,7 @@ impl DocumentStore {
     /// use [`Self::try_open`] so saturation is an explicit stable error rather
     /// than an eviction of a live (possibly dirty) buffer.
     pub fn can_open(&self, file: &omaterm_context::EditorFile) -> Result<(), CommandError> {
-        if self.docs.len() >= MAX_OPEN_DOCUMENTS {
+        if self.occupied_slots() >= MAX_OPEN_DOCUMENTS {
             return Err(CommandError::new(
                 ErrorCode::InvalidRequest,
                 "the 32-document editor limit is reached",
@@ -534,7 +540,19 @@ impl DocumentStore {
     /// Owned copy of the live buffer for saves. Cloned once per save;
     /// bounded by the editor byte cap.
     pub fn buffer_text(&self, document: DocumentId) -> Option<String> {
-        self.docs.get(&document).map(|doc| doc.text.to_string())
+        self.docs.get(&document).map(|doc| {
+            self.note_buffer_copy();
+            doc.text.to_string()
+        })
+    }
+
+    pub fn note_buffer_copy(&self) {
+        self.buffer_copy_count
+            .set(self.buffer_copy_count.get().saturating_add(1));
+    }
+
+    pub fn buffer_copy_count(&self) -> u64 {
+        self.buffer_copy_count.get()
     }
 
     pub fn text(&self, document: DocumentId) -> Option<&str> {
@@ -761,7 +779,25 @@ impl DocumentStore {
     /// placeholders. Used by the cap check so an in-flight restore cannot
     /// over-subscribe the editor.
     fn occupied_slots(&self) -> usize {
-        self.docs.len() + self.placeholders.len()
+        self.docs.len() + self.placeholders.len() + self.pending_opens
+    }
+
+    pub(crate) fn reserve_open(&mut self) -> Result<(), CommandError> {
+        if self.occupied_slots() >= MAX_OPEN_DOCUMENTS {
+            return Err(CommandError::new(
+                ErrorCode::InvalidRequest,
+                "the 32-document editor limit is reached",
+            ));
+        }
+        self.pending_opens += 1;
+        Ok(())
+    }
+
+    pub(crate) fn release_open(&mut self) {
+        self.pending_opens = self
+            .pending_opens
+            .checked_sub(1)
+            .expect("open reservation exists");
     }
 
     /// Reserve a metadata-only restore entry under the persisted id. Rejects
@@ -841,6 +877,10 @@ impl DocumentStore {
             // A contained alias or concurrent open already owns this file:
             // converge on one buffer and drop the redundant reservation.
             return Err(RestoreCommitError::DuplicateLive(*existing));
+        }
+        if self.can_open(&file).is_err() {
+            self.placeholders.insert(document, placeholder);
+            return Err(RestoreCommitError::ResourceLimit);
         }
         self.insert_live(
             document,
@@ -1290,28 +1330,68 @@ impl EditorCaret {
     }
 }
 
+/// Find just the line containing `offset`, including its LF terminator. Byte
+/// searches stop at the neighboring newlines, even for a caret near EOF in a
+/// large document. Including the terminator keeps CRLF indivisible; LF is a
+/// grapheme boundary on both sides, so segmentation needs no earlier context.
+/// The search accepts offsets inside UTF-8 characters without slicing there.
+fn grapheme_line(text: &str, offset: usize) -> (usize, &str) {
+    let offset = offset.min(text.len());
+    let bytes = text.as_bytes();
+    let start = bytes
+        .get(..offset)
+        .and_then(|prefix| prefix.iter().rposition(|byte| *byte == b'\n'))
+        .map_or(0, |index| index + 1);
+    let end = bytes
+        .get(offset..)
+        .and_then(|suffix| suffix.iter().position(|byte| *byte == b'\n'))
+        .map_or(text.len(), |index| offset + index + 1);
+    let line = text
+        .get(start..end)
+        .expect("newline-delimited range is within text and UTF-8 aligned");
+    (start, line)
+}
+
 fn clamp_grapheme_offset(text: &str, offset: usize) -> usize {
-    text.grapheme_indices(true)
+    let offset = offset.min(text.len());
+    if offset == text.len() {
+        return offset;
+    }
+    let (start, line) = grapheme_line(text, offset);
+    line.grapheme_indices(true)
         .map(|(index, _)| index)
-        .chain(std::iter::once(text.len()))
-        .take_while(|index| *index <= offset.min(text.len()))
+        .take_while(|index| *index <= offset - start)
         .last()
         .unwrap_or(0)
+        + start
 }
 
 pub fn previous_grapheme(text: &str, offset: usize) -> usize {
-    text.grapheme_indices(true)
+    let offset = offset.min(text.len());
+    if offset == 0 {
+        return 0;
+    }
+    // At a line start, inspect the previous line's terminator (and its CR).
+    let (start, line) = grapheme_line(text, offset - 1);
+    line.grapheme_indices(true)
         .map(|(index, _)| index)
-        .take_while(|index| *index < offset.min(text.len()))
+        .take_while(|index| *index < offset - start)
         .last()
         .unwrap_or(0)
+        + start
 }
 
 pub fn next_grapheme(text: &str, offset: usize) -> usize {
-    text.grapheme_indices(true)
+    let offset = offset.min(text.len());
+    if offset == text.len() {
+        return offset;
+    }
+    let (start, line) = grapheme_line(text, offset);
+    line.grapheme_indices(true)
         .map(|(index, _)| index)
-        .find(|index| *index > offset)
-        .unwrap_or(text.len())
+        .find(|index| *index > offset - start)
+        .unwrap_or(line.len())
+        + start
 }
 
 const RUST_KEYWORDS: &[&str] = &[
@@ -2033,20 +2113,11 @@ pub fn strip_trailing_cr_for_display(line: &str) -> &str {
 /// selectors, keycaps and regional-indicator flags collapse to a single
 /// two-column cluster instead of summing their individual char widths.
 pub fn grapheme_display_width(grapheme: &str) -> usize {
-    let mut width = 0;
-    let mut emoji_sequence = false;
-    let mut regional_flag = false;
-    for ch in grapheme.chars() {
-        match ch {
-            '\u{200d}' | '\u{fe0f}' | '\u{20e3}' => emoji_sequence = true,
-            '\u{1f1e6}'..='\u{1f1ff}' => regional_flag = true,
-            _ => width = width.max(char_display_width(ch)),
-        }
-    }
-    if emoji_sequence || regional_flag {
-        width.max(2)
+    // Tabs expand at the caller's current column; other controls are invisible.
+    if grapheme.chars().all(char::is_control) {
+        0
     } else {
-        width
+        UnicodeWidthStr::width(grapheme)
     }
 }
 
@@ -2235,15 +2306,25 @@ pub(crate) enum EditorIoKind {
     Revert,
 }
 
-/// Metadata captured by the owner before enqueueing filesystem work. The root
-/// identity is rechecked by the worker after it captures its own descriptor,
-/// so a same-path root replacement cannot retarget an accepted operation.
+/// Domain metadata captured before enqueueing filesystem work. Production
+/// callers supply root inputs and an optional expected identity (save/revert/
+/// restore). The worker fills root_path/root_identity before invoking I/O;
+/// synthetic queue runners can supply already-resolved metadata instead.
 pub(crate) struct EditorIoRequest {
+    pub root_inputs: Option<EditorRootInputs>,
+    pub expected_root: Option<omaterm_context::RootIdentity>,
     pub project: ProjectId,
     pub root_path: PathBuf,
     pub root_identity: omaterm_context::RootIdentity,
     pub generation: u64,
     pub job: EditorIoJob,
+}
+
+/// Domain-only inputs. Resolution and descriptor capture belong to the worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditorRootInputs {
+    pub pinned: Option<PathBuf>,
+    pub cached_cwd: Option<PathBuf>,
 }
 
 /// Final successful I/O payload. Revert and open stay distinct so the owner
@@ -2260,6 +2341,7 @@ pub(crate) enum EditorIoSuccess {
 #[derive(Debug)]
 pub(crate) enum EditorIoError {
     Cancelled,
+    NoRoot,
     RootChanged,
     Context(omaterm_context::EditorError),
 }
@@ -2268,6 +2350,11 @@ pub(crate) enum EditorIoError {
 /// stale completion without consulting worker-local state.
 #[derive(Debug)]
 pub(crate) struct EditorIoCompletion {
+    /// Captured save payload metadata, retained even if its document retires.
+    pub saved_info: Option<EditorDocumentInfo>,
+    /// Enqueue through successful filesystem write return (including sync).
+    /// Absent for failures, cancelled queued work and non-save operations.
+    pub save_elapsed: Option<std::time::Duration>,
     pub operation: EditorOperationId,
     pub project: ProjectId,
     pub root_path: PathBuf,
@@ -2286,8 +2373,10 @@ pub(crate) enum EditorIoSubmitError {
 }
 
 const EDITOR_IO_QUEUE_CAPACITY: usize = 16;
+const EDITOR_IO_OUTSTANDING_CAPACITY: usize = 17;
 
 struct QueuedEditorIo {
+    started: std::time::Instant,
     operation: EditorOperationId,
     request: EditorIoRequest,
     cancelled: Arc<AtomicBool>,
@@ -2373,8 +2462,13 @@ impl EditorIoQueue {
                     queued
                 };
 
-                let result = run(&queued.request, &queued.cancelled);
-                let completion = completion_for(queued.operation, queued.request, result);
+                let mut queued = queued;
+                let result = resolve_editor_io_root(&mut queued.request, &queued.cancelled)
+                    .and_then(|()| run(&queued.request, &queued.cancelled));
+                let save_elapsed = matches!(&result, Ok(EditorIoSuccess::Saved(_)))
+                    .then(|| queued.started.elapsed());
+                let mut completion = completion_for(queued.operation, queued.request, result);
+                completion.save_elapsed = save_elapsed;
                 let (lock, ready) = &*worker_state;
                 let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 if state
@@ -2395,7 +2489,8 @@ impl EditorIoQueue {
     }
 
     /// Reserves a foreground slot before taking ownership of the request; the
-    /// queue never copies a save payload. A full queue excludes the active job.
+    /// queue never copies a save payload. Pending work is capped at 16 and
+    /// pending + active + unconsumed completions at 17.
     pub(crate) fn submit(
         &self,
         request: EditorIoRequest,
@@ -2405,7 +2500,10 @@ impl EditorIoQueue {
         if state.shutdown {
             return Err(EditorIoSubmitError::Shutdown);
         }
-        if state.pending.len() == EDITOR_IO_QUEUE_CAPACITY {
+        if state.pending.len() >= EDITOR_IO_QUEUE_CAPACITY
+            || state.pending.len() + state.completions.len() + usize::from(state.active.is_some())
+                >= EDITOR_IO_OUTSTANDING_CAPACITY
+        {
             return Err(EditorIoSubmitError::QueueFull);
         }
         let operation = EditorOperationId(
@@ -2415,6 +2513,7 @@ impl EditorIoQueue {
         );
         state.next_operation = operation.0.checked_add(1);
         state.pending.push_back(QueuedEditorIo {
+            started: std::time::Instant::now(),
             operation,
             request,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -2463,6 +2562,53 @@ impl EditorIoQueue {
             .lock()
             .ok()
             .and_then(|mut state| state.completions.pop_front())
+    }
+
+    /// Owner admission preflight, before materializing bounded save payloads.
+    /// The worker only moves outstanding jobs between these three containers.
+    pub(crate) fn can_submit(&self) -> bool {
+        let state = self.state.0.lock().unwrap_or_else(|p| p.into_inner());
+        !state.shutdown
+            && state.next_operation.is_some()
+            && state.pending.len() < EDITOR_IO_QUEUE_CAPACITY
+            && state.pending.len() + state.completions.len() + usize::from(state.active.is_some())
+                < EDITOR_IO_OUTSTANDING_CAPACITY
+    }
+
+    /// S8 instrumentation: number of queued (not yet started) editor I/O
+    /// requests. Read-only; never mutates the queue.
+    pub(crate) fn pending_depth(&self) -> usize {
+        self.state
+            .0
+            .lock()
+            .map(|state| state.pending.len())
+            .unwrap_or(0)
+    }
+
+    /// S8 instrumentation: whether an editor I/O request is executing.
+    pub(crate) fn has_active(&self) -> bool {
+        self.state
+            .0
+            .lock()
+            .map(|state| state.active.is_some())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn result_count(&self) -> usize {
+        self.state
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .completions
+            .len()
+    }
+
+    pub(crate) fn worker_count(&self) -> usize {
+        usize::from(
+            self.thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished()),
+        )
     }
 
     /// Stop accepting work, cancel every queued operation, request cooperative
@@ -2545,7 +2691,24 @@ fn completion_for(
     request: EditorIoRequest,
     result: Result<EditorIoSuccess, EditorIoError>,
 ) -> EditorIoCompletion {
+    let saved_info = match &request.job {
+        EditorIoJob::Save {
+            document,
+            path,
+            text,
+            ..
+        } => Some(EditorDocumentInfo {
+            document: *document,
+            project: request.project,
+            path: path.clone(),
+            bytes: text.len(),
+            lines: count_lines(text),
+        }),
+        _ => None,
+    };
     EditorIoCompletion {
+        saved_info,
+        save_elapsed: None,
         operation,
         project: request.project,
         root_path: request.root_path,
@@ -2574,8 +2737,9 @@ fn run_editor_io(
     }
     match &request.job {
         EditorIoJob::Open { path } => {
-            let file = omaterm_context::read_text_file_from_root(&root, path)
-                .map_err(EditorIoError::Context)?;
+            let file =
+                omaterm_context::read_text_file_from_root_cancellable(&root, path, cancelled)
+                    .map_err(EditorIoError::Context)?;
             if cancelled.load(Ordering::Acquire) {
                 Err(EditorIoError::Cancelled)
             } else {
@@ -2593,13 +2757,20 @@ fn run_editor_io(
             if cancelled.load(Ordering::Acquire) {
                 return Err(EditorIoError::Cancelled);
             }
-            omaterm_context::write_text_file_from_root(&root, path, text, expected.as_ref())
-                .map(EditorIoSuccess::Saved)
-                .map_err(EditorIoError::Context)
+            omaterm_context::write_text_file_from_root_cancellable(
+                &root,
+                path,
+                text,
+                expected.as_ref(),
+                cancelled,
+            )
+            .map(EditorIoSuccess::Saved)
+            .map_err(EditorIoError::Context)
         }
         EditorIoJob::Revert { path, .. } => {
-            let file = omaterm_context::read_text_file_from_root(&root, path)
-                .map_err(EditorIoError::Context)?;
+            let file =
+                omaterm_context::read_text_file_from_root_cancellable(&root, path, cancelled)
+                    .map_err(EditorIoError::Context)?;
             if cancelled.load(Ordering::Acquire) {
                 Err(EditorIoError::Cancelled)
             } else {
@@ -2607,6 +2778,32 @@ fn run_editor_io(
             }
         }
     }
+}
+
+fn resolve_editor_io_root(
+    request: &mut EditorIoRequest,
+    cancelled: &AtomicBool,
+) -> Result<(), EditorIoError> {
+    let Some(inputs) = &request.root_inputs else {
+        return Ok(());
+    };
+    if cancelled.load(Ordering::Acquire) {
+        return Err(EditorIoError::Cancelled);
+    }
+    let path =
+        omaterm_context::resolve_root(inputs.pinned.as_deref(), inputs.cached_cwd.as_deref())
+            .root
+            .ok_or(EditorIoError::NoRoot)?;
+    let root = omaterm_context::EditorRoot::open(&path).map_err(EditorIoError::Context)?;
+    if request
+        .expected_root
+        .is_some_and(|expected| expected != root.identity())
+    {
+        return Err(EditorIoError::RootChanged);
+    }
+    request.root_path = root.canonical_path().to_path_buf();
+    request.root_identity = root.identity();
+    Ok(())
 }
 
 /// One background highlight job plus one replaceable pending request,
@@ -2800,6 +2997,40 @@ impl HighlightWorker {
             .ok()
             .and_then(|mut state| state.result.take())
     }
+
+    /// S8 instrumentation: one pending request, one active tokenize and the
+    /// single worker thread, observed without mutating worker state.
+    pub fn pending_jobs(&self) -> usize {
+        self.state
+            .0
+            .lock()
+            .map(|state| usize::from(state.pending.is_some()))
+            .unwrap_or(0)
+    }
+
+    pub fn active_jobs(&self) -> usize {
+        self.state
+            .0
+            .lock()
+            .map(|state| usize::from(state.active_cancel.is_some()))
+            .unwrap_or(0)
+    }
+
+    pub fn result_count(&self) -> usize {
+        self.state
+            .0
+            .lock()
+            .map(|state| usize::from(state.result.is_some()))
+            .unwrap_or(0)
+    }
+
+    pub fn worker_count(&self) -> usize {
+        usize::from(
+            self.thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished()),
+        )
+    }
 }
 
 impl Default for HighlightWorker {
@@ -2902,6 +3133,119 @@ mod tests {
         caret.clamp(text);
         assert_eq!(caret.cursor, text.len());
         assert_eq!(caret.anchor, Some(0));
+    }
+
+    #[test]
+    fn line_local_navigation_matches_whole_text_at_every_byte_offset() {
+        let texts = [
+            "",
+            "\r\n",
+            "\n\r\n\n",
+            "e\u{301}\r\n👩‍💻🇯🇵\n界\r\n",
+            "\u{301}a\r\n\u{301}👨‍👩‍👧‍👦\n🇦🇧🇨\rfin",
+            "क्\u{200d}ष\n1\u{fe0f}\u{20e3}\r\n👍🏽end",
+        ];
+        for text in texts {
+            let boundaries: Vec<_> = text
+                .grapheme_indices(true)
+                .map(|(index, _)| index)
+                .chain(std::iter::once(text.len()))
+                .collect();
+            // Include continuation bytes, inside CRLF, EOF and overflow input.
+            for offset in (0..=text.len()).chain([text.len() + 1, usize::MAX]) {
+                let bounded = offset.min(text.len());
+                let clamp = *boundaries.iter().rfind(|index| **index <= bounded).unwrap();
+                let previous = boundaries
+                    .iter()
+                    .rfind(|index| **index < bounded)
+                    .copied()
+                    .unwrap_or(0);
+                let next = boundaries
+                    .iter()
+                    .find(|index| **index > bounded)
+                    .copied()
+                    .unwrap_or(text.len());
+                assert_eq!(
+                    clamp_grapheme_offset(text, offset),
+                    clamp,
+                    "clamp {text:?} {offset}"
+                );
+                assert_eq!(
+                    previous_grapheme(text, offset),
+                    previous,
+                    "previous {text:?} {offset}"
+                );
+                assert_eq!(next_grapheme(text, offset), next, "next {text:?} {offset}");
+                let mut caret = EditorCaret {
+                    cursor: offset,
+                    anchor: Some(bounded),
+                };
+                caret.clamp(text);
+                assert_eq!(caret.cursor, clamp);
+                assert_eq!(caret.anchor, None);
+            }
+        }
+    }
+
+    #[test]
+    fn crlf_navigation_never_stops_between_terminator_bytes() {
+        let text = "e\u{301}\r\n👩‍💻\r\n";
+        let cr = "e\u{301}".len();
+        let next_line = cr + 2;
+        assert_eq!(next_grapheme(text, cr), next_line);
+        assert_eq!(next_grapheme(text, cr + 1), next_line);
+        assert_eq!(previous_grapheme(text, next_line), cr);
+        assert_eq!(previous_grapheme(text, cr + 1), cr);
+        assert_eq!(clamp_grapheme_offset(text, cr + 1), cr);
+        assert_eq!(previous_grapheme(text, text.len()), text.len() - 2);
+        assert_eq!(next_grapheme(text, text.len() - 2), text.len());
+    }
+
+    #[test]
+    fn near_end_large_buffer_navigation_scans_only_neighboring_lines() {
+        let prefix = "earlier e\u{301}👩‍💻 content\r\n".repeat(100_000);
+        let tail = "e\u{301}👩‍💻🇯🇵\r\n界x";
+        let base = prefix.len();
+        let text = prefix + tail;
+        let boundaries: Vec<_> = tail
+            .grapheme_indices(true)
+            .map(|(index, _)| base + index)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        // Assert the actual segmentation input is local, not just the result.
+        // At a line start, previous motion must include the preceding CRLF.
+        assert_eq!(
+            grapheme_line(&text, base - 1).1,
+            "earlier e\u{301}👩‍💻 content\r\n"
+        );
+        for offset in base..text.len() {
+            let (start, line) = grapheme_line(&text, offset);
+            assert!(start >= base);
+            assert!(line.len() <= tail.len());
+            assert_eq!(
+                clamp_grapheme_offset(&text, offset),
+                *boundaries.iter().rfind(|index| **index <= offset).unwrap()
+            );
+        }
+        for _ in 0..256 {
+            let mut cursor = text.len();
+            for expected in boundaries.iter().rev().skip(1) {
+                cursor = previous_grapheme(&text, cursor);
+                assert_eq!(cursor, *expected);
+            }
+            assert_eq!(previous_grapheme(&text, cursor), base - 2);
+            for expected in boundaries.iter().skip(1) {
+                cursor = next_grapheme(&text, cursor);
+                assert_eq!(cursor, *expected);
+            }
+            let mut caret = EditorCaret {
+                cursor: text.len(),
+                anchor: Some(base + 1),
+            };
+            caret.clamp(&text);
+            assert_eq!(caret.cursor, text.len());
+            assert_eq!(caret.anchor, Some(base));
+        }
     }
 
     #[test]
@@ -3127,6 +3471,64 @@ mod tests {
         let thread = worker.take_shutdown_thread().unwrap();
         thread.join().unwrap();
         assert!(worker.take_result().is_none());
+    }
+
+    #[test]
+    fn highlight_worker_reports_pending_active_result_and_worker_counts() {
+        use omaterm_context::EditorLanguage as Lang;
+        let gate = Arc::new(IoGate {
+            started: Mutex::new(false),
+            release: Condvar::new(),
+        });
+        let runner_gate = Arc::clone(&gate);
+        let worker = HighlightWorker::with_runner(
+            move |request: HighlightRequest| {
+                let mut started = runner_gate
+                    .started
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *started = true;
+                runner_gate.release.notify_all();
+                while *started {
+                    started = runner_gate
+                        .release
+                        .wait(started)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                HighlightResult {
+                    document: request.document,
+                    generation: request.generation,
+                    highlight: DocHighlight::default(),
+                    cancelled: false,
+                }
+            },
+            || {},
+        );
+        assert_eq!(worker.worker_count(), 1);
+        assert_eq!(worker.pending_jobs(), 0);
+        assert_eq!(worker.active_jobs(), 0);
+        assert_eq!(worker.result_count(), 0);
+        let document = DocumentId::new();
+        worker.submit(HighlightRequest {
+            document,
+            generation: 1,
+            language: Lang::Rust,
+            text: "fn one() {}".into(),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        gate.wait_started();
+        assert_eq!(worker.pending_jobs(), 0);
+        assert_eq!(worker.active_jobs(), 1);
+        gate.release();
+        let start = std::time::Instant::now();
+        while worker.result_count() == 0 {
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(worker.active_jobs(), 0);
+        assert_eq!(worker.result_count(), 1);
+        let _ = worker.take_result();
+        assert_eq!(worker.result_count(), 0);
     }
 
     #[test]
@@ -3695,6 +4097,8 @@ mod tests {
 
     fn io_request(generation: u64, job: EditorIoJob) -> EditorIoRequest {
         EditorIoRequest {
+            root_inputs: None,
+            expected_root: None,
             project: ProjectId::new(),
             root_path: PathBuf::from("/test-root"),
             root_identity: omaterm_context::RootIdentity {
@@ -3704,6 +4108,87 @@ mod tests {
             generation,
             job,
         }
+    }
+
+    #[test]
+    fn checked_opens_count_placeholders_and_pending_reservations() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        for _ in 0..MAX_OPEN_DOCUMENTS - 1 {
+            store.reserve_open().unwrap();
+        }
+        let reserved = reservation(DocumentId::new(), project, b"restored.txt");
+        store.reserve_restore(&reserved).unwrap();
+        assert!(store.reserve_open().is_err());
+        let identity = reserved.root_identity;
+        assert!(
+            store
+                .try_open(
+                    project,
+                    "new.txt".into(),
+                    "/repo".into(),
+                    identity,
+                    restore_file(42, "text")
+                )
+                .is_err()
+        );
+        assert_eq!(store.occupied_slots(), MAX_OPEN_DOCUMENTS);
+        // A restore replaces its own placeholder, preserving the bound.
+        store
+            .commit_restore(reserved.id, "/repo".into(), restore_file(7, "restored"))
+            .unwrap();
+        assert_eq!(store.occupied_slots(), MAX_OPEN_DOCUMENTS);
+        store.release_open();
+        let document = store
+            .try_open(
+                project,
+                "new.txt".into(),
+                "/repo".into(),
+                identity,
+                restore_file(42, "text"),
+            )
+            .unwrap();
+        assert_eq!(store.occupied_slots(), MAX_OPEN_DOCUMENTS);
+        // Checked dedup remains accepted at capacity without replacing text.
+        assert_eq!(
+            store
+                .try_open(
+                    project,
+                    "alias.txt".into(),
+                    "/repo".into(),
+                    identity,
+                    restore_file(42, "other")
+                )
+                .unwrap(),
+            document
+        );
+        assert_eq!(store.text(document), Some("text"));
+    }
+
+    #[test]
+    fn editor_io_unconsumed_results_hold_admission_until_drained() {
+        let mut queue = EditorIoQueue::with_runner(|request, _| test_io_success(request));
+        for index in 0..=EDITOR_IO_QUEUE_CAPACITY {
+            assert!(queue.can_submit());
+            queue
+                .submit(io_request(index as u64, open_job(index as u64)))
+                .unwrap();
+            queue.wait_for_completion_count(index + 1);
+        }
+        assert_eq!(queue.pending_depth(), 0);
+        assert!(!queue.has_active());
+        assert_eq!(queue.result_count(), 17);
+        assert!(!queue.can_submit());
+        assert_eq!(
+            queue.submit(io_request(99, open_job(99))),
+            Err(EditorIoSubmitError::QueueFull)
+        );
+        queue.take_completion().unwrap();
+        assert!(queue.can_submit());
+        queue.submit(io_request(100, open_job(100))).unwrap();
+        queue.wait_for_completion_count(17);
+        assert!(!queue.can_submit());
+        queue.shutdown_and_join().unwrap();
     }
 
     fn open_job(index: u64) -> EditorIoJob {
@@ -3805,6 +4290,23 @@ mod tests {
             queue.submit(io_request(99, open_job(99))),
             Err(EditorIoSubmitError::QueueFull)
         );
+        // Cancelling pending work moves it into the mailbox; it does not
+        // release outstanding capacity until the owner consumes the result.
+        let pending = queue
+            .state
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .front()
+            .unwrap()
+            .operation;
+        assert!(queue.cancel(pending));
+        assert!(!queue.can_submit());
+        assert_eq!(
+            queue.submit(io_request(100, open_job(100))),
+            Err(EditorIoSubmitError::QueueFull)
+        );
         assert!(queue.cancel(first));
         gate.release();
         assert!(queue.shutdown_and_join().is_ok());
@@ -3880,6 +4382,8 @@ mod tests {
         };
         let first = queue
             .submit(EditorIoRequest {
+                root_inputs: None,
+                expected_root: None,
                 project,
                 root_path: PathBuf::from("/project"),
                 root_identity: root,
@@ -3890,6 +4394,8 @@ mod tests {
         let document = DocumentId::new();
         let latest = queue
             .submit(EditorIoRequest {
+                root_inputs: None,
+                expected_root: None,
                 project,
                 root_path: PathBuf::from("/project"),
                 root_identity: root,
@@ -3918,6 +4424,47 @@ mod tests {
             Ok(EditorIoSuccess::Reverted(_))
         ));
         assert!(queue.take_completion().is_none());
+    }
+
+    #[test]
+    fn editor_io_queue_reports_pending_depth_and_active_state() {
+        let gate = Arc::new(IoGate {
+            started: Mutex::new(false),
+            release: Condvar::new(),
+        });
+        let runner_gate = Arc::clone(&gate);
+        let mut queue = EditorIoQueue::with_runner(move |request, _| {
+            if request.generation != 1 {
+                return test_io_success(request);
+            }
+            let mut started = runner_gate
+                .started
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *started = true;
+            runner_gate.release.notify_all();
+            while *started {
+                started = runner_gate
+                    .release
+                    .wait(started)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            test_io_success(request)
+        });
+        assert_eq!(queue.pending_depth(), 0);
+        assert!(!queue.has_active());
+        queue.submit(io_request(1, open_job(1))).unwrap();
+        gate.wait_started();
+        assert!(queue.has_active());
+        queue.submit(io_request(2, open_job(2))).unwrap();
+        assert_eq!(queue.pending_depth(), 1);
+        gate.release();
+        queue.wait_for_completion_count(2);
+        assert_eq!(queue.result_count(), 2);
+        assert!(queue.shutdown_and_join().is_ok());
+        assert_eq!(queue.worker_count(), 0);
+        assert_eq!(queue.pending_depth(), 0);
+        assert!(!queue.has_active());
     }
 
     #[test]
@@ -4023,6 +4570,13 @@ mod tests {
         assert_eq!(grapheme_display_width("1\u{fe0f}\u{20e3}"), 2);
         // Regional-indicator pair is one flag.
         assert_eq!(grapheme_display_width("🇯🇵"), 2);
+        assert_eq!(grapheme_display_width("👍🏽"), 2);
+        assert_eq!(grapheme_display_width("👨‍👩‍👧‍👦"), 2);
+        // Text presentation and isolated selectors do not force emoji width.
+        assert_eq!(grapheme_display_width("\u{2764}\u{fe0e}"), 1);
+        assert_eq!(grapheme_display_width("\u{fe0f}"), 0);
+        assert_eq!(grapheme_display_width("\u{301}"), 0);
+        assert_eq!(grapheme_display_width("\r\n"), 0);
         // A tab is not a grapheme with others; measured by the callers.
         assert_eq!(grapheme_display_width("\t"), 0);
     }

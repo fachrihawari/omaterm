@@ -4,16 +4,18 @@
   "status": "pending",
   "milestone": "M19",
   "slice": "S9",
-  "description": "Scaffold manifest for the final M19 S9 acceptance. Every status is pending or blocked until real evidence exists. This file records no measured results, timings, hashes, or screenshots.",
+  "description": "Current automated gates pass; native acceptance is blocked/partial. E01-E10 and S9 remain open. Real startup, terminal IPC and 20 process samples are not editor resource/latency acceptance.",
   "generated_at_utc": null,
-  "delivered_revision": null,
-  "working_tree_clean": null,
+  "delivered_revision": "f287991+worktree",
+  "source_parent": "f287991f223e01a36ea5e0a60c219c824da05ba3",
+  "working_tree_clean": false,
   "toolchain": {
     "pin_file": "rust-toolchain.toml",
-    "rustup_toolchain_override": null,
-    "rustc_version": null,
-    "cargo_version": null,
-    "status": "pending"
+    "rustup_toolchain_override": "1.99.0",
+    "rustc_version": "1.99.0 (b940084d7 2026-09-28)",
+    "cargo_version": "1.99.0 (5f94df478 2026-08-27)",
+    "status": "verified",
+    "notes": "Versions probed in current native record; repository pin remains 1.98.1."
   },
   "authority": {
     "completion_plan": "docs/m19-completion-plan.md",
@@ -27,14 +29,16 @@
       "name": "run-m19-wayland-acceptance",
       "path": "scripts/run-m19-wayland-acceptance.py",
       "sha256": null,
-      "exit_codes": { "ok": 0, "blocked": 2, "failed": 3 },
-      "status": "pending"
+      "exit_codes": { "ok": 0, "blocked": 2, "failed": 3, "pending": 4 },
+      "status": "partial",
+      "notes": "Self-test passed (tooling only). Explicit --scripted-steps plus --allow-input and protocol helper required for semantic flows; collection alone remains pending. No synthetic measurement placeholders."
     },
     {
       "name": "m19-resource-bench",
       "path": "scripts/m19-resource-bench.py",
       "sha256": null,
-      "status": "pending"
+      "status": "partial",
+      "notes": "Self-test and actual 20-sample process collection passed; empty timing arrays are unobserved with null percentiles, no resource/latency pass."
     },
     {
       "name": "generate-m19-fixtures",
@@ -46,37 +50,48 @@
     }
   ],
   "automated_gates": [
-    { "id": "G1", "check": "format", "command": "cargo fmt --all --check", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
-    { "id": "G2", "check": "workspace-tests-parallel", "command": "cargo test --workspace", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
-    { "id": "G3", "check": "workspace-tests-serial", "command": "cargo test --workspace -- --test-threads=1", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
-    { "id": "G4", "check": "clippy", "command": "cargo clippy --workspace --all-targets -- -D warnings", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
-    { "id": "G5", "check": "release-build", "command": "cargo build --release --bin omaterm --bin omaterm-desktop", "status": "pending", "revision": null, "exit_code": null, "log": null, "binaries": { "omaterm": null, "omaterm_desktop": null }, "notes": "" },
-    { "id": "G6", "check": "docs", "command": "python3 scripts/check-docs.py", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
-    { "id": "G7", "check": "whitespace", "command": "git diff --check", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" }
+    { "id": "G1", "check": "format", "command": "RUSTUP_TOOLCHAIN=1.99.0 cargo fmt --all --check", "status": "pass", "revision": "f287991+worktree", "exit_code": 0, "log": null, "notes": "Parent-run result supplied; recorded in docs/status.md. Cargo not rerun by docs reconciliation." },
+    { "id": "G2", "check": "workspace-tests-parallel", "command": "RUSTUP_TOOLCHAIN=1.99.0 cargo test --workspace --quiet", "status": "pass", "revision": "f287991+worktree", "exit_code": 0, "test_count": 606, "log": null, "notes": "Parent-run result supplied; recorded in docs/status.md." },
+    { "id": "G3", "check": "workspace-tests-serial", "command": "RUSTUP_TOOLCHAIN=1.99.0 cargo test --workspace --quiet -- --test-threads=1", "status": "pass", "revision": "f287991+worktree", "exit_code": 0, "test_count": 606, "log": null, "notes": "Parent-run result supplied; recorded in docs/status.md." },
+    { "id": "G4", "check": "clippy", "command": "RUSTUP_TOOLCHAIN=1.99.0 cargo clippy --workspace --all-targets -- -D warnings", "status": "pass", "revision": "f287991+worktree", "exit_code": 0, "log": null, "notes": "Parent-run result supplied; recorded in docs/status.md." },
+    { "id": "G5", "check": "release-build", "command": "RUSTUP_TOOLCHAIN=1.99.0 cargo build --release --bin omaterm --bin omaterm-desktop", "status": "pass", "revision": "f287991+worktree", "exit_code": 0, "log": null, "binaries": { "omaterm": "target/release/omaterm", "omaterm_desktop": "target/release/omaterm-desktop" }, "notes": "Parent-run result supplied; observed native-run binary SHA-256 values in docs/evidence/m19-native-current.md. No full Cargo log path supplied." },
+    { "id": "G6", "check": "docs", "command": "python3 scripts/check-docs.py", "status": "pass", "revision": "f287991+worktree + docs reconciliation", "exit_code": 0, "log": null, "notes": "Docs reconciliation run: 39 Markdown files, 173 local links, 304 numbered blueprint references, all 34 CLI mappings; result in docs/evidence/m19-s9-report.md." },
+    { "id": "G7", "check": "whitespace", "command": "git diff --check", "status": "pass", "revision": "f287991+worktree + docs reconciliation", "exit_code": 0, "log": null, "notes": "Docs reconciliation run: no whitespace diagnostics; result in docs/evidence/m19-s9-report.md." }
   ],
   "requirement_evidence": [
-    { "id": "E01", "requirement": "Root-contained identity and reads/writes", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §5 exit criteria" },
-    { "id": "E02", "requirement": "Async lifecycle and version-safe save", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §6; one final outcome per operation" },
-    { "id": "E03", "requirement": "Aggregate bounds and indexed rendering", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §7; S8 counters" },
-    { "id": "E04", "requirement": "Metadata-only registry persistence", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §8; schema 1/2 to 3; no dirty text persisted" },
-    { "id": "E05", "requirement": "Dirty/conflict/project/shutdown decisions", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §9; every Save/Discard/Cancel path" },
-    { "id": "E06", "requirement": "Text/IME, graphemes, selection and focus", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §10; no input leaks either direction" },
-    { "id": "E07", "requirement": "All entry routes and unchanged terminal contract", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §11; file.open still submits $EDITOR" },
-    { "id": "E08", "requirement": "Highlight/fallback/cancellation", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §12; stale results cannot paint newer text" },
-    { "id": "E09", "requirement": "Resource bounds, idle and operation timings", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §12; p50/p95 + sample count + machine/FS/load" },
-    { "id": "E10", "requirement": "Final regression and redaction review", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "G1-G7 logs; code/log audit; no secrets in logs or snapshots" }
+    { "id": "E01", "requirement": "Root-contained identity and reads/writes", "status": "partial", "command": "G2/G3", "revision": "f287991+worktree", "artifacts": ["docs/status.md"], "notes": "Off-thread rooted I/O implemented/tested; complete native root acceptance pending." },
+    { "id": "E02", "requirement": "Async lifecycle and version-safe save", "status": "partial", "command": "G2/G3", "revision": "f287991+worktree", "artifacts": ["docs/status.md"], "notes": "Committed G baseline acknowledgement preserves G+1; native pending-work proof pending." },
+    { "id": "E03", "requirement": "Aggregate bounds and indexed rendering", "status": "partial", "command": "G2/G3", "revision": "f287991+worktree", "artifacts": ["docs/status.md"], "notes": "Global 32 slots, 17-result mailbox, line-local navigation/shared indexed snapshots; measured cap/aggregate/render proof pending." },
+    { "id": "E04", "requirement": "Metadata-only registry persistence", "status": "partial", "command": "G2/G3", "revision": "f287991+worktree", "artifacts": ["docs/status.md"], "notes": "Schema-3 snapshots, bounded restore and Retry implemented; actual normal-close/restart pending." },
+    { "id": "E05", "requirement": "Dirty/conflict/project/shutdown decisions", "status": "partial", "command": "G2/G3", "revision": "f287991+worktree", "artifacts": ["docs/status.md"], "notes": "Observed-revision overwrite/re-conflict implemented; every native decision/failure pending; no graceful exit." },
+    { "id": "E06", "requirement": "Text/IME, graphemes, selection and focus", "status": "partial", "command": "G2/G3", "revision": "f287991+worktree", "artifacts": ["docs/status.md"], "notes": "EntityInputHandler/UTF-16/composition/surface cancellation implemented; native IME/clipboard/focus/leakage pending." },
+    { "id": "E07", "requirement": "All entry routes and unchanged terminal contract", "status": "partial", "command": "Current native driver IPC commands (see linked record)", "revision": "f287991+worktree", "artifacts": ["docs/evidence/m19-native-current.md"], "notes": "Terminal file.open submits $EDITOR and retains pane/session; native entry routes/dedup pending." },
+    { "id": "E08", "requirement": "Highlight/fallback/cancellation", "status": "partial", "command": "G2/G3", "revision": "f287991+worktree", "artifacts": ["docs/status.md"], "notes": "Automated evidence only; native all-language/fallback captures pending." },
+    { "id": "E09", "requirement": "Resource bounds, idle and operation timings", "status": "partial", "command": "python3 scripts/m19-resource-bench.py --pid 1664916 --proc-root /proc --metrics-json /tmp/opencode/m19-native-current/metrics.json --output /tmp/opencode/m19-native-current/terminal-idle-resources.json --samples 20 --interval-seconds 1", "revision": "f287991+worktree", "artifacts": ["docs/evidence/m19-native-current.md", "/tmp/opencode/m19-native-current/terminal-idle-resources.json"], "notes": "20 real process samples only. Six empty timing arrays, unobserved/null percentiles; no resource/latency pass; small/cap cycles 0/20 each." },
+    { "id": "E10", "requirement": "Final regression and redaction review", "status": "partial", "command": "G1-G7", "revision": "f287991+worktree", "artifacts": ["docs/evidence/m19-s9-report.md", "docs/status.md"], "notes": "Automated passes recorded; complete native/regression/redaction handoff pending." }
   ],
   "native_acceptance": {
     "harness": "scripts/run-m19-wayland-acceptance.py",
-    "status": "pending",
+    "status": "blocked",
     "invocation": null,
     "harness_exit_code": null,
     "harness_report_status": null,
-    "compositor": null,
-    "output": null,
-    "scale": null,
+    "evidence_record": "docs/evidence/m19-native-current.md",
+    "driver": "/tmp/opencode/m19-native-driver.py",
+    "notes": "External driver, not an acceptance-harness run; do not invent harness exit code. Input aborted before first event on user-focus change. Startup/terminal IPC/20 process samples only.",
+    "small_file_cycles": 0,
+    "cap_file_cycles": 0,
+    "required_cycles_per_workload": 20,
+    "editor_timing_observations_per_series": 0,
+    "editor_timing_percentiles": null,
+    "resource_pass": null,
+    "latency_pass": null,
+    "graceful_exit_observed": false,
+    "compositor": "Hyprland 0.56.2 (efb50993780079460b0cbed1363e2166a2de1d9f)",
+    "output": "eDP-1, 1920x1200 physical, 1536x960 logical",
+    "scale": 1.25,
     "font": null,
-    "viewport": null,
+    "viewport": "760x924 logical (initial terminal window only)",
     "steps": [
       { "id": "N1", "action": "Open from Files, finder, general palette, Git and diff actions; verify dedup, defaults, explicit terminal fallback including error targets", "status": "pending", "artifacts": [], "notes": "" },
       { "id": "N2", "action": "Type/select/copy/cut/paste/undo/redo/save via keyboard and pointer; native commits/composition and exact on-disk byte assertions", "status": "pending", "artifacts": [], "notes": "" },
@@ -89,7 +104,11 @@
       { "id": "N9", "action": "Exit normally; unit/PIDs, shells, sockets, worker threads/tasks, owned temp files cleaned; prior workspace/focus restored", "status": "pending", "artifacts": [], "notes": "" }
     ]
   },
-  "blockers": [],
+  "blockers": [
+    "User-focus change before first keyboard/pointer event; injection aborted without refocusing/resuming.",
+    "Editor/conflict/restart/IME matrix and both 20-cycle workloads unexecuted.",
+    "No graceful exit: forced SIGTERM cleanup; unserved socket explicitly unlinked."
+  ],
   "deviations": [],
   "handoff": {
     "definition_of_done": [
@@ -103,8 +122,8 @@
     "milestone_complete": false
   },
   "notes": [
-    "This manifest is a scaffold. Do not treat any field as measured until populated with real evidence.",
+    "Delivered source is f287991+worktree, not a clean parent or an invented later commit hash. G1-G5 are parent-run reported passes, not Cargo executions by this docs-only reconciliation.",
     "No secrets, file contents, clipboard data, environment values, or command output are recorded here.",
-    "Pointer, focus, and performance evidence is never synthesized; absence yields blocked, not pass."
+    "Pointer, focus, and performance evidence is never synthesized; absence yields blocked/pending, not pass. Full-native gates and S9 remain open."
   ]
 }

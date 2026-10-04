@@ -150,6 +150,8 @@ impl WorkspaceSnapshot {
         expanded: &HashMap<ProjectId, Vec<PathBuf>>,
         document_registries: &HashMap<ProjectId, DocumentRegistry>,
     ) -> Self {
+        let limits = SnapshotLimits::default();
+        let mut remaining_documents = limits.max_documents;
         let projects = window
             .projects
             .iter()
@@ -160,7 +162,7 @@ impl WorkspaceSnapshot {
                         registry
                             .documents
                             .iter()
-                            .take(SnapshotLimits::default().max_documents_per_project)
+                            .take(remaining_documents.min(limits.max_documents_per_project))
                             .map(|document| DocumentSnapshot {
                                 id: document.id.0.to_string(),
                                 path_bytes: document.path_bytes.clone(),
@@ -170,6 +172,7 @@ impl WorkspaceSnapshot {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                remaining_documents -= documents.len();
                 let active_document = registry
                     .and_then(|registry| registry.active_document)
                     .filter(|active| {
@@ -239,7 +242,19 @@ impl WorkspaceSnapshot {
             return Err(SnapshotError::Invalid("too many projects".into()));
         }
         let mut projects = Vec::with_capacity(window.projects.len());
+        let mut remaining_documents = limits.max_documents;
+        let mut remaining_registry_bytes = limits.max_document_registry_bytes;
         for project in &window.projects {
+            remaining_documents = remaining_documents
+                .checked_sub(project.documents.len())
+                .ok_or_else(|| SnapshotError::Invalid("too many documents in snapshot".into()))?;
+            remaining_registry_bytes = remaining_registry_bytes
+                .checked_sub(document_registry_bytes(project)?)
+                .ok_or_else(|| {
+                    SnapshotError::Invalid(
+                        "document registries exceed serialized-byte limit".into(),
+                    )
+                })?;
             check_name(project.custom_name.as_deref(), limits)?;
             check_path(project.pinned_directory.as_deref(), limits)?;
             let project_id = ProjectId(parse_uuid(&project.id, &mut ids)?);
@@ -333,6 +348,15 @@ impl WorkspaceSnapshot {
         core_window
             .validate()
             .map_err(|error| SnapshotError::Invalid(error.to_string()))?;
+        // Direct validation must enforce the same document-wide byte boundary
+        // as decoding. The store separately caps its pretty-printed file bytes.
+        if serde_json::to_vec(self)
+            .map_err(|error| SnapshotError::Invalid(error.to_string()))?
+            .len()
+            > limits.max_file_bytes
+        {
+            return Err(SnapshotError::TooLarge);
+        }
         let mut expanded_out = Vec::with_capacity(projects.len());
         let mut document_registries = Vec::with_capacity(projects.len());
         let pane_cwds = projects
@@ -362,20 +386,15 @@ fn validate_document_registry(
             "too many documents in project".into(),
         ));
     }
-    if document_registry_bytes(project)? > limits.max_document_registry_bytes {
-        return Err(SnapshotError::Invalid(
-            "document registry exceeds serialized-byte limit".into(),
-        ));
-    }
-
     let mut keys = HashSet::with_capacity(project.documents.len());
     let mut documents = Vec::with_capacity(project.documents.len());
     for document in &project.documents {
         let id = DocumentId(parse_uuid(&document.id, ids)?);
         check_document_path(&document.path_bytes, limits)?;
-        if document.root_device == 0 || document.root_inode == 0 {
+        // Device zero is a valid st_dev value, not a missing identity sentinel.
+        if document.root_inode == 0 {
             return Err(SnapshotError::Invalid(
-                "document root identity must be nonzero".into(),
+                "document root inode must be nonzero".into(),
             ));
         }
         let key = (
@@ -582,7 +601,10 @@ pub struct SnapshotLimits {
     pub max_expanded_dirs: usize,
     /// Bounded metadata-only open-document descriptors per project (M19).
     pub max_documents_per_project: usize,
-    /// Maximum serialized JSON bytes for one project's document registry.
+    /// Maximum descriptors across all projects, matching the editor store cap.
+    pub max_documents: usize,
+    /// Maximum aggregate serialized JSON bytes for project document registries,
+    /// including their active-document references.
     pub max_document_registry_bytes: usize,
 }
 impl Default for SnapshotLimits {
@@ -597,6 +619,7 @@ impl Default for SnapshotLimits {
             max_path_bytes: 4096,
             max_expanded_dirs: 128,
             max_documents_per_project: 32,
+            max_documents: 32,
             // JSON encodes each path byte as up to three digits plus a comma.
             max_document_registry_bytes: 32 * (4 * 4096 + 256),
         }
@@ -663,6 +686,236 @@ mod tests {
             root_device: 7,
             root_inode: 11,
         }
+    }
+
+    fn multi_project_documents(counts: &[usize]) -> WorkspaceSnapshot {
+        let mut window = WorkspaceWindow::new();
+        for _ in counts {
+            window.add_project(Project::new(None, None)).unwrap();
+        }
+        let mut snapshot = WorkspaceSnapshot::capture(&window, &HashMap::new());
+        for (project, count) in snapshot.windows[0].projects.iter_mut().zip(counts) {
+            project.documents = (0..*count)
+                .map(|index| document_snapshot(format!("src/{index}.rs").into_bytes()))
+                .collect();
+            project.active_document = project.documents.last().map(|document| document.id.clone());
+        }
+        snapshot
+    }
+
+    #[test]
+    fn global_document_cap_accepts_32_across_projects_and_rejects_33() {
+        let limits = SnapshotLimits::default();
+        let snapshot = multi_project_documents(&[16, 16, 0]);
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let decoded = crate::migration::decode(&bytes, limits).unwrap();
+        let restored = decoded.validate(limits).unwrap();
+        assert_eq!(restored.document_registries.len(), 3);
+        for (project, (_, registry)) in snapshot.windows[0]
+            .projects
+            .iter()
+            .zip(&restored.document_registries)
+        {
+            assert_eq!(registry.documents.len(), project.documents.len());
+            assert_eq!(
+                registry.active_document.map(|id| id.0.to_string()),
+                project.active_document
+            );
+        }
+
+        let over = multi_project_documents(&[16, 17]);
+        for result in [
+            over.validate(limits).map(|_| ()),
+            crate::migration::decode(&serde_json::to_vec(&over).unwrap(), limits).map(|_| ()),
+        ] {
+            assert!(matches!(result, Err(SnapshotError::Invalid(message))
+                if message == "too many documents in snapshot"));
+        }
+
+        let mut foreign_active = snapshot.clone();
+        foreign_active.windows[0].projects[1].active_document = foreign_active.windows[0].projects
+            [0]
+        .active_document
+        .clone();
+        assert!(
+            matches!(foreign_active.validate(limits), Err(SnapshotError::Invalid(message))
+            if message == "active document does not exist in project registry")
+        );
+
+        let mut duplicate_id = snapshot;
+        duplicate_id.windows[0].projects[1].documents[0].id =
+            duplicate_id.windows[0].projects[0].documents[0].id.clone();
+        assert!(
+            matches!(duplicate_id.validate(limits), Err(SnapshotError::Invalid(message))
+            if message == "duplicate ID")
+        );
+    }
+
+    #[test]
+    fn capture_shares_document_budget_and_keeps_only_retained_active_references() {
+        for counts in [&[16, 16, 0][..], &[16, 17, 1][..]] {
+            let source = multi_project_documents(counts);
+            let restored = source
+                .validate(SnapshotLimits {
+                    max_documents: 34,
+                    ..SnapshotLimits::default()
+                })
+                .unwrap();
+            let registries = restored.document_registries.into_iter().collect();
+            let captured = WorkspaceSnapshot::capture_with_expanded_and_documents(
+                &restored.window,
+                &HashMap::new(),
+                &HashMap::new(),
+                &registries,
+            );
+            let projects = &captured.windows[0].projects;
+            assert_eq!(
+                projects.iter().map(|p| p.documents.len()).sum::<usize>(),
+                32
+            );
+            assert_eq!(
+                projects[0].documents,
+                source.windows[0].projects[0].documents
+            );
+            assert_eq!(
+                projects[1].documents,
+                source.windows[0].projects[1].documents[..16]
+            );
+            assert!(projects[2].documents.is_empty());
+            assert_eq!(
+                projects[0].active_document,
+                source.windows[0].projects[0].active_document
+            );
+            assert_eq!(
+                projects[1].active_document,
+                if counts[1] == 16 {
+                    source.windows[0].projects[1].active_document.clone()
+                } else {
+                    None
+                }
+            );
+            assert_eq!(projects[2].active_document, None);
+            captured.validate(SnapshotLimits::default()).unwrap();
+        }
+    }
+
+    #[test]
+    fn registry_byte_budget_is_global_and_includes_active_references() {
+        let mut snapshot = multi_project_documents(&[16, 16]);
+        for project in &mut snapshot.windows[0].projects {
+            for (index, document) in project.documents.iter_mut().enumerate() {
+                // Maximum-length lossless paths with worst-case JSON byte expansion.
+                document.path_bytes = vec![255; SnapshotLimits::default().max_path_bytes];
+                document.path_bytes[0] = 128 + index as u8;
+            }
+        }
+        let registry_bytes = snapshot.windows[0]
+            .projects
+            .iter()
+            .map(|project| document_registry_bytes(project).unwrap())
+            .sum::<usize>();
+        snapshot.validate(SnapshotLimits::default()).unwrap();
+        let limits = SnapshotLimits {
+            max_document_registry_bytes: registry_bytes,
+            ..SnapshotLimits::default()
+        };
+        snapshot.validate(limits).unwrap();
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        crate::migration::decode(&bytes, limits).unwrap();
+        let over = SnapshotLimits {
+            max_document_registry_bytes: registry_bytes - 1,
+            ..limits
+        };
+        assert!(
+            matches!(snapshot.validate(over), Err(SnapshotError::Invalid(message))
+            if message == "document registries exceed serialized-byte limit")
+        );
+        assert!(matches!(
+            crate::migration::decode(&bytes, over),
+            Err(SnapshotError::Invalid(_))
+        ));
+
+        let mut no_active = snapshot.clone();
+        for project in &mut no_active.windows[0].projects {
+            project.active_document = None;
+        }
+        let no_active_bytes = no_active.windows[0]
+            .projects
+            .iter()
+            .map(|project| document_registry_bytes(project).unwrap())
+            .sum();
+        assert!(no_active_bytes < registry_bytes);
+        no_active
+            .validate(SnapshotLimits {
+                max_document_registry_bytes: no_active_bytes,
+                ..limits
+            })
+            .unwrap();
+        assert!(matches!(
+            snapshot.validate(SnapshotLimits {
+                max_document_registry_bytes: no_active_bytes,
+                ..limits
+            }),
+            Err(SnapshotError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn whole_snapshot_byte_cap_applies_to_direct_validation_and_raw_decode() {
+        let snapshot = multi_project_documents(&[16, 16]);
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let limits = SnapshotLimits {
+            max_file_bytes: bytes.len(),
+            ..SnapshotLimits::default()
+        };
+        snapshot.validate(limits).unwrap();
+        crate::migration::decode(&bytes, limits).unwrap();
+        let over = SnapshotLimits {
+            max_file_bytes: bytes.len() - 1,
+            ..limits
+        };
+        assert!(matches!(
+            snapshot.validate(over),
+            Err(SnapshotError::TooLarge)
+        ));
+        assert!(matches!(
+            crate::migration::decode(&bytes, over),
+            Err(SnapshotError::TooLarge)
+        ));
+        let mut padded = bytes;
+        padded.push(b' ');
+        assert!(matches!(
+            crate::migration::decode(&padded, limits),
+            Err(SnapshotError::TooLarge)
+        ));
+
+        // Non-registry metadata must also consume the whole-snapshot budget.
+        let mut bulky = multi_project_documents(&[0, 0, 0]);
+        for project in &mut bulky.windows[0].projects {
+            project.expanded_dirs = vec![PathBuf::from("x".repeat(4096)); 128];
+        }
+        assert!(matches!(
+            bulky.validate(SnapshotLimits::default()),
+            Err(SnapshotError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn accepts_device_zero_with_a_valid_inode_and_lossless_path() {
+        let mut snapshot = multi_project_documents(&[1]);
+        let document = &mut snapshot.windows[0].projects[0].documents[0];
+        document.root_device = 0;
+        document.path_bytes = b"src/non-utf8-\xff.rs".to_vec();
+        let decoded = crate::migration::decode(
+            &serde_json::to_vec(&snapshot).unwrap(),
+            SnapshotLimits::default(),
+        )
+        .unwrap();
+        let restored = decoded.validate(SnapshotLimits::default()).unwrap();
+        let descriptor = &restored.document_registries[0].1.documents[0];
+        assert_eq!(descriptor.root_device, 0);
+        assert_eq!(descriptor.root_inode, 11);
+        assert_eq!(descriptor.path_bytes, b"src/non-utf8-\xff.rs");
     }
 
     #[test]
@@ -1029,6 +1282,10 @@ mod tests {
             vec![],
             b"/absolute.rs".to_vec(),
             b"src/../escape.rs".to_vec(),
+            b"src/child/../../escape.rs".to_vec(),
+            b"src/..".to_vec(),
+            b"../escape.rs".to_vec(),
+            b"src/trailing/".to_vec(),
             b"src//empty.rs".to_vec(),
             b"src/./current.rs".to_vec(),
             b"src/nul\0.rs".to_vec(),
@@ -1042,7 +1299,7 @@ mod tests {
             ));
         }
 
-        for root_identity in [(0, 11), (7, 0)] {
+        for root_identity in [(0, 0), (7, 0)] {
             let (window, cwd) = sample();
             let mut snapshot = WorkspaceSnapshot::capture(&window, &cwd);
             let mut document = document_snapshot(b"src/main.rs".to_vec());

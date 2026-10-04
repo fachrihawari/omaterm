@@ -2,6 +2,83 @@
 
 ## Current position
 
+### M19 delivered-worktree reconciliation — 2026-10-04
+
+**Delivered source: `f287991+worktree` (dirty), source parent
+`f287991f223e01a36ea5e0a60c219c824da05ba3`.** This identifies the current
+uncommitted implementation, not a new commit or a clean-parent build. A later
+documentation commit must not be substituted for this source identity.
+
+Current full automated results supplied by the parent run:
+
+| Command | Result |
+|---|---|
+| `RUSTUP_TOOLCHAIN=1.99.0 cargo fmt --all --check` | PASS |
+| `RUSTUP_TOOLCHAIN=1.99.0 cargo test --workspace --quiet` | PASS: **606** unit/integration tests (parallel) |
+| `RUSTUP_TOOLCHAIN=1.99.0 cargo test --workspace --quiet -- --test-threads=1` | PASS: **606** unit/integration tests (serial) |
+| `RUSTUP_TOOLCHAIN=1.99.0 cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `RUSTUP_TOOLCHAIN=1.99.0 cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
+
+These current results supersede older counts for current-gate reporting;
+historical runs below retain their original counts/outcomes. The documentation
+reconciliation did not rerun Cargo. Native tool probes record rustc
+`1.99.0 (b940084d7 2026-09-28)` and Cargo `1.99.0 (5f94df478 2026-08-27)`;
+the repository's 1.98.1 pin is unchanged.
+
+Source-audit corrections on this worktree:
+
+- Router preparation captures root inputs; filesystem root resolution and
+  descriptor capture run off-thread. Editor I/O has one active job, 16 queued
+  jobs and a bounded **17-result mailbox**, with completion capacity included
+  in admission rather than an unbounded result queue.
+- **32 documents globally**, including pending-open reservations and unavailable
+  restore entries; schema validation/capture applies the workspace-wide bound.
+- Schema-3 metadata-only snapshots preserve raw path bytes/root identity and
+  selection. Bounded restore reads, unavailable entries and Retry/Close are
+  implemented; real normal-close/restart acceptance is still pending.
+- Committed save acknowledgements adopt captured G text/revision as the saved
+  baseline, retaining live G+1 edits; cancellation/stale view handling does not
+  erase an already-committed disk outcome. Overwrite is scoped to the observed
+  revision and a second external change re-conflicts.
+- S6 now implements GPUI `EntityInputHandler`, UTF-16/native text and marked
+  composition handling, with composition cancellation across input-owner/surface
+  transitions. Native IME, focus, clipboard and leakage validation remains open.
+- Grapheme navigation/clamping is line-local rather than resegmenting the whole
+  document; unchanged rendering uses shared indexed snapshots. This source audit
+  is not a resource/latency acceptance result.
+
+The [S9 report](evidence/m19-s9-report.md) and
+[manifest](evidence/m19-s9-manifest.json) record G1–G5 passes and partial native
+evidence. **S9 and all full-native gates remain open; E01–E10 are pending/partial.**
+The [current native attempt](evidence/m19-native-current.md) demonstrated startup,
+terminal IPC parity and 20 real `/proc` samples only. Focus changed before input;
+both workloads executed 0/20 cycles. All six editor timing arrays are empty,
+unobserved, with null percentiles and no resource/latency pass. Cleanup was forced
+SIGTERM plus explicit stale-socket unlink, **not graceful exit**.
+
+Harness documentation now reflects pending exit **4**, explicit
+`--scripted-steps` for semantic input, and no synthetic measurement placeholders.
+Next action: an uninterrupted target-focused native run of every entry/input/
+conflict/dirty-action/normal-restart case, both 20-cycle workloads and normal
+exit/worker/socket cleanup. Earlier S0/S1/S2 implementation next actions below
+are historical checkpoints, superseded by this delivered-worktree audit.
+
+Documentation checks for this reconciliation: `python3 scripts/check-docs.py`
+PASS (exit 0: 39 Markdown files, 173 local link targets, 304 numbered blueprint
+references, all 34 CLI method mappings); `git diff --check` PASS (exit 0).
+Results are also recorded in the S9 gate table.
+
+### M19 current-release native attempt — 2026-10-04
+
+Real Wayland startup, isolated IPC terminal-file-open parity, actual 20-sample
+terminal resource collection and forced owned-process/socket cleanup
+are recorded in [M19 current native evidence](evidence/m19-native-current.md).
+Compositor focus changed before the first keyboard/pointer event, so injection
+was aborted; native editor/conflict/restart/IME flows and both 20-cycle workloads
+are **BLOCKED**, with zero cycles executed. All six editor timing series remained
+unobserved. No Rust edits/commits or final Cargo gates were made by this validation
+run. S9 remains open; next action is an uninterrupted target-focused native run.
+
 **UI v5 fidelity: incomplete.** The committed rewrite `8cade1b` has confirmed
 sidebar, icon, typography, spacing, hover, geometry and color differences from
 the supplied HTML. The earlier all-phases-finished claim is superseded by the

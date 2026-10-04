@@ -29,7 +29,9 @@ pub use editor::{
 };
 #[cfg(target_os = "linux")]
 pub use editor::{
-    EditorRoot, WriteTextOutcome, read_text_file_from_root, write_text_file_from_root,
+    EditorRoot, WriteTextOutcome, read_text_file_cancellable, read_text_file_from_root,
+    read_text_file_from_root_cancellable, write_text_file_from_root,
+    write_text_file_from_root_cancellable,
 };
 pub use files::{
     FileSearchIndex, FileWatcher, MAX_SEARCH_INDEX_BYTES, MAX_SEARCH_SCAN, WatchError,

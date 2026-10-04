@@ -19,6 +19,22 @@ with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
 
 ## Selection record
 
+### M19 delivered-worktree verification — 2026-10-04
+
+Delivered source is `f287991+worktree` (dirty), source parent
+`f287991f223e01a36ea5e0a60c219c824da05ba3`. Parent-run format, parallel
+**606** tests, serial **606** tests, workspace/all-target Clippy with denied
+warnings and release build pass using `RUSTUP_TOOLCHAIN=1.99.0`. Native probes
+record `rustc 1.99.0 (b940084d7 2026-09-28)` and
+`cargo 1.99.0 (5f94df478 2026-08-27)`. The repository 1.98.1 pin and locked
+dependency versions remain unchanged; this establishes no new MSRV.
+S6's added `EntityInputHandler` uses existing GPUI 0.2.2, with no new IME or
+grammar dependency. Exact current commands/results are in [status](status.md)
+and the [S9 report](evidence/m19-s9-report.md). Native composition/restart and
+resource/latency acceptance remain pending; process collection alone is not
+verification of those contracts. Historical dependency records below retain
+their original verification scope.
+
 ### M19 acceptance hardening — 2026-10-03
 
 - Desktop promotes already-locked `unicode-segmentation` =1.13.3 and

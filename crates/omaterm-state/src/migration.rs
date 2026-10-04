@@ -74,12 +74,18 @@ mod tests {
         )]);
         let expanded = HashMap::from([(project_id, vec![PathBuf::from("src")])]);
         let mut snapshot = WorkspaceSnapshot::capture_with_expanded(&window, &cwd, &expanded);
-        snapshot.windows[0].projects[0].documents = vec![DocumentSnapshot {
-            id: uuid::Uuid::new_v4().to_string(),
-            path_bytes: b"not-used-by-old-schemas".to_vec(),
-            root_device: 0,
-            root_inode: 0,
-        }];
+        // Even an opportunistic registry over the current global cap must be
+        // discarded before schema-3 registry validation on an old-schema file.
+        snapshot.windows[0].projects[0].documents =
+            vec![
+                DocumentSnapshot {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    path_bytes: b"not-used-by-old-schemas".to_vec(),
+                    root_device: 0,
+                    root_inode: 0,
+                };
+                crate::SnapshotLimits::default().max_documents + 1
+            ];
         snapshot.windows[0].projects[0].active_document = Some("not-a-valid-document-id".into());
         for version in [
             WorkspaceSnapshot::V1_SCHEMA_VERSION,

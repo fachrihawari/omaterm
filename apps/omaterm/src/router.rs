@@ -117,10 +117,12 @@ impl DocumentRestoreRequest {
 /// internal so editor completions share the router receipt namespace without
 /// colliding with terminal launches.
 struct PendingEditor {
+    check: bool,
     context: CommandContext,
     project: ProjectId,
-    root_path: PathBuf,
-    root_identity: omaterm_context::RootIdentity,
+    root_inputs: crate::editor::EditorRootInputs,
+    project_generation: u64,
+    root_identity: Option<omaterm_context::RootIdentity>,
     path: PathBuf,
     document: Option<omaterm_core::DocumentId>,
     generation: u64,
@@ -137,6 +139,14 @@ struct PendingEditor {
 }
 
 pub enum CommandEffect {
+    EditorDiskChecked {
+        document: omaterm_core::DocumentId,
+        generation: u64,
+        observed: omaterm_context::FileRevision,
+        changed: bool,
+        dirty: bool,
+    },
+    EditorSaveTiming(std::time::Duration),
     SessionStarted(omaterm_core::SessionId),
     SessionClosed(ClosedPane),
     PersistenceDirty,
@@ -158,6 +168,17 @@ pub struct DispatchOutcome {
     pub effects: Vec<CommandEffect>,
 }
 
+/// Desktop decisions share the ordinary editor queue and commit guards, but
+/// are deliberately absent from the IPC/CLI command contract.
+pub enum DesktopEditorOperation {
+    Check(omaterm_core::DocumentId),
+    Overwrite {
+        document: omaterm_core::DocumentId,
+        generation: u64,
+        observed: omaterm_context::FileRevision,
+    },
+}
+
 /// In-process semantic dispatcher. It deliberately contains no GPUI types;
 /// the desktop owner applies returned effects and owns all UI state changes.
 pub struct CommandRouter {
@@ -166,6 +187,7 @@ pub struct CommandRouter {
     pending: HashMap<u64, PendingLaunch>,
     editor_io: Option<EditorIoQueue>,
     pending_editors: HashMap<u64, PendingEditor>,
+    editor_project_generations: HashMap<ProjectId, u64>,
     editor_receipts: HashMap<EditorOperationId, u64>,
     next_operation: u64,
     credentials: Option<Credentials>,
@@ -209,6 +231,7 @@ impl CommandRouter {
             pending: HashMap::new(),
             editor_io: Some(EditorIoQueue::new()),
             pending_editors: HashMap::new(),
+            editor_project_generations: HashMap::new(),
             editor_receipts: HashMap::new(),
             next_operation: 0,
             credentials: None,
@@ -229,6 +252,46 @@ impl CommandRouter {
     #[allow(dead_code)]
     pub fn documents_mut(&mut self) -> &mut DocumentStore {
         &mut self.documents
+    }
+
+    /// S8 instrumentation: live document text/history bytes retained by the
+    /// shared store. Content-free: only a byte count crosses this boundary.
+    pub fn retained_document_bytes(&self) -> usize {
+        self.documents
+            .retained_text_bytes()
+            .saturating_add(self.documents.retained_history_bytes())
+    }
+
+    /// S8 instrumentation: retained highlight token memory, in bytes.
+    pub fn token_memory_bytes(&self) -> usize {
+        self.documents.retained_token_bytes()
+    }
+
+    /// S8 instrumentation: queued (not yet started) editor I/O requests.
+    pub fn editor_queue_depth(&self) -> usize {
+        self.editor_io
+            .as_ref()
+            .map(EditorIoQueue::pending_depth)
+            .unwrap_or(0)
+    }
+
+    /// S8 instrumentation: whether an editor I/O request is executing.
+    pub fn editor_queue_active(&self) -> bool {
+        self.editor_io
+            .as_ref()
+            .is_some_and(EditorIoQueue::has_active)
+    }
+
+    pub fn editor_result_count(&self) -> usize {
+        self.editor_io
+            .as_ref()
+            .map_or(0, EditorIoQueue::result_count)
+    }
+
+    pub fn editor_worker_count(&self) -> usize {
+        self.editor_io
+            .as_ref()
+            .map_or(0, EditorIoQueue::worker_count)
     }
 
     /// Replace the history manager (tests inject an in-memory key provider).
@@ -359,29 +422,29 @@ impl CommandRouter {
         }
     }
 
-    /// Owned snapshot of a live buffer for save/revert paths: project,
-    /// supplied relative path, open-time root identity, on-disk revision,
-    /// dirty flag, and buffer text.
-    fn editor_buffer(
+    fn editor_root_inputs(
         &self,
-        document: omaterm_core::DocumentId,
-    ) -> Option<(
-        ProjectId,
-        PathBuf,
-        omaterm_context::RootIdentity,
-        omaterm_context::FileRevision,
-        bool,
-        String,
-    )> {
-        let store = &self.documents;
-        Some((
-            store.project_of(document)?,
-            store.relative_path(document)?,
-            store.open_root_identity(document)?,
-            store.revision(document)?,
-            store.is_dirty(document)?,
-            store.buffer_text(document)?,
-        ))
+        context: CommandContext,
+        project: ProjectId,
+    ) -> Result<crate::editor::EditorRootInputs, CommandError> {
+        let target = self.coordinator.window().project(project).ok_or_else(|| {
+            CommandError::new(ErrorCode::ProjectNotFound, "project does not exist")
+        })?;
+        if matches!(context, CommandContext::Project(scope) if scope != project) {
+            return Err(CommandError::new(
+                ErrorCode::CrossProjectDenied,
+                "outside project scope",
+            ));
+        }
+        let pinned = target.pinned_directory.clone();
+        Ok(crate::editor::EditorRootInputs {
+            cached_cwd: if pinned.is_none() {
+                self.cached_shell_cwd_for(project)
+            } else {
+                None
+            },
+            pinned,
+        })
     }
 
     /// Capture owner-verified editor state, then hand only immutable data to
@@ -393,60 +456,88 @@ impl CommandRouter {
         context: CommandContext,
         command: EditorCommand,
     ) -> DispatchOutcome {
+        self.prepare_editor_scoped(context, command, false, None)
+    }
+
+    pub fn desktop_editor(&mut self, operation: DesktopEditorOperation) -> DispatchOutcome {
+        match operation {
+            DesktopEditorOperation::Check(document) => self.prepare_editor_scoped(
+                CommandContext::LocalUser,
+                EditorCommand::Revert { document },
+                true,
+                None,
+            ),
+            DesktopEditorOperation::Overwrite {
+                document,
+                generation,
+                observed,
+            } => {
+                if self.documents.generation(document) != Some(generation) {
+                    return DispatchOutcome {
+                        result: err(ErrorCode::DocumentConflict, "overwrite decision is stale"),
+                        effects: vec![],
+                    };
+                }
+                self.prepare_editor_scoped(
+                    CommandContext::LocalUser,
+                    EditorCommand::Save { document },
+                    false,
+                    Some(observed),
+                )
+            }
+        }
+    }
+
+    fn prepare_editor_scoped(
+        &mut self,
+        context: CommandContext,
+        command: EditorCommand,
+        check: bool,
+        overwrite: Option<omaterm_context::FileRevision>,
+    ) -> DispatchOutcome {
         let error = |result| DispatchOutcome {
             result,
             effects: vec![],
         };
+        if !self
+            .editor_io
+            .as_ref()
+            .is_some_and(EditorIoQueue::can_submit)
+        {
+            return error(err(
+                ErrorCode::RuntimeFailure,
+                "editor I/O queue is full or closed",
+            ));
+        }
         let (project, root, document, generation, job, saved_text) = match command {
             EditorCommand::Open { project, path } => {
-                let root = match self.file_root(context, project) {
-                    Ok(Some(root)) => root,
-                    Ok(None) => {
-                        return error(err(
-                            ErrorCode::NoProjectRoot,
-                            "project has no filesystem root",
-                        ));
-                    }
+                let root = match self.editor_root_inputs(context, project) {
+                    Ok(root) => root,
                     Err(issue) => return error(CommandResult::Err(issue)),
                 };
-                let root = match omaterm_context::EditorRoot::open(&root) {
-                    Ok(root) => root,
-                    Err(issue) => return error(editor_error(issue, ErrorCode::FileNotFound)),
-                };
+                if let Err(issue) = self.documents.reserve_open() {
+                    return error(CommandResult::Err(issue));
+                }
                 (project, root, None, 0, EditorIoJob::Open { path }, None)
             }
             EditorCommand::Save { document } => {
-                let (project, path, open_root_identity, revision, _, text) = match self
-                    .editor_buffer(document)
-                {
-                    Some(buffer) => buffer,
+                let project = match self.documents.project_of(document) {
+                    Some(project) => project,
                     None => return error(err(ErrorCode::DocumentNotOpen, "document is not open")),
                 };
                 let generation = self
                     .documents
                     .generation(document)
                     .expect("live editor buffer");
-                let root = match self.file_root(context, project) {
-                    Ok(Some(root)) => root,
-                    Ok(None) => {
-                        return error(err(
-                            ErrorCode::NoProjectRoot,
-                            "project has no filesystem root",
-                        ));
-                    }
+                let root = match self.editor_root_inputs(context, project) {
+                    Ok(root) => root,
                     Err(issue) => return error(CommandResult::Err(issue)),
                 };
-                let root = match omaterm_context::EditorRoot::open(&root) {
-                    Ok(root) => root,
-                    Err(issue) => return error(editor_error(issue, ErrorCode::DocumentConflict)),
-                };
-                if root.identity() != open_root_identity {
-                    return error(err(
-                        ErrorCode::DocumentConflict,
-                        "project root changed since open; reopen the document",
-                    ));
-                }
+                let path = self.documents.relative_path(document).expect("live buffer");
+                let revision = self.documents.revision(document).expect("live buffer");
+                let text = self.documents.buffer_text(document).expect("live buffer");
                 let baseline: Arc<str> = Arc::from(text.as_str());
+                self.documents.note_buffer_copy();
                 (
                     project,
                     root,
@@ -456,42 +547,25 @@ impl CommandRouter {
                         document,
                         path,
                         text,
-                        expected: Some(revision),
+                        expected: Some(overwrite.unwrap_or(revision)),
                     },
                     Some(baseline),
                 )
             }
             EditorCommand::Revert { document } => {
-                let (project, path, open_root_identity, _, _, _) = match self
-                    .editor_buffer(document)
-                {
-                    Some(buffer) => buffer,
+                let project = match self.documents.project_of(document) {
+                    Some(project) => project,
                     None => return error(err(ErrorCode::DocumentNotOpen, "document is not open")),
                 };
+                let path = self.documents.relative_path(document).expect("live buffer");
                 let generation = self
                     .documents
                     .generation(document)
                     .expect("live editor buffer");
-                let root = match self.file_root(context, project) {
-                    Ok(Some(root)) => root,
-                    Ok(None) => {
-                        return error(err(
-                            ErrorCode::NoProjectRoot,
-                            "project has no filesystem root",
-                        ));
-                    }
+                let root = match self.editor_root_inputs(context, project) {
+                    Ok(root) => root,
                     Err(issue) => return error(CommandResult::Err(issue)),
                 };
-                let root = match omaterm_context::EditorRoot::open(&root) {
-                    Ok(root) => root,
-                    Err(issue) => return error(editor_error(issue, ErrorCode::DocumentConflict)),
-                };
-                if root.identity() != open_root_identity {
-                    return error(err(
-                        ErrorCode::DocumentConflict,
-                        "project root changed since open; reopen the document",
-                    ));
-                }
                 (
                     project,
                     root,
@@ -513,25 +587,41 @@ impl CommandRouter {
             | EditorIoJob::Save { path, .. }
             | EditorIoJob::Revert { path, .. } => path.clone(),
         };
+        let root_identity = document.and_then(|id| self.documents.open_root_identity(id));
         let request = EditorIoRequest {
+            root_inputs: Some(root.clone()),
+            expected_root: root_identity,
             project,
-            root_path: root.canonical_path().to_path_buf(),
-            root_identity: root.identity(),
+            root_path: PathBuf::new(),
+            root_identity: root_identity.unwrap_or(omaterm_context::RootIdentity {
+                device: 0,
+                inode: 0,
+            }),
             generation,
             job,
         };
-        let Some(queue) = &self.editor_io else {
-            return error(err(ErrorCode::RuntimeFailure, "editor I/O queue is closed"));
-        };
+        let queue = self
+            .editor_io
+            .as_ref()
+            .expect("queue passed owner admission");
         let queue_operation = match queue.submit(request) {
             Ok(operation) => operation,
             Err(EditorIoSubmitError::QueueFull) => {
+                if kind == EditorIoKind::Open {
+                    self.documents.release_open();
+                }
                 return error(err(ErrorCode::RuntimeFailure, "editor I/O queue is full"));
             }
             Err(EditorIoSubmitError::Shutdown) => {
+                if kind == EditorIoKind::Open {
+                    self.documents.release_open();
+                }
                 return error(err(ErrorCode::RuntimeFailure, "editor I/O queue is closed"));
             }
             Err(EditorIoSubmitError::OperationIdExhausted) => {
+                if kind == EditorIoKind::Open {
+                    self.documents.release_open();
+                }
                 return error(err(
                     ErrorCode::RuntimeFailure,
                     "editor I/O operation IDs exhausted",
@@ -543,10 +633,16 @@ impl CommandRouter {
         self.pending_editors.insert(
             operation_id,
             PendingEditor {
+                check,
                 context,
                 project,
-                root_path: root.canonical_path().to_path_buf(),
-                root_identity: root.identity(),
+                root_inputs: root,
+                project_generation: self
+                    .editor_project_generations
+                    .get(&project)
+                    .copied()
+                    .unwrap_or(0),
+                root_identity,
                 path,
                 document,
                 generation,
@@ -608,14 +704,10 @@ impl CommandRouter {
                 effects: vec![CommandEffect::PersistenceDirty],
             }
         };
-        // Resolve the project's current root and require its identity to match
-        // the captured descriptor: a replacement at the same pathname must
-        // never load the same relative filename from an unrelated root.
-        let root = match self.file_root(CommandContext::LocalUser, request.project) {
-            Ok(Some(root)) => root,
-            Ok(None) => {
-                return unavailable(self, "project has no filesystem root");
-            }
+        // Capture only domain inputs. The worker resolves the root and checks
+        // the descriptor identity before reading from it.
+        let root = match self.editor_root_inputs(CommandContext::LocalUser, request.project) {
+            Ok(root) => root,
             Err(error) => {
                 self.documents
                     .mark_restore_unavailable(request.document, error.to_string());
@@ -625,24 +717,21 @@ impl CommandRouter {
                 };
             }
         };
-        let root = match omaterm_context::EditorRoot::open(&root) {
-            Ok(root) => root,
-            Err(issue) => {
-                return unavailable(self, &format!("{issue}"));
-            }
-        };
-        if root.identity() != reservation.root_identity {
-            return unavailable(
-                self,
-                "project root changed since the document was persisted",
-            );
+        if !self
+            .editor_io
+            .as_ref()
+            .is_some_and(EditorIoQueue::can_submit)
+        {
+            return unavailable(self, "editor I/O queue is full or closed");
         }
         let path = PathBuf::from(std::ffi::OsString::from_vec(request.path_bytes.clone()));
         let job = EditorIoJob::Open { path: path.clone() };
         let io_request = EditorIoRequest {
+            root_inputs: Some(root.clone()),
+            expected_root: Some(reservation.root_identity),
             project: request.project,
-            root_path: root.canonical_path().to_path_buf(),
-            root_identity: root.identity(),
+            root_path: PathBuf::new(),
+            root_identity: reservation.root_identity,
             generation: 0,
             job,
         };
@@ -668,12 +757,18 @@ impl CommandRouter {
             PendingEditor {
                 context: CommandContext::LocalUser,
                 project: request.project,
-                root_path: root.canonical_path().to_path_buf(),
-                root_identity: root.identity(),
+                root_inputs: root,
+                project_generation: self
+                    .editor_project_generations
+                    .get(&request.project)
+                    .copied()
+                    .unwrap_or(0),
+                root_identity: Some(reservation.root_identity),
                 path,
                 document: Some(request.document),
                 generation: 0,
                 kind: EditorIoKind::Open,
+                check: false,
                 cancelled: false,
                 saved_text: None,
                 restore: true,
@@ -1265,17 +1360,22 @@ impl CommandRouter {
             let Some(operation_id) = self.editor_receipts.remove(&completion.operation) else {
                 continue;
             };
-            outcomes.push((
-                operation_id,
-                self.finish_editor_operation(operation_id, completion),
-            ));
+            let elapsed = completion.save_elapsed;
+            let mut outcome = self.finish_editor_operation(operation_id, completion);
+            if let Some(elapsed) = elapsed {
+                // A committed filesystem write remains real even if its owner
+                // acknowledgement is rejected after a cancellation/root change.
+                outcome
+                    .effects
+                    .push(CommandEffect::EditorSaveTiming(elapsed));
+            }
+            outcomes.push((operation_id, outcome));
         }
         outcomes
     }
 
-    /// Reject a completion even when cancellation races a completed worker
-    /// syscall. The worker is asked to stop too, but only the owner decides
-    /// whether its result may touch the document store.
+    /// Cancel disposable results and pre-commit work. A save that already
+    /// committed remains a save and adopts its captured baseline when live.
     pub fn cancel_editor_operation(&mut self, operation_id: u64) -> bool {
         let Some(pending) = self.pending_editors.get_mut(&operation_id) else {
             return false;
@@ -1292,7 +1392,7 @@ impl CommandRouter {
         true
     }
 
-    /// Stop accepting editor I/O and reject all outstanding completions. Call
+    /// Stop accepting editor I/O and cancel outstanding pre-commit work. Call
     /// `shutdown_editor_operations` during final application shutdown to join
     /// the worker rather than detaching it.
     pub fn cancel_editor_operations(&mut self) {
@@ -1311,9 +1411,8 @@ impl CommandRouter {
             Some(queue) => queue.shutdown_and_join(),
             None => Ok(()),
         };
-        self.editor_io = None;
-        self.pending_editors.clear();
-        self.editor_receipts.clear();
+        // Keep the bounded mailbox/receipts available to the owner's final
+        // poll: joining must never erase already-committed save reports.
         result
     }
 
@@ -1322,7 +1421,49 @@ impl CommandRouter {
         operation_id: u64,
         completion: EditorIoCompletion,
     ) -> DispatchOutcome {
-        let Some(mut pending) = self.pending_editors.remove(&operation_id) else {
+        let mut pending = self.pending_editors.remove(&operation_id);
+        if pending
+            .as_ref()
+            .is_some_and(|pending| pending.kind == EditorIoKind::Open && !pending.restore)
+        {
+            self.documents.release_open();
+        }
+        // Rename is irreversible. Inspect committed outcomes before cancellation,
+        // project/root staleness or document retirement can hide the write.
+        if let Ok(EditorIoSuccess::Saved(saved)) = &completion.result {
+            let document = completion.document.expect("committed save has document");
+            let mut effects = Vec::new();
+            if !saved.is_durable() {
+                effects.push(CommandEffect::EditorSaveDurabilityWarning {
+                    project: completion.project,
+                    document,
+                });
+            }
+            if self.documents.project_of(document) == Some(completion.project)
+                && self.documents.open_root_identity(document) == Some(completion.root_identity)
+                && let Some(pending) = pending.as_mut()
+                && pending.document == Some(document)
+                && pending.project == completion.project
+                && pending.kind == EditorIoKind::Save
+                && pending.generation == completion.generation
+                && pending.root_identity == Some(completion.root_identity)
+                && self.documents.relative_path(document).as_deref() == Some(pending.path.as_path())
+                && let Some(baseline) = pending.saved_text.take()
+            {
+                self.documents
+                    .mark_saved_baseline(document, saved.revision(), baseline);
+            }
+            // Captured metadata reports the committed G write even if its
+            // original document/project has since been closed or deleted.
+            let info = completion
+                .saved_info
+                .expect("save captured document metadata");
+            return DispatchOutcome {
+                result: ok(CommandOutput::EditorSaved(info)),
+                effects,
+            };
+        }
+        let Some(pending) = pending else {
             return DispatchOutcome {
                 result: err(ErrorCode::RuntimeFailure, "editor operation was cancelled"),
                 effects: vec![],
@@ -1333,14 +1474,23 @@ impl CommandRouter {
             effects: vec![],
         };
         if pending.cancelled {
+            if pending.restore
+                && pending
+                    .document
+                    .is_some_and(|document| self.documents.is_placeholder(document))
+            {
+                return self.fail_restore(&pending, "restore read was cancelled");
+            }
             return rejected(err(
                 ErrorCode::RuntimeFailure,
                 "editor operation was cancelled",
             ));
         }
         if completion.project != pending.project
-            || completion.root_path != pending.root_path
-            || completion.root_identity != pending.root_identity
+            || (completion.result.is_ok()
+                && pending
+                    .root_identity
+                    .is_some_and(|expected| completion.root_identity != expected))
             || (!pending.restore && completion.document != pending.document)
             || completion.generation != pending.generation
             || completion.kind != pending.kind
@@ -1361,21 +1511,26 @@ impl CommandRouter {
         if self.coordinator.window().project(pending.project).is_none() {
             return rejected(err(ErrorCode::ProjectNotFound, "project no longer exists"));
         }
-        let root = match self.file_root(pending.context, pending.project) {
-            Ok(Some(root)) => root,
-            Ok(None) => {
-                return rejected(err(
-                    ErrorCode::DocumentConflict,
-                    "project root changed while editor I/O was pending",
-                ));
-            }
+        let root_inputs = match self.editor_root_inputs(pending.context, pending.project) {
+            Ok(inputs) => inputs,
             Err(issue) => return rejected(CommandResult::Err(issue)),
         };
-        let root = match omaterm_context::EditorRoot::open(&root) {
-            Ok(root) => root,
-            Err(issue) => return rejected(editor_error(issue, ErrorCode::DocumentConflict)),
-        };
-        if root.canonical_path() != pending.root_path || root.identity() != pending.root_identity {
+        if root_inputs != pending.root_inputs
+            || self
+                .editor_project_generations
+                .get(&pending.project)
+                .copied()
+                .unwrap_or(0)
+                != pending.project_generation
+        {
+            if pending.restore
+                && pending
+                    .document
+                    .is_some_and(|document| self.documents.is_placeholder(document))
+            {
+                return self
+                    .fail_restore(&pending, "project root changed while restore was pending");
+            }
             return rejected(err(
                 ErrorCode::DocumentConflict,
                 "project root changed while editor I/O was pending",
@@ -1393,7 +1548,7 @@ impl CommandRouter {
                 ));
             };
             if placeholder.project() != pending.project
-                || placeholder.root_identity() != pending.root_identity
+                || Some(placeholder.root_identity()) != pending.root_identity
                 || placeholder.path() != pending.path
             {
                 return rejected(err(
@@ -1403,7 +1558,7 @@ impl CommandRouter {
             }
         } else if let Some(document) = pending.document
             && (self.documents.project_of(document) != Some(pending.project)
-                || self.documents.open_root_identity(document) != Some(pending.root_identity)
+                || self.documents.open_root_identity(document) != pending.root_identity
                 || self.documents.relative_path(document).as_deref()
                     != Some(pending.path.as_path())
                 // A save may complete after the user typed newer text (G+1).
@@ -1423,7 +1578,7 @@ impl CommandRouter {
                 let document = pending.document.expect("restore has document");
                 match self
                     .documents
-                    .commit_restore(document, pending.root_path.clone(), file)
+                    .commit_restore(document, completion.root_path.clone(), file)
                 {
                     Ok(document) => {
                         let Some(info) = self.documents.document_info(document) else {
@@ -1462,16 +1617,21 @@ impl CommandRouter {
                         ErrorCode::DocumentConflict,
                         "restored document id collided with a live document",
                     )),
+                    Err(crate::editor::RestoreCommitError::ResourceLimit) => self
+                        .fail_restore(&pending, "restored document exceeds editor resource limits"),
                 }
             }
             (EditorIoKind::Open, Ok(EditorIoSuccess::Opened(file))) => {
-                let document = self.documents.open(
+                let document = match self.documents.try_open(
                     pending.project,
                     pending.path,
-                    pending.root_path,
-                    pending.root_identity,
+                    completion.root_path,
+                    completion.root_identity,
                     file,
-                );
+                ) {
+                    Ok(id) => id,
+                    Err(issue) => return rejected(CommandResult::Err(issue)),
+                };
                 let Some(info) = self.documents.document_info(document) else {
                     return rejected(err(
                         ErrorCode::RuntimeFailure,
@@ -1484,39 +1644,24 @@ impl CommandRouter {
                     effects: vec![CommandEffect::PersistenceDirty],
                 }
             }
-            (EditorIoKind::Save, Ok(EditorIoSuccess::Saved(saved))) => {
-                let document = pending.document.expect("save has document");
-                let durable = saved.is_durable();
-                let mut effects = Vec::new();
-                if !durable {
-                    // Committed to disk but the post-rename directory sync was
-                    // not confirmed. This is a successful save with a durability
-                    // warning: surface it as a typed effect, never as an
-                    // ordinary "Saved", while still adopting the baseline.
-                    tracing::warn!(target: "omaterm::editor", project_id = %pending.project.0, "editor save committed without directory-sync confirmation");
-                    effects.push(CommandEffect::EditorSaveDurabilityWarning {
-                        project: pending.project,
-                        document,
-                    });
-                }
-                match pending.saved_text.take() {
-                    Some(baseline) => {
-                        self.documents
-                            .mark_saved_baseline(document, saved.revision(), baseline)
-                    }
-                    None => self.documents.mark_saved(document, saved.revision()),
-                }
-                let Some(info) = self.documents.document_info(document) else {
-                    return rejected(err(ErrorCode::DocumentNotOpen, "document is not open"));
-                };
-                tracing::debug!(target: "omaterm::editor", project_id = %pending.project.0, bytes = info.bytes, "editor document saved");
-                DispatchOutcome {
-                    result: ok(CommandOutput::EditorSaved(info)),
-                    effects,
-                }
-            }
             (EditorIoKind::Revert, Ok(EditorIoSuccess::Reverted(file))) => {
                 let document = pending.document.expect("revert has document");
+                if pending.check {
+                    return DispatchOutcome {
+                        result: ok(CommandOutput::EditorOpened(
+                            self.documents
+                                .document_info(document)
+                                .expect("checked live buffer"),
+                        )),
+                        effects: vec![CommandEffect::EditorDiskChecked {
+                            document,
+                            generation: pending.generation,
+                            observed: file.revision,
+                            changed: self.documents.revision(document) != Some(file.revision),
+                            dirty: self.documents.is_dirty(document) == Some(true),
+                        }],
+                    };
+                }
                 self.documents.adopt_disk_text(document, file);
                 let Some(info) = self.documents.document_info(document) else {
                     return rejected(err(ErrorCode::DocumentNotOpen, "document is not open"));
@@ -1530,6 +1675,13 @@ impl CommandRouter {
             (_, Err(EditorIoError::Cancelled)) if pending.restore => {
                 self.fail_restore(&pending, "restore read was cancelled")
             }
+            (_, Err(EditorIoError::NoRoot)) if pending.restore => {
+                self.fail_restore(&pending, "project has no filesystem root")
+            }
+            (_, Err(EditorIoError::NoRoot)) => rejected(err(
+                ErrorCode::NoProjectRoot,
+                "project has no filesystem root",
+            )),
             (_, Err(EditorIoError::RootChanged)) if pending.restore => self.fail_restore(
                 &pending,
                 "project root changed since the document was persisted",
@@ -1956,6 +2108,7 @@ impl CommandRouter {
                 match self.coordinator.close_project(project) {
                     Ok(closed) => {
                         close_effects(effects, closed);
+                        self.editor_project_generations.remove(&project);
                         // Owned editor buffers retire with the project;
                         // dirty text is discarded, never written.
                         self.documents.close_project(project);
@@ -1980,6 +2133,11 @@ impl CommandRouter {
             OmaCommand::Project(ProjectCommand::SetDirectory { project, directory }) => {
                 match self.coordinator.set_project_directory(project, directory) {
                     Ok(()) => {
+                        let generation =
+                            self.editor_project_generations.entry(project).or_default();
+                        *generation = generation
+                            .checked_add(1)
+                            .expect("editor project generation exhausted");
                         effects.push(CommandEffect::ProjectDirectoryChanged(project));
                         changed(effects, Out::Unit)
                     }
@@ -2780,6 +2938,7 @@ fn editor_error(error: omaterm_context::EditorError, missing: ErrorCode) -> Comm
         Context::NotTextFile => err(ErrorCode::NotTextFile, error.to_string()),
         Context::Conflict => err(ErrorCode::DocumentConflict, error.to_string()),
         Context::SecureResolutionUnavailable => err(ErrorCode::RuntimeFailure, error.to_string()),
+        Context::Cancelled => err(ErrorCode::Timeout, error.to_string()),
         Context::Io(_) => err(ErrorCode::RuntimeFailure, error.to_string()),
     }
 }
@@ -4101,6 +4260,252 @@ mod tests {
         }
     }
 
+    fn finish_desktop_editor(
+        router: &mut CommandRouter,
+        operation: DesktopEditorOperation,
+    ) -> DispatchOutcome {
+        let receipt = router.desktop_editor(operation);
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            return receipt;
+        };
+        wait_for_editor_operation(router, operation_id)
+    }
+
+    fn open_conflict_fixture(tag: &str) -> (CommandRouter, PathBuf, omaterm_core::DocumentId) {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, tag, "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open");
+        };
+        (router, root, info.document)
+    }
+
+    fn disk_observation(outcome: &DispatchOutcome) -> (omaterm_context::FileRevision, bool, bool) {
+        outcome
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                CommandEffect::EditorDiskChecked {
+                    observed,
+                    changed,
+                    dirty,
+                    ..
+                } => Some((*observed, *changed, *dirty)),
+                _ => None,
+            })
+            .expect("accepted disk observation")
+    }
+
+    #[test]
+    fn desktop_overwrite_refuses_second_disk_change_and_stale_generation() {
+        let (mut router, root, document) = open_conflict_fixture("second-overwrite");
+        router
+            .documents_mut()
+            .apply_edit(document, 0, 0, "local ")
+            .unwrap();
+        std::fs::write(root.join("notes.txt"), "first external\n").unwrap();
+        let checked = finish_desktop_editor(&mut router, DesktopEditorOperation::Check(document));
+        let (observed, changed, dirty) = disk_observation(&checked);
+        assert!(changed && dirty);
+        let generation = router.documents().generation(document).unwrap();
+        let modified = std::fs::metadata(root.join("notes.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::fs::write(root.join("notes.txt"), "later external\n").unwrap();
+        std::fs::File::open(root.join("notes.txt"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let refused = finish_desktop_editor(
+            &mut router,
+            DesktopEditorOperation::Overwrite {
+                document,
+                generation,
+                observed,
+            },
+        );
+        assert!(matches!(
+            refused.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::DocumentConflict,
+                ..
+            })
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "later external\n"
+        );
+        assert_eq!(router.documents().text(document), Some("local disk\n"));
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+        let checked = finish_desktop_editor(&mut router, DesktopEditorOperation::Check(document));
+        let (second, _, _) = disk_observation(&checked);
+        assert_ne!(observed, second);
+        router
+            .documents_mut()
+            .apply_edit(document, 0, 0, "new ")
+            .unwrap();
+        let stale = router.desktop_editor(DesktopEditorOperation::Overwrite {
+            document,
+            generation,
+            observed: second,
+        });
+        assert!(matches!(
+            stale.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::DocumentConflict,
+                ..
+            })
+        ));
+        let generation = router.documents().generation(document).unwrap();
+        let saved = finish_desktop_editor(
+            &mut router,
+            DesktopEditorOperation::Overwrite {
+                document,
+                generation,
+                observed: second,
+            },
+        );
+        assert!(matches!(
+            saved.result,
+            CommandResult::Ok(CommandOutput::EditorSaved(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "new local disk\n"
+        );
+        assert_eq!(router.documents().is_dirty(document), Some(false));
+        router.shutdown_editor_operations().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_checks_preserve_clean_and_dirty_buffers_and_failed_reload_history() {
+        let (mut router, root, document) = open_conflict_fixture("check-outcomes");
+        let unchanged = finish_desktop_editor(&mut router, DesktopEditorOperation::Check(document));
+        assert!(!disk_observation(&unchanged).1);
+        std::fs::write(root.join("notes.txt"), "external\n").unwrap();
+        let clean = finish_desktop_editor(&mut router, DesktopEditorOperation::Check(document));
+        assert_eq!(
+            (disk_observation(&clean).1, disk_observation(&clean).2),
+            (true, false)
+        );
+        assert_eq!(router.documents().text(document), Some("disk\n"));
+        assert_eq!(router.documents().is_dirty(document), Some(false));
+        router
+            .documents_mut()
+            .apply_edit(document, 0, 0, "local ")
+            .unwrap();
+        let generation = router.documents().generation(document).unwrap();
+        let dirty = finish_desktop_editor(&mut router, DesktopEditorOperation::Check(document));
+        assert_eq!(
+            (disk_observation(&dirty).1, disk_observation(&dirty).2),
+            (true, true)
+        );
+        assert_eq!(router.documents().generation(document), Some(generation));
+        std::fs::remove_file(root.join("notes.txt")).unwrap();
+        let failed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Revert { document }),
+        );
+        assert!(matches!(failed.result, CommandResult::Err(_)));
+        assert_eq!(router.documents().text(document), Some("local disk\n"));
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+        assert!(router.documents_mut().undo(document).unwrap());
+        assert!(router.documents_mut().redo(document).unwrap());
+        std::fs::write(root.join("notes.txt"), "fresh disk\n").unwrap();
+        let loaded = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Revert { document }),
+        );
+        assert!(matches!(
+            loaded.result,
+            CommandResult::Ok(CommandOutput::EditorOpened(_))
+        ));
+        assert_eq!(router.documents().text(document), Some("fresh disk\n"));
+        assert_eq!(router.documents().is_dirty(document), Some(false));
+        assert!(!router.documents_mut().undo(document).unwrap());
+        router.shutdown_editor_operations().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_check_cancellation_and_stale_read_publish_no_observation() {
+        let (mut router, root, document) = open_conflict_fixture("check-cancel");
+        let receipt = router.desktop_editor(DesktopEditorOperation::Check(document));
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("receipt");
+        };
+        assert!(router.cancel_editor_operation(operation_id));
+        let cancelled = wait_for_editor_operation(&mut router, operation_id);
+        assert!(matches!(cancelled.result, CommandResult::Err(_)));
+        assert!(cancelled.effects.is_empty());
+        let receipt = router.desktop_editor(DesktopEditorOperation::Check(document));
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("receipt");
+        };
+        wait_for_editor_mailbox(&router);
+        router
+            .documents_mut()
+            .apply_edit(document, 0, 0, "new ")
+            .unwrap();
+        let stale = wait_for_editor_operation(&mut router, operation_id);
+        assert!(matches!(
+            stale.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::DocumentConflict,
+                ..
+            })
+        ));
+        assert!(stale.effects.is_empty());
+        assert_eq!(router.documents().text(document), Some("new disk\n"));
+        router.shutdown_editor_operations().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_overwrite_never_bypasses_root_containment() {
+        let (mut router, root, document) = open_conflict_fixture("overwrite-boundary");
+        router
+            .documents_mut()
+            .apply_edit(document, 0, 0, "local ")
+            .unwrap();
+        let checked = finish_desktop_editor(&mut router, DesktopEditorOperation::Check(document));
+        let (observed, _, _) = disk_observation(&checked);
+        let generation = router.documents().generation(document).unwrap();
+        let outside = root.with_extension("outside");
+        std::fs::write(&outside, "outside\n").unwrap();
+        std::fs::remove_file(root.join("notes.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("notes.txt")).unwrap();
+        let refused = finish_desktop_editor(
+            &mut router,
+            DesktopEditorOperation::Overwrite {
+                document,
+                generation,
+                observed,
+            },
+        );
+        assert!(matches!(
+            refused.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::PathOutsideRoot,
+                ..
+            })
+        ));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside\n");
+        assert_eq!(router.documents().text(document), Some("local disk\n"));
+        router.shutdown_editor_operations().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(outside).unwrap();
+    }
+
     /// Create a project rooted at a fresh temp directory containing one file.
     fn create_document_project(
         router: &mut CommandRouter,
@@ -4244,8 +4649,12 @@ mod tests {
             root_device: identity.device,
             root_inode: identity.inode,
         });
-        assert!(matches!(receipt.result, CommandResult::Err(_)));
-        assert!(has_persistence_dirty(&receipt.effects));
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("restore receipt");
+        };
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        assert!(matches!(completed.result, CommandResult::Err(_)));
+        assert!(has_persistence_dirty(&completed.effects));
         assert!(router.documents().document_info(persisted).is_none());
         let placeholder = router
             .documents()
@@ -4331,7 +4740,10 @@ mod tests {
             saved.result,
             CommandResult::Ok(CommandOutput::EditorSaved(_))
         ));
-        assert!(saved.effects.is_empty());
+        assert!(matches!(
+            saved.effects.as_slice(),
+            [CommandEffect::EditorSaveTiming(_)]
+        ));
 
         let reverted = router.dispatch(
             CommandContext::LocalUser,
@@ -4413,8 +4825,377 @@ mod tests {
         }
     }
 
+    fn wait_for_editor_mailbox(router: &CommandRouter) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while router.editor_result_count() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "editor worker did not publish"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn editor_prepare_does_not_probe_missing_root_and_completion_does_not_reopen_it() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "owner-no-disk", "notes.txt");
+        let moved = root.with_extension("moved");
+        std::fs::rename(&root, &moved).unwrap();
+        let receipt = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: "notes.txt".into(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("owner probed missing root");
+        };
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        assert!(matches!(
+            completed.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::NoProjectRoot,
+                ..
+            })
+        ));
+        std::fs::rename(&moved, &root).unwrap();
+
+        let receipt = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: "notes.txt".into(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("open receipt");
+        };
+        wait_for_editor_mailbox(&router);
+        // The read captured the root identity on the worker. Removing its
+        // pathname after publication cannot trigger a new owner-side probe.
+        std::fs::rename(&root, &moved).unwrap();
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        assert!(matches!(
+            completed.result,
+            CommandResult::Ok(CommandOutput::EditorOpened(_))
+        ));
+        std::fs::remove_dir_all(&moved).unwrap();
+    }
+
+    #[test]
+    fn save_and_revert_check_expected_root_on_worker_without_copying_revert_text() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "worker-identity", "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: "notes.txt".into(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open");
+        };
+        let moved = root.with_extension("moved");
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("notes.txt"), "replacement\n").unwrap();
+        let copies = router.documents().buffer_copy_count();
+        for command in [
+            EditorCommand::Revert {
+                document: info.document,
+            },
+            EditorCommand::Save {
+                document: info.document,
+            },
+        ] {
+            let receipt =
+                router.dispatch_async(CommandContext::LocalUser, OmaCommand::Editor(command));
+            let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+                panic!("owner probed replacement root");
+            };
+            let completed = wait_for_editor_operation(&mut router, operation_id);
+            assert!(matches!(
+                completed.result,
+                CommandResult::Err(CommandError {
+                    code: ErrorCode::DocumentConflict,
+                    ..
+                })
+            ));
+            assert_eq!(router.documents().text(info.document), Some("disk\n"));
+        }
+        assert_eq!(
+            router.documents().buffer_copy_count(),
+            copies + 2,
+            "only save materializes text"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "replacement\n"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&moved).unwrap();
+    }
+
+    #[test]
+    fn committed_warning_survives_cancel_root_change_and_document_retirement() {
+        for retire in [false, true] {
+            let mut router =
+                router().with_editor_io(EditorIoQueue::with_test_runner(warning_save_runner));
+            let (project, root) = create_document_project(
+                &mut router,
+                if retire {
+                    "committed-retired"
+                } else {
+                    "committed-live"
+                },
+                "notes.txt",
+            );
+            let opened = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Editor(EditorCommand::Open {
+                    project,
+                    path: "notes.txt".into(),
+                }),
+            );
+            let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+                panic!("open");
+            };
+            let document = info.document;
+            router
+                .documents_mut()
+                .apply_edit(document, 4, 0, " G")
+                .unwrap();
+            let receipt = router.dispatch_async(
+                CommandContext::LocalUser,
+                OmaCommand::Editor(EditorCommand::Save { document }),
+            );
+            let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+                panic!("save receipt");
+            };
+            wait_for_editor_mailbox(&router); // Deterministically after commit, before owner acknowledgement.
+            assert!(router.cancel_editor_operation(operation_id));
+            if retire {
+                router.documents_mut().discard_changes(document);
+                let deleted = router.dispatch(
+                    CommandContext::LocalUser,
+                    OmaCommand::Project(ProjectCommand::Delete { project }),
+                );
+                assert!(matches!(deleted.result, CommandResult::Ok(_)));
+            } else {
+                router
+                    .documents_mut()
+                    .apply_edit(document, 6, 0, "+1")
+                    .unwrap();
+                let changed = router.dispatch(
+                    CommandContext::LocalUser,
+                    OmaCommand::Project(ProjectCommand::SetDirectory {
+                        project,
+                        directory: root.parent().unwrap().into(),
+                    }),
+                );
+                assert!(matches!(changed.result, CommandResult::Ok(_)));
+            }
+            let completed = wait_for_editor_operation(&mut router, operation_id);
+            let CommandResult::Ok(CommandOutput::EditorSaved(saved)) = completed.result else {
+                panic!("committed save misreported: {:?}", completed.result);
+            };
+            assert_eq!(saved.document, document);
+            assert_eq!(saved.bytes, "disk G\n".len());
+            assert!(completed.effects.iter().any(|effect| matches!(effect, CommandEffect::EditorSaveDurabilityWarning { document: id, .. } if *id == document)));
+            assert!(
+                completed
+                    .effects
+                    .iter()
+                    .any(|effect| matches!(effect, CommandEffect::EditorSaveTiming(_)))
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+                "disk G\n"
+            );
+            if retire {
+                assert!(router.documents().document_info(document).is_none());
+            } else {
+                assert_eq!(router.documents().text(document), Some("disk G+1\n"));
+                assert_eq!(router.documents().is_dirty(document), Some(true));
+                router.documents_mut().undo(document).unwrap();
+                assert_eq!(
+                    router.documents().is_dirty(document),
+                    Some(false),
+                    "committed G is the adopted baseline"
+                );
+            }
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn editor_root_generation_rejects_a_b_a_without_owner_disk_probe() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "root-generation", "notes.txt");
+        let receipt = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: "notes.txt".into(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("receipt");
+        };
+        wait_for_editor_mailbox(&router);
+        for directory in [root.parent().unwrap().to_path_buf(), root.clone()] {
+            let changed = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Project(ProjectCommand::SetDirectory { project, directory }),
+            );
+            assert!(matches!(changed.result, CommandResult::Ok(_)));
+        }
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        assert!(matches!(
+            completed.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::DocumentConflict,
+                ..
+            })
+        ));
+        assert!(completed.effects.is_empty());
+        assert!(router.documents().project_documents(project).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn editor_admission_precedes_save_copy_and_shutdown_retains_committed_reports() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "admission", "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: "notes.txt".into(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open");
+        };
+        router
+            .documents_mut()
+            .apply_edit(info.document, 4, 0, " saved")
+            .unwrap();
+        let receipt = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Save {
+                document: info.document,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Pending {
+            operation_id: save_id,
+        }) = receipt.result
+        else {
+            panic!("save");
+        };
+        wait_for_editor_mailbox(&router);
+        // Leave all final results unconsumed; outstanding capacity must stay
+        // bounded even though the worker can process requests immediately.
+        for count in 2..=17 {
+            let receipt = router.dispatch_async(
+                CommandContext::LocalUser,
+                OmaCommand::Editor(EditorCommand::Open {
+                    project,
+                    path: "notes.txt".into(),
+                }),
+            );
+            assert!(matches!(
+                receipt.result,
+                CommandResult::Ok(CommandOutput::Pending { .. })
+            ));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while router.editor_result_count() < count {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        }
+        let copies = router.documents().buffer_copy_count();
+        let rejected = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Save {
+                document: info.document,
+            }),
+        );
+        assert!(matches!(rejected.result, CommandResult::Err(_)));
+        assert_eq!(router.documents().buffer_copy_count(), copies);
+        router.shutdown_editor_operations().unwrap();
+        assert_eq!(router.editor_result_count(), 17);
+        let results = router.poll_editor_operations();
+        assert_eq!(results.len(), 17);
+        assert!(results.iter().any(|(id, outcome)| *id == save_id
+            && matches!(
+                outcome.result,
+                CommandResult::Ok(CommandOutput::EditorSaved(_))
+            )));
+        assert_eq!(router.documents().is_dirty(info.document), Some(false));
+        assert!(!router.has_pending_editor_operations());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_and_stale_restore_reads_leave_retryable_placeholders() {
+        for cancel in [false, true] {
+            let mut router = router();
+            let (project, root) = create_document_project(
+                &mut router,
+                if cancel {
+                    "restore-cancel"
+                } else {
+                    "restore-stale"
+                },
+                "notes.txt",
+            );
+            let identity = omaterm_context::EditorRoot::open(&root).unwrap().identity();
+            let document = DocumentId::new();
+            let receipt = router.schedule_document_restore(DocumentRestoreRequest {
+                project,
+                document,
+                path_bytes: b"notes.txt".to_vec(),
+                root_device: identity.device,
+                root_inode: identity.inode,
+            });
+            let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+                panic!("restore receipt");
+            };
+            wait_for_editor_mailbox(&router);
+            if cancel {
+                assert!(router.cancel_editor_operation(operation_id));
+            } else {
+                let changed = router.dispatch(
+                    CommandContext::LocalUser,
+                    OmaCommand::Project(ProjectCommand::SetDirectory {
+                        project,
+                        directory: root.parent().unwrap().into(),
+                    }),
+                );
+                assert!(matches!(changed.result, CommandResult::Ok(_)));
+            }
+            let completed = wait_for_editor_operation(&mut router, operation_id);
+            assert!(matches!(completed.result, CommandResult::Err(_)));
+            assert!(has_persistence_dirty(&completed.effects));
+            assert!(
+                router
+                    .documents()
+                    .placeholder(document)
+                    .unwrap()
+                    .is_unavailable()
+            );
+            assert!(router.documents().text(document).is_none());
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
     #[test]
     fn editor_save_pending_receipt_is_not_completion() {
+        use std::time::Duration;
         let mut router = router();
         let (project, root) = create_document_project(&mut router, "pending-save", "notes.txt");
         let opened = router.dispatch(
@@ -4434,6 +5215,8 @@ mod tests {
             .unwrap();
         assert_eq!(router.documents().is_dirty(document), Some(true));
 
+        let copies_before = router.documents().buffer_copy_count();
+        let started = std::time::Instant::now();
         let receipt = router.dispatch_async(
             CommandContext::LocalUser,
             OmaCommand::Editor(EditorCommand::Save { document }),
@@ -4449,7 +5232,27 @@ mod tests {
         assert!(router.has_pending_editor_operations());
         assert_eq!(router.documents().is_dirty(document), Some(true));
 
+        assert_eq!(router.documents().buffer_copy_count(), copies_before + 2);
+        // Let the worker finish without owner acknowledgement. The timing must
+        // end on the worker, not include time spent waiting for the owner poll.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while router.editor_result_count() == 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let before_poll = started.elapsed();
+
         let completed = wait_for_editor_operation(&mut router, operation_id);
+        let timings = completed
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                CommandEffect::EditorSaveTiming(elapsed) => Some(*elapsed),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(timings.len(), 1);
+        assert!(timings[0] > Duration::ZERO && timings[0] <= before_poll);
         // Only the matching completion clears dirty and reports the save.
         let CommandResult::Ok(CommandOutput::EditorSaved(_)) = completed.result else {
             panic!("save completion: {:?}", completed.result);

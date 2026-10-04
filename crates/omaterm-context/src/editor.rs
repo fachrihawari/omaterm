@@ -18,6 +18,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
@@ -147,6 +148,17 @@ impl EditorRoot {
 
     pub const fn identity(&self) -> RootIdentity {
         self.identity
+    }
+
+    /// Refuse a removed, moved or replaced canonical root, including a symlink
+    /// substituted at that pathname. Descendant I/O still uses the captured FD.
+    pub fn validate_live_identity(&self) -> Result<(), EditorError> {
+        let live =
+            std::fs::symlink_metadata(&self.canonical_path).map_err(|_| EditorError::Conflict)?;
+        if !live.is_dir() || !same_object(&live, &self.directory.metadata()?) {
+            return Err(EditorError::Conflict);
+        }
+        Ok(())
     }
 
     /// Open a relative descendant beneath the captured descriptor. Linux's
@@ -313,6 +325,8 @@ pub enum EditorError {
     Conflict,
     #[error("secure descriptor-relative path resolution is unavailable")]
     SecureResolutionUnavailable,
+    #[error("editor operation was cancelled before publication or commit")]
+    Cancelled,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -327,6 +341,7 @@ impl EditorError {
             Self::NotTextFile => "not_text_file",
             Self::Conflict => "document_conflict",
             Self::SecureResolutionUnavailable => "runtime_failure",
+            Self::Cancelled => "cancelled",
             Self::Io(_) => "io_error",
         }
     }
@@ -374,14 +389,47 @@ pub fn read_text_file(root: &Path, user_path: &Path) -> Result<EditorFile, Edito
     read_text_file_from_root(&root, user_path)
 }
 
-/// Read through an already captured Linux root descriptor. This is the S1
-/// worker-facing API: a root replacement after capture cannot retarget it.
+/// Read through an already captured Linux root descriptor. A root replacement
+/// after capture refuses publication rather than retargeting or publishing
+/// from the moved tree.
 #[cfg(target_os = "linux")]
 pub fn read_text_file_from_root(
     root: &EditorRoot,
     user_path: &Path,
 ) -> Result<EditorFile, EditorError> {
-    read_open_file(root.open_descendant(user_path)?, user_path)
+    read_text_file_from_root_cancellable(root, user_path, &AtomicBool::new(false))
+}
+
+/// Chunked read with cooperative cancellation. Blocking filesystem syscalls
+/// cannot be interrupted. Revalidate the root and current descendant before
+/// publication; changes after the last check remain a residual race interval.
+#[cfg(target_os = "linux")]
+pub fn read_text_file_from_root_cancellable(
+    root: &EditorRoot,
+    user_path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<EditorFile, EditorError> {
+    check_cancelled(cancelled)?;
+    root.validate_live_identity()?;
+    let result =
+        read_open_file_cancellable(root.open_descendant(user_path)?, user_path, cancelled)?;
+    let current = root.open_descendant(user_path)?.metadata()?;
+    if FileRevision::of(&current, result.text.as_bytes()) != result.revision {
+        return Err(EditorError::Conflict);
+    }
+    root.validate_live_identity()?;
+    check_cancelled(cancelled)?;
+    Ok(result)
+}
+
+#[cfg(target_os = "linux")]
+pub fn read_text_file_cancellable(
+    root: &Path,
+    user_path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<EditorFile, EditorError> {
+    check_cancelled(cancelled)?;
+    read_text_file_from_root_cancellable(&EditorRoot::open(root)?, user_path, cancelled)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -402,7 +450,17 @@ fn read_canonical_file(absolute: &Path, user_path: &Path) -> Result<EditorFile, 
     read_open_file(options.open(absolute)?, user_path)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn read_open_file(file: std::fs::File, user_path: &Path) -> Result<EditorFile, EditorError> {
+    read_open_file_cancellable(file, user_path, &AtomicBool::new(false))
+}
+
+fn read_open_file_cancellable(
+    file: std::fs::File,
+    user_path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<EditorFile, EditorError> {
+    check_cancelled(cancelled)?;
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() {
         return Err(EditorError::NotRegularFile);
@@ -410,7 +468,7 @@ fn read_open_file(file: std::fs::File, user_path: &Path) -> Result<EditorFile, E
     if metadata.len() > MAX_EDITOR_BYTES as u64 {
         return Err(EditorError::TooLarge);
     }
-    let bytes = read_bounded(&file)?;
+    let bytes = read_bounded_cancellable(&file, cancelled)?;
     if bytes.len() > MAX_EDITOR_BYTES {
         return Err(EditorError::TooLarge);
     }
@@ -426,6 +484,7 @@ fn read_open_file(file: std::fs::File, user_path: &Path) -> Result<EditorFile, E
     if revision != FileRevision::of(&metadata, text.as_bytes()) {
         return Err(EditorError::Conflict);
     }
+    check_cancelled(cancelled)?;
     Ok(EditorFile {
         bytes: text.len(),
         lines,
@@ -435,13 +494,44 @@ fn read_open_file(file: std::fs::File, user_path: &Path) -> Result<EditorFile, E
     })
 }
 
+#[cfg(test)]
 fn read_bounded(reader: impl Read) -> Result<Vec<u8>, EditorError> {
+    read_bounded_cancellable(reader, &AtomicBool::new(false))
+}
+
+const IO_CHUNK_BYTES: usize = 16 * 1024;
+
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), EditorError> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(EditorError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+fn read_bounded_cancellable(
+    mut reader: impl Read,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, EditorError> {
     let mut bytes = Vec::new();
-    reader
-        .take(MAX_EDITOR_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_EDITOR_BYTES {
-        return Err(EditorError::TooLarge);
+    let mut chunk = [0; IO_CHUNK_BYTES];
+    loop {
+        check_cancelled(cancelled)?;
+        let limit = chunk.len().min(MAX_EDITOR_BYTES + 1 - bytes.len());
+        let count = match reader.read(&mut chunk[..limit]) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        check_cancelled(cancelled)?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        #[cfg(all(test, target_os = "linux"))]
+        write_hook(WriteHookPoint::ReadChunk, c"read")?;
+        if bytes.len() > MAX_EDITOR_BYTES {
+            return Err(EditorError::TooLarge);
+        }
     }
     Ok(bytes)
 }
@@ -449,7 +539,9 @@ fn read_bounded(reader: impl Read) -> Result<Vec<u8>, EditorError> {
 /// Atomically replace an existing text file using a freshly captured Linux
 /// root descriptor. The final component must be a regular file, not a
 /// symlink: renaming over a symlink would replace the alias rather than its
-/// referent. Contained ancestor aliases remain supported.
+/// referent, so saves via contained final aliases explicitly fail with
+/// `Conflict` (reads still follow them). Contained ancestor aliases remain
+/// supported. A replaced root refuses a save to either tree.
 #[cfg(target_os = "linux")]
 pub fn write_text_file_from_root(
     root: &EditorRoot,
@@ -457,15 +549,33 @@ pub fn write_text_file_from_root(
     text: &str,
     expected: Option<&FileRevision>,
 ) -> Result<WriteTextOutcome, EditorError> {
+    write_text_file_from_root_cancellable(root, user_path, text, expected, &AtomicBool::new(false))
+}
+
+/// Cooperative save: cancellation before rename means no commit; after rename
+/// the committed outcome is preserved even if cancellation arrives. Root,
+/// parent, destination and sidecar checks precede rename. The interval between
+/// these checks and rename is not an atomic compare-and-swap: arbitrary writers
+/// can still race it. Cleanup likewise has a stat-to-unlink residual interval.
+#[cfg(target_os = "linux")]
+pub fn write_text_file_from_root_cancellable(
+    root: &EditorRoot,
+    user_path: &Path,
+    text: &str,
+    expected: Option<&FileRevision>,
+    cancelled: &AtomicBool,
+) -> Result<WriteTextOutcome, EditorError> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+    check_cancelled(cancelled)?;
+    root.validate_live_identity()?;
     if text.len() > MAX_EDITOR_BYTES || count_lines(text) > MAX_EDITOR_LINES {
         return Err(EditorError::TooLarge);
     }
     // This follows a contained alias but rejects an escaping one before the
     // no-follow target open below decides whether replacement is safe.
-    let opened = read_text_file_from_root(root, user_path)?;
+    let opened = read_text_file_from_root_cancellable(root, user_path, cancelled)?;
     let (parent, leaf) = root.open_parent(user_path)?;
     if let Some(expected) = expected
         && opened.revision != *expected
@@ -479,15 +589,23 @@ pub fn write_text_file_from_root(
     }
 
     let temp_name = unique_sidecar_name();
+    check_cancelled(cancelled)?;
     #[cfg(test)]
     write_hook(WriteHookPoint::TempCreate, &temp_name)?;
+    check_cancelled(cancelled)?;
     let mut temp = create_sidecar(&parent, &temp_name)?;
     let result = (|| {
         #[cfg(test)]
         write_hook(WriteHookPoint::AfterTempCreate, &temp_name)?;
         #[cfg(test)]
         write_hook(WriteHookPoint::Write, &temp_name)?;
-        temp.write_all(text.as_bytes())?;
+        for chunk in text.as_bytes().chunks(IO_CHUNK_BYTES) {
+            check_cancelled(cancelled)?;
+            temp.write_all(chunk)?;
+            #[cfg(test)]
+            write_hook(WriteHookPoint::Chunk, &temp_name)?;
+        }
+        check_cancelled(cancelled)?;
         temp.set_permissions(std::fs::Permissions::from_mode(metadata.mode()))?;
         #[cfg(test)]
         write_hook(WriteHookPoint::FileSync, &temp_name)?;
@@ -495,12 +613,34 @@ pub fn write_text_file_from_root(
 
         // This detects observable changes before commit. It is intentionally
         // not described as a compare-and-swap against arbitrary writers.
-        if read_parent_file(&parent, &leaf, user_path)?.revision != opened.revision {
+        if read_open_file_cancellable(
+            open_parent_file(&parent, &leaf, libc::O_RDONLY | libc::O_NONBLOCK)?,
+            user_path,
+            cancelled,
+        )?
+        .revision
+            != opened.revision
+        {
             return Err(EditorError::Conflict);
         }
         let revision = FileRevision::of(&temp.metadata()?, text.as_bytes());
         #[cfg(test)]
         write_hook(WriteHookPoint::Rename, &temp_name)?;
+        let (live_parent, _) = root.open_parent(user_path)?;
+        if !same_object(&parent.metadata()?, &live_parent.metadata()?)
+            || read_open_file_cancellable(
+                open_parent_file(&live_parent, &leaf, libc::O_RDONLY | libc::O_NONBLOCK)?,
+                user_path,
+                cancelled,
+            )?
+            .revision
+                != opened.revision
+            || !sidecar_is_owned(&parent, &temp_name, &temp)
+        {
+            return Err(EditorError::Conflict);
+        }
+        root.validate_live_identity()?;
+        check_cancelled(cancelled)?;
         let renamed = unsafe {
             libc::renameat(
                 parent.as_raw_fd(),
@@ -523,9 +663,10 @@ pub fn write_text_file_from_root(
         }
     })();
     if result.is_err() {
-        // The sidecar name is private and was created with O_EXCL. Cleanup is
-        // descriptor-relative; never re-resolve a potentially replaced path.
-        let _ = unsafe { libc::unlinkat(parent.as_raw_fd(), temp_name.as_ptr(), 0) };
+        // A private O_EXCL name can still be swapped by another writer.
+        if sidecar_is_owned(&parent, &temp_name, &temp) {
+            let _ = unsafe { libc::unlinkat(parent.as_raw_fd(), temp_name.as_ptr(), 0) };
+        }
     }
     result
 }
@@ -536,6 +677,8 @@ enum WriteHookPoint {
     TempCreate,
     AfterTempCreate,
     Write,
+    Chunk,
+    ReadChunk,
     FileSync,
     Rename,
     DirectorySync,
@@ -588,15 +731,17 @@ fn open_parent_file(
 }
 
 #[cfg(target_os = "linux")]
-fn read_parent_file(
-    parent: &std::fs::File,
-    name: &std::ffi::CStr,
-    user_path: &Path,
-) -> Result<EditorFile, EditorError> {
-    read_open_file(
-        open_parent_file(parent, name, libc::O_RDONLY | libc::O_NONBLOCK)?,
-        user_path,
-    )
+fn same_object(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    first.dev() == second.dev() && first.ino() == second.ino()
+}
+
+#[cfg(target_os = "linux")]
+fn sidecar_is_owned(parent: &std::fs::File, name: &std::ffi::CStr, owned: &std::fs::File) -> bool {
+    // O_PATH avoids reading or blocking on a substituted special file.
+    open_parent_file(parent, name, libc::O_PATH)
+        .and_then(|file| Ok(same_object(&file.metadata()?, &owned.metadata()?)))
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -997,6 +1142,7 @@ mod tests {
 
     #[test]
     fn stable_codes_match_the_core_wire_strings() {
+        assert_eq!(EditorError::Cancelled.code(), "cancelled");
         assert_eq!(EditorError::PathOutsideRoot.code(), "path_outside_root");
         assert_eq!(EditorError::NotFound.code(), "file_not_found");
         assert_eq!(EditorError::NotRegularFile.code(), "invalid_request");
@@ -1013,7 +1159,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn descriptor_root_keeps_original_tree_and_rejects_escaping_symlinks() {
+    fn descriptor_root_refuses_replacement_and_rejects_escaping_symlinks() {
         use std::os::unix::fs::symlink;
 
         let root = fixture_root("descriptor-root");
@@ -1059,12 +1205,10 @@ mod tests {
             captured.identity(),
             "replacement root must have a distinct identity"
         );
-        assert_eq!(
-            read_text_file_from_root(&captured, Path::new("inside/doc.txt"))
-                .unwrap()
-                .text,
-            "original root\n"
-        );
+        assert!(matches!(
+            read_text_file_from_root(&captured, Path::new("inside/doc.txt")),
+            Err(EditorError::Conflict)
+        ));
 
         std::fs::remove_dir_all(&root).unwrap();
         std::fs::remove_dir_all(&moved).unwrap();
@@ -1115,17 +1259,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&moved);
         std::fs::rename(&root, &moved).unwrap();
         write_fixture(&root, "nested/doc.txt", b"replacement root\n");
-        let opened = read_text_file_from_root(&captured, Path::new("nested/doc.txt")).unwrap();
-        write_text_file_from_root(
-            &captured,
-            Path::new("nested/doc.txt"),
-            "captured root\n",
-            Some(&opened.revision),
-        )
-        .unwrap();
+        assert!(matches!(
+            write_text_file_from_root(
+                &captured,
+                Path::new("nested/doc.txt"),
+                "captured root\n",
+                None,
+            ),
+            Err(EditorError::Conflict)
+        ));
         assert_eq!(
             std::fs::read(moved.join("nested/doc.txt")).unwrap(),
-            b"captured root\n"
+            b"ancestor save\n"
         );
         assert_eq!(
             std::fs::read(root.join("nested/doc.txt")).unwrap(),
@@ -1206,7 +1351,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn save_barrier_keeps_writes_under_the_captured_root() {
+    fn save_barrier_refuses_writes_to_a_moved_root() {
         let root = fixture_root("save-barrier");
         write_fixture(&root, "doc.txt", b"old bytes\n");
         let captured = EditorRoot::open(&root).unwrap();
@@ -1240,10 +1385,10 @@ mod tests {
         write_fixture(&root, "doc.txt", b"replacement bytes\n");
         entered.wait();
 
-        assert!(writer.join().unwrap().unwrap().is_durable());
+        assert!(matches!(writer.join().unwrap(), Err(EditorError::Conflict)));
         assert_eq!(
             std::fs::read(moved.join("doc.txt")).unwrap(),
-            b"captured bytes\n"
+            b"old bytes\n"
         );
         assert_eq!(
             std::fs::read(root.join("doc.txt")).unwrap(),
@@ -1253,5 +1398,240 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(moved).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_publication_refuses_root_ancestor_and_final_swaps() {
+        use std::os::unix::fs::symlink;
+        for kind in ["root", "ancestor", "final"] {
+            let root = fixture_root(&format!("read-swap-{kind}"));
+            write_fixture(&root, "nested/doc.txt", b"original");
+            let captured = EditorRoot::open(&root).unwrap();
+            let moved = root.with_extension("moved");
+            let _ = std::fs::remove_dir_all(&moved);
+            let hook_root = root.clone();
+            let hook_moved = moved.clone();
+            let once = AtomicBool::new(false);
+            let hook = install_write_hook(std::sync::Arc::new(move |point, _| {
+                if point == WriteHookPoint::ReadChunk && !once.swap(true, Ordering::AcqRel) {
+                    match kind {
+                        "root" => {
+                            std::fs::rename(&hook_root, &hook_moved)?;
+                            write_fixture(&hook_root, "nested/doc.txt", b"replacement");
+                        }
+                        "ancestor" => {
+                            std::fs::rename(hook_root.join("nested"), hook_root.join("old"))?;
+                            symlink("/etc", hook_root.join("nested"))?;
+                        }
+                        _ => {
+                            std::fs::rename(
+                                hook_root.join("nested/doc.txt"),
+                                hook_root.join("old.txt"),
+                            )?;
+                            symlink("/etc/passwd", hook_root.join("nested/doc.txt"))?;
+                        }
+                    }
+                }
+                Ok(())
+            }));
+            assert!(read_text_file_from_root(&captured, Path::new("nested/doc.txt")).is_err());
+            drop(hook);
+            std::fs::remove_dir_all(root).unwrap();
+            if moved.exists() {
+                std::fs::remove_dir_all(moved).unwrap();
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn save_revalidates_ancestor_final_and_sidecar_before_rename() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+        for kind in ["ancestor", "final", "sidecar"] {
+            let root = fixture_root(&format!("write-swap-{kind}"));
+            write_fixture(&root, "nested/doc.txt", b"original");
+            let captured = EditorRoot::open(&root).unwrap();
+            let hook_root = root.clone();
+            let hook = install_write_hook(std::sync::Arc::new(move |point, name| {
+                if point == WriteHookPoint::Rename {
+                    match kind {
+                        "ancestor" => {
+                            std::fs::rename(hook_root.join("nested"), hook_root.join("old"))?;
+                            symlink("old", hook_root.join("nested"))?;
+                            // Replace the alias with a different contained parent.
+                            std::fs::remove_file(hook_root.join("nested"))?;
+                            write_fixture(&hook_root, "nested/doc.txt", b"replacement");
+                        }
+                        "final" => {
+                            std::fs::rename(
+                                hook_root.join("nested/doc.txt"),
+                                hook_root.join("old.txt"),
+                            )?;
+                            symlink("/etc/passwd", hook_root.join("nested/doc.txt"))?;
+                        }
+                        _ => {
+                            let sidecar = hook_root
+                                .join("nested")
+                                .join(std::ffi::OsStr::from_bytes(name.to_bytes()));
+                            std::fs::rename(&sidecar, hook_root.join("owned.tmp"))?;
+                            std::fs::write(sidecar, b"unrelated")?;
+                        }
+                    }
+                }
+                Ok(())
+            }));
+            assert!(matches!(
+                write_text_file_from_root(&captured, Path::new("nested/doc.txt"), "new", None),
+                Err(EditorError::Conflict)
+            ));
+            drop(hook);
+            if kind == "sidecar" {
+                let leftovers = sidecars(&root.join("nested"));
+                assert_eq!(leftovers.len(), 1);
+                assert_eq!(std::fs::read(&leftovers[0]).unwrap(), b"unrelated");
+                assert_eq!(
+                    std::fs::read(root.join("nested/doc.txt")).unwrap(),
+                    b"original"
+                );
+            } else if kind == "ancestor" {
+                assert_eq!(
+                    std::fs::read(root.join("old/doc.txt")).unwrap(),
+                    b"original"
+                );
+                assert!(sidecars(&root.join("old")).is_empty());
+                assert_eq!(
+                    std::fs::read(root.join("nested/doc.txt")).unwrap(),
+                    b"replacement"
+                );
+            } else {
+                assert_eq!(std::fs::read(root.join("old.txt")).unwrap(), b"original");
+                assert!(root.join("nested/doc.txt").is_symlink());
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancellation_boundaries_preserve_precommit_and_postcommit_outcomes() {
+        for point in [
+            WriteHookPoint::ReadChunk,
+            WriteHookPoint::TempCreate,
+            WriteHookPoint::Chunk,
+            WriteHookPoint::Rename,
+            WriteHookPoint::DirectorySync,
+        ] {
+            let root = fixture_root(&format!("cancel-{point:?}"));
+            write_fixture(&root, "doc.txt", b"original");
+            let captured = EditorRoot::open(&root).unwrap();
+            let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+            let flag = cancelled.clone();
+            let hook = install_write_hook(std::sync::Arc::new(move |seen, _| {
+                if seen == point {
+                    flag.store(true, Ordering::Release);
+                }
+                Ok(())
+            }));
+            let text = "x".repeat(IO_CHUNK_BYTES * 2);
+            let result = write_text_file_from_root_cancellable(
+                &captured,
+                Path::new("doc.txt"),
+                &text,
+                None,
+                &cancelled,
+            );
+            drop(hook);
+            if point == WriteHookPoint::DirectorySync {
+                assert!(result.unwrap().is_durable());
+                assert_eq!(std::fs::read_to_string(root.join("doc.txt")).unwrap(), text);
+            } else {
+                assert!(matches!(result, Err(EditorError::Cancelled)));
+                assert_eq!(std::fs::read(root.join("doc.txt")).unwrap(), b"original");
+            }
+            assert!(sidecars(&root).is_empty());
+            assert!(matches!(
+                read_text_file_from_root_cancellable(&captured, Path::new("doc.txt"), &cancelled),
+                Err(EditorError::Cancelled)
+            ));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancelled_chunked_read_never_publishes_partial_text() {
+        let root = fixture_root("read-cancel-chunk");
+        write_fixture(&root, "doc.txt", &vec![b'x'; IO_CHUNK_BYTES * 2]);
+        let captured = EditorRoot::open(&root).unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let hook = install_write_hook(std::sync::Arc::new(move |point, _| {
+            if point == WriteHookPoint::ReadChunk {
+                flag.store(true, Ordering::Release);
+            }
+            Ok(())
+        }));
+        assert!(matches!(
+            read_text_file_from_root_cancellable(&captured, Path::new("doc.txt"), &cancelled),
+            Err(EditorError::Cancelled)
+        ));
+        drop(hook);
+        assert!(matches!(
+            write_text_file_from_root_cancellable(
+                &captured,
+                Path::new("doc.txt"),
+                "new",
+                None,
+                &cancelled
+            ),
+            Err(EditorError::Cancelled)
+        ));
+        assert_eq!(
+            std::fs::read(root.join("doc.txt")).unwrap().len(),
+            IO_CHUNK_BYTES * 2
+        );
+        assert!(sidecars(&root).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn postcommit_cancel_preserves_a_durability_warning() {
+        let root = fixture_root("cancel-directory-warning");
+        write_fixture(&root, "doc.txt", b"original");
+        let captured = EditorRoot::open(&root).unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let hook = install_write_hook(std::sync::Arc::new(move |point, _| {
+            if point == WriteHookPoint::DirectorySync {
+                flag.store(true, Ordering::Release);
+                return Err(std::io::Error::other("directory sync failed"));
+            }
+            Ok(())
+        }));
+        let outcome = write_text_file_from_root_cancellable(
+            &captured,
+            Path::new("doc.txt"),
+            "committed",
+            None,
+            &cancelled,
+        )
+        .unwrap();
+        drop(hook);
+        assert!(matches!(
+            outcome,
+            WriteTextOutcome::CommittedDurabilityWarning { .. }
+        ));
+        assert_eq!(
+            read_text_file_from_root(&captured, Path::new("doc.txt"))
+                .unwrap()
+                .revision,
+            outcome.revision()
+        );
+        assert_eq!(std::fs::read(root.join("doc.txt")).unwrap(), b"committed");
+        assert!(sidecars(&root).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
