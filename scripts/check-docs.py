@@ -20,11 +20,29 @@ def main():
 
     ipc = (root / "docs/08-milestone-8-ipc.md").read_text()
     cli = (root / "docs/09-milestone-9-cli.md").read_text()
-    wire_methods = set(re.findall(r"^\| `([a-z]+\.[a-z]+)` \|", ipc, re.MULTILINE))
-    cli_methods = set(re.findall(r"^\| `[^`]+` \| `([a-z]+\.[a-z]+)` \|",
+    method = r"[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*"
+    wire_methods = set(re.findall(rf"^\| `({method})` \|", ipc, re.MULTILINE))
+    cli_methods = set(re.findall(rf"^\| `[^`]+` \| `({method})` \|",
                                  cli, re.MULTILINE))
     for method in sorted(cli_methods - wire_methods):
         errors.append(f"CLI coverage method missing from IPC table: {method}")
+    for method in sorted(wire_methods - cli_methods):
+        errors.append(f"IPC method missing from CLI table: {method}")
+
+    coverage_map = (root / "docs/blueprint-coverage-map.md").read_text()
+    coverage_table = coverage_map.split("## Coverage Table\n", 1)[1].split(
+        "\n## Open gaps", 1
+    )[0]
+    coverage_sections = re.findall(r"^\| (\d+) \|", coverage_table, re.MULTILINE)
+    expected_sections = {str(section) for section in range(1, 80)}
+    actual_sections = set(coverage_sections)
+    for section in sorted(expected_sections - actual_sections, key=int):
+        errors.append(f"Blueprint coverage map missing §{section}")
+    for section in sorted(actual_sections - expected_sections, key=int):
+        errors.append(f"Blueprint coverage map has invalid §{section}")
+    for section in sorted(actual_sections, key=int):
+        if coverage_sections.count(section) != 1:
+            errors.append(f"Blueprint coverage map lists §{section} more than once")
 
     for file in files:
         text = file.read_text()
@@ -48,7 +66,7 @@ def main():
         return 1
     print(f"PASS: {len(files)} Markdown files, {links} local link targets, "
           f"{references} numbered blueprint references.")
-    print(f"PASS: all {len(cli_methods)} CLI methods have IPC table mappings.")
+    print(f"PASS: all {len(cli_methods)} CLI methods and {len(wire_methods)} IPC methods map both ways.")
     print("External URLs and heading anchors require separate review.")
     return 0
 

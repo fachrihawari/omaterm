@@ -5,12 +5,13 @@
 **Goal:** close M19 with a reliable native open → edit → highlight → save →
 close/restart loop, without expanding into an IDE.
 
-**Current execution update — 2026-10-04:** delivered source is dirty
+**Historical execution update — 2026-10-04:** the delivered source was dirty
 `f287991+worktree`, parent `f287991f223e01a36ea5e0a60c219c824da05ba3`.
-Current format, parallel **606** tests, serial **606** tests, workspace/all-target
-Clippy and release build pass with `RUSTUP_TOOLCHAIN=1.99.0`; see the
+Its format, parallel **606** tests, serial **606** tests, workspace/all-target
+Clippy and release-build passes used `RUSTUP_TOOLCHAIN=1.99.0`; see the
 [S9 report](evidence/m19-s9-report.md) and [manifest](evidence/m19-s9-manifest.json).
-The baseline audit below is historical. Root resolution is now off-thread;
+This evidence does not identify the current checkout without a source comparison
+and rerun. The baseline audit below is historical. Root resolution is now off-thread;
 I/O admission bounds one active + 16 queued jobs and a 17-result mailbox;
 32 document slots are workspace-wide including reservations/restore entries.
 Metadata-only snapshots/bounded restore/Retry, committed-save baseline

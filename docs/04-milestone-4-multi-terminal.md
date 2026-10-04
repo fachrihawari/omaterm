@@ -75,11 +75,11 @@ session, commit the new leaf, then publish state. If creation or insertion fails
 dispose of the provisional session and leave the original tree/focus intact.
 Inject spawn/insertion failures in tests. Do not await process work on the UI thread.
 
-Close removes a leaf and updates focus through shared domain operations, then
-tears down its session exactly once. Track cleanup failures until reaped rather
-than silently dropping the last handle. Process exit retains a visible exited
-session until explicit pane close. Closing the final M4 pane shows an empty
-workspace with a new-terminal action; M5 defines hierarchy-aware close behavior.
+Close or detected shell exit removes the leaf and updates focus through shared
+domain operations, then tears down its session exactly once. Track cleanup
+failures until reaped rather than silently dropping the last handle. Closing the
+final M4 pane shows an empty workspace with a new-terminal action; M5 defines
+hierarchy-aware close behavior.
 
 ```
 ✅ Splitting a pane    → new TerminalSession created

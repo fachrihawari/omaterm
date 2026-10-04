@@ -4,10 +4,13 @@
 
 ### M18 correctness follow-up and release Wayland evidence — 2026-10-04
 
-Current source is **`73b3470+worktree`**, with changes in `main.rs`, `router.rs`
-and terminal `platform.rs`. The previous M18 prerequisite-complete claim was
-premature: implementation and evidence have advanced, but full Q1/M18 acceptance
-is still open. Earlier M19 source identities and test counts below are historical.
+Current checked-in source is **`2cc1ce4`**. The runtime evidence below identifies
+the earlier captured `73b3470+worktree` source and binaries; the final palette
+bookkeeping correction followed that runtime capture. The 640-test automated-gate
+record is separate evidence, not a substitution of its source identity into the
+runtime report. The previous M18 prerequisite-complete claim was premature:
+implementation and evidence have advanced, but full Q1/M18 acceptance is still
+open. Earlier M19 source identities and test counts below are historical.
 
 Corrections implemented:
 
@@ -42,7 +45,7 @@ Verified commands (`RUSTUP_TOOLCHAIN=1.99.0`):
 | `cargo test --workspace --quiet` (after palette receipt correction) | PASS: 640 tests, zero failures |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS; existing transitive `proc-macro-error2` future-incompatibility notice |
 | `cargo build --release --bin omaterm --bin omaterm-desktop` | PASS |
-| `python3 scripts/check-docs.py` | PASS: 44 Markdown files, 304 local link targets, 318 blueprint references, 35 CLI mappings |
+| `python3 scripts/check-docs.py` | Historical PASS: 44 Markdown files, 304 local link targets, 318 blueprint references, 35 CLI mappings; the checker now validates all 41 hyphen-aware CLI/IPC method mappings bidirectionally |
 | `git diff --check` | PASS |
 
 [Release runtime evidence](evidence/m18-runtime-current.md): two-project child/
@@ -65,14 +68,15 @@ not established. The incident is explicitly recorded in the evidence report.
 displayed row to kill, and validate native arm/cancel/collapse/copy/refresh before
 claiming M18 complete. M15/M16/M17 and M19 native closure gates remain open.
 
-### M19 delivered-worktree reconciliation — 2026-10-04
+### M19 historical delivered-worktree reconciliation — 2026-10-04
 
 **Delivered source: `f287991+worktree` (dirty), source parent
-`f287991f223e01a36ea5e0a60c219c824da05ba3`.** This identifies the current
-uncommitted implementation, not a new commit or a clean-parent build. A later
-documentation commit must not be substituted for this source identity.
+`f287991f223e01a36ea5e0a60c219c824da05ba3`.** This identifies the historical
+uncommitted implementation that was tested, not a new commit or a clean-parent
+build. It must not be substituted for the current checkout without a source and
+verification comparison.
 
-Current full automated results supplied by the parent run:
+Historical full automated results supplied by the parent run:
 
 | Command | Result |
 |---|---|
@@ -163,7 +167,7 @@ M4 evidence below.
 | 8 — IPC | complete | Typed 17-method mapping, bounds, credentials/scope/child-env, owner bridge, 11 transport tests, concurrent-load + shutdown-under-load Wayland proof recorded below | Documented limits only: cross-UID harness, fallback-dir creation path, owner-channel saturation race (see below) | Begin M9 CLI |
 | 9 — CLI | complete | `omaterm-cli` thin client (27-row parser/mapping matrix plus path-launch forms), 31 CLI tests, workspace gates, and release Wayland CLI/desktop proof recorded below; live `pane.resize` via discovered split IDs closed by M11 | Scoped in-app denial covered by M8 evidence plus CLI env/deny tests | M10 history (post-v0.1) |
 | 10 — Encrypted History Recovery | complete | 287-test suite green 2026-09-28 plus release Wayland proof (opt-in, styled/Unicode restore, fresh shells, journal merge, alt absence, clears + rotation, disable, key-loss memory-only); M11 closed the remaining live items (same-pane restore, corrupt-archive quarantine) — see M11 record | Documented limits only: graceful-close live, banner-visibility eyes, per-pane CWD re-verification stays on M6 plumbing | M11 closure |
-| 11 — v0.1 Closure & Hardening | complete | 313-test serial suite green; release Wayland IPC proofs (split-ID discovery + live resize/equalize, path launch + run, history restore + quarantine, invalid-config survival, targeted logging); PKGBUILD + license inventory; perf baseline recorded — see M11 record below | Documented limits only: eyes/hands items (jump keys, picker portal, paste/drop live, font-size visual), theme engine + automation-disable enforcement future, X11/second-compositor/scaling, per-process GPU | M12 (done — see M12 row) |
+| 11 — v0.1 Closure & Hardening | complete with documented limits | 313-test serial suite green; release Wayland IPC proofs (split-ID discovery + live resize/equalize, path launch + run, history restore + quarantine, invalid-config survival, targeted logging); PKGBUILD + license inventory; perf baseline recorded — see M11 record below | Documented limits only: eyes/hands items (jump keys, picker portal, paste/drop live, font-size visual), theme engine + automation-disable enforcement future, X11/second-compositor/scaling, per-process GPU | M12 (done — see M12 row) |
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |

@@ -30,8 +30,9 @@ Membership is revalidated immediately before signalling (`ESRCH` →
   = 512` validation; `process_not_found` error code; no
   `WorkspaceChanged`/`PersistenceDirty` effects (process state is
   ephemeral, never snapshotted).
-- [ ] Full parity: `process.list [--project]` (bounded
-  `entries[{pid,ppid,name,pane,session,ports,cpu,mem}], truncated`) +
+- [ ] Full parity: `process.list [--project]` (bounded shell-family entries
+  `[{pid,ppid,name,pane_id,session_id,ports,cpu_percent,memory_bytes}],
+  truncated`) +
   `process.kill <pid>` → `{pid, signal: SIGTERM}`; human + `--json`.
 - [ ] Panel UI: collapsible sections with badges, empty states ("no child
   processes", "no listening ports"), explicit error notices.
@@ -44,7 +45,7 @@ Membership is revalidated immediately before signalling (`ESRCH` →
 ## Deliverables
 
 - Platform: CPU/RSS inspection + `terminate(pid)` (`SIGTERM`) on the seam.
-- Coordinator: `processes_for_project` (shell families → descendants +
+- Coordinator: `processes_for_project` (shell roots plus descendants and
   per-PID ports, deduped, PID-sorted, capped) + `kill_project_process`
   (membership check → signal → `ESRCH/EPERM` mapping).
 - Router: `List` scope-filtered like `Terminal::List`; `Kill` ownership

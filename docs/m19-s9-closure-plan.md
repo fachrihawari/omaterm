@@ -18,30 +18,25 @@
 ## 2. Gap register
 
 ### G1 — Graceful-shutdown E2E (Save-all / Discard / Cancel on window close)
-- **Symptom:** `hl.dsp.window.close()` returns ok but is a no-op; Super+W does
-  not fire from the virtual keyboard; no shutdown prompt has ever been
-  exercised natively.
+- **Current mechanism:** the M18 isolated Wayland run found and used the working
+  Hyprland 0.56 close form: `hyprctl dispatch
+  'hl.dsp.window.close("address:<window-address>")'`. It removed the owned
+  process, socket, credential and terminal processes; see
+  [M18 runtime evidence](evidence/m18-runtime-current.md). This establishes a
+  harness close mechanism, not dirty-editor shutdown acceptance. Super+W remains
+  unproven for virtual-keyboard delivery.
 - **Severity:** release-blocking for S5-shutdown acceptance.
 - **Definition of done:** normal window close with N dirty docs shows the
   shutdown decision; each of Save-all (all outcomes awaited, partial failure
   blocks teardown), Discard (explicit, buffers dropped), Cancel (resumes input)
   proven with byte/process evidence; final snapshot written; worker joined;
   socket removed; shells reaped.
-- **Options:**
-  1. *Find working close syntax* — read the hyprland-lua `hl.dsp` plugin
-     source, discover the correct close call/args. Cheapest; may not exist.
-  2. *SIGTERM → graceful shutdown* — handle `SIGTERM` (and `SIGHUP`) by
-     routing into the existing `begin_shutdown` flow instead of dying
-     instantly. Real product value (blueprint §67: stop IPC, persist,
-     terminate sessions, reap, remove socket). `signal-hook 0.4.4` is already
-     in `Cargo.lock` (transitive); promoting it to a direct dependency needs
-     version/license recording, no new resolution. Medium effort, testable
-     headlessly (`kill -TERM`, assert snapshot/exit code/cleanup).
-  3. *Human-in-the-loop* — script everything up to the close, then ask the
-     user to close the window once via their own keybind. Fallback only.
-- **Recommendation:** try (1) for 30 minutes; then implement (2) — it is
-  independently justified and makes shutdown testing deterministic forever.
-  Keep (3) as the last resort for the dirty-shutdown UI half.
+- **Approach:** carry the M18 command into the isolated M19 harness after it
+  verifies the target window PID/address. First prove a clean-state normal close;
+  then run Save-all, Discard, and Cancel on dirty documents in P4. Only consider
+  SIGTERM/SIGHUP graceful handling as a separate product improvement if this
+  targeted native flow reveals an application defect; it is no longer required
+  merely to make the acceptance test closable.
 
 ### G2 — 20-cycle small/cap reruns on the final binary
 - **Symptom:** 20+20 cycles proven on `50c06cc`; the shipped code changed
@@ -132,8 +127,8 @@
 
 | Phase | Work | Gaps closed | Exit |
 |---|---|---|---|
-| P0 | Harness: encode G9 rules into the S9 runner; fix `closewindow` investigation (G1-opt1, 30 min timebox) | — (enabler) | Runner refuses shared runtime dirs; close path found or declared absent |
-| P1 | SIGTERM graceful shutdown **or** confirmed close path; unit + headless tests | G1 (mechanism) | `kill -TERM` with dirty docs → prompt-equivalent handling, snapshot, clean exit code, reaped children — or documented close path |
+| P0 | Harness: encode G9 rules into the S9 runner and adopt the proven targeted `hl.dsp.window.close` flow | — (enabler) | Runner refuses shared runtime dirs and verifies target PID/address before close |
+| P1 | Verify the proven normal-close path with a clean editor state | G1 (mechanism) | Snapshot, clean exit, reaped children and removed socket evidence; the harness is ready for P4 dirty-state decisions |
 | P2 | Matrix rerun on final binary: 20+20 cycles, entry routes, dirty close/revert, undo/clipboard/unicode, languages, second-change conflict, cap-33 rejection, restart-missing Retry, narrow layout | G2, G4, G5, G6 | cases.json all PASS with byte evidence; failures fixed or re-scoped with rationale |
 | P3 | Idle baselines + budgets; IME session (consent-gated) | G3, G7 | 4-mode samples + budgets; IME PASS or consent-declined BLOCKED note |
 | P4 | Graceful-shutdown UI E2E (Save-all/Discard/Cancel) + restart-after-graceful restore | G1 (UI half) | Byte/process evidence for all three choices |
@@ -154,6 +149,6 @@ P1–P3 parallelize after P0 (separate instances/dirs). P4 needs P1. P5 is last.
 
 ## 5. Immediate next actions (in order)
 
-1. P0: harden the runner (30 min), timebox the close-syntax hunt (30 min).
-2. P1: implement SIGTERM graceful shutdown + tests if close is unavailable.
-3. P2: full matrix rerun on the final binary.
+1. P0: harden the runner and adopt the proven targeted close command.
+2. P1: prove clean-state normal close through the targeted command.
+3. P2: full matrix rerun on the final binary; P4 exercises dirty close decisions.

@@ -3,25 +3,27 @@
 ## Current verification state
 
 Milestone 1 selected the published `gpui` 0.2.2 release and validated it on
-Omarchy/Hyprland. `rust-toolchain.toml` pins the working Rust 1.98.1 toolchain
-with `rustfmt` and `clippy`. This is a verified working toolchain, not an MSRV.
+Omarchy/Hyprland. `rust-toolchain.toml` and CI pin Rust 1.98.1 with `rustfmt`
+and `clippy`; this is the repository toolchain, not an MSRV. The current local
+environment is Rust/Cargo 1.99.0 via `RUSTUP_TOOLCHAIN`; records that use the
+override explicitly name it and do not change the pin or establish an MSRV.
 
 | Component | Selection | License evidence | Verification |
 |---|---|---|---|
-| Rust toolchain | 1.98.1 (`48a229cea`, LLVM 22.1.8) | Official distribution | `rustc --version --verbose`; build/checks pass on 2026-09-26 |
+| Rust toolchain | Repository/CI pin 1.98.1 (`48a229cea`, LLVM 22.1.8); local override 1.99.0 (`b940084d7`) | Official distribution | Pin build/checks pass on 2026-09-26; latest recorded M18/M19 gates use the explicitly named 1.99.0 override |
 | GPUI/platform crates | `gpui` 0.2.2 from crates.io, `wayland` + `x11` features | Apache-2.0; crate manifest and crates.io metadata | Linux build and Wayland launch pass on 2026-09-26 |
 | Native Linux packages | See M1 native package record below | Arch package metadata | Present and linked during M1 build on 2026-09-26 |
 | Core ID/error dependencies | `uuid` 1.26.1; `thiserror` 2.0.21 | Selected crate manifests | M2 core/workspace checks pass on 2026-09-26 |
-| `alacritty_terminal` | Pending M3, exact compatible release | Selected package | Not verified |
-| PTY provider | Pending M3 API/lifecycle evaluation | Selected package | Not verified |
-| `serde`, `serde_json`, `libc` for protocol/IPC | `serde` 1.0.228, `serde_json` 1.0.149, existing `libc` 0.2.189 resolution | Permissive dual licenses in selected manifests; full transitive review pending | M8 protocol/transport targeted tests and Clippy pending final M8 integration |
-| M10 key storage/encryption/compression | Unselected; research after M5–M9 prerequisites | Must review crate and native-service licenses | No API, license, or runtime verification yet |
+| `alacritty_terminal` | 0.26.0, behind `omaterm-terminal` abstraction | Apache-2.0; selected manifest/package license | M3 API, parser, PTY and Wayland validation recorded below |
+| PTY provider | `alacritty_terminal::tty` Unix backend | Alacritty dependency inventory; `libc` MIT OR Apache-2.0 | M3 lifecycle behavior and M4 cleanup coverage recorded below |
+| `serde`, `serde_json`, `libc` for protocol/IPC | `serde` 1.0.228, `serde_json` 1.0.149, `libc` 0.2.189 | Permissive dual licenses in selected manifests; full transitive inventory completed in M11 | M8 protocol/transport integration and release Wayland evidence recorded below |
+| M10 key storage/encryption/compression | `chacha20poly1305` 0.11.0, `hkdf` 0.12.4, `sha2` 0.10.9, `getrandom` 0.4.3, `flate2` 1.1.10, `keyring` 4.2.0, `zeroize` 1.9.0 | Selected manifests and package license files; full transitive inventory completed in M11 | M10 keyring spike, archive tests and release Wayland evidence recorded below |
 
 ## Selection record
 
-### M19 delivered-worktree verification — 2026-10-04
+### M19 historical delivered-worktree verification — 2026-10-04
 
-Delivered source is `f287991+worktree` (dirty), source parent
+Delivered source was `f287991+worktree` (dirty), source parent
 `f287991f223e01a36ea5e0a60c219c824da05ba3`. Parent-run format, parallel
 **606** tests, serial **606** tests, workspace/all-target Clippy with denied
 warnings and release build pass using `RUSTUP_TOOLCHAIN=1.99.0`. Native probes
