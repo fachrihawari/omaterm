@@ -275,6 +275,28 @@ struct WorkspaceView {
     /// Active pointer drag: document plus the press-point anchor offset.
     /// Cleared on release.
     editor_selecting: Option<(DocumentId, usize)>,
+    /// Explicit keyboard-input owner (S6). Exactly one surface owns typing at
+    /// a time, so terminal input can never reach the editor and vice versa.
+    /// `None` means no surface claims typing (e.g. empty workspace chrome).
+    input_owner: Option<InputOwner>,
+    /// Remembered preferred *visual* column for vertical caret motion
+    /// (sticky-column). Set by `Up`/`Down`, cleared by any horizontal motion
+    /// or edit so the caret stops "remembering" a column once it moves.
+    editor_preferred_cols: HashMap<DocumentId, usize>,
+    /// Latest measured editor body bounds per document (origin + size),
+    /// recorded by a paint-time canvas. Drives minimal horizontal/vertical
+    /// reveal without an unconditional recenter.
+    editor_body_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
+    /// Caret-blink phase (S6): `on` is the currently painted visibility and
+    /// `next_toggle` is the next deadline. Reset on edit/motion; the single
+    /// blink task pauses for hidden/unfocused/overtaken surfaces.
+    editor_blink_on: bool,
+    editor_blink_active: bool,
+    editor_blink_next_toggle: Instant,
+    /// Best-effort window activation flag, sampled every render. Used to
+    /// terminate drag capture and pause the caret when the window loses
+    /// keyboard focus without delivering a mouse-up.
+    window_focused: bool,
     /// Bounded restart restores: descriptors are scheduled one at a time, and
     /// the next is enqueued only after the previous completes. This keeps at
     /// most one restore read in flight without blocking terminal startup.
@@ -293,6 +315,22 @@ const EDITOR_GUTTER_W: f32 = 54.0;
 const EDITOR_ROW_H: f32 = 22.0;
 const EDITOR_FONT_SIZE: f32 = 12.5;
 
+/// Caret blink half-period: a 1000ms cycle at 50% stepped visibility.
+const CARET_BLINK_HALF_PERIOD: Duration = Duration::from_millis(500);
+
+/// Vertical reveal margin in rows: motion within this band does not scroll,
+/// which is what makes reveal "minimal" instead of an unconditional recenter.
+const EDITOR_REVEAL_MARGIN_ROWS: f32 = 3.0;
+
+/// Row-step for gutter drag autoscroll at/beyond a viewport edge. Bounded and
+/// applied once per drag-move event so a pointer held outside cannot spin.
+const EDITOR_DRAG_AUTOSCROLL_ROWS: i32 = 1;
+
+/// Horizontal gap between the editor code area and the inspector sidebar
+/// below which the code viewport is considered narrow; the editor then keeps
+/// a hard minimum and header actions stay reachable instead of overflowing.
+const EDITOR_NARROW_WIDTH: f32 = 360.0;
+
 #[derive(Default)]
 struct DiffPreviewScroll {
     rows: UniformListScrollHandle,
@@ -310,6 +348,53 @@ enum HistoryArm {
     Enable,
     Disable,
     ClearPane(PaneId),
+}
+
+/// Explicit owner of keyboard input (S6). Only the owning surface receives
+/// typing; every other surface is inert until ownership is transferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputOwner {
+    Terminal(PaneId),
+    Editor(DocumentId),
+    Palette,
+    FilesFilter,
+    GitCommit,
+    Confirmation,
+}
+
+impl InputOwner {
+    /// True when the editor surface owns typing for `document`.
+    fn editor_document(self) -> Option<DocumentId> {
+        match self {
+            Self::Editor(document) => Some(document),
+            _ => None,
+        }
+    }
+
+    /// True when a terminal pane owns typing.
+    fn terminal_pane(self) -> Option<PaneId> {
+        match self {
+            Self::Terminal(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    /// Whether editor-owned chords (typing, Ctrl+S, motion) may run.
+    fn is_editor(self) -> bool {
+        matches!(self, Self::Editor(_))
+    }
+}
+
+/// Result of hit-testing the editor body: the row, buffer offset, whether the
+/// press landed in the gutter, and whether it fell above/below the content
+/// (used to decide bounded autoscroll during a drag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EditorHit {
+    line: usize,
+    offset: usize,
+    gutter: bool,
+    outside_above: bool,
+    outside_below: bool,
 }
 
 /// Right-inspector panel: Info, Files tree, or Source Control. Defaults to
@@ -960,6 +1045,13 @@ impl WorkspaceView {
             editor_highlight_worker: editor::HighlightWorker::new(),
             editor_body_origins: HashMap::new(),
             editor_selecting: None,
+            input_owner: None,
+            editor_preferred_cols: HashMap::new(),
+            editor_body_bounds: HashMap::new(),
+            editor_blink_on: true,
+            editor_blink_active: false,
+            editor_blink_next_toggle: Instant::now() + CARET_BLINK_HALF_PERIOD,
+            window_focused: true,
             document_restore_queue: std::collections::VecDeque::new(),
             document_restore_in_flight: None,
             focus_epoch: 0,
@@ -2088,7 +2180,7 @@ impl WorkspaceView {
                 ) => {
                     self.input_notice = None;
                     if let Some(caret) = self.editor_carets.get(&document).copied() {
-                        self.editor_set_caret(document, caret.cursor, false);
+                        self.editor_set_caret(document, caret.cursor, false, cx);
                     }
                     self.editor_after_edit(document, cx);
                     self.show_toast("Reverted to disk".into(), cx);
@@ -3532,6 +3624,71 @@ impl WorkspaceView {
             .filter(|doc| self.coordinator.documents().project_of(*doc) == Some(project))
     }
 
+    /// Current active editor surface for the selected project, if any.
+    fn active_editor_surface(&self) -> Option<(ProjectId, DocumentId)> {
+        self.coordinator.selected_project_id().and_then(|project| {
+            self.editor_active_doc(project)
+                .map(|document| (project, document))
+        })
+    }
+
+    /// Compute the owner that should hold typing given the current surface
+    /// flags: transient overlays and focused fields first, then the active
+    /// editor, then the focused terminal. Pure over view flags so the routing
+    /// rule is unit-testable.
+    fn computed_input_owner(&self) -> Option<InputOwner> {
+        if self.editor_lifecycle.is_some() {
+            return Some(InputOwner::Confirmation);
+        }
+        if self.ctrlp_open {
+            return Some(InputOwner::Palette);
+        }
+        if self.files_search_focused
+            && self.inspector_visible
+            && self.inspector_tab == InspectorTab::Files
+        {
+            return Some(InputOwner::FilesFilter);
+        }
+        if self.git_panel.commit_focused()
+            && self.inspector_visible
+            && self.inspector_tab == InspectorTab::Git
+        {
+            return Some(InputOwner::GitCommit);
+        }
+        if let Some((_, document)) = self.active_editor_surface() {
+            return Some(InputOwner::Editor(document));
+        }
+        if let Some(pane) = self.coordinator.focused() {
+            return Some(InputOwner::Terminal(pane));
+        }
+        None
+    }
+
+    /// Re-derive the input owner from view flags. Every surface transition
+    /// that opens/closes an overlay or focuses/blurs a field calls this so the
+    /// owner can never drift from the visible surface.
+    fn restore_input_owner(&mut self) {
+        self.input_owner = self.computed_input_owner();
+    }
+
+    /// Explicitly transfer typing to `owner`.
+    fn set_input_owner(&mut self, owner: InputOwner) {
+        self.input_owner = Some(owner);
+    }
+
+    /// True when the editor surface currently owns typing (S6): the owner is
+    /// the active editor and its buffer is still live for this project.
+    fn editor_owns_input(&self) -> bool {
+        if !self.input_owner.is_some_and(InputOwner::is_editor) {
+            return false;
+        }
+        let Some(owner_document) = self.input_owner.and_then(InputOwner::editor_document) else {
+            return false;
+        };
+        self.active_editor_surface()
+            .is_some_and(|(_, active)| active == owner_document)
+    }
+
     /// Capture the current identity of one live document for revalidation.
     /// Returns `None` for a document that is no longer a live buffer.
     fn capture_document(
@@ -3621,6 +3778,8 @@ impl WorkspaceView {
             decision.message = Some(format!("Unsaved changes in {count} documents."));
         }
         self.editor_lifecycle = Some(decision);
+        // The confirmation prompt owns keyboard input while it is up.
+        self.set_input_owner(InputOwner::Confirmation);
         true
     }
 
@@ -3648,6 +3807,7 @@ impl WorkspaceView {
         };
         if choice == DirtyChoice::Cancel {
             self.editor_lifecycle = None;
+            self.restore_input_owner();
             cx.notify();
             return;
         }
@@ -3664,6 +3824,7 @@ impl WorkspaceView {
             let refreshed = self.revalidate_targets(&decision.targets);
             if refreshed.is_empty() {
                 self.editor_lifecycle = None;
+                self.restore_input_owner();
                 self.editor_after_decision_resolved(decision.action, cx);
                 cx.notify();
                 return;
@@ -3825,6 +3986,7 @@ impl WorkspaceView {
         decision.lifecycle = EditorLifecycle::Committed;
         let action = decision.action;
         self.editor_lifecycle = None;
+        self.restore_input_owner();
         self.editor_after_decision_resolved(action, cx);
         cx.notify();
     }
@@ -3905,9 +4067,96 @@ impl WorkspaceView {
         self.files_search_focused = false;
         self.git_panel.set_commit_focused(false);
         self.editor_carets.entry(document).or_default();
+        // The activated document owns typing until another surface claims it.
+        self.set_input_owner(InputOwner::Editor(document));
         self.editor_submit_highlight(document);
         self.editor_reveal_caret(document);
+        self.reset_editor_blink();
+        self.ensure_editor_blink(cx);
         cx.notify();
+    }
+
+    /// Leave the editor surface for a project (Escape or terminal/tab switch)
+    /// and hand typing back to the derived owner (focused terminal or none).
+    fn editor_deactivate(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        if self.editor_active.remove(&project).is_some() {
+            self.editor_selecting = None;
+            self.restore_input_owner();
+            cx.notify();
+        }
+    }
+
+    /// True while the caret should be allowed to blink: an editor surface is
+    /// visible, owns typing, and the window still has keyboard focus. Any
+    /// other case leaves the caret solid (or unpainted when hidden).
+    fn editor_blink_should_run(&self) -> bool {
+        !self.shutting_down && self.window_focused && self.editor_owns_input()
+    }
+
+    /// Reset the blink phase to visible and schedule a full half-period ahead.
+    /// Called on every edit and caret motion so typing always starts with a
+    /// visible caret (standard blink-phase reset).
+    fn reset_editor_blink(&mut self) {
+        self.editor_blink_on = true;
+        self.editor_blink_next_toggle = Instant::now() + CARET_BLINK_HALF_PERIOD;
+    }
+
+    /// Start the single caret-blink task if one is not already running. Mirrors
+    /// `ensure_ctrlp_blink`: one task per active editing session, deadline
+    /// driven, exits on teardown or when the surface stops owning input. It
+    /// never wakes the UI for a hidden/unfocused editor, so it cannot become an
+    /// idle repaint loop.
+    fn ensure_editor_blink(&mut self, cx: &mut Context<Self>) {
+        if self.editor_blink_active {
+            return;
+        }
+        self.editor_blink_active = true;
+        self.reset_editor_blink();
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                let wait = weak
+                    .update(cx, |view, cx| {
+                        if !view.editor_blink_should_run() {
+                            // Pause without ending the task: ownership may be
+                            // restored later (e.g. palette closed). Repaint so
+                            // the caret paints solid while paused.
+                            view.editor_blink_on = true;
+                            return None;
+                        }
+                        let now = Instant::now();
+                        if view.editor_blink_next_toggle > now {
+                            return Some(view.editor_blink_next_toggle - now);
+                        }
+                        view.editor_blink_on = !view.editor_blink_on;
+                        view.editor_blink_next_toggle = now + CARET_BLINK_HALF_PERIOD;
+                        cx.notify();
+                        Some(CARET_BLINK_HALF_PERIOD)
+                    })
+                    .ok()
+                    .flatten();
+                let Some(wait) = wait else {
+                    // No editor surface exists anywhere: stop the task. A future
+                    // activation restarts it.
+                    let stop = weak
+                        .update(cx, |view, _| {
+                            if view.editor_active.is_empty() {
+                                view.editor_blink_active = false;
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(true);
+                    if stop {
+                        break;
+                    }
+                    Timer::after(CARET_BLINK_HALF_PERIOD).await;
+                    continue;
+                };
+                Timer::after(wait).await;
+            }
+        })
+        .detach();
     }
 
     /// Queue a background tokenize of the live buffer. Generations retire
@@ -3957,12 +4206,15 @@ impl WorkspaceView {
         self.editor_x_handles.remove(&document);
         self.editor_highlight_widths.remove(&document);
         self.editor_body_origins.remove(&document);
+        self.editor_preferred_cols.remove(&document);
+        self.editor_body_bounds.remove(&document);
         if self
             .editor_selecting
             .is_some_and(|(selecting, _)| selecting == document)
         {
             self.editor_selecting = None;
         }
+        self.restore_input_owner();
     }
 
     /// Close a document through the dispatcher. Dirty buffers refuse with
@@ -3994,6 +4246,7 @@ impl WorkspaceView {
                 if self.editor_selected.get(&project) == Some(&document) {
                     self.editor_selected.remove(&project);
                 }
+                self.restore_input_owner();
                 cx.notify();
             }
             Err(error) => {
@@ -4105,7 +4358,7 @@ impl WorkspaceView {
             Ok(CommandOutput::EditorOpened(_)) => {
                 self.input_notice = None;
                 if let Some(caret) = self.editor_carets.get(&document).copied() {
-                    self.editor_set_caret(document, caret.cursor, false);
+                    self.editor_set_caret(document, caret.cursor, false, cx);
                 }
                 self.editor_after_edit(document, cx);
                 self.show_toast("Reverted to disk".into(), cx);
@@ -4122,7 +4375,10 @@ impl WorkspaceView {
         }
     }
 
-    /// Scroll the caret line into view (non-strict: no jump when visible).
+    /// Reveal the caret line with the minimal vertical delta. Motion inside
+    /// the margin band does not move the viewport; when body geometry has not
+    /// been measured yet (first frame after activation) the native
+    /// `FirstVisible` strategy performs the same minimal reveal.
     fn editor_reveal_caret(&mut self, document: DocumentId) {
         let (Some(snapshot), Some(caret)) = (
             self.coordinator.documents().render_snapshot(document),
@@ -4131,14 +4387,95 @@ impl WorkspaceView {
             return;
         };
         let (line, _) = snapshot.offset_to_line_col(caret.cursor);
+        let Some(bounds) = self
+            .editor_body_bounds
+            .get(&document)
+            .map(|cell| cell.get())
+        else {
+            // Nothing has been painted yet: fall back to the native list's
+            // minimal reveal, but only when the line is outside the current
+            // visible band (never an unconditional recenter).
+            if let Some(handle) = self.editor_rows_handles.get(&document) {
+                let base = handle.0.borrow().base_handle.clone();
+                let top = base.top_item();
+                let bottom = base.bottom_item();
+                if line < top || line > bottom {
+                    handle.scroll_to_item(line, ScrollStrategy::Top);
+                }
+            }
+            return;
+        };
+        let viewport_h: f32 = bounds.size.height.into();
+        let content_h = snapshot.line_count() as f32 * EDITOR_ROW_H;
         if let Some(handle) = self.editor_rows_handles.get(&document) {
-            handle.scroll_to_item(line, ScrollStrategy::Center);
+            let base = handle.0.borrow().base_handle.clone();
+            // GPUI's scroll offset is negative when scrolled down; the reveal
+            // helper works in positive content position, so convert both ways.
+            let current_y = -(f32::from(base.offset().y));
+            let target_y = line as f32 * EDITOR_ROW_H;
+            let next_y = editor::minimal_reveal_offset(
+                viewport_h,
+                content_h,
+                current_y,
+                target_y,
+                EDITOR_REVEAL_MARGIN_ROWS * EDITOR_ROW_H,
+            );
+            if (next_y - current_y).abs() > 0.5 {
+                let current_x = f32::from(base.offset().x);
+                base.set_offset(gpui::point(px(current_x), px(-next_y)));
+            }
+        }
+    }
+
+    /// Reveal the caret horizontally using the given monospace cell width:
+    /// scroll only when the caret's shaped pixel x leaves the visible width,
+    /// clamped to the measured content extent so a long line can reach its
+    /// true end.
+    fn editor_reveal_caret_x(&mut self, document: DocumentId, cell_width: f32) {
+        let (Some(snapshot), Some(caret), Some(bounds)) = (
+            self.coordinator.documents().render_snapshot(document),
+            self.editor_carets.get(&document).copied(),
+            self.editor_body_bounds
+                .get(&document)
+                .map(|cell| cell.get()),
+        ) else {
+            return;
+        };
+        let Some(handle) = self.editor_x_handles.get(&document) else {
+            return;
+        };
+        let viewport_w: f32 = bounds.size.width.into();
+        if viewport_w <= 0.0 {
+            return;
+        }
+        let (line, col) = snapshot.offset_to_line_col(caret.cursor);
+        let line_text = snapshot.line(line).unwrap_or("");
+        let display_x = editor::buffer_offset_to_display_byte(line_text, col) as f32 * cell_width;
+        let content_w = editor::line_visual_width(line_text) as f32 * cell_width;
+        let current_x = -(f32::from(handle.offset().x));
+        let next_x = editor::minimal_reveal_offset(
+            viewport_w,
+            content_w,
+            current_x,
+            display_x,
+            cell_width * 2.0,
+        );
+        if (next_x - current_x).abs() > 0.5 {
+            let current_y = f32::from(handle.offset().y);
+            handle.set_offset(gpui::point(px(-next_x), px(current_y)));
         }
     }
 
     /// Set the caret, extending the selection when requested. Offsets clamp
-    /// into the buffer on char boundaries; the caret line is revealed.
-    fn editor_set_caret(&mut self, document: DocumentId, offset: usize, extend: bool) {
+    /// into the buffer on char boundaries; the caret is revealed vertically
+    /// and horizontally with minimal deltas.
+    fn editor_set_caret(
+        &mut self,
+        document: DocumentId,
+        offset: usize,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(snapshot) = self.coordinator.documents().render_snapshot(document) else {
             return;
         };
@@ -4160,6 +4497,9 @@ impl WorkspaceView {
         }
         caret.clamp(snapshot.text());
         self.editor_reveal_caret(document);
+        let cell_width = self.editor_cell_width(cx);
+        self.editor_reveal_caret_x(document, cell_width);
+        self.reset_editor_blink();
     }
 
     /// Shared post-edit bookkeeping: fresh highlights, caret reveal, repaint.
@@ -4170,9 +4510,19 @@ impl WorkspaceView {
                 .or_default()
                 .clamp(snapshot.text());
         }
+        // Any edit ends the sticky visual column; the caret is where it is.
+        self.editor_preferred_cols.remove(&document);
         self.editor_submit_highlight(document);
         self.editor_reveal_caret(document);
+        let cell_width = self.editor_cell_width(cx);
+        self.editor_reveal_caret_x(document, cell_width);
+        self.reset_editor_blink();
         cx.notify();
+    }
+
+    /// Measured monospace cell width for the editor face.
+    fn editor_cell_width(&mut self, cx: &Context<Self>) -> f32 {
+        self.fonts(cx).cell_width.into()
     }
 
     /// Insert text at the caret, replacing any selection. Control chars
@@ -4244,16 +4594,17 @@ impl WorkspaceView {
         }
     }
 
-    /// Map a window point to a buffer offset: body origin plus native
-    /// scroll offsets, fixed 22px rows, then shaped-prefix binary search
-    /// for the column. Wide/tab text maps through display columns.
-    fn editor_offset_at_point(
+    /// Map a window point onto the editor body: the target line, the buffer
+    /// offset under the pointer, and whether the press landed in the gutter.
+    /// The column goes through the grapheme-aware display-byte mapping so
+    /// tabs, combining marks and ZWJ clusters hit exactly as they paint.
+    fn editor_hit_at_point(
         &mut self,
         document: DocumentId,
         position: gpui::Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<usize> {
+    ) -> Option<EditorHit> {
         let origin = self.editor_body_origins.get(&document)?.get();
         let scroll_y: f32 = self
             .editor_rows_handles
@@ -4267,36 +4618,83 @@ impl WorkspaceView {
             .unwrap_or(0.0);
         let snapshot = self.coordinator.documents().render_snapshot(document)?;
         let rel_y: f32 = (position.y - origin.y).into();
-        let line = ((rel_y - scroll_y) / EDITOR_ROW_H).floor() as usize;
-        let line = line.min(snapshot.line_count().saturating_sub(1));
+        let line_count = snapshot.line_count();
+        if line_count == 0 {
+            return Some(EditorHit {
+                line: 0,
+                offset: 0,
+                gutter: false,
+                outside_above: false,
+                outside_below: false,
+            });
+        }
+        let raw_line = ((rel_y - scroll_y) / EDITOR_ROW_H).floor();
+        let outside_above = raw_line < 0.0;
+        let outside_below = raw_line >= line_count as f32;
+        let line = (raw_line.max(0.0) as usize).min(line_count.saturating_sub(1));
         let line_range = snapshot.line_range(line)?;
         let line_start = line_range.start;
         let line_text = snapshot.line(line)?;
-        let display = editor::display_line(line_text);
         let rel_x: f32 = (position.x - origin.x).into();
+        let in_gutter = rel_x < EDITOR_GUTTER_W;
         let target_x = (rel_x - EDITOR_GUTTER_W - scroll_x).max(0.0);
-        let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
-        let shaped = window.text_system().shape_line(
-            SharedString::from(display.into_owned()),
-            px(EDITOR_FONT_SIZE),
-            &[TextRun {
-                len: editor::display_line(line_text).len(),
-                font: font(mono),
-                color: rgb(crate::ui::theme::TEXT).into(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }],
-            None,
-        );
-        let best = shaped.closest_index_for_x(px(target_x));
-        let buffer_col = editor::display_byte_to_buffer_col(line_text, best);
+        let buffer_col = if in_gutter {
+            0
+        } else {
+            let display = editor::display_line(editor::strip_trailing_cr_for_display(line_text));
+            let display_len = display.len();
+            let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
+            let shaped = window.text_system().shape_line(
+                SharedString::from(display.into_owned()),
+                px(EDITOR_FONT_SIZE),
+                &[TextRun {
+                    len: display_len,
+                    font: font(mono),
+                    color: rgb(crate::ui::theme::TEXT).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            );
+            let best = shaped.closest_index_for_x(px(target_x));
+            editor::display_byte_to_buffer_offset(line_text, best)
+        };
         let mut caret = editor::EditorCaret {
             cursor: line_start + buffer_col,
             anchor: None,
         };
         caret.clamp(snapshot.text());
-        Some(caret.cursor)
+        Some(EditorHit {
+            line,
+            offset: caret.cursor,
+            gutter: in_gutter,
+            outside_above,
+            outside_below,
+        })
+    }
+
+    /// Full buffer range of `line`, including its trailing newline so a gutter
+    /// click selects the whole line and a subsequent edit joins correctly.
+    fn editor_full_line_range(
+        snapshot: &editor::DocumentRenderSnapshot,
+        line: usize,
+    ) -> (usize, usize) {
+        let text = snapshot.text();
+        let Some(range) = snapshot.line_range(line) else {
+            return (0, 0);
+        };
+        let start = range.start;
+        let mut end = range.end.min(text.len());
+        if end < text.len() {
+            // Include the line terminator; CRLF is two bytes and stays intact.
+            if text.as_bytes()[end] == b'\r' && text.as_bytes().get(end + 1) == Some(&b'\n') {
+                end += 2;
+            } else if text.as_bytes()[end] == b'\n' {
+                end += 1;
+            }
+        }
+        (start, end)
     }
 
     /// Undo the newest buffer edit and restore its valid caret endpoint.
@@ -4305,7 +4703,7 @@ impl WorkspaceView {
             Ok(applied) => {
                 if applied {
                     if let Some(offset) = self.coordinator.documents().history_cursor(document) {
-                        self.editor_set_caret(document, offset, false);
+                        self.editor_set_caret(document, offset, false, cx);
                     }
                     self.editor_after_edit(document, cx);
                 }
@@ -4322,7 +4720,7 @@ impl WorkspaceView {
             Ok(applied) => {
                 if applied {
                     if let Some(offset) = self.coordinator.documents().history_cursor(document) {
-                        self.editor_set_caret(document, offset, false);
+                        self.editor_set_caret(document, offset, false, cx);
                     }
                     self.editor_after_edit(document, cx);
                 }
@@ -4403,7 +4801,8 @@ impl WorkspaceView {
     }
 
     /// Pointer press on a code row: focus, place the caret, begin a drag.
-    /// Shift+press extends the selection from the existing anchor.
+    /// Gutter press selects the whole line; Shift+press extends from the
+    /// existing anchor instead of starting a new selection.
     fn editor_mouse_down(
         &mut self,
         document: DocumentId,
@@ -4415,26 +4814,51 @@ impl WorkspaceView {
             return;
         }
         window.focus(&self.focus_handle);
-        let Some(offset) = self.editor_offset_at_point(document, event.position, window, cx) else {
+        let Some(snapshot) = self.coordinator.documents().render_snapshot(document) else {
             return;
         };
+        let Some(hit) = self.editor_hit_at_point(document, event.position, window, cx) else {
+            return;
+        };
+        // A press on the editor reassigns typing to this document.
+        self.set_input_owner(InputOwner::Editor(document));
         let caret = self.editor_carets.entry(document).or_default();
         if event.modifiers.shift {
+            // Shift+click extends from the existing anchor without moving it.
             if caret.anchor.is_none() {
                 caret.anchor = Some(caret.cursor);
             }
+            let offset = if hit.gutter {
+                let (start, end) = Self::editor_full_line_range(&snapshot, hit.line);
+                let _ = start;
+                end
+            } else {
+                hit.offset
+            };
             caret.cursor = offset;
             if caret.anchor == Some(caret.cursor) {
                 caret.anchor = None;
             }
         } else {
-            caret.collapse_to(offset);
+            // Plain gutter click selects the complete line (newline included).
+            let (start, end) = if hit.gutter {
+                Self::editor_full_line_range(&snapshot, hit.line)
+            } else {
+                (hit.offset, hit.offset)
+            };
+            caret.cursor = end;
+            caret.anchor = (start != end).then_some(start);
         }
-        self.editor_selecting = Some((document, caret.anchor.unwrap_or(offset)));
+        self.editor_selecting = Some((document, caret.anchor.unwrap_or(caret.cursor)));
+        self.editor_preferred_cols.remove(&document);
+        self.reset_editor_blink();
+        self.editor_reveal_caret(document);
         cx.notify();
     }
 
-    /// Pointer drag: extend the selection from the press point.
+    /// Pointer drag: extend the selection from the press point. When the
+    /// pointer leaves the viewport vertically, autoscroll by exactly one row
+    /// per event in that direction (bounded, never a runaway loop).
     fn editor_mouse_move(
         &mut self,
         document: DocumentId,
@@ -4445,19 +4869,70 @@ impl WorkspaceView {
         let Some((selecting, anchor)) = self.editor_selecting else {
             return;
         };
-        if selecting != document {
+        if selecting != document || !self.window_focused {
+            if !self.window_focused {
+                self.editor_selecting = None;
+            }
             return;
         }
-        let Some(offset) = self.editor_offset_at_point(document, event.position, window, cx) else {
+        let Some(hit) = self.editor_hit_at_point(document, event.position, window, cx) else {
             return;
         };
+        if hit.outside_above || hit.outside_below {
+            self.editor_drag_autoscroll(document, hit.outside_below, window, cx);
+        }
         let caret = self.editor_carets.entry(document).or_default();
         caret.anchor = Some(anchor);
-        caret.cursor = offset;
+        caret.cursor = hit.offset;
         if caret.anchor == Some(caret.cursor) {
             caret.anchor = None;
         }
+        self.editor_preferred_cols.remove(&document);
+        self.reset_editor_blink();
         cx.notify();
+    }
+
+    /// Bounded autoscroll during a gutter/drag selection: step one row
+    /// toward the edge the pointer crossed, clamped to the content range.
+    fn editor_drag_autoscroll(
+        &mut self,
+        document: DocumentId,
+        downward: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let (Some(snapshot), Some(handle)) = (
+            self.coordinator.documents().render_snapshot(document),
+            self.editor_rows_handles.get(&document),
+        ) else {
+            return;
+        };
+        let rows = snapshot.line_count() as i32;
+        if rows == 0 {
+            return;
+        }
+        if let Some(bounds) = self
+            .editor_body_bounds
+            .get(&document)
+            .map(|cell| cell.get())
+        {
+            let viewport_h: f32 = bounds.size.height.into();
+            if viewport_h <= 0.0 {
+                return;
+            }
+            let base = handle.0.borrow().base_handle.clone();
+            let current_y = -(f32::from(base.offset().y));
+            let step = EDITOR_DRAG_AUTOSCROLL_ROWS as f32 * EDITOR_ROW_H;
+            let max_offset = ((rows as f32 * EDITOR_ROW_H) - viewport_h).max(0.0);
+            let next_y = if downward {
+                (current_y + step).min(max_offset)
+            } else {
+                (current_y - step).max(0.0)
+            };
+            if (next_y - current_y).abs() > 0.5 {
+                base.set_offset(gpui::point(base.offset().x, px(-next_y)));
+            }
+        }
     }
 
     /// Pointer release: end the drag, publishing non-empty selections to
@@ -4554,27 +5029,27 @@ impl WorkspaceView {
                     return;
                 }
                 (false, "home") => {
-                    self.editor_set_caret(document, 0, false);
+                    self.editor_set_caret(document, 0, false, cx);
                     cx.notify();
                     return;
                 }
                 (false, "end") => {
                     if let Some(snapshot) = self.coordinator.documents().render_snapshot(document) {
                         let end = snapshot.text().len();
-                        self.editor_set_caret(document, end, false);
+                        self.editor_set_caret(document, end, false, cx);
                         cx.notify();
                     }
                     return;
                 }
                 (true, "home") => {
-                    self.editor_set_caret(document, 0, true);
+                    self.editor_set_caret(document, 0, true, cx);
                     cx.notify();
                     return;
                 }
                 (true, "end") => {
                     if let Some(snapshot) = self.coordinator.documents().render_snapshot(document) {
                         let end = snapshot.text().len();
-                        self.editor_set_caret(document, end, true);
+                        self.editor_set_caret(document, end, true, cx);
                         cx.notify();
                     }
                     return;
@@ -4587,8 +5062,7 @@ impl WorkspaceView {
         }
         match key_name.as_str() {
             "escape" => {
-                self.editor_active.remove(&project);
-                cx.notify();
+                self.editor_deactivate(project, cx);
             }
             "enter" | "return" | "kpenter" => self.editor_insert_newline(document, cx),
             "backspace" => self.editor_backspace(document, cx),
@@ -4624,6 +5098,8 @@ impl WorkspaceView {
         ) else {
             return;
         };
+        // Horizontal motion ends the sticky visual column.
+        self.editor_preferred_cols.remove(&document);
         // A selection collapses toward the motion before stepping.
         let base = match caret.selection_range() {
             Some((start, end)) if !extend => {
@@ -4637,7 +5113,7 @@ impl WorkspaceView {
         };
         let mut offset = base;
         if caret.selection_range().is_some() && !extend {
-            self.editor_set_caret(document, base, false);
+            self.editor_set_caret(document, base, false, cx);
             cx.notify();
             return;
         }
@@ -4656,7 +5132,7 @@ impl WorkspaceView {
                 offset = editor::next_grapheme(snapshot.text(), offset);
             }
         }
-        self.editor_set_caret(document, offset, extend);
+        self.editor_set_caret(document, offset, extend, cx);
         cx.notify();
     }
 
@@ -4677,11 +5153,23 @@ impl WorkspaceView {
         let (line, col) = snapshot.offset_to_line_col(caret.cursor);
         let next = (line as i32 + delta).clamp(0, snapshot.line_count() as i32 - 1) as usize;
         let line_start = snapshot.line_range(line).map_or(0, |range| range.start);
-        let visual_col = editor::line_display_width(&snapshot.text()[line_start..line_start + col]);
+        // Sticky column: reuse the remembered visual column from the previous
+        // vertical step when present, otherwise derive it from the caret once.
+        let visual_col = match self.editor_preferred_cols.get(&document).copied() {
+            Some(col) => col,
+            None => {
+                let col = editor::buffer_offset_to_visual_col(
+                    &snapshot.text()[line_start..line_start + col],
+                    col,
+                );
+                self.editor_preferred_cols.insert(document, col);
+                col
+            }
+        };
         let next_line = snapshot.line(next).unwrap_or("");
-        let next_col = editor::display_col_to_buffer_col(next_line, visual_col);
+        let next_col = editor::visual_col_to_buffer_offset(next_line, visual_col);
         let offset = snapshot.line_col_to_offset(next, next_col);
-        self.editor_set_caret(document, offset, extend);
+        self.editor_set_caret(document, offset, extend, cx);
         cx.notify();
     }
 
@@ -4705,7 +5193,10 @@ impl WorkspaceView {
         } else {
             snapshot.line_range(line).map_or(0, |range| range.end)
         };
-        self.editor_set_caret(document, offset, extend);
+        // Horizontal motion clears the sticky column: the next vertical step
+        // remembers where the user actually is, not the pre-Home column.
+        self.editor_preferred_cols.remove(&document);
+        self.editor_set_caret(document, offset, extend, cx);
         cx.notify();
     }
 
@@ -4736,7 +5227,10 @@ impl WorkspaceView {
             .chars()
             .take_while(|ch| *ch == ' ' || *ch == '\t')
             .collect();
-        let insert = format!("\n{indent}");
+        // Follow the document's established line-ending convention (LF or
+        // CRLF) rather than normalizing mixed files to LF on every Enter.
+        let newline = editor::detect_newline_convention(snapshot.text()).as_str();
+        let insert = format!("{newline}{indent}");
         match self
             .coordinator
             .documents_mut()
@@ -4861,13 +5355,16 @@ impl WorkspaceView {
             .copied()
             .unwrap_or_default();
         let row_width = main_view_width.max(max_cols as f32 * cell_width + EDITOR_GUTTER_W + 16.0);
+        // Narrow windows keep a usable code viewport: the surface never
+        // collapses below this width, so the header actions stay reachable.
+        let surface_min = EDITOR_NARROW_WIDTH.min(row_width);
 
         // Header: breadcrumb path, dirty marker, document actions.
         let mut bar = div()
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(0.0))
+            .min_w(px(surface_min))
             .min_h(px(0.0));
         let filename = path
             .as_ref()
@@ -4891,27 +5388,44 @@ impl WorkspaceView {
             .px_3()
             .h(px(36.0))
             .flex_shrink_0()
+            .overflow_hidden()
             .border_b_1()
             .border_color(rgb(crate::ui::theme::BORDER))
             .bg(rgb(crate::ui::theme::PANEL))
             .text_size(px(10.0))
             .text_color(rgb(crate::ui::theme::MUTED));
+        // Breadcrumb group shrinks and truncates so the fixed action buttons
+        // remain reachable no matter how narrow the window gets.
+        let mut breadcrumb = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .flex_shrink()
+            .min_w(px(0.0))
+            .overflow_hidden();
         if !parent.is_empty() {
-            header = header.child(parent).child("›");
+            breadcrumb = breadcrumb.child(div().truncate().child(parent)).child("›");
         }
-        header = header
-            .child(
-                div()
-                    .text_color(rgb(crate::ui::theme::TEXT2))
-                    .child(filename),
-            )
-            .child(div().flex_1());
+        breadcrumb = breadcrumb.child(
+            div()
+                .truncate()
+                .text_color(rgb(crate::ui::theme::TEXT2))
+                .child(filename),
+        );
+        header = header.child(breadcrumb).child(div().flex_1());
         if dirty {
-            header = header.child(div().text_color(rgb(crate::ui::theme::YELLOW)).child("M"));
+            header = header.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(crate::ui::theme::YELLOW))
+                    .child("M"),
+            );
         }
         for (label, action) in [("Save", 0u8), ("Revert", 1u8), ("Close", 2u8)] {
             header = header.child(
                 div()
+                    .flex_shrink_0()
                     .cursor_pointer()
                     .px_2()
                     .py_1()
@@ -4951,9 +5465,17 @@ impl WorkspaceView {
             .or_default()
             .clone();
         let x_handle = self.editor_x_handles.entry(document).or_default().clone();
+        let bounds_cell = self
+            .editor_body_bounds
+            .entry(document)
+            .or_insert_with(|| Rc::new(Cell::new(Bounds::default())))
+            .clone();
         let snapshot = Arc::new(snapshot);
         let row_mono = mono.clone();
         let (caret_line, caret_col) = snapshot.offset_to_line_col(caret.cursor);
+        // Blink phase paints the caret; a paused/unfocused editor leaves it
+        // solid (never produces a repaint loop of its own).
+        let caret_visible = !self.editor_blink_active || self.editor_blink_on;
         let rows = uniform_list(
             "editor-lines",
             snapshot.line_count(),
@@ -4965,7 +5487,11 @@ impl WorkspaceView {
                             let line_range = snapshot.line_range(line).unwrap_or(0..0);
                             let line_start = line_range.start;
                             let line_end = line_range.end;
-                            let line_text = snapshot.line(line).unwrap_or("");
+                            let raw_line = snapshot.line(line).unwrap_or("");
+                            // Paint the line without its CRLF `\r`; buffer
+                            // bytes/offsets are untouched (CRLF renders as one
+                            // line ending).
+                            let line_text = editor::strip_trailing_cr_for_display(raw_line);
                             let display = editor::display_line(line_text);
                             // Token + selection highlights merged into
                             // non-overlapping segments (no cascade ambiguity).
@@ -5064,6 +5590,14 @@ impl WorkspaceView {
                                         } else {
                                             0x515D6D
                                         }))
+                                        // Gutter presses select the whole line
+                                        // (and begin a drag like the code area).
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            _cx.listener(move |view, event, window, cx| {
+                                                view.editor_mouse_down(document, event, window, cx);
+                                            }),
+                                        )
                                         .child(format!("{}", line + 1)),
                                 )
                                 .child(
@@ -5082,14 +5616,13 @@ impl WorkspaceView {
                                                 .with_highlights(styles),
                                         ),
                                 );
-                            if line == caret_line && selection.is_none() {
-                                let display_col =
-                                    editor::buffer_col_to_display_col(line_text, caret_col);
-                                let prefix = display.get(..display_col.min(display.len()));
-                                let mut prefix_len = prefix.map(str::len).unwrap_or(0);
-                                while prefix_len > 0 && !display.is_char_boundary(prefix_len) {
-                                    prefix_len -= 1;
-                                }
+                            if line == caret_line && selection.is_none() && caret_visible {
+                                // Grapheme-aware display byte keeps combining /
+                                // ZWJ clusters and tabs aligned with hit-testing.
+                                let display_byte =
+                                    editor::buffer_offset_to_display_byte(line_text, caret_col);
+                                let prefix = display.get(..display_byte.min(display.len()));
+                                let prefix_len = prefix.map(str::len).unwrap_or(0);
                                 let caret_x = Self::editor_shape_width(
                                     &display[..prefix_len],
                                     &row_mono,
@@ -5130,6 +5663,7 @@ impl WorkspaceView {
                     move |bounds, _, _| bounds,
                     move |_, bounds_prepaint: Bounds<Pixels>, _, _| {
                         origin.set(bounds_prepaint.origin);
+                        bounds_cell.set(bounds_prepaint);
                     },
                 )
                 .absolute()
@@ -5164,24 +5698,17 @@ impl WorkspaceView {
             );
         bar = bar.child(body);
 
-        // Footer: cursor (1-based display column), indentation,
-        // encoding, language.
+        // Footer: cursor (1-based visual column), indentation, encoding,
+        // line-ending convention, language. Uses the same grapheme-aware
+        // mapping as motion and hit-testing so they never disagree.
         let caret_display_col = {
-            let line_text = snapshot.line(caret_line).unwrap_or("");
-            let mut cols = 0;
-            let mut bytes = 0;
-            for ch in line_text.chars() {
-                if bytes >= caret_col {
-                    break;
-                }
-                bytes += ch.len_utf8();
-                cols += if ch == '\t' {
-                    4 - (cols % 4)
-                } else {
-                    editor::char_display_width(ch)
-                };
-            }
-            cols
+            let line_text =
+                editor::strip_trailing_cr_for_display(snapshot.line(caret_line).unwrap_or(""));
+            editor::buffer_offset_to_visual_col(line_text, caret_col)
+        };
+        let newline_label = match editor::detect_newline_convention(snapshot.text()) {
+            editor::NewlineConvention::Lf => "LF",
+            editor::NewlineConvention::Crlf => "CRLF",
         };
         let footer = div()
             .flex()
@@ -5203,6 +5730,7 @@ impl WorkspaceView {
             ))
             .child("Spaces: 4")
             .child("UTF-8")
+            .child(newline_label)
             .child(div().flex_1())
             .child(language.as_str());
         if dirty {
@@ -5683,6 +6211,7 @@ impl WorkspaceView {
             return;
         }
         self.ctrlp_open = true;
+        self.set_input_owner(InputOwner::Palette);
         self.ctrlp_origin = Some(PaletteOrigin {
             project: self.coordinator.selected_project_id(),
             tab: self.coordinator.selected_tab_id(),
@@ -6139,6 +6668,7 @@ impl WorkspaceView {
         };
         self.ctrlp_open = false;
         self.palette_search_worker.cancel_current();
+        self.restore_input_owner();
         self.editor_open_document(project, path, cx);
     }
 
@@ -6148,6 +6678,7 @@ impl WorkspaceView {
         };
         self.ctrlp_open = false;
         self.palette_search_worker.cancel_current();
+        self.restore_input_owner();
         let outcome = match entry.target.clone() {
             palette::PaletteTarget::Semantic(command) => {
                 if let Some((project, path)) = entry.file_target() {
@@ -6590,6 +7121,7 @@ impl WorkspaceView {
                 self.ctrlp_open = false;
                 self.palette_search_worker.cancel_current();
                 self.restore_palette_origin(cx);
+                self.restore_input_owner();
                 cx.notify();
             }
             // M19 Phase D interim: Ctrl+Enter opens the highlighted
@@ -6692,6 +7224,10 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
+        // Re-derive the input owner from the visible surface before routing,
+        // so a transition that did not itself set the owner still cannot leak
+        // keys across surfaces.
+        self.restore_input_owner();
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
         if self.editor_lifecycle.is_some() {
@@ -7068,12 +7604,18 @@ impl WorkspaceView {
         // Everything else
         // belongs to the document. Unhandled keys are swallowed rather than
         // forwarded to a terminal that does not own input.
-        if self
-            .coordinator
-            .selected_project_id()
-            .is_some_and(|project| self.editor_active_doc(project).is_some())
-        {
+        if self.editor_owns_input() {
             return self.on_editor_key(event, cx);
+        }
+
+        // Terminal forwarding only when a terminal actually owns typing. Any
+        // other owner (editor, overlay, focused field) has already returned
+        // above, and a stale owner falls through to a no-op rather than
+        // leaking keys into a PTY.
+        if let Some(owner) = self.input_owner
+            && owner.terminal_pane().is_none()
+        {
+            return;
         }
 
         let Some(session_id) = self.focused_session_id() else {
@@ -7263,6 +7805,7 @@ impl WorkspaceView {
         self.git_panel.set_commit_focused(false);
         self.files_search_focused = false;
         window.focus(&self.focus_handle);
+        self.set_input_owner(InputOwner::Terminal(pane));
         let Some(cell) = self.pos_to_cell(pane, event.position, cx) else {
             return;
         };
@@ -8502,6 +9045,8 @@ impl WorkspaceView {
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
                                 view.git_panel.set_commit_focused(true);
+                                view.files_search_focused = false;
+                                view.set_input_owner(InputOwner::GitCommit);
                                 cx.notify();
                             }),
                         )
@@ -10151,6 +10696,7 @@ impl WorkspaceView {
                         view.user_focus_action();
                         view.diff_panel.close_preview(project_id);
                         view.editor_active.remove(&project_id);
+                        view.restore_input_owner();
                         let _ = view.dispatch_command(
                             OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
                             cx,
@@ -10217,6 +10763,7 @@ impl WorkspaceView {
                                 view.diff_panel.close_preview(project);
                                 view.editor_active.remove(&project);
                             }
+                            view.restore_input_owner();
                             view.create_tab(cx);
                         }),
                     )
@@ -10712,6 +11259,8 @@ impl WorkspaceView {
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
                                 view.files_search_focused = true;
+                                view.git_panel.set_commit_focused(false);
+                                view.set_input_owner(InputOwner::FilesFilter);
                                 cx.notify();
                             }),
                         )
@@ -11350,6 +11899,15 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Sample window activation each frame. A focus loss without a matching
+        // mouse-up must terminate drag capture so a stuck drag cannot continue
+        // when the window regains focus.
+        let focused = self.focus_handle.is_focused(window);
+        if self.window_focused && !focused {
+            self.editor_selecting = None;
+            self.files_vdrag = None;
+        }
+        self.window_focused = focused;
         self.resize_panes_to_window(window, cx);
         let viewport = window.viewport_size();
         let main_view_width = crate::ui::geometry::shell_rects(
@@ -12650,8 +13208,8 @@ fn main() {
 mod tests {
     use super::{
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
-        InspectorTab, PaletteFileIndexCache, PaletteSearchRequest, PaletteSearchWorker,
-        captured_targets_stale, project_jump_index, revalidate_captured_targets,
+        InputOwner, InspectorTab, PaletteFileIndexCache, PaletteSearchRequest, PaletteSearchWorker,
+        WorkspaceView, captured_targets_stale, project_jump_index, revalidate_captured_targets,
         select_mono_family,
     };
     use crate::editor::DocumentStore;
@@ -12890,5 +13448,83 @@ mod tests {
         }
         worker.shutdown();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn input_owner_routes_only_the_owning_surface() {
+        let pane = omaterm_core::PaneId::new();
+        let document = omaterm_core::DocumentId::new();
+
+        // Editor ownership routes editor chords and nothing else.
+        let editor = InputOwner::Editor(document);
+        assert!(editor.is_editor());
+        assert_eq!(editor.editor_document(), Some(document));
+        assert_eq!(editor.terminal_pane(), None);
+
+        // Terminal ownership routes PTY bytes and never editor chords.
+        let terminal = InputOwner::Terminal(pane);
+        assert!(!terminal.is_editor());
+        assert_eq!(terminal.terminal_pane(), Some(pane));
+        assert_eq!(terminal.editor_document(), None);
+
+        // Overlays and focused fields route neither editor nor terminal.
+        for owner in [
+            InputOwner::Palette,
+            InputOwner::FilesFilter,
+            InputOwner::GitCommit,
+            InputOwner::Confirmation,
+        ] {
+            assert!(!owner.is_editor(), "{owner:?} must not own editor input");
+            assert!(
+                owner.terminal_pane().is_none(),
+                "{owner:?} must not own a PTY"
+            );
+        }
+    }
+
+    #[test]
+    fn gutter_line_selection_includes_terminator_and_preserves_crlf() {
+        let mut store = DocumentStore::default();
+        let (_, lf) = open_store_document(&mut store, "lf.txt", "alpha\nbeta\ngamma");
+        let snapshot = store.render_snapshot(lf).unwrap();
+        // Line 0 with a following newline includes the `\n`.
+        assert_eq!(
+            WorkspaceView::editor_full_line_range(&snapshot, 0),
+            (0, "alpha\n".len())
+        );
+        // The final line has no trailing newline and stops at the buffer end.
+        assert_eq!(
+            WorkspaceView::editor_full_line_range(&snapshot, 2),
+            ("alpha\nbeta\n".len(), "alpha\nbeta\ngamma".len())
+        );
+
+        let mut store = DocumentStore::default();
+        let (_, crlf) = open_store_document(&mut store, "crlf.txt", "alpha\r\nbeta\r\n");
+        let snapshot = store.render_snapshot(crlf).unwrap();
+        // CRLF is two bytes and stays intact so a later edit joins correctly.
+        assert_eq!(
+            WorkspaceView::editor_full_line_range(&snapshot, 0),
+            (0, "alpha\r\n".len())
+        );
+        // The trailing terminator of the last line is also selected.
+        assert_eq!(
+            WorkspaceView::editor_full_line_range(&snapshot, 1),
+            ("alpha\r\n".len(), "alpha\r\nbeta\r\n".len())
+        );
+    }
+
+    #[test]
+    fn newline_convention_drives_enter_insertion() {
+        use crate::editor::{NewlineConvention, detect_newline_convention};
+        assert_eq!(
+            detect_newline_convention("a\r\nb").as_str(),
+            NewlineConvention::Crlf.as_str()
+        );
+        assert_eq!(
+            detect_newline_convention("a\nb\r\n").as_str(),
+            NewlineConvention::Lf.as_str()
+        );
+        assert_eq!(NewlineConvention::Crlf.as_str(), "\r\n");
+        assert_eq!(NewlineConvention::Lf.as_str(), "\n");
     }
 }
