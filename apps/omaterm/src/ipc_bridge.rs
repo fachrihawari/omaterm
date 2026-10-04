@@ -367,6 +367,10 @@ pub fn map_request(
             Method::ProcessList(p) => OmaCommand::Process(omaterm_core::ProcessCommand::List {
                 project: resolve_project(p.project_id)?,
             }),
+            Method::ProcessKill(p) => OmaCommand::Process(omaterm_core::ProcessCommand::Kill {
+                project: resolve_project(p.project_id)?,
+                pid: p.pid,
+            }),
         })
     })()
     .map_err(|message| invalid(id, message))?;
@@ -531,6 +535,9 @@ fn output_json(output: CommandOutput) -> Value {
             let truncated = list.truncated || list.entries.len() > LIST_LIMIT;
             json!({"entries":list.entries.into_iter().take(LIST_LIMIT).map(|entry| json!({"pid":entry.pid,"ppid":entry.ppid,"name":entry.name,"pane_id":entry.pane.0.to_string(),"session_id":entry.session.0.to_string(),"ports":entry.ports,"cpu_percent":entry.cpu_percent,"memory_bytes":entry.memory_bytes})).collect::<Vec<_>>(),"truncated":truncated})
         }
+        CommandOutput::ProcessKilled { pid, signal } => {
+            json!({"pid":pid,"signal":signal})
+        }
     }
 }
 
@@ -671,8 +678,10 @@ mod tests {
             ),
             ("process.list", json!({}), false),
             ("process.list", json!({"project_id": id}), true),
+            ("process.kill", json!({"pid": 1}), false),
+            ("process.kill", json!({"project_id": id, "pid": 1}), true),
         ];
-        assert_eq!(cases.len(), 54);
+        assert_eq!(cases.len(), 56);
         for (method, params, valid) in cases {
             let result = map_request(&request(method, params), CommandContext::LocalUser, &router);
             assert_eq!(result.is_ok(), valid, "{method}");

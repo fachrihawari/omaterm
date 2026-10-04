@@ -21,6 +21,7 @@ use omaterm_core::{
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
+use omaterm_terminal::platform::{CpuSampler, ProcessSnapshot, TerminateError};
 use omaterm_terminal::workspace::ClosedSessions;
 use omaterm_terminal::{
     ClosedPane, CoordinatorError, LinuxProcessInspector, ProcessInspector, ProjectSessionCommit,
@@ -138,6 +139,263 @@ struct PendingEditor {
     restore: bool,
 }
 
+/// Domain-only input for one asynchronous process query. The owner captures
+/// the shell root pids on its own thread and hands them to the worker, so the
+/// owner never scans `/proc`. `cap` bounds the whole snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessQueryRequest {
+    pub project: ProjectId,
+    /// `(session, pane, root_pid)` for every live terminal in the project.
+    pub roots: Vec<(SessionId, PaneId, u32)>,
+    pub cap: usize,
+}
+
+/// Worker-side final result. Carries the routing `operation` (the worker's own
+/// receipt namespace) plus the bounded, already-attributed list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessQueryCompletion {
+    pub operation: u64,
+    pub project: ProjectId,
+    pub info: ProcessListInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessQuerySubmitError {
+    QueueFull,
+    Shutdown,
+    OperationIdExhausted,
+}
+
+const PROCESS_QUERY_QUEUE_CAPACITY: usize = 4;
+const PROCESS_QUERY_RESULT_CAPACITY: usize = 4;
+const PROCESS_QUERY_OUTSTANDING_CAPACITY: usize =
+    PROCESS_QUERY_QUEUE_CAPACITY + PROCESS_QUERY_RESULT_CAPACITY;
+
+struct QueuedProcessQuery {
+    operation: u64,
+    request: ProcessQueryRequest,
+}
+
+struct ProcessQueryState {
+    pending: std::collections::VecDeque<QueuedProcessQuery>,
+    completions: std::collections::VecDeque<ProcessQueryCompletion>,
+    next_operation: Option<u64>,
+    shutdown: bool,
+}
+
+impl Default for ProcessQueryState {
+    fn default() -> Self {
+        Self {
+            pending: std::collections::VecDeque::new(),
+            completions: std::collections::VecDeque::new(),
+            next_operation: Some(1),
+            shutdown: false,
+        }
+    }
+}
+
+/// One bounded background process-query worker. It owns the `LinuxProcessInspector`
+/// and a long-lived `CpuSampler` so CPU deltas persist across queries, and
+/// never touches coordinator/UI state — the owner applies completions.
+struct ProcessQueryWorker {
+    state: Arc<(std::sync::Mutex<ProcessQueryState>, std::sync::Condvar)>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ProcessQueryWorker {
+    fn new() -> Self {
+        let state = Arc::new((
+            std::sync::Mutex::new(ProcessQueryState::default()),
+            std::sync::Condvar::new(),
+        ));
+        let worker_state = Arc::clone(&state);
+        let thread = std::thread::spawn(move || {
+            let mut inspector = LinuxProcessInspector;
+            let mut sampler = CpuSampler::new();
+            loop {
+                let queued = {
+                    let (lock, ready) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|p| p.into_inner());
+                    while state.pending.is_empty() && !state.shutdown {
+                        state = ready.wait(state).unwrap_or_else(|p| p.into_inner());
+                    }
+                    if state.shutdown {
+                        return;
+                    }
+                    state.pending.pop_front().expect("pending process query")
+                };
+                let info = run_process_query(&mut inspector, &mut sampler, &queued.request);
+                let (lock, ready) = &*worker_state;
+                let mut state = lock.lock().unwrap_or_else(|p| p.into_inner());
+                state.completions.push_back(ProcessQueryCompletion {
+                    operation: queued.operation,
+                    project: queued.request.project,
+                    info,
+                });
+                ready.notify_all();
+            }
+        });
+        Self {
+            state,
+            thread: Some(thread),
+        }
+    }
+
+    fn can_submit(&self) -> bool {
+        let state = self.state.0.lock().unwrap_or_else(|p| p.into_inner());
+        !state.shutdown
+            && state.next_operation.is_some()
+            && state.pending.len() < PROCESS_QUERY_QUEUE_CAPACITY
+            && state.pending.len() + state.completions.len() < PROCESS_QUERY_OUTSTANDING_CAPACITY
+    }
+
+    fn submit(&self, request: ProcessQueryRequest) -> Result<u64, ProcessQuerySubmitError> {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|p| p.into_inner());
+        if state.shutdown {
+            return Err(ProcessQuerySubmitError::Shutdown);
+        }
+        if state.pending.len() >= PROCESS_QUERY_QUEUE_CAPACITY
+            || state.pending.len() + state.completions.len() >= PROCESS_QUERY_OUTSTANDING_CAPACITY
+        {
+            return Err(ProcessQuerySubmitError::QueueFull);
+        }
+        let operation = state
+            .next_operation
+            .ok_or(ProcessQuerySubmitError::OperationIdExhausted)?;
+        state.next_operation = operation.checked_add(1);
+        state
+            .pending
+            .push_back(QueuedProcessQuery { operation, request });
+        ready.notify_one();
+        Ok(operation)
+    }
+
+    fn take_completion(&self) -> Option<ProcessQueryCompletion> {
+        self.state
+            .0
+            .lock()
+            .ok()
+            .and_then(|mut state| state.completions.pop_front())
+    }
+
+    #[cfg(test)]
+    fn worker_count(&self) -> usize {
+        usize::from(
+            self.thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished()),
+        )
+    }
+
+    fn shutdown(&self) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|p| p.into_inner());
+        if state.shutdown {
+            return;
+        }
+        state.shutdown = true;
+        state.pending.clear();
+        ready.notify_all();
+    }
+
+    fn shutdown_and_join(&mut self) -> std::thread::Result<()> {
+        self.shutdown();
+        if let Some(thread) = self.thread.take() {
+            thread.join()
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for ProcessQueryWorker {
+    fn drop(&mut self) {
+        let _ = self.shutdown_and_join();
+    }
+}
+
+/// Pure worker-side computation: one bounded snapshot, CPU sampled against the
+/// previous query, ports attributed per pid, deduped and PID-sorted. Never
+/// touches the coordinator or UI.
+fn run_process_query(
+    inspector: &mut LinuxProcessInspector,
+    sampler: &mut CpuSampler,
+    request: &ProcessQueryRequest,
+) -> ProcessListInfo {
+    let root_pids: Vec<u32> = request.roots.iter().map(|(_, _, pid)| *pid).collect();
+    let ProcessSnapshot {
+        mut processes,
+        ports,
+        truncated: snapshot_truncated,
+    } = inspector.snapshot(&root_pids, request.cap);
+    sampler.sample(&mut processes);
+
+    // In-memory tree attribution from the snapshot's own ppid fields: no
+    // additional `/proc` scan. Each process is owned by the first root that
+    // reaches it; roots map to themselves.
+    let children: HashMap<u32, Vec<u32>> = {
+        let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
+        for process in &processes {
+            map.entry(process.ppid).or_default().push(process.pid);
+        }
+        map
+    };
+    let mut owner_of: HashMap<u32, usize> = HashMap::new();
+    for (index, (_, _, root_pid)) in request.roots.iter().enumerate() {
+        let mut stack = vec![*root_pid];
+        owner_of.entry(*root_pid).or_insert(index);
+        while let Some(parent) = stack.pop() {
+            if let Some(kids) = children.get(&parent) {
+                for kid in kids {
+                    if owner_of.insert(*kid, index).is_none() {
+                        stack.push(*kid);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    let mut seen_pids = HashSet::new();
+    let mut truncated = snapshot_truncated;
+    // The shell root itself is not listed (matching the pre-M18 behavior that
+    // listed descendants only); descendants are attributed to their root.
+    let root_set: HashSet<u32> = root_pids.iter().copied().collect();
+    for process in processes {
+        if !seen_pids.insert(process.pid) {
+            continue;
+        }
+        if root_set.contains(&process.pid) {
+            continue;
+        }
+        if entries.len() == request.cap {
+            truncated = true;
+            break;
+        }
+        let Some(&index) = owner_of.get(&process.pid) else {
+            continue;
+        };
+        let (session, pane, _) = request.roots[index];
+        entries.push(ProcessEntryInfo {
+            pid: process.pid,
+            ppid: process.ppid,
+            name: process.name,
+            pane,
+            session,
+            ports: ports
+                .iter()
+                .filter(|port| port.pid == process.pid)
+                .map(|port| port.port)
+                .collect(),
+            cpu_percent: process.cpu_percent,
+            memory_bytes: process.memory_bytes,
+        });
+    }
+    entries.sort_by_key(|entry| entry.pid);
+    ProcessListInfo { entries, truncated }
+}
+
 pub enum CommandEffect {
     EditorDiskChecked {
         document: omaterm_core::DocumentId,
@@ -189,6 +447,12 @@ pub struct CommandRouter {
     pending_editors: HashMap<u64, PendingEditor>,
     editor_project_generations: HashMap<ProjectId, u64>,
     editor_receipts: HashMap<EditorOperationId, u64>,
+    /// Bounded off-thread process query worker. Owns the `LinuxProcessInspector`
+    /// and a persistent `CpuSampler`; the owner never scans `/proc` for `List`.
+    process_query: Option<ProcessQueryWorker>,
+    pending_process_queries: HashMap<u64, ProjectId>,
+    /// Worker queue operation → owner operation receipt.
+    process_receipts: HashMap<u64, u64>,
     next_operation: u64,
     credentials: Option<Credentials>,
     socket_path: Option<PathBuf>,
@@ -233,6 +497,9 @@ impl CommandRouter {
             pending_editors: HashMap::new(),
             editor_project_generations: HashMap::new(),
             editor_receipts: HashMap::new(),
+            process_query: Some(ProcessQueryWorker::new()),
+            pending_process_queries: HashMap::new(),
+            process_receipts: HashMap::new(),
             next_operation: 0,
             credentials: None,
             socket_path: None,
@@ -839,18 +1106,30 @@ impl CommandRouter {
         }
     }
 
-    fn process_list(&self, context: CommandContext, project: ProjectId) -> CommandResult {
+    /// Scope check and shell-root capture for `process.list`. Runs on the
+    /// owner thread but performs no `/proc` scan: it only reads cached child
+    /// PIDs from live sessions. Returns `(pane, session, root_pid)` per live
+    /// terminal in the project.
+    fn capture_process_roots(
+        &self,
+        context: CommandContext,
+        project: ProjectId,
+    ) -> Result<Vec<(SessionId, PaneId, u32)>, CommandError> {
         let Some(owner) = self.coordinator.projects().iter().find(|p| p.id == project) else {
-            return err(ErrorCode::ProjectNotFound, "project does not exist");
+            return Err(CommandError::new(
+                ErrorCode::ProjectNotFound,
+                "project does not exist",
+            ));
         };
         if matches!(context, CommandContext::Project(scope) if scope != project) {
-            return err(ErrorCode::CrossProjectDenied, "outside project scope");
+            return Err(CommandError::new(
+                ErrorCode::CrossProjectDenied,
+                "outside project scope",
+            ));
         }
-        let inspector = LinuxProcessInspector;
-        let mut entries = Vec::new();
+        let mut roots = Vec::new();
         let mut seen = HashSet::new();
-        let mut truncated = false;
-        'tabs: for tab in &owner.tabs {
+        for tab in &owner.tabs {
             for pane in tab.tree.panes() {
                 let PaneContent::Terminal(session_id) = &pane.content else {
                     continue;
@@ -863,41 +1142,136 @@ impl CommandRouter {
                 };
                 let root_pid = session.child_pid();
                 drop(session);
-                if inspector.process_info(root_pid).is_none() {
+                if root_pid == 0 || !seen.insert(root_pid) {
                     continue;
                 }
-                let descendants = inspector.descendants(root_pid);
-                let ports = inspector.listening_ports(root_pid);
-                for process in descendants {
-                    if !seen.insert(process.pid) {
-                        continue;
-                    }
-                    if entries.len() == MAX_PROCESS_ENTRIES {
-                        truncated = true;
-                        break 'tabs;
-                    }
-                    entries.push(ProcessEntryInfo {
-                        pid: process.pid,
-                        ppid: process.ppid,
-                        name: process.name,
-                        pane: pane.id,
-                        session: *session_id,
-                        ports: ports
-                            .iter()
-                            .filter(|port| port.pid == process.pid)
-                            .map(|port| port.port)
-                            .collect(),
-                        cpu_percent: None,
-                        memory_bytes: None,
-                    });
-                }
+                roots.push((*session_id, pane.id, root_pid));
             }
         }
-        entries.sort_by_key(|entry| entry.pid);
-        ok(CommandOutput::ProcessList(ProcessListInfo {
-            entries,
-            truncated,
-        }))
+        Ok(roots)
+    }
+
+    /// Prepare an asynchronous `process.list`. Validates and authorizes, then
+    /// captures shell roots and enqueues the bounded worker, returning a
+    /// `Pending` receipt. No `/proc` scan happens here.
+    fn prepare_process_query(
+        &mut self,
+        context: CommandContext,
+        project: ProjectId,
+    ) -> DispatchOutcome {
+        let error = |result| DispatchOutcome {
+            result,
+            effects: vec![],
+        };
+        let roots = match self.capture_process_roots(context, project) {
+            Ok(roots) => roots,
+            Err(issue) => return error(CommandResult::Err(issue)),
+        };
+        if !self
+            .process_query
+            .as_ref()
+            .is_some_and(ProcessQueryWorker::can_submit)
+        {
+            return error(err(
+                ErrorCode::RuntimeFailure,
+                "process query queue is full or closed",
+            ));
+        }
+        let request = ProcessQueryRequest {
+            project,
+            roots,
+            cap: MAX_PROCESS_ENTRIES,
+        };
+        let queue = self
+            .process_query
+            .as_ref()
+            .expect("queue passed owner admission");
+        let queue_operation = match queue.submit(request) {
+            Ok(operation) => operation,
+            Err(ProcessQuerySubmitError::QueueFull) => {
+                return error(err(
+                    ErrorCode::RuntimeFailure,
+                    "process query queue is full",
+                ));
+            }
+            Err(ProcessQuerySubmitError::Shutdown) => {
+                return error(err(
+                    ErrorCode::RuntimeFailure,
+                    "process query queue is closed",
+                ));
+            }
+            Err(ProcessQuerySubmitError::OperationIdExhausted) => {
+                return error(err(
+                    ErrorCode::RuntimeFailure,
+                    "process query operation IDs exhausted",
+                ));
+            }
+        };
+        self.next_operation += 1;
+        let operation_id = self.next_operation;
+        self.pending_process_queries.insert(operation_id, project);
+        self.process_receipts.insert(queue_operation, operation_id);
+        DispatchOutcome {
+            result: ok(CommandOutput::Pending { operation_id }),
+            effects: vec![],
+        }
+    }
+
+    /// Convert a completed bounded worker result into the owner-facing
+    /// `ProcessList` envelope. Pure: no effects, no coordinator mutation.
+    pub fn process_query_result(
+        &self,
+        _project: ProjectId,
+        info: ProcessListInfo,
+    ) -> CommandResult {
+        ok(CommandOutput::ProcessList(info))
+    }
+
+    /// Scoped `SIGTERM`. Fast enough to run synchronously on the owner thread:
+    /// the project's process family is resolved once, membership is
+    /// revalidated, then `terminate(pid)` signals the single pid. No
+    /// persistence or workspace effects.
+    fn process_kill(
+        &mut self,
+        context: CommandContext,
+        project: ProjectId,
+        pid: u32,
+    ) -> CommandResult {
+        let roots = match self.capture_process_roots(context, project) {
+            Ok(roots) => roots,
+            Err(issue) => return CommandResult::Err(issue),
+        };
+        let mut inspector = LinuxProcessInspector;
+        let root_pids: Vec<u32> = roots.iter().map(|(_, _, root)| *root).collect();
+        let snapshot = inspector.snapshot(&root_pids, MAX_PROCESS_ENTRIES);
+        let owned = snapshot.processes.iter().any(|process| process.pid == pid);
+        if !owned {
+            // Distinguish "exists but foreign" from "gone": a pid outside the
+            // family is a scope violation, a pid nobody owns is absent.
+            if inspector.process_info(pid).is_some() {
+                return err(
+                    ErrorCode::CrossProjectDenied,
+                    "process does not belong to this project",
+                );
+            }
+            return err(ErrorCode::ProcessNotFound, "process does not exist");
+        }
+        match inspector.terminate(pid) {
+            Ok(()) => ok(CommandOutput::ProcessKilled {
+                pid,
+                signal: "SIGTERM",
+            }),
+            Err(TerminateError::NotFound) => {
+                err(ErrorCode::ProcessNotFound, "process does not exist")
+            }
+            Err(TerminateError::PermissionDenied) => {
+                err(ErrorCode::PermissionDenied, "permission denied")
+            }
+            Err(TerminateError::Other(kind)) => err(
+                ErrorCode::RuntimeFailure,
+                format!("failed to terminate process: {kind:?}"),
+            ),
+        }
     }
 
     /// Shared diff query path (M15): project existence plus scope check
@@ -1198,7 +1572,8 @@ impl CommandRouter {
             | OmaCommand::Git(GitCommand::Commit { project, .. }) => Some(*project),
             OmaCommand::Diff(DiffCommand::Show { project, .. })
             | OmaCommand::Diff(DiffCommand::ListFiles { project, .. }) => Some(*project),
-            OmaCommand::Process(ProcessCommand::List { project }) => Some(*project),
+            OmaCommand::Process(ProcessCommand::List { project })
+            | OmaCommand::Process(ProcessCommand::Kill { project, .. }) => Some(*project),
             OmaCommand::Pane(
                 PaneCommand::FocusDirection { .. }
                 | PaneCommand::ResizeFocused { .. }
@@ -1257,6 +1632,12 @@ impl CommandRouter {
             };
             return self.prepare_editor(context, command);
         }
+        if matches!(command, OmaCommand::Process(ProcessCommand::List { .. })) {
+            let OmaCommand::Process(ProcessCommand::List { project }) = command else {
+                unreachable!("process list command was matched above");
+            };
+            return self.prepare_process_query(context, project);
+        }
         let mut effects = Vec::new();
         let file_opened = match &command {
             OmaCommand::File(FileCommand::Open { project, .. }) => Some(*project),
@@ -1307,6 +1688,11 @@ impl CommandRouter {
                 }
             }
             for (id, finished) in self.poll_editor_operations() {
+                if id == operation_id {
+                    return finished;
+                }
+            }
+            for (id, finished) in self.poll_process_queries() {
                 if id == operation_id {
                     return finished;
                 }
@@ -1414,6 +1800,54 @@ impl CommandRouter {
         // Keep the bounded mailbox/receipts available to the owner's final
         // poll: joining must never erase already-committed save reports.
         result
+    }
+
+    /// S8/test instrumentation: number of live process-query worker threads.
+    #[cfg(test)]
+    pub fn process_query_worker_count(&self) -> usize {
+        self.process_query
+            .as_ref()
+            .map_or(0, ProcessQueryWorker::worker_count)
+    }
+
+    pub fn has_pending_process_queries(&self) -> bool {
+        !self.pending_process_queries.is_empty()
+    }
+
+    /// Called only by the application owner. Completed process queries are
+    /// committed here. Ephemeral queries emit no effects.
+    pub fn poll_process_queries(&mut self) -> Vec<(u64, DispatchOutcome)> {
+        let mut outcomes = Vec::new();
+        while let Some(completion) = self
+            .process_query
+            .as_ref()
+            .and_then(ProcessQueryWorker::take_completion)
+        {
+            let Some(operation_id) = self.process_receipts.remove(&completion.operation) else {
+                continue;
+            };
+            let Some(project) = self.pending_process_queries.remove(&operation_id) else {
+                continue;
+            };
+            let result = self.process_query_result(project, completion.info);
+            outcomes.push((
+                operation_id,
+                DispatchOutcome {
+                    result,
+                    effects: vec![],
+                },
+            ));
+        }
+        outcomes
+    }
+
+    /// Stop accepting process queries and join the worker rather than
+    /// detaching it. Call during final application shutdown.
+    pub fn shutdown_process_queries(&mut self) -> std::thread::Result<()> {
+        match self.process_query.as_mut() {
+            Some(worker) => worker.shutdown_and_join(),
+            None => Ok(()),
+        }
     }
 
     fn finish_editor_operation(
@@ -2426,8 +2860,12 @@ impl CommandRouter {
             OmaCommand::Diff(DiffCommand::ListFiles { project, staged }) => {
                 self.diff_query(context, project, None, staged, 0, true)
             }
-            OmaCommand::Process(ProcessCommand::List { project }) => {
-                self.process_list(context, project)
+            OmaCommand::Process(ProcessCommand::List { .. }) => err(
+                ErrorCode::RuntimeFailure,
+                "process list must go through the async query path",
+            ),
+            OmaCommand::Process(ProcessCommand::Kill { project, pid }) => {
+                self.process_kill(context, project, pid)
             }
             OmaCommand::Tab(TabCommand::List { project }) => {
                 let Some(p) = self.coordinator.window().project(project) else {
@@ -3009,7 +3447,7 @@ mod tests {
             assert!(start.elapsed() < std::time::Duration::from_secs(5));
             std::thread::sleep(std::time::Duration::from_millis(2));
         };
-        let result = router.dispatch_async(
+        let result = router.dispatch(
             CommandContext::LocalUser,
             OmaCommand::Process(ProcessCommand::List { project }),
         );
@@ -3082,6 +3520,164 @@ mod tests {
         assert!(matches!(outcome.result, CommandResult::Err(_)));
         assert!(outcome.effects.is_empty());
         assert!(router.registry().is_empty());
+    }
+
+    /// Create a project whose single pane has a live shell, returning the
+    /// project id and the shell's root pid.
+    fn create_live_project(router: &mut CommandRouter, tag: &str) -> (ProjectId, u32) {
+        let directory =
+            std::env::temp_dir().join(format!("omaterm-proc-{tag}-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&directory);
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(directory),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation: {:?}", created.result);
+        };
+        let session = router
+            .projects()
+            .iter()
+            .find(|owner| owner.id == project)
+            .and_then(|owner| owner.tabs.first())
+            .and_then(|tab| tab.tree.panes().into_iter().next())
+            .and_then(|pane| match pane.content {
+                PaneContent::Terminal(session) => Some(session),
+                PaneContent::Empty => None,
+            })
+            .expect("live session");
+        let root_pid = router
+            .registry()
+            .get(session)
+            .expect("session registered")
+            .lock()
+            .expect("session lock")
+            .child_pid();
+        (project, root_pid)
+    }
+
+    #[test]
+    fn process_query_worker_completes_bounded_and_effect_free_async() {
+        let mut router = router();
+        let (project, _) = create_live_project(&mut router, "async");
+        assert_eq!(router.process_query_worker_count(), 1);
+        let outcome = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        assert!(
+            outcome.effects.is_empty(),
+            "process queries are ephemeral (no WorkspaceChanged/PersistenceDirty)"
+        );
+        assert!(!has_persistence_dirty(&outcome.effects));
+        let CommandResult::Ok(CommandOutput::ProcessList(info)) = outcome.result else {
+            panic!("expected process list");
+        };
+        assert!(info.entries.len() <= MAX_PROCESS_ENTRIES);
+        assert!(info.entries.windows(2).all(|w| w[0].pid <= w[1].pid));
+        assert!(!router.has_pending_process_queries());
+        assert_eq!(router.process_query_worker_count(), 1);
+        router.shutdown_process_queries().unwrap();
+        assert_eq!(router.process_query_worker_count(), 0);
+    }
+
+    #[test]
+    fn process_kill_is_project_scoped() {
+        let mut router = router();
+        let (project, _) = create_live_project(&mut router, "kill");
+        // A foreign project scope must be rejected before any signalling.
+        let foreign = ProjectId::new();
+        let denied = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Process(ProcessCommand::Kill {
+                project: foreign,
+                pid: 1,
+            }),
+        );
+        assert!(
+            matches!(&denied.result, CommandResult::Err(error) if error.code == ErrorCode::CrossProjectDenied),
+            "foreign project scope: {:?}",
+            denied.result
+        );
+        assert!(denied.effects.is_empty());
+
+        // A pid nobody owns is absent, not a scope violation.
+        let missing = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::Kill {
+                project,
+                pid: i32::MAX as u32,
+            }),
+        );
+        assert!(
+            matches!(&missing.result, CommandResult::Err(error) if error.code == ErrorCode::ProcessNotFound),
+            "missing pid: {:?}",
+            missing.result
+        );
+        assert!(missing.effects.is_empty());
+        router.shutdown_process_queries().unwrap();
+    }
+
+    #[test]
+    fn process_kill_denies_existing_foreign_pid() {
+        let mut router = router();
+        let (project, _) = create_live_project(&mut router, "kill-foreign");
+        // PID 1 exists but does not belong to the project family.
+        let denied = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::Kill { project, pid: 1 }),
+        );
+        assert!(
+            matches!(&denied.result, CommandResult::Err(error) if error.code == ErrorCode::CrossProjectDenied),
+            "foreign pid: {:?}",
+            denied.result
+        );
+        assert!(denied.effects.is_empty());
+        router.shutdown_process_queries().unwrap();
+    }
+
+    #[test]
+    fn repeated_process_queries_reuse_one_worker_thread() {
+        let mut router = router();
+        let (project, _) = create_live_project(&mut router, "repeat");
+        for _ in 0..100 {
+            let outcome = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Process(ProcessCommand::List { project }),
+            );
+            assert!(matches!(
+                outcome.result,
+                CommandResult::Ok(CommandOutput::ProcessList(_))
+            ));
+            assert!(outcome.effects.is_empty());
+            assert_eq!(router.process_query_worker_count(), 1);
+        }
+        router.shutdown_process_queries().unwrap();
+        assert_eq!(router.process_query_worker_count(), 0);
+    }
+
+    #[test]
+    fn process_query_shutdown_joins_the_worker() {
+        let mut router = router();
+        let (project, _) = create_live_project(&mut router, "join");
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        assert_eq!(router.process_query_worker_count(), 1);
+        router.shutdown_process_queries().unwrap();
+        assert_eq!(router.process_query_worker_count(), 0);
+        // After shutdown the queue rejects further queries without panicking.
+        let rejected = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Process(ProcessCommand::List { project }),
+        );
+        assert!(matches!(rejected.result, CommandResult::Err(_)));
+        assert!(rejected.effects.is_empty());
     }
 
     #[test]

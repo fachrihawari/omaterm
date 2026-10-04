@@ -200,6 +200,10 @@ struct WorkspaceView {
     pending_palette_mru: HashMap<u64, String>,
     pending_palette_origins: HashMap<u64, PaletteOrigin>,
     process_list: Option<(ProjectId, omaterm_core::ProcessListInfo)>,
+    /// In-flight process-query operation → owning project. The worker result
+    /// arrives through the launch poller; the project is applied only when the
+    /// query targeted the currently viewed project.
+    pending_process_refresh: HashMap<u64, ProjectId>,
     ctrlp_caret_on: bool,
     ctrlp_blink_active: bool,
     /// M14 Source Control panel: last-good statuses, explicit empty/error
@@ -1491,6 +1495,7 @@ impl WorkspaceView {
             pending_palette_mru: HashMap::new(),
             pending_palette_origins: HashMap::new(),
             process_list: None,
+            pending_process_refresh: HashMap::new(),
             ctrlp_caret_on: true,
             ctrlp_blink_active: false,
             git_panel: git_panel::GitPanel::default(),
@@ -2158,6 +2163,9 @@ impl WorkspaceView {
         if self.coordinator.shutdown_editor_operations().is_err() {
             tracing::error!(target: "omaterm::editor", "editor I/O worker panicked during shutdown");
         }
+        if self.coordinator.shutdown_process_queries().is_err() {
+            tracing::error!(target: "omaterm::process", "process query worker panicked during shutdown");
+        }
         for (operation_id, outcome) in self.coordinator.poll_editor_operations() {
             self.pending_ui_launches.remove(&operation_id);
             self.pending_native_opens.remove(&operation_id);
@@ -2668,6 +2676,7 @@ impl WorkspaceView {
             .poll_launches()
             .into_iter()
             .chain(self.coordinator.poll_editor_operations())
+            .chain(self.coordinator.poll_process_queries())
         {
             // Every final outcome retires the start, including failure/cancel.
             let open_started = self.metrics_open_started.remove(&operation_id);
@@ -2687,6 +2696,26 @@ impl WorkspaceView {
                         )
                     };
                     let _ = work.reply.send(result);
+                }
+                self.apply_command_effects(outcome.effects, cx);
+                continue;
+            }
+            // Ephemeral process-query completions: apply the bounded list only
+            // when the query still targets the viewed project. No effects.
+            if let Some(project) = self.pending_process_refresh.remove(&operation_id) {
+                self.pending_ui_launches.remove(&operation_id);
+                match &outcome.result {
+                    CommandResult::Ok(CommandOutput::ProcessList(info))
+                        if self.coordinator.selected_project_id() == Some(project) =>
+                    {
+                        self.process_list = Some((project, info.clone()));
+                        cx.notify();
+                    }
+                    CommandResult::Err(error) => {
+                        self.input_notice = Some(format!("Process refresh: {error}"));
+                        cx.notify();
+                    }
+                    _ => {}
                 }
                 self.apply_command_effects(outcome.effects, cx);
                 continue;
@@ -2922,6 +2951,7 @@ impl WorkspaceView {
         self.schedule_metrics_flush(cx);
         let pending = self.coordinator.has_pending_launches()
             || self.coordinator.has_pending_editor_operations()
+            || self.coordinator.has_pending_process_queries()
             || self.document_restore_in_flight.is_some()
             || !self.document_restore_queue.is_empty()
             || self
@@ -3451,11 +3481,41 @@ impl WorkspaceView {
             OmaCommand::Process(omaterm_core::ProcessCommand::List { project }),
             cx,
         ) {
-            Ok(CommandOutput::ProcessList(info)) => self.process_list = Some((project, info)),
-            Ok(_) => {
-                self.input_notice = Some("Process query returned an unexpected result.".into())
+            Ok(CommandOutput::Pending { operation_id }) => {
+                self.pending_process_refresh.insert(operation_id, project);
             }
-            Err(error) => self.input_notice = Some(format!("Process refresh: {error}")),
+            Ok(_) => {
+                self.input_notice = Some("Process query returned an unexpected result.".into());
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Process refresh: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Dispatch a project-scoped `SIGTERM` for `pid`. Kill is synchronous and
+    /// effect-free; errors surface as an input notice.
+    #[allow(dead_code)]
+    fn kill_process(&mut self, pid: u32, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            self.input_notice = Some("Kill: no selected project".into());
+            cx.notify();
+            return;
+        };
+        match self.dispatch_command(
+            OmaCommand::Process(omaterm_core::ProcessCommand::Kill { project, pid }),
+            cx,
+        ) {
+            Ok(CommandOutput::ProcessKilled { .. }) => {
+                self.input_notice = Some(format!("Terminated process {pid}"));
+                self.refresh_process_list(project, cx);
+            }
+            Ok(_) => {
+                self.input_notice = Some("Kill returned an unexpected result.".into());
+            }
+            Err(error) => self.input_notice = Some(format!("Kill: {error}")),
         }
         cx.notify();
     }
@@ -8013,10 +8073,10 @@ impl WorkspaceView {
                     self.git_dirty_hint |= refresh_git;
                     self.diff_dirty_hint |= refresh_diff;
                 }
-                if let (Some(project), Ok(CommandOutput::ProcessList(info))) =
+                if let (Some(project), Ok(CommandOutput::Pending { operation_id })) =
                     (process_project, &outcome)
                 {
-                    self.process_list = Some((project, info.clone()));
+                    self.pending_process_refresh.insert(*operation_id, project);
                     self.select_inspector_tab(InspectorTab::Info, cx);
                 }
                 Some(outcome)

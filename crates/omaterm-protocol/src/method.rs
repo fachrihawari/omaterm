@@ -159,6 +159,12 @@ pub struct DiffListFiles {
 pub struct ProcessList {
     pub project_id: Option<String>,
 }
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessKill {
+    pub project_id: Option<String>,
+    pub pid: u32,
+}
 
 #[derive(Clone)]
 pub enum Method {
@@ -202,6 +208,7 @@ pub enum Method {
     DiffShow(DiffShow),
     DiffListFiles(DiffListFiles),
     ProcessList(ProcessList),
+    ProcessKill(ProcessKill),
 }
 
 impl Method {
@@ -259,6 +266,7 @@ impl Method {
             "diff.show" => decode!(DiffShow, DiffShow),
             "diff.list-files" => decode!(DiffListFiles, DiffListFiles),
             "process.list" => decode!(ProcessList, ProcessList),
+            "process.kill" => decode!(ProcessKill, ProcessKill),
             _ => Err(MethodError("unknown method")),
         }
     }
@@ -338,8 +346,9 @@ mod tests {
             ),
             ("diff.list-files", serde_json::json!({"staged": false})),
             ("process.list", serde_json::json!({})),
+            ("process.kill", serde_json::json!({"pid": 123})),
         ];
-        assert_eq!(cases.len(), 40);
+        assert_eq!(cases.len(), 41);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

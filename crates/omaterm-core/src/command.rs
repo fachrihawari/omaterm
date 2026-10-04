@@ -250,7 +250,15 @@ pub enum DiffCommand {
 /// Bounded, project-scoped process inspection (M18 query slice).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProcessCommand {
-    List { project: ProjectId },
+    List {
+        project: ProjectId,
+    },
+    /// Scoped `SIGTERM` to a project-owned descendant. Membership is
+    /// revalidated at dispatch and again before signalling.
+    Kill {
+        project: ProjectId,
+        pid: u32,
+    },
 }
 
 /// Authority is kept separate from command data so transport identity cannot

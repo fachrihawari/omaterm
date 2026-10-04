@@ -134,6 +134,7 @@ crates/omaterm-ipc/
 | `diff.show` | `DiffCommand::Show` |
 | `diff.list-files` | `DiffCommand::ListFiles` |
 | `process.list` | `ProcessCommand::List` |
+| `process.kill` | `ProcessCommand::Kill` |
 
 ### Socket Path
 

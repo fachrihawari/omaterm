@@ -31,6 +31,9 @@ pub enum ErrorCode {
     /// `$EDITOR` is unset or empty so `file.open` has nothing to submit
     /// (M13). The editor pane itself is v0.3 scope.
     EditorNotConfigured,
+    /// The requested process id is not part of the project's process family,
+    /// or no longer exists, so `process.kill` has nothing to signal (M18).
+    ProcessNotFound,
     /// The project has no filesystem root (M12 `none` empty state) and the
     /// requested operation needs one (`file.open`). Listing/searching
     /// without a root returns an empty envelope instead of this error.
@@ -82,6 +85,7 @@ impl ErrorCode {
             Self::PathOutsideRoot => "path_outside_root",
             Self::FileNotFound => "file_not_found",
             Self::EditorNotConfigured => "editor_not_configured",
+            Self::ProcessNotFound => "process_not_found",
             Self::NoProjectRoot => "no_project_root",
             Self::NotARepo => "not_a_repo",
             Self::GitFailed => "git_failed",
@@ -186,6 +190,12 @@ pub enum CommandOutput {
     },
     Diff(DiffInfo),
     ProcessList(ProcessListInfo),
+    /// A project-scoped `SIGTERM` was delivered. `signal` is the stable wire
+    /// name (`SIGTERM`); callers never parse a numeric signal.
+    ProcessKilled {
+        pid: u32,
+        signal: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -105,8 +105,67 @@ M4 evidence below.
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
 | 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk parity, cancellable latest-only worker, shared mutation invalidation, cached virtual rows, independent Split X/Inline X, source anchors; release Wayland direct Git click, long-row/character reach, exact copy, one-hunk stage, IPC refresh and terminal open | Rails/paging/drag, rendered-range instrumentation and full metadata/stale/scope/refresh-anchor matrix remain; see current M15 evidence | Finish D2/D3 in the [remaining-work plan](m15-m16-remaining-work-plan.md) before M16 completion |
-| 16 — Command Palette | in_progress | Dual-mode overlay, fuzzy ranked command/workspace/file/Git candidates, one latest-only source worker, bounded root index, core ranking, root-aware File MRU and origin restoration; release Wayland command/file/project/split/focus/process refresh proof and CLI spot-checks recorded below | M15 not closed; M18 process query still synchronous and CPU/RSS absent; rapid-search worker/resource measurements and full stale/focus/error/argument matrix pending | Finish M15 and M18 query gates, then close M16 implementation/acceptance gaps |
-| 18 — Process Panel | in_progress (query slice only) | Bounded `ProcessCommand::List`, IPC/CLI `process.list`, Info process/port sections; router scope/no-effect test and same-instance CLI query passed | No off-thread query lifecycle, CPU/RSS sampler, scoped kill, resource proof or complete M18 acceptance | Move the query off the owner/UI thread and complete M18 contract before claiming the M16 prerequisite |
+| 16 — Command Palette | in_progress | Dual-mode overlay, fuzzy ranked command/workspace/file/Git candidates, one latest-only source worker, bounded root index, core ranking, root-aware File MRU and origin restoration; release Wayland command/file/project/split/focus/process refresh proof and CLI spot-checks recorded below | M15 not closed; rapid-search worker/resource measurements and full stale/focus/error/argument matrix pending (M18 query is now off-thread, see M18 row) | Finish M15, then close M16 implementation/acceptance gaps |
+| 17 — v0.2 Closure | open | No closeout run yet; depends on M12–M16 completion | M15/M16 in progress; v0.2 acceptance rows pending | Only after M12–M16 pass; M19 re-sequencing does not close this gate |
+| 18 — Process Panel | in_progress (query + kill slice) | Q01–Q03 landed 2026-10-04: bounded async `ProcessQueryWorker` (1 thread, queue cap 4, mailbox 4, joined shutdown), owner captures root PIDs/authorizes only, worker runs one `/proc` snapshot + persistent `CpuSampler` (CPU% delta + RSS), ports attributed per PID, ≤512 cap with truncation; scoped `kill` (`cross_project_denied`/`process_not_found`/`permission_denied`); CPU/RSS columns in CLI/JSON; IPC `process.kill`; workspace serial suite + Clippy + fmt green — see M18 record below | Panel UI (collapsible sections/badges/empty states), auto-refresh debounce, full kill UI arm flow and release Wayland child/port/kill resource proof remain | Finish Info panel UI + live Wayland acceptance; M16 query prerequisite gate now satisfied |
+| 19 — Basic Built-in Editor | in_progress | Rooted context I/O + SHA-256 revisions, `EditorIoQueue` worker (1 active + 16 queued), bounded 32-slot store, metadata-only registry snapshots/restore, `EntityInputHandler`; 606-test suite, Clippy, release pass with `RUSTUP_TOOLCHAIN=1.99.0` — see M19 records below and the [S9 report](evidence/m19-s9-report.md) | S9/E01–E10 open: native input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit/restart, IME preedit; [milestone spec](19-milestone-19-editor.md) | Complete S9 native exit criteria; do not claim M19 complete |
+| Privacy: local-only defaults (§46) | partial | Redaction audit green; local state under `$XDG_*`; no telemetry/cloud code | No dedicated no-egress network test or user-facing privacy statement; acceptance row partial in [matrix](acceptance-matrix.md) | Add no-egress test or record explicit limit |
+
+## M18 async process query + scoped kill (query prerequisite) — 2026-10-04
+
+Landed Q01–Q03 from the [remaining-work plan](m15-m16-remaining-work-plan.md) §8,
+satisfying the M16 process-query prerequisite. This is not full M18 acceptance:
+the collapsible Info panel UI, debounced auto-refresh, kill arm/confirm UI and
+release Wayland resource proof remain open.
+
+Platform (`omaterm-terminal/src/platform.rs`):
+- `ProcessInfo` gained `cpu_percent: Option<f32>` and `memory_bytes: Option<u64>`
+  (RSS from `/proc/<pid>/statm`, resident pages × page size).
+- New `ProcessSnapshot { processes, ports, truncated }` and
+  `ProcessInspector::snapshot(roots, cap)`: one `/proc` scan per request, ports
+  read once, owned set = roots ∪ descendants (deduped), growth halted at `cap`.
+- New `CpuSampler` (persistent utime/stime + start-time delta, PID-reuse guard,
+  first-sample `None`) and `ProcessInspector::terminate(pid)` via `libc::kill`
+  with `TerminateError { NotFound, PermissionDenied, Other }`. No new crates.
+
+Router (`apps/omaterm/src/router.rs`):
+- `ProcessQueryWorker`: one thread, bounded pending queue (4), result mailbox
+  (4), `shutdown_and_join`. `ProcessQueryRequest { project, roots: Vec<(SessionId,
+  PaneId, u32)>, cap }` carries domain inputs only. The owner captures cached
+  `child_pid()`s and authorizes; no `/proc` work runs on the owner thread for
+  `List`. The worker owns `LinuxProcessInspector` + persistent `CpuSampler`,
+  attributes ports per PID in memory, and enforces `MAX_PROCESS_ENTRIES` before
+  unbounded growth. `ProcessCommand::List` now returns `CommandOutput::Pending`;
+  completions drain via `poll_process_queries()` and carry no effects (asserted).
+- Scoped synchronous `Kill`: `capture_process_roots` resolves the family once,
+  membership is revalidated, `terminate` signals one PID; foreign existing PIDs
+  → `cross_project_denied`, gone PIDs → `process_not_found`, `EPERM` →
+  `permission_denied`. `CommandOutput::ProcessKilled { pid, signal }` and
+  `ErrorCode::ProcessNotFound` added.
+
+Parity:
+- Protocol/CLI: `process.kill { project_id, pid }` → `{ pid, signal }`; CLI
+  `process kill PID [--project]`, renderer `Terminated process {pid} (SIGTERM).`;
+  `process list` human output now shows `cpu`/`mem` when present; CPU/RSS also
+  flow through the existing JSON bridge.
+- IPC bridge maps `Method::ProcessKill` and `CommandOutput::ProcessKilled`.
+
+Tests added: platform statm/stat-times/tricky-comm/sampler/snapshot/terminate;
+router async bounded/effect-free list, project-scoped kill, foreign-pid denial,
+100-query single-worker reuse, shutdown join; CLI kill mapping + cpu/mem render;
+protocol decode. Moved the existing scoped-list test onto the async path.
+
+Verification with `RUSTUP_TOOLCHAIN=1.99.0`: `cargo fmt --all --check` PASS;
+`cargo test --workspace -- --test-threads=1` PASS (219 + 44 + 67 + 7 + 1 + 8 +
+21 + 11 + 3 + 6 + 58 + 145 + 33, 0 failed); `cargo clippy --workspace
+--all-targets -- -D warnings` PASS (only the pre-existing transitive
+`proc-macro-error2` future-incompatibility notice); `python3 scripts/check-docs.py`
+PASS; `git diff --check` PASS. Manual Wayland validation of child/port
+attribution, kill flow and resource stability is not yet recorded.
+
+**Next action:** build the Info panel collapsible UI + debounced auto-refresh
+over the completed snapshot, wire the arm/confirm kill flow, then run release
+Wayland child/port ownership and 100-query FD/thread stability proof.
 
 ## M15 + M16 remaining-work planning — 2026-10-03
 

@@ -75,6 +75,7 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "diff.show" => render_diff(&result),
         "diff.list-files" => render_diff_files(&result),
         "process.list" => render_process_list(&result),
+        "process.kill" => render_process_kill(&result),
         _ => result.to_string(),
     }
 }
@@ -594,7 +595,15 @@ fn render_process_list(result: &Value) -> String {
                     .join(",")
             })
             .unwrap_or_default();
-        out.push_str(&format!("{pid}\t{name}\tpane={pane}\tports={ports}\n"));
+        let mut row = format!("{pid}\t{name}\tpane={pane}\tports={ports}");
+        if let Some(cpu) = entry.get("cpu_percent").and_then(Value::as_f64) {
+            row.push_str(&format!("\tcpu={cpu:.1}%"));
+        }
+        if let Some(mem) = entry.get("memory_bytes").and_then(Value::as_f64) {
+            row.push_str(&format!("\tmem={}", format_memory(mem)));
+        }
+        row.push('\n');
+        out.push_str(&row);
     }
     if result
         .get("truncated")
@@ -604,6 +613,34 @@ fn render_process_list(result: &Value) -> String {
         out.push_str("(truncated: bounded process list)\n");
     }
     out.trim_end().to_owned()
+}
+
+fn format_memory(bytes: f64) -> String {
+    if bytes >= 1024.0 * 1024.0 {
+        format!("{:.1}MiB", bytes / (1024.0 * 1024.0))
+    } else {
+        format!("{:.0}KiB", bytes / 1024.0)
+    }
+}
+
+fn render_process_kill(result: &Value) -> String {
+    if let Some(error) = result.get("error") {
+        let code = error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("command_error");
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("command failed");
+        return format!("Error [{code}]: {message}");
+    }
+    let pid = result.get("pid").and_then(Value::as_u64).unwrap_or(0);
+    let signal = result
+        .get("signal")
+        .and_then(Value::as_str)
+        .unwrap_or("SIGTERM");
+    format!("Terminated process {pid} ({signal}).")
 }
 
 fn render_read(result: &Value) -> String {
@@ -656,6 +693,50 @@ mod tests {
         );
         assert!(text.contains("42\tsleep\tpane=pane-a\tports=8080"));
         assert!(text.contains("truncated"));
+    }
+
+    #[test]
+    fn human_process_list_renders_cpu_and_memory() {
+        let text = human_success(
+            "process.list",
+            &ok(serde_json::json!({
+                "entries": [
+                    {"pid":7,"name":"server","pane_id":"pane-a","ports":[],
+                     "cpu_percent":12.34,"memory_bytes":1572864},
+                    {"pid":8,"name":"tiny","pane_id":"pane-b","ports":[],
+                     "cpu_percent":0.5,"memory_bytes":2048},
+                ],
+                "truncated": false,
+            })),
+        );
+        assert!(text.contains("cpu=12.3%"));
+        assert!(text.contains("mem=1.5MiB"));
+        assert!(text.contains("cpu=0.5%"));
+        assert!(text.contains("mem=2KiB"));
+    }
+
+    #[test]
+    fn human_process_kill_renders_pid_and_signal() {
+        assert_eq!(
+            human_success("process.kill", &ok(serde_json::json!({"pid": 42}))),
+            "Terminated process 42 (SIGTERM)."
+        );
+        assert_eq!(
+            human_success(
+                "process.kill",
+                &ok(serde_json::json!({"pid": 7, "signal": "SIGKILL"})),
+            ),
+            "Terminated process 7 (SIGKILL)."
+        );
+        assert_eq!(
+            human_success(
+                "process.kill",
+                &ok(serde_json::json!({
+                    "error": {"code": "process_not_found", "message": "no such pid"},
+                })),
+            ),
+            "Error [process_not_found]: no such pid"
+        );
     }
 
     #[test]
