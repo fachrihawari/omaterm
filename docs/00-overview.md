@@ -54,7 +54,7 @@ the canonical workflow in [AGENTS.md](../AGENTS.md).
 | 16 | [Command Palette](16-milestone-16-palette.md) | Fuzzy palette over semantic commands + file index | desktop |
 | 17 | [v0.2 Closure](17-milestone-17-v02-closure.md) | Live closeout, baselines, redaction audit, acceptance rows | docs, desktop, tests |
 | 18 | [Process Panel](18-milestone-18-process-panel.md) | Kero-parity Info panel: processes + ports + scoped kill | `omaterm-terminal`, desktop, IPC, CLI |
-| 19 | [Basic Built-in Editor](m19-basic-editor-implementation-plan.md) | Native open/edit/highlight/save; no LSP/IDE scope | `omaterm-core`, `omaterm-context`, desktop |
+| 19 | [Basic Built-in Editor](19-milestone-19-editor.md) | Native open/edit/highlight/save; no LSP/IDE scope | `omaterm-core`, `omaterm-context`, desktop |
 
 M10 is post-v0.1 and does not change M6's layout/CWD-only persistence contract.
 It is blocked until M5–M9 and its dependency/replay spikes are complete.
@@ -71,10 +71,21 @@ are the panels (sidebar-first, editor deferred), M17 is the v0.2
 closeout. M18 adds the Kero-parity process Info panel (per focused pane,
 ports + scoped SIGTERM kill) and may land any time after M12. M19 is the
 basic built-in editor (blueprint §34: open/edit/highlight/save, no LSP or
-IDE scope), tracked by its implementation plan. Blueprint §23 allows the
-lightweight editor into v0.2 or v0.3; version assignment stays a product
-decision outside this plan. Project license is MIT OR Apache-2.0
-(`LICENSE-MIT`, `LICENSE-APACHE`).
+IDE scope), tracked by its [milestone spec](19-milestone-19-editor.md) and
+implementation plan. Blueprint §23 allows the lightweight editor into v0.2
+or v0.3; version assignment stays a product decision outside this plan.
+Project license is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`).
+
+**Sequencing note:** M17 (v0.2 closure) blocks the v0.2 release claim and
+depends on M12–M16 completion. M15/M16 and M18 are still in progress, and the
+editor (M19) was explicitly re-sequenced ahead of their remaining gates by
+product direction. This re-sequencing is not evidence that M15–M17 passed;
+their acceptance gates stay open in [status](status.md) and the
+[acceptance matrix](acceptance-matrix.md). M19 must not mask those gates.
+
+Section-level ownership for the whole blueprint — including intentionally
+deferred and unowned sections — is tracked in the
+[blueprint coverage map](blueprint-coverage-map.md).
 
 ## Version Roadmap
 
@@ -115,6 +126,7 @@ If this works, OmaTerm has proven the architecture for future agent control.
 
 - [OMATERM_AGENT_BLUEPRINT.md](../OMATERM_AGENT_BLUEPRINT.md) — Authoritative specification (79 sections)
 - [AGENTS.md](../AGENTS.md) — AI agent instructions
+- [Blueprint Coverage Map](blueprint-coverage-map.md) — every blueprint section mapped to its owning milestone, with open/deferred/unowned gaps made explicit
 - [UI v5 Fidelity Correction Plan](ui-v5-fidelity-correction-plan.md) — next UI execution plan: audited sidebar/icon/detail mismatches and evidence-based correction gates
 - [UI v5 Pixel-Perfect Rewrite Plan](ui-v5-pixel-perfect-plan.md) — exact mockup reproduction, assets/measurements, phased delivery, and screenshot acceptance
 - [Diff and Files/Git UX Correction Plan](diff-files-ux-correction-plan.md) — diff row alignment and virtualization, natural two-axis scrolling, centered Git icons, and contextual Files help
