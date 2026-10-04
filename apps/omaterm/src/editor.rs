@@ -1250,16 +1250,10 @@ pub fn char_display_width(ch: char) -> usize {
 }
 
 /// Display columns for a line with tabs expanded to `TAB_WIDTH` stops.
+/// Delegates to [`line_visual_width`] so the scroll extent, footer, vertical
+/// motion and hit-testing all share one grapheme-cluster mapping.
 pub fn line_display_width(line: &str) -> usize {
-    let mut cols = 0;
-    for ch in line.chars() {
-        if ch == '\t' {
-            cols += TAB_WIDTH - (cols % TAB_WIDTH);
-        } else {
-            cols += char_display_width(ch);
-        }
-    }
-    cols
+    line_visual_width(line)
 }
 
 /// Caret plus optional selection anchor, as buffer byte offsets. The anchor
@@ -1970,6 +1964,227 @@ pub fn display_line(line: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(line)
     }
+}
+
+// ---------------------------------------------------------------------------
+// S6 presentation helpers: newline convention, preferred visual columns,
+// grapheme-consistent hit-test mapping and minimal reveal math. All of these
+// are pure functions over buffer text; the GPUI adapter in `main.rs` composes
+// them with shaping and scroll handles.
+// ---------------------------------------------------------------------------
+
+/// Established line-ending convention for a buffer, inferred from the first
+/// line terminator and preserved across edits. `Lf` is the default for
+/// new/empty documents and for text with no terminator at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NewlineConvention {
+    #[default]
+    Lf,
+    Crlf,
+}
+
+impl NewlineConvention {
+    /// The exact bytes inserted for a new line under this convention.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::Crlf => "\r\n",
+        }
+    }
+
+    /// The trailing bytes that must be stripped from a rendered line so the
+    /// `\r` of a CRLF is not painted as a glyph. Empty for `Lf`.
+    pub fn display_terminator(self) -> &'static str {
+        match self {
+            Self::Lf => "",
+            Self::Crlf => "\r",
+        }
+    }
+}
+
+/// Detect the newline convention from the document text: the first line
+/// terminator wins, so mixed files follow their leading style rather than
+/// being normalized. Lone `\r` bytes are not a terminator and never win.
+pub fn detect_newline_convention(text: &str) -> NewlineConvention {
+    let bytes = text.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        match byte {
+            // CRLF wins when the very first terminator is `\r\n`.
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => return NewlineConvention::Crlf,
+            // A bare LF (including the LF of a `\r\n` pair never reached
+            // because the branch above returned first) establishes LF.
+            b'\n' => return NewlineConvention::Lf,
+            _ => {}
+        }
+    }
+    NewlineConvention::Lf
+}
+
+/// Strip a single trailing `\r` from a line for display only. Buffer bytes and
+/// offsets are untouched: the caller keeps rendering the same `line` slice and
+/// simply paints the returned prefix. Any `\r` not at the very end is real
+/// content and retained.
+pub fn strip_trailing_cr_for_display(line: &str) -> &str {
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+/// Display width of one extended grapheme cluster. Combining marks add zero,
+/// wide CJK/emoji keep their two columns, and joined emoji (ZWJ), variation
+/// selectors, keycaps and regional-indicator flags collapse to a single
+/// two-column cluster instead of summing their individual char widths.
+pub fn grapheme_display_width(grapheme: &str) -> usize {
+    let mut width = 0;
+    let mut emoji_sequence = false;
+    let mut regional_flag = false;
+    for ch in grapheme.chars() {
+        match ch {
+            '\u{200d}' | '\u{fe0f}' | '\u{20e3}' => emoji_sequence = true,
+            '\u{1f1e6}'..='\u{1f1ff}' => regional_flag = true,
+            _ => width = width.max(char_display_width(ch)),
+        }
+    }
+    if emoji_sequence || regional_flag {
+        width.max(2)
+    } else {
+        width
+    }
+}
+
+/// Visual columns for a line with tabs expanded to `TAB_WIDTH` stops and
+/// grapheme clusters measured as single display units. This is the shared
+/// mapping used by the footer, vertical motion and hit-testing so they cannot
+/// disagree about emoji/ZWJ content.
+pub fn line_visual_width(line: &str) -> usize {
+    let mut cols = 0;
+    for grapheme in line.graphemes(true) {
+        cols += if grapheme == "\t" {
+            TAB_WIDTH - (cols % TAB_WIDTH)
+        } else {
+            grapheme_display_width(grapheme)
+        };
+    }
+    cols
+}
+
+/// Buffer byte offset within `line` (relative to the line start) to visual
+/// cell column. Offsets inside a grapheme cluster count only the clusters that
+/// end at or before the offset, so a clamped caret never splits a cluster.
+pub fn buffer_offset_to_visual_col(line: &str, offset: usize) -> usize {
+    let offset = offset.min(line.len());
+    let mut cols = 0;
+    for (index, grapheme) in line.grapheme_indices(true) {
+        if index >= offset {
+            break;
+        }
+        cols += if grapheme == "\t" {
+            TAB_WIDTH - (cols % TAB_WIDTH)
+        } else {
+            grapheme_display_width(grapheme)
+        };
+    }
+    cols
+}
+
+/// Visual cell column to the buffer byte offset nearest it: the largest
+/// grapheme-aligned prefix whose visual width does not exceed `target_col`.
+/// A target inside a tab stop or wide cluster lands before that cluster, which
+/// is the same snap used by [`display_col_to_buffer_col`].
+pub fn visual_col_to_buffer_offset(line: &str, target_col: usize) -> usize {
+    let mut cols = 0;
+    let mut buf = 0;
+    for (index, grapheme) in line.grapheme_indices(true) {
+        let width = if grapheme == "\t" {
+            TAB_WIDTH - (cols % TAB_WIDTH)
+        } else {
+            grapheme_display_width(grapheme)
+        };
+        if cols + width > target_col {
+            break;
+        }
+        cols += width;
+        buf = index + grapheme.len();
+    }
+    buf
+}
+
+/// Buffer byte offset within `line` to the display-expanded byte offset
+/// (tabs become spaces to the next stop). Grapheme-aware counterpart of
+/// [`buffer_col_to_display_col`] used for shaped hit-testing and caret
+/// placement, so combining/ZWJ clusters keep their bytes together.
+pub fn buffer_offset_to_display_byte(line: &str, offset: usize) -> usize {
+    let offset = offset.min(line.len());
+    let mut display = 0;
+    let mut cols = 0;
+    for (index, grapheme) in line.grapheme_indices(true) {
+        if index >= offset {
+            break;
+        }
+        if grapheme == "\t" {
+            let stop = TAB_WIDTH - (cols % TAB_WIDTH);
+            display += stop;
+            cols += stop;
+        } else {
+            display += grapheme.len();
+            cols += grapheme_display_width(grapheme);
+        }
+    }
+    display
+}
+
+/// Display-expanded byte offset to the clamped buffer byte offset within
+/// `line`, always landing on a grapheme boundary. Inverse of
+/// [`buffer_offset_to_display_byte`] for shaped hit-testing.
+pub fn display_byte_to_buffer_offset(line: &str, display_byte: usize) -> usize {
+    let mut display = 0;
+    let mut cols = 0;
+    for (index, grapheme) in line.grapheme_indices(true) {
+        let bytes = if grapheme == "\t" {
+            TAB_WIDTH - (cols % TAB_WIDTH)
+        } else {
+            grapheme.len()
+        };
+        if display + bytes > display_byte {
+            return index;
+        }
+        display += bytes;
+        cols += if grapheme == "\t" {
+            bytes
+        } else {
+            grapheme_display_width(grapheme)
+        };
+    }
+    line.len()
+}
+
+/// Minimal scroll offset that reveals `target_offset` within a viewport
+/// without recentering. `viewport_extent`/`content_extent`/`current_offset`/
+/// `target_offset`/`margin` are in the same 1-D units (usually pixels along
+/// one axis). The result is clamped to `[0, content - viewport]`; a target
+/// already inside the margin-adjusted window leaves `current_offset` unchanged.
+pub fn minimal_reveal_offset(
+    viewport_extent: f32,
+    content_extent: f32,
+    current_offset: f32,
+    target_offset: f32,
+    margin: f32,
+) -> f32 {
+    let max_offset = (content_extent - viewport_extent).max(0.0);
+    if viewport_extent <= 0.0 || max_offset <= 0.0 {
+        return 0.0;
+    }
+    // A margin larger than half the viewport cannot be honored on both edges;
+    // cap it so the reveal window is never empty.
+    let margin = margin.max(0.0).min(viewport_extent / 2.0);
+    let start = current_offset + margin;
+    let end = current_offset + viewport_extent - margin;
+    let next = if target_offset < start {
+        target_offset - margin
+    } else if target_offset > end {
+        target_offset - viewport_extent + margin
+    } else {
+        current_offset
+    };
+    next.clamp(0.0, max_offset)
 }
 
 /// Router-local identity for one accepted editor filesystem operation. This is
@@ -3747,5 +3962,180 @@ mod tests {
                 .iter()
                 .all(|completion| matches!(completion.result, Err(EditorIoError::Cancelled)))
         );
+    }
+
+    #[test]
+    fn newline_convention_detects_first_terminator_and_defaults_to_lf() {
+        assert_eq!(detect_newline_convention(""), NewlineConvention::Lf);
+        assert_eq!(
+            detect_newline_convention("no terminator"),
+            NewlineConvention::Lf
+        );
+        assert_eq!(
+            detect_newline_convention("a\r\nb\r\n"),
+            NewlineConvention::Crlf
+        );
+        assert_eq!(detect_newline_convention("a\nb\n"), NewlineConvention::Lf);
+        // Mixed files follow the first terminator; no normalization implied.
+        assert_eq!(
+            detect_newline_convention("a\r\nb\nc"),
+            NewlineConvention::Crlf
+        );
+        assert_eq!(
+            detect_newline_convention("a\nb\r\nc"),
+            NewlineConvention::Lf
+        );
+        // A lone CR is not a terminator and must not win over a later LF.
+        assert_eq!(detect_newline_convention("a\rb\nc"), NewlineConvention::Lf);
+        assert_eq!(detect_newline_convention("a\rb"), NewlineConvention::Lf);
+        assert_eq!(NewlineConvention::Lf.as_str(), "\n");
+        assert_eq!(NewlineConvention::Crlf.as_str(), "\r\n");
+    }
+
+    #[test]
+    fn display_strips_only_a_trailing_cr_and_preserves_buffer_bytes() {
+        // The line slice from `line_range` keeps the CR of a CRLF; display
+        // drops exactly one trailing CR.
+        assert_eq!(strip_trailing_cr_for_display("hello\r"), "hello");
+        assert_eq!(strip_trailing_cr_for_display("hello"), "hello");
+        assert_eq!(strip_trailing_cr_for_display("\r"), "");
+        // Interior or doubled CRs are real content.
+        assert_eq!(strip_trailing_cr_for_display("a\rb\r"), "a\rb");
+        assert_eq!(strip_trailing_cr_for_display("a\r\r"), "a\r");
+        // Offsets are computed against the full buffer slice, not the stripped
+        // display form.
+        let text = "one\r\ntwo\r\n";
+        let starts = line_starts(text);
+        let first = line_range(&starts, text, 0).unwrap();
+        assert_eq!(&text[first.clone()], "one\r");
+        assert_eq!(strip_trailing_cr_for_display(&text[first]), "one");
+    }
+
+    #[test]
+    fn grapheme_width_collapses_combining_zwj_and_flags() {
+        assert_eq!(grapheme_display_width("a"), 1);
+        assert_eq!(grapheme_display_width("e\u{301}"), 1);
+        assert_eq!(grapheme_display_width("界"), 2);
+        // ZWJ sequence must be one two-column cluster, not 2 + 0 + 2 = 4.
+        assert_eq!(grapheme_display_width("👩‍💻"), 2);
+        // Variation selector and keycap sequences render as emoji.
+        assert_eq!(grapheme_display_width("\u{2764}\u{fe0f}"), 2);
+        assert_eq!(grapheme_display_width("1\u{fe0f}\u{20e3}"), 2);
+        // Regional-indicator pair is one flag.
+        assert_eq!(grapheme_display_width("🇯🇵"), 2);
+        // A tab is not a grapheme with others; measured by the callers.
+        assert_eq!(grapheme_display_width("\t"), 0);
+    }
+
+    #[test]
+    fn preferred_visual_column_maps_through_tabs_and_emoji() {
+        // "a\t界x": a=1 col, tab to stop 4, 界=2 cols, x=1 col.
+        let line = "a\t界x";
+        assert_eq!(line_visual_width(line), 7);
+        assert_eq!(buffer_offset_to_visual_col(line, 0), 0);
+        assert_eq!(buffer_offset_to_visual_col(line, 1), 1);
+        // Offset at the tab byte and just past it both sit at the tab stop.
+        assert_eq!(buffer_offset_to_visual_col(line, 2), 4);
+        assert_eq!(buffer_offset_to_visual_col(line, 2 + "界".len()), 6);
+        assert_eq!(visual_col_to_buffer_offset(line, 0), 0);
+        assert_eq!(visual_col_to_buffer_offset(line, 1), 1);
+        // Target columns inside the tab stop land on the tab byte.
+        assert_eq!(visual_col_to_buffer_offset(line, 2), 1);
+        assert_eq!(visual_col_to_buffer_offset(line, 4), 2);
+        // Target inside the wide char lands on its first byte.
+        assert_eq!(visual_col_to_buffer_offset(line, 5), 2);
+        assert_eq!(visual_col_to_buffer_offset(line, 6), 2 + "界".len());
+        assert_eq!(visual_col_to_buffer_offset(line, 99), line.len());
+
+        // A combining cluster is never split by a target column.
+        let combined = "e\u{301}x";
+        assert_eq!(line_visual_width(combined), 2);
+        assert_eq!(visual_col_to_buffer_offset(combined, 1), "e\u{301}".len());
+        assert_eq!(buffer_offset_to_visual_col(combined, "e\u{301}".len()), 1);
+
+        // ZWJ emoji is two columns, so `x` is reachable at column 2.
+        let emoji = "👩‍💻x";
+        assert_eq!(line_visual_width(emoji), 3);
+        assert_eq!(visual_col_to_buffer_offset(emoji, 1), 0);
+        assert_eq!(visual_col_to_buffer_offset(emoji, 2), "👩‍💻".len());
+        assert_eq!(buffer_offset_to_visual_col(emoji, "👩‍💻".len()), 2);
+        // line_display_width shares the grapheme mapping.
+        assert_eq!(line_display_width("e\u{301}"), 1);
+        assert_eq!(line_display_width("👩‍💻"), 2);
+    }
+
+    #[test]
+    fn hit_test_round_trips_through_tabs_combining_and_emoji() {
+        let lines = ["a\t界x", "e\u{301}👩‍💻界\tz", "plain", ""];
+        for line in lines {
+            // Every grapheme boundary round-trips between buffer offset and
+            // display byte.
+            for (offset, _) in line.grapheme_indices(true) {
+                let display = buffer_offset_to_display_byte(line, offset);
+                assert_eq!(
+                    display_byte_to_buffer_offset(line, display),
+                    offset,
+                    "line {line:?} offset {offset}"
+                );
+                // And the same offset maps onto a grapheme boundary in visual
+                // columns as well.
+                let col = buffer_offset_to_visual_col(line, offset);
+                assert_eq!(visual_col_to_buffer_offset(line, col), offset);
+            }
+            // End of line is a valid, stable endpoint on both mappings.
+            let end = line.len();
+            let display_end = buffer_offset_to_display_byte(line, end);
+            assert_eq!(
+                buffer_offset_to_display_byte(line, display_end),
+                display_end
+            );
+            assert_eq!(display_byte_to_buffer_offset(line, display_end), end);
+            // Display-expanded length agrees with visual width for tab-free
+            // lines; tabs make the display byte count larger (spaces) than the
+            // visual column count.
+            if !line.contains('\t') {
+                assert_eq!(
+                    buffer_offset_to_display_byte(line, end),
+                    line_visual_width(line)
+                );
+            }
+        }
+
+        // Offset 1 is inside the combining cluster: the display mapping rounds
+        // forward to the enclosing grapheme boundary, and hit-testing that
+        // display byte returns the same boundary rather than a split byte.
+        let combined = "e\u{301}x";
+        let inside = buffer_offset_to_display_byte(combined, 1);
+        assert_eq!(inside, "e\u{301}".len());
+        assert_eq!(
+            display_byte_to_buffer_offset(combined, inside),
+            "e\u{301}".len()
+        );
+        // The grapheme start remains reachable at display byte zero.
+        assert_eq!(display_byte_to_buffer_offset(combined, 0), 0);
+        // Shaped display bytes beyond the expanded line clamp to the end.
+        assert_eq!(display_byte_to_buffer_offset("a\tb", 999), 3);
+    }
+
+    #[test]
+    fn minimal_reveal_shifts_only_when_target_leaves_the_margin_window() {
+        // 100px viewport over 500px content: max offset 400.
+        // Target already visible: no movement (never recenters).
+        assert_eq!(minimal_reveal_offset(100.0, 500.0, 50.0, 80.0, 4.0), 50.0);
+        // Target below the bottom margin: shift minimally to bring it inside.
+        assert_eq!(minimal_reveal_offset(100.0, 500.0, 50.0, 150.0, 4.0), 54.0);
+        // Target above the top margin: shift minimally upward.
+        assert_eq!(minimal_reveal_offset(100.0, 500.0, 50.0, 40.0, 4.0), 36.0);
+        // Clamp to the lower bound.
+        assert_eq!(minimal_reveal_offset(100.0, 500.0, 50.0, 0.0, 4.0), 0.0);
+        // Clamp to the upper bound (content - viewport).
+        assert_eq!(minimal_reveal_offset(100.0, 500.0, 50.0, 999.0, 4.0), 400.0);
+        // Content smaller than the viewport can never scroll.
+        assert_eq!(minimal_reveal_offset(100.0, 40.0, 0.0, 30.0, 4.0), 0.0);
+        // Degenerate viewport is pinned at zero.
+        assert_eq!(minimal_reveal_offset(0.0, 500.0, 10.0, 20.0, 4.0), 0.0);
+        // An oversized margin is capped at half the viewport, keeping the
+        // reveal window non-empty.
+        assert_eq!(minimal_reveal_offset(100.0, 500.0, 0.0, 90.0, 80.0), 40.0);
     }
 }

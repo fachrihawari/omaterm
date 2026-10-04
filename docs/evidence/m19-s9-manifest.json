@@ -1,0 +1,110 @@
+{
+  "format": 1,
+  "schema": "omaterm.m19.s9.acceptance-manifest",
+  "status": "pending",
+  "milestone": "M19",
+  "slice": "S9",
+  "description": "Scaffold manifest for the final M19 S9 acceptance. Every status is pending or blocked until real evidence exists. This file records no measured results, timings, hashes, or screenshots.",
+  "generated_at_utc": null,
+  "delivered_revision": null,
+  "working_tree_clean": null,
+  "toolchain": {
+    "pin_file": "rust-toolchain.toml",
+    "rustup_toolchain_override": null,
+    "rustc_version": null,
+    "cargo_version": null,
+    "status": "pending"
+  },
+  "authority": {
+    "completion_plan": "docs/m19-completion-plan.md",
+    "status_record": "docs/status.md",
+    "acceptance_matrix": "docs/acceptance-matrix.md",
+    "implementation_contract": "docs/m19-basic-editor-implementation-plan.md",
+    "dependencies": "docs/dependencies.md"
+  },
+  "harnesses": [
+    {
+      "name": "run-m19-wayland-acceptance",
+      "path": "scripts/run-m19-wayland-acceptance.py",
+      "sha256": null,
+      "exit_codes": { "ok": 0, "blocked": 2, "failed": 3 },
+      "status": "pending"
+    },
+    {
+      "name": "m19-resource-bench",
+      "path": "scripts/m19-resource-bench.py",
+      "sha256": null,
+      "status": "pending"
+    },
+    {
+      "name": "generate-m19-fixtures",
+      "path": "scripts/generate-m19-fixtures.py",
+      "sha256": null,
+      "manifest": null,
+      "manifest_sha256": null,
+      "status": "pending"
+    }
+  ],
+  "automated_gates": [
+    { "id": "G1", "check": "format", "command": "cargo fmt --all --check", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
+    { "id": "G2", "check": "workspace-tests-parallel", "command": "cargo test --workspace", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
+    { "id": "G3", "check": "workspace-tests-serial", "command": "cargo test --workspace -- --test-threads=1", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
+    { "id": "G4", "check": "clippy", "command": "cargo clippy --workspace --all-targets -- -D warnings", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
+    { "id": "G5", "check": "release-build", "command": "cargo build --release --bin omaterm --bin omaterm-desktop", "status": "pending", "revision": null, "exit_code": null, "log": null, "binaries": { "omaterm": null, "omaterm_desktop": null }, "notes": "" },
+    { "id": "G6", "check": "docs", "command": "python3 scripts/check-docs.py", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" },
+    { "id": "G7", "check": "whitespace", "command": "git diff --check", "status": "pending", "revision": null, "exit_code": null, "log": null, "notes": "" }
+  ],
+  "requirement_evidence": [
+    { "id": "E01", "requirement": "Root-contained identity and reads/writes", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §5 exit criteria" },
+    { "id": "E02", "requirement": "Async lifecycle and version-safe save", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §6; one final outcome per operation" },
+    { "id": "E03", "requirement": "Aggregate bounds and indexed rendering", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §7; S8 counters" },
+    { "id": "E04", "requirement": "Metadata-only registry persistence", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §8; schema 1/2 to 3; no dirty text persisted" },
+    { "id": "E05", "requirement": "Dirty/conflict/project/shutdown decisions", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §9; every Save/Discard/Cancel path" },
+    { "id": "E06", "requirement": "Text/IME, graphemes, selection and focus", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §10; no input leaks either direction" },
+    { "id": "E07", "requirement": "All entry routes and unchanged terminal contract", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §11; file.open still submits $EDITOR" },
+    { "id": "E08", "requirement": "Highlight/fallback/cancellation", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §12; stale results cannot paint newer text" },
+    { "id": "E09", "requirement": "Resource bounds, idle and operation timings", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "Plan §12; p50/p95 + sample count + machine/FS/load" },
+    { "id": "E10", "requirement": "Final regression and redaction review", "status": "pending", "command": null, "revision": null, "artifacts": [], "notes": "G1-G7 logs; code/log audit; no secrets in logs or snapshots" }
+  ],
+  "native_acceptance": {
+    "harness": "scripts/run-m19-wayland-acceptance.py",
+    "status": "pending",
+    "invocation": null,
+    "harness_exit_code": null,
+    "harness_report_status": null,
+    "compositor": null,
+    "output": null,
+    "scale": null,
+    "font": null,
+    "viewport": null,
+    "steps": [
+      { "id": "N1", "action": "Open from Files, finder, general palette, Git and diff actions; verify dedup, defaults, explicit terminal fallback including error targets", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N2", "action": "Type/select/copy/cut/paste/undo/redo/save via keyboard and pointer; native commits/composition and exact on-disk byte assertions", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N3", "action": "All languages/plain fallback, Unicode/graphemes/tabs, empty/LF/CRLF, long lines, byte/line caps, binary/invalid UTF-8/non-regular errors", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N4", "action": "External modification; clean/dirty conflict states, cancelled decisions, confirmed reload, confirmed overwrite, second-change re-conflict", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N5", "action": "Switch documents/projects/terminal/diff/palette/inspector while pending; stable buffers/carets, valid focus, unchanged PTY identity, sentinels prove no input leaks", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N6", "action": "Close/reload/delete projects with several dirty documents; every Save/Discard/Cancel and failure path; hidden dirty buffers included", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N7", "action": "Normal window close, restart, schema migration/registry, clean disk content, remembered selection, fresh terminal sessions, unavailable-document recovery", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N8", "action": "S8 cycles/cap/aggregate/idle measurements; standard and narrow widths, scroll ends, composition/caret/selection, prompt/conflict/error states", "status": "pending", "artifacts": [], "notes": "" },
+      { "id": "N9", "action": "Exit normally; unit/PIDs, shells, sockets, worker threads/tasks, owned temp files cleaned; prior workspace/focus restored", "status": "pending", "artifacts": [], "notes": "" }
+    ]
+  },
+  "blockers": [],
+  "deviations": [],
+  "handoff": {
+    "definition_of_done": [
+      { "item": "S1-S8 exit criteria passing on delivered revision", "done": false },
+      { "item": "E01-E10 backed by artifacts", "done": false },
+      { "item": "G1-G7 logged with exit codes", "done": false },
+      { "item": "N1-N9 revision-bound artifacts captured", "done": false },
+      { "item": "Status/checklist/overview/matrix/dependency records agree", "done": false },
+      { "item": "Redaction review confirms no secrets in logs/reports/snapshots", "done": false }
+    ],
+    "milestone_complete": false
+  },
+  "notes": [
+    "This manifest is a scaffold. Do not treat any field as measured until populated with real evidence.",
+    "No secrets, file contents, clipboard data, environment values, or command output are recorded here.",
+    "Pointer, focus, and performance evidence is never synthesized; absence yields blocked, not pass."
+  ]
+}
