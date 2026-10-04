@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::credentials::Credentials;
 use crate::editor::{
@@ -125,6 +126,10 @@ struct PendingEditor {
     generation: u64,
     kind: EditorIoKind,
     cancelled: bool,
+    /// Captured save baseline text (G). When the live buffer advances to G+1
+    /// while the write is in flight, the completion adopts this text as the
+    /// saved baseline instead of the newer live text.
+    saved_text: Option<Arc<str>>,
     /// True for a restart restore: the completion must commit through the
     /// store's checked restore path using the persisted `document` id, not
     /// mint a new buffer identity.
@@ -139,6 +144,13 @@ pub enum CommandEffect {
     GitChanged(ProjectId),
     ProjectDirectoryChanged(ProjectId),
     FileOpened(ProjectId),
+    /// A save committed to disk but the post-rename directory sync was not
+    /// confirmed. Typed so the UI can present a durability warning rather than
+    /// an ordinary success toast.
+    EditorSaveDurabilityWarning {
+        project: ProjectId,
+        document: omaterm_core::DocumentId,
+    },
 }
 
 pub struct DispatchOutcome {
@@ -223,6 +235,15 @@ impl CommandRouter {
     #[cfg(test)]
     pub fn with_history_manager(mut self, manager: HistoryManager) -> Self {
         self.history = Some(manager);
+        self
+    }
+
+    /// Replace the editor I/O worker with a deterministic test runner so save
+    /// durability warnings and injected failures are observable without a real
+    /// filesystem race.
+    #[cfg(test)]
+    pub fn with_editor_io(mut self, queue: EditorIoQueue) -> Self {
+        self.editor_io = Some(queue);
         self
     }
 
@@ -376,7 +397,7 @@ impl CommandRouter {
             result,
             effects: vec![],
         };
-        let (project, root, document, generation, job) = match command {
+        let (project, root, document, generation, job, saved_text) = match command {
             EditorCommand::Open { project, path } => {
                 let root = match self.file_root(context, project) {
                     Ok(Some(root)) => root,
@@ -392,7 +413,7 @@ impl CommandRouter {
                     Ok(root) => root,
                     Err(issue) => return error(editor_error(issue, ErrorCode::FileNotFound)),
                 };
-                (project, root, None, 0, EditorIoJob::Open { path })
+                (project, root, None, 0, EditorIoJob::Open { path }, None)
             }
             EditorCommand::Save { document } => {
                 let (project, path, open_root_identity, revision, _, text) = match self
@@ -425,6 +446,7 @@ impl CommandRouter {
                         "project root changed since open; reopen the document",
                     ));
                 }
+                let baseline: Arc<str> = Arc::from(text.as_str());
                 (
                     project,
                     root,
@@ -436,6 +458,7 @@ impl CommandRouter {
                         text,
                         expected: Some(revision),
                     },
+                    Some(baseline),
                 )
             }
             EditorCommand::Revert { document } => {
@@ -475,6 +498,7 @@ impl CommandRouter {
                     Some(document),
                     generation,
                     EditorIoJob::Revert { document, path },
+                    None,
                 )
             }
             EditorCommand::Close { .. } => unreachable!("close is owner-local"),
@@ -528,6 +552,7 @@ impl CommandRouter {
                 generation,
                 kind,
                 cancelled: false,
+                saved_text,
                 restore: false,
             },
         );
@@ -650,6 +675,7 @@ impl CommandRouter {
                 generation: 0,
                 kind: EditorIoKind::Open,
                 cancelled: false,
+                saved_text: None,
                 restore: true,
             },
         );
@@ -1296,7 +1322,7 @@ impl CommandRouter {
         operation_id: u64,
         completion: EditorIoCompletion,
     ) -> DispatchOutcome {
-        let Some(pending) = self.pending_editors.remove(&operation_id) else {
+        let Some(mut pending) = self.pending_editors.remove(&operation_id) else {
             return DispatchOutcome {
                 result: err(ErrorCode::RuntimeFailure, "editor operation was cancelled"),
                 effects: vec![],
@@ -1380,7 +1406,12 @@ impl CommandRouter {
                 || self.documents.open_root_identity(document) != Some(pending.root_identity)
                 || self.documents.relative_path(document).as_deref()
                     != Some(pending.path.as_path())
-                || self.documents.generation(document) != Some(pending.generation))
+                // A save may complete after the user typed newer text (G+1).
+                // The write committed the captured G text, so the completion is
+                // still valid; the captured baseline is adopted below. Open and
+                // revert remain strict: their read must not clobber newer text.
+                || (pending.kind != EditorIoKind::Save
+                    && self.documents.generation(document) != Some(pending.generation)))
         {
             return rejected(err(
                 ErrorCode::DocumentConflict,
@@ -1455,15 +1486,34 @@ impl CommandRouter {
             }
             (EditorIoKind::Save, Ok(EditorIoSuccess::Saved(saved))) => {
                 let document = pending.document.expect("save has document");
-                if !saved.is_durable() {
+                let durable = saved.is_durable();
+                let mut effects = Vec::new();
+                if !durable {
+                    // Committed to disk but the post-rename directory sync was
+                    // not confirmed. This is a successful save with a durability
+                    // warning: surface it as a typed effect, never as an
+                    // ordinary "Saved", while still adopting the baseline.
                     tracing::warn!(target: "omaterm::editor", project_id = %pending.project.0, "editor save committed without directory-sync confirmation");
+                    effects.push(CommandEffect::EditorSaveDurabilityWarning {
+                        project: pending.project,
+                        document,
+                    });
                 }
-                self.documents.mark_saved(document, saved.revision());
+                match pending.saved_text.take() {
+                    Some(baseline) => {
+                        self.documents
+                            .mark_saved_baseline(document, saved.revision(), baseline)
+                    }
+                    None => self.documents.mark_saved(document, saved.revision()),
+                }
                 let Some(info) = self.documents.document_info(document) else {
                     return rejected(err(ErrorCode::DocumentNotOpen, "document is not open"));
                 };
                 tracing::debug!(target: "omaterm::editor", project_id = %pending.project.0, bytes = info.bytes, "editor document saved");
-                rejected(ok(CommandOutput::EditorSaved(info)))
+                DispatchOutcome {
+                    result: ok(CommandOutput::EditorSaved(info)),
+                    effects,
+                }
             }
             (EditorIoKind::Revert, Ok(EditorIoSuccess::Reverted(file))) => {
                 let document = pending.document.expect("revert has document");
@@ -4312,6 +4362,340 @@ mod tests {
         ));
         assert!(has_persistence_dirty(&closed.effects));
 
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Serve editor I/O from the real filesystem but downgrade every durable
+    /// save to a `CommittedDurabilityWarning`, so the typed warning path is
+    /// exercised deterministically.
+    fn warning_save_runner(
+        request: &EditorIoRequest,
+        _cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<EditorIoSuccess, EditorIoError> {
+        let root = omaterm_context::EditorRoot::open(&request.root_path)
+            .map_err(EditorIoError::Context)?;
+        match &request.job {
+            EditorIoJob::Open { path } => {
+                let file = omaterm_context::read_text_file_from_root(&root, path)
+                    .map_err(EditorIoError::Context)?;
+                Ok(EditorIoSuccess::Opened(file))
+            }
+            EditorIoJob::Revert { path, .. } => {
+                let file = omaterm_context::read_text_file_from_root(&root, path)
+                    .map_err(EditorIoError::Context)?;
+                Ok(EditorIoSuccess::Reverted(file))
+            }
+            EditorIoJob::Save {
+                path,
+                text,
+                expected,
+                ..
+            } => {
+                let outcome = omaterm_context::write_text_file_from_root(
+                    &root,
+                    path,
+                    text,
+                    expected.as_ref(),
+                )
+                .map_err(EditorIoError::Context)?;
+                let revision = outcome.revision();
+                Ok(EditorIoSuccess::Saved(
+                    omaterm_context::WriteTextOutcome::CommittedDurabilityWarning {
+                        revision,
+                        error: std::io::Error::other("injected directory-sync warning"),
+                    },
+                ))
+            }
+        }
+    }
+
+    #[test]
+    fn editor_save_pending_receipt_is_not_completion() {
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "pending-save", "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open: {:?}", opened.result);
+        };
+        let document = info.document;
+        router
+            .documents_mut()
+            .apply_edit(document, 4, 0, " edited")
+            .unwrap();
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+
+        let receipt = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Save { document }),
+        );
+        // A pending receipt is an acknowledgement, never a completion.
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("expected pending save receipt: {:?}", receipt.result);
+        };
+        assert!(!matches!(
+            receipt.result,
+            CommandResult::Ok(CommandOutput::EditorSaved(_))
+        ));
+        assert!(router.has_pending_editor_operations());
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        // Only the matching completion clears dirty and reports the save.
+        let CommandResult::Ok(CommandOutput::EditorSaved(_)) = completed.result else {
+            panic!("save completion: {:?}", completed.result);
+        };
+        assert_eq!(router.documents().is_dirty(document), Some(false));
+        assert!(!router.has_pending_editor_operations());
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn durability_warning_save_keeps_g_baseline_with_g_plus_one_dirty() {
+        let mut router =
+            router().with_editor_io(EditorIoQueue::with_test_runner(warning_save_runner));
+        let (project, root) = create_document_project(&mut router, "durability", "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open: {:?}", opened.result);
+        };
+        let document = info.document;
+        // G: the text the save will capture.
+        router
+            .documents_mut()
+            .apply_edit(document, 4, 0, " G")
+            .unwrap();
+        let generation_g = router.documents().generation(document).unwrap();
+
+        let receipt = router.dispatch_async(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Save { document }),
+        );
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = receipt.result else {
+            panic!("pending save: {:?}", receipt.result);
+        };
+        // G+1: the user keeps typing while the write is in flight.
+        router
+            .documents_mut()
+            .apply_edit(document, 6, 0, "+1")
+            .unwrap();
+        let generation_g1 = router.documents().generation(document).unwrap();
+        assert!(generation_g1 > generation_g);
+
+        let completed = wait_for_editor_operation(&mut router, operation_id);
+        let CommandResult::Ok(CommandOutput::EditorSaved(_)) = completed.result else {
+            panic!("save completion: {:?}", completed.result);
+        };
+        // The durability warning is a typed effect, not a silent log.
+        assert!(completed.effects.iter().any(|effect| matches!(
+            effect,
+            CommandEffect::EditorSaveDurabilityWarning { document: d, .. } if *d == document
+        )));
+        // Disk holds G; live text is G+1 and stays dirty.
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "disk G\n"
+        );
+        assert_eq!(router.documents().text(document), Some("disk G+1\n"));
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+        // Savepoint adoption did not advance the buffer generation.
+        assert_eq!(router.documents().generation(document), Some(generation_g1));
+
+        // The baseline is G: undoing the G+1 edit back to it clears dirty.
+        assert!(router.documents_mut().undo(document).unwrap());
+        assert_eq!(router.documents().is_dirty(document), Some(false));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_save_retains_dirty_text() {
+        // A real same-size, same-mtime external edit makes the live save fail
+        // with a conflict. The dirty buffer and its text must survive.
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "failed-save", "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open: {:?}", opened.result);
+        };
+        let document = info.document;
+        std::fs::write(root.join("notes.txt"), b"extrn\n").unwrap();
+        router
+            .documents_mut()
+            .apply_edit(document, 0, 0, "> ")
+            .unwrap();
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+        let before = router.documents().text(document).unwrap().to_owned();
+
+        let failed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Save { document }),
+        );
+        assert!(matches!(
+            failed.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::DocumentConflict,
+                ..
+            })
+        ));
+        // Dirty text is retained, not silently discarded.
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+        assert_eq!(router.documents().text(document), Some(before.as_str()));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Close { document }),
+        );
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dirty_project_delete_conflicts_then_deletes_after_discard() {
+        use omaterm_core::EditorCommand;
+
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "dirty-delete", "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open: {:?}", opened.result);
+        };
+        let document = info.document;
+        router
+            .documents_mut()
+            .apply_edit(document, 4, 0, " dirty")
+            .unwrap();
+
+        // The shared delete path refuses a dirty project; it never silently
+        // discards the buffer.
+        let conflicted = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        assert!(matches!(
+            conflicted.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::DocumentConflict,
+                ..
+            })
+        ));
+        assert!(router.documents().project_of(document).is_some());
+        assert_eq!(router.documents().is_dirty(document), Some(true));
+
+        // Save-then-delete succeeds.
+        let saved = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Save { document }),
+        );
+        assert!(matches!(
+            saved.result,
+            CommandResult::Ok(CommandOutput::EditorSaved(_))
+        ));
+        let deleted = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        assert!(matches!(deleted.result, CommandResult::Ok(_)));
+        assert!(router.documents().project_of(document).is_none());
+
+        // Discard-then-delete is an equally valid explicit path.
+        let (project_b, root_b) = create_document_project(&mut router, "dirty-delete-b", "b.txt");
+        let opened_b = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project: project_b,
+                path: PathBuf::from("b.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened_b.result else {
+            panic!("open b: {:?}", opened_b.result);
+        };
+        router
+            .documents_mut()
+            .apply_edit(info.document, 4, 0, " dirty")
+            .unwrap();
+        router.documents_mut().discard_changes(info.document);
+        let deleted_b = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project: project_b }),
+        );
+        assert!(matches!(deleted_b.result, CommandResult::Ok(_)));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root_b);
+    }
+
+    #[test]
+    fn shutdown_dirty_scan_includes_hidden_documents() {
+        use omaterm_core::EditorCommand;
+
+        let mut router = router();
+        let (project, root) = create_document_project(&mut router, "shutdown-hidden", "notes.txt");
+        let opened = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Open {
+                project,
+                path: PathBuf::from("notes.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::EditorOpened(info)) = opened.result else {
+            panic!("open: {:?}", opened.result);
+        };
+        let document = info.document;
+        router
+            .documents_mut()
+            .apply_edit(document, 4, 0, " hidden-dirty")
+            .unwrap();
+
+        // "Hidden" is a view-local surface fact; the store still owns the
+        // dirty buffer, and the shutdown scan must see it.
+        assert!(router.documents().has_dirty_documents());
+        assert_eq!(router.documents().dirty_documents(), vec![document]);
+        assert_eq!(router.documents().project_of(document), Some(project));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Editor(EditorCommand::Close { document }),
+        );
         let _ = router.dispatch(
             CommandContext::LocalUser,
             OmaCommand::Project(ProjectCommand::Delete { project }),

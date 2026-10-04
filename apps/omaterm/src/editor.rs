@@ -1173,6 +1173,23 @@ impl DocumentStore {
     /// This changes the savepoint, not buffer content, so the buffer generation
     /// remains stable. Undo history survives save so edits remain reversible.
     pub fn mark_saved(&mut self, document: DocumentId, revision: omaterm_context::FileRevision) {
+        let Some(baseline) = self.docs.get(&document).map(|doc| doc.text.clone()) else {
+            return;
+        };
+        self.mark_saved_baseline(document, revision, baseline);
+    }
+
+    /// Record a successful save whose captured baseline text is `saved_text`.
+    /// When the user edited to a newer generation while the write was in
+    /// flight, the live text stays and `dirty` remains true: the disk holds
+    /// the captured G text, so G is the new baseline, not the live G+1 text.
+    /// The buffer generation is left unchanged (content did not change).
+    pub fn mark_saved_baseline(
+        &mut self,
+        document: DocumentId,
+        revision: omaterm_context::FileRevision,
+        saved_text: Arc<str>,
+    ) {
         let Some((old_key, new_key)) = self.docs.get_mut(&document).map(|doc| {
             let old_key = (
                 doc.project,
@@ -1183,8 +1200,8 @@ impl DocumentStore {
             doc.revision = revision;
             doc.file_device = revision.device;
             doc.file_inode = revision.inode;
-            doc.saved_text = Arc::clone(&doc.text);
-            doc.dirty = false;
+            doc.saved_text = saved_text;
+            doc.dirty = doc.text != doc.saved_text;
             (
                 old_key,
                 (
@@ -2097,6 +2114,17 @@ pub(crate) struct EditorIoQueue {
 impl EditorIoQueue {
     pub(crate) fn new() -> Self {
         Self::with_runner(run_editor_io)
+    }
+
+    /// Test-only constructor exposing the deterministic runner seam. Never
+    /// used by the desktop binary.
+    #[cfg(test)]
+    pub(crate) fn with_test_runner(
+        run: impl FnMut(&EditorIoRequest, &AtomicBool) -> Result<EditorIoSuccess, EditorIoError>
+        + Send
+        + 'static,
+    ) -> Self {
+        Self::with_runner(run)
     }
 
     fn with_runner(

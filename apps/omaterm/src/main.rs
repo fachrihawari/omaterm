@@ -99,6 +99,10 @@ struct WorkspaceView {
     paste_arm: Option<(SessionId, Vec<u8>, Instant)>,
     /// Transient input notice (paste confirmation prompt, drop errors).
     input_notice: Option<String>,
+    /// Last committed save whose directory sync was not confirmed. Rendered as
+    /// a visible warning, never as an ordinary "Saved"; cleared on the next
+    /// fully durable save.
+    editor_save_warning: Option<String>,
     /// Bottom-center toast (message, hide-after deadline). Pointer-
     /// transparent; action confirmations only, never errors or prompts.
     toast: Option<(String, Instant)>,
@@ -255,7 +259,10 @@ struct WorkspaceView {
     editor_active: HashMap<ProjectId, DocumentId>,
     editor_selected: HashMap<ProjectId, DocumentId>,
     editor_carets: HashMap<DocumentId, editor::EditorCaret>,
-    editor_pending_action: Option<EditorPendingAction>,
+    /// In-flight dirty/conflict/shutdown resolution (S5). `None` is
+    /// `EditorLifecycle::Idle`; a present value carries the typed action,
+    /// captured targets and per-document outcomes.
+    editor_lifecycle: Option<DirtyDecision>,
     editor_rows_handles: HashMap<DocumentId, UniformListScrollHandle>,
     editor_x_handles: HashMap<DocumentId, ScrollHandle>,
     /// Measured width from the latest accepted highlight result. Token spans
@@ -316,11 +323,134 @@ enum InspectorTab {
     Git,
 }
 
-#[derive(Clone, Copy)]
-enum EditorPendingAction {
-    Close(ProjectId, DocumentId),
-    Revert(DocumentId),
-    Shutdown(gpui::AnyWindowHandle),
+/// The user action that requires an explicit dirty-resolution decision. S5
+/// replaces the earlier numeric prompt with this typed request so every
+/// lifecycle path is testable without simulating keystrokes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DirtyAction {
+    Close {
+        project: ProjectId,
+        document: DocumentId,
+    },
+    Revert {
+        project: ProjectId,
+        document: DocumentId,
+    },
+    ProjectDelete {
+        project: ProjectId,
+    },
+    Shutdown {
+        window: gpui::AnyWindowHandle,
+    },
+}
+
+/// Owner-captured identity of one dirty target, revalidated before a decision
+/// is applied. `revision` is the on-disk revision observed when the prompt was
+/// raised; if either the in-memory generation or the disk revision moved, the
+/// decision is stale and must be re-confirmed against refreshed targets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct CapturedVersion {
+    project: ProjectId,
+    document: DocumentId,
+    generation: u64,
+    revision: omaterm_context::FileRevision,
+}
+
+/// Explicit dirty-resolution choices. `Overwrite` is reserved for the
+/// external-change path (revision-scoped); the other three cover close,
+/// revert, project delete and shutdown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DirtyChoice {
+    Cancel,
+    Save,
+    Discard,
+    Overwrite,
+}
+
+/// Final outcome recorded for one document during a dirty-resolution action.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DocSaveOutcome {
+    Committed,
+    /// Committed to disk but the post-rename directory sync was not confirmed.
+    CommittedWarning,
+    Failed,
+    Discarded,
+    Cancelled,
+}
+
+/// Typed lifecycle for a dirty-resolution flow. `Pending` receipts never move
+/// this to `Committed`: only a matching completion/error in
+/// `finish_pending_launches` does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EditorLifecycle {
+    Idle,
+    Checking,
+    AwaitingDecision,
+    Saving,
+    Failed,
+    Committed,
+}
+
+/// One in-flight dirty-resolution flow: the requested action, the captured
+/// targets to revalidate, and the per-document outcomes. Save dispatches are
+/// keyed by router operation id so only the matching completion can advance
+/// the flow out of `Saving`.
+struct DirtyDecision {
+    action: DirtyAction,
+    lifecycle: EditorLifecycle,
+    targets: Vec<CapturedVersion>,
+    pending_saves: HashMap<u64, CapturedVersion>,
+    outcomes: HashMap<DocumentId, DocSaveOutcome>,
+    message: Option<String>,
+}
+
+impl DirtyDecision {
+    fn new(action: DirtyAction, targets: Vec<CapturedVersion>) -> Self {
+        Self {
+            action,
+            lifecycle: EditorLifecycle::AwaitingDecision,
+            targets,
+            pending_saves: HashMap::new(),
+            outcomes: HashMap::new(),
+            message: None,
+        }
+    }
+
+    /// True once every save receipt has a final outcome.
+    fn saves_settled(&self) -> bool {
+        self.pending_saves.is_empty()
+    }
+}
+
+/// True when any captured target's live generation or disk revision moved.
+/// Pure over a `DocumentStore` so the stale-target recheck is unit-testable
+/// without a GPUI context.
+fn captured_targets_stale(store: &editor::DocumentStore, targets: &[CapturedVersion]) -> bool {
+    targets.iter().any(|captured| {
+        store.generation(captured.document) != Some(captured.generation)
+            || store.revision(captured.document) != Some(captured.revision)
+    })
+}
+
+/// Refresh captured targets from live state, dropping vanished documents.
+fn revalidate_captured_targets(
+    store: &editor::DocumentStore,
+    targets: &[CapturedVersion],
+) -> Vec<CapturedVersion> {
+    targets
+        .iter()
+        .filter_map(|captured| {
+            if store.project_of(captured.document) != Some(captured.project) {
+                return None;
+            }
+            Some(CapturedVersion {
+                project: captured.project,
+                document: captured.document,
+                generation: store.generation(captured.document)?,
+                revision: store.revision(captured.document)?,
+            })
+        })
+        .collect()
 }
 
 /// Arm window for two-step history controls.
@@ -746,6 +876,7 @@ impl WorkspaceView {
             history_arm: None,
             paste_arm: None,
             input_notice: None,
+            editor_save_warning: None,
             toast: None,
             files_panel: files::FilePanel::default(),
             files_warning: None,
@@ -822,7 +953,7 @@ impl WorkspaceView {
             editor_active: HashMap::new(),
             editor_selected: HashMap::new(),
             editor_carets: HashMap::new(),
-            editor_pending_action: None,
+            editor_lifecycle: None,
             editor_rows_handles: HashMap::new(),
             editor_x_handles: HashMap::new(),
             editor_highlight_widths: HashMap::new(),
@@ -1363,13 +1494,36 @@ impl WorkspaceView {
         .detach();
     }
 
+    /// Entry point for normal window close. Dirty documents anywhere in the
+    /// workspace (including hidden ones) raise a typed `Shutdown` decision;
+    /// otherwise teardown proceeds immediately. A decision only reaches
+    /// teardown after every final save outcome has landed.
     fn begin_shutdown(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
         }
-        if self.coordinator.documents().has_dirty_documents() {
-            self.editor_pending_action = Some(EditorPendingAction::Shutdown(window));
+        if self.editor_lifecycle.is_some() {
+            // A decision is already active; do not stack another.
             cx.notify();
+            return;
+        }
+        if self.coordinator.documents().has_dirty_documents() {
+            let targets = self.capture_all_dirty();
+            let dirty = targets.len();
+            let mut decision = DirtyDecision::new(DirtyAction::Shutdown { window }, targets);
+            decision.message = Some(format!(
+                "Unsaved changes in {dirty} document{} across all projects.",
+                if dirty == 1 { "" } else { "s" }
+            ));
+            self.editor_lifecycle = Some(decision);
+            cx.notify();
+            return;
+        }
+        self.begin_shutdown_teardown(window, cx);
+    }
+
+    fn begin_shutdown_teardown(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
+        if self.shutting_down {
             return;
         }
         self.shutting_down = true;
@@ -1779,6 +1933,29 @@ impl WorkspaceView {
                     }
                     cx.notify();
                 }
+                router::CommandEffect::EditorSaveDurabilityWarning { document, project } => {
+                    // Committed but the directory sync was not confirmed. Keep
+                    // the buffer as saved (baseline adoption already happened)
+                    // and show a durable warning, not a plain success.
+                    let filename = self
+                        .coordinator
+                        .documents()
+                        .relative_path(document)
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<document>".into());
+                    let project_name = self
+                        .coordinator
+                        .projects()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, owner)| owner.id == project)
+                        .map(|(ordinal, owner)| owner.display_name(ordinal + 1))
+                        .unwrap_or_else(|| "project".into());
+                    self.editor_save_warning = Some(format!(
+                        "Saved {project_name} / {filename} to disk, but the directory sync was not confirmed."
+                    ));
+                    cx.notify();
+                }
             }
         }
     }
@@ -1836,6 +2013,52 @@ impl WorkspaceView {
                 self.palette_mru.insert(0, key);
                 self.palette_mru.truncate(100);
             }
+            // A save dispatched by a dirty-resolution decision completes here,
+            // keyed by its operation id. `CommandOutput::Pending` was only a
+            // receipt; this is the matching final outcome. A failed or
+            // warning outcome still settles the document, but a failure keeps
+            // the decision reachable.
+            let decision_target = self
+                .editor_lifecycle
+                .as_ref()
+                .and_then(|decision| decision.pending_saves.get(&operation_id).copied());
+            if let Some(target) = decision_target {
+                let durability_warning = outcome.effects.iter().any(|effect| {
+                    matches!(
+                        effect,
+                        router::CommandEffect::EditorSaveDurabilityWarning { .. }
+                    )
+                });
+                let final_outcome = match &outcome.result {
+                    CommandResult::Ok(CommandOutput::EditorSaved(_)) => {
+                        if durability_warning {
+                            DocSaveOutcome::CommittedWarning
+                        } else {
+                            DocSaveOutcome::Committed
+                        }
+                    }
+                    _ => DocSaveOutcome::Failed,
+                };
+                let failed_message = match &outcome.result {
+                    CommandResult::Err(error) => Some(error.to_string()),
+                    _ => None,
+                };
+                if final_outcome == DocSaveOutcome::Failed
+                    && let Some(message) = failed_message.clone()
+                    && let Some(decision) = self.editor_lifecycle.as_mut()
+                {
+                    decision.message = Some(format!("Save failed: {message}. Buffers retained."));
+                }
+                self.apply_command_effects(outcome.effects, cx);
+                self.editor_save_completed(target.document, final_outcome, cx);
+                continue;
+            }
+            let durability_warning = outcome.effects.iter().any(|effect| {
+                matches!(
+                    effect,
+                    router::CommandEffect::EditorSaveDurabilityWarning { .. }
+                )
+            });
             match (&outcome.result, ui) {
                 (
                     CommandResult::Ok(CommandOutput::EditorOpened(info)),
@@ -1849,7 +2072,15 @@ impl WorkspaceView {
                     Some(PendingUiLaunch::EditorSave),
                 ) => {
                     self.input_notice = None;
-                    self.show_toast("Saved".into(), cx);
+                    if durability_warning {
+                        // A visible warning, not an ordinary success. The
+                        // warning banner is set by the effect application
+                        // below; keep the transient toast from claiming plain
+                        // success.
+                    } else {
+                        self.editor_save_warning = None;
+                        self.show_toast("Saved".into(), cx);
+                    }
                 }
                 (
                     CommandResult::Ok(CommandOutput::EditorOpened(_)),
@@ -1941,7 +2172,11 @@ impl WorkspaceView {
         let pending = self.coordinator.has_pending_launches()
             || self.coordinator.has_pending_editor_operations()
             || self.document_restore_in_flight.is_some()
-            || !self.document_restore_queue.is_empty();
+            || !self.document_restore_queue.is_empty()
+            || self
+                .editor_lifecycle
+                .as_ref()
+                .is_some_and(|decision| matches!(decision.lifecycle, EditorLifecycle::Saving));
         if !pending {
             self.launch_poller_active = false;
         }
@@ -2367,11 +2602,36 @@ impl WorkspaceView {
         let _ = self.dispatch_command(OmaCommand::Tab(TabCommand::Close { tab }), cx);
     }
 
+    /// Request deletion of a project. Dirty documents owned by the project
+    /// (including hidden ones) raise a typed `ProjectDelete` decision offering
+    /// Save all / Discard / Cancel; the final delete always routes through
+    /// `ProjectCommand::Delete`. Non-dirty deletes surface the shared conflict
+    /// error instead of swallowing it (CLI parity: deletion never silently
+    /// discards desktop buffers).
     fn close_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
         }
-        let _ = self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx);
+        if self.editor_lifecycle.is_some() {
+            return;
+        }
+        let targets = self.capture_project_dirty(project);
+        if self.raise_dirty_decision(DirtyAction::ProjectDelete { project }, targets) {
+            cx.notify();
+            return;
+        }
+        self.delete_project(project, cx);
+    }
+
+    /// Dispatch the actual project deletion through shared semantics.
+    fn delete_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
+        match self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx) {
+            Ok(_) => {}
+            Err(error) => {
+                self.input_notice = Some(format!("Close project: {error}"));
+                cx.notify();
+            }
+        }
     }
 
     // ---- M13 file panel (contextual-sidebar tree + Ctrl+P finder) ----
@@ -3272,49 +3532,324 @@ impl WorkspaceView {
             .filter(|doc| self.coordinator.documents().project_of(*doc) == Some(project))
     }
 
-    fn editor_resolve_pending(&mut self, choice: u8, cx: &mut Context<Self>) {
-        let Some(action) = self.editor_pending_action else {
+    /// Capture the current identity of one live document for revalidation.
+    /// Returns `None` for a document that is no longer a live buffer.
+    fn capture_document(
+        &self,
+        project: ProjectId,
+        document: DocumentId,
+    ) -> Option<CapturedVersion> {
+        let store = self.coordinator.documents();
+        if store.project_of(document) != Some(project) {
+            return None;
+        }
+        Some(CapturedVersion {
+            project,
+            document,
+            generation: store.generation(document)?,
+            revision: store.revision(document)?,
+        })
+    }
+
+    /// Every dirty live document across the whole workspace, with its owning
+    /// project and captured generation/revision. Hidden documents are
+    /// included: shutdown and project delete must never silently drop them.
+    fn capture_all_dirty(&self) -> Vec<CapturedVersion> {
+        let store = self.coordinator.documents();
+        store
+            .dirty_documents()
+            .into_iter()
+            .filter_map(|document| {
+                let project = store.project_of(document)?;
+                Some(CapturedVersion {
+                    project,
+                    document,
+                    generation: store.generation(document)?,
+                    revision: store.revision(document)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Dirty live documents owned by `project` only.
+    fn capture_project_dirty(&self, project: ProjectId) -> Vec<CapturedVersion> {
+        let store = self.coordinator.documents();
+        store
+            .project_documents(project)
+            .into_iter()
+            .filter(|document| store.is_dirty(*document) == Some(true))
+            .filter_map(|document| {
+                Some(CapturedVersion {
+                    project,
+                    document,
+                    generation: store.generation(document)?,
+                    revision: store.revision(document)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Human-readable target label for the prompt: `project / filename`.
+    fn dirty_target_label(&self, target: &CapturedVersion) -> String {
+        let filename = self
+            .coordinator
+            .documents()
+            .relative_path(target.document)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<unknown>".into());
+        let project = self
+            .coordinator
+            .projects()
+            .iter()
+            .enumerate()
+            .find(|(_, owner)| owner.id == target.project)
+            .map(|(ordinal, owner)| owner.display_name(ordinal + 1))
+            .unwrap_or_else(|| "project".into());
+        format!("{project} / {filename}")
+    }
+
+    /// Raise a typed dirty decision for one action. Returns `true` when a
+    /// prompt was raised; `false` when there was nothing dirty to resolve and
+    /// the caller may proceed directly.
+    fn raise_dirty_decision(&mut self, action: DirtyAction, targets: Vec<CapturedVersion>) -> bool {
+        if targets.is_empty() {
+            return false;
+        }
+        let count = targets.len();
+        let mut decision = DirtyDecision::new(action, targets);
+        if count > 1 {
+            decision.message = Some(format!("Unsaved changes in {count} documents."));
+        }
+        self.editor_lifecycle = Some(decision);
+        true
+    }
+
+    /// Revalidate every captured target against live state. Returns refreshed
+    /// targets where any generation or disk revision moved, so the caller can
+    /// return to `AwaitingDecision` without discarding reloading newer text.
+    /// Targets that disappeared (closed/deleted) are dropped; a vanished
+    /// target needs no decision.
+    fn revalidate_targets(&self, targets: &[CapturedVersion]) -> Vec<CapturedVersion> {
+        revalidate_captured_targets(self.coordinator.documents(), targets)
+    }
+
+    /// True when any captured target's generation or disk revision moved.
+    fn targets_are_stale(&self, targets: &[CapturedVersion]) -> bool {
+        captured_targets_stale(self.coordinator.documents(), targets)
+    }
+
+    /// Apply an explicit dirty-resolution choice. Cancel, Discard and Save are
+    /// all routed through here so the same stale-target recheck governs every
+    /// path. `Save` enters `Saving` and only completes in the poller; the
+    /// other choices act immediately.
+    fn editor_resolve_pending(&mut self, choice: DirtyChoice, cx: &mut Context<Self>) {
+        let Some(mut decision) = self.editor_lifecycle.take() else {
             return;
         };
-        if choice == 0 {
-            self.editor_pending_action = None;
+        if choice == DirtyChoice::Cancel {
+            self.editor_lifecycle = None;
             cx.notify();
             return;
         }
-        let documents = match action {
-            EditorPendingAction::Close(_, document) | EditorPendingAction::Revert(document) => {
-                vec![document]
-            }
-            EditorPendingAction::Shutdown(_) => self.coordinator.documents().dirty_documents(),
+        // Recheck captured generation/revision. A stale target means the disk
+        // or the buffer moved while the prompt was up: refresh and re-prompt
+        // rather than applying a decision to text the user has not seen. The
+        // decision passes through `Checking` while this guard runs.
+        decision.lifecycle = EditorLifecycle::Checking;
+        self.editor_lifecycle = Some(decision);
+        let Some(mut decision) = self.editor_lifecycle.take() else {
+            return;
         };
-        for document in documents {
-            if choice == 1 {
-                if let Err(error) =
-                    self.dispatch_command(OmaCommand::Editor(EditorCommand::Save { document }), cx)
-                {
-                    self.input_notice =
-                        Some(format!("Save: {error}. Action cancelled; buffer retained."));
-                    cx.notify();
-                    return;
+        if self.targets_are_stale(&decision.targets) {
+            let refreshed = self.revalidate_targets(&decision.targets);
+            if refreshed.is_empty() {
+                self.editor_lifecycle = None;
+                self.editor_after_decision_resolved(decision.action, cx);
+                cx.notify();
+                return;
+            }
+            let mut decision = DirtyDecision::new(decision.action, refreshed);
+            decision.message = Some(
+                "The target changed while the prompt was open; review and choose again.".into(),
+            );
+            self.editor_lifecycle = Some(decision);
+            cx.notify();
+            return;
+        }
+        decision.lifecycle = EditorLifecycle::AwaitingDecision;
+        match choice {
+            DirtyChoice::Cancel => unreachable!("handled above"),
+            DirtyChoice::Save | DirtyChoice::Overwrite => {
+                self.editor_begin_save(decision, cx);
+            }
+            DirtyChoice::Discard => {
+                for target in &decision.targets {
+                    self.coordinator
+                        .documents_mut()
+                        .discard_changes(target.document);
+                    decision
+                        .outcomes
+                        .insert(target.document, DocSaveOutcome::Discarded);
                 }
-            } else {
-                self.coordinator.documents_mut().discard_changes(document);
+                self.editor_finish_decision(decision, cx);
             }
         }
-        self.editor_pending_action = None;
-        match action {
-            EditorPendingAction::Close(project, document) => {
-                self.editor_close_document(project, document, cx)
-            }
-            EditorPendingAction::Revert(document) => {
-                self.editor_after_edit(document, cx);
-                if let Some(project) = self.coordinator.documents().project_of(document) {
-                    self.editor_revert_document(project, document, cx);
+    }
+
+    /// Dispatch one save per captured target and enter `Saving`. Save receipts
+    /// are keyed by operation id; `CommandOutput::Pending` is a receipt, never
+    /// completion. Any dispatch error blocks the action and keeps buffers.
+    ///
+    /// The view always reaches the async path, so a save returns `Pending` and
+    /// completion is observed later by the poller. A synchronous `EditorSaved`
+    /// would only occur if the queue were bypassed; it is treated as a final
+    /// success so no path can hang.
+    fn editor_begin_save(&mut self, mut decision: DirtyDecision, cx: &mut Context<Self>) {
+        decision.lifecycle = EditorLifecycle::Saving;
+        decision.pending_saves.clear();
+        decision.outcomes.clear();
+        decision.message = None;
+        let targets = decision.targets.clone();
+        let mut dispatch_failure: Option<(DocumentId, String)> = None;
+        for target in &targets {
+            match self.dispatch_command(
+                OmaCommand::Editor(EditorCommand::Save {
+                    document: target.document,
+                }),
+                cx,
+            ) {
+                Ok(CommandOutput::Pending { operation_id }) => {
+                    decision.pending_saves.insert(operation_id, *target);
+                }
+                Ok(CommandOutput::EditorSaved(_)) => {
+                    decision
+                        .outcomes
+                        .insert(target.document, DocSaveOutcome::Committed);
+                }
+                Ok(_) => {
+                    dispatch_failure = Some((target.document, "unexpected editor result".into()));
+                    break;
+                }
+                Err(error) => {
+                    dispatch_failure = Some((target.document, error.to_string()));
+                    break;
                 }
             }
-            EditorPendingAction::Shutdown(window) => self.begin_shutdown(window, cx),
+        }
+        if let Some((document, reason)) = dispatch_failure {
+            for outcome in decision.outcomes.values_mut() {
+                if !matches!(
+                    outcome,
+                    DocSaveOutcome::Committed | DocSaveOutcome::CommittedWarning
+                ) {
+                    *outcome = DocSaveOutcome::Cancelled;
+                }
+            }
+            decision.lifecycle = EditorLifecycle::Failed;
+            decision.outcomes.insert(document, DocSaveOutcome::Failed);
+            decision.message = Some(format!("Save failed: {reason}. Buffers retained."));
+            self.editor_lifecycle = Some(decision);
+            cx.notify();
+            return;
+        }
+        let settled = decision.pending_saves.is_empty();
+        self.editor_lifecycle = Some(decision);
+        self.ensure_launch_poller(cx);
+        if settled && let Some(decision) = self.editor_lifecycle.take() {
+            self.editor_finish_decision(decision, cx);
         }
         cx.notify();
+    }
+
+    /// Complete a save: record the final outcome for `document` and, once all
+    /// receipts have landed, advance the decision.
+    fn editor_save_completed(
+        &mut self,
+        document: DocumentId,
+        outcome: DocSaveOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut decision) = self.editor_lifecycle.take() else {
+            return;
+        };
+        decision.outcomes.insert(document, outcome);
+        decision
+            .pending_saves
+            .retain(|_, target| target.document != document);
+        if decision.saves_settled() {
+            self.editor_finish_decision(decision, cx);
+        } else {
+            self.editor_lifecycle = Some(decision);
+        }
+        cx.notify();
+    }
+
+    /// Advance a decision whose choices have all been applied. A failed save
+    /// blocks teardown/deletion and keeps buffers: the decision stays failed
+    /// with a reachable retry path. Otherwise the action proceeds.
+    fn editor_finish_decision(&mut self, mut decision: DirtyDecision, cx: &mut Context<Self>) {
+        let failed = decision
+            .outcomes
+            .values()
+            .any(|outcome| matches!(outcome, DocSaveOutcome::Failed | DocSaveOutcome::Cancelled));
+        if failed {
+            // A save cannot be promised transactional with other disk writes.
+            // Report which documents saved and which did not.
+            let saved = decision
+                .outcomes
+                .values()
+                .filter(|outcome| {
+                    matches!(
+                        outcome,
+                        DocSaveOutcome::Committed | DocSaveOutcome::CommittedWarning
+                    )
+                })
+                .count();
+            let remaining = decision
+                .outcomes
+                .values()
+                .filter(|outcome| matches!(outcome, DocSaveOutcome::Failed))
+                .count();
+            let mut failed_decision = decision;
+            failed_decision.lifecycle = EditorLifecycle::Failed;
+            failed_decision.message = Some(format!(
+                "{saved} saved, {remaining} failed. Resolve or cancel before continuing."
+            ));
+            self.editor_lifecycle = Some(failed_decision);
+            cx.notify();
+            return;
+        }
+        // Every outcome committed or was explicitly discarded: the action may
+        // proceed. Record the terminal `Committed` state for the frame, then
+        // clear it so the next prompt starts from `Idle`.
+        decision.lifecycle = EditorLifecycle::Committed;
+        let action = decision.action;
+        self.editor_lifecycle = None;
+        self.editor_after_decision_resolved(action, cx);
+        cx.notify();
+    }
+
+    /// Current lifecycle state (`Idle` when no decision is active).
+    fn editor_lifecycle_state(&self) -> EditorLifecycle {
+        self.editor_lifecycle
+            .as_ref()
+            .map(|decision| decision.lifecycle)
+            .unwrap_or(EditorLifecycle::Idle)
+    }
+
+    /// Run the requested action after its dirty resolution is complete.
+    fn editor_after_decision_resolved(&mut self, action: DirtyAction, cx: &mut Context<Self>) {
+        match action {
+            DirtyAction::Close { project, document } => {
+                self.editor_close_document(project, document, cx)
+            }
+            DirtyAction::Revert { project, document } => {
+                self.editor_after_edit(document, cx);
+                self.editor_revert_document(project, document, cx);
+            }
+            DirtyAction::ProjectDelete { project } => self.delete_project(project, cx),
+            DirtyAction::Shutdown { window } => self.begin_shutdown_teardown(window, cx),
+        }
     }
 
     /// Dispatch `EditorCommand::Open` and activate the document on success.
@@ -3442,7 +3977,11 @@ impl WorkspaceView {
             return;
         }
         if self.coordinator.documents().is_dirty(document) == Some(true) {
-            self.editor_pending_action = Some(EditorPendingAction::Close(project, document));
+            let targets = self
+                .capture_document(project, document)
+                .into_iter()
+                .collect();
+            self.raise_dirty_decision(DirtyAction::Close { project, document }, targets);
             cx.notify();
             return;
         }
@@ -3546,7 +4085,7 @@ impl WorkspaceView {
     /// clamps into the fresh text; highlights regenerate from it.
     fn editor_revert_document(
         &mut self,
-        _project: ProjectId,
+        project: ProjectId,
         document: DocumentId,
         cx: &mut Context<Self>,
     ) {
@@ -3554,7 +4093,11 @@ impl WorkspaceView {
             return;
         }
         if self.coordinator.documents().is_dirty(document) == Some(true) {
-            self.editor_pending_action = Some(EditorPendingAction::Revert(document));
+            let targets = self
+                .capture_document(project, document)
+                .into_iter()
+                .collect();
+            self.raise_dirty_decision(DirtyAction::Revert { project, document }, targets);
             cx.notify();
             return;
         }
@@ -6151,11 +6694,12 @@ impl WorkspaceView {
         }
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
 
-        if self.editor_pending_action.is_some() {
+        if self.editor_lifecycle.is_some() {
             match key_name.as_str() {
-                "escape" => self.editor_resolve_pending(0, cx),
-                "s" => self.editor_resolve_pending(1, cx),
-                "d" => self.editor_resolve_pending(2, cx),
+                "escape" => self.editor_resolve_pending(DirtyChoice::Cancel, cx),
+                "s" => self.editor_resolve_pending(DirtyChoice::Save, cx),
+                "d" => self.editor_resolve_pending(DirtyChoice::Discard, cx),
+                "o" => self.editor_resolve_pending(DirtyChoice::Overwrite, cx),
                 _ => {}
             }
             return;
@@ -10907,18 +11451,80 @@ impl Render for WorkspaceView {
             .min_w(px(0.0))
             .min_h(px(0.0))
             .relative();
-        if self.editor_pending_action.is_some() {
+        if self.editor_lifecycle_state() != EditorLifecycle::Idle
+            && let Some(decision) = self.editor_lifecycle.as_ref()
+        {
+            let (headline, choices): (String, Vec<(DirtyChoice, &str)>) = match &decision.action {
+                DirtyAction::Close { .. } => (
+                    format!(
+                        "Unsaved changes in {}. Close?",
+                        decision
+                            .targets
+                            .first()
+                            .map(|target| self.dirty_target_label(target))
+                            .unwrap_or_else(|| "<unknown>".into())
+                    ),
+                    vec![
+                        (DirtyChoice::Cancel, "Cancel (Esc)"),
+                        (DirtyChoice::Save, "Save (S)"),
+                        (DirtyChoice::Discard, "Discard (D)"),
+                    ],
+                ),
+                DirtyAction::Revert { .. } => (
+                    format!(
+                        "Reload {} and discard local changes?",
+                        decision
+                            .targets
+                            .first()
+                            .map(|target| self.dirty_target_label(target))
+                            .unwrap_or_else(|| "<unknown>".into())
+                    ),
+                    vec![
+                        (DirtyChoice::Cancel, "Cancel (Esc)"),
+                        (DirtyChoice::Save, "Save then reload (S)"),
+                        (DirtyChoice::Discard, "Discard and reload (D)"),
+                    ],
+                ),
+                DirtyAction::ProjectDelete { .. } => (
+                    format!(
+                        "Project has {} unsaved document{}. Delete project?",
+                        decision.targets.len(),
+                        if decision.targets.len() == 1 { "" } else { "s" }
+                    ),
+                    vec![
+                        (DirtyChoice::Cancel, "Cancel (Esc)"),
+                        (DirtyChoice::Save, "Save all (S)"),
+                        (DirtyChoice::Discard, "Discard all (D)"),
+                    ],
+                ),
+                DirtyAction::Shutdown { .. } => (
+                    format!(
+                        "Unsaved changes in {} document{} across all projects. Save before exit?",
+                        decision.targets.len(),
+                        if decision.targets.len() == 1 { "" } else { "s" }
+                    ),
+                    vec![
+                        (DirtyChoice::Cancel, "Cancel (Esc)"),
+                        (DirtyChoice::Save, "Save all (S)"),
+                        (DirtyChoice::Discard, "Discard and exit (D)"),
+                    ],
+                ),
+            };
             let mut prompt = div()
                 .flex()
-                .items_center()
-                .gap_2()
+                .flex_col()
+                .gap_1()
                 .px_3()
                 .py_2()
                 .bg(rgb(workbench::WARN_BG))
                 .text_color(rgb(workbench::WARN_TEXT))
-                .child("Unsaved changes. Choose explicitly:");
-            for (choice, label) in [(0, "Cancel (Esc)"), (1, "Save (S)"), (2, "Discard (D)")] {
-                prompt = prompt.child(
+                .child(headline);
+            if let Some(message) = decision.message.clone() {
+                prompt = prompt.child(div().child(message));
+            }
+            let mut buttons = div().flex().items_center().gap_2();
+            for (choice, label) in choices {
+                buttons = buttons.child(
                     div()
                         .cursor_pointer()
                         .px_2()
@@ -10935,6 +11541,7 @@ impl Render for WorkspaceView {
                         .child(label),
                 );
             }
+            prompt = prompt.child(buttons);
             pane_area = pane_area.child(prompt);
         }
         if let Some((arm, at)) = self.history_arm
@@ -10970,6 +11577,16 @@ impl Render for WorkspaceView {
             );
         }
         if let Some(message) = self.input_notice.clone() {
+            pane_area = pane_area.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(workbench::WARN_BG))
+                    .text_color(rgb(workbench::WARN_TEXT))
+                    .child(message),
+            );
+        }
+        if let Some(message) = self.editor_save_warning.clone() {
             pane_area = pane_area.child(
                 div()
                     .px_3()
@@ -12032,10 +12649,122 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
+        CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
         InspectorTab, PaletteFileIndexCache, PaletteSearchRequest, PaletteSearchWorker,
-        project_jump_index, select_mono_family,
+        captured_targets_stale, project_jump_index, revalidate_captured_targets,
+        select_mono_family,
     };
+    use crate::editor::DocumentStore;
+    use omaterm_core::ProjectId;
     use std::sync::Arc;
+
+    /// Open one plain document in a fresh store for pure state-machine tests.
+    fn open_store_document(
+        store: &mut DocumentStore,
+        name: &str,
+        text: &str,
+    ) -> (ProjectId, omaterm_core::DocumentId) {
+        let project = ProjectId::new();
+        let revision = omaterm_context::FileRevision {
+            size: text.len() as u64,
+            mtime_secs: 1,
+            mtime_nanos: 0,
+            device: 1,
+            inode: 7,
+            content_digest: [0; 32],
+        };
+        let document = store
+            .try_open(
+                project,
+                std::path::PathBuf::from(name),
+                std::path::PathBuf::from("/repo"),
+                omaterm_context::RootIdentity {
+                    device: 1,
+                    inode: 1,
+                },
+                omaterm_context::EditorFile {
+                    text: text.into(),
+                    bytes: text.len(),
+                    lines: text.matches('\n').count(),
+                    revision,
+                    language: omaterm_context::EditorLanguage::Plain,
+                },
+            )
+            .unwrap();
+        (project, document)
+    }
+
+    #[test]
+    fn editor_lifecycle_states_are_typed_and_saving_is_not_settled_by_pending() {
+        let mut store = DocumentStore::default();
+        let (project, document) = open_store_document(&mut store, "a.txt", "disk\n");
+        let target = CapturedVersion {
+            project,
+            document,
+            generation: store.generation(document).unwrap(),
+            revision: store.revision(document).unwrap(),
+        };
+        let mut decision =
+            DirtyDecision::new(DirtyAction::Close { project, document }, vec![target]);
+        assert_eq!(decision.lifecycle, EditorLifecycle::AwaitingDecision);
+        assert!(decision.saves_settled());
+        // Registering a pending save receipt keeps the flow in Saving: a
+        // receipt is not completion.
+        decision.lifecycle = EditorLifecycle::Saving;
+        decision.pending_saves.insert(42, target);
+        assert!(!decision.saves_settled());
+        // Only the matching final outcome settles it.
+        decision.pending_saves.clear();
+        decision
+            .outcomes
+            .insert(document, DocSaveOutcome::Committed);
+        assert!(decision.saves_settled());
+        assert_eq!(DirtyChoice::Overwrite, DirtyChoice::Overwrite);
+    }
+
+    #[test]
+    fn stale_prompt_target_is_refreshed_without_discarding_newer_text() {
+        let mut store = DocumentStore::default();
+        let (project, document) = open_store_document(&mut store, "a.txt", "disk\n");
+        let captured = CapturedVersion {
+            project,
+            document,
+            generation: store.generation(document).unwrap(),
+            revision: store.revision(document).unwrap(),
+        };
+        assert!(!captured_targets_stale(&store, &[captured]));
+
+        // The user keeps typing: generation advances. The captured target is
+        // now stale.
+        store.apply_edit(document, 4, 0, " newer").unwrap();
+        assert!(captured_targets_stale(&store, &[captured]));
+        let refreshed = revalidate_captured_targets(&store, &[captured]);
+        assert_eq!(refreshed.len(), 1);
+        assert_ne!(refreshed[0].generation, captured.generation);
+        assert_eq!(refreshed[0].generation, store.generation(document).unwrap());
+        // Newer text is preserved; nothing was discarded or reloaded.
+        assert_eq!(store.text(document), Some("disk newer\n"));
+
+        // A disk-revision-only change also marks the target stale.
+        let mut next_revision = store.revision(document).unwrap();
+        next_revision.content_digest = [9; 32];
+        store.mark_saved(document, next_revision);
+        assert!(captured_targets_stale(&store, &[captured]));
+    }
+
+    #[test]
+    fn disappeared_target_is_dropped_during_revalidation() {
+        let mut store = DocumentStore::default();
+        let (project, document) = open_store_document(&mut store, "a.txt", "disk\n");
+        let captured = CapturedVersion {
+            project,
+            document,
+            generation: store.generation(document).unwrap(),
+            revision: store.revision(document).unwrap(),
+        };
+        assert!(store.remove(document));
+        assert!(revalidate_captured_targets(&store, &[captured]).is_empty());
+    }
 
     #[test]
     fn inspector_tab_defaults_to_info() {
