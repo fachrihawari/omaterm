@@ -81,6 +81,10 @@ struct WorkspaceView {
     observed_cwds: HashMap<PaneId, PersistedCwd>,
     restored_failures: HashMap<PaneId, (omaterm_core::ProjectId, omaterm_core::TabId, String)>,
     pending_ui_launches: HashMap<u64, PendingUiLaunch>,
+    /// Identity/root/epoch captured when a native file open is dispatched
+    /// (S7). A late async completion is compared against live state so it can
+    /// register the document without stealing focus after a target switch.
+    pending_native_opens: HashMap<u64, NativeOpenTarget>,
     launch_poller_active: bool,
     /// True while Control or Shift is held: the sidebar then shows the
     /// `Ctrl+Shift+1..9` jump index next to each project.
@@ -258,6 +262,10 @@ struct WorkspaceView {
     /// terminal on launch.
     editor_active: HashMap<ProjectId, DocumentId>,
     editor_selected: HashMap<ProjectId, DocumentId>,
+    /// Explicit main-area surface per project (S7). Kept in sync with
+    /// `editor_active` and the diff preview so Ctrl+1/2/3 can route without
+    /// mutating terminal selection.
+    active_surface: HashMap<ProjectId, ActiveSurface>,
     editor_carets: HashMap<DocumentId, editor::EditorCaret>,
     /// In-flight dirty/conflict/shutdown resolution (S5). `None` is
     /// `EditorLifecycle::Idle`; a present value carries the typed action,
@@ -382,6 +390,81 @@ impl InputOwner {
     /// Whether editor-owned chords (typing, Ctrl+S, motion) may run.
     fn is_editor(self) -> bool {
         matches!(self, Self::Editor(_))
+    }
+}
+
+/// Explicit main-area surface (S7). Exactly one surface is shown per project,
+/// like the diff preview and native editor before it. Switching surfaces never
+/// mutates the core selected terminal tab or any PTY session ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveSurface {
+    Terminal,
+    Editor(DocumentId),
+    Diff,
+}
+
+/// Default activation route for a primary file action (S7). Plain activation
+/// opens natively; an explicit terminal gesture keeps the unchanged
+/// `FileCommand::Open` dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileActivation {
+    Native,
+    Terminal,
+}
+
+/// Ctrl+1/2/3 routing outcome (S7). `Unavailable` carries the digit so the
+/// notice can name the surface instead of opening a fake default file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceRoute {
+    Terminal,
+    Editor(DocumentId),
+    Diff,
+    Unavailable(u8),
+}
+
+/// The Ctrl+1/2/3 slot for a key name, or `None` for every other key.
+/// Distinct from `project_jump_index`, which is Ctrl+Shift+<digit>.
+fn ctrl_surface_slot(key_name: &str) -> Option<u8> {
+    match key_name {
+        "1" => Some(1),
+        "2" => Some(2),
+        "3" => Some(3),
+        _ => None,
+    }
+}
+
+/// Decide the surface Ctrl+<slot> should reveal. Terminal always routes (the
+/// remembered core tab is legitimate); editor and diff route only when a real
+/// document/preview exists, otherwise a truthful unavailable notice.
+fn route_ctrl_surface(
+    slot: u8,
+    active_document: Option<DocumentId>,
+    has_preview: bool,
+) -> SurfaceRoute {
+    match slot {
+        1 => SurfaceRoute::Terminal,
+        2 => match active_document {
+            Some(document) => SurfaceRoute::Editor(document),
+            None => SurfaceRoute::Unavailable(2),
+        },
+        3 => {
+            if has_preview {
+                SurfaceRoute::Diff
+            } else {
+                SurfaceRoute::Unavailable(3)
+            }
+        }
+        other => SurfaceRoute::Unavailable(other),
+    }
+}
+
+/// Primary file activation: plain activation is native; only an explicit
+/// terminal gesture (Alt) keeps semantic terminal submission.
+fn file_activation(alt: bool) -> FileActivation {
+    if alt {
+        FileActivation::Terminal
+    } else {
+        FileActivation::Native
     }
 }
 
@@ -560,6 +643,39 @@ struct PaletteOrigin {
     tab: Option<omaterm_core::TabId>,
     pane: Option<PaneId>,
     session: Option<SessionId>,
+}
+
+/// Captured identity/root/epoch of one in-flight native open (S7). Live state
+/// must still match project, root and epoch before a late completion may
+/// activate its editor surface.
+#[derive(Debug, Clone, PartialEq)]
+struct NativeOpenTarget {
+    project: ProjectId,
+    /// Typed root-relative path captured at dispatch (identity for tests and
+    /// diagnostics; never used for display).
+    path: std::path::PathBuf,
+    epoch: u64,
+    root: Option<std::path::PathBuf>,
+    /// Optional 1-based source line to reveal after a successful activation.
+    line: Option<usize>,
+    /// Palette entry whose MRU/recent lists are promoted only after the open
+    /// activates successfully.
+    mru: Option<palette::PaletteCandidate>,
+}
+
+/// Pure guard for a late native-open completion (S7). Activation is allowed
+/// only when the user has not changed targets since dispatch: same project,
+/// same epoch (no intervening focus action), and an unchanged project root.
+/// A stale completion may register the document but must not steal focus.
+fn native_open_may_activate(
+    captured: &NativeOpenTarget,
+    current_project: Option<ProjectId>,
+    current_epoch: u64,
+    current_root: Option<&std::path::Path>,
+) -> bool {
+    current_project == Some(captured.project)
+        && current_epoch == captured.epoch
+        && current_root == captured.root.as_deref()
 }
 
 struct PaletteSearchResult {
@@ -951,6 +1067,7 @@ impl WorkspaceView {
             observed_cwds: HashMap::new(),
             restored_failures: HashMap::new(),
             pending_ui_launches: HashMap::new(),
+            pending_native_opens: HashMap::new(),
             launch_poller_active: false,
             show_project_hints: false,
             project_context_menu: None,
@@ -1037,6 +1154,7 @@ impl WorkspaceView {
             diff_last_project: None,
             editor_active: HashMap::new(),
             editor_selected: HashMap::new(),
+            active_surface: HashMap::new(),
             editor_carets: HashMap::new(),
             editor_lifecycle: None,
             editor_rows_handles: HashMap::new(),
@@ -1984,7 +2102,9 @@ impl WorkspaceView {
                 router::CommandEffect::PersistenceDirty => self.mark_persistence_dirty(cx),
                 router::CommandEffect::WorkspaceChanged => cx.notify(),
                 router::CommandEffect::FileOpened(project) => {
-                    self.diff_panel.close_preview(project);
+                    // Terminal-routed `file.open` reveals the terminal surface:
+                    // the diff preview closes and any editor activation drops.
+                    self.reveal_terminal_surface(project);
                     cx.notify();
                 }
                 router::CommandEffect::ProjectDirectoryChanged(project) => {
@@ -2097,6 +2217,8 @@ impl WorkspaceView {
             }
             let ui = self.pending_ui_launches.remove(&operation_id);
             let mut restore_completed = false;
+            let native_target = self.pending_native_opens.remove(&operation_id);
+
             let palette_key = self.pending_palette_mru.remove(&operation_id);
             if matches!(&outcome.result, CommandResult::Ok(_))
                 && let Some(key) = palette_key
@@ -2157,7 +2279,33 @@ impl WorkspaceView {
                     Some(PendingUiLaunch::EditorOpen(project)),
                 ) => {
                     self.input_notice = None;
-                    self.editor_activate(project, info.document, cx);
+                    // S7 late-completion guard: register the document, but only
+                    // steal focus when the captured identity/root/epoch still
+                    // matches live state. Switching targets cancels focus.
+                    let current_root = self
+                        .files_watched
+                        .as_ref()
+                        .and_then(|(owner, root)| (*owner == project).then(|| root.clone()));
+                    let may_activate = native_target.as_ref().is_none_or(|captured| {
+                        native_open_may_activate(
+                            captured,
+                            self.coordinator.selected_project_id(),
+                            self.focus_epoch,
+                            current_root.as_deref(),
+                        )
+                    });
+                    self.editor_selected.insert(project, info.document);
+                    if may_activate {
+                        let line = native_target.as_ref().and_then(|target| target.line);
+                        self.editor_activate_selected(project, info.document, line, cx);
+                        if let Some(entry) =
+                            native_target.as_ref().and_then(|target| target.mru.clone())
+                        {
+                            self.promote_palette_entry(&entry);
+                        }
+                    } else {
+                        cx.notify();
+                    }
                 }
                 (
                     CommandResult::Ok(CommandOutput::EditorSaved(_)),
@@ -4015,27 +4163,60 @@ impl WorkspaceView {
     }
 
     /// Dispatch `EditorCommand::Open` and activate the document on success.
-    /// Phase D trigger: palette file results with Ctrl+Enter/Ctrl+click.
-    /// Failures surface as an input notice; no terminal is disturbed.
+    /// This is the default native file activation for Files/palette/Git/diff
+    /// entry points; terminal submission stays on the explicit
+    /// `FileCommand::Open` path. Failures surface as an input notice and never
+    /// fall back to PTY submission.
     fn editor_open_document(
         &mut self,
         project: ProjectId,
         path: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
+        self.editor_open_document_at(project, path, None, None, cx);
+    }
+
+    /// Native open with an optional source line to reveal after activation and
+    /// an optional palette entry promoted only after a successful activation.
+    fn editor_open_document_at(
+        &mut self,
+        project: ProjectId,
+        path: std::path::PathBuf,
+        line: Option<usize>,
+        mru: Option<palette::PaletteCandidate>,
+        cx: &mut Context<Self>,
+    ) {
         if self.shutting_down {
             return;
         }
         self.user_focus_action();
+        let captured = NativeOpenTarget {
+            project,
+            path: path.clone(),
+            epoch: self.focus_epoch,
+            root: self
+                .files_watched
+                .as_ref()
+                .and_then(|(owner, root)| (*owner == project).then(|| root.clone())),
+            line,
+            mru,
+        };
         match self.dispatch_command(
             OmaCommand::Editor(EditorCommand::Open { project, path }),
             cx,
         ) {
             Ok(CommandOutput::EditorOpened(info)) => {
                 self.input_notice = None;
-                self.editor_activate(project, info.document, cx)
+                self.editor_activate_selected(project, info.document, line, cx);
+                if let Some(entry) = captured.mru.clone() {
+                    self.promote_palette_entry(&entry);
+                }
             }
-            Ok(CommandOutput::Pending { .. }) => {}
+            Ok(CommandOutput::Pending { operation_id }) => {
+                // Capture identity for the late-completion guard. Registration
+                // still happens there; only focus activation is gated.
+                self.pending_native_opens.insert(operation_id, captured);
+            }
             Ok(_) => {
                 self.input_notice = Some("Open: unexpected editor result.".into());
                 cx.notify();
@@ -4044,6 +4225,40 @@ impl WorkspaceView {
                 self.input_notice = Some(format!("Open: {error}"));
                 cx.notify();
             }
+        }
+    }
+
+    /// Promote one palette entry's MRU and recent-file lists after a
+    /// successful activation (never on dispatch or failure).
+    fn promote_palette_entry(&mut self, entry: &palette::PaletteCandidate) {
+        self.palette_mru.retain(|existing| existing != &entry.key);
+        self.palette_mru.insert(0, entry.key.clone());
+        self.palette_mru.truncate(100);
+        if entry.kind == palette::PaletteKind::File {
+            self.palette_recent_files
+                .retain(|recent| recent.key != entry.key);
+            self.palette_recent_files.insert(0, entry.clone());
+            self.palette_recent_files.truncate(100);
+        }
+    }
+
+    /// Activate a freshly opened document, optionally revealing a source line.
+    fn editor_activate_selected(
+        &mut self,
+        project: ProjectId,
+        document: DocumentId,
+        line: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor_activate(project, document, cx);
+        if let Some(line) = line
+            && let Some(offset) = self
+                .coordinator
+                .documents()
+                .render_snapshot(document)
+                .map(|snapshot| snapshot.line_col_to_offset(line.saturating_sub(1), 0))
+        {
+            self.editor_set_caret(document, offset, false, cx);
         }
     }
 
@@ -4064,6 +4279,8 @@ impl WorkspaceView {
     ) {
         self.editor_active.insert(project, document);
         self.editor_selected.insert(project, document);
+        self.active_surface
+            .insert(project, ActiveSurface::Editor(document));
         self.files_search_focused = false;
         self.git_panel.set_commit_focused(false);
         self.editor_carets.entry(document).or_default();
@@ -4081,8 +4298,84 @@ impl WorkspaceView {
     fn editor_deactivate(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         if self.editor_active.remove(&project).is_some() {
             self.editor_selecting = None;
+            if self.active_surface.get(&project) == Some(&ActiveSurface::Diff) {
+                // A diff preview underneath the editor remains the surface.
+            } else {
+                self.active_surface.insert(project, ActiveSurface::Terminal);
+            }
             self.restore_input_owner();
             cx.notify();
+        }
+    }
+
+    /// Reveal the terminal surface for a project: close any diff preview and
+    /// drop the editor activation. Terminal selection is not touched here; the
+    /// caller decides whether a tab re-select is appropriate.
+    fn reveal_terminal_surface(&mut self, project: ProjectId) {
+        self.diff_panel.close_preview(project);
+        self.editor_active.remove(&project);
+        self.active_surface.insert(project, ActiveSurface::Terminal);
+        self.restore_input_owner();
+    }
+
+    /// Route Ctrl+1/2/3 to the distinct main-area surfaces (S7). Slots 2/3
+    /// never mutate the selected core terminal tab; an absent real
+    /// document/preview produces a truthful notice rather than a fake default.
+    fn route_ctrl_surface_key(&mut self, slot: u8, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            self.input_notice = Some("No project selected.".into());
+            cx.notify();
+            return;
+        };
+        // Prefer the currently active document; otherwise fall back to the
+        // retained editor selection so Ctrl+2 can return to the remembered
+        // real document after a diff/terminal detour. Never invent one.
+        let active_document = self.editor_active_doc(project).or_else(|| {
+            self.editor_selected
+                .get(&project)
+                .copied()
+                .filter(|doc| self.coordinator.documents().project_of(*doc) == Some(project))
+        });
+        let has_preview = self.diff_panel.preview_open(project);
+        match route_ctrl_surface(slot, active_document, has_preview) {
+            SurfaceRoute::Terminal => {
+                self.reveal_terminal_surface(project);
+                if let Some(tab) = self
+                    .coordinator
+                    .active_project()
+                    .and_then(|owner| {
+                        owner
+                            .tabs
+                            .iter()
+                            .find(|tab| Some(tab.id) == owner.selected_tab)
+                    })
+                    .map(|tab| tab.id)
+                {
+                    let _ = self.dispatch_command(OmaCommand::Tab(TabCommand::Select { tab }), cx);
+                }
+                self.input_notice = None;
+                cx.notify();
+            }
+            SurfaceRoute::Editor(document) => {
+                self.user_focus_action();
+                self.editor_activate(project, document, cx);
+            }
+            SurfaceRoute::Diff => {
+                self.user_focus_action();
+                self.editor_active.remove(&project);
+                self.active_surface.insert(project, ActiveSurface::Diff);
+                self.restore_input_owner();
+                cx.notify();
+            }
+            SurfaceRoute::Unavailable(2) => {
+                self.input_notice = Some("No open document for this project.".into());
+                cx.notify();
+            }
+            SurfaceRoute::Unavailable(3) => {
+                self.input_notice = Some("No diff preview for this project.".into());
+                cx.notify();
+            }
+            SurfaceRoute::Unavailable(_) => {}
         }
     }
 
@@ -4242,6 +4535,7 @@ impl WorkspaceView {
                 self.editor_forget_view(document);
                 if self.editor_active.get(&project) == Some(&document) {
                     self.editor_active.remove(&project);
+                    self.active_surface.insert(project, ActiveSurface::Terminal);
                 }
                 if self.editor_selected.get(&project) == Some(&document) {
                     self.editor_selected.remove(&project);
@@ -5990,6 +6284,8 @@ impl WorkspaceView {
         self.diff_panel.select_file(project, path);
         self.diff_panel.set_show_staged(project, staged);
         self.diff_panel.open_preview(project);
+        self.editor_active.remove(&project);
+        self.active_surface.insert(project, ActiveSurface::Diff);
         self.diff_dirty_hint = true;
         tracing::debug!(
             target: "omaterm::git",
@@ -6651,104 +6947,109 @@ impl WorkspaceView {
         });
     }
 
-    /// Open the highlighted file result in the native editor (M19 Phase D
-    /// interim trigger: Ctrl+Enter / Ctrl+click). Closes the palette and
-    /// activates the document; non-file results report a notice instead of
-    /// falling back to terminal submission.
-    fn ctrlp_open_in_editor(&mut self, cx: &mut Context<Self>) {
-        let Some((project, path)) = self
-            .ctrlp_results
-            .get(self.ctrlp_selected)
-            .cloned()
-            .and_then(|entry| entry.file_target())
-        else {
-            self.input_notice = Some("No file result selected.".into());
-            cx.notify();
-            return;
-        };
-        self.ctrlp_open = false;
-        self.palette_search_worker.cancel_current();
-        self.restore_input_owner();
-        self.editor_open_document(project, path, cx);
-    }
-
-    fn ctrlp_confirm(&mut self, cx: &mut Context<Self>) {
+    /// Confirm the highlighted palette result. File results open natively by
+    /// default after result/root freshness validation; `terminal_fallback`
+    /// (Alt+Enter/Alt+click) keeps the unchanged semantic `FileCommand::Open`
+    /// terminal submission. Non-file results always use semantic dispatch.
+    fn ctrlp_confirm(&mut self, terminal_fallback: bool, cx: &mut Context<Self>) {
         let Some(entry) = self.ctrlp_results.get(self.ctrlp_selected).cloned() else {
             return;
         };
         self.ctrlp_open = false;
         self.palette_search_worker.cancel_current();
         self.restore_input_owner();
+        // File results: validate freshness, then route. The default is a
+        // native open whose MRU promotion happens only after activation.
+        if let Some((project, path)) = entry.file_target() {
+            let current_origin = PaletteOrigin {
+                project: self.coordinator.selected_project_id(),
+                tab: self.coordinator.selected_tab_id(),
+                pane: self.coordinator.focused(),
+                session: self.coordinator.focused_session_id(),
+            };
+            let current_root = self.files_project_root(project, cx);
+            if self.coordinator.selected_project_id() != Some(project)
+                || self.ctrlp_origin != Some(current_origin)
+                || self.ctrlp_search_root != current_root
+            {
+                self.input_notice = Some("Palette target changed; search again.".into());
+                self.restore_palette_origin(cx);
+                cx.notify();
+                return;
+            }
+            self.files_panel.select(project, path.clone());
+            if terminal_fallback {
+                let outcome = self
+                    .dispatch_command(OmaCommand::File(FileCommand::Open { project, path }), cx);
+                match outcome {
+                    Ok(CommandOutput::Pending { operation_id }) => {
+                        self.pending_palette_mru
+                            .insert(operation_id, entry.key.clone());
+                        if let Some(origin) = self.ctrlp_origin {
+                            self.pending_palette_origins.insert(operation_id, origin);
+                        }
+                        self.restore_palette_origin(cx);
+                    }
+                    Ok(_) => {
+                        self.promote_palette_entry(&entry);
+                        self.restore_palette_origin(cx);
+                    }
+                    Err(error) => {
+                        self.input_notice = Some(format!("Palette: {error}"));
+                        self.restore_palette_origin(cx);
+                    }
+                }
+            } else {
+                self.editor_open_document_at(project, path, None, Some(entry.clone()), cx);
+            }
+            cx.notify();
+            return;
+        }
         let outcome = match entry.target.clone() {
             palette::PaletteTarget::Semantic(command) => {
-                if let Some((project, path)) = entry.file_target() {
-                    let current_origin = PaletteOrigin {
-                        project: self.coordinator.selected_project_id(),
-                        tab: self.coordinator.selected_tab_id(),
-                        pane: self.coordinator.focused(),
-                        session: self.coordinator.focused_session_id(),
-                    };
-                    let current_root = self.files_project_root(project, cx);
-                    if self.coordinator.selected_project_id() != Some(project)
-                        || self.ctrlp_origin != Some(current_origin)
-                        || self.ctrlp_search_root != current_root
-                    {
-                        self.input_notice = Some("Palette target changed; search again.".into());
-                        self.restore_palette_origin(cx);
-                        cx.notify();
-                        return;
-                    }
-                    self.files_panel.select(project, path.clone());
-                    Some(self.dispatch_command(
-                        OmaCommand::File(FileCommand::Open { project, path }),
-                        cx,
-                    ))
-                } else {
-                    let requires_origin = matches!(
-                        &command,
-                        OmaCommand::Pane(
-                            PaneCommand::FocusDirection { .. }
-                                | PaneCommand::ResizeFocused { .. }
-                                | PaneCommand::EqualizeSelected
-                        )
-                    );
-                    let current_origin = PaletteOrigin {
-                        project: self.coordinator.selected_project_id(),
-                        tab: self.coordinator.selected_tab_id(),
-                        pane: self.coordinator.focused(),
-                        session: self.coordinator.focused_session_id(),
-                    };
-                    if requires_origin && self.ctrlp_origin != Some(current_origin) {
-                        self.input_notice = Some("Palette origin changed; search again.".into());
-                        self.restore_palette_origin(cx);
-                        cx.notify();
-                        return;
-                    }
-                    let refresh_git =
-                        matches!(&command, OmaCommand::Git(GitCommand::Status { .. }));
-                    let refresh_diff = matches!(
-                        &command,
-                        OmaCommand::Diff(DiffCommand::Show { .. } | DiffCommand::ListFiles { .. })
-                    );
-                    let process_project = match &command {
-                        OmaCommand::Process(omaterm_core::ProcessCommand::List { project }) => {
-                            Some(*project)
-                        }
-                        _ => None,
-                    };
-                    let outcome = self.dispatch_command(command, cx);
-                    if outcome.is_ok() {
-                        self.git_dirty_hint |= refresh_git;
-                        self.diff_dirty_hint |= refresh_diff;
-                    }
-                    if let (Some(project), Ok(CommandOutput::ProcessList(info))) =
-                        (process_project, &outcome)
-                    {
-                        self.process_list = Some((project, info.clone()));
-                        self.select_inspector_tab(InspectorTab::Info, cx);
-                    }
-                    Some(outcome)
+                let requires_origin = matches!(
+                    &command,
+                    OmaCommand::Pane(
+                        PaneCommand::FocusDirection { .. }
+                            | PaneCommand::ResizeFocused { .. }
+                            | PaneCommand::EqualizeSelected
+                    )
+                );
+                let current_origin = PaletteOrigin {
+                    project: self.coordinator.selected_project_id(),
+                    tab: self.coordinator.selected_tab_id(),
+                    pane: self.coordinator.focused(),
+                    session: self.coordinator.focused_session_id(),
+                };
+                if requires_origin && self.ctrlp_origin != Some(current_origin) {
+                    self.input_notice = Some("Palette origin changed; search again.".into());
+                    self.restore_palette_origin(cx);
+                    cx.notify();
+                    return;
                 }
+                let refresh_git = matches!(&command, OmaCommand::Git(GitCommand::Status { .. }));
+                let refresh_diff = matches!(
+                    &command,
+                    OmaCommand::Diff(DiffCommand::Show { .. } | DiffCommand::ListFiles { .. })
+                );
+                let process_project = match &command {
+                    OmaCommand::Process(omaterm_core::ProcessCommand::List { project }) => {
+                        Some(*project)
+                    }
+                    _ => None,
+                };
+                let outcome = self.dispatch_command(command, cx);
+                if outcome.is_ok() {
+                    self.git_dirty_hint |= refresh_git;
+                    self.diff_dirty_hint |= refresh_diff;
+                }
+                if let (Some(project), Ok(CommandOutput::ProcessList(info))) =
+                    (process_project, &outcome)
+                {
+                    self.process_list = Some((project, info.clone()));
+                    self.select_inspector_tab(InspectorTab::Info, cx);
+                }
+                Some(outcome)
             }
             palette::PaletteTarget::PaneFocus {
                 pane,
@@ -7010,11 +7311,10 @@ impl WorkspaceView {
             "enter" | "return" | "kpenter" => {
                 let project = self.coordinator.selected_project_id();
                 let query = self.files_search.clone();
-                // M19 Phase E: Ctrl+Enter opens the first file match in
-                // the native editor; plain Enter keeps terminal routing.
-                let to_editor = event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.shift
-                    && !event.keystroke.modifiers.alt;
+                // S7: plain Enter opens the first file match natively; Ctrl/Alt
+                // is the explicit terminal fallback. Directories still toggle.
+                let terminal_fallback =
+                    event.keystroke.modifiers.control || event.keystroke.modifiers.alt;
                 if let Some(project) = project
                     && let Some(row) = self
                         .files_panel
@@ -7028,13 +7328,17 @@ impl WorkspaceView {
                     self.files_search_focused = false;
                     if is_dir {
                         self.toggle_file_row(project, row.path, true, cx);
-                    } else if to_editor {
-                        self.files_panel.select(project, row.path.clone());
-                        self.editor_open_document(project, row.path, cx);
                     } else {
                         self.files_panel.select(project, row.path.clone());
-                        self.open_file_path(project, row.path, cx);
-                        self.refresh_files(cx);
+                        match file_activation(terminal_fallback) {
+                            FileActivation::Native => {
+                                self.editor_open_document(project, row.path, cx)
+                            }
+                            FileActivation::Terminal => {
+                                self.open_file_path(project, row.path, cx);
+                                self.refresh_files(cx);
+                            }
+                        }
                     }
                 } else {
                     self.files_search_focused = false;
@@ -7128,14 +7432,10 @@ impl WorkspaceView {
             // file result in the native editor instead of submitting it
             // to a terminal. Plain Enter keeps terminal-routed behavior.
             "enter" | "return" | "kpenter" => {
-                if event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.shift
-                    && !event.keystroke.modifiers.alt
-                {
-                    self.ctrlp_open_in_editor(cx);
-                } else {
-                    self.ctrlp_confirm(cx);
-                }
+                // S7: plain/Ctrl+Enter open file results natively; Alt+Enter is
+                // the explicit terminal fallback for file results.
+                let terminal_fallback = event.keystroke.modifiers.alt;
+                self.ctrlp_confirm(terminal_fallback, cx);
             }
             "backspace" => {
                 if self.ctrlp_caret_byte > 0 {
@@ -7252,6 +7552,17 @@ impl WorkspaceView {
             && key_name == "o"
         {
             self.open_project_directory(cx);
+            return;
+        }
+        // S7 surface routing: Ctrl+1/2/3 show Terminal/Editor/Diff. This is
+        // distinct from Ctrl+Shift+<digit> project jumps, so it requires plain
+        // Ctrl with no Shift/Alt and is consumed before terminal encoding.
+        if event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && let Some(slot) = ctrl_surface_slot(&key_name)
+        {
+            self.route_ctrl_surface_key(slot, cx);
             return;
         }
         if event.keystroke.modifiers.control
@@ -8715,6 +9026,9 @@ impl WorkspaceView {
                 name
             };
             let path = row.path.clone();
+            // Cloned before the primary click closure moves `path`, so the
+            // explicit Open in Terminal control keeps its own handle.
+            let terminal_path = path.clone();
             let dimmed = row.loading && !is_selected;
             // Keep the file identity stable. The prior pseudo-horizontal
             // scroll swapped this basename for a full path and left icons
@@ -8805,16 +9119,20 @@ impl WorkspaceView {
                             view.files_vdrag = None;
                             if is_dir {
                                 view.toggle_file_row(project, path.clone(), true, cx);
-                            } else if event.modifiers.control {
-                                // M19 Phase E: Ctrl+click opens files in the
-                                // native editor; plain click keeps the
-                                // terminal-routed open (M13 contract).
-                                view.files_panel.select(project, path.clone());
-                                view.editor_open_document(project, path.clone(), cx);
                             } else {
                                 view.files_panel.select(project, path.clone());
-                                view.open_file_path(project, path.clone(), cx);
-                                view.refresh_files(cx);
+                                // S7: plain click opens natively; Alt+click is
+                                // the explicit terminal fallback (the row also
+                                // exposes an explicit Open in Terminal icon).
+                                match file_activation(event.modifiers.alt) {
+                                    FileActivation::Native => {
+                                        view.editor_open_document(project, path.clone(), cx)
+                                    }
+                                    FileActivation::Terminal => {
+                                        view.open_file_path(project, path.clone(), cx);
+                                        view.refresh_files(cx);
+                                    }
+                                }
                             }
                         }),
                     )
@@ -8823,6 +9141,41 @@ impl WorkspaceView {
                     // Long names ellipsize inside the fixed sidebar instead
                     // of stretching the row and breaking column alignment.
                     .child(label_view)
+                    .when(!is_dir, |row| {
+                        // S7 explicit terminal control: primary click opens
+                        // natively, this control keeps the unchanged semantic
+                        // `FileCommand::Open` submission.
+                        let term_project = project;
+                        let term_path = terminal_path.clone();
+                        row.child(
+                            div()
+                                .w(px(16.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.files_panel.select(term_project, term_path.clone());
+                                        view.open_file_path(term_project, term_path.clone(), cx);
+                                        view.refresh_files(cx);
+                                    }),
+                                )
+                                .child(crate::ui::assets::icon(
+                                    crate::ui::assets::EXTERNAL,
+                                    12.0,
+                                    crate::ui::theme::MUTED,
+                                )),
+                        )
+                    })
                     .child(
                         div()
                             .w(px(14.0))
@@ -9182,28 +9535,36 @@ impl WorkspaceView {
         staged_group: bool,
         untracked: bool,
     ) -> Div {
-        let (first, second) = if staged_group {
-            (
+        let actions: Vec<(&'static str, GitRowAction)> = if staged_group {
+            vec![
                 (crate::ui::assets::UNSTAGE, GitRowAction::Unstage),
+                (crate::ui::assets::FILE_TEXT, GitRowAction::OpenFile),
                 (crate::ui::assets::EXTERNAL, GitRowAction::Open),
-            )
+            ]
         } else if untracked {
-            (
+            vec![
                 (crate::ui::assets::STAGE, GitRowAction::Stage),
                 (crate::ui::assets::TRASH, GitRowAction::Discard),
-            )
+                (crate::ui::assets::FILE_TEXT, GitRowAction::OpenFile),
+            ]
         } else {
-            (
+            vec![
                 (crate::ui::assets::STAGE, GitRowAction::Stage),
                 (crate::ui::assets::UNDO, GitRowAction::Discard),
-            )
+                (crate::ui::assets::FILE_TEXT, GitRowAction::OpenFile),
+            ]
         };
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .child(self.git_action_button(cx, project, path.clone(), open_path.clone(), first))
-            .child(self.git_action_button(cx, project, path, open_path, second))
+        actions
+            .into_iter()
+            .fold(div().flex().flex_row().items_center(), |row, action| {
+                row.child(self.git_action_button(
+                    cx,
+                    project,
+                    path.clone(),
+                    open_path.clone(),
+                    action,
+                ))
+            })
     }
 
     /// One inspector Git icon button. The glyph → action pair is chosen by
@@ -9235,6 +9596,9 @@ impl WorkspaceView {
                             view.git_unstage_paths(project, vec![path.clone()], cx)
                         }
                         GitRowAction::Discard => view.git_discard_path(project, path.clone(), cx),
+                        GitRowAction::OpenFile => {
+                            view.editor_open_document(project, open_path.clone(), cx)
+                        }
                         GitRowAction::Open => view.open_file_path(project, open_path.clone(), cx),
                     }
                 }),
@@ -9648,6 +10012,39 @@ impl WorkspaceView {
                     .child("Discard"),
             );
         }
+        {
+            // S7: explicit native Open File using the typed project/path. The
+            // optional source line is supplied by the per-hunk action row.
+            let open_path = path.clone();
+            actions = actions.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                    .bg(rgb(crate::ui::theme::PILL_BG))
+                    .text_color(rgb(crate::ui::theme::BLUE))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.editor_open_document_at(
+                                project,
+                                open_path.clone(),
+                                None,
+                                None,
+                                cx,
+                            );
+                        }),
+                    )
+                    .child("Open File"),
+            );
+        }
         actions = actions
             .child(
                 div()
@@ -9995,6 +10392,38 @@ impl WorkspaceView {
                                         );
                                     }
                                     if can_open {
+                                        // S7: Open File opens the typed
+                                        // project/path natively at the hunk's
+                                        // 1-based new-side line; Open in
+                                        // Terminal stays the explicit
+                                        // unchanged terminal submission.
+                                        let open_doc_path = stage_path.clone();
+                                        let source_line = copy_info
+                                            .files
+                                            .iter()
+                                            .find(|file| file.path == copy_path)
+                                            .and_then(|file| file.hunks.get(hunk))
+                                            .map(|hunk| hunk.new_start.max(1) as usize);
+                                        actions = actions.child(
+                                            div()
+                                                .cursor_pointer()
+                                                .text_color(rgb(crate::ui::theme::BLUE))
+                                                .child("Open File")
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    _cx.listener(move |view, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        window.focus(&view.focus_handle);
+                                                        view.editor_open_document_at(
+                                                            project,
+                                                            open_doc_path.clone(),
+                                                            source_line,
+                                                            None,
+                                                            cx,
+                                                        );
+                                                    }),
+                                                ),
+                                        );
                                         let open_path = stage_path.clone();
                                         actions = actions.child(
                                             div()
@@ -10694,9 +11123,7 @@ impl WorkspaceView {
                         }
                         window.focus(&view.focus_handle);
                         view.user_focus_action();
-                        view.diff_panel.close_preview(project_id);
-                        view.editor_active.remove(&project_id);
-                        view.restore_input_owner();
+                        view.reveal_terminal_surface(project_id);
                         let _ = view.dispatch_command(
                             OmaCommand::Tab(TabCommand::Select { tab: tab_id }),
                             cx,
@@ -10760,10 +11187,8 @@ impl WorkspaceView {
                             window.focus(&view.focus_handle);
                             view.user_focus_action();
                             if let Some(project) = view.coordinator.selected_project_id() {
-                                view.diff_panel.close_preview(project);
-                                view.editor_active.remove(&project);
+                                view.reveal_terminal_surface(project);
                             }
-                            view.restore_input_owner();
                             view.create_tab(cx);
                         }),
                     )
@@ -11811,13 +12236,9 @@ impl WorkspaceView {
                                 }
                                 window.focus(&view.focus_handle);
                                 view.palette_select(index);
-                                // M19 Phase D interim: Ctrl+click opens file
-                                // results in the native editor.
-                                if event.modifiers.control {
-                                    view.ctrlp_open_in_editor(cx);
-                                } else {
-                                    view.ctrlp_confirm(cx);
-                                }
+                                // S7: plain click opens file results natively;
+                                // Alt+click is the explicit terminal fallback.
+                                view.ctrlp_confirm(event.modifiers.alt, cx);
                             }),
                         )
                         .child(
@@ -12611,6 +13032,9 @@ enum GitRowAction {
     Stage,
     Unstage,
     Discard,
+    /// Explicit native document open (S7 primary Git-row file action).
+    OpenFile,
+    /// Explicit terminal-routed open (unchanged `FileCommand::Open`).
     Open,
 }
 
@@ -13208,12 +13632,13 @@ fn main() {
 mod tests {
     use super::{
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
-        InputOwner, InspectorTab, PaletteFileIndexCache, PaletteSearchRequest, PaletteSearchWorker,
-        WorkspaceView, captured_targets_stale, project_jump_index, revalidate_captured_targets,
-        select_mono_family,
+        FileActivation, InputOwner, InspectorTab, NativeOpenTarget, PaletteFileIndexCache,
+        PaletteSearchRequest, PaletteSearchWorker, SurfaceRoute, WorkspaceView,
+        captured_targets_stale, ctrl_surface_slot, file_activation, native_open_may_activate,
+        project_jump_index, revalidate_captured_targets, route_ctrl_surface, select_mono_family,
     };
     use crate::editor::DocumentStore;
-    use omaterm_core::ProjectId;
+    use omaterm_core::{DocumentId, FileCommand, OmaCommand, ProjectId};
     use std::sync::Arc;
 
     /// Open one plain document in a fresh store for pure state-machine tests.
@@ -13526,5 +13951,212 @@ mod tests {
         );
         assert_eq!(NewlineConvention::Crlf.as_str(), "\r\n");
         assert_eq!(NewlineConvention::Lf.as_str(), "\n");
+    }
+
+    #[test]
+    fn default_file_activation_opens_native_not_terminal() {
+        // Primary activation (no modifier) is native; the native path builds
+        // an EditorCommand::Open, which is a different semantic command from
+        // the terminal-routed FileCommand::Open.
+        assert_eq!(file_activation(false), FileActivation::Native);
+        let project = ProjectId::new();
+        let path = std::path::PathBuf::from("src/main.rs");
+        let native = OmaCommand::Editor(omaterm_core::EditorCommand::Open {
+            project,
+            path: path.clone(),
+        });
+        let terminal = OmaCommand::File(FileCommand::Open {
+            project,
+            path: path.clone(),
+        });
+        assert!(matches!(native, OmaCommand::Editor(_)));
+        assert!(matches!(terminal, OmaCommand::File(_)));
+        assert_ne!(
+            std::mem::discriminant(&native),
+            std::mem::discriminant(&terminal)
+        );
+    }
+
+    #[test]
+    fn explicit_open_in_terminal_still_dispatches_file_open() {
+        assert_eq!(file_activation(true), FileActivation::Terminal);
+        let project = ProjectId::new();
+        let path = std::path::PathBuf::from("src/main.rs");
+        let command = OmaCommand::File(FileCommand::Open {
+            project,
+            path: path.clone(),
+        });
+        assert!(
+            matches!(
+                command,
+                OmaCommand::File(FileCommand::Open { ref path, .. }) if path == &std::path::PathBuf::from("src/main.rs")
+            ),
+            "explicit terminal activation must keep the unchanged FileCommand::Open"
+        );
+    }
+
+    #[test]
+    fn diff_open_file_targets_typed_project_path_and_source_line() {
+        let mut store = DocumentStore::default();
+        let (project, document) =
+            open_store_document(&mut store, "src/diff.rs", "one\ntwo\nthree\n");
+        let target = NativeOpenTarget {
+            project,
+            path: std::path::PathBuf::from("src/diff.rs"),
+            epoch: 7,
+            root: Some(std::path::PathBuf::from("/repo")),
+            line: Some(3),
+            mru: None,
+        };
+        assert_eq!(target.project, project);
+        assert_eq!(target.path, std::path::PathBuf::from("src/diff.rs"));
+        assert_eq!(target.line, Some(3));
+        // The optional source line resolves to the start of that 1-based line
+        // in the opened snapshot, so activation reveals the typed anchor.
+        let snapshot = store.render_snapshot(document).unwrap();
+        assert_eq!(snapshot.line_col_to_offset(2, 0), "one\ntwo\n".len());
+        assert_eq!(snapshot.line(2), Some("three"));
+    }
+
+    #[test]
+    fn ctrl1_2_3_route_surfaces_without_core_tab_mutation() {
+        let document = DocumentId::new();
+        assert_eq!(ctrl_surface_slot("1"), Some(1));
+        assert_eq!(ctrl_surface_slot("2"), Some(2));
+        assert_eq!(ctrl_surface_slot("3"), Some(3));
+        assert_eq!(ctrl_surface_slot("4"), None);
+        assert_eq!(ctrl_surface_slot("p"), None);
+        // The routing decision is a pure surface intent. Slot 1 may re-select
+        // the remembered terminal tab; slots 2/3 return only a surface and can
+        // never request a core tab mutation.
+        assert_eq!(
+            route_ctrl_surface(1, Some(document), true),
+            SurfaceRoute::Terminal
+        );
+        assert_eq!(
+            route_ctrl_surface(2, Some(document), true),
+            SurfaceRoute::Editor(document)
+        );
+        assert_eq!(
+            route_ctrl_surface(3, Some(document), true),
+            SurfaceRoute::Diff
+        );
+    }
+
+    #[test]
+    fn unavailable_surface_shows_truthful_notice() {
+        // No real document: slot 2 is unavailable, never a fake default file.
+        assert_eq!(
+            route_ctrl_surface(2, None, true),
+            SurfaceRoute::Unavailable(2)
+        );
+        // No retained preview: slot 3 is unavailable, never a fake diff.
+        assert_eq!(
+            route_ctrl_surface(3, Some(DocumentId::new()), false),
+            SurfaceRoute::Unavailable(3)
+        );
+    }
+
+    #[test]
+    fn late_open_result_cannot_steal_focus_after_target_switch() {
+        let project = ProjectId::new();
+        let other = ProjectId::new();
+        let root = std::path::PathBuf::from("/repo/a");
+        let captured = NativeOpenTarget {
+            project,
+            path: std::path::PathBuf::from("src/lib.rs"),
+            epoch: 4,
+            root: Some(root.clone()),
+            line: None,
+            mru: None,
+        };
+        // Unchanged target: activation is allowed.
+        assert!(native_open_may_activate(
+            &captured,
+            Some(project),
+            4,
+            Some(root.as_path())
+        ));
+        // The user switched project, took a focus action (epoch advanced), or
+        // the project root was replaced: the late completion must not activate.
+        assert!(!native_open_may_activate(
+            &captured,
+            Some(other),
+            4,
+            Some(root.as_path())
+        ));
+        assert!(!native_open_may_activate(
+            &captured,
+            Some(project),
+            5,
+            Some(root.as_path())
+        ));
+        assert!(!native_open_may_activate(
+            &captured,
+            Some(project),
+            4,
+            Some(std::path::Path::new("/repo/b"))
+        ));
+        assert!(!native_open_may_activate(
+            &captured,
+            None,
+            4,
+            Some(root.as_path())
+        ));
+    }
+
+    #[test]
+    fn native_open_dedups_across_projects() {
+        let mut store = DocumentStore::default();
+        let project_a = ProjectId::new();
+        let project_b = ProjectId::new();
+        let revision = omaterm_context::FileRevision {
+            size: 4,
+            mtime_secs: 1,
+            mtime_nanos: 0,
+            device: 9,
+            inode: 42,
+            content_digest: [0; 32],
+        };
+        let file = || omaterm_context::EditorFile {
+            text: "hi\n".into(),
+            bytes: 3,
+            lines: 1,
+            revision,
+            language: omaterm_context::EditorLanguage::Plain,
+        };
+        let root = std::path::PathBuf::from("/repo");
+        let identity = omaterm_context::RootIdentity {
+            device: 1,
+            inode: 1,
+        };
+        // The same file identity in one project dedups to one live buffer.
+        let first = store
+            .try_open(
+                project_a,
+                "src/lib.rs".into(),
+                root.clone(),
+                identity,
+                file(),
+            )
+            .unwrap();
+        let second = store
+            .try_open(
+                project_a,
+                "src/lib.rs".into(),
+                root.clone(),
+                identity,
+                file(),
+            )
+            .unwrap();
+        assert_eq!(first, second);
+        // The same path/file under a different project must never share a
+        // buffer: project is part of the document key.
+        let across = store
+            .try_open(project_b, "src/lib.rs".into(), root, identity, file())
+            .unwrap();
+        assert_ne!(first, across);
+        assert_eq!(store.project_of(first), Some(project_a));
+        assert_eq!(store.project_of(across), Some(project_b));
     }
 }
