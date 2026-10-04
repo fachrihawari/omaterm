@@ -4315,3 +4315,31 @@ transitive `proc-macro-error2` future-incompatibility notice remains.
 poll this queue on the owner, and apply only generation/document/root-accepted
 completions. Do not call filesystem APIs from `editor_dispatch` once that path
 lands; dirty close/shutdown must await final editor outcomes.
+
+## M19 native verify-fix + restart — 2026-10-04
+
+Fixed two native-found defects on top of `50c06cc` and verified the fixes on
+release binary `32cd3d9f9d8498e7` (`87bc5bf` prompt render/keyboard resolution,
+`b28ca8a` frozen-path dedup), pushed to `origin/main`:
+
+- Conflict prompt invisible while owning all input: the absolute-positioned
+  prompt painted beneath the opaque editor and `r`/`o`/`Escape` were unreachable
+  (owner `Confirmation`, handlers only in the editor path), wedging every
+  keystroke. Now in-flow and keyboard-resolvable; dirty Overwrite/Reload/Cancel
+  and clean Reload all proven with on-disk byte assertions.
+- Reopened paths forked buffers after external replacement (inode-keyed
+  dedup), producing duplicate registry descriptors and a recovery-wiped
+  restart. Dedup now uses the frozen `(project, root, path bytes)` key first
+  (inode map kept for aliases); new snapshots validate with zero duplicates.
+- Leak retest with clean-baseline discipline passes; earlier `CB` FAIL was a
+  polluted-baseline artifact, not a live leak. 1 MiB cap edit/save byte-exact.
+- Restart (SIGKILL, explicitly non-graceful): schema-3 snapshot valid, docs
+  restored clean from disk, dirty text not recovered, terminal sessions fresh,
+  no recovery banner.
+- Harness rule learned: a second instance on an occupied runtime dir silently
+  displaces the first — this explains all prior "spontaneous deaths". Always
+  kill-before-relaunch and verify.
+
+Full record: [native verify-fix evidence](evidence/m19-native-verify-fix.md).
+S9 remains open: graceful-shutdown E2E (no compositor-close tooling), 20-cycle
+reruns on the final binary, IME preedit, entry-route retakes, idle baselines.
