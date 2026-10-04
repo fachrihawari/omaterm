@@ -252,6 +252,14 @@ pub struct DocumentStore {
     buffer_copy_count: std::cell::Cell<u64>,
     docs: HashMap<DocumentId, Document>,
     by_file: HashMap<(ProjectId, omaterm_context::RootIdentity, u64, u64), DocumentId>,
+    /// Frozen document key: project plus captured root identity plus
+    /// normalized root-relative path bytes (S0 contract). Reopening the same
+    /// path always converges on the live buffer, even after an external
+    /// atomic replacement changed the underlying inode; save/revert paths
+    /// detect the revision divergence instead of forking a second buffer.
+    /// `by_file` remains as the secondary index so contained symlink aliases
+    /// (different spellings, same inode) converge too.
+    by_relpath: HashMap<(ProjectId, omaterm_context::RootIdentity, Vec<u8>), DocumentId>,
     /// Metadata-only entries with no live buffer (loading/unavailable).
     placeholders: HashMap<DocumentId, DocumentPlaceholder>,
     pending_opens: usize,
@@ -278,6 +286,49 @@ fn validate_restore_path(path_bytes: &[u8]) -> Result<(), RestoreReserveError> {
 /// has a path rather than a persisted descriptor.
 fn path_bytes_of(path: &Path) -> Vec<u8> {
     path.as_os_str().as_encoded_bytes().to_vec()
+}
+
+/// Frozen dedup key for one open document: project, captured root identity,
+/// and lexically normalized root-relative path bytes. `.` segments are
+/// dropped and interior `..` segments pop the previous component, so
+/// `sub/../file` and `file` converge; display paths are untouched. Absolute
+/// paths and leading `..` keep their raw bytes (containment is enforced by
+/// the I/O layer, not this key).
+fn relpath_key(
+    project: ProjectId,
+    root_identity: omaterm_context::RootIdentity,
+    path: &Path,
+) -> (ProjectId, omaterm_context::RootIdentity, Vec<u8>) {
+    (project, root_identity, normalized_path_bytes(path))
+}
+
+#[cfg(unix)]
+fn normalized_path_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    let raw = path.as_os_str().as_bytes();
+    if raw.is_empty() || raw.starts_with(b"/") {
+        return raw.to_vec();
+    }
+    let mut out: Vec<&[u8]> = Vec::new();
+    for component in raw.split(|byte| *byte == b'/') {
+        match component {
+            b"" | b"." => {}
+            b".." => {
+                if out.last().is_some_and(|last| *last != b"..") {
+                    out.pop();
+                } else {
+                    out.push(component);
+                }
+            }
+            _ => out.push(component),
+        }
+    }
+    out.join(&b'/')
+}
+
+#[cfg(not(unix))]
+fn normalized_path_bytes(path: &Path) -> Vec<u8> {
+    path_bytes_of(path)
 }
 
 /// Immutable, shared data for one render generation. Cloning this value only
@@ -392,8 +443,11 @@ impl DocumentStore {
     }
 
     /// Checked open path for lifecycle code that has not already reserved
-    /// capacity. Reopening the same file is always accepted and returns the
-    /// existing live buffer.
+    /// capacity. Reopening the same path always converges on the existing
+    /// live buffer without re-reading, even after an external replacement
+    /// changed the underlying inode; revision divergence surfaces through
+    /// save/revert conflict handling instead of a forked buffer. A contained
+    /// symlink alias (different spelling, same inode) converges too.
     pub fn try_open(
         &mut self,
         project: ProjectId,
@@ -402,24 +456,18 @@ impl DocumentStore {
         root_identity: omaterm_context::RootIdentity,
         file: omaterm_context::EditorFile,
     ) -> Result<DocumentId, CommandError> {
-        let file_key = (
-            project,
-            root_identity,
-            file.revision.device,
-            file.revision.inode,
-        );
-        if let Some(id) = self.by_file.get(&file_key) {
-            return Ok(*id);
+        if let Some(id) = self.live_for_open(project, root_identity, &path, &file.revision) {
+            return Ok(id);
         }
         self.can_open(&file)?;
         Ok(self.open_unchecked(project, path, root, root_identity, file))
     }
 
     /// Open a buffer over an already-validated read. Returns the live document
-    /// when the same opened file (including a contained symlink alias) is open
-    /// beneath the same captured root identity. Existing lifecycle callers
-    /// validate the read before this point; new callers should prefer
-    /// [`Self::try_open`] to receive an explicit capacity error.
+    /// for the same path key or the same opened file (including a contained
+    /// symlink alias) beneath the same captured root identity. Existing
+    /// lifecycle callers validate the read before this point; new callers
+    /// should prefer [`Self::try_open`] to receive an explicit capacity error.
     pub fn open(
         &mut self,
         project: ProjectId,
@@ -431,6 +479,26 @@ impl DocumentStore {
         self.open_unchecked(project, path, root, root_identity, file)
     }
 
+    /// Live buffer for an open request: the frozen path key first, then the
+    /// opened-file identity for contained aliases.
+    fn live_for_open(
+        &self,
+        project: ProjectId,
+        root_identity: omaterm_context::RootIdentity,
+        path: &Path,
+        revision: &omaterm_context::FileRevision,
+    ) -> Option<DocumentId> {
+        if let Some(id) = self
+            .by_relpath
+            .get(&relpath_key(project, root_identity, path))
+        {
+            return Some(*id);
+        }
+        self.by_file
+            .get(&(project, root_identity, revision.device, revision.inode))
+            .copied()
+    }
+
     fn open_unchecked(
         &mut self,
         project: ProjectId,
@@ -439,14 +507,8 @@ impl DocumentStore {
         root_identity: omaterm_context::RootIdentity,
         file: omaterm_context::EditorFile,
     ) -> DocumentId {
-        let file_key = (
-            project,
-            root_identity,
-            file.revision.device,
-            file.revision.inode,
-        );
-        if let Some(id) = self.by_file.get(&file_key) {
-            return *id;
+        if let Some(id) = self.live_for_open(project, root_identity, &path, &file.revision) {
+            return id;
         }
         let id = DocumentId::new();
         self.insert_live(id, project, path, root, root_identity, file);
@@ -473,9 +535,11 @@ impl DocumentStore {
         );
         let language = file.language;
         let revision = file.revision;
+        let relpath = relpath_key(project, root_identity, &path);
         let text: Arc<str> = Arc::from(file.text);
         let line_starts = line_starts(&text).into();
         self.by_file.insert(file_key, id);
+        self.by_relpath.insert(relpath, id);
         self.docs.insert(
             id,
             Document {
@@ -745,6 +809,8 @@ impl DocumentStore {
             doc.file_device,
             doc.file_inode,
         ));
+        self.by_relpath
+            .remove(&relpath_key(doc.project, doc.root_identity, &doc.path));
         true
     }
 
@@ -852,8 +918,8 @@ impl DocumentStore {
     /// Commit a successful restore read through the checked restore path.
     /// The reservation must still exist (a closed/late completion is rejected
     /// and can never recreate a retired document), the persisted id is reused,
-    /// and the opened file is deduplicated on (project, root identity, file
-    /// identity) against live buffers.
+    /// and the opened path is deduplicated on the frozen (project, root
+    /// identity, path) key plus the opened-file identity against live buffers.
     pub fn commit_restore(
         &mut self,
         document: DocumentId,
@@ -867,16 +933,25 @@ impl DocumentStore {
             self.placeholders.insert(document, placeholder);
             return Err(RestoreCommitError::IdCollision);
         }
-        let file_key = (
+        let relpath = relpath_key(
             placeholder.project,
             placeholder.root_identity,
-            file.revision.device,
-            file.revision.inode,
+            &placeholder.path(),
         );
-        if let Some(existing) = self.by_file.get(&file_key) {
-            // A contained alias or concurrent open already owns this file:
-            // converge on one buffer and drop the redundant reservation.
-            return Err(RestoreCommitError::DuplicateLive(*existing));
+        if let Some(existing) = self.by_relpath.get(&relpath).copied().or_else(|| {
+            self.by_file
+                .get(&(
+                    placeholder.project,
+                    placeholder.root_identity,
+                    file.revision.device,
+                    file.revision.inode,
+                ))
+                .copied()
+        }) {
+            // The same path was opened while the restore was in flight, or a
+            // contained alias already owns this file: converge on one buffer
+            // and drop the redundant reservation.
+            return Err(RestoreCommitError::DuplicateLive(existing));
         }
         if self.can_open(&file).is_err() {
             self.placeholders.insert(document, placeholder);
@@ -904,9 +979,22 @@ impl DocumentStore {
     ) -> HashMap<ProjectId, DocumentRegistry> {
         let cap = omaterm_state::SnapshotLimits::default().max_documents_per_project;
         let mut registries: HashMap<ProjectId, DocumentRegistry> = HashMap::new();
+        // A snapshot with two descriptors for one (project, root, path) key
+        // is rejected at load and would discard the whole workspace restore,
+        // so live buffers win and any overlapping placeholder is skipped: the
+        // registry must never be the vector for an invalid snapshot.
+        let mut emitted: std::collections::HashSet<(
+            ProjectId,
+            omaterm_context::RootIdentity,
+            Vec<u8>,
+        )> = std::collections::HashSet::new();
         for doc in self.docs.values() {
             let registry = registries.entry(doc.project).or_default();
             if registry.documents.len() >= cap {
+                continue;
+            }
+            let key = relpath_key(doc.project, doc.root_identity, &doc.path);
+            if !emitted.insert(key) {
                 continue;
             }
             registry.documents.push(DocumentDescriptor {
@@ -919,6 +1007,14 @@ impl DocumentStore {
         for placeholder in self.placeholders.values() {
             let registry = registries.entry(placeholder.project).or_default();
             if registry.documents.len() >= cap {
+                continue;
+            }
+            let key = (
+                placeholder.project,
+                placeholder.root_identity,
+                placeholder.path_bytes.clone(),
+            );
+            if !emitted.insert(key) {
                 continue;
             }
             registry.documents.push(DocumentDescriptor {
@@ -3276,6 +3372,96 @@ mod tests {
         // Same path in another project is a separate document.
         let other = open_doc(&mut store, ProjectId::new(), "a.md", "# v1\n");
         assert_ne!(first, other);
+    }
+
+    fn open_doc_with_inode(
+        store: &mut DocumentStore,
+        project: ProjectId,
+        name: &str,
+        text: &str,
+        inode: u64,
+    ) -> DocumentId {
+        let revision = omaterm_context::FileRevision {
+            size: text.len() as u64,
+            mtime_secs: 1,
+            mtime_nanos: 0,
+            device: 1,
+            inode,
+            content_digest: [0; 32],
+        };
+        store
+            .try_open(
+                project,
+                PathBuf::from(name),
+                PathBuf::from("/repo"),
+                omaterm_context::RootIdentity {
+                    device: 1,
+                    inode: 1,
+                },
+                omaterm_context::EditorFile {
+                    text: text.into(),
+                    bytes: text.len(),
+                    lines: count_lines(text),
+                    revision,
+                    language: omaterm_context::EditorLanguage::Plain,
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn reopen_after_external_replacement_converges_without_forking() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let first = open_doc_with_inode(&mut store, project, "a.md", "# v1\n", 11);
+        // The file was atomically replaced (new inode, new bytes). Reopening
+        // the same path must return the live buffer — never a second buffer —
+        // so the registry can never export two descriptors for one path key.
+        let second = open_doc_with_inode(&mut store, project, "a.md", "# v2\n", 12);
+        assert_eq!(first, second);
+        assert_eq!(store.text(first), Some("# v1\n"));
+        let registry = store.export_document_registry(&HashMap::new());
+        let descriptors = &registry.get(&project).expect("project registry").documents;
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].id, first);
+    }
+
+    #[test]
+    fn contained_alias_and_dotdot_spellings_converge_on_one_buffer() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let first = open_doc_with_inode(&mut store, project, "src/a.md", "# v1\n", 21);
+        // Same inode under a different spelling: contained alias converges.
+        let alias = open_doc_with_inode(&mut store, project, "link.md", "# v1\n", 21);
+        assert_eq!(first, alias);
+        // Same file through a `..` spelling converges on the frozen path key.
+        let dotted = open_doc_with_inode(&mut store, project, "src/../src/a.md", "# v1\n", 21);
+        assert_eq!(first, dotted);
+        let registry = store.export_document_registry(&HashMap::new());
+        let descriptors = &registry.get(&project).expect("project registry").documents;
+        assert_eq!(descriptors.len(), 1);
+    }
+
+    #[test]
+    fn save_updates_file_key_and_reopen_still_converges() {
+        let mut store = DocumentStore::default();
+        let project = ProjectId::new();
+        let id = open_doc_with_inode(&mut store, project, "a.md", "# v1\n", 31);
+        // Atomic save replaces the inode; the store adopts the new identity.
+        let saved = omaterm_context::FileRevision {
+            size: 5,
+            mtime_secs: 2,
+            mtime_nanos: 0,
+            device: 1,
+            inode: 32,
+            content_digest: [1; 32],
+        };
+        store.mark_saved(id, saved);
+        let reopened = open_doc_with_inode(&mut store, project, "a.md", "# v1\n", 32);
+        assert_eq!(id, reopened);
+        let registry = store.export_document_registry(&HashMap::new());
+        let descriptors = &registry.get(&project).expect("project registry").documents;
+        assert_eq!(descriptors.len(), 1);
     }
 
     #[test]
