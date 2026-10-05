@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Placeholder OmaTerm icon. Maintainer will replace with final branding. -->
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="#1a1b26"/>
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="none" stroke="#7aa2f7" stroke-width="3"/>
+  <path d="M18 22l10 8-10 8" fill="none" stroke="#c0caf5" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="32" y1="42" x2="48" y2="42" stroke="#7aa2f7" stroke-width="4" stroke-linecap="round"/>
+</svg>

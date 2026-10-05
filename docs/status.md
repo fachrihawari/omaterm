@@ -2,6 +2,33 @@
 
 ## Current position
 
+### AUR packaging Fase 1 (Arch/Omarchy focus) — 2026-10-06
+
+- Dual AUR brand reservation: `packaging/arch/` (`omaterm`, source build)
+  and `packaging/arch-bin/` (`omaterm-bin`, prebuilt GitHub Release
+  tarball). Both install `omaterm` + `omaterm-desktop`, the new
+  `packaging/omaterm.desktop`, placeholder icon
+  `packaging/icons/omaterm.svg` (final branding follows), and both
+  licenses; the packages conflict with each other.
+- New `release` workflow: tag `v*` → build both binaries on ubuntu-22.04,
+  attach `omaterm-<ver>-x86_64.tar.gz` (+ `.sha256`) to the GitHub
+  Release, then pin tag-tarball/release-tarball checksums into copies of
+  each PKGBUILD + `.SRCINFO` and push to `omaterm` / `omaterm-bin` AUR
+  repos via `AUR_SSH_PRIVATE_KEY`. Manual dispatch is a tarball dry-run
+  only. `scripts/bump-aur.sh` is the local pre-tag version bumper
+  (regenerates `.SRCINFO` via makepkg); `scripts/check-aur-sync.py`
+  enforces PKGBUILD ↔ `.SRCINFO` sync and `pkgver` parity with both
+  binary crates, wired as a new CI `packaging` job.
+- One-off setup still required by maintainer: AUR account + SSH key,
+  empty `omaterm` / `omaterm-bin` submissions, `AUR_SSH_PRIVATE_KEY`
+  secret — see `packaging/README.md`. No tag pushed yet, so both
+  `sha256sums` remain `SKIP`. Not committed.
+- Verification: `python3 scripts/check-aur-sync.py` PASS,
+  `makepkg --printsrcinfo` round-trip identical for both packages,
+  release-workflow checksum-pinning seds simulated locally OK,
+  `bash -n` + YAML parse + `git diff --check` PASS. `namcap` unavailable
+  locally; first real AUR push pending the one-off setup + first tag.
+
 ### Full-height tab strip — 2026-10-05
 
 - Tab chips (terminal/diff/editor/restore) and the trailing new-tab button now

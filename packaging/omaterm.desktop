@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OmaTerm
+GenericName=Terminal Workspace
+Comment=Terminal-first developer workspace with semantic CLI automation
+Exec=omaterm-desktop
+Icon=omaterm
+Terminal=false
+Categories=Utility;TerminalEmulator;System;
+StartupWMClass=omaterm-desktop
+Keywords=terminal;workspace;development;

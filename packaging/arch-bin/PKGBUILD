@@ -1,0 +1,48 @@
+# Maintainer: OmaTerm contributors
+#
+# Prebuilt binary companion to `omaterm` (source build). Installs the same two
+# binaries (`omaterm` CLI + `omaterm-desktop` GUI) from the GitHub Release
+# tarball — no Rust toolchain required. Publishing both names reserves the
+# OmaTerm brand on AUR.
+#
+# Project license: MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE in the
+# release tarball). Dependency licenses: docs/dependencies.md in the repo.
+#
+# Release flow: the `release` GitHub workflow bumps pkgver + sha256sums from
+# the v<pkgver> release tarball on every release. Manual publishers MUST pin
+# the checksum (never ship SKIP) — see packaging/README.md.
+#
+# Tarball layout (defined by the release workflow):
+#   omaterm-<pkgver>-x86_64.tar.gz
+#   ├── omaterm            (CLI binary)
+#   ├── omaterm-desktop    (GPUI desktop binary)
+#   ├── omaterm.desktop    (XDG desktop entry)
+#   ├── omaterm.svg        (placeholder icon; final branding follows)
+#   ├── LICENSE-MIT
+#   └── LICENSE-APACHE
+
+pkgname=omaterm-bin
+_pkgname=omaterm
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Terminal-first developer workspace with semantic CLI automation (prebuilt binary)'
+arch=('x86_64')
+url='https://github.com/fachrihawari/omaterm'
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs' 'fontconfig' 'freetype2' 'libxkbcommon' 'libx11' 'libxcb' 'wayland' 'vulkan-icd-loader')
+optdepends=('otf-nerd-fonts: file-tree and git icon glyphs')
+provides=('omaterm')
+conflicts=('omaterm')
+source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
+# SKIP until the first v<pkgver> GitHub Release exists; the release workflow
+# pins this.
+sha256sums=('SKIP')
+
+package() {
+  install -Dm755 "$srcdir/omaterm" "$pkgdir/usr/bin/omaterm"
+  install -Dm755 "$srcdir/omaterm-desktop" "$pkgdir/usr/bin/omaterm-desktop"
+  install -Dm644 "$srcdir/omaterm.desktop" "$pkgdir/usr/share/applications/omaterm.desktop"
+  install -Dm644 "$srcdir/omaterm.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/omaterm.svg"
+  install -Dm644 "$srcdir/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 "$srcdir/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

@@ -1,0 +1,165 @@
+name: Release
+
+# Tag flow (the real release):
+#   1. maintainer runs scripts/bump-aur.sh <ver>, commits, pushes tag v<ver>
+#   2. `dist` builds both binaries and attaches
+#      omaterm-<ver>-x86_64.tar.gz to the GitHub Release
+#   3. `aur` pins the two checksums into copies of packaging/arch (+-bin)
+#      and pushes each to its AUR repo (omaterm / omaterm-bin)
+#
+# Manual dispatch is a dry-run: it builds the tarball and uploads it as a
+# workflow artifact without creating a release or touching AUR.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (X.Y.Z, without leading v)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  dist:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      # Release jobs must not restore/save shared caches (cache-poisoning
+      # risk on published artifacts): backend `local` only installs mbx.
+      # https://mr-boxington.jdx.dev/github-action#production-releases
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          backend: local
+
+      - name: Install native dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install --yes
+          libfontconfig1-dev libfreetype-dev libvulkan1 libwayland-dev
+          libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+          pkg-config
+
+      - name: Build release binaries
+        run: mbx build --release --locked --bin omaterm --bin omaterm-desktop
+
+      - name: Stage tarball
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          STAGE="dist/omaterm-$VER-x86_64"
+          mkdir -p "$STAGE"
+          cp target/release/omaterm target/release/omaterm-desktop "$STAGE/"
+          cp packaging/omaterm.desktop "$STAGE/"
+          cp packaging/icons/omaterm.svg "$STAGE/"
+          cp LICENSE-MIT LICENSE-APACHE "$STAGE/"
+          tar -czf "dist/omaterm-$VER-x86_64.tar.gz" -C dist "omaterm-$VER-x86_64"
+          (cd dist && sha256sum "omaterm-$VER-x86_64.tar.gz" > "omaterm-$VER-x86_64.tar.gz.sha256")
+          tar -tzf "dist/omaterm-$VER-x86_64.tar.gz"
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/omaterm-*.tar.gz
+            dist/omaterm-*.tar.gz.sha256
+
+      - name: Upload tarball artifact (dry-run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omaterm-dist
+          path: dist/omaterm-*.tar.gz*
+
+  aur:
+    needs: dist
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Resolve version and guard PKGBUILD sync
+        id: ver
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          for d in packaging/arch packaging/arch-bin; do
+            PKGVER=$(grep -m1 '^pkgver=' "$d/PKGBUILD" | cut -d= -f2)
+            if [[ "$PKGVER" != "$VER" ]]; then
+              echo "error: $d/PKGBUILD pkgver=$PKGVER != tag version $VER." >&2
+              echo "Run scripts/bump-aur.sh $VER before tagging." >&2
+              exit 1
+            fi
+          done
+          python3 scripts/check-aur-sync.py
+
+      - name: Compute checksums
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/v$VER.tar.gz" \
+            -o /tmp/src.tar.gz
+          echo "src_sha=$(sha256sum /tmp/src.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          gh release download "v$VER" \
+            -p "omaterm-$VER-x86_64.tar.gz" -O /tmp/bin.tar.gz \
+            --repo "${{ github.repository }}"
+          echo "bin_sha=$(sha256sum /tmp/bin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup AUR SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+          git config --global user.name "omaterm-release"
+          git config --global user.email "omaterm-release@users.noreply.github.com"
+
+      - name: Push omaterm (source) to AUR
+        env:
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/aur
+        run: |
+          rm -rf /tmp/aur-omaterm
+          git clone "ssh://aur@aur.archlinux.org/omaterm.git" /tmp/aur-omaterm
+          cp packaging/arch/PKGBUILD packaging/arch/.SRCINFO /tmp/aur-omaterm/
+          cd /tmp/aur-omaterm
+          sed -i "s/^sha256sums=.*/sha256sums=('${{ steps.sha.outputs.src_sha }}')/" PKGBUILD
+          sed -i "s/^\tsha256sums = .*/\tsha256sums = ${{ steps.sha.outputs.src_sha }}/" .SRCINFO
+          git add PKGBUILD .SRCINFO
+          git -c user.name="omaterm-release" -c user.email="omaterm-release@users.noreply.github.com" \
+            commit -m "v${{ steps.ver.outputs.version }}" || echo "nothing to commit"
+          git push origin master
+
+      - name: Push omaterm-bin to AUR
+        env:
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/aur
+        run: |
+          rm -rf /tmp/aur-omaterm-bin
+          git clone "ssh://aur@aur.archlinux.org/omaterm-bin.git" /tmp/aur-omaterm-bin
+          cp packaging/arch-bin/PKGBUILD packaging/arch-bin/.SRCINFO /tmp/aur-omaterm-bin/
+          cd /tmp/aur-omaterm-bin
+          sed -i "s/^sha256sums=.*/sha256sums=('${{ steps.sha.outputs.bin_sha }}')/" PKGBUILD
+          sed -i "s/^\tsha256sums = .*/\tsha256sums = ${{ steps.sha.outputs.bin_sha }}/" .SRCINFO
+          git add PKGBUILD .SRCINFO
+          git -c user.name="omaterm-release" -c user.email="omaterm-release@users.noreply.github.com" \
+            commit -m "v${{ steps.ver.outputs.version }}" || echo "nothing to commit"
+          git push origin master

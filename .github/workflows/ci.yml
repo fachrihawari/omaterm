@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -13,13 +16,21 @@ jobs:
         with:
           toolchain: 1.98.1
           components: rustfmt, clippy
+      - uses: jdx/mr-boxington-action@v1
       - name: Install native dependencies
         run: >-
           sudo apt-get update && sudo apt-get install --yes
           libfontconfig1-dev libfreetype-dev libvulkan1 libwayland-dev
           libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
           pkg-config
-      - run: cargo fmt --all --check
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo build --workspace
+      - run: mbx fmt --all --check
+      - run: mbx test --workspace
+      - run: mbx clippy --workspace --all-targets -- -D warnings
+      - run: mbx build --workspace
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check-aur-sync.py
+      - run: bash -n scripts/bump-aur.sh

@@ -1,0 +1,23 @@
+pkgbase = omaterm-bin
+	pkgdesc = Terminal-first developer workspace with semantic CLI automation (prebuilt binary)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/fachrihawari/omaterm
+	arch = x86_64
+	license = MIT
+	license = Apache-2.0
+	depends = gcc-libs
+	depends = fontconfig
+	depends = freetype2
+	depends = libxkbcommon
+	depends = libx11
+	depends = libxcb
+	depends = wayland
+	depends = vulkan-icd-loader
+	optdepends = otf-nerd-fonts: file-tree and git icon glyphs
+	provides = omaterm
+	conflicts = omaterm
+	source = omaterm-0.1.0-x86_64.tar.gz::https://github.com/fachrihawari/omaterm/releases/download/v0.1.0/omaterm-0.1.0-x86_64.tar.gz
+	sha256sums = SKIP
+
+pkgname = omaterm-bin
