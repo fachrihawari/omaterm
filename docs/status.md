@@ -2,6 +2,31 @@
 
 ## Current position
 
+### Full-height tab strip — 2026-10-05
+
+- Tab chips (terminal/diff/editor/restore) and the trailing new-tab button now
+  fill the full 42px header height; container side padding and inter-chip gaps
+  removed. Combined with the earlier sharp-corner change, the strip is flush
+  top and sides.
+- Native Wayland validation captured against the rebuilt release desktop with
+  an isolated project; screenshot: `/tmp/opencode/sharp-tabs/tabstrip-fullwidth.png`.
+- `mbx fmt --all --check`, `mbx test --workspace --quiet` (642 tests),
+  `mbx clippy --workspace --all-targets -- -D warnings`, and
+  `mbx build --release --bin omaterm-desktop` PASS. Existing transitive
+  `proc-macro-error2` future-incompatibility notice remains. Not committed.
+
+### Sharp tab strip — 2026-10-05
+
+- Removed rounded corners from terminal, diff, editor and restore tab chips,
+  plus the trailing new-tab button. The tab strip now uses Omarchy-style sharp
+  edges; the terminal pane dot remains intentionally circular.
+- Native Wayland validation captured against the rebuilt release desktop with
+  an isolated project; screenshot: `/tmp/opencode/sharp-tabs/omaterm-sharp-tabs.png`.
+- `cargo fmt --all --check`, `cargo test --workspace --quiet` (642 tests),
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo build --release --bin omaterm-desktop` PASS. Existing transitive
+  `proc-macro-error2` future-incompatibility notice remains. Not committed.
+
 ### Sidebar/tab-strip polish batch — 2026-10-05
 
 - Active terminal tabs no longer show the pane count (dot + name + close only).

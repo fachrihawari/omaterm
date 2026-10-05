@@ -12390,8 +12390,6 @@ impl WorkspaceView {
             .items_end()
             .min_w(px(0.0))
             .h_full()
-            .px_1()
-            .gap_1()
             .overflow_hidden();
         if let Some(project) = self.coordinator.active_project() {
             // One highlight across all tab kinds: the visible surface
@@ -12416,8 +12414,7 @@ impl WorkspaceView {
                         .items_center()
                         .gap_2()
                         .px_3()
-                        .h(px(36.0))
-                        .rounded_t_md(),
+                        .h_full(),
                     crate::ui::metrics::TAB_12,
                 )
                 .bg(rgb(if active {
@@ -12498,8 +12495,7 @@ impl WorkspaceView {
                         .items_center()
                         .gap_2()
                         .px_3()
-                        .h(px(36.0))
-                        .rounded_t_md()
+                        .h_full()
                         .border_t_2()
                         .border_color(rgb(if diff_active {
                             crate::ui::theme::BLUE
@@ -12586,8 +12582,7 @@ impl WorkspaceView {
                         .items_center()
                         .gap_2()
                         .px_3()
-                        .h(px(36.0))
-                        .rounded_t_md()
+                        .h_full()
                         .border_t_2()
                         .border_color(rgb(if active {
                             crate::ui::theme::BLUE
@@ -12683,8 +12678,7 @@ impl WorkspaceView {
                     .items_center()
                     .gap_2()
                     .px_3()
-                    .h(px(36.0))
-                    .rounded_t_md()
+                    .h_full()
                     .border_t_2()
                     .border_color(rgb(if unavailable {
                         crate::workbench::ERROR_TEXT
@@ -12758,12 +12752,10 @@ impl WorkspaceView {
             tabs = tabs.child(
                 div()
                     .w(px(32.0))
-                    .h(px(32.0))
-                    .mb(px(2.0))
+                    .h_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_md()
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .on_mouse_down(
                         MouseButton::Left,
