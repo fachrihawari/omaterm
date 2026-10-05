@@ -26,7 +26,7 @@ use omaterm_core::{
 
 use super::git::{
     GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, join_under_root, run_git,
-    run_git_cancellable, run_git_input,
+    run_git_cancellable, run_git_cancellable_no_index_diff, run_git_input, run_git_no_index_diff,
 };
 
 /// Largest `git diff` stdout kept in memory. Beyond this the parse still
@@ -59,6 +59,11 @@ pub struct DiffRequest {
     pub path: Option<PathBuf>,
     pub context_lines: u8,
     pub files_only: bool,
+    /// Untracked single path: render `empty → content` via
+    /// `git diff --no-index /dev/null <path>` instead of the index diff,
+    /// which never lists untracked files. Only honored with `path` set and
+    /// `staged == false`; otherwise ignored.
+    pub untracked: bool,
 }
 
 impl DiffRequest {
@@ -68,6 +73,7 @@ impl DiffRequest {
             path: None,
             context_lines: DEFAULT_DIFF_CONTEXT_LINES,
             files_only: false,
+            untracked: false,
         }
     }
 }
@@ -92,6 +98,13 @@ fn git_diff_with_cancel(
     request: &DiffRequest,
     cancelled: Option<&AtomicBool>,
 ) -> Result<DiffInfo, GitError> {
+    // Untracked files never appear in the index diff: compare against the
+    // empty file so the result reads as all-additions (VSCode parity).
+    // `--no-index` exits 1 when differences exist, which the runner below
+    // accepts for this argv only.
+    if request.untracked && !request.staged && request.path.is_some() {
+        return git_diff_no_index(root, request, cancelled);
+    }
     let context = request.context_lines.min(MAX_DIFF_CONTEXT_LINES);
     let context_arg = format!("-U{}", context);
     let mut args = vec![
@@ -145,6 +158,67 @@ fn git_diff_with_cancel(
         // `--src-prefix`): that reinterpretation IS the non-repository
         // signal, so it maps to `NotARepo` (empty envelope) like the
         // plain warning. Every other failure stays loud.
+        Err(GitError::GitFailed(message)) if message.contains("no-index") => {
+            Err(GitError::NotARepo)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Untracked single-path diff via `git diff --no-index /dev/null <path>`.
+/// Same caps, timeout, cancellation and parsing as the index diff; exit
+/// code 1 (differences found) is success here. An empty untracked file
+/// yields no hunks, exactly like an empty addition elsewhere.
+fn git_diff_no_index(
+    root: &Path,
+    request: &DiffRequest,
+    cancelled: Option<&AtomicBool>,
+) -> Result<DiffInfo, GitError> {
+    let context = request.context_lines.min(MAX_DIFF_CONTEXT_LINES);
+    let context_arg = format!("-U{context}");
+    let path = request.path.as_ref().expect("untracked diff needs a path");
+    let joined = join_under_root(root, path)?;
+    let relative = joined
+        .strip_prefix(std::fs::canonicalize(root).map_err(GitError::Io)?)
+        .map_err(|_| GitError::PathOutsideRoot)?;
+    if relative.as_os_str().is_empty() {
+        return Err(GitError::PathOutsideRoot);
+    }
+    let relative = relative.to_string_lossy().into_owned();
+    let args = [
+        "--literal-pathspecs",
+        "--no-optional-locks",
+        "-c",
+        "status.relativePaths=true",
+        "diff",
+        "--no-index",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        context_arg.as_str(),
+        "--",
+        "/dev/null",
+        relative.as_str(),
+    ];
+    let output = match cancelled {
+        Some(cancelled) => run_git_cancellable_no_index_diff(
+            root,
+            &[],
+            &args,
+            GIT_STATUS_TIMEOUT,
+            MAX_DIFF_BYTES,
+            cancelled,
+        ),
+        None => run_git_no_index_diff(root, &[], &args, GIT_STATUS_TIMEOUT, MAX_DIFF_BYTES),
+    };
+    match output {
+        Ok(output) => {
+            let mut info = parse_diff(&output.stdout, output.stdout_capped, request.files_only);
+            info.staged = false;
+            Ok(info)
+        }
         Err(GitError::GitFailed(message)) if message.contains("no-index") => {
             Err(GitError::NotARepo)
         }

@@ -14,7 +14,7 @@
 //! entries, accurate `truncated`). No syntax highlighting in v0.2: the
 //! desktop colors `±` lines in plain monospace.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
@@ -398,6 +398,11 @@ pub struct DiffPanel {
     empties: HashMap<(ProjectId, bool), DiffEmpty>,
     selected_file: HashMap<ProjectId, PathBuf>,
     selected_hunk: HashMap<ProjectId, usize>,
+    /// Untracked paths per project, synced from the latest `git status`.
+    /// `git diff` never contains these, so prune must keep them selected
+    /// instead of treating them as vanished (which flickered the preview
+    /// tab open then closed).
+    untracked: HashMap<ProjectId, HashSet<PathBuf>>,
     show_staged: HashMap<ProjectId, bool>,
     /// View-local preview tab in the main area (M15): which projects have
     /// the diff preview open. Never persisted, never on the wire — the
@@ -490,6 +495,7 @@ impl DiffPanel {
         self.empties.retain(|(owner, _), _| Some(*owner) == project);
         self.selected_file
             .retain(|owner, _| Some(*owner) == project);
+        self.untracked.retain(|owner, _| Some(*owner) == project);
         self.selected_hunk
             .retain(|owner, _| Some(*owner) == project);
         self.show_staged.retain(|owner, _| Some(*owner) == project);
@@ -532,6 +538,23 @@ impl DiffPanel {
 
     pub fn selected_file(&self, project: ProjectId) -> Option<&PathBuf> {
         self.selected_file.get(&project)
+    }
+
+    /// Sync the untracked set from the latest status. A stale entry can only
+    /// linger until the next status lands; it never dispatches anything.
+    pub fn set_untracked(&mut self, project: ProjectId, paths: HashSet<PathBuf>) {
+        if paths.is_empty() {
+            self.untracked.remove(&project);
+        } else {
+            self.untracked.insert(project, paths);
+        }
+    }
+
+    /// Whether `path` is currently untracked for `project`.
+    pub fn is_untracked(&self, project: ProjectId, path: &PathBuf) -> bool {
+        self.untracked
+            .get(&project)
+            .is_some_and(|paths| paths.contains(path))
     }
 
     pub fn selected_hunk(&self, project: ProjectId) -> usize {
@@ -613,9 +636,18 @@ impl DiffPanel {
     }
 
     /// Drop the file selection when it leaves the refreshed side, and
-    /// clamp the hunk cursor into the parsed hunk range.
+    /// clamp the hunk cursor into the parsed hunk range. Untracked files
+    /// never appear in `git diff`, so they are kept selected: the renderer
+    /// shows an explicit untracked state instead of closing the preview.
     fn prune_selection(&mut self, project: ProjectId, staged: bool) {
         if self.show_staged(project) != staged {
+            return;
+        }
+        if self
+            .selected_file
+            .get(&project)
+            .is_some_and(|selected| self.is_untracked(project, selected))
+        {
             return;
         }
         let visible = self
@@ -649,6 +681,9 @@ pub struct DiffRequestKey {
     pub active_cwd: Option<PathBuf>,
     pub staged: bool,
     pub context_lines: u8,
+    /// Whether the selected path is untracked: the worker renders
+    /// empty → content via `--no-index` instead of the index diff.
+    pub untracked: bool,
 }
 
 /// Spawn parameters for one selected diff. It is sent through a single worker
@@ -817,6 +852,7 @@ fn run_diff_spawn(spawn: DiffSpawn) -> DiffWorkerResult {
         spawn.key.staged,
         spawn.key.context_lines,
         spawn.key.path.clone(),
+        spawn.key.untracked,
         &spawn.cancelled,
     );
     DiffWorkerResult {
@@ -831,6 +867,7 @@ fn refresh_off_thread(
     staged: bool,
     context_lines: u8,
     path: Option<PathBuf>,
+    untracked: bool,
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<DiffInfo, DiffEmpty> {
     let resolved = omaterm_context::resolve_root(pinned, active_cwd);
@@ -845,6 +882,7 @@ fn refresh_off_thread(
         path,
         context_lines,
         files_only: false,
+        untracked,
     };
     match omaterm_context::git_diff_cancellable(&root, &request, cancelled) {
         Ok(info) => Ok(info),
@@ -927,6 +965,7 @@ mod tests {
             active_cwd: None,
             staged: false,
             context_lines: 3,
+            untracked: false,
         }
     }
 
@@ -977,6 +1016,10 @@ mod tests {
             },
             DiffRequestKey {
                 context_lines: 0,
+                ..key.clone()
+            },
+            DiffRequestKey {
+                untracked: true,
                 ..key.clone()
             },
         ];
@@ -1421,6 +1464,49 @@ mod tests {
     }
 
     #[test]
+    fn refresh_keeps_untracked_selection_and_prunes_once_tracked() {
+        let project = ProjectId::new();
+        let mut panel = panel_with(project, vec![]);
+        panel.select_file(project, PathBuf::from("new.txt"));
+        panel.set_untracked(project, [PathBuf::from("new.txt")].into_iter().collect());
+        assert!(panel.is_untracked(project, &PathBuf::from("new.txt")));
+        // An empty `git diff` (which never lists untracked files) must not
+        // drop the selection: that flickered the preview tab open then shut.
+        panel.apply_refresh(
+            project,
+            false,
+            DiffRefresh {
+                worker: std::thread::current().id(),
+                result: Ok(DiffInfo {
+                    files: vec![],
+                    truncated: false,
+                    staged: false,
+                }),
+            },
+        );
+        assert_eq!(
+            panel.selected_file(project),
+            Some(&PathBuf::from("new.txt"))
+        );
+        // Once the path leaves the untracked set, normal pruning resumes.
+        panel.set_untracked(project, HashSet::new());
+        assert!(!panel.is_untracked(project, &PathBuf::from("new.txt")));
+        panel.apply_refresh(
+            project,
+            false,
+            DiffRefresh {
+                worker: std::thread::current().id(),
+                result: Ok(DiffInfo {
+                    files: vec![],
+                    truncated: false,
+                    staged: false,
+                }),
+            },
+        );
+        assert!(panel.selected_file(project).is_none());
+    }
+
+    #[test]
     fn staged_toggle_defaults_unstaged_and_refreshes_swap_sides() {
         let project = ProjectId::new();
         let mut panel = DiffPanel::default();
@@ -1515,6 +1601,7 @@ mod tests {
             active_cwd: None,
             staged: false,
             context_lines: 3,
+            untracked: false,
         };
         spawn_diff_thread(
             caller,
@@ -1549,6 +1636,7 @@ mod tests {
                 active_cwd: Some(root.clone()),
                 staged: generation % 2 == 1,
                 context_lines: generation as u8,
+                untracked: false,
             };
             worker.submit(DiffSpawn {
                 key,
@@ -1564,6 +1652,7 @@ mod tests {
             active_cwd: Some(root),
             staged: true,
             context_lines: 63,
+            untracked: false,
         };
         let start = std::time::Instant::now();
         loop {

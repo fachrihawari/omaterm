@@ -11,8 +11,8 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString};
 
-/// Lucide asset names keyed by UI slot.
-pub const PANEL_LEFT_CLOSE: &str = "panel-left-close";
+/// Lucide asset names keyed by UI slot. (`panel-left-close.svg` stays
+/// vendored in `ICONS` for future use; no slot references it right now.)
 pub const PANEL_LEFT: &str = "panel-left";
 pub const PANEL_RIGHT: &str = "panel-right";
 pub const FOLDER_PLUS: &str = "folder-plus";

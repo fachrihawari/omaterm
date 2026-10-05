@@ -2,6 +2,79 @@
 
 ## Current position
 
+### Sidebar/tab-strip polish batch — 2026-10-05
+
+- Active terminal tabs no longer show the pane count (dot + name + close only).
+- Diff preview chips survive surface switches: switching to a terminal tab or
+  an editor document no longer closes the preview (only its own × does), and
+  clicking the `Diff:` chip reveals the preview again (previously a no-op
+  notify). Main area keeps following the active surface.
+- Removed the per-row Open in Terminal icon from the file tree; plain click
+  opens natively, Alt+click keeps the `FileCommand::Open` fallback.
+- Left sidebar header now reads OMATERM instead of PROJECTS.
+- Both sidebar toggles plus the collapsed reveal button share one
+  `sidebar_toggle` pill (pressed state + white/muted icon); the unused
+  `PANEL_LEFT_CLOSE` slot const was removed (SVG stays vendored).
+- Removed the redundant header new-project icon; the bottom Open Project
+  button (label + Ctrl+O hint) is the single entry point.
+- `cargo fmt --all --check`, `cargo test --workspace --quiet` (642 tests),
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo build --release --bin omaterm-desktop`, and `git diff --check` PASS.
+  Existing transitive `proc-macro-error2` future-incompatibility notice remains.
+- Manual Wayland validation pending for all six items. Not committed; working
+  tree also still holds the earlier untracked-diff/tab-highlight batch.
+
+### Untracked diff renders as all-additions; single tab highlight — 2026-10-05
+
+- Untracked preview now runs `git diff --no-index /dev/null <path>` and
+  renders empty → content (Added, green lines) like VSCode. The runner
+  accepts exit code 1 only on this argv; caps, timeout, cancellation,
+  binary handling and the existing parser are unchanged. IPC/CLI diffs stay
+  on the index sides.
+- Tab strip highlight now derives from the single `project_surface` source:
+  exactly one of selected terminal tab / diff chip / editor document looks
+  active. `editor_selected` remains selection memory (Ctrl+2 return intact).
+- `cargo fmt --all --check`, `cargo test --workspace --quiet` (642 tests,
+  incl. live-repo `untracked_file_renders_as_all_additions` and
+  `exactly_one_tab_kind_owns_the_active_highlight`),
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo build --release --bin omaterm-desktop`, and `git diff --check` PASS.
+  Existing transitive `proc-macro-error2` future-incompatibility notice remains.
+- Manual Wayland validation pending: untracked file shows full green content;
+  clicking terminal/file/diff leaves exactly one active tab. Not committed.
+
+### New-tab button trails the tab strip — 2026-10-05
+
+- Moved the `+` button after every chip (terminal tabs, diff preview, editor
+  documents, restore placeholders) so it always trails the strip instead of
+  wedging between tab kinds. Render-only reorder; behavior unchanged.
+- `cargo fmt --all --check`, `cargo test --workspace --quiet` (640 tests),
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo build --release --bin omaterm-desktop`, and `git diff --check` PASS.
+  Existing transitive `proc-macro-error2` future-incompatibility notice remains.
+- Manual Wayland validation pending: open a file and a diff, confirm `+` is
+  rightmost; close all, confirm the terminal-only strip looks unchanged.
+
+### Untracked diff preview no longer flickers closed — 2026-10-05
+
+- Root cause: the preview worker reads `git diff`, which never lists
+  untracked files. When the empty result landed, prune dropped the selection,
+  so the `Diff:` tab appeared on click and vanished on refresh.
+- `DiffPanel` now syncs the untracked set from each landed `git status` and
+  keeps untracked selections through diff refreshes; pruning resumes once a
+  path leaves the untracked set. The preview keeps its header (Stage/Open File)
+  and shows "Untracked file — no diff to show until it is staged."
+- Automated verification: `cargo fmt --all --check`,
+  `cargo test --workspace --quiet` (640 tests, incl. new
+  `refresh_keeps_untracked_selection_and_prunes_once_tracked`),
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo build --release --bin omaterm-desktop`,
+  `python3 scripts/check-docs.py`, and `git diff --check` PASS. Existing
+  transitive `proc-macro-error2` future-incompatibility notice remains.
+- Manual Wayland validation pending: click an untracked file and confirm the
+  preview stays open with the untracked state, then stage it and confirm the
+  staged diff appears. Not committed; working tree holds this fix.
+
 ### Theme-aligned discard dialog — 2026-10-05
 
 - Replaced GPUI's plain fallback prompt with an OmaTerm-themed renderer:

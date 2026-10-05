@@ -439,6 +439,53 @@ pub(crate) fn run_git_cancellable(
     )
 }
 
+/// `--no-index` diff runners: exit code 1 (differences found) is the
+/// expected success signal here, not a failure. Scoped to the untracked
+/// single-path diff; nothing else may use these.
+pub(crate) fn run_git_no_index_diff(
+    root: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+    timeout: Duration,
+    stdout_cap: usize,
+) -> Result<GitOutput, GitError> {
+    run_git_with(
+        "git",
+        root,
+        extra_env,
+        args,
+        GitInput {
+            allow_exit_one: true,
+            ..GitInput::default()
+        },
+        timeout,
+        stdout_cap,
+    )
+}
+
+pub(crate) fn run_git_cancellable_no_index_diff(
+    root: &Path,
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+    timeout: Duration,
+    stdout_cap: usize,
+    cancelled: &AtomicBool,
+) -> Result<GitOutput, GitError> {
+    run_git_with(
+        "git",
+        root,
+        extra_env,
+        args,
+        GitInput {
+            cancelled: Some(cancelled),
+            allow_exit_one: true,
+            ..GitInput::default()
+        },
+        timeout,
+        stdout_cap,
+    )
+}
+
 /// Bounded Git mutation with internally generated stdin. Callers pass only
 /// trusted context-owned bytes; IPC/UI never expose a generic patch channel.
 pub(crate) fn run_git_input(
@@ -467,6 +514,10 @@ pub(crate) fn run_git_input(
 struct GitInput<'a> {
     bytes: Option<&'a [u8]>,
     cancelled: Option<&'a AtomicBool>,
+    /// Accept exit code 1 as success. Only `git diff --no-index` uses this:
+    /// it exits 1 when differences exist, which is the expected outcome.
+    /// Never set for mutations or porcelain reads.
+    allow_exit_one: bool,
 }
 
 /// Same spawn with an explicit binary path. Production always passes
@@ -559,7 +610,7 @@ fn run_git_with(
     let input_result = input_rx
         .recv_timeout(remaining())
         .map_err(|_| GitError::Timeout)?;
-    if !status.success() {
+    if !status.success() && !(input.allow_exit_one && status.code() == Some(1)) {
         let text = String::from_utf8_lossy(&stderr);
         let trimmed = text.trim();
         // Case-insensitive: `status` reports "fatal: not a git

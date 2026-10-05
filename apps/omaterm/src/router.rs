@@ -1349,6 +1349,9 @@ impl CommandRouter {
             path: path.map(std::path::PathBuf::from),
             context_lines,
             files_only,
+            // IPC/CLI diffs stay on the index sides; the untracked
+            // empty→content rendering is a desktop preview concern.
+            untracked: false,
         };
         match omaterm_context::git_diff(&root, &request) {
             Ok(info) => {

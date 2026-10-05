@@ -56,6 +56,7 @@ fn show_request(staged: bool, path: Option<&str>) -> DiffRequest {
         path: path.map(PathBuf::from),
         context_lines: 3,
         files_only: false,
+        untracked: false,
     }
 }
 
@@ -244,5 +245,42 @@ fn binary_and_rename_shapes_parse_live() {
         .find(|file| file.path.as_path() == Path::new("blob.bin"))
         .expect("binary change must parse");
     assert!(binary.binary && binary.hunks.is_empty());
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn untracked_file_renders_as_all_additions() {
+    let repo = fixture("untracked");
+    std::fs::write(repo.join("tracked.txt"), b"base\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "init"]);
+    std::fs::write(repo.join("new.txt"), b"one\ntwo\n").unwrap();
+    // The plain index diff never lists untracked files.
+    let plain = git_diff(&repo, &show_request(false, Some("new.txt"))).unwrap();
+    assert!(plain.files.is_empty());
+    // The untracked request renders empty → content, like VSCode.
+    let request = DiffRequest {
+        untracked: true,
+        ..show_request(false, Some("new.txt"))
+    };
+    let info = git_diff(&repo, &request).unwrap();
+    assert!(!info.staged && !info.truncated);
+    assert_eq!(info.files.len(), 1);
+    let file = &info.files[0];
+    assert_eq!(file.path, PathBuf::from("new.txt"));
+    assert!(matches!(file.status, omaterm_core::DiffFileStatus::Added));
+    assert!(!file.binary && !file.hunks.is_empty());
+    assert!(
+        file.hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .all(|line| matches!(line.kind, omaterm_core::DiffLineKind::Addition))
+    );
+    let texts: Vec<&str> = info.files[0].hunks[0]
+        .lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect();
+    assert_eq!(texts, vec!["one", "two"]);
     let _ = std::fs::remove_dir_all(&repo);
 }

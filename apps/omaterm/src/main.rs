@@ -20,7 +20,7 @@ use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
     ErrorCode, FileCommand, FileEntry, GitCommand, OmaCommand, Pane, PaneCommand, PaneContent,
     PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis, SplitDirection, TabCommand,
-    TerminalCommand,
+    TabId, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -545,6 +545,61 @@ impl ActiveSurface {
             Self::Diff => Some(InputOwner::Diff),
             Self::Terminal => pane.map(InputOwner::Terminal),
         }
+    }
+}
+
+/// Which main-area tab owns the active highlight for a project. Single
+/// source of truth so a terminal tab, the diff preview, and editor
+/// documents can never look active at the same time. `editor_selected`
+/// stays pure selection memory (Ctrl+2 return) and never drives this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveTabKind {
+    Terminal(TabId),
+    Diff,
+    Editor(DocumentId),
+}
+
+fn active_tab_kind(surface: ActiveSurface, selected_tab: Option<TabId>) -> Option<ActiveTabKind> {
+    match surface {
+        ActiveSurface::Editor(document) => Some(ActiveTabKind::Editor(document)),
+        ActiveSurface::Diff => Some(ActiveTabKind::Diff),
+        ActiveSurface::Terminal => selected_tab.map(ActiveTabKind::Terminal),
+    }
+}
+
+/// Shared sidebar-toggle visuals for the left header, the right header,
+/// and the collapsed reveal button: a padded pill that reads pressed while
+/// its sidebar is visible, with a white icon when open and muted when
+/// closed. Callers add their own icon, handler, and outer margins.
+fn sidebar_toggle(visible: bool) -> Div {
+    div()
+        .p(px(6.0))
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(if visible {
+            crate::ui::theme::BORDER2
+        } else {
+            crate::ui::theme::HEADER_BG
+        }))
+        .bg(rgb(if visible {
+            crate::ui::theme::SELECTED_PROJECT_BG
+        } else {
+            crate::ui::theme::HEADER_BG
+        }))
+        .text_color(rgb(if visible {
+            0xFFFFFF
+        } else {
+            crate::ui::theme::MUTED
+        }))
+}
+
+/// Toggle icon color matching [`sidebar_toggle`]: white when its sidebar
+/// is visible, muted otherwise.
+fn sidebar_toggle_icon(visible: bool) -> u32 {
+    if visible {
+        0xFFFFFF
+    } else {
+        crate::ui::theme::MUTED
     }
 }
 
@@ -4241,6 +4296,22 @@ impl WorkspaceView {
                 self.git_in_flight = None;
             }
             self.git_panel.apply_refresh(project, refresh);
+            // Keep the diff panel's untracked set in lockstep: `git diff`
+            // never contains these paths, so the diff prune must not treat
+            // them as vanished (that flickered the preview tab closed).
+            match self.git_panel.status_for(project) {
+                Some(status) => self.diff_panel.set_untracked(
+                    project,
+                    status
+                        .untracked
+                        .iter()
+                        .map(|entry| entry.path.clone())
+                        .collect(),
+                ),
+                None => self
+                    .diff_panel
+                    .set_untracked(project, std::collections::HashSet::new()),
+            }
             self.git_refreshed_at.insert(project, Instant::now());
             landed = true;
         }
@@ -4322,6 +4393,10 @@ impl WorkspaceView {
             active_cwd: self.coordinator.cached_shell_cwd_for(project),
             staged: self.diff_panel.show_staged(project),
             context_lines: 3,
+            untracked: self
+                .diff_panel
+                .selected_file(project)
+                .is_some_and(|path| self.diff_panel.is_untracked(project, path)),
         });
         let mut landed = false;
         while let Some(result) = self.diff_worker.take_result() {
@@ -4375,6 +4450,9 @@ impl WorkspaceView {
             active_cwd,
             staged,
             context_lines: 3,
+            untracked: path
+                .as_ref()
+                .is_some_and(|path| self.diff_panel.is_untracked(project, path)),
         };
         if self.diff_in_flight.as_ref() == Some(&key) {
             return;
@@ -5191,14 +5269,26 @@ impl WorkspaceView {
         }
     }
 
-    /// Reveal the terminal surface for a project: close any diff preview and
-    /// drop the editor activation. Terminal selection is not touched here; the
-    /// caller decides whether a tab re-select is appropriate.
+    /// Reveal the terminal surface for a project: the diff preview chip
+    /// stays open (it only closes via its own ×) so focus can return to
+    /// it; the main area follows the surface. Terminal selection is not
+    /// touched here; the caller decides whether a tab re-select is
+    /// appropriate.
     fn reveal_terminal_surface(&mut self, project: ProjectId) {
-        self.diff_panel.close_preview(project);
         self.editor_active.remove(&project);
         self.active_surface.insert(project, ActiveSurface::Terminal);
         self.restore_input_owner();
+    }
+
+    /// Return focus to an already-open diff preview (same steps as the
+    /// Ctrl+3 route): the chip is only rendered while open, so there is
+    /// always a preview to reveal.
+    fn reveal_diff_surface(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        self.user_focus_action();
+        self.editor_active.remove(&project);
+        self.active_surface.insert(project, ActiveSurface::Diff);
+        self.restore_input_owner();
+        cx.notify();
     }
 
     /// Route Ctrl+1/2/3 to the distinct main-area surfaces (S7). Slots 2/3
@@ -10326,9 +10416,6 @@ impl WorkspaceView {
                 name
             };
             let path = row.path.clone();
-            // Cloned before the primary click closure moves `path`, so the
-            // explicit Open in Terminal control keeps its own handle.
-            let terminal_path = path.clone();
             let dimmed = row.loading && !is_selected;
             // Keep the file identity stable. The prior pseudo-horizontal
             // scroll swapped this basename for a full path and left icons
@@ -10441,41 +10528,9 @@ impl WorkspaceView {
                     // Long names ellipsize inside the fixed sidebar instead
                     // of stretching the row and breaking column alignment.
                     .child(label_view)
-                    .when(!is_dir, |row| {
-                        // S7 explicit terminal control: primary click opens
-                        // natively, this control keeps the unchanged semantic
-                        // `FileCommand::Open` submission.
-                        let term_project = project;
-                        let term_path = terminal_path.clone();
-                        row.child(
-                            div()
-                                .w(px(16.0))
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_sm()
-                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        view.files_panel.select(term_project, term_path.clone());
-                                        view.open_file_path(term_project, term_path.clone(), cx);
-                                        view.refresh_files(cx);
-                                    }),
-                                )
-                                .child(crate::ui::assets::icon(
-                                    crate::ui::assets::EXTERNAL,
-                                    12.0,
-                                    crate::ui::theme::MUTED,
-                                )),
-                        )
-                    })
+                    // The explicit Open in Terminal icon was removed: plain
+                    // click opens natively and Alt+click keeps the unchanged
+                    // semantic `FileCommand::Open` fallback.
                     .child(
                         div()
                             .w(px(14.0))
@@ -12108,17 +12163,7 @@ impl WorkspaceView {
                     .border_b_1()
                     .border_color(rgb(crate::ui::theme::BORDER))
                     .child(
-                        div()
-                            .p(px(6.0))
-                            .rounded(px(7.0))
-                            .border_1()
-                            .border_color(rgba(0x00000000))
-                            .text_color(rgb(crate::ui::theme::MUTED))
-                            .hover(|s| {
-                                s.bg(rgb(crate::ui::theme::CMD_HOVER_BG))
-                                    .border_color(rgb(crate::ui::theme::CMD_HOVER_BORDER))
-                                    .text_color(rgb(0xFFFFFF))
-                            })
+                        sidebar_toggle(true)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|view, _, window, cx| {
@@ -12133,40 +12178,17 @@ impl WorkspaceView {
                                 }),
                             )
                             .child(crate::ui::primitives::cmd_icon(
-                                crate::ui::assets::PANEL_LEFT_CLOSE,
+                                crate::ui::assets::PANEL_LEFT,
                                 16.0,
-                                crate::ui::theme::MUTED,
+                                sidebar_toggle_icon(true),
                             )),
                     )
                     .child(
                         div()
                             .text_color(rgb(crate::ui::theme::MUTED))
-                            .child("PROJECTS"),
+                            .child("OMATERM"),
                     )
-                    .child(
-                        div().flex_1().flex().flex_row().justify_end().child(
-                            div()
-                                .p(px(6.0))
-                                .rounded_sm()
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        view.open_project_directory(cx);
-                                    }),
-                                )
-                                .child(crate::ui::primitives::cmd_icon(
-                                    crate::ui::assets::FOLDER_PLUS,
-                                    14.0,
-                                    crate::ui::theme::MUTED,
-                                )),
-                        ),
-                    ),
+                    .child(div().flex_1()),
             )
             .child(
                 div()
@@ -12339,12 +12361,9 @@ impl WorkspaceView {
             .border_color(rgb(crate::ui::theme::BORDER));
         if !self.projects_visible {
             row = row.child(
-                div()
+                sidebar_toggle(false)
                     .ml(px(8.0))
                     .mr(px(4.0))
-                    .p(px(6.0))
-                    .rounded_sm()
-                    .text_color(rgb(crate::ui::theme::MUTED))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| {
@@ -12360,7 +12379,7 @@ impl WorkspaceView {
                     .child(crate::ui::primitives::cmd_icon(
                         crate::ui::assets::PANEL_LEFT,
                         16.0,
-                        crate::ui::theme::MUTED,
+                        sidebar_toggle_icon(false),
                     )),
             );
         }
@@ -12375,11 +12394,15 @@ impl WorkspaceView {
             .gap_1()
             .overflow_hidden();
         if let Some(project) = self.coordinator.active_project() {
+            // One highlight across all tab kinds: the visible surface
+            // decides, never the retained editor selection.
+            let active_kind =
+                active_tab_kind(self.project_surface(project.id), project.selected_tab);
             for (index, tab) in project.tabs.iter().enumerate() {
                 let project_id = project.id;
                 let tab_id = tab.id;
-                let active = project.selected_tab == Some(tab_id);
-                let (pane_count, attention) = self.tab_health(tab);
+                let active = active_kind == Some(ActiveTabKind::Terminal(tab_id));
+                let attention = self.tab_health(tab).1;
                 let dot = if attention {
                     crate::ui::theme::YELLOW
                 } else {
@@ -12425,14 +12448,7 @@ impl WorkspaceView {
                 .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
                 .child(tab.display_name(index + 1));
                 if active {
-                    chip = chip
-                        .border_t_2()
-                        .border_color(rgb(crate::ui::theme::BLUE))
-                        .child(
-                            div()
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .child(format!("{pane_count} panes")),
-                        );
+                    chip = chip.border_t_2().border_color(rgb(crate::ui::theme::BLUE));
                 }
                 let close_project = project_id;
                 let close_tab = tab_id;
@@ -12459,40 +12475,13 @@ impl WorkspaceView {
                 );
                 tabs = tabs.child(chip);
             }
-            tabs = tabs.child(
-                div()
-                    .w(px(32.0))
-                    .h(px(32.0))
-                    .mb(px(2.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .text_color(rgb(crate::ui::theme::MUTED))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            view.user_focus_action();
-                            if let Some(project) = view.coordinator.selected_project_id() {
-                                view.reveal_terminal_surface(project);
-                            }
-                            view.create_tab(cx);
-                        }),
-                    )
-                    .child(crate::ui::assets::icon(
-                        crate::ui::assets::PLUS,
-                        16.0,
-                        crate::ui::theme::MUTED,
-                    )),
-            );
+            // New-tab button renders after every chip (terminal tabs, diff
+            // preview, editor documents, restore placeholders) so it always
+            // trails the strip instead of wedging between tab kinds.
             // M15 diff preview chip: view-local, visually distinct from
-            // terminal tabs. Selecting a terminal tab or closing the chip
-            // returns to the terminal surface.
+            // terminal tabs. The chip stays open across surface switches
+            // (only its own × closes it); clicking it reveals the preview
+            // again while terminal tabs and editor chips keep working.
             if self.diff_panel.preview_open(project.id)
                 && let Some(path) = self.diff_panel.selected_file(project.id).cloned()
             {
@@ -12501,6 +12490,7 @@ impl WorkspaceView {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.to_string_lossy().into_owned());
                 let preview_id = project.id;
+                let diff_active = active_kind == Some(ActiveTabKind::Diff);
                 tabs = tabs.child(
                     div()
                         .flex()
@@ -12511,9 +12501,21 @@ impl WorkspaceView {
                         .h(px(36.0))
                         .rounded_t_md()
                         .border_t_2()
-                        .border_color(rgb(crate::ui::theme::BLUE))
-                        .bg(rgb(crate::ui::theme::ACTIVE_TAB_BG))
-                        .text_color(rgb(0xFFFFFF))
+                        .border_color(rgb(if diff_active {
+                            crate::ui::theme::BLUE
+                        } else {
+                            crate::ui::theme::BORDER
+                        }))
+                        .bg(rgb(if diff_active {
+                            crate::ui::theme::ACTIVE_TAB_BG
+                        } else {
+                            crate::ui::theme::PANEL
+                        }))
+                        .text_color(rgb(if diff_active {
+                            0xFFFFFF
+                        } else {
+                            crate::ui::theme::TEXT2
+                        }))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -12521,7 +12523,7 @@ impl WorkspaceView {
                                     return;
                                 }
                                 window.focus(&view.focus_handle);
-                                cx.notify();
+                                view.reveal_diff_surface(preview_id, cx);
                             }),
                         )
                         .child(format!("Diff: {name}"))
@@ -12575,7 +12577,7 @@ impl WorkspaceView {
                     .documents()
                     .is_dirty(document)
                     .unwrap_or(false);
-                let active = self.editor_selected.get(&project.id) == Some(&document);
+                let active = active_kind == Some(ActiveTabKind::Editor(document));
                 let open_project = project.id;
                 tabs = tabs.child(
                     div()
@@ -12753,6 +12755,37 @@ impl WorkspaceView {
                 );
                 tabs = tabs.child(chip);
             }
+            tabs = tabs.child(
+                div()
+                    .w(px(32.0))
+                    .h(px(32.0))
+                    .mb(px(2.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.user_focus_action();
+                            if let Some(project) = view.coordinator.selected_project_id() {
+                                view.reveal_terminal_surface(project);
+                            }
+                            view.create_tab(cx);
+                        }),
+                    )
+                    .child(crate::ui::assets::icon(
+                        crate::ui::assets::PLUS,
+                        16.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            );
         } else {
             tabs = tabs.child(
                 div()
@@ -12794,25 +12827,7 @@ impl WorkspaceView {
                 )
                 .child({
                     let visible = self.inspector_visible;
-                    div()
-                        .p(px(6.0))
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(rgb(if visible {
-                            crate::ui::theme::BORDER2
-                        } else {
-                            crate::ui::theme::HEADER_BG
-                        }))
-                        .bg(rgb(if visible {
-                            crate::ui::theme::SELECTED_PROJECT_BG
-                        } else {
-                            crate::ui::theme::HEADER_BG
-                        }))
-                        .text_color(rgb(if visible {
-                            0xFFFFFF
-                        } else {
-                            crate::ui::theme::MUTED
-                        }))
+                    sidebar_toggle(visible)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|view, _, window, cx| {
@@ -12829,11 +12844,7 @@ impl WorkspaceView {
                         .child(crate::ui::primitives::cmd_icon(
                             crate::ui::assets::PANEL_RIGHT,
                             16.0,
-                            if visible {
-                                0xFFFFFF
-                            } else {
-                                crate::ui::theme::MUTED
-                            },
+                            sidebar_toggle_icon(visible),
                         ))
                 }),
         )
@@ -15341,9 +15352,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveSurface, ExternalChoice, ExternalDecision, ExternalState, NativeEditorEdit,
-        apply_native_editor_edit, byte_to_utf16, restore_selection,
-        retain_queued_restore_descriptors, utf16_to_bytes,
+        ActiveSurface, ActiveTabKind, ExternalChoice, ExternalDecision, ExternalState,
+        NativeEditorEdit, active_tab_kind, apply_native_editor_edit, byte_to_utf16,
+        restore_selection, retain_queued_restore_descriptors, utf16_to_bytes,
     };
     use super::{
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
@@ -15356,7 +15367,7 @@ mod tests {
     use crate::editor::DocumentStore;
     use crate::editor::EditorCaret;
     use crate::metrics::PendingTiming;
-    use omaterm_core::{DocumentId, FileCommand, OmaCommand, ProjectId};
+    use omaterm_core::{DocumentId, FileCommand, OmaCommand, ProjectId, TabId};
     use std::sync::Arc;
 
     /// Open one plain document in a fresh store for pure state-machine tests.
@@ -15684,6 +15695,32 @@ mod tests {
         assert_eq!(ActiveSurface::Terminal.input_owner(None), None);
         assert!(InputOwner::Diff.terminal_pane().is_none());
         assert!(InputOwner::Diff.editor_document().is_none());
+    }
+
+    #[test]
+    fn exactly_one_tab_kind_owns_the_active_highlight() {
+        let tab = TabId::new();
+        let other_tab = TabId::new();
+        let document = DocumentId::new();
+        // The visible surface decides; the retained editor selection and
+        // the core selected tab never combine into two highlights.
+        assert_eq!(
+            active_tab_kind(ActiveSurface::Editor(document), Some(tab)),
+            Some(ActiveTabKind::Editor(document))
+        );
+        assert_eq!(
+            active_tab_kind(ActiveSurface::Diff, Some(tab)),
+            Some(ActiveTabKind::Diff)
+        );
+        assert_eq!(
+            active_tab_kind(ActiveSurface::Terminal, Some(tab)),
+            Some(ActiveTabKind::Terminal(tab))
+        );
+        assert_ne!(
+            active_tab_kind(ActiveSurface::Terminal, Some(tab)),
+            Some(ActiveTabKind::Terminal(other_tab))
+        );
+        assert_eq!(active_tab_kind(ActiveSurface::Terminal, None), None);
     }
 
     #[test]
