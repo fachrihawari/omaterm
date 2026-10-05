@@ -9,7 +9,7 @@
 
 VSCode Source Control conventions adapted to a compact sidebar: branch +
 ahead/behind badge, three change groups, per-file `stage` / `unstage` /
-`discard` (discard is arm-and-confirm, like paste/history), `refresh`
+`discard` (explicit Cancel / Discard Changes confirmation dialog), `refresh`
 (manual + debounced interval + post-`terminal.run` hint — never terminal
 text scraping), and a minimal commit message row. Commit uses
 `git commit -m` and repository-configured authorship; no amend/push UI.
@@ -26,7 +26,7 @@ projects show the empty state.
   `git.status` / `git.stage` / `git.unstage` / `git.discard` / `git.commit` wire methods +
   CLI, bounded entries + `truncated`.
 - [x] Stage/unstage operate on explicit file paths under the M12 root
-  (traversal-rejected); discard requires the two-step confirm.
+  (traversal-rejected); desktop discard requires explicit dialog confirmation.
 
 ## Prerequisites
 
@@ -41,7 +41,7 @@ projects show the empty state.
   result DTOs; error codes `not_a_repo`, `path_outside_root`,
   `git_failed` (message carries git stderr, bounded).
 - Desktop: Source Control section, group headers with counts, per-file
-  actions, discard arm banner.
+  actions, discard confirmation dialog (user-requested update 2026-10-05).
 - Protocol/bridge/CLI with human + `--json` rendering.
 
 ## Test Plan
@@ -58,7 +58,7 @@ projects show the empty state.
 - [x] Status + stage/unstage/discard/commit all work from panel and CLI
 - [x] Locked-index / missing-git / non-repo paths show explicit states
 - [x] No git process ever runs on the UI thread (timed assertion)
-- [x] Discard without confirm is impossible (test the arm window)
+- [x] Discard without confirm is impossible (dialog cancellation/stale-context gate unit-tested; native dialog validation pending)
 - [x] Quality gates green
 
 ## Non-Goals

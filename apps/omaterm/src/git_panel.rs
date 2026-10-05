@@ -1,5 +1,5 @@
 //! M14 Source Control panel state: contextual-sidebar git status rows plus the
-//! discard two-step arm.
+//! project-local selection and commit drafts.
 //!
 //! GPUI-free. Rendering and key/mouse wiring live in `main.rs`, which owns
 //! the worker threads: every git subprocess (root resolution's `rev-parse`
@@ -40,9 +40,6 @@ pub struct GitRefresh {
     pub result: Result<GitStatusInfo, GitEmpty>,
 }
 
-/// Arm window for the two-step discard confirm (paste/history precedent).
-pub const DISCARD_ARM_WINDOW: Duration = Duration::from_secs(8);
-
 /// Largest commit message the panel input accepts (mirrors core
 /// validation; the router re-validates).
 pub const MAX_COMMIT_MESSAGE_LEN: usize = 4 * 1024;
@@ -71,10 +68,6 @@ pub struct GitPanel {
     statuses: HashMap<ProjectId, GitStatusInfo>,
     empties: HashMap<ProjectId, GitEmpty>,
     selected: HashMap<ProjectId, PathBuf>,
-    discard_arm: Option<(ProjectId, PathBuf, Instant)>,
-    /// Bulk-discard arm: (project, captured target paths, armed-at).
-    /// Arming a single path clears this and vice versa.
-    discard_all_arm: Option<(ProjectId, Vec<PathBuf>, Instant)>,
     /// Collapsed change groups per project (`true` = staged group,
     /// `false` = working-tree group). View-local, never persisted.
     collapsed: HashSet<(ProjectId, bool)>,
@@ -87,6 +80,16 @@ pub struct GitPanel {
 }
 
 impl GitPanel {
+    /// Only the explicit destructive answer may commit a captured dialog target.
+    pub fn discard_confirmed(
+        answer: Option<usize>,
+        captured_project: ProjectId,
+        selected_project: Option<ProjectId>,
+        shutting_down: bool,
+    ) -> bool {
+        answer == Some(1) && selected_project == Some(captured_project) && !shutting_down
+    }
+
     pub fn status_for(&self, project: ProjectId) -> Option<&GitStatusInfo> {
         self.statuses.get(&project)
     }
@@ -122,20 +125,6 @@ impl GitPanel {
         self.empties.remove(&project);
         self.selected.remove(&project);
         self.commit_drafts.remove(&project);
-        if self
-            .discard_arm
-            .as_ref()
-            .is_some_and(|(armed_project, _, _)| *armed_project == project)
-        {
-            self.discard_arm = None;
-        }
-        if self
-            .discard_all_arm
-            .as_ref()
-            .is_some_and(|(armed_project, _, _)| *armed_project == project)
-        {
-            self.discard_all_arm = None;
-        }
         self.collapsed.retain(|(owner, _)| *owner != project);
     }
 
@@ -153,43 +142,6 @@ impl GitPanel {
             self.collapsed.insert((project, staged));
             true
         }
-    }
-
-    /// Arm bulk discard for captured paths. Returns true when a live arm
-    /// for the same project+paths already exists (the caller then dispatches
-    /// one `GitCommand::Discard` per path); otherwise arms and returns
-    /// false (the caller shows the banner). Arming a single path clears
-    /// this arm and vice versa.
-    pub fn arm_discard_all(&mut self, project: ProjectId, paths: &[PathBuf]) -> bool {
-        self.discard_arm = None;
-        if paths.is_empty() {
-            self.discard_all_arm = None;
-            return false;
-        }
-        if let Some((armed_project, armed_paths, at)) = &self.discard_all_arm
-            && *armed_project == project
-            && armed_paths.as_slice() == paths
-            && at.elapsed() < DISCARD_ARM_WINDOW
-        {
-            self.discard_all_arm = None;
-            return true;
-        }
-        self.discard_all_arm = Some((project, paths.to_vec(), Instant::now()));
-        false
-    }
-
-    /// Live bulk-arm text for the banner, if the arm is for this project
-    /// and still inside the window.
-    pub fn armed_all_text(&self, project: ProjectId) -> Option<String> {
-        let (armed_project, paths, at) = self.discard_all_arm.as_ref()?;
-        if *armed_project != project || at.elapsed() >= DISCARD_ARM_WINDOW {
-            return None;
-        }
-        Some(format!(
-            "Discard {} file{}? click discard-all again within 8s to confirm.",
-            paths.len(),
-            if paths.len() == 1 { "" } else { "s" }
-        ))
     }
 
     pub fn select(&mut self, project: ProjectId, path: PathBuf) {
@@ -252,37 +204,6 @@ impl GitPanel {
             });
         }
         rows
-    }
-
-    /// Arm discard for a path. Returns true when a live arm for the same
-    /// project+path already exists (the caller then dispatches
-    /// `GitCommand::Discard`); otherwise arms and returns false (the
-    /// caller shows the banner). Anything else disarms.
-    pub fn arm_discard(&mut self, project: ProjectId, path: &PathBuf) -> bool {
-        self.discard_all_arm = None;
-        if let Some((armed_project, armed_path, at)) = &self.discard_arm
-            && *armed_project == project
-            && armed_path == path
-            && at.elapsed() < DISCARD_ARM_WINDOW
-        {
-            self.discard_arm = None;
-            return true;
-        }
-        self.discard_arm = Some((project, path.clone(), Instant::now()));
-        false
-    }
-
-    /// Live arm text for the banner, if the arm is for this project and
-    /// still inside the window.
-    pub fn armed_text(&self, project: ProjectId) -> Option<String> {
-        let (armed_project, path, at) = self.discard_arm.as_ref()?;
-        if *armed_project != project || at.elapsed() >= DISCARD_ARM_WINDOW {
-            return None;
-        }
-        Some(format!(
-            "Discard '{}'? click discard again within 8s to confirm.",
-            path.to_string_lossy()
-        ))
     }
 
     /// Drop a path from the selection when it leaves the status.
@@ -517,25 +438,35 @@ mod tests {
     }
 
     #[test]
-    fn discard_arm_requires_a_second_confirm_inside_the_window() {
+    fn discard_dialog_cancellation_and_stale_context_never_confirm() {
         let project = ProjectId::new();
-        let mut panel = GitPanel::default();
-        let path = PathBuf::from("scratch.txt");
-        // First press arms; banner text names the path.
-        assert!(!panel.arm_discard(project, &path));
-        let banner = panel.armed_text(project).expect("armed banner");
-        assert!(banner.contains("scratch.txt"));
-        // Second press inside the window confirms and disarms.
-        assert!(panel.arm_discard(project, &path));
-        assert!(panel.armed_text(project).is_none());
-        // A different path re-arms instead of confirming.
-        assert!(!panel.arm_discard(project, &PathBuf::from("other.txt")));
-        // An expired arm never confirms: backdate past the window.
-        if let Some((_, _, at)) = panel.discard_arm.as_mut() {
-            *at = Instant::now() - DISCARD_ARM_WINDOW - Duration::from_secs(1);
+        for answer in [None, Some(0), Some(2)] {
+            assert!(!GitPanel::discard_confirmed(
+                answer,
+                project,
+                Some(project),
+                false
+            ));
         }
-        assert!(!panel.arm_discard(project, &PathBuf::from("other.txt")));
-        assert!(panel.armed_text(project).is_some());
+        assert!(GitPanel::discard_confirmed(
+            Some(1),
+            project,
+            Some(project),
+            false
+        ));
+        assert!(!GitPanel::discard_confirmed(
+            Some(1),
+            project,
+            Some(ProjectId::new()),
+            false
+        ));
+        assert!(!GitPanel::discard_confirmed(Some(1), project, None, false));
+        assert!(!GitPanel::discard_confirmed(
+            Some(1),
+            project,
+            Some(project),
+            true
+        ));
     }
 
     #[test]
@@ -588,29 +519,6 @@ mod tests {
         panel.toggle_collapsed(project, false);
         panel.clear_project(project);
         assert!(!panel.is_collapsed(project, false));
-    }
-
-    #[test]
-    fn bulk_discard_arm_confirms_matching_paths_inside_the_window() {
-        let project = ProjectId::new();
-        let mut panel = GitPanel::default();
-        let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")];
-        assert!(!panel.arm_discard_all(project, &paths));
-        let banner = panel.armed_all_text(project).expect("armed banner");
-        assert!(banner.contains("2 files"));
-        // Same paths confirm and disarm.
-        assert!(panel.arm_discard_all(project, &paths));
-        assert!(panel.armed_all_text(project).is_none());
-        // Different paths re-arm; single-path arm clears the bulk arm.
-        assert!(!panel.arm_discard_all(project, &[PathBuf::from("c.txt")]));
-        assert!(!panel.arm_discard(project, &PathBuf::from("c.txt")));
-        assert!(panel.armed_all_text(project).is_none());
-        assert!(panel.armed_text(project).is_some());
-        // Bulk arm clears the single arm.
-        assert!(!panel.arm_discard_all(project, &paths));
-        assert!(panel.armed_text(project).is_none());
-        // Empty paths never confirm.
-        assert!(!panel.arm_discard_all(project, &[]));
     }
 
     #[test]

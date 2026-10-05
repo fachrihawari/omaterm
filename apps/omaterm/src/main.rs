@@ -217,8 +217,9 @@ struct WorkspaceView {
     ctrlp_caret_on: bool,
     ctrlp_blink_active: bool,
     /// M14 Source Control panel: last-good statuses, explicit empty/error
-    /// states, selection, and the discard two-step arm (GPUI-free).
+    /// states and selection (GPUI-free).
     git_panel: git_panel::GitPanel,
+    git_discard_prompt_open: bool,
     /// Background status-refresh completions `(generation, project,
     /// outcome)`. Root resolution and `git status` both run on the worker
     /// (never the UI thread); stale generations drop on project switch.
@@ -1613,6 +1614,7 @@ impl WorkspaceView {
             ctrlp_caret_on: true,
             ctrlp_blink_active: false,
             git_panel: git_panel::GitPanel::default(),
+            git_discard_prompt_open: false,
             git_tx,
             git_rx,
             git_generation: 0,
@@ -7420,30 +7422,66 @@ impl WorkspaceView {
         }
     }
 
-    /// Discard with the two-step arm: the first press arms (banner), the
-    /// second press inside the window dispatches. No code path dispatches
-    /// without a live arm, so discard-without-confirm is impossible.
+    /// Capture the single-file target before asking for confirmation.
     fn git_discard_path(
         &mut self,
         project: ProjectId,
         path: std::path::PathBuf,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.shutting_down {
+        self.git_confirm_discard(project, vec![path], window, cx);
+    }
+
+    fn git_confirm_discard(
+        &mut self,
+        project: ProjectId,
+        paths: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down || self.git_discard_prompt_open || paths.is_empty() {
             return;
         }
-        if !self.git_panel.arm_discard(project, &path) {
-            cx.notify();
-            return;
-        }
-        let summary = summarize_paths(std::slice::from_ref(&path));
-        match self.dispatch_command(
-            OmaCommand::Git(GitCommand::Discard {
-                project,
-                paths: vec![path],
-            }),
+        self.git_discard_prompt_open = true;
+        let message = if paths.len() == 1 {
+            format!("Discard changes in '{}' ?", paths[0].display())
+        } else {
+            format!("Discard changes in {} files?", paths.len())
+        };
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            &message,
+            Some("This will restore tracked files and permanently delete selected untracked files. This action cannot be undone."),
+            &["Cancel", "Discard Changes"],
             cx,
-        ) {
+        );
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let answer = answer.await.ok();
+            let _ = weak.update(cx, |view, cx| {
+                view.git_discard_prompt_open = false;
+                if git_panel::GitPanel::discard_confirmed(
+                    answer,
+                    project,
+                    view.coordinator.selected_project_id(),
+                    view.shutting_down,
+                ) {
+                    view.git_apply_discard(project, paths, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn git_apply_discard(
+        &mut self,
+        project: ProjectId,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let summary = summarize_paths(&paths);
+        match self.dispatch_command(OmaCommand::Git(GitCommand::Discard { project, paths }), cx) {
             Ok(_) => {
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
@@ -7496,10 +7534,8 @@ impl WorkspaceView {
         }
     }
 
-    /// Discard every working-tree path behind the same two-step arm as
-    /// single-path discard: first press arms (banner names the count),
-    /// second press inside the window dispatches one discard per path.
-    fn git_discard_all(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+    /// Confirm the captured working-tree paths in one dialog.
+    fn git_discard_all(&mut self, project: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
         let paths: Vec<std::path::PathBuf> = self
             .git_panel
             .status_for(project)
@@ -7512,26 +7548,7 @@ impl WorkspaceView {
                     .collect()
             })
             .unwrap_or_default();
-        if paths.is_empty() {
-            return;
-        }
-        if !self.git_panel.arm_discard_all(project, &paths) {
-            cx.notify();
-            return;
-        }
-        let summary = summarize_paths(&paths);
-        match self.dispatch_command(OmaCommand::Git(GitCommand::Discard { project, paths }), cx) {
-            Ok(_) => {
-                self.git_dirty_hint = true;
-                self.diff_dirty_hint = true;
-                self.refresh_files(cx);
-                self.show_toast(format!("Discarded {summary}"), cx);
-            }
-            Err(error) => {
-                self.input_notice = Some(format!("Discard: {error}"));
-                cx.notify();
-            }
-        }
+        self.git_confirm_discard(project, paths, window, cx);
     }
 
     /// Select a changed path and open its M15 diff in the main-area
@@ -10508,27 +10525,6 @@ impl WorkspaceView {
             );
         };
         let mut bar = bar;
-        // Discard arm banners (two-step confirm, single and bulk).
-        if let Some(text) = self.git_panel.armed_text(project) {
-            bar = bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .bg(rgb(workbench::WARN_BG))
-                    .text_color(rgb(workbench::WARN_TEXT))
-                    .child(text),
-            );
-        }
-        if let Some(text) = self.git_panel.armed_all_text(project) {
-            bar = bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .bg(rgb(workbench::WARN_BG))
-                    .text_color(rgb(workbench::WARN_TEXT))
-                    .child(text),
-            );
-        }
         // Explicit empty/error states (never a spinner forever).
         // Failure details are truncated: the stable code drives agents,
         // never the full stderr text.
@@ -10821,20 +10817,17 @@ impl WorkspaceView {
         let actions: Vec<(&'static str, GitRowAction)> = if staged_group {
             vec![
                 (crate::ui::assets::UNSTAGE, GitRowAction::Unstage),
-                (crate::ui::assets::FILE_TEXT, GitRowAction::OpenFile),
                 (crate::ui::assets::EXTERNAL, GitRowAction::Open),
             ]
         } else if untracked {
             vec![
                 (crate::ui::assets::STAGE, GitRowAction::Stage),
                 (crate::ui::assets::TRASH, GitRowAction::Discard),
-                (crate::ui::assets::FILE_TEXT, GitRowAction::OpenFile),
             ]
         } else {
             vec![
                 (crate::ui::assets::STAGE, GitRowAction::Stage),
                 (crate::ui::assets::UNDO, GitRowAction::Discard),
-                (crate::ui::assets::FILE_TEXT, GitRowAction::OpenFile),
             ]
         };
         actions
@@ -10878,9 +10871,8 @@ impl WorkspaceView {
                         GitRowAction::Unstage => {
                             view.git_unstage_paths(project, vec![path.clone()], cx)
                         }
-                        GitRowAction::Discard => view.git_discard_path(project, path.clone(), cx),
-                        GitRowAction::OpenFile => {
-                            view.editor_open_document(project, open_path.clone(), cx)
+                        GitRowAction::Discard => {
+                            view.git_discard_path(project, path.clone(), window, cx)
                         }
                         GitRowAction::Open => view.open_file_path(project, open_path.clone(), cx),
                     }
@@ -10963,7 +10955,7 @@ impl WorkspaceView {
             )
             .child(div().flex_1());
         // Bulk actions: unstage-all on staged, stage-all + discard-all on
-        // working tree. Discard-all keeps the two-step arm.
+        // working tree. Discard-all opens the same confirmation dialog.
         if staged_group {
             header = header.child(
                 div()
@@ -11024,7 +11016,7 @@ impl WorkspaceView {
                                 }
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
-                                view.git_discard_all(project, cx);
+                                view.git_discard_all(project, window, cx);
                             }),
                         )
                         .child(crate::ui::primitives::cmd_icon(
@@ -11120,11 +11112,24 @@ impl WorkspaceView {
                                 .items_center()
                                 .justify_center()
                                 .flex_shrink_0()
-                                .child(crate::ui::assets::icon(
-                                    crate::ui::assets::FILE_TEXT,
-                                    16.0,
-                                    crate::ui::theme::MUTED,
-                                )),
+                                .text_color(rgb(files::icon_for(
+                                    &entry.path,
+                                    omaterm_core::FileKind::File,
+                                    false,
+                                )
+                                .color
+                                .unwrap_or(crate::ui::theme::MUTED)))
+                                .font_family("JetBrainsMono Nerd Font")
+                                .text_size(px(16.0))
+                                .child(
+                                    files::icon_for(
+                                        &entry.path,
+                                        omaterm_core::FileKind::File,
+                                        false,
+                                    )
+                                    .glyph
+                                    .to_string(),
+                                ),
                         })
                         .child(
                             div()
@@ -11289,7 +11294,7 @@ impl WorkspaceView {
                             }
                             cx.stop_propagation();
                             window.focus(&view.focus_handle);
-                            view.git_discard_path(project, discard_path.clone(), cx);
+                            view.git_discard_path(project, discard_path.clone(), window, cx);
                         }),
                     )
                     .child("Discard"),
@@ -13172,15 +13177,20 @@ impl WorkspaceView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(format!("{shell_label} · PID {pid}"))
                     .child(
-                        div()
-                            .truncate()
-                            .text_color(rgb(crate::ui::theme::MUTED))
-                            .child(path_label.clone()),
+                        crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
+                            .child(format!("{shell_label} · PID {pid}")),
                     )
                     .child(
-                        div()
+                        crate::ui::metrics::text_role(
+                            div().truncate(),
+                            crate::ui::metrics::META_10,
+                        )
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(path_label.clone()),
+                    )
+                    .child(
+                        crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10)
                             .cursor_pointer()
                             .text_color(rgb(crate::ui::theme::BLUE))
                             .child("Copy path")
@@ -13195,9 +13205,10 @@ impl WorkspaceView {
                     ),
             );
         }
-        // Only a Loaded snapshot for the viewed project is a verified result.
+        // Keep the last verified snapshot visible during refresh. Initial queries
+        // still show loading, and snapshots never cross project boundaries.
         let loaded = match (&self.process_query, viewing_project) {
-            (ProcessQueryView::Loaded, Some(project)) => self
+            (ProcessQueryView::Loaded | ProcessQueryView::Loading, Some(project)) => self
                 .process_list
                 .as_ref()
                 .filter(|(owner, _)| *owner == project)
@@ -13342,13 +13353,17 @@ impl WorkspaceView {
                     "Processes have not been queried yet.".to_string(),
                     crate::ui::theme::MUTED,
                 ),
-                ProcessQueryView::Loading => {
+                ProcessQueryView::Loading if loaded.is_none() => {
                     process_state_box("Querying processes…".to_string(), crate::ui::theme::MUTED)
                 }
-                ProcessQueryView::Loaded if process_entries.is_empty() => {
+                ProcessQueryView::Loaded | ProcessQueryView::Loading
+                    if process_entries.is_empty() =>
+                {
                     process_state_box("No child processes".to_string(), crate::ui::theme::MUTED)
                 }
-                ProcessQueryView::Loaded => process_rows.into_any_element(),
+                ProcessQueryView::Loaded | ProcessQueryView::Loading => {
+                    process_rows.into_any_element()
+                }
             });
             if let Some(pid) = armed_pid {
                 process_section = process_section.child(
@@ -13386,11 +13401,15 @@ impl WorkspaceView {
                     process_state_box(
                         match &self.process_query {
                             ProcessQueryView::Idle => "Ports have not been queried yet.".into(),
-                            ProcessQueryView::Loading => "Querying ports…".into(),
+                            ProcessQueryView::Loading if loaded.is_none() => {
+                                "Querying ports…".into()
+                            }
                             ProcessQueryView::Failed(_) => {
                                 "Ports unavailable: process query failed.".into()
                             }
-                            ProcessQueryView::Loaded => "No listening ports".into(),
+                            ProcessQueryView::Loaded | ProcessQueryView::Loading => {
+                                "No listening ports".into()
+                            }
                         },
                         crate::ui::theme::MUTED,
                     )
@@ -14724,8 +14743,6 @@ enum GitRowAction {
     Stage,
     Unstage,
     Discard,
-    /// Explicit native document open (S7 primary Git-row file action).
-    OpenFile,
     /// Explicit terminal-routed open (unchanged `FileCommand::Open`).
     Open,
 }
@@ -15289,6 +15306,7 @@ fn main() {
     Application::new()
         .with_assets(crate::ui::assets::OmaAssets)
         .run(|cx: &mut App| {
+            ui::prompt::install(cx);
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();

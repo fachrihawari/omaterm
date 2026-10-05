@@ -2,6 +2,65 @@
 
 ## Current position
 
+### Theme-aligned discard dialog — 2026-10-05
+
+- Replaced GPUI's plain fallback prompt with an OmaTerm-themed renderer:
+  dim backdrop, centered dark card, border/shadow, shared typography,
+  restore icon and separate footer with horizontal Cancel / Discard Changes
+  buttons. The destructive choice uses a red accent.
+- Cancel is selected initially; Tab/Shift+Tab and arrows move the visible focus
+  outline, Enter chooses the selected button, and Esc cancels. GPUI's prompt
+  handle retains response delivery and restores the previous focus on completion.
+- `cargo fmt --all --check`, `cargo test --workspace --quiet` (639 tests),
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo build --release --bin omaterm-desktop` PASS. The existing transitive
+  `proc-macro-error2` future-incompatibility notice remains.
+- `python3 scripts/check-docs.py` and `git diff --check`: PASS.
+- Manual Wayland visual/keyboard validation remains pending; no new desktop
+  interaction acceptance is claimed.
+
+### Git change icons and explicit discard dialog — 2026-10-05
+
+- Git rows reuse the Files panel's filename/extension icon mapping, colors and
+  Nerd Font glyphs for paths without a text badge, replacing the generic document
+  SVG (including Python and text files). Removed the redundant document-open
+  action from each row; Ctrl+click still opens the native editor.
+- User-requested replacement of timed double-click discard banners with a GPUI
+  warning dialog: Cancel / Discard Changes. Single-file, bulk and diff-toolbar
+  discard share captured target paths and the existing semantic discard command.
+  Cancel, dismissed prompts, invalid answers, a different selected project and
+  shutdown cannot dispatch; duplicate prompt admission is suppressed.
+- Removed obsolete arm-window state/tests; added cancellation/stale-context
+  confirmation coverage. `cargo fmt --all --check`,
+  `cargo test --workspace --quiet` (639 tests),
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo build --release --bin omaterm-desktop` PASS. Existing transitive
+  `proc-macro-error2` future-incompatibility notice remains.
+- Documentation checker and `git diff --check`: PASS.
+- Manual desktop validation is pending: verify Python/text icons, Cancel/Esc,
+  confirm tracked restore and untracked deletion, bulk confirmation and diff
+  toolbar confirmation in a disposable repository on Wayland. No new native
+  visual or interaction acceptance is claimed.
+
+### Info panel typography and refresh stability — 2026-10-05
+
+- Focused-shell identity now uses the shared 11px body role; CWD and Copy path
+  use the shared 10px metadata role instead of inheriting oversized default text.
+- During a process refresh, retain the last successful snapshot for the viewed
+  project, including process/port rows, counts and truncation notices. Only an
+  initial query without a matching snapshot renders loading placeholders.
+  Query errors remain explicit, and snapshots remain project-bound.
+- Automated verification: `cargo fmt --all --check`,
+  `cargo test --workspace --quiet` (640 tests),
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo build --release --bin omaterm-desktop`, and `git diff --check` PASS.
+  Clippy/build retain the existing transitive `proc-macro-error2`
+  future-incompatibility notice.
+- Manual desktop validation: pending; no new Wayland visual/interaction evidence
+  was collected. Next action: verify typography, manual/automatic refresh without
+  row/count/empty-state flashing, initial loading, query errors and project switches
+  using the rebuilt `target/release/omaterm-desktop`. M18 acceptance remains open.
+
 ### M18 correctness follow-up and release Wayland evidence — 2026-10-04
 
 Current checked-in source is **`2cc1ce4`**. The runtime evidence below identifies
