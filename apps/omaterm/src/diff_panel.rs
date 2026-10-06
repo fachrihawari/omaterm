@@ -11,8 +11,9 @@
 //! IPC/CLI (blueprint §62) — and set a refresh hint the poller consumes.
 //!
 //! Payloads are `omaterm_core::DiffInfo` (root-relative paths, bounded
-//! entries, accurate `truncated`). No syntax highlighting in v0.2: the
-//! desktop colors `±` lines in plain monospace.
+//! entries, accurate `truncated`). Code lines carry presentation-only spans
+//! from the shared built-in highlighter over the `±` line coloring
+//! (user-directed M15 scope change; each line tokenizes independently).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -20,6 +21,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 
 use omaterm_core::{DiffInfo, ProjectId};
+
+use crate::editor::{TokenSpan, tokenize};
 
 /// Explicit non-data state for a project+side. `NoRoot` (M12 `none`) and
 /// `NotRepo` render the empty state, never an error; failures name the
@@ -43,8 +46,8 @@ pub struct DiffRefresh {
 }
 
 /// Detail-view mode. Split is the mock default; both modes render from
-/// the same bounded unified hunks (no full-file fetch, no syntax
-/// highlighting in v0.2).
+/// the same bounded unified hunks (no full-file fetch). Code lines in both
+/// modes carry highlight spans computed in [`preview_rows`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DiffMode {
     #[default]
@@ -53,23 +56,28 @@ pub enum DiffMode {
 }
 
 /// One aligned body row for Split/Inline rendering: exactly one of the
-/// line numbers is present on add/delete-only rows.
+/// line numbers is present on add/delete-only rows. `tokens` holds
+/// presentation-only highlight spans over `text` (byte offsets into the
+/// final tab-expanded text); empty means plain rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlignedRow {
     pub old_no: Option<u32>,
     pub new_no: Option<u32>,
     pub kind: omaterm_core::DiffLineKind,
     pub text: String,
+    pub tokens: Vec<TokenSpan>,
     pub no_newline_at_end: bool,
 }
 
 /// One present side of a Split diff row. Split presentation deliberately keeps
 /// old/new text independent so replacement pairs never repeat one side's text.
+/// `tokens` mirrors [`AlignedRow::tokens`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitCell {
     pub line_no: Option<u32>,
     pub kind: omaterm_core::DiffLineKind,
     pub text: String,
+    pub tokens: Vec<TokenSpan>,
     pub no_newline_at_end: bool,
 }
 
@@ -109,6 +117,19 @@ pub enum PreviewRow {
     },
     HunkTruncated,
     FileTruncated,
+}
+
+/// Presentation-only syntax spans for one diff content line. The language
+/// comes from the diffed file's path; binary files and unknown extensions
+/// yield no spans (plain rendering). Each line tokenizes independently, so
+/// multiline strings/comments spanning hunk lines are a documented subset
+/// gap — same single-pass built-in highlighter as the editor, no new
+/// dependencies, no UI-thread filesystem work (pure text in, spans out).
+pub fn highlight_diff_line(
+    language: omaterm_context::EditorLanguage,
+    text: &str,
+) -> Vec<TokenSpan> {
+    tokenize(language, text)
 }
 
 pub fn can_stage_hunk(
@@ -202,13 +223,24 @@ pub fn preview_rows(
         rows.push(PreviewRow::FileTruncated);
     }
     // Read-only presentation uses four spaces per tab. Copy/stage still read
-    // the untouched source DTO, preserving the exact Git bytes.
+    // the untouched source DTO, preserving the exact Git bytes. Highlight
+    // spans are computed over the final tab-expanded text so renderer offsets
+    // stay valid; binary files keep plain rows.
+    let language = if file.binary {
+        omaterm_context::EditorLanguage::Plain
+    } else {
+        omaterm_context::detect_language(&file.path)
+    };
     for row in &mut rows {
         match row {
-            PreviewRow::Inline(line) => line.text = line.text.replace('\t', "    "),
+            PreviewRow::Inline(line) => {
+                line.text = line.text.replace('\t', "    ");
+                line.tokens = highlight_diff_line(language, &line.text);
+            }
             PreviewRow::Split(line) => {
                 for cell in line.old.iter_mut().chain(line.new.iter_mut()) {
                     cell.text = cell.text.replace('\t', "    ");
+                    cell.tokens = highlight_diff_line(language, &cell.text);
                 }
             }
             _ => {}
@@ -289,6 +321,7 @@ pub fn align_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<AlignedRow> {
                     new_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    tokens: Vec::new(),
                     no_newline_at_end: line.no_newline_at_end,
                 });
                 old_no = old_no.and_then(|number| number.checked_add(1));
@@ -300,6 +333,7 @@ pub fn align_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<AlignedRow> {
                     new_no: None,
                     kind: line.kind,
                     text: line.text.clone(),
+                    tokens: Vec::new(),
                     no_newline_at_end: line.no_newline_at_end,
                 });
                 old_no = old_no.and_then(|number| number.checked_add(1));
@@ -310,6 +344,7 @@ pub fn align_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<AlignedRow> {
                     new_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    tokens: Vec::new(),
                     no_newline_at_end: line.no_newline_at_end,
                 });
                 new_no = new_no.and_then(|number| number.checked_add(1));
@@ -337,12 +372,14 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
                     line_no: old_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    tokens: Vec::new(),
                     no_newline_at_end: line.no_newline_at_end,
                 }),
                 new: Some(SplitCell {
                     line_no: new_no,
                     kind: line.kind,
                     text: line.text.clone(),
+                    tokens: Vec::new(),
                     no_newline_at_end: line.no_newline_at_end,
                 }),
             });
@@ -362,6 +399,7 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
                         line_no: old_no,
                         kind: line.kind,
                         text: line.text.clone(),
+                        tokens: Vec::new(),
                         no_newline_at_end: line.no_newline_at_end,
                     });
                     old_no = old_no.and_then(|number| number.checked_add(1));
@@ -371,6 +409,7 @@ pub fn split_hunk(hunk: &omaterm_core::DiffHunkInfo) -> Vec<SplitRow> {
                         line_no: new_no,
                         kind: line.kind,
                         text: line.text.clone(),
+                        tokens: Vec::new(),
                         no_newline_at_end: line.no_newline_at_end,
                     });
                     new_no = new_no.and_then(|number| number.checked_add(1));
@@ -1258,6 +1297,143 @@ mod tests {
         );
         assert!(matches!(rows[303], PreviewRow::HunkHeader { hunk: 1, .. }));
         assert!(matches!(rows.last(), Some(PreviewRow::Inline(_))));
+    }
+
+    fn code_hunk() -> DiffHunkInfo {
+        DiffHunkInfo {
+            id: 7,
+            header: "@@ -1,2 +1,2 @@".into(),
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 2,
+            lines: vec![
+                DiffLineInfo {
+                    kind: DiffLineKind::Deletion,
+                    text: "let old = 1; // gone".into(),
+                    no_newline_at_end: false,
+                },
+                DiffLineInfo {
+                    kind: DiffLineKind::Addition,
+                    text: "let在他 = \"x\"; // 界".into(),
+                    no_newline_at_end: false,
+                },
+            ],
+            truncated: false,
+        }
+    }
+
+    fn spans_valid(text: &str, spans: &[TokenSpan]) {
+        let mut end = 0;
+        for span in spans {
+            assert!(span.start >= end, "overlap at {span:?}");
+            assert!(text.is_char_boundary(span.start));
+            assert!(text.is_char_boundary(span.start + span.len));
+            assert!(span.start + span.len <= text.len());
+            end = span.start + span.len;
+        }
+    }
+
+    #[test]
+    fn preview_rows_highlight_code_lines_by_file_language() {
+        let mut file = file("src/main.rs", 0);
+        file.hunks = vec![code_hunk()];
+        file.hunk_count = 1;
+        for mode in [DiffMode::Inline, DiffMode::Split] {
+            let rows = preview_rows(&file, mode, false);
+            // Inline yields one row per hunk line; Split pairs the
+            // deletion/addition run into a single row with two cells.
+            let cells: Vec<(&str, &[TokenSpan])> = rows
+                .iter()
+                .flat_map(|row| match row {
+                    PreviewRow::Inline(line) => {
+                        vec![(line.text.as_str(), line.tokens.as_slice())]
+                    }
+                    PreviewRow::Split(split) => split
+                        .old
+                        .iter()
+                        .chain(split.new.iter())
+                        .map(|cell| (cell.text.as_str(), cell.tokens.as_slice()))
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            assert_eq!(cells.len(), 2, "{mode:?}");
+            for (text, tokens) in cells {
+                assert!(!tokens.is_empty(), "{mode:?} {text:?} has no spans");
+                assert!(
+                    tokens
+                        .iter()
+                        .any(|span| span.kind == crate::editor::TokenKind::Keyword
+                            && &text[span.start..span.start + span.len] == "let"),
+                    "{mode:?} {text:?} missing `let` keyword"
+                );
+                spans_valid(text, tokens);
+            }
+        }
+    }
+
+    #[test]
+    fn preview_rows_stay_plain_for_binary_unknown_and_tabbed_lines() {
+        // Unknown extension: no spans.
+        let mut plain = file("notes.txt", 0);
+        plain.hunks = vec![code_hunk()];
+        plain.hunk_count = 1;
+        let rows = preview_rows(&plain, DiffMode::Inline, false);
+        assert!(
+            rows.iter()
+                .filter_map(|row| match row {
+                    PreviewRow::Inline(line) => Some(line),
+                    _ => None,
+                })
+                .all(|line| line.tokens.is_empty())
+        );
+        // Binary: no spans even for a highlightable extension.
+        let mut binary = file("src/main.rs", 0);
+        binary.binary = true;
+        binary.hunks = vec![code_hunk()];
+        binary.hunk_count = 1;
+        let rows = preview_rows(&binary, DiffMode::Inline, false);
+        assert!(
+            rows.iter()
+                .filter_map(|row| match row {
+                    PreviewRow::Inline(line) => Some(line),
+                    _ => None,
+                })
+                .all(|line| line.tokens.is_empty())
+        );
+        // Tabs expand before tokenizing: offsets address the final text.
+        let mut tabbed = file("run.sh", 0);
+        tabbed.hunks = vec![DiffHunkInfo {
+            id: 8,
+            header: "@@ -1,1 +1,1 @@".into(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![DiffLineInfo {
+                kind: DiffLineKind::Addition,
+                text: "\t# hi".into(),
+                no_newline_at_end: false,
+            }],
+            truncated: false,
+        }];
+        tabbed.hunk_count = 1;
+        let rows = preview_rows(&tabbed, DiffMode::Inline, false);
+        let line = rows
+            .iter()
+            .find_map(|row| match row {
+                PreviewRow::Inline(line) => Some(line),
+                _ => None,
+            })
+            .expect("one inline row");
+        assert_eq!(line.text, "    # hi");
+        assert_eq!(line.tokens.len(), 1);
+        assert_eq!(
+            &line.text[line.tokens[0].start..line.tokens[0].start + line.tokens[0].len],
+            "# hi"
+        );
+        spans_valid(&line.text, &line.tokens);
     }
 
     #[test]

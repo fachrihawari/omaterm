@@ -64,6 +64,11 @@ struct WorkspaceView {
     selections: HashMap<SessionId, SelectionRange>,
     selecting: Option<PaneId>,
     scroll_indicator_until: HashMap<SessionId, Instant>,
+    /// Fractional terminal wheel remainder in line units, per session.
+    /// Trackpad/pixel scroll streams arrive as sub-line deltas; they
+    /// accumulate here until a whole line can move instead of forcing a
+    /// full-line jump (and a full viewport clone + repaint) per event.
+    terminal_scroll_remainder: HashMap<SessionId, f32>,
     grid_origins: HashMap<PaneId, Rc<Cell<gpui::Point<Pixels>>>>,
     /// Last grid applied to each session. Compared in `render` so the PTY
     /// follows pane geometry without locking sessions on every frame.
@@ -172,13 +177,13 @@ struct WorkspaceView {
     /// Whether the inspector search box owns the keyboard. Clicking it
     /// focuses; Esc/Enter, tab switches, and terminal clicks release it.
     files_search_focused: bool,
-    /// Wheel scroll offset into the tree rows (row-granular, clamped every
-    /// render). Reset on project switch.
-    files_scroll_rows: usize,
-    /// Fractional wheel/trackpad remainder in row units. Retains small native
-    /// deltas until a complete row can be shown instead of forcing a jump.
-    files_scroll_remainder: f32,
-    /// Thumb drag in flight: (last pointer position, sub-row accumulator).
+    /// Native smooth-scroll handle for the inspector file tree. Wheel,
+    /// trackpad and thumb-drag deltas flow through GPUI's pixel scroll
+    /// offset (like the editor and palette lists) instead of jumping whole
+    /// 28px rows per event. Reset to top on project switch/filter changes.
+    files_scroll_handle: UniformListScrollHandle,
+    /// Thumb drag in flight: last pointer y (fractional positions land
+    /// directly on the native pixel offset, so no sub-row accumulator).
     /// Cleared on release, pane clicks, and tab switches (no stuck drags).
     files_vdrag: Option<(f32, f32)>,
     files_last_resolve: Instant,
@@ -1517,6 +1522,14 @@ enum SpawnRetry {
 
 /// How long the scroll thumb lingers after the last scroll input.
 const SCROLL_INDICATOR_FADE_MS: u64 = 800;
+/// Bound for the per-session terminal wheel accumulator (line units). A
+/// large fling can owe several lines at once, but the debt never grows
+/// without bound and never survives a direction reversal unclamped.
+const MAX_WHEEL_ACCUM_LINES: f32 = 32.0;
+/// Upper bound for arrow-key repeats sent to full-screen apps per wheel
+/// event. Large enough that fast flicks move visibly, small enough that
+/// one fling cannot flood the PTY with unbounded input.
+const MAX_ALT_SCREEN_WHEEL_REPEATS: u32 = 10;
 
 impl WorkspaceView {
     /// Load general `config.toml` settings with explicit failure reporting.
@@ -1575,6 +1588,7 @@ impl WorkspaceView {
             selections: HashMap::new(),
             selecting: None,
             scroll_indicator_until: HashMap::new(),
+            terminal_scroll_remainder: HashMap::new(),
             grid_origins: HashMap::new(),
             grid_sizes: HashMap::new(),
             fonts: None,
@@ -1628,8 +1642,7 @@ impl WorkspaceView {
             files_root_caps: HashMap::new(),
             files_search: String::new(),
             files_search_focused: false,
-            files_scroll_rows: 0,
-            files_scroll_remainder: 0.0,
+            files_scroll_handle: UniformListScrollHandle::new(),
             files_vdrag: None,
             files_last_resolve: Instant::now()
                 .checked_sub(Duration::from_secs(60))
@@ -3165,6 +3178,7 @@ impl WorkspaceView {
         }
         self.selections.remove(&session_id);
         self.scroll_indicator_until.remove(&session_id);
+        self.terminal_scroll_remainder.remove(&session_id);
         self.grid_origins.remove(&pane);
         if self.selecting == Some(pane) {
             self.selecting = None;
@@ -4112,8 +4126,8 @@ impl WorkspaceView {
         if switched {
             self.files_event.store(false, Ordering::Release);
             self.files_last_resolve = Instant::now();
-            self.files_scroll_rows = 0;
-            self.files_scroll_remainder = 0.0;
+            self.files_scroll_handle
+                .scroll_to_item(0, ScrollStrategy::Top);
             // New generation retires in-flight fetches; other projects'
             // caches drop so memory stays bounded by one project.
             self.files_generation = self.files_generation.wrapping_add(1);
@@ -7440,12 +7454,7 @@ impl WorkspaceView {
     /// Token foregrounds: plan palette hues; comments use a muted green
     /// first-delivery approximation until a full token palette lands.
     fn editor_token_color(kind: editor::TokenKind) -> u32 {
-        match kind {
-            editor::TokenKind::Comment => 0x6A9955,
-            editor::TokenKind::String => crate::ui::theme::ORANGE,
-            editor::TokenKind::Number => crate::ui::theme::CYAN,
-            editor::TokenKind::Keyword => crate::ui::theme::PURPLE,
-        }
+        token_color(kind)
     }
 
     /// Shaped pixel width of a display-expanded prefix in the editor face.
@@ -8864,8 +8873,8 @@ impl WorkspaceView {
             "escape" => {
                 self.files_search.clear();
                 self.files_search_focused = false;
-                self.files_scroll_rows = 0;
-                self.files_scroll_remainder = 0.0;
+                self.files_scroll_handle
+                    .scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
             }
             "enter" | "return" | "kpenter" => {
@@ -8907,8 +8916,8 @@ impl WorkspaceView {
             }
             "backspace" => {
                 self.files_search.pop();
-                self.files_scroll_rows = 0;
-                self.files_scroll_remainder = 0.0;
+                self.files_scroll_handle
+                    .scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
             }
             _ => {
@@ -8922,8 +8931,8 @@ impl WorkspaceView {
                     && self.files_search.len() < 256
                 {
                     self.files_search.push(ch);
-                    self.files_scroll_rows = 0;
-                    self.files_scroll_remainder = 0.0;
+                    self.files_scroll_handle
+                        .scroll_to_item(0, ScrollStrategy::Top);
                     cx.notify();
                 }
             }
@@ -9839,11 +9848,22 @@ impl WorkspaceView {
     }
 
     fn flash_scroll_indicator(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let already_pending = self
+            .scroll_indicator_until
+            .get(&session_id)
+            .is_some_and(|deadline| *deadline > now);
         self.scroll_indicator_until.insert(
             session_id,
-            Instant::now() + Duration::from_millis(SCROLL_INDICATOR_FADE_MS),
+            now + Duration::from_millis(SCROLL_INDICATOR_FADE_MS),
         );
         cx.notify();
+        // Extend the existing deadline when a fade-out is already pending
+        // instead of spawning one timer per wheel event; trackpad streams
+        // would otherwise pile up dozens of redundant wakeups per second.
+        if already_pending {
+            return;
+        }
         cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
             Timer::after(Duration::from_millis(SCROLL_INDICATOR_FADE_MS + 50)).await;
             let _ = weak.update(cx, |view, cx| {
@@ -9880,13 +9900,23 @@ impl WorkspaceView {
             }
             ScrollDelta::Lines(point) => point.y,
         };
-        let mut steps = dy_lines.round() as i32;
-        if steps == 0 && dy_lines != 0.0 {
-            steps = dy_lines.signum() as i32;
-        }
+        // Accumulate sub-line trackpad deltas until a whole line is owed.
+        // The previous `round() || signum()` forced every tiny pixel tick
+        // into a full-line jump plus a complete viewport clone/repaint, so
+        // smooth touchpad streams felt jumpy and cost a repaint per event.
+        let entry = self
+            .terminal_scroll_remainder
+            .entry(session_id)
+            .or_insert(0.0);
+        *entry += dy_lines;
+        // Bound the accumulator so a direction reversal never inherits a
+        // stale multi-line debt (and a huge fling stays a bounded scroll).
+        *entry = entry.clamp(-MAX_WHEEL_ACCUM_LINES, MAX_WHEEL_ACCUM_LINES);
+        let steps = entry.trunc() as i32;
         if steps == 0 {
             return;
         }
+        *entry -= steps as f32;
 
         let Ok(session) = handle.lock() else {
             return;
@@ -9895,7 +9925,10 @@ impl WorkspaceView {
             let app_cursor = session.app_cursor();
             drop(session);
             let key = if steps > 0 { Key::Up } else { Key::Down };
-            let repeats = steps.unsigned_abs().min(3) as usize;
+            // Full-screen apps (less, vim, …) consume arrow keys; bound the
+            // repeats so a large fling cannot flood the PTY, but allow more
+            // than a couple of lines so fast scrolling does not feel stuck.
+            let repeats = steps.unsigned_abs().min(MAX_ALT_SCREEN_WHEEL_REPEATS) as usize;
             for _ in 0..repeats {
                 let bytes = encode_key(&KeyEvent {
                     key: key.clone(),
@@ -10405,23 +10438,27 @@ impl WorkspaceView {
 
 impl WorkspaceView {
     /// Vertical tree scrollbar: a thin rail beside the rows with a
-    /// proportional thumb. Wheel scrolls, press-and-slide on the rail
-    /// drags (deltas only — no window geometry needed), releases end the
-    /// drag; stuck drags clear on the next pane click or row action.
-    /// Hidden entirely when everything fits (nothing to scroll).
+    /// proportional thumb driven by the native list's pixel offset.
+    /// Press-and-slide on the rail drags (deltas only — no window geometry
+    /// needed), releases end the drag; stuck drags clear on the next pane
+    /// click or row action. Hidden entirely when everything fits.
     fn render_tree_vscrollbar(
         &mut self,
         total: usize,
         visible: usize,
-        rows_shown: usize,
         row_height: f32,
         cx: &mut Context<Self>,
     ) -> Div {
         if total <= visible {
             return div();
         }
-        let (top_frac, height_frac) = files::scroll_thumb(total, visible, self.files_scroll_rows);
-        let track_h = (rows_shown as f32 * row_height).max(1.0);
+        // Native pixel offset → fractional row position for the thumb. The
+        // shared `scroll_thumb` helper pins over-clamped values to the ends.
+        let scrolled_rows =
+            (-f32::from(self.files_scroll_handle.0.borrow().base_handle.offset().y) / row_height)
+                .max(0.0);
+        let (top_frac, height_frac) = files::scroll_thumb(total, visible, scrolled_rows as usize);
+        let track_h = (visible as f32 * row_height).max(1.0);
         let thumb_h = (height_frac * track_h)
             .max(files::MIN_THUMB_PX)
             .min(track_h);
@@ -10455,7 +10492,7 @@ impl WorkspaceView {
                         }),
                     )
                     .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
-                        let Some((last_y, mut acc)) = view.files_vdrag else {
+                        let Some((last_y, _)) = view.files_vdrag else {
                             return;
                         };
                         if view.shutting_down {
@@ -10463,12 +10500,21 @@ impl WorkspaceView {
                             return;
                         }
                         let y = f32::from(event.position.y);
-                        acc += (y - last_y) / travel * max_start;
-                        let step = acc.trunc() as i32;
-                        acc -= step as f32;
-                        view.files_scroll_rows =
-                            (view.files_scroll_rows as i32 + step).max(0) as usize;
-                        view.files_vdrag = Some((y, acc));
+                        // Rail travel maps onto content travel; the result
+                        // lands directly on the native pixel offset so the
+                        // thumb tracks the pointer 1:1 instead of jumping
+                        // whole rows per motion event.
+                        let base_rows =
+                            -f32::from(view.files_scroll_handle.0.borrow().base_handle.offset().y)
+                                / row_height;
+                        let target =
+                            (base_rows + (y - last_y) / travel * max_start).clamp(0.0, max_start);
+                        view.files_scroll_handle
+                            .0
+                            .borrow()
+                            .base_handle
+                            .set_offset(gpui::point(px(0.0), px(-target * row_height)));
+                        view.files_vdrag = Some((y, 0.0));
                         cx.notify();
                     }))
                     .on_mouse_up(
@@ -10493,8 +10539,8 @@ impl WorkspaceView {
     /// Inspector file tree for the selected project. Pure render from
     /// the panel row cache (no filesystem or dispatcher work per frame);
     /// clicks select/toggle through the dispatcher-owned refresh. Rows are
-    /// the exact 28px height (`files::TREE_ROW_H`); scroll math uses the
-    /// same constant so wheel, drag, and render always agree.
+    /// the exact 28px height (`files::TREE_ROW_H`) in a natively scrolled
+    /// virtual list; drag and thumb math reuse the same constant.
     fn render_files_tree(&mut self, bar: Div, viewport_height: f32, cx: &mut Context<Self>) -> Div {
         let Some(project) = self.coordinator.selected_project_id() else {
             return bar.child(
@@ -10519,32 +10565,26 @@ impl WorkspaceView {
             .files_panel
             .selected_path(project)
             .map(|path| path.to_path_buf());
-        // Row-granular wheel scroll: visible window over the cached rows.
-        // Header, footers, and hints stay fixed; only rows move. Rows are
-        // the exact 28px inspector height; the search box filters cached
-        // rows by file-name substring (display only, cache intact).
+        // Natively scrolled virtual rows over the cached tree: only visible
+        // rows enter the element tree and wheel/trackpad deltas move pixel
+        // offsets (like the editor and palette lists) instead of jumping
+        // whole 28px rows per event. Header, footers, and hints stay fixed;
+        // only rows move. Rows are the exact 28px inspector height; the
+        // search box filters cached rows by file-name substring (display
+        // only, cache intact).
         let row_height = files::TREE_ROW_H;
         let visible = ((viewport_height / row_height) as usize).clamp(1, files::MAX_RENDER_ROWS);
         let query = self.files_search.clone();
-        let all_rows: Vec<files::FileRow> = self
-            .files_panel
-            .rows_for(project)
-            .unwrap_or_default()
-            .iter()
-            .filter(|row| files::row_matches_query(&row.path, &query))
-            .cloned()
-            .collect();
-        let max_start = all_rows
-            .len()
-            .saturating_sub(visible.min(all_rows.len().max(1)));
-        self.files_scroll_rows = self.files_scroll_rows.min(max_start);
-        let rows: Vec<files::FileRow> = all_rows
-            .iter()
-            .skip(self.files_scroll_rows)
-            .take(visible)
-            .cloned()
-            .collect();
-        if rows.is_empty() {
+        let all_rows: Arc<Vec<files::FileRow>> = Arc::new(
+            self.files_panel
+                .rows_for(project)
+                .unwrap_or_default()
+                .iter()
+                .filter(|row| files::row_matches_query(&row.path, &query))
+                .cloned()
+                .collect(),
+        );
+        if all_rows.is_empty() {
             bar = bar.child(div().px_2().py_1().text_color(rgb(0x71717A)).child(
                 if query.is_empty() {
                     "Empty directory"
@@ -10584,176 +10624,203 @@ impl WorkspaceView {
                     .child(format!("Show more ({root_cap}+)")),
             );
         }
-        // Rows render into their own column so the vertical scrollbar
-        // rail can sit beside them (footers stay full-width below).
-        let mut rows_col = div().flex().flex_col().flex_1().min_w(px(0.0));
-        let rows_shown = rows.len();
+        // Rows area: virtual list beside the vertical scrollbar rail
+        // (footers stay full-width below). The processor builds only the
+        // visible range; the native pixel offset makes wheel, trackpad,
+        // and thumb-drag motion smooth instead of row-stepped.
         let rows_total = all_rows.len();
-        // Git decorations for tree rows (mock M/U marks): untracked → U,
-        // staged/unstaged → M. Computed once per frame over bounded rows.
-        let git_mark = |path: &std::path::Path| -> Option<(char, u32)> {
-            let status = self.git_panel.status_for(project)?;
-            if status.untracked.iter().any(|entry| entry.path == path) {
-                return Some(('U', crate::ui::theme::GREEN));
-            }
-            if status.staged.iter().any(|entry| entry.path == path)
-                || status.unstaged.iter().any(|entry| entry.path == path)
-            {
-                return Some(('M', crate::ui::theme::YELLOW));
-            }
-            None
-        };
-        for row in rows {
-            let is_selected = selected.as_ref() == Some(&row.path);
-            let is_dir = row.kind == omaterm_core::FileKind::Directory;
-            let name = row
-                .path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| row.path.to_string_lossy().into_owned());
-            let icon = files::icon_for(&row.path, row.kind, row.expanded);
-            let icon_color =
-                icon.color
-                    .unwrap_or(if is_selected { 0xFA_FA_FA } else { 0xA1_A1_AA });
-            let label = if is_dir && row.loading {
-                format!("{name} …")
-            } else {
-                name
-            };
-            let path = row.path.clone();
-            let dimmed = row.loading && !is_selected;
-            // Keep the file identity stable. The prior pseudo-horizontal
-            // scroll swapped this basename for a full path and left icons
-            // behind; a true whole-row horizontal viewport comes in U4.
-            let label_view = div().flex_1().min_w(px(0.0)).truncate().child(label);
-            // Leading marker: explicit chevron for directories (mock),
-            // 14px spacer for files. Badge: TS/{ } text marks, else the
-            // file-type glyph.
-            let marker: Div = if is_dir {
-                div()
-                    .w(px(14.0))
-                    .flex_shrink_0()
-                    .child(crate::ui::assets::icon(
-                        if row.expanded {
-                            crate::ui::assets::CHEVRON_DOWN
-                        } else {
-                            crate::ui::assets::CHEVRON_RIGHT
-                        },
-                        14.0,
-                        crate::ui::theme::MUTED,
-                    ))
-            } else {
-                div().w(px(14.0)).flex_shrink_0()
-            };
-            // Directories use Lucide folder glyphs (mock); other types
-            // keep Nerd file marks plus TS/{ } badges until the full
-            // Lucide file set lands (recorded P6 follow-up).
-            let badge: Div = match files::file_badge(&row.path) {
-                Some((text, color)) => div()
-                    .w(px(18.0))
-                    .flex_shrink_0()
-                    .font_weight(crate::ui::metrics::BADGE_600)
-                    .text_color(rgb(color))
-                    .child(text),
-                None if is_dir => div()
-                    .w(px(18.0))
-                    .flex_shrink_0()
-                    .child(crate::ui::assets::icon(
-                        if row.expanded {
-                            crate::ui::assets::FOLDER_OPEN
-                        } else {
-                            crate::ui::assets::FOLDER
-                        },
-                        16.0,
-                        crate::ui::theme::YELLOW,
-                    )),
-                None => div()
-                    .w(px(18.0))
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_center()
-                    .text_color(rgb(icon_color))
-                    .child(icon.glyph.to_string()),
-            };
-            let mark = git_mark(&row.path);
-            rows_col = rows_col.child(
+        if !all_rows.is_empty() {
+            let rows_list = uniform_list(
+                "files-tree",
+                rows_total,
+                cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
+                    range
+                        .map(|index| {
+                            let row = &all_rows[index];
+                            let is_selected = selected.as_ref() == Some(&row.path);
+                            let is_dir = row.kind == omaterm_core::FileKind::Directory;
+                            let name = row
+                                .path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| row.path.to_string_lossy().into_owned());
+                            let icon = files::icon_for(&row.path, row.kind, row.expanded);
+                            let icon_color = icon.color.unwrap_or(if is_selected {
+                                0xFA_FA_FA
+                            } else {
+                                0xA1_A1_AA
+                            });
+                            let label = if is_dir && row.loading {
+                                format!("{name} …")
+                            } else {
+                                name
+                            };
+                            let path = row.path.clone();
+                            let dimmed = row.loading && !is_selected;
+                            // Keep the file identity stable. The prior pseudo-horizontal
+                            // scroll swapped this basename for a full path and left icons
+                            // behind; a true whole-row horizontal viewport comes in U4.
+                            let label_view = div().flex_1().min_w(px(0.0)).truncate().child(label);
+                            // Leading marker: explicit chevron for directories (mock),
+                            // 14px spacer for files. Badge: TS/{ } text marks, else the
+                            // file-type glyph.
+                            let marker: Div = if is_dir {
+                                div()
+                                    .w(px(14.0))
+                                    .flex_shrink_0()
+                                    .child(crate::ui::assets::icon(
+                                        if row.expanded {
+                                            crate::ui::assets::CHEVRON_DOWN
+                                        } else {
+                                            crate::ui::assets::CHEVRON_RIGHT
+                                        },
+                                        14.0,
+                                        crate::ui::theme::MUTED,
+                                    ))
+                            } else {
+                                div().w(px(14.0)).flex_shrink_0()
+                            };
+                            // Directories use Lucide folder glyphs (mock); other types
+                            // keep Nerd file marks plus TS/{ } badges until the full
+                            // Lucide file set lands (recorded P6 follow-up).
+                            let badge: Div = match files::file_badge(&row.path) {
+                                Some((text, color)) => div()
+                                    .w(px(18.0))
+                                    .flex_shrink_0()
+                                    .font_weight(crate::ui::metrics::BADGE_600)
+                                    .text_color(rgb(color))
+                                    .child(text),
+                                None if is_dir => div().w(px(18.0)).flex_shrink_0().child(
+                                    crate::ui::assets::icon(
+                                        if row.expanded {
+                                            crate::ui::assets::FOLDER_OPEN
+                                        } else {
+                                            crate::ui::assets::FOLDER
+                                        },
+                                        16.0,
+                                        crate::ui::theme::YELLOW,
+                                    ),
+                                ),
+                                None => div()
+                                    .w(px(18.0))
+                                    .flex()
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(rgb(icon_color))
+                                    .child(icon.glyph.to_string()),
+                            };
+                            // Git decorations for tree rows: untracked → U,
+                            // staged/unstaged → M.
+                            let mark: Option<(char, u32)> = (|| {
+                                let status = view.git_panel.status_for(project)?;
+                                if status.untracked.iter().any(|entry| entry.path == row.path) {
+                                    return Some(('U', crate::ui::theme::GREEN));
+                                }
+                                if status.staged.iter().any(|entry| entry.path == row.path)
+                                    || status.unstaged.iter().any(|entry| entry.path == row.path)
+                                {
+                                    return Some(('M', crate::ui::theme::YELLOW));
+                                }
+                                None
+                            })();
+                            div()
+                                .id(index)
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .h(px(files::TREE_ROW_H))
+                                .pl(px(8.0 + row.depth as f32 * 16.0))
+                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                .bg(rgb(if is_selected {
+                                    crate::ui::theme::TREE_SELECTED_BG
+                                } else {
+                                    crate::ui::theme::PANEL
+                                }))
+                                .text_size(px(11.0))
+                                .text_color(rgb(if is_selected {
+                                    0xFAFAFA
+                                } else if dimmed {
+                                    0x52525B
+                                } else {
+                                    crate::ui::theme::TEXT2
+                                }))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        window.focus(&view.focus_handle);
+                                        view.files_search_focused = false;
+                                        view.files_vdrag = None;
+                                        if is_dir {
+                                            view.toggle_file_row(project, path.clone(), true, cx);
+                                        } else {
+                                            view.files_panel.select(project, path.clone());
+                                            // S7: plain click opens natively; Alt+click is
+                                            // the explicit terminal fallback (the row also
+                                            // exposes an explicit Open in Terminal icon).
+                                            match file_activation(event.modifiers.alt) {
+                                                FileActivation::Native => view
+                                                    .editor_open_document(
+                                                        project,
+                                                        path.clone(),
+                                                        cx,
+                                                    ),
+                                                FileActivation::Terminal => {
+                                                    view.open_file_path(project, path.clone(), cx);
+                                                    view.refresh_files(cx);
+                                                }
+                                            }
+                                        }
+                                    }),
+                                )
+                                .child(marker)
+                                .child(badge)
+                                // Long names ellipsize inside the fixed sidebar instead
+                                // of stretching the row and breaking column alignment.
+                                .child(label_view)
+                                // The explicit Open in Terminal icon was removed: plain
+                                // click opens natively and Alt+click keeps the unchanged
+                                // semantic `FileCommand::Open` fallback.
+                                .child(
+                                    div()
+                                        .w(px(14.0))
+                                        .flex_shrink_0()
+                                        .text_color(rgb(mark
+                                            .map(|(_, color)| color)
+                                            .unwrap_or(crate::ui::theme::PANEL)))
+                                        .child(
+                                            mark.map(|(letter, _)| letter.to_string())
+                                                .unwrap_or_default(),
+                                        ),
+                                )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(self.files_scroll_handle.clone())
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w(px(0.0))
+            .map(|mut list| {
+                list.style().restrict_scroll_to_axis = Some(true);
+                list
+            });
+            let vbar = self.render_tree_vscrollbar(rows_total, visible, row_height, cx);
+            bar = bar.child(
                 div()
                     .flex()
                     .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .h(px(files::TREE_ROW_H))
-                    .pl(px(8.0 + row.depth as f32 * 16.0))
-                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                    .bg(rgb(if is_selected {
-                        crate::ui::theme::TREE_SELECTED_BG
-                    } else {
-                        crate::ui::theme::PANEL
-                    }))
-                    .text_size(px(11.0))
-                    .text_color(rgb(if is_selected {
-                        0xFAFAFA
-                    } else if dimmed {
-                        0x52525B
-                    } else {
-                        crate::ui::theme::TEXT2
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            window.focus(&view.focus_handle);
-                            view.files_search_focused = false;
-                            view.files_vdrag = None;
-                            if is_dir {
-                                view.toggle_file_row(project, path.clone(), true, cx);
-                            } else {
-                                view.files_panel.select(project, path.clone());
-                                // S7: plain click opens natively; Alt+click is
-                                // the explicit terminal fallback (the row also
-                                // exposes an explicit Open in Terminal icon).
-                                match file_activation(event.modifiers.alt) {
-                                    FileActivation::Native => {
-                                        view.editor_open_document(project, path.clone(), cx)
-                                    }
-                                    FileActivation::Terminal => {
-                                        view.open_file_path(project, path.clone(), cx);
-                                        view.refresh_files(cx);
-                                    }
-                                }
-                            }
-                        }),
-                    )
-                    .child(marker)
-                    .child(badge)
-                    // Long names ellipsize inside the fixed sidebar instead
-                    // of stretching the row and breaking column alignment.
-                    .child(label_view)
-                    // The explicit Open in Terminal icon was removed: plain
-                    // click opens natively and Alt+click keeps the unchanged
-                    // semantic `FileCommand::Open` fallback.
-                    .child(
-                        div()
-                            .w(px(14.0))
-                            .flex_shrink_0()
-                            .text_color(rgb(mark
-                                .map(|(_, color)| color)
-                                .unwrap_or(crate::ui::theme::PANEL)))
-                            .child(
-                                mark.map(|(letter, _)| letter.to_string())
-                                    .unwrap_or_default(),
-                            ),
-                    ),
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(rows_list)
+                    .child(vbar),
             );
         }
-        // Rows area: windowed rows beside the vertical scrollbar rail.
-        // The rail spans exactly the shown rows (one unit each).
-        let vbar = self.render_tree_vscrollbar(rows_total, visible, rows_shown, row_height, cx);
-        bar = bar.child(div().flex().flex_row().child(rows_col).child(vbar));
         if self.files_panel.is_truncated() {
             bar = bar.child(
                 div()
@@ -13259,23 +13326,10 @@ impl WorkspaceView {
                     .child(message),
             );
         }
-        body.on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
-            let row_height = files::TREE_ROW_H;
-            let dy_lines: f32 = match event.delta {
-                ScrollDelta::Pixels(point) => f32::from(point.y) / row_height,
-                // One wheel detent should cover a useful number of compact
-                // 28px tree rows; touchpads retain their pixel precision.
-                ScrollDelta::Lines(point) => point.y * 3.0,
-            };
-            view.files_scroll_remainder -= dy_lines;
-            let steps = view.files_scroll_remainder.trunc() as i32;
-            view.files_scroll_remainder -= steps as f32;
-            if steps == 0 {
-                return;
-            }
-            view.files_scroll_rows = (view.files_scroll_rows as i32 + steps).max(0) as usize;
-            cx.notify();
-        }))
+        // The tree rows are a natively scrolled `uniform_list` (pixel
+        // offsets, like the editor and palette), so no manual wheel handler
+        // here: the list consumes wheel/trackpad deltas itself.
+        body
     }
 
     /// Inspector Info body: focused shell identity, cached CWD and bounded
@@ -14945,6 +14999,36 @@ fn diff_row_decor(kind: omaterm_core::DiffLineKind) -> Div {
     }
 }
 
+/// Shared token foregrounds for editor and diff code lines: plan palette
+/// hues; comments use a muted green first-delivery approximation until a
+/// full token palette lands.
+fn token_color(kind: editor::TokenKind) -> u32 {
+    match kind {
+        editor::TokenKind::Comment => 0x6A9955,
+        editor::TokenKind::String => crate::ui::theme::ORANGE,
+        editor::TokenKind::Number => crate::ui::theme::CYAN,
+        editor::TokenKind::Keyword => crate::ui::theme::PURPLE,
+    }
+}
+
+/// One diff code line with token foregrounds over the row's `±` background.
+/// Empty spans render as plain text; span offsets address `text` directly.
+fn diff_highlighted_text(text: &str, tokens: &[editor::TokenSpan]) -> StyledText {
+    let styles: Vec<(std::ops::Range<usize>, HighlightStyle)> = tokens
+        .iter()
+        .map(|span| {
+            (
+                span.start..span.start + span.len,
+                HighlightStyle {
+                    color: Some(rgb(token_color(span.kind)).into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    StyledText::new(text.to_owned()).with_highlights(styles)
+}
+
 /// One Split cell: gutter + its own code/text, or a blank spacer when the
 /// paired edit has no line on this side.
 fn split_cell(
@@ -14993,7 +15077,7 @@ fn split_cell(
                             div()
                                 .w(px(content_width + 8.0))
                                 .flex_shrink_0()
-                                .child(cell.text.clone()),
+                                .child(diff_highlighted_text(&cell.text, &cell.tokens)),
                         ),
                 ),
         )
@@ -15086,7 +15170,7 @@ fn inline_row(row: &diff_panel::AlignedRow, mono: &str) -> Div {
                         .min_w(px(0.0))
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .child(row.text.clone()),
+                        .child(diff_highlighted_text(&row.text, &row.tokens)),
                 ),
         )
 }

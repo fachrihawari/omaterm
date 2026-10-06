@@ -527,7 +527,7 @@ pub struct ProcessEntryInfo {
     pub memory_bytes: Option<u64>,
 }
 
-/// Hunk line kind for the `±` coloring (no highlighting in v0.2).
+/// Hunk line kind for the `±` coloring, composed with token foregrounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
     Context,

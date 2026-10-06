@@ -2,6 +2,60 @@
 
 ## Current position
 
+### Diff viewer syntax highlight (user-directed M15 scope change) — 2026-10-06
+
+- `AlignedRow`/`SplitCell` carry presentation-only `tokens` over the final
+  tab-expanded text; `preview_rows` fills them per file language
+  (`detect_language` on the diff path, `Plain` for binary). Copy/stage still
+  read the untouched source DTO, so exact-copy/stage bytes are unchanged.
+- `split_cell`/`inline_row` render `StyledText` with the shared token
+  foregrounds over the existing `±` backgrounds; `editor_token_color` now
+  delegates to a shared free `token_color`. Headers, NoNewline markers and
+  width measurement are untouched.
+- Documented subset: each line tokenizes independently (multiline
+  string/comment state does not cross hunk lines). No new dependencies, no
+  worker, no persistence/IPC change; per-line cost is bounded by the parser
+  caps. M15 spec + `DiffLineKind` docs amended to record the scope change.
+- Verification with `mbx`: `fmt --all --check` PASS, `test --workspace
+  --quiet` PASS (652 tests: 650 prior + 2 new diff highlight tests),
+  serial `-- --test-threads=1` PASS (20 suites ok), `clippy --workspace
+  --all-targets -- -D warnings` PASS (only the known transitive
+  `proc-macro-error2` notice), `git diff --check` PASS. Release build and
+  Wayland visual validation not run. Not committed.
+
+### Scroll smoothness: terminal accumulation + native file-tree list — 2026-10-06
+
+- Terminal wheel (`apps/omaterm/src/main.rs` `on_scroll_wheel`) now
+  accumulates sub-line trackpad/pixel deltas per session
+  (`terminal_scroll_remainder`, clamped to ±32 lines) instead of forcing
+  every tiny tick into a full-line jump plus a complete viewport
+  clone/repaint. Alt-screen repeat cap raised 3 → 10 so fast flicks in
+  `less`/`vim` no longer feel stuck, and the scroll-thumb fade timer is
+  extended rather than respawned per event.
+- File tree rows are now a natively scrolled `uniform_list`
+  (`files_scroll_handle`, pixel offsets like editor/palette/diff)
+  instead of manual row-window `skip`/`take` with whole-row jumps; the
+  custom wheel handler is removed and the thumb rail + drag read/write
+  the native pixel offset. Scroll resets (project switch, filter
+  edits) use `scroll_to_item(0, Top)`.
+- Editor needed no change: it already scrolls through native
+  `uniform_list` + `track_scroll` with axis restriction; no custom wheel
+  handler interferes. If it still feels slow on huge files, that needs
+  Wayland profiling (per-row shaping cost or notify storms), not scroll
+  plumbing.
+- Incidental: annotated the collection type in the in-progress
+  `diff_highlighted_text` (concurrent diff-highlight work left
+  `E0283`; logic untouched).
+- Verification: `mbx fmt --all --check` PASS, `mbx test --workspace`
+  651 passed + 1 failed (`diff_panel ::
+  preview_rows_highlight_code_lines_by_file_language`, belongs to the
+  concurrent in-progress diff-highlight change, untouched here),
+  `mbx clippy --workspace --all-targets -- -D warnings` PASS (only the
+  known transitive `proc-macro-error2` notice),
+  `mbx build --release --bin omaterm-desktop` PASS,
+  `git diff --check` PASS. Wayland feel validation pending — rebuild
+  and scroll each surface. Not committed.
+
 ### Built-in highlight batch 2 (Kotlin/Zig/Lua/Dockerfile/shell) — 2026-10-06
 
 - `EditorLanguage` grows to 24 file types: + Kotlin (`kt/kts`, `"""` raw

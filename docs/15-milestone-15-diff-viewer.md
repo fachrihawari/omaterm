@@ -20,8 +20,10 @@ terminal-only (editor deferred to v0.3): preview state is view-local,
 never persisted or sent over IPC. Binary
 files render as "binary, not shown". Everything is capped before
 allocation (files/hunks/lines/bytes) with accurate `truncated` flags.
-No syntax highlighting in v0.2 (Tree-sitter arrives with the v0.3 editor);
-plain monospace with `±` line coloring. Hunk stage buttons dispatch
+Code lines carry token foregrounds from the shared built-in highlighter
+(24 file types; each line tokenizes independently) composed over the plain
+monospace `±` line coloring — a user-directed scope change superseding the
+original no-highlighting rule. Hunk stage buttons dispatch
 `GitCommand::Stage`-equivalent scoped mutations — no bespoke git logic in
 the view.
 
@@ -84,8 +86,10 @@ satisfy the per-hunk staging contract.
 
 ## Non-Goals
 
-- Split mode is an approved UI v5 presentation extension; no highlighting or
-  word-diff in M15.
+- Split mode is an approved UI v5 presentation extension; no word-diff in
+  M15. Code-line syntax spans from the shared built-in highlighter were
+  added later as a user-directed scope change (per-line subset, composed
+  over the `±` backgrounds); full word-diff remains out of scope.
 - No commit UI. No editor (v0.3). No `terminal wait` (v0.4).
 
 ## References
