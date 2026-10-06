@@ -43,9 +43,26 @@ mod ipc_bridge;
 mod metrics;
 mod palette;
 mod router;
+mod scroll;
 mod shortcuts;
 mod ui;
 mod workbench;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum WheelTarget {
+    Files,
+    Git(ProjectId),
+    Diff(ProjectId),
+    Editor(DocumentId),
+    Terminal(SessionId),
+}
+
+struct WheelMotion {
+    motion: scroll::Motion,
+    handle: Option<ScrollHandle>,
+    applied: f32,
+    line_height: f32,
+}
 
 /// M4 workspace: a recursive pane tree whose leaves reference
 /// registry-owned `TerminalSession`s by `SessionId`.
@@ -56,6 +73,12 @@ mod workbench;
 /// bounded channel; the main thread applies snapshots event-driven and
 /// repaints. Painting never holds a session lock.
 struct WorkspaceView {
+    wheel_motions: HashMap<WheelTarget, WheelMotion>,
+    wheel_frame_pending: bool,
+    wheel_frame_at: Instant,
+    git_scroll_handles: HashMap<ProjectId, ScrollHandle>,
+    terminal_pixel_offsets: HashMap<SessionId, f32>,
+    terminal_scroll_tails: HashMap<SessionId, omaterm_terminal::TerminalRow>,
     editor_composition: Option<EditorComposition>,
     focus_handle: FocusHandle,
     coordinator: router::CommandRouter,
@@ -171,6 +194,9 @@ struct WorkspaceView {
     /// Per-project top-level listing caps (`Show more` paging; ephemeral,
     /// never persisted). Nested dirs always use the config default.
     files_root_caps: HashMap<ProjectId, usize>,
+    /// Startup file-list limit. Per-project `Show more` overrides live in
+    /// `files_root_caps`; rendering never reopens config.toml.
+    files_default_limit: usize,
     /// Inspector search-box query: filters cached tree rows by file-name
     /// substring (view-local, never persisted). Empty matches everything.
     files_search: String,
@@ -249,6 +275,9 @@ struct WorkspaceView {
     /// Set by manual refresh, git mutations, and post-`terminal.run`
     /// submissions: the next tick refreshes immediately.
     git_dirty_hint: bool,
+    /// Startup configuration captured once. The 250ms poller must never
+    /// synchronously reopen and parse config.toml on the UI thread.
+    git_refresh_interval: Duration,
     /// Last project the git poller served (switch detection).
     git_last_project: Option<ProjectId>,
     /// UI v5 shell: independent Projects (left) and Inspector (right)
@@ -1532,6 +1561,293 @@ const MAX_WHEEL_ACCUM_LINES: f32 = 32.0;
 const MAX_ALT_SCREEN_WHEEL_REPEATS: u32 = 10;
 
 impl WorkspaceView {
+    /// Capture discrete wheels before GPUI's immediate native scroll handler.
+    /// Precise input retains compositor-provided pixel motion without easing.
+    fn capture_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down || self.ctrlp_open || self.keybindings_open {
+            return;
+        }
+        let mut destination = None;
+        if self.inspector_visible {
+            let candidate = match self.inspector_tab {
+                InspectorTab::Files => Some((
+                    WheelTarget::Files,
+                    self.files_scroll_handle.0.borrow().base_handle.clone(),
+                )),
+                InspectorTab::Git => self.coordinator.selected_project_id().and_then(|project| {
+                    self.git_scroll_handles
+                        .get(&project)
+                        .cloned()
+                        .map(|handle| (WheelTarget::Git(project), handle))
+                }),
+                _ => None,
+            };
+            if let Some((target, handle)) = candidate
+                && handle.bounds().contains(&event.position)
+            {
+                destination = Some((target, Some(handle), 1.0));
+            }
+        }
+        if destination.is_none()
+            && let Some((_, document)) = self.active_editor_surface()
+            && let Some(handle) = self.editor_rows_handles.get(&document)
+        {
+            let handle = handle.0.borrow().base_handle.clone();
+            if handle.bounds().contains(&event.position) {
+                destination = Some((WheelTarget::Editor(document), Some(handle), 1.0));
+            }
+        }
+        if destination.is_none()
+            && let Some(project) = self.coordinator.selected_project_id()
+            && self.diff_is_active(project)
+        {
+            let path = self
+                .git_panel
+                .selected_path(project)
+                .or_else(|| self.diff_panel.selected_file(project));
+            if let Some(path) = path
+                && let Some(scroll) = self.diff_scroll_handles.get(&(
+                    project,
+                    self.diff_panel.show_staged(project),
+                    path.clone(),
+                    self.diff_panel.diff_mode(project),
+                ))
+            {
+                let handle = scroll.rows.0.borrow().base_handle.clone();
+                if handle.bounds().contains(&event.position) {
+                    destination = Some((WheelTarget::Diff(project), Some(handle), 1.0));
+                }
+            }
+        }
+        if destination.is_none()
+            && self.active_editor_surface().is_none()
+            && !self
+                .coordinator
+                .selected_project_id()
+                .is_some_and(|p| self.diff_is_active(p))
+        {
+            let fonts = self.fonts(cx);
+            for pane in self.coordinator.tree().panes() {
+                let Some(session) = self.session_id_for_pane(pane.id) else {
+                    continue;
+                };
+                let (Some(origin), Some(snapshot)) = (
+                    self.grid_origins.get(&pane.id),
+                    self.snapshots.get(&session),
+                ) else {
+                    continue;
+                };
+                if !snapshot.is_alt_screen
+                    && Bounds::new(
+                        origin.get(),
+                        size(
+                            fonts.cell_width * snapshot.cols as f32,
+                            fonts.line_height * snapshot.lines as f32,
+                        ),
+                    )
+                    .contains(&event.position)
+                {
+                    destination = Some((
+                        WheelTarget::Terminal(session),
+                        None,
+                        f32::from(fonts.line_height),
+                    ));
+                    break;
+                }
+            }
+        }
+        let Some((target, handle, line_height)) = destination else {
+            return;
+        };
+        let ScrollDelta::Lines(delta) = event.delta else {
+            // Direct touchpad input or thumb/caret motion must take ownership.
+            self.wheel_motions.remove(&target);
+            if let WheelTarget::Terminal(session) = target {
+                self.terminal_pixel_offsets.remove(&session);
+                self.terminal_scroll_tails.remove(&session);
+            }
+            return;
+        };
+        if delta.y == 0.0 || delta.x != 0.0 || event.modifiers.shift {
+            return;
+        }
+        let (position, min, max) = if let Some(handle) = &handle {
+            (
+                f32::from(handle.offset().y),
+                -f32::from(handle.max_offset().height),
+                0.0,
+            )
+        } else if let WheelTarget::Terminal(session) = target {
+            let snapshot = &self.snapshots[&session];
+            (
+                snapshot.display_offset as f32 * line_height,
+                0.0,
+                snapshot.history_size as f32 * line_height,
+            )
+        } else {
+            return;
+        };
+        if min == max {
+            return;
+        }
+        let motion = self
+            .wheel_motions
+            .entry(target)
+            .or_insert_with(|| WheelMotion {
+                motion: scroll::Motion::new(position),
+                handle,
+                applied: position,
+                line_height,
+            });
+        if (motion.applied - position).abs() > 1.0 {
+            motion.motion = scroll::Motion::new(position);
+            motion.applied = position;
+        }
+        motion
+            .motion
+            .push(delta.y * scroll::WHEEL_PIXELS_PER_LINE, min, max);
+        if matches!(target, WheelTarget::Terminal(_)) {
+            motion.motion.target = (motion.motion.target / line_height).round() * line_height;
+        }
+        cx.stop_propagation();
+        if let WheelTarget::Terminal(session) = target {
+            self.flash_scroll_indicator(session, cx);
+        }
+        self.schedule_wheel_frame(window, cx);
+    }
+
+    fn schedule_wheel_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.wheel_frame_pending || self.wheel_motions.is_empty() {
+            return;
+        }
+        self.wheel_frame_pending = true;
+        self.wheel_frame_at = Instant::now();
+        let weak = cx.entity().downgrade();
+        window.on_next_frame(move |window, cx| {
+            let _ = weak.update(cx, |view, cx| {
+                view.wheel_frame_pending = false;
+                if view.shutting_down || !window.is_window_active() {
+                    view.wheel_motions.clear();
+                    view.terminal_pixel_offsets.clear();
+                    view.terminal_scroll_tails.clear();
+                    cx.notify();
+                    return;
+                }
+                let elapsed = view.wheel_frame_at.elapsed();
+                let mut motions = std::mem::take(&mut view.wheel_motions);
+                for (target, mut motion) in motions.drain() {
+                    let visible = match target {
+                        WheelTarget::Files => {
+                            view.inspector_visible && view.inspector_tab == InspectorTab::Files
+                        }
+                        WheelTarget::Git(project) => {
+                            view.inspector_visible
+                                && view.inspector_tab == InspectorTab::Git
+                                && view.coordinator.selected_project_id() == Some(project)
+                        }
+                        WheelTarget::Editor(doc) => view
+                            .active_editor_surface()
+                            .is_some_and(|(_, active)| active == doc),
+                        WheelTarget::Diff(project) => {
+                            view.coordinator.selected_project_id() == Some(project)
+                                && view.diff_is_active(project)
+                        }
+                        WheelTarget::Terminal(session) => {
+                            view.active_editor_surface().is_none()
+                                && !view
+                                    .coordinator
+                                    .selected_project_id()
+                                    .is_some_and(|p| view.diff_is_active(p))
+                                && view
+                                    .coordinator
+                                    .tree()
+                                    .panes()
+                                    .iter()
+                                    .any(|p| view.session_id_for_pane(p.id) == Some(session))
+                        }
+                    };
+                    if !visible {
+                        if let WheelTarget::Terminal(session) = target {
+                            view.terminal_pixel_offsets.remove(&session);
+                            view.terminal_scroll_tails.remove(&session);
+                        }
+                        continue;
+                    }
+                    let continuing = motion.motion.advance(elapsed);
+                    tracing::debug!(target: "omaterm::render", ?target,
+                        position = motion.motion.position, destination = motion.motion.target,
+                        elapsed_ms = elapsed.as_secs_f32() * 1000.0, continuing,
+                        "wheel animation frame");
+                    if let Some(handle) = &motion.handle {
+                        // A caret reveal or rail drag cancels old momentum.
+                        if (f32::from(handle.offset().y) - motion.applied).abs() > 1.0 {
+                            continue;
+                        }
+                        let y = motion
+                            .motion
+                            .position
+                            .clamp(-f32::from(handle.max_offset().height), 0.0);
+                        handle.set_offset(gpui::point(handle.offset().x, px(y)));
+                        motion.applied = y;
+                    } else if let WheelTarget::Terminal(session) = target {
+                        let Some(handle) = view.coordinator.registry().get(session) else {
+                            continue;
+                        };
+                        if let Ok(mut terminal) = handle.lock() {
+                            let Some(snapshot) = view.snapshots.get(&session) else {
+                                continue;
+                            };
+                            if snapshot.is_alt_screen {
+                                view.terminal_pixel_offsets.remove(&session);
+                                view.terminal_scroll_tails.remove(&session);
+                                continue;
+                            }
+                            let wanted =
+                                (motion.motion.position / motion.line_height).ceil() as i32;
+                            let actual = snapshot.display_offset as i32;
+                            if (actual as f32 * motion.line_height - motion.applied).abs() > 1.0 {
+                                view.terminal_pixel_offsets.remove(&session);
+                                view.terminal_scroll_tails.remove(&session);
+                                continue;
+                            }
+                            if wanted != actual {
+                                terminal.scroll(ScrollCommand::Lines(wanted - actual));
+                                view.snapshots.insert(session, terminal.viewport());
+                            }
+                            if (wanted != actual
+                                || !view.terminal_scroll_tails.contains_key(&session))
+                                && let Some(row) = terminal.viewport_following_row()
+                            {
+                                view.terminal_scroll_tails.insert(session, row);
+                            }
+                            let actual = view.snapshots[&session].display_offset as f32;
+                            view.terminal_pixel_offsets.insert(
+                                session,
+                                motion.motion.position - actual * motion.line_height,
+                            );
+                            motion.applied = wanted as f32 * motion.line_height;
+                        }
+                    }
+                    if continuing {
+                        view.wheel_motions.insert(target, motion);
+                    } else if let WheelTarget::Terminal(session) = target {
+                        view.terminal_pixel_offsets.remove(&session);
+                        view.terminal_scroll_tails.remove(&session);
+                    }
+                }
+                cx.notify();
+                view.schedule_wheel_frame(window, cx);
+            });
+        });
+        // Ask the platform for a display frame; no idle timer remains alive.
+        cx.notify();
+    }
+
     /// Load general `config.toml` settings with explicit failure reporting.
     /// Returns the effective config plus an optional banner warning: malformed
     /// files and invalid values fall back to defaults (never silent), and a
@@ -1580,6 +1896,12 @@ impl WorkspaceView {
         let palette_file_index = Arc::new(PaletteFileIndexCache::default());
         let palette_search_worker = PaletteSearchWorker::new(Arc::clone(&palette_file_index));
         let mut view = Self {
+            wheel_motions: HashMap::new(),
+            wheel_frame_pending: false,
+            wheel_frame_at: Instant::now(),
+            git_scroll_handles: HashMap::new(),
+            terminal_pixel_offsets: HashMap::new(),
+            terminal_scroll_tails: HashMap::new(),
             editor_composition: None,
             focus_handle,
             coordinator: router::CommandRouter::new(coordinator),
@@ -1640,6 +1962,7 @@ impl WorkspaceView {
                 .checked_sub(Duration::from_secs(60))
                 .unwrap_or_else(Instant::now),
             files_root_caps: HashMap::new(),
+            files_default_limit: app_config.resolved_max_results() as usize,
             files_search: String::new(),
             files_search_focused: false,
             files_scroll_handle: UniformListScrollHandle::new(),
@@ -1686,6 +2009,9 @@ impl WorkspaceView {
             git_in_flight: None,
             git_refreshed_at: HashMap::new(),
             git_dirty_hint: true,
+            git_refresh_interval: Duration::from_secs(
+                app_config.resolved_git_refresh_secs().clamp(1, 300),
+            ),
             git_last_project: None,
             projects_visible: true,
             projects_width: crate::ui::geometry::PROJECTS_DEFAULT,
@@ -3179,6 +3505,10 @@ impl WorkspaceView {
         self.selections.remove(&session_id);
         self.scroll_indicator_until.remove(&session_id);
         self.terminal_scroll_remainder.remove(&session_id);
+        self.wheel_motions
+            .remove(&WheelTarget::Terminal(session_id));
+        self.terminal_pixel_offsets.remove(&session_id);
+        self.terminal_scroll_tails.remove(&session_id);
         self.grid_origins.remove(&pane);
         if self.selecting == Some(pane) {
             self.selecting = None;
@@ -3829,11 +4159,7 @@ impl WorkspaceView {
         self.files_root_caps
             .get(&project)
             .copied()
-            .unwrap_or_else(|| {
-                omaterm_state::AppConfig::load()
-                    .unwrap_or_default()
-                    .resolved_max_results() as usize
-            })
+            .unwrap_or(self.files_default_limit)
     }
 
     /// At most this many directory fetches run concurrently; the rest wait
@@ -3884,9 +4210,8 @@ impl WorkspaceView {
             return;
         }
         let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let config = omaterm_state::AppConfig::load().unwrap_or_default();
-        let limit = config.resolved_max_results() as usize;
-        let show_hidden = config.show_hidden();
+        let limit = self.files_default_limit;
+        let show_hidden = self.files_show_hidden;
         for dir in needed.into_iter().take(slots) {
             self.files_panel.mark_pending(project, dir.clone());
             let tx = self.files_fetch_tx.clone();
@@ -3949,8 +4274,7 @@ impl WorkspaceView {
         {
             extra_skips.push(canonical_parent);
         }
-        let config = omaterm_state::AppConfig::load().unwrap_or_default();
-        let show_hidden = config.show_hidden();
+        let show_hidden = self.files_show_hidden;
         std::thread::spawn(move || {
             let started = Instant::now();
             let result = omaterm_context::FileWatcher::watch(
@@ -4355,8 +4679,7 @@ impl WorkspaceView {
         if self.git_in_flight.is_some() {
             return landed;
         }
-        let config = omaterm_state::AppConfig::load().unwrap_or_default();
-        let interval = Duration::from_secs(config.resolved_git_refresh_secs().clamp(1, 300));
+        let interval = self.git_refresh_interval;
         let known = self.git_panel.status_for(project).is_some()
             || self.git_panel.empty_for(project).is_some();
         if !git_panel::should_refresh(
@@ -4370,7 +4693,8 @@ impl WorkspaceView {
         }
         let pinned = self.coordinator.pinned_for(project);
         let active_cwd = self.coordinator.shell_cwd_for(project);
-        let limit = (config.resolved_max_results() as usize)
+        let limit = self
+            .files_default_limit
             .clamp(1, omaterm_core::validation::MAX_FILE_ENTRIES);
         let tx = self.git_tx.clone();
         git_panel::spawn_status_thread(
@@ -4470,8 +4794,7 @@ impl WorkspaceView {
             return;
         }
         let supersedes = self.diff_in_flight.is_some();
-        let config = omaterm_state::AppConfig::load().unwrap_or_default();
-        let interval = Duration::from_secs(config.resolved_git_refresh_secs().clamp(1, 300));
+        let interval = self.git_refresh_interval;
         let known = self.diff_panel.diff_for(project, staged).is_some()
             || self.diff_panel.empty_for(project, staged).is_some();
         if !supersedes
@@ -9690,7 +10013,13 @@ impl WorkspaceView {
             return None;
         }
         let rel_x = f32::from(position.x) - f32::from(origin.x);
-        let rel_y = f32::from(position.y) - f32::from(origin.y);
+        let rel_y = f32::from(position.y)
+            - f32::from(origin.y)
+            - self
+                .terminal_pixel_offsets
+                .get(&session_id)
+                .copied()
+                .unwrap_or(0.0);
         let col = (rel_x / cell_width).floor() as isize;
         let row = (rel_y / line_height).floor() as isize;
         if row < 0 || col < 0 || row >= lines as isize || col >= cols as isize {
@@ -9865,17 +10194,26 @@ impl WorkspaceView {
             return;
         }
         cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
-            Timer::after(Duration::from_millis(SCROLL_INDICATOR_FADE_MS + 50)).await;
-            let _ = weak.update(cx, |view, cx| {
-                if view
-                    .scroll_indicator_until
-                    .get(&session_id)
-                    .is_some_and(|deadline| Instant::now() >= *deadline)
-                {
-                    view.scroll_indicator_until.remove(&session_id);
-                    cx.notify();
-                }
-            });
+            let mut wait = Duration::from_millis(SCROLL_INDICATOR_FADE_MS);
+            loop {
+                Timer::after(wait).await;
+                let next = weak
+                    .update(cx, |view, cx| {
+                        let deadline = view.scroll_indicator_until.get(&session_id)?;
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            view.scroll_indicator_until.remove(&session_id);
+                            cx.notify();
+                            None
+                        } else {
+                            Some(remaining)
+                        }
+                    })
+                    .ok()
+                    .flatten();
+                let Some(remaining) = next else { break };
+                wait = remaining;
+            }
         })
         .detach();
     }
@@ -10093,7 +10431,7 @@ impl WorkspaceView {
                 .into_any_element();
         }
 
-        let Some(snapshot) = self.snapshots.get(&session_id).cloned() else {
+        let Some(mut snapshot) = self.snapshots.get(&session_id).cloned() else {
             return div()
                 .flex()
                 .flex_1()
@@ -10107,6 +10445,16 @@ impl WorkspaceView {
         };
 
         let focused = self.coordinator.focused() == Some(pane_id);
+        let pixel_offset = self
+            .terminal_pixel_offsets
+            .get(&session_id)
+            .copied()
+            .unwrap_or(0.0);
+        if pixel_offset != 0.0
+            && let Some(tail) = self.terminal_scroll_tails.get(&session_id)
+        {
+            snapshot.rows.push(tail.clone());
+        }
         let cursor_color: Hsla = rgb(0xE4E4E7).into();
         let show_scrollbar = self
             .scroll_indicator_until
@@ -10342,6 +10690,7 @@ impl WorkspaceView {
                 .size_full()
                 .min_w(px(0.0))
                 .min_h(px(0.0))
+                .overflow_hidden()
                 .child(canvas(
                     move |bounds, _, _| bounds,
                     move |bounds: Bounds<Pixels>,
@@ -10362,6 +10711,7 @@ impl WorkspaceView {
                                 cursor_color,
                                 show_scrollbar,
                                 selection,
+                                pixel_offset,
                             },
                             window,
                             cx,
@@ -10804,6 +11154,7 @@ impl WorkspaceView {
             )
             .track_scroll(self.files_scroll_handle.clone())
             .flex_1()
+            .h_full()
             .min_h(px(0.0))
             .min_w(px(0.0))
             .map(|mut list| {
@@ -10817,6 +11168,7 @@ impl WorkspaceView {
                     .flex_row()
                     .flex_1()
                     .min_h(px(0.0))
+                    .overflow_hidden()
                     .child(rows_list)
                     .child(vbar),
             );
@@ -12421,6 +12773,8 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .flex_shrink_0()
+            .min_h(px(0.0))
+            .overflow_hidden()
             .bg(rgb(crate::ui::theme::PANEL))
             .border_r_1()
             .border_color(rgb(crate::ui::theme::BORDER))
@@ -13146,6 +13500,11 @@ impl WorkspaceView {
     /// Right inspector: 40px Info/Files/Git tab row plus the selected body.
     /// Switching tabs never disturbs the center surface or panel geometry.
     fn render_inspector(&mut self, viewport_h: f32, cx: &mut Context<Self>) -> Div {
+        let git_scroll = self
+            .coordinator
+            .selected_project_id()
+            .map(|project| self.git_scroll_handles.entry(project).or_default().clone())
+            .unwrap_or_default();
         let git_count = self
             .coordinator
             .selected_project_id()
@@ -13243,79 +13602,101 @@ impl WorkspaceView {
         panel = match self.inspector_tab {
             InspectorTab::Info => panel.child(self.render_inspector_info(cx)),
             InspectorTab::Files => panel.child(self.render_inspector_files(viewport_h, cx)),
-            InspectorTab::Git => panel
-                .child(self.render_git_panel(div().flex().flex_col().flex_1().min_h(px(0.0)), cx)),
+            InspectorTab::Git => panel.child(
+                div()
+                    .id("git-panel-scroll")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&git_scroll)
+                    .map(|mut panel| {
+                        panel.style().restrict_scroll_to_axis = Some(true);
+                        panel
+                    })
+                    .child(
+                        self.render_git_panel(div().flex().flex_col().w_full().flex_shrink_0(), cx),
+                    ),
+            ),
         };
         panel
     }
 
-    /// Inspector Files body: search box plus the existing tree, with the
-    /// row-step wheel handler attached to the scroll container.
+    /// Inspector Files body: fixed search box plus a bounded native virtual
+    /// list. The body clips its children so the list receives the real panel
+    /// height rather than expanding to its complete content height.
     fn render_inspector_files(&mut self, viewport_h: f32, cx: &mut Context<Self>) -> Div {
         // Real filter input over the cached rows (file-name substring).
         // Clicking focuses the box; typing filters, Enter opens the first
         // match, Esc clears and releases. Ctrl+P stays the fuzzy path.
         let query = self.files_search.clone();
         let search_focused = self.files_search_focused;
-        let mut body = div().flex().flex_col().flex_1().min_h(px(0.0)).child(
-            div()
-                .p_2()
-                .border_b_1()
-                .border_color(rgb(crate::ui::theme::BORDER))
-                .child(
-                    div()
-                        .h(px(32.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .px_2()
-                        .gap_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgb(if search_focused {
-                            crate::ui::theme::BLUE2
-                        } else {
-                            crate::ui::theme::BORDER
-                        }))
-                        .bg(rgb(crate::ui::theme::PILL_BG))
-                        .text_size(px(11.0))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                view.files_search_focused = true;
-                                view.git_panel.set_commit_focused(false);
-                                view.set_input_owner(InputOwner::FilesFilter);
-                                cx.notify();
-                            }),
-                        )
-                        .child(crate::ui::assets::icon(
-                            crate::ui::assets::SEARCH,
-                            14.0,
-                            crate::ui::theme::MUTED,
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .truncate()
-                                .text_color(rgb(if query.is_empty() {
-                                    crate::ui::theme::MUTED
-                                } else {
-                                    crate::ui::theme::TEXT
-                                }))
-                                .child(if query.is_empty() {
-                                    "Search files".to_string()
-                                } else {
-                                    query
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(
+                div()
+                    .p_2()
+                    .border_b_1()
+                    .border_color(rgb(crate::ui::theme::BORDER))
+                    .child(
+                        div()
+                            .h(px(32.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .px_2()
+                            .gap_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(if search_focused {
+                                crate::ui::theme::BLUE2
+                            } else {
+                                crate::ui::theme::BORDER
+                            }))
+                            .bg(rgb(crate::ui::theme::PILL_BG))
+                            .text_size(px(11.0))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.files_search_focused = true;
+                                    view.git_panel.set_commit_focused(false);
+                                    view.set_input_owner(InputOwner::FilesFilter);
+                                    cx.notify();
                                 }),
-                        ),
-                ),
-        );
+                            )
+                            .child(crate::ui::assets::icon(
+                                crate::ui::assets::SEARCH,
+                                14.0,
+                                crate::ui::theme::MUTED,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_color(rgb(if query.is_empty() {
+                                        crate::ui::theme::MUTED
+                                    } else {
+                                        crate::ui::theme::TEXT
+                                    }))
+                                    .child(if query.is_empty() {
+                                        "Search files".to_string()
+                                    } else {
+                                        query
+                                    }),
+                            ),
+                    ),
+            );
         body = self.render_files_tree(body, viewport_h, cx);
         if let Some(message) = self.files_warning.clone() {
             body = body.child(
@@ -14886,9 +15267,17 @@ impl Render for WorkspaceView {
         // to the PTY and no `Ctrl` chord honors them).
         let weak = cx.entity().downgrade();
         let drop_weak = weak.clone();
+        let wheel_weak = weak.clone();
         div()
+            .relative()
             .track_focus(&self.focus_handle)
             .on_any_mouse_down(cx.listener(|view, _, _, cx| {
+                if !view.wheel_motions.is_empty() {
+                    view.wheel_motions.clear();
+                    view.terminal_pixel_offsets.clear();
+                    view.terminal_scroll_tails.clear();
+                    cx.notify();
+                }
                 if view.process_arm.take().is_some() {
                     cx.notify();
                 }
@@ -14925,6 +15314,25 @@ impl Render for WorkspaceView {
             .text_color(rgb(crate::ui::theme::TEXT))
             .child(content_row)
             .child(status_bar)
+            .child(
+                canvas(
+                    |bounds, _, _| bounds,
+                    move |_, _, window, _| {
+                        let weak = wheel_weak.clone();
+                        window.on_mouse_event(
+                            move |event: &ScrollWheelEvent, phase, window, cx| {
+                                if phase == gpui::DispatchPhase::Capture {
+                                    let _ = weak.update(cx, |view, cx| {
+                                        view.capture_wheel(event, window, cx)
+                                    });
+                                }
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 
@@ -15450,6 +15858,7 @@ struct PaintArgs<'a> {
     cursor_color: Hsla,
     show_scrollbar: bool,
     selection: Option<(CellPoint, CellPoint)>,
+    pixel_offset: f32,
 }
 
 fn paint_terminal(
@@ -15464,7 +15873,7 @@ fn paint_terminal(
     let cursor_color = args.cursor_color;
     let show_scrollbar = args.show_scrollbar;
     let selection = args.selection;
-    let origin = origin_bounds.origin;
+    let origin = origin_bounds.origin + gpui::point(px(0.0), px(args.pixel_offset));
     let cell_width = fonts.cell_width;
     let line_height = fonts.line_height;
     let font_size = fonts.font_size;
@@ -15711,13 +16120,13 @@ fn paint_terminal(
 
     let history = snapshot.history_size;
     if show_scrollbar && history > 0 {
-        let track_x = origin.x + origin_bounds.size.width - px(8.0);
+        let track_x = origin_bounds.origin.x + origin_bounds.size.width - px(8.0);
         let track_h: f32 = (snapshot.lines as f32) * f32::from(line_height);
         let total = (history + snapshot.lines as usize) as f32;
         let thumb_h = (track_h * snapshot.lines as f32 / total).max(12.0);
         let travel = (track_h - thumb_h).max(0.0);
         let frac = (snapshot.display_offset as f32 / history as f32).clamp(0.0, 1.0);
-        let thumb_y = origin.y + px((1.0 - frac) * travel);
+        let thumb_y = origin_bounds.origin.y + px((1.0 - frac) * travel);
         let thumb_color: Hsla = rgb(0x52525B).into();
         window.paint_quad(gpui::fill(
             Bounds {

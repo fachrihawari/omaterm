@@ -41,6 +41,12 @@ pub trait TerminalEngine: Send {
     /// Current display offset (0 = bottom). Exposed for scroll tests.
     fn display_offset(&self) -> usize;
 
+    /// One row below the viewport for smooth pixel scrolling. Available only
+    /// above the live bottom; does not resize or mutate the terminal grid.
+    fn viewport_following_row(&self) -> Option<TerminalRow> {
+        None
+    }
+
     /// Whether application-cursor mode is active (arrow-key encoding).
     fn app_cursor(&self) -> bool;
 

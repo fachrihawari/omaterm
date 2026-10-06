@@ -269,6 +269,23 @@ impl TerminalEngine for AlacrittyEngine {
     fn display_offset(&self) -> usize {
         self.term.grid().display_offset()
     }
+
+    fn viewport_following_row(&self) -> Option<TerminalRow> {
+        if self.is_alt_screen() || self.display_offset() == 0 {
+            return None;
+        }
+        let line = self.term.screen_lines() as i32 - self.display_offset() as i32;
+        let cells = (0..self.term.columns())
+            .map(|col| {
+                let point = alacritty_terminal::index::Point::new(
+                    alacritty_terminal::index::Line(line),
+                    alacritty_terminal::index::Column(col),
+                );
+                map_cell(&self.term, &self.term.grid()[point])
+            })
+            .collect();
+        Some(TerminalRow { cells })
+    }
 }
 
 // --- cell / color mapping -------------------------------------------------
@@ -616,6 +633,26 @@ mod tests {
         assert!(engine.display_offset() > 0);
         engine.scroll(ScrollCommand::Bottom);
         assert_eq!(engine.display_offset(), 0);
+    }
+
+    #[test]
+    fn overscan_row_matches_neighbor_without_mutating_grid_or_offset() {
+        let mut engine = AlacrittyEngine::with_scrollback(20, 5, 100);
+        for i in 0..20 {
+            engine.advance_output(format!("line{i}\r\n").as_bytes());
+        }
+        assert!(engine.viewport_following_row().is_none());
+        for offset in [1, 3, engine.viewport().history_size as i32] {
+            engine.scroll(ScrollCommand::Bottom);
+            engine.scroll(ScrollCommand::Lines(offset));
+            let before = engine.viewport();
+            let tail = engine.viewport_following_row().unwrap();
+            assert_eq!(engine.viewport(), before);
+            engine.scroll(ScrollCommand::Lines(-1));
+            assert_eq!(engine.viewport().rows.last(), Some(&tail));
+        }
+        engine.advance_output(b"\x1b[?1049h");
+        assert!(engine.viewport_following_row().is_none());
     }
 
     #[test]

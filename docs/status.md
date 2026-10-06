@@ -2,6 +2,59 @@
 
 ## Current position
 
+### Mouse-wheel ease-out and terminal pixel interpolation — 2026-10-07
+
+- The preceding layout/I/O fixes did not add wheel animation. Confirmed against
+  GPUI 0.2.2: Linux wheel deltas already contain three line units per detent;
+  native scroll handlers apply them immediately with no easing/momentum tail.
+- Added shared, frame-driven wheel ease-out in `apps/omaterm/src/scroll.rs`.
+  Discrete vertical wheels are captured before GPUI's immediate bubble handler
+  and use 32px per reported line (96px per normal detent). Successive detents
+  extend the destination, reversal drops old debt, and bounds clamp travel.
+  One `Window::on_next_frame` loop services Files, editor, Git, diff and terminal
+  surfaces; it stops when motion settles or loses ownership/visibility/focus.
+  Precise touchpad and horizontal/Shift-wheel input retain native routing.
+- Terminal scrollback now paints fractional vertical positions over its stable
+  grid snapshot with one following overscan row, settling at a whole-row
+  boundary. `viewport_following_row` reads the neighbor without resizing or
+  mutating the terminal; full-screen apps retain their existing input protocol.
+  Extended scroll-indicator deadlines now actually expire via one waiting task.
+- Regression tests cover refresh-rate-independent convergence, bounds/reversal,
+  and neighboring terminal rows at top/middle/bottom and alt-screen exclusion.
+- Verification: `mbx fmt --all --check`, `mbx test --workspace --quiet` (663 tests),
+  `mbx clippy --workspace --all-targets -- -D warnings`, release desktop/CLI build,
+  and `git diff --check` PASS (known transitive `proc-macro-error2` notice only).
+  Real release Wayland wheel injection confirmed intermediate positions and
+  settlement on all five surfaces; see [native evidence](evidence/wheel-easing.md).
+  Physical hardware subjective feel and precise touchpad behavior remain manual
+  validation items.
+
+### Scroll-surface correctness and UI-thread hot-path removal — 2026-10-07
+
+- Root causes from the scroll investigation: `Git` had no vertical scroll
+  container; the Files `uniform_list` could size to content instead of the
+  inspector viewport; and the 250ms UI poller synchronously reloaded and parsed
+  `config.toml` for Git/diff refresh checks. Files rendering also reloaded
+  config through `files_root_cap` on every scroll-triggered render.
+- Inspector now clips its tab body. Files uses a height-constrained native
+  `uniform_list`, and the Git panel has an axis-restricted vertical scroll
+  viewport whose content cannot flex-shrink to fit. Git lists can therefore
+  scroll instead of clipping below the inspector.
+- File-list cap and Git refresh interval are captured from startup config in
+  `WorkspaceView`; the Files renderer, watcher/fetch setup, and 250ms Git/diff
+  poller no longer perform UI-thread config I/O. Editor/diff already use native
+  `uniform_list` pixel scrolling; terminal display uses GPUI's cached line
+  shaping but remains line-granular by terminal-grid design. GPUI does not
+  synthesize browser-style momentum/easing, so native Wayland touchpad deltas
+  are direct rather than animated.
+- Verification: `mbx fmt --all --check` PASS, `mbx test --workspace` PASS
+  (660 tests), `mbx clippy --workspace --all-targets -- -D warnings` PASS
+  (only the known transitive `proc-macro-error2` notice),
+  `mbx build --release --bin omaterm-desktop` PASS,
+  `python3 scripts/check-docs.py` PASS, `git diff --check` PASS. Manual
+  Wayland feel validation is pending: an existing shared-session OmaTerm window
+  predates this build and was not restarted automatically.
+
 ### Git history H0–H2 + initial command parity — 2026-10-06
 
 - Baseline: `git 2.55.0`, SHA-1 repository object format, `mbx 1.22.0`,

@@ -515,6 +515,10 @@ impl TerminalSession {
         self.engine.viewport()
     }
 
+    pub fn viewport_following_row(&self) -> Option<crate::engine::TerminalRow> {
+        self.engine.viewport_following_row()
+    }
+
     pub fn read_visible_text(&self, max_lines: usize, max_columns: usize) -> String {
         self.engine.read_visible_text(max_lines, max_columns)
     }
