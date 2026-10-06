@@ -2,6 +2,52 @@
 
 ## Current position
 
+### Built-in highlight batch 2 (Kotlin/Zig/Lua/Dockerfile/shell) — 2026-10-06
+
+- `EditorLanguage` grows to 24 file types: + Kotlin (`kt/kts`, `"""` raw
+  strings, `//` + flat `/* */`), Zig (`zig/zon`, `//` only — no block
+  comments per the language spec), Lua (`lua`, `--` line comments;
+  `--[[ ]]` long comments only highlight their opening line, documented
+  subset), Dockerfile (`Dockerfile`, `Dockerfile.*`, `Containerfile*`;
+  case-insensitive instruction keywords per spec).
+- Shell reuse, no new variants: `zsh`/`fish` extensions, `PKGBUILD`, and
+  `.bashrc`/`.bash_profile`/`.zshrc`/`.zprofile`/`.profile` dotfiles all map
+  to the existing Bash profile. File-tree icons already covered everything
+  except Zig (falls back to the generic icon — no unverified glyph added).
+- `word_insensitive` now serves SQL + Dockerfile. Worker, caps, fallback
+  and indexing unchanged; no new dependencies.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace
+  --quiet` PASS (650 tests, incl. extended `extended_language_subset_rules_hold`
+  + detection cases), serial `-- --test-threads=1` PASS (20 suites ok),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS (only the
+  known transitive `proc-macro-error2` notice), `git diff --check` PASS.
+  Release build and Wayland visual validation not run. Not committed.
+
+### Built-in highlight extended to 20 languages — 2026-10-06
+
+- `omaterm-context` `EditorLanguage` grows from 5 to 20 file types
+  (Rust, Markdown, TOML, JSON, Bash + Python, JavaScript, TypeScript, HTML,
+  CSS, YAML, XML, SQL, Go, Java, C, C++, C#, Ruby, PHP); `Plain` remains the
+  fallback. Detection covers common extensions (`tsx`, `mjs`, `yml`, `hpp`,
+  `phtml`, …) plus `go.mod`/`go.sum` and `Gemfile`/`Rakefile` names;
+  `Dockerfile`/`Makefile` stay `Plain`, bare `.h` maps to C (documented
+  subset). No new dependencies; `core` stays GPUI-free.
+- Desktop tokenizer (`apps/omaterm/src/editor.rs`) becomes profile-driven:
+  per-family `//` / `#` (with the existing `$#` guard) / SQL `--` line
+  comments, nested Rust `/* */` vs flat blocks elsewhere, `<!-- -->` for
+  HTML/XML with tag names as keywords, `"` + `'`-escaped + JS/TS template
+  backticks + Go raw backticks + Python triple-quoted strings, per-language
+  keyword subsets, and case-insensitive SQL keywords. Rust `#` attributes
+  and CSS `#id` selectors are explicitly not comments. Worker, generation,
+  cancellation, `MAX_HIGHLIGHT_SPANS` cap/plain-fallback and visible-range
+  indexing are unchanged.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace
+  --quiet` PASS (650 tests: 649 prior + 1 new `twenty_language_subset_rules_hold`),
+  serial `-- --test-threads=1` PASS (650), `cargo clippy --workspace
+  --all-targets -- -D warnings` PASS (only the known transitive
+  `proc-macro-error2` notice), `git diff --check` PASS. Release build and
+  Wayland visual validation not run. Not committed.
+
 ### Packaging review fixes — 2026-10-06
 
 - Installer/uninstaller now support piped help and reject missing argument

@@ -30,8 +30,9 @@ pub const MAX_EDITOR_BYTES: usize = 1024 * 1024;
 /// `omaterm_core::validation::MAX_EDITOR_LINES`; enforced while splitting.
 pub const MAX_EDITOR_LINES: usize = 20_000;
 
-/// First-delivery language set (M19 plan §12). Everything else is `Plain`
-/// until the highlight pipeline proves more.
+/// Highlight-supported language set: the 20-language first batch plus the
+/// follow-up six (Kotlin, Zig, Lua, Dockerfile; zsh/fish/PKGBUILD reuse the
+/// Bash profile). Everything else is `Plain` until the pipeline proves more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorLanguage {
     Rust,
@@ -39,6 +40,25 @@ pub enum EditorLanguage {
     Toml,
     Json,
     Bash,
+    Python,
+    JavaScript,
+    TypeScript,
+    Html,
+    Css,
+    Yaml,
+    Xml,
+    Sql,
+    Go,
+    Java,
+    C,
+    Cpp,
+    CSharp,
+    Ruby,
+    Php,
+    Kotlin,
+    Zig,
+    Lua,
+    Dockerfile,
     Plain,
 }
 
@@ -50,6 +70,25 @@ impl EditorLanguage {
             Self::Toml => "toml",
             Self::Json => "json",
             Self::Bash => "bash",
+            Self::Python => "python",
+            Self::JavaScript => "javascript",
+            Self::TypeScript => "typescript",
+            Self::Html => "html",
+            Self::Css => "css",
+            Self::Yaml => "yaml",
+            Self::Xml => "xml",
+            Self::Sql => "sql",
+            Self::Go => "go",
+            Self::Java => "java",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::CSharp => "csharp",
+            Self::Ruby => "ruby",
+            Self::Php => "php",
+            Self::Kotlin => "kotlin",
+            Self::Zig => "zig",
+            Self::Lua => "lua",
+            Self::Dockerfile => "dockerfile",
             Self::Plain => "plaintext",
         }
     }
@@ -57,13 +96,38 @@ impl EditorLanguage {
 
 /// Language detection by filename/extension, case-insensitive. Lossy text is
 /// display-only here; identity always uses original path bytes elsewhere.
+/// `Dockerfile`/`Makefile` stay `Plain`, and a bare `.h` maps to `C`
+/// (documented subset — C/C++ share the header suffix). zsh/fish/PKGBUILD
+/// and common shell dotfiles reuse the Bash profile; `Dockerfile.*` and
+/// `Containerfile` reuse the Dockerfile profile.
 pub fn detect_language(path: &Path) -> EditorLanguage {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if name == "dockerfile" || name == "makefile" {
+    if name == "dockerfile" || name.starts_with("dockerfile.") {
+        return EditorLanguage::Dockerfile;
+    }
+    if name == "containerfile" || name.starts_with("containerfile.") {
+        return EditorLanguage::Dockerfile;
+    }
+    if name == "makefile" {
         return EditorLanguage::Plain;
+    }
+    if name == "go.mod" || name == "go.sum" {
+        return EditorLanguage::Go;
+    }
+    if name == "gemfile" || name == "rakefile" {
+        return EditorLanguage::Ruby;
+    }
+    if name == "pkgbuild" {
+        return EditorLanguage::Bash;
+    }
+    if matches!(
+        name.as_str(),
+        ".bashrc" | ".bash_profile" | ".zshrc" | ".zprofile" | ".profile"
+    ) {
+        return EditorLanguage::Bash;
     }
     match path
         .extension()
@@ -75,7 +139,25 @@ pub fn detect_language(path: &Path) -> EditorLanguage {
         Some("md" | "markdown") => EditorLanguage::Markdown,
         Some("toml") => EditorLanguage::Toml,
         Some("json") => EditorLanguage::Json,
-        Some("sh" | "bash") => EditorLanguage::Bash,
+        Some("sh" | "bash" | "zsh" | "fish") => EditorLanguage::Bash,
+        Some("py" | "pyw" | "pyi") => EditorLanguage::Python,
+        Some("js" | "mjs" | "cjs" | "jsx") => EditorLanguage::JavaScript,
+        Some("ts" | "mts" | "cts" | "tsx") => EditorLanguage::TypeScript,
+        Some("html" | "htm" | "xhtml") => EditorLanguage::Html,
+        Some("css") => EditorLanguage::Css,
+        Some("yaml" | "yml") => EditorLanguage::Yaml,
+        Some("xml" | "xsd" | "svg") => EditorLanguage::Xml,
+        Some("sql") => EditorLanguage::Sql,
+        Some("go") => EditorLanguage::Go,
+        Some("java") => EditorLanguage::Java,
+        Some("c" | "h") => EditorLanguage::C,
+        Some("cpp" | "cxx" | "cc" | "hpp" | "hh" | "hxx") => EditorLanguage::Cpp,
+        Some("cs") => EditorLanguage::CSharp,
+        Some("rb") => EditorLanguage::Ruby,
+        Some("php" | "phtml") => EditorLanguage::Php,
+        Some("kt" | "kts") => EditorLanguage::Kotlin,
+        Some("zig" | "zon") => EditorLanguage::Zig,
+        Some("lua") => EditorLanguage::Lua,
         _ => EditorLanguage::Plain,
     }
 }
@@ -979,6 +1061,42 @@ mod tests {
             ("config.toml", EditorLanguage::Toml),
             ("data.json", EditorLanguage::Json),
             ("run.sh", EditorLanguage::Bash),
+            ("app.py", EditorLanguage::Python),
+            ("APP.PY", EditorLanguage::Python),
+            ("app.js", EditorLanguage::JavaScript),
+            ("app.jsx", EditorLanguage::JavaScript),
+            ("app.ts", EditorLanguage::TypeScript),
+            ("app.tsx", EditorLanguage::TypeScript),
+            ("index.html", EditorLanguage::Html),
+            ("style.css", EditorLanguage::Css),
+            ("config.yaml", EditorLanguage::Yaml),
+            ("config.yml", EditorLanguage::Yaml),
+            ("data.xml", EditorLanguage::Xml),
+            ("query.sql", EditorLanguage::Sql),
+            ("main.go", EditorLanguage::Go),
+            ("go.mod", EditorLanguage::Go),
+            ("Main.java", EditorLanguage::Java),
+            ("main.c", EditorLanguage::C),
+            ("header.h", EditorLanguage::C),
+            ("main.cpp", EditorLanguage::Cpp),
+            ("header.hpp", EditorLanguage::Cpp),
+            ("App.cs", EditorLanguage::CSharp),
+            ("app.rb", EditorLanguage::Ruby),
+            ("Gemfile", EditorLanguage::Ruby),
+            ("index.php", EditorLanguage::Php),
+            ("main.kt", EditorLanguage::Kotlin),
+            ("build.kts", EditorLanguage::Kotlin),
+            ("main.zig", EditorLanguage::Zig),
+            ("build.zon", EditorLanguage::Zig),
+            ("init.lua", EditorLanguage::Lua),
+            ("Dockerfile", EditorLanguage::Dockerfile),
+            ("dockerfile.dev", EditorLanguage::Dockerfile),
+            ("Containerfile", EditorLanguage::Dockerfile),
+            ("deploy.zsh", EditorLanguage::Bash),
+            ("config.fish", EditorLanguage::Bash),
+            ("PKGBUILD", EditorLanguage::Bash),
+            (".bashrc", EditorLanguage::Bash),
+            (".zshrc", EditorLanguage::Bash),
             ("Makefile", EditorLanguage::Plain),
             ("notes.txt", EditorLanguage::Plain),
             ("no-extension", EditorLanguage::Plain),

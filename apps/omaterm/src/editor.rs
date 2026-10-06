@@ -1502,6 +1502,681 @@ const BASH_KEYWORDS: &[&str] = &[
     "function", "if", "in", "local", "readonly", "return", "select", "then", "until", "while",
 ];
 
+/// Keyword subsets for the 20-language built-in highlighter. Each table is a
+/// documented subset (common keywords only), not a full grammar guarantee.
+const PYTHON_KEYWORDS: &[&str] = &[
+    "and", "as", "assert", "async", "await", "break", "case", "class", "continue", "def", "del",
+    "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in",
+    "is", "lambda", "match", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+    "try", "while", "with", "yield",
+];
+
+const JS_KEYWORDS: &[&str] = &[
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "let",
+    "new",
+    "null",
+    "of",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "static",
+    "get",
+    "set",
+];
+
+const TS_KEYWORDS: &[&str] = &[
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "let",
+    "new",
+    "null",
+    "of",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "static",
+    "get",
+    "set",
+    "interface",
+    "type",
+    "enum",
+    "namespace",
+    "declare",
+    "abstract",
+    "implements",
+    "readonly",
+    "keyof",
+    "infer",
+    "satisfies",
+    "as",
+    "is",
+    "override",
+    "private",
+    "protected",
+    "public",
+    "string",
+    "number",
+    "boolean",
+    "never",
+    "unknown",
+    "any",
+];
+
+const GO_KEYWORDS: &[&str] = &[
+    "break",
+    "case",
+    "chan",
+    "const",
+    "continue",
+    "default",
+    "defer",
+    "else",
+    "fallthrough",
+    "for",
+    "func",
+    "go",
+    "goto",
+    "if",
+    "import",
+    "interface",
+    "map",
+    "package",
+    "range",
+    "return",
+    "select",
+    "struct",
+    "switch",
+    "type",
+    "var",
+    "true",
+    "false",
+    "nil",
+    "iota",
+];
+
+const JAVA_KEYWORDS: &[&str] = &[
+    "abstract",
+    "assert",
+    "boolean",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extends",
+    "final",
+    "finally",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "implements",
+    "import",
+    "instanceof",
+    "int",
+    "interface",
+    "long",
+    "native",
+    "new",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "short",
+    "static",
+    "strictfp",
+    "super",
+    "switch",
+    "synchronized",
+    "this",
+    "throw",
+    "throws",
+    "transient",
+    "try",
+    "void",
+    "volatile",
+    "while",
+    "true",
+    "false",
+    "null",
+    "var",
+    "record",
+    "sealed",
+];
+
+const C_KEYWORDS: &[&str] = &[
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
+    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
+    "union", "unsigned", "void", "volatile", "while", "true", "false", "NULL",
+];
+
+const CPP_KEYWORDS: &[&str] = &[
+    "auto",
+    "break",
+    "case",
+    "char",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+    "true",
+    "false",
+    "NULL",
+    "class",
+    "namespace",
+    "template",
+    "typename",
+    "virtual",
+    "public",
+    "private",
+    "protected",
+    "friend",
+    "new",
+    "delete",
+    "this",
+    "using",
+    "try",
+    "catch",
+    "throw",
+    "constexpr",
+    "decltype",
+    "noexcept",
+    "explicit",
+    "operator",
+    "override",
+    "final",
+    "nullptr",
+    "static_assert",
+    "bool",
+    "concept",
+    "requires",
+];
+
+const CSHARP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "as",
+    "base",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "checked",
+    "class",
+    "const",
+    "continue",
+    "decimal",
+    "default",
+    "delegate",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "float",
+    "for",
+    "foreach",
+    "goto",
+    "if",
+    "implicit",
+    "in",
+    "int",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "long",
+    "namespace",
+    "new",
+    "null",
+    "object",
+    "operator",
+    "out",
+    "override",
+    "params",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "ref",
+    "return",
+    "sbyte",
+    "sealed",
+    "short",
+    "sizeof",
+    "stackalloc",
+    "static",
+    "string",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "uint",
+    "ulong",
+    "unchecked",
+    "unsafe",
+    "ushort",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "while",
+    "var",
+    "async",
+    "await",
+    "record",
+    "where",
+    "get",
+    "set",
+];
+
+const SQL_KEYWORDS: &[&str] = &[
+    "select",
+    "from",
+    "where",
+    "and",
+    "or",
+    "not",
+    "insert",
+    "into",
+    "values",
+    "update",
+    "set",
+    "delete",
+    "create",
+    "table",
+    "alter",
+    "drop",
+    "join",
+    "left",
+    "right",
+    "inner",
+    "outer",
+    "on",
+    "group",
+    "by",
+    "order",
+    "having",
+    "limit",
+    "offset",
+    "union",
+    "all",
+    "distinct",
+    "as",
+    "null",
+    "true",
+    "false",
+    "primary",
+    "key",
+    "foreign",
+    "references",
+    "index",
+    "view",
+    "database",
+    "case",
+    "when",
+    "then",
+    "else",
+    "end",
+    "exists",
+    "between",
+    "like",
+    "is",
+    "asc",
+    "desc",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+];
+
+const RUBY_KEYWORDS: &[&str] = &[
+    "alias", "and", "begin", "break", "case", "class", "def", "defined", "do", "else", "elsif",
+    "end", "ensure", "false", "for", "if", "in", "module", "next", "nil", "not", "or", "redo",
+    "rescue", "retry", "return", "self", "super", "then", "true", "undef", "unless", "until",
+    "when", "while", "yield",
+];
+
+const PHP_KEYWORDS: &[&str] = &[
+    "echo",
+    "if",
+    "else",
+    "elseif",
+    "endif",
+    "for",
+    "foreach",
+    "while",
+    "do",
+    "switch",
+    "case",
+    "break",
+    "continue",
+    "function",
+    "return",
+    "class",
+    "interface",
+    "trait",
+    "extends",
+    "implements",
+    "new",
+    "clone",
+    "var",
+    "const",
+    "public",
+    "private",
+    "protected",
+    "static",
+    "abstract",
+    "final",
+    "try",
+    "catch",
+    "finally",
+    "throw",
+    "true",
+    "false",
+    "null",
+    "and",
+    "or",
+    "xor",
+    "as",
+    "include",
+    "require",
+    "namespace",
+    "use",
+    "global",
+    "isset",
+    "empty",
+    "exit",
+    "die",
+    "list",
+    "array",
+    "print",
+    "goto",
+];
+
+const CSS_KEYWORDS: &[&str] = &[
+    "import",
+    "media",
+    "charset",
+    "font-face",
+    "keyframes",
+    "supports",
+    "namespace",
+    "page",
+    "document",
+    "viewport",
+    "layer",
+    "container",
+    "scope",
+];
+
+const YAML_KEYWORDS: &[&str] = &["true", "false", "null"];
+
+const KOTLIN_KEYWORDS: &[&str] = &[
+    "abstract",
+    "actual",
+    "annotation",
+    "as",
+    "break",
+    "by",
+    "catch",
+    "class",
+    "companion",
+    "const",
+    "constructor",
+    "continue",
+    "crossinline",
+    "data",
+    "do",
+    "dynamic",
+    "else",
+    "enum",
+    "expect",
+    "external",
+    "false",
+    "field",
+    "file",
+    "final",
+    "finally",
+    "for",
+    "fun",
+    "get",
+    "if",
+    "import",
+    "in",
+    "infix",
+    "init",
+    "inline",
+    "inner",
+    "interface",
+    "internal",
+    "is",
+    "lateinit",
+    "noinline",
+    "null",
+    "object",
+    "open",
+    "operator",
+    "out",
+    "override",
+    "package",
+    "param",
+    "private",
+    "protected",
+    "public",
+    "reified",
+    "return",
+    "sealed",
+    "set",
+    "super",
+    "suspend",
+    "tailrec",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typealias",
+    "val",
+    "var",
+    "vararg",
+    "when",
+    "where",
+    "while",
+];
+
+const ZIG_KEYWORDS: &[&str] = &[
+    "addrspace",
+    "align",
+    "allowzero",
+    "and",
+    "anyframe",
+    "anytype",
+    "asm",
+    "async",
+    "await",
+    "break",
+    "callconv",
+    "catch",
+    "comptime",
+    "const",
+    "continue",
+    "defer",
+    "else",
+    "enum",
+    "errdefer",
+    "error",
+    "export",
+    "extern",
+    "fn",
+    "for",
+    "if",
+    "inline",
+    "linksection",
+    "noinline",
+    "nosuspend",
+    "opaque",
+    "or",
+    "orelse",
+    "packed",
+    "pub",
+    "resume",
+    "return",
+    "struct",
+    "suspend",
+    "switch",
+    "test",
+    "threadlocal",
+    "try",
+    "union",
+    "unreachable",
+    "usingnamespace",
+    "var",
+    "volatile",
+    "while",
+    "true",
+    "false",
+    "null",
+    "undefined",
+];
+
+const LUA_KEYWORDS: &[&str] = &[
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
+];
+
+/// Dockerfile instruction keywords, lowercase: matching is case-insensitive
+/// per the Dockerfile spec (`FROM` == `from`).
+const DOCKERFILE_KEYWORDS: &[&str] = &[
+    "from",
+    "run",
+    "cmd",
+    "label",
+    "maintainer",
+    "expose",
+    "env",
+    "add",
+    "copy",
+    "entrypoint",
+    "volume",
+    "user",
+    "workdir",
+    "arg",
+    "onbuild",
+    "stopsignal",
+    "healthcheck",
+    "shell",
+];
+
 fn is_ident_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_'
 }
@@ -1589,6 +2264,120 @@ impl<'a> Scanner<'a> {
         self.push(start, TokenKind::String);
     }
 
+    /// Consume a `'`-quoted string with backslash escapes (C-like, Python,
+    /// JS/TS, Ruby, PHP, SQL, CSS, YAML). Runs to the closing quote or EOF.
+    fn single_escaped(&mut self) {
+        let start = self.pos;
+        self.pos += 1;
+        while self.pos < self.bytes.len() && !self.is_cancelled() {
+            let byte = self.bytes[self.pos];
+            if byte == b'\\' {
+                self.pos += 1;
+                if self.pos < self.bytes.len() {
+                    self.pos += utf8_len(self.bytes[self.pos]);
+                }
+                continue;
+            }
+            self.pos += utf8_len(byte);
+            if byte == b'\'' {
+                break;
+            }
+        }
+        self.push(start, TokenKind::String);
+    }
+
+    /// Consume a backtick string with backslash escapes (JS/TS templates).
+    fn backtick_escaped(&mut self) {
+        let start = self.pos;
+        self.pos += 1;
+        while self.pos < self.bytes.len() && !self.is_cancelled() {
+            let byte = self.bytes[self.pos];
+            if byte == b'\\' {
+                self.pos += 1;
+                if self.pos < self.bytes.len() {
+                    self.pos += utf8_len(self.bytes[self.pos]);
+                }
+                continue;
+            }
+            self.pos += utf8_len(byte);
+            if byte == b'`' {
+                break;
+            }
+        }
+        self.push(start, TokenKind::String);
+    }
+
+    /// Consume a raw backtick string with no escapes (Go raw strings).
+    fn backtick_raw(&mut self) {
+        let start = self.pos;
+        self.pos += 1;
+        while self.pos < self.bytes.len() && !self.is_cancelled() && self.bytes[self.pos] != b'`' {
+            self.pos += utf8_len(self.bytes[self.pos]);
+        }
+        self.pos = (self.pos + 1).min(self.bytes.len());
+        self.push(start, TokenKind::String);
+    }
+
+    /// Consume a Python `"""..."""` / `'''...'''` triple-quoted string.
+    /// `quote` is the repeated delimiter byte. Runs to the closing triple
+    /// or EOF; backslash escapes are honored inside.
+    fn triple_string(&mut self, quote: u8) {
+        let start = self.pos;
+        self.pos += 3;
+        while self.pos < self.bytes.len() && !self.is_cancelled() {
+            if self.bytes[self.pos] == b'\\' {
+                self.pos += 1;
+                if self.pos < self.bytes.len() {
+                    self.pos += utf8_len(self.bytes[self.pos]);
+                }
+                continue;
+            }
+            if self.bytes[self.pos] == quote
+                && self.bytes.get(self.pos + 1) == Some(&quote)
+                && self.bytes.get(self.pos + 2) == Some(&quote)
+            {
+                self.pos += 3;
+                break;
+            }
+            self.pos += utf8_len(self.bytes[self.pos]);
+        }
+        self.push(start, TokenKind::String);
+    }
+
+    /// Consume a `/* ... */` block comment. Rust nests; every other language
+    /// closes at the first `*/`. Runs to EOF when unterminated.
+    fn block_comment(&mut self, nested: bool) {
+        let start = self.pos;
+        self.pos += 2;
+        let mut depth = 1;
+        while self.pos < self.bytes.len() && depth > 0 && !self.is_cancelled() {
+            if nested && self.rest_starts_with(b"/*") {
+                depth += 1;
+                self.pos += 2;
+            } else if self.rest_starts_with(b"*/") {
+                depth -= 1;
+                self.pos += 2;
+            } else {
+                self.pos += utf8_len(self.bytes[self.pos]);
+            }
+        }
+        self.push(start, TokenKind::Comment);
+    }
+
+    /// Consume an HTML/XML `<!-- ... -->` comment through `-->` or EOF.
+    fn html_comment(&mut self) {
+        let start = self.pos;
+        self.pos += 4;
+        while self.pos < self.bytes.len() && !self.is_cancelled() {
+            if self.rest_starts_with(b"-->") {
+                self.pos += 3;
+                break;
+            }
+            self.pos += utf8_len(self.bytes[self.pos]);
+        }
+        self.push(start, TokenKind::Comment);
+    }
+
     /// Consume a line comment through (not including) the newline.
     fn line_comment(&mut self) {
         let start = self.pos;
@@ -1613,6 +2402,25 @@ impl<'a> Scanner<'a> {
             && keywords.contains(&word)
         {
             self.push(start, TokenKind::Keyword);
+        }
+    }
+
+    /// Case-insensitive variant for SQL, whose keywords match in any case
+    /// (`SELECT` == `select`). ASCII-only; identifiers stay ASCII by
+    /// construction so lowercasing is a pure ASCII fold.
+    fn word_insensitive(&mut self, keywords: &[&str]) {
+        let start = self.pos;
+        while self.pos < self.bytes.len()
+            && !self.is_cancelled()
+            && is_ident_continue(self.bytes[self.pos])
+        {
+            self.pos += 1;
+        }
+        if let Ok(word) = std::str::from_utf8(&self.bytes[start..self.pos]) {
+            let lowered = word.to_ascii_lowercase();
+            if keywords.iter().any(|key| *key == lowered) {
+                self.push(start, TokenKind::Keyword);
+            }
         }
     }
 
@@ -1668,24 +2476,125 @@ fn tokenize_cancellable(
     if matches!(language, Lang::Markdown) {
         return tokenize_markdown(text, cancelled);
     }
+    if matches!(language, Lang::Html | Lang::Xml) {
+        return tokenize_markup(text, cancelled);
+    }
     let mut scan = Scanner::new(text, cancelled);
+    // Per-language profile: keywords, comment styles, string styles, numbers.
+    // CSS deliberately has no `#` line comments (`#id` selectors are not
+    // comments); SQL uses `--` line comments; Rust alone nests `/* */`.
     let keywords: &[&str] = match language {
         Lang::Rust => RUST_KEYWORDS,
         Lang::Bash => BASH_KEYWORDS,
         Lang::Toml => &["true", "false"],
         Lang::Json => &["true", "false", "null"],
+        Lang::Python => PYTHON_KEYWORDS,
+        Lang::JavaScript => JS_KEYWORDS,
+        Lang::TypeScript => TS_KEYWORDS,
+        Lang::Go => GO_KEYWORDS,
+        Lang::Java => JAVA_KEYWORDS,
+        Lang::C => C_KEYWORDS,
+        Lang::Cpp => CPP_KEYWORDS,
+        Lang::CSharp => CSHARP_KEYWORDS,
+        Lang::Sql => SQL_KEYWORDS,
+        Lang::Ruby => RUBY_KEYWORDS,
+        Lang::Php => PHP_KEYWORDS,
+        Lang::Css => CSS_KEYWORDS,
+        Lang::Yaml => YAML_KEYWORDS,
+        Lang::Kotlin => KOTLIN_KEYWORDS,
+        Lang::Zig => ZIG_KEYWORDS,
+        Lang::Lua => LUA_KEYWORDS,
+        Lang::Dockerfile => DOCKERFILE_KEYWORDS,
         _ => &[],
     };
     let bash = matches!(language, Lang::Bash);
-    let hash_comment = !matches!(language, Lang::Json);
-    let block_comment = matches!(language, Lang::Rust);
+    let slash_comment = matches!(
+        language,
+        Lang::Rust
+            | Lang::Go
+            | Lang::Java
+            | Lang::C
+            | Lang::Cpp
+            | Lang::CSharp
+            | Lang::JavaScript
+            | Lang::TypeScript
+            | Lang::Php
+            | Lang::Kotlin
+            | Lang::Zig
+    );
+    let hash_comment = matches!(
+        language,
+        Lang::Bash
+            | Lang::Python
+            | Lang::Ruby
+            | Lang::Toml
+            | Lang::Yaml
+            | Lang::Php
+            | Lang::Dockerfile
+    );
+    let dash_comment = matches!(language, Lang::Sql | Lang::Lua);
+    // Some(true) = nested (Rust); Some(false) = first-`*/` close; None = none.
+    // Zig has no block comments; Lua long-bracket `--[[ ]]` comments are a
+    // documented subset gap (only the `--` opening line highlights).
+    let block_comment: Option<bool> = match language {
+        Lang::Rust => Some(true),
+        Lang::Go
+        | Lang::Java
+        | Lang::C
+        | Lang::Cpp
+        | Lang::CSharp
+        | Lang::JavaScript
+        | Lang::TypeScript
+        | Lang::Php
+        | Lang::Css
+        | Lang::Sql
+        | Lang::Kotlin => Some(false),
+        _ => None,
+    };
+    let single_raw_bash = bash;
+    let single_escaped = matches!(
+        language,
+        Lang::Python
+            | Lang::JavaScript
+            | Lang::TypeScript
+            | Lang::Go
+            | Lang::Java
+            | Lang::C
+            | Lang::Cpp
+            | Lang::CSharp
+            | Lang::Ruby
+            | Lang::Php
+            | Lang::Sql
+            | Lang::Css
+            | Lang::Yaml
+            | Lang::Toml
+            | Lang::Json
+            | Lang::Kotlin
+            | Lang::Zig
+            | Lang::Lua
+            | Lang::Dockerfile
+    );
+    let backtick_template = matches!(language, Lang::JavaScript | Lang::TypeScript);
+    let backtick_raw = matches!(language, Lang::Go);
+    let python_triple = matches!(language, Lang::Python);
+    // Kotlin has `"""` raw strings (no `'''`); handled with the same scanner.
+    let kotlin_triple = matches!(language, Lang::Kotlin);
+    let rust_char = matches!(language, Lang::Rust);
+    // SQL and Dockerfile keywords are case-insensitive; every other table is
+    // exact-case.
+    let insensitive_keywords = matches!(language, Lang::Sql | Lang::Dockerfile);
+    let negative_number = matches!(language, Lang::Json | Lang::Toml | Lang::Yaml | Lang::Sql);
     while scan.pos < scan.bytes.len() && !scan.is_cancelled() {
         let byte = scan.bytes[scan.pos];
-        if byte == b'"' {
+        if (python_triple && (scan.rest_starts_with(b"\"\"\"") || scan.rest_starts_with(b"'''")))
+            || (kotlin_triple && scan.rest_starts_with(b"\"\"\""))
+        {
+            scan.triple_string(byte);
+        } else if byte == b'"' {
             scan.string(TokenKind::String);
-        } else if bash && byte == b'\'' {
+        } else if single_raw_bash && byte == b'\'' {
             scan.single_string();
-        } else if matches!(language, Lang::Rust) && byte == b'\'' {
+        } else if rust_char && byte == b'\'' {
             // Rust char literal `'x'` / `'\n'` versus lifetime `'a`:
             // only the exact literal shape becomes a string span.
             let rest = &scan.bytes[scan.pos..];
@@ -1698,35 +2607,92 @@ fn tokenize_cancellable(
             } else {
                 scan.pos += 1;
             }
-        } else if (!bash && scan.rest_starts_with(b"//"))
+        } else if single_escaped && byte == b'\'' {
+            scan.single_escaped();
+        } else if backtick_template && byte == b'`' {
+            scan.backtick_escaped();
+        } else if backtick_raw && byte == b'`' {
+            scan.backtick_raw();
+        } else if (slash_comment && !bash && scan.rest_starts_with(b"//"))
             || (hash_comment && byte == b'#' && is_comment_hash(&scan))
+            || (dash_comment && scan.rest_starts_with(b"--"))
         {
             scan.line_comment();
-        } else if block_comment && scan.rest_starts_with(b"/*") {
-            let start = scan.pos;
-            scan.pos += 2;
-            let mut depth = 1;
-            while scan.pos < scan.bytes.len() && depth > 0 && !scan.is_cancelled() {
-                if scan.rest_starts_with(b"/*") {
-                    depth += 1;
-                    scan.pos += 2;
-                } else if scan.rest_starts_with(b"*/") {
-                    depth -= 1;
-                    scan.pos += 2;
-                } else {
-                    scan.pos += utf8_len(scan.bytes[scan.pos]);
-                }
-            }
-            scan.push(start, TokenKind::Comment);
+        } else if let Some(nested) = block_comment
+            && scan.rest_starts_with(b"/*")
+        {
+            scan.block_comment(nested);
         } else if is_ident_start(byte) {
-            scan.word(keywords);
+            if insensitive_keywords {
+                scan.word_insensitive(keywords);
+            } else {
+                scan.word(keywords);
+            }
         } else if byte.is_ascii_digit()
             || (byte == b'-'
-                && matches!(language, Lang::Json)
+                && negative_number
                 && scan.pos + 1 < scan.bytes.len()
                 && scan.bytes[scan.pos + 1].is_ascii_digit())
         {
             scan.number();
+        } else {
+            scan.pos += utf8_len(byte);
+        }
+    }
+    scan.spans
+}
+
+/// Markup subset for HTML/XML: `<!-- -->` comments, tag names as keywords,
+/// and quoted attribute values as strings. Text content stays plain; invalid
+/// or unterminated constructs run to EOF without panicking.
+fn tokenize_markup(
+    text: &str,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+) -> Vec<TokenSpan> {
+    let mut scan = Scanner::new(text, cancelled);
+    while scan.pos < scan.bytes.len() && !scan.is_cancelled() {
+        let byte = scan.bytes[scan.pos];
+        if scan.rest_starts_with(b"<!--") {
+            scan.html_comment();
+        } else if byte == b'"' {
+            scan.string(TokenKind::String);
+        } else if byte == b'\'' {
+            scan.single_escaped();
+        } else if byte == b'<' {
+            let rest = &scan.bytes[scan.pos..];
+            let after_lt = rest.get(1).copied().unwrap_or(0);
+            let (name_at, _) = if after_lt == b'/' {
+                (scan.pos + 2, rest.get(2).copied().unwrap_or(0))
+            } else {
+                (scan.pos + 1, after_lt)
+            };
+            if (name_at < scan.bytes.len() && is_ident_start(scan.bytes[name_at]))
+                || scan.bytes.get(name_at) == Some(&b'!')
+            {
+                // Consume `<` + optional `/`, then the tag name as keyword.
+                scan.pos = name_at;
+                if scan.bytes.get(scan.pos) == Some(&b'!') {
+                    scan.pos += utf8_len(b'!');
+                } else {
+                    let start = scan.pos;
+                    while scan.pos < scan.bytes.len()
+                        && !scan.is_cancelled()
+                        && (scan.bytes[scan.pos].is_ascii_alphanumeric()
+                            || matches!(scan.bytes[scan.pos], b'-' | b'_' | b':'))
+                    {
+                        scan.pos += 1;
+                    }
+                    if scan.pos > start {
+                        scan.spans.push(TokenSpan {
+                            start,
+                            len: scan.pos - start,
+                            kind: TokenKind::Keyword,
+                        });
+                    }
+                }
+            } else {
+                scan.pos += utf8_len(byte);
+            }
         } else {
             scan.pos += utf8_len(byte);
         }
@@ -3355,9 +4321,217 @@ mod tests {
         assert!(spans.iter().any(|span| span_text(text, span) == "'\\n'"));
         assert!(spans.iter().any(|span| span_text(text, span) == "'界'"));
         let cancel = std::sync::atomic::AtomicBool::new(true);
-        for lang in [Lang::Rust, Lang::Json, Lang::Markdown] {
+        for lang in [
+            Lang::Rust,
+            Lang::Json,
+            Lang::Markdown,
+            Lang::Python,
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Html,
+            Lang::Css,
+            Lang::Yaml,
+            Lang::Xml,
+            Lang::Sql,
+            Lang::Go,
+            Lang::Java,
+            Lang::C,
+            Lang::Cpp,
+            Lang::CSharp,
+            Lang::Ruby,
+            Lang::Php,
+            Lang::Kotlin,
+            Lang::Zig,
+            Lang::Lua,
+            Lang::Dockerfile,
+        ] {
             assert!(tokenize_cancellable(lang, text, Some(&cancel)).is_empty());
         }
+    }
+
+    #[test]
+    fn extended_language_subset_rules_hold() {
+        use omaterm_context::EditorLanguage as Lang;
+        // Each case: (language, source, expected keyword, expected other span).
+        let cases: &[(Lang, &str, &str, &str, TokenKind)] = &[
+            (
+                Lang::Python,
+                "def f():\n    # hi 界\n    s = \"a\\\"b\"\n    t = '''x'''\n    n = 7\n",
+                "def",
+                "# hi 界",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::JavaScript,
+                "function f() {\n// hi\nconst s = \"a\";\nconst t = `x${1}`;\nlet n = 7;\n}\n",
+                "function",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::TypeScript,
+                "interface Box {\n// hi\nconst s: string = \"a\";\nlet n: number = 7;\n}\n",
+                "interface",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Go,
+                "package main\n// hi\nfunc f() {\ns := \"a\"\n_ = `raw`\n_ = 7\n}\n",
+                "func",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Java,
+                "class A {\n// hi\nString s = \"a\";\nint n = 7;\n}\n",
+                "class",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::C,
+                "#include <stdio.h>\n// hi\nint main() { return 0; }\n",
+                "return",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Cpp,
+                "#include <cstdio>\n// hi\nint main() { return 0; }\n",
+                "return",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::CSharp,
+                "using System;\n// hi\nclass A { string s = \"a\"; }\n",
+                "class",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Ruby,
+                "def f\n# hi 界\ns = \"a\"\nend\n",
+                "def",
+                "# hi 界",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Php,
+                "<?php\n// hi\n# also\n$x = \"a\";\nif ($x) { echo $x; }\n",
+                "echo",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Sql,
+                "SELECT a FROM t WHERE n = -12; -- hi\n/* block */\n",
+                "SELECT",
+                "-- hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Yaml,
+                "# hi\ntitle: \"demo\"\ncount: -7\nflag: true\n",
+                "true",
+                "# hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Css,
+                "/* hi */\n@media screen {\n#id { color: \"red\"; width: 12px; }\n}\n",
+                "media",
+                "/* hi */",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Html,
+                "<!-- hi -->\n<div class=\"a\">x</div>\n",
+                "div",
+                "<!-- hi -->",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Xml,
+                "<!-- hi -->\n<note attr=\"v\">x</note>\n",
+                "note",
+                "<!-- hi -->",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Kotlin,
+                "fun main() {\n// hi 界\nval s = \"a\"\n}\n",
+                "fun",
+                "// hi 界",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Zig,
+                "const std = @import(\"std\");\n// hi\npub fn main() void {}\n",
+                "fn",
+                "// hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Lua,
+                "local s = \"a\" -- hi\nfunction f() end\n",
+                "local",
+                "-- hi",
+                TokenKind::Comment,
+            ),
+            (
+                Lang::Dockerfile,
+                "FROM ubuntu:22.04\n# hi\nRUN echo \"a\"\n",
+                "FROM",
+                "# hi",
+                TokenKind::Comment,
+            ),
+        ];
+        for (lang, text, keyword, other, other_kind) in cases {
+            let spans = tokenize(*lang, text);
+            let kinds: Vec<(&str, TokenKind)> = spans
+                .iter()
+                .map(|span| (span_text(text, span), span.kind))
+                .collect();
+            assert!(
+                kinds.contains(&(*keyword, TokenKind::Keyword)),
+                "{lang:?}: missing keyword {keyword:?} in {kinds:?}"
+            );
+            assert!(
+                kinds.contains(&(*other, *other_kind)),
+                "{lang:?}: missing {other:?} in {kinds:?}"
+            );
+            // Sorted, non-overlapping, char-boundary aligned.
+            let mut end = 0;
+            for span in &spans {
+                assert!(span.start >= end, "{lang:?}: overlap at {span:?}");
+                assert!(text.is_char_boundary(span.start));
+                assert!(text.is_char_boundary(span.start + span.len));
+                end = span.start + span.len;
+            }
+        }
+        // Rust `#` attributes are not comments; CSS `#id` is not a comment.
+        let rust = "#[derive(Debug)]\nfn main() {}\n";
+        assert!(
+            !tokenize(Lang::Rust, rust)
+                .iter()
+                .any(|span| span.kind == TokenKind::Comment)
+        );
+        // Kotlin `"""` raw strings tokenize as one string span.
+        let kotlin_raw = "val s = \"\"\"a\"\"\"\n";
+        assert!(
+            tokenize(Lang::Kotlin, kotlin_raw)
+                .iter()
+                .any(|span| span.kind == TokenKind::String
+                    && span_text(kotlin_raw, span) == "\"\"\"a\"\"\"")
+        );
+        let css = "#id { color: red; }\n";
+        assert!(
+            !tokenize(Lang::Css, css)
+                .iter()
+                .any(|span| span.kind == TokenKind::Comment)
+        );
     }
 
     #[test]
