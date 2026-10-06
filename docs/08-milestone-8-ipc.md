@@ -126,6 +126,7 @@ crates/omaterm-ipc/
 | `file.search` | `FileCommand::Search` |
 | `file.open` | `FileCommand::Open` |
 | `git.status` | `GitCommand::Status` |
+| `git.history` | `GitCommand::History` |
 | `git.stage` | `GitCommand::Stage` |
 | `git.stage-hunk` | `GitCommand::StageHunk` |
 | `git.unstage` | `GitCommand::Unstage` |

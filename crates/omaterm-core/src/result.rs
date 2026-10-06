@@ -185,6 +185,7 @@ pub enum CommandOutput {
     EditorOpened(EditorDocumentInfo),
     EditorSaved(EditorDocumentInfo),
     GitStatus(GitStatusInfo),
+    GitHistory(GitHistoryPage),
     GitCommitted {
         oid: String,
     },
@@ -378,6 +379,324 @@ pub struct GitStatusInfo {
     pub unstaged: Vec<GitEntry>,
     pub untracked: Vec<GitEntry>,
     pub truncated: bool,
+}
+
+/// A canonical full Git object ID. History operations deliberately accept full
+/// SHA-1 (40 hex) or SHA-256 (64 hex) IDs only: abbreviated revisions and rev
+/// expressions make a selected historical comparison ambiguous or mutable.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GitObjectId(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitObjectIdError {
+    InvalidLength,
+    InvalidCharacter,
+}
+
+impl std::fmt::Display for GitObjectIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLength => {
+                f.write_str("git object ID must contain 40 or 64 hexadecimal characters")
+            }
+            Self::InvalidCharacter => {
+                f.write_str("git object ID must contain only hexadecimal characters")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GitObjectIdError {}
+
+impl GitObjectId {
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, GitObjectIdError> {
+        let value = value.as_ref();
+        if !matches!(value.len(), 40 | 64) {
+            return Err(GitObjectIdError::InvalidLength);
+        }
+        if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(GitObjectIdError::InvalidCharacter);
+        }
+        Ok(Self(value.to_ascii_lowercase()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn short(&self) -> &str {
+        &self.0[..self.0.len().min(12)]
+    }
+}
+
+impl std::fmt::Display for GitObjectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for GitObjectId {
+    type Error = GitObjectIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<&str> for GitObjectId {
+    type Error = GitObjectIdError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+/// Bounded opaque continuation token for a project-scoped history snapshot.
+/// The token is server-issued; callers must not synthesize a traversal from a
+/// commit's parent because Git history is a DAG, not a linear list.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GitHistoryCursor(String);
+
+pub const MAX_GIT_HISTORY_CURSOR_BYTES: usize = 4 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitHistoryCursorError {
+    Empty,
+    TooLong,
+    ControlCharacter,
+}
+
+impl std::fmt::Display for GitHistoryCursorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("git history cursor must not be empty"),
+            Self::TooLong => f.write_str("git history cursor exceeds the 4096-byte limit"),
+            Self::ControlCharacter => {
+                f.write_str("git history cursor must not contain control characters")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GitHistoryCursorError {}
+
+impl GitHistoryCursor {
+    pub fn parse(value: impl Into<String>) -> Result<Self, GitHistoryCursorError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(GitHistoryCursorError::Empty);
+        }
+        if value.len() > MAX_GIT_HISTORY_CURSOR_BYTES {
+            return Err(GitHistoryCursorError::TooLong);
+        }
+        if value.chars().any(char::is_control) {
+            return Err(GitHistoryCursorError::ControlCharacter);
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Which immutable graph roots a history page walks. `AllLocalBranches` never
+/// consults remotes or fetches; remote refs are decorations only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitHistoryScope {
+    #[default]
+    CurrentHead,
+    AllLocalBranches,
+}
+
+impl GitHistoryScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentHead => "current_head",
+            Self::AllLocalBranches => "all_local_branches",
+        }
+    }
+}
+
+/// An instant emitted by Git's commit metadata. `offset_minutes` is the
+/// original author/committer UTC offset, not the viewer's local timezone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitTimestamp {
+    pub unix_seconds: i64,
+    pub offset_minutes: i16,
+}
+
+/// Decoration type rendered beside a history row. Decorations never alter the
+/// traversal roots: remote tracking refs and tags are display metadata only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitRefKind {
+    Head,
+    LocalBranch,
+    RemoteTracking,
+    Tag,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRef {
+    pub name: String,
+    pub kind: GitRefKind,
+}
+
+/// Bounded, immutable commit metadata for one graph row. Full messages and
+/// changed paths are separate on-demand queries so an initial history page
+/// stays small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommitSummary {
+    pub id: GitObjectId,
+    pub parents: Vec<GitObjectId>,
+    pub author_name: String,
+    pub author_email: String,
+    pub author_time: GitTimestamp,
+    pub subject: String,
+    pub refs: Vec<GitRef>,
+    /// The history walk reached a shallow boundary whose unavailable parent is
+    /// not represented as a root commit.
+    pub shallow_boundary: bool,
+}
+
+/// Bounded history page from an immutable graph snapshot. `has_more` means a
+/// complete next record exists; `truncated` means a configured byte/item/ref
+/// cap prevented a complete representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHistoryPage {
+    pub commits: Vec<GitCommitSummary>,
+    pub has_more: bool,
+    pub truncated: bool,
+}
+
+/// A complete bounded commit message. The summary repeats the graph row so a
+/// details response remains self-describing after a sidebar refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommitDetails {
+    pub summary: GitCommitSummary,
+    pub body: String,
+    pub body_truncated: bool,
+}
+
+/// File-level change kind in a parent-to-commit comparison. Mode/type changes
+/// are explicit because they can have no textual hunk body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitCommitFileKind {
+    Added,
+    Deleted,
+    Modified,
+    Renamed,
+    Copied,
+    TypeChanged,
+    ModeChanged,
+    Submodule,
+}
+
+impl GitCommitFileKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Deleted => "deleted",
+            Self::Modified => "modified",
+            Self::Renamed => "renamed",
+            Self::Copied => "copied",
+            Self::TypeChanged => "type_changed",
+            Self::ModeChanged => "mode_changed",
+            Self::Submodule => "submodule",
+        }
+    }
+}
+
+/// One raw root-relative historical path pair. These paths identify committed
+/// tree entries and must not be canonicalized against today's filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommitFile {
+    pub path: PathBuf,
+    pub old_path: Option<PathBuf>,
+    pub kind: GitCommitFileKind,
+    pub old_mode: Option<u32>,
+    pub new_mode: Option<u32>,
+}
+
+/// Parent-specific changed-file listing for an expanded history node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommitFiles {
+    pub commit: GitObjectId,
+    pub base: GitComparisonBase,
+    pub files: Vec<GitCommitFile>,
+    pub truncated: bool,
+}
+
+/// The base side of an immutable committed comparison. `EmptyTree` is valid
+/// only for a genuine root commit and is resolved by the Git backend for the
+/// repository's configured object format.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GitComparisonBase {
+    Parent(GitObjectId),
+    EmptyTree,
+}
+
+/// Provenance for a diff preview. Rendering derives available controls from
+/// this identity rather than inferring that every non-staged diff is mutable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffSource {
+    WorkingTree {
+        path: Option<PathBuf>,
+        untracked: bool,
+    },
+    Index {
+        path: Option<PathBuf>,
+    },
+    Commit {
+        commit: GitObjectId,
+        base: GitComparisonBase,
+        old_path: Option<PathBuf>,
+        path: PathBuf,
+    },
+}
+
+/// UI/action affordances approved for a source. The owner still revalidates
+/// command inputs and project scope before every semantic mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffCapabilities {
+    pub stage_file: bool,
+    pub unstage_file: bool,
+    pub discard_file: bool,
+    pub stage_hunk: bool,
+    pub open_working_file: bool,
+}
+
+impl DiffSource {
+    pub const fn capabilities(&self) -> DiffCapabilities {
+        match self {
+            Self::WorkingTree { .. } => DiffCapabilities {
+                stage_file: true,
+                unstage_file: false,
+                discard_file: true,
+                stage_hunk: true,
+                open_working_file: true,
+            },
+            Self::Index { .. } => DiffCapabilities {
+                stage_file: false,
+                unstage_file: true,
+                discard_file: false,
+                stage_hunk: false,
+                open_working_file: true,
+            },
+            Self::Commit { .. } => DiffCapabilities {
+                stage_file: false,
+                unstage_file: false,
+                discard_file: false,
+                stage_hunk: false,
+                open_working_file: true,
+            },
+        }
+    }
+
+    pub const fn is_historical(&self) -> bool {
+        matches!(self, Self::Commit { .. })
+    }
 }
 
 impl GitStatusInfo {
@@ -579,4 +898,81 @@ pub struct TerminalInfo {
     pub exited: bool,
     pub columns: usize,
     pub lines: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHA1: &str = "0123456789abcdef0123456789abcdef01234567";
+    const SHA256: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn git_object_ids_require_full_hex_and_normalize_case() {
+        let uppercase = SHA1.to_ascii_uppercase();
+        let sha1 = GitObjectId::parse(&uppercase).expect("valid SHA-1");
+        let sha256 = GitObjectId::parse(SHA256).expect("valid SHA-256");
+
+        assert_eq!(sha1.as_str(), SHA1);
+        assert_eq!(sha1.short(), &SHA1[..12]);
+        assert_eq!(sha256.short(), &SHA256[..12]);
+        assert_eq!(
+            GitObjectId::parse("0123456789abcdef0123456789abcdef0123456"),
+            Err(GitObjectIdError::InvalidLength)
+        );
+        assert_eq!(
+            GitObjectId::parse(format!("{}g", &SHA1[..39])),
+            Err(GitObjectIdError::InvalidCharacter)
+        );
+    }
+
+    #[test]
+    fn history_cursor_is_bounded_and_printable() {
+        assert_eq!(
+            GitHistoryCursor::parse(String::new()),
+            Err(GitHistoryCursorError::Empty)
+        );
+        assert_eq!(
+            GitHistoryCursor::parse("snapshot\n2"),
+            Err(GitHistoryCursorError::ControlCharacter)
+        );
+        assert_eq!(
+            GitHistoryCursor::parse("x".repeat(MAX_GIT_HISTORY_CURSOR_BYTES + 1)),
+            Err(GitHistoryCursorError::TooLong)
+        );
+        assert_eq!(
+            GitHistoryCursor::parse("snapshot:2").unwrap().as_str(),
+            "snapshot:2"
+        );
+    }
+
+    #[test]
+    fn historical_diffs_never_advertise_git_mutations() {
+        let source = DiffSource::Commit {
+            commit: GitObjectId::parse(SHA1).unwrap(),
+            base: GitComparisonBase::Parent(GitObjectId::parse(SHA256).unwrap()),
+            old_path: Some(PathBuf::from("old name.rs")),
+            path: PathBuf::from("new name.rs"),
+        };
+        let capabilities = source.capabilities();
+
+        assert!(source.is_historical());
+        assert!(!capabilities.stage_file);
+        assert!(!capabilities.unstage_file);
+        assert!(!capabilities.discard_file);
+        assert!(!capabilities.stage_hunk);
+        assert!(capabilities.open_working_file);
+
+        let working = DiffSource::WorkingTree {
+            path: Some(PathBuf::from("src/main.rs")),
+            untracked: false,
+        };
+        assert!(!working.is_historical());
+        assert!(working.capabilities().stage_file);
+        assert!(working.capabilities().discard_file);
+
+        let index = DiffSource::Index { path: None };
+        assert!(index.capabilities().unstage_file);
+        assert!(!index.capabilities().discard_file);
+    }
 }

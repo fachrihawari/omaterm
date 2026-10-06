@@ -198,6 +198,14 @@ pub enum GitCommand {
     Status {
         project: ProjectId,
     },
+    /// First bounded page of immutable commits reachable from the selected
+    /// graph roots. Continuation cursors are introduced with the async query
+    /// service; this query intentionally has no UI-specific behavior.
+    History {
+        project: ProjectId,
+        scope: crate::GitHistoryScope,
+        limit: usize,
+    },
     Stage {
         project: ProjectId,
         paths: Vec<PathBuf>,

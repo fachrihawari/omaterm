@@ -22,11 +22,14 @@ pub use pane::{
 };
 pub use project::Project;
 pub use result::{
-    CommandError, CommandOutput, CommandResult, DiffFileInfo, DiffFileStatus, DiffHunkInfo,
-    DiffInfo, DiffLineInfo, DiffLineKind, EditorDocumentInfo, ErrorCode, FileEntry, FileKind,
-    FileListInfo, GitEntry, GitStatusInfo, HistoryStatusInfo, JournalEntryInfo,
-    MAX_PROCESS_ENTRIES, PaneInfo, ProcessEntryInfo, ProcessListInfo, ProjectInfo, ProjectRootInfo,
-    RootSource, TabInfo, TerminalInfo,
+    CommandError, CommandOutput, CommandResult, DiffCapabilities, DiffFileInfo, DiffFileStatus,
+    DiffHunkInfo, DiffInfo, DiffLineInfo, DiffLineKind, DiffSource, EditorDocumentInfo, ErrorCode,
+    FileEntry, FileKind, FileListInfo, GitCommitDetails, GitCommitFile, GitCommitFileKind,
+    GitCommitFiles, GitCommitSummary, GitComparisonBase, GitEntry, GitHistoryCursor,
+    GitHistoryCursorError, GitHistoryPage, GitHistoryScope, GitObjectId, GitObjectIdError, GitRef,
+    GitRefKind, GitStatusInfo, GitTimestamp, HistoryStatusInfo, JournalEntryInfo,
+    MAX_GIT_HISTORY_CURSOR_BYTES, MAX_PROCESS_ENTRIES, PaneInfo, ProcessEntryInfo, ProcessListInfo,
+    ProjectInfo, ProjectRootInfo, RootSource, TabInfo, TerminalInfo,
 };
 pub use tab::Tab;
 pub use workspace::{Workspace, WorkspaceWindow};

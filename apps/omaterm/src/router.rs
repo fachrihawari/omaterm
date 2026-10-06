@@ -1616,6 +1616,7 @@ impl CommandRouter {
                 | EditorCommand::Revert { document },
             ) => self.documents.project_of(*document),
             OmaCommand::Git(GitCommand::Status { project })
+            | OmaCommand::Git(GitCommand::History { project, .. })
             | OmaCommand::Git(GitCommand::Stage { project, .. })
             | OmaCommand::Git(GitCommand::StageHunk { project, .. })
             | OmaCommand::Git(GitCommand::Unstage { project, .. })
@@ -2897,6 +2898,44 @@ impl CommandRouter {
                     // state, never an error (M14 product contract).
                     Err(omaterm_context::GitError::NotARepo) => {
                         ok(Out::GitStatus(GitStatusInfo::empty()))
+                    }
+                    Err(error) => git_error(error),
+                }
+            }
+            OmaCommand::Git(GitCommand::History {
+                project,
+                scope,
+                limit,
+            }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return ok(Out::GitHistory(omaterm_core::GitHistoryPage {
+                            commits: Vec::new(),
+                            has_more: false,
+                            truncated: false,
+                        }));
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_history(&root, scope, limit) {
+                    Ok(history) => {
+                        tracing::debug!(
+                            target: "omaterm::git",
+                            project_id = %project.0,
+                            commits = history.commits.len(),
+                            has_more = history.has_more,
+                            truncated = history.truncated,
+                            "git history served",
+                        );
+                        ok(Out::GitHistory(history))
+                    }
+                    Err(omaterm_context::GitError::NotARepo) => {
+                        ok(Out::GitHistory(omaterm_core::GitHistoryPage {
+                            commits: Vec::new(),
+                            has_more: false,
+                            truncated: false,
+                        }))
                     }
                     Err(error) => git_error(error),
                 }

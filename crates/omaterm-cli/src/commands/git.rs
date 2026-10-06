@@ -23,6 +23,19 @@ pub enum GitCmd {
         #[arg(long)]
         project: Option<String>,
     },
+    /// List a bounded first page of immutable commits. Use `--all-local` to
+    /// include every local branch tip rather than only the current HEAD.
+    Log {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// First-page row limit (1–100, default 50).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Walk all local branch tips without fetching or contacting remotes.
+        #[arg(long)]
+        all_local: bool,
+    },
     /// Stage explicit root-relative paths (`git add -- <paths>`).
     Stage {
         /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
@@ -110,6 +123,24 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
             }),
         }),
+        GitCmd::Log {
+            project,
+            limit,
+            all_local,
+        } => {
+            let limit = limit.unwrap_or(50);
+            if limit == 0 || limit > 100 {
+                return Err("git log limit must be between 1 and 100 entries".into());
+            }
+            Ok(WireCall {
+                method: "git.history".into(),
+                params: json!({
+                    "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                    "scope": if *all_local { "all_local_branches" } else { "current_head" },
+                    "limit": limit,
+                }),
+            })
+        }
         GitCmd::Stage { project, paths } => {
             check_paths(paths, "stage")?;
             Ok(WireCall {
@@ -193,6 +224,23 @@ mod tests {
         let call = build(&GitCmd::Status { project: None }).unwrap();
         assert_eq!(call.method, "git.status");
         assert_eq!(call.params, serde_json::json!({"project_id": null}));
+        let call = build(&GitCmd::Log {
+            project: Some("p".into()),
+            limit: Some(10),
+            all_local: true,
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.history");
+        assert_eq!(call.params["scope"], "all_local_branches");
+        assert_eq!(call.params["limit"], 10);
+        assert!(
+            build(&GitCmd::Log {
+                project: None,
+                limit: Some(101),
+                all_local: false,
+            })
+            .is_err()
+        );
         for (cmd, method, first) in [
             (
                 GitCmd::Stage {

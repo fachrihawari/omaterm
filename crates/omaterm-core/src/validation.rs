@@ -27,6 +27,9 @@ pub const MAX_GIT_PATH_BYTES: usize = 4 * 1024;
 /// Largest accepted commit message in bytes. Generous for a summary plus
 /// body, small enough to keep the subprocess argv bounded.
 pub const MAX_GIT_MESSAGE_BYTES: usize = 4 * 1024;
+/// First history page cap. Continuation/cached-history bounds are enforced by
+/// the router-owned history service once pagination lands.
+pub const MAX_GIT_HISTORY_LIMIT: usize = 100;
 /// Largest accepted `diff.show` context size (`-U` lines). Generous for
 /// review, small enough to keep one wire response bounded.
 pub const MAX_DIFF_CONTEXT_LINES: u8 = 10;
@@ -199,6 +202,11 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
                 "commit message must be 1 to 4096 bytes with no control characters besides newline/tab",
             );
         }
+        OmaCommand::Git(GitCommand::History { limit, .. })
+            if *limit == 0 || *limit > MAX_GIT_HISTORY_LIMIT =>
+        {
+            return invalid("git history limit must be between 1 and 100 entries");
+        }
         OmaCommand::Diff(DiffCommand::Show {
             path,
             context_lines,
@@ -225,7 +233,7 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PaneId, ProjectId, SessionId, SplitId, TabId};
+    use crate::{GitHistoryScope, PaneId, ProjectId, SessionId, SplitId, TabId};
 
     #[test]
     fn validates_fraction_names_and_bounded_terminal_commands() {
@@ -376,6 +384,29 @@ mod tests {
             .is_ok()
         );
         assert!(validate(&OmaCommand::Git(GitCommand::Status { project })).is_ok());
+    }
+
+    #[test]
+    fn git_history_limit_is_bounded_before_any_git_process_can_run() {
+        let project = ProjectId::new();
+        for limit in [0, MAX_GIT_HISTORY_LIMIT + 1] {
+            assert!(
+                validate(&OmaCommand::Git(GitCommand::History {
+                    project,
+                    scope: GitHistoryScope::CurrentHead,
+                    limit,
+                }))
+                .is_err()
+            );
+        }
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::History {
+                project,
+                scope: GitHistoryScope::AllLocalBranches,
+                limit: MAX_GIT_HISTORY_LIMIT,
+            }))
+            .is_ok()
+        );
     }
 
     #[test]

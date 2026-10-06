@@ -123,6 +123,13 @@ pub struct GitStatus {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitHistory {
+    pub project_id: Option<String>,
+    pub scope: Option<String>,
+    pub limit: Option<usize>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitPaths {
     pub project_id: Option<String>,
     pub paths: Vec<String>,
@@ -200,6 +207,7 @@ pub enum Method {
     FileSearch(FileSearch),
     FileOpen(FileOpen),
     GitStatus(GitStatus),
+    GitHistory(GitHistory),
     GitStage(GitPaths),
     GitStageHunk(GitStageHunk),
     GitUnstage(GitPaths),
@@ -258,6 +266,7 @@ impl Method {
             "file.search" => decode!(FileSearch, FileSearch),
             "file.open" => decode!(FileOpen, FileOpen),
             "git.status" => decode!(GitStatus, GitStatus),
+            "git.history" => decode!(GitHistory, GitHistory),
             "git.stage" => decode!(GitPaths, GitStage),
             "git.stage-hunk" => decode!(GitStageHunk, GitStageHunk),
             "git.unstage" => decode!(GitPaths, GitUnstage),
@@ -336,6 +345,10 @@ mod tests {
             ("file.search", serde_json::json!({"query": "main"})),
             ("file.open", serde_json::json!({"path": "src/main.rs"})),
             ("git.status", serde_json::json!({})),
+            (
+                "git.history",
+                serde_json::json!({"scope":"current_head","limit":50}),
+            ),
             ("git.stage", serde_json::json!({"paths": ["a.txt"]})),
             ("git.unstage", serde_json::json!({"paths": ["a.txt"]})),
             ("git.discard", serde_json::json!({"paths": ["a.txt"]})),
@@ -348,7 +361,7 @@ mod tests {
             ("process.list", serde_json::json!({})),
             ("process.kill", serde_json::json!({"pid": 123})),
         ];
-        assert_eq!(cases.len(), 41);
+        assert_eq!(cases.len(), 42);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

@@ -2,6 +2,36 @@
 
 ## Current position
 
+### Git history H0–H2 + initial command parity — 2026-10-06
+
+- Baseline: `git 2.55.0`, SHA-1 repository object format, `mbx 1.22.0`,
+  Rust/Cargo `1.99.0`; no dependency changes. H0 fixtures now cover unborn and
+  linear repositories. Merge/shallow/worktree/raw-path fixtures remain H2/H4
+  follow-up acceptance, not complete.
+- Core gained full canonical SHA-1/SHA-256 `GitObjectId`, bounded opaque cursor,
+  history scope/summary/page/timestamp/ref/file DTOs, immutable comparison/diff
+  source and capability contracts. Historical source capabilities do not offer
+  stage/unstage/discard/hunk-stage actions; command validation caps a history
+  page at 100 rows.
+- `omaterm-context::git_history` reads a bounded, NUL-framed, topological first
+  page using the system Git binary with existing timeout/cap/env hygiene. It
+  handles unborn HEAD as an empty page and drops malformed/capped partial
+  records without fabricating commits. Decorations, cursor snapshots, parent
+  file lists/patches and a shared off-thread query service remain pending.
+- `GitCommand::History`, `git.history` and `omaterm git log` now share the same
+  router/context read path and return bounded commit IDs, parents, author time,
+  subject and flags. `--all-local` walks local branch tips only. This is the
+  first semantic query, not the Graph/sidebar or commit-diff UI. It currently
+  follows the existing synchronous `git.status` router path; the planned bounded
+  cancellable router-owned history worker remains required before UI polling.
+- Verification with `mbx`: `fmt --all --check` PASS; `test --workspace --quiet`
+  PASS (659 tests); serial `-- --test-threads=1` PASS (659); `clippy --workspace
+  --all-targets -- -D warnings` PASS (known transitive `proc-macro-error2`
+  future-incompatibility notice only); `build --release --bin omaterm --bin
+  omaterm-desktop` PASS; `python3 scripts/check-docs.py` and `git diff --check`
+  PASS. Wayland validation is not applicable yet: Graph and history-diff UI are
+  not implemented. Not committed.
+
 ### Git history graph and commit-file diff planning — 2026-10-06
 
 - Added the [comprehensive Git history plan](git-history-plan.md) against

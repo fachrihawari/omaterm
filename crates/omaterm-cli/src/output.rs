@@ -67,6 +67,7 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "file.list" | "file.search" => render_files(&result),
         "file.open" => "Submitted open to shell.".into(),
         "git.status" => render_git_status(&result),
+        "git.history" => render_git_history(&result),
         "git.stage" => "Staged paths.".into(),
         "git.stage-hunk" => "Staged hunk.".into(),
         "git.unstage" => "Unstaged paths.".into(),
@@ -441,6 +442,41 @@ fn render_git_status(result: &Value) -> String {
         .unwrap_or(false)
     {
         out.push_str("(truncated: bounded git status)\n");
+    }
+    out.trim_end().to_owned()
+}
+
+fn render_git_history(result: &Value) -> String {
+    let Some(commits) = result.get("commits").and_then(Value::as_array) else {
+        return "No commits yet.".into();
+    };
+    if commits.is_empty() {
+        return "No commits yet.".into();
+    }
+    let mut out = String::from("COMMIT\tSUBJECT\tAUTHOR\n");
+    for commit in commits {
+        let id = commit.get("id").and_then(Value::as_str).unwrap_or("-");
+        let short: String = id.chars().take(12).collect();
+        let subject = commit.get("subject").and_then(Value::as_str).unwrap_or("-");
+        let author = commit
+            .get("author_name")
+            .and_then(Value::as_str)
+            .unwrap_or("-");
+        out.push_str(&format!("{short}\t{subject}\t{author}\n"));
+    }
+    if result
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(more commits available)\n");
+    }
+    if result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(truncated: bounded git history)\n");
     }
     out.trim_end().to_owned()
 }

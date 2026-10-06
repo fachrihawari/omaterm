@@ -14,6 +14,7 @@ pub mod diff;
 pub mod editor;
 pub mod files;
 pub mod git;
+pub mod git_history;
 pub mod ignore;
 pub mod resolve;
 
@@ -41,6 +42,10 @@ pub use files::{
 pub use git::{
     GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, git_commit, git_discard, git_stage,
     git_status, git_unstage, join_under_root,
+};
+pub use git_history::{
+    MAX_GIT_HISTORY_AUTHOR_BYTES, MAX_GIT_HISTORY_BYTES, MAX_GIT_HISTORY_COMMITS,
+    MAX_GIT_HISTORY_SUBJECT_BYTES, git_history, parse_history_log,
 };
 pub use ignore::IgnoreFilter;
 pub use resolve::{

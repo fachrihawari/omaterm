@@ -21,6 +21,10 @@ pub const MAX_GIT_PATHS: usize = 100;
 pub const MAX_GIT_PATH_BYTES: usize = 4 * 1024;
 /// Largest accepted commit message in bytes on the wire.
 pub const MAX_GIT_MESSAGE_BYTES: usize = 4 * 1024;
+/// Largest first-page history request. Further pagination remains server
+/// snapshot-bound, so clients cannot turn an opaque cursor into an unbounded
+/// graph walk.
+pub const MAX_GIT_HISTORY_LIMIT: usize = 100;
 /// Largest accepted `diff.show` context size on the wire.
 pub const MAX_DIFF_CONTEXT_LINES: u8 = 10;
 

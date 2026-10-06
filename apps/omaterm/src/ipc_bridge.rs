@@ -3,13 +3,14 @@
 use base64::Engine;
 use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, FileCommand, GitCommand,
-    HistoryCommand, OmaCommand, PaneCommand, PaneContent, PaneId, ProjectCommand, ProjectId,
-    SessionId, SplitDirection, SplitId, TabCommand, TabId, TerminalCommand,
+    GitHistoryScope, HistoryCommand, OmaCommand, PaneCommand, PaneContent, PaneId, ProjectCommand,
+    ProjectId, SessionId, SplitDirection, SplitId, TabCommand, TabId, TerminalCommand,
 };
 use omaterm_protocol::{
     IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_DIFF_CONTEXT_LINES,
-    MAX_FILE_ENTRIES, MAX_GIT_MESSAGE_BYTES, MAX_GIT_PATH_BYTES, MAX_GIT_PATHS,
-    MAX_JOURNAL_ENTRIES, MAX_READ_COLUMNS, MAX_READ_LINES, MAX_SEND_BYTES, method::Method,
+    MAX_FILE_ENTRIES, MAX_GIT_HISTORY_LIMIT, MAX_GIT_MESSAGE_BYTES, MAX_GIT_PATH_BYTES,
+    MAX_GIT_PATHS, MAX_JOURNAL_ENTRIES, MAX_READ_COLUMNS, MAX_READ_LINES, MAX_SEND_BYTES,
+    method::Method,
 };
 use serde_json::{Value, json};
 
@@ -316,6 +317,24 @@ pub fn map_request(
             Method::GitStatus(p) => OmaCommand::Git(GitCommand::Status {
                 project: resolve_project(p.project_id)?,
             }),
+            Method::GitHistory(p) => {
+                let limit = p.limit.unwrap_or(50);
+                if limit == 0 || limit > MAX_GIT_HISTORY_LIMIT {
+                    return Err("git.history limit must be between 1 and 100 entries");
+                }
+                let scope = match p.scope.as_deref().unwrap_or("current_head") {
+                    "current_head" => GitHistoryScope::CurrentHead,
+                    "all_local_branches" => GitHistoryScope::AllLocalBranches,
+                    _ => {
+                        return Err("git.history scope must be current_head or all_local_branches");
+                    }
+                };
+                OmaCommand::Git(GitCommand::History {
+                    project: resolve_project(p.project_id)?,
+                    scope,
+                    limit,
+                })
+            }
             Method::GitStage(p) => OmaCommand::Git(GitCommand::Stage {
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,
@@ -475,6 +494,10 @@ fn output_json(output: CommandOutput) -> Value {
                 }
             }
             json!({"branch":status.branch,"upstream":status.upstream,"ahead":status.ahead,"behind":status.behind,"staged":staged,"unstaged":unstaged,"untracked":untracked,"truncated":truncated})
+        }
+        CommandOutput::GitHistory(page) => {
+            let truncated = page.truncated || page.commits.len() > LIST_LIMIT;
+            json!({"commits":page.commits.into_iter().take(LIST_LIMIT).map(|commit| json!({"id":commit.id.as_str(),"parents":commit.parents.into_iter().map(|parent| parent.as_str().to_owned()).collect::<Vec<_>>(),"author_name":commit.author_name,"author_email":commit.author_email,"author_time":{"unix_seconds":commit.author_time.unix_seconds,"offset_minutes":commit.author_time.offset_minutes},"subject":commit.subject,"refs":commit.refs.into_iter().map(|reference| json!({"name":reference.name,"kind":match reference.kind { omaterm_core::GitRefKind::Head => "head", omaterm_core::GitRefKind::LocalBranch => "local_branch", omaterm_core::GitRefKind::RemoteTracking => "remote_tracking", omaterm_core::GitRefKind::Tag => "tag", omaterm_core::GitRefKind::Other => "other" }})).collect::<Vec<_>>(),"shallow_boundary":commit.shallow_boundary})).collect::<Vec<_>>(),"has_more":page.has_more,"truncated":truncated})
         }
         CommandOutput::GitCommitted { oid } => {
             json!({"oid":oid})
