@@ -9,6 +9,15 @@
 # OmaTerm runtime state (never commit)
 *.sock
 *.socket
+*.credential
+
+# Local configuration and private keys (never commit)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Editor / IDE
 .idea/
