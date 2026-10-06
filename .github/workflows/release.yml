@@ -26,6 +26,9 @@ permissions:
 jobs:
   dist:
     runs-on: ubuntu-22.04
+    env:
+      # Local mbx normally manages target directories; staging expects target/release.
+      MBX_TARGET_VIEWS: '0'
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +71,10 @@ jobs:
           cp packaging/omaterm.desktop "$STAGE/"
           cp packaging/icons/omaterm.svg "$STAGE/"
           cp LICENSE-MIT LICENSE-APACHE "$STAGE/"
-          tar -czf "dist/omaterm-$VER-x86_64.tar.gz" -C dist "omaterm-$VER-x86_64"
+          # NB: files go at the TARBALL ROOT (no versioned subdir) — this is
+          # the layout contract packaging/arch-bin/PKGBUILD, install.sh and
+          # packaging/README.md all rely on.
+          tar -czf "dist/omaterm-$VER-x86_64.tar.gz" -C "$STAGE" .
           (cd dist && sha256sum "omaterm-$VER-x86_64.tar.gz" > "omaterm-$VER-x86_64.tar.gz.sha256")
           tar -tzf "dist/omaterm-$VER-x86_64.tar.gz"
 
@@ -79,6 +85,8 @@ jobs:
           files: |
             dist/omaterm-*.tar.gz
             dist/omaterm-*.tar.gz.sha256
+            packaging/install.sh
+            packaging/uninstall.sh
 
       - name: Upload tarball artifact (dry-run)
         if: github.ref_type != 'tag'
@@ -89,7 +97,9 @@ jobs:
 
   aur:
     needs: dist
-    if: github.ref_type == 'tag'
+    # Enable the AUR_ENABLED repository variable after configuring the SSH secret.
+    # Tarball releases work without AUR setup.
+    if: github.ref_type == 'tag' && vars.AUR_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

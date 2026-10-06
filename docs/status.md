@@ -2,6 +2,53 @@
 
 ## Current position
 
+### Packaging review fixes — 2026-10-06
+
+- Installer/uninstaller now support piped help and reject missing argument
+  values. Relative prefixes are normalized before temporary-directory changes;
+  desktop Exec points to the installed binary. Installer validates all six
+  payload files and checks missing runtime libraries before modifying the
+  installation; binaries are replaced through temporary files and rename.
+- Uninstall targets `/usr/local` and `~/.local`, never `/usr` package-manager
+  files; it refreshes caches in user/root modes too and removes only specified
+  empty directories, without recursive parent removal.
+- AUR job gating uses repository variable `AUR_ENABLED=true` instead of an
+  unsupported job-level secrets expression. Release sets `MBX_TARGET_VIEWS=0`
+  so mbx outputs match staging's `target/release` path. Publishing runbook
+  corrects the earlier web-form/empty-package instructions: submit valid
+  packages through git after release assets exist.
+- Verification: `bash -n` for both scripts; isolated fixture checks for piped
+  help, missing values, `/usr` refusal, relative/spaced prefixes, absolute
+  desktop Exec, incomplete payload preserving existing installation, user
+  install/uninstall, invalid checksum and missing-library rejection PASS.
+  `actionlint` v1.7.7 validates both workflows; documentation and packaging
+  sync checkers and `git diff --check` PASS. Real release download and native
+  desktop validation remain pending. No Rust code changed.
+
+### Tarball install/uninstall scripts (Opsi 1 sharing) — 2026-10-06
+
+- New `packaging/install.sh` (latest/`--version`, `--user`/`--prefix`,
+  x86_64 guard, `.sha256` verification, desktop/icon cache refresh) and
+  `packaging/uninstall.sh` (exact-file removal across
+  `/usr/local`+`/usr`+`~/.local`, caches refreshed, user data untouched).
+  Both ship as GitHub Release assets via the `release` workflow, so the
+  `curl .../releases/latest/download/install.sh | bash` one-liner works.
+- Two release-tarball bugs found by local fixture testing and fixed:
+  `release.yml` now tars the staging dir *contents* (files at tarball
+  root, matching the `-bin` PKGBUILD + installer contract instead of a
+  versioned subdir), and the installer compares hashes explicitly
+  (the `.sha256` asset names the versioned file while the download uses
+  a fixed local name). A third fix: `mkdir -p $PREFIX` before the
+  writability check so fresh `--prefix` targets don't wrongly escalate
+  to sudo; `PREFIX` also respects the environment now.
+- `aur` workflow job skips gracefully while `AUR_SSH_PRIVATE_KEY` is
+  absent (AUR registration is currently paused) — tarball releases stay
+  green without it. Not committed.
+- Verification: full install→uninstall round-trip PASS in system-prefix
+  and `--user` modes against a fixture tarball (6 files each, only
+  regenerated caches remain), checksum-mismatch aborts with no partial
+  install, `bash -n` + YAML parse + `git diff --check` PASS.
+
 ### Keybinding overhaul: Alt tab/project jumps + cheatsheet + tabless fallback — 2026-10-06
 
 - New GPUI-free registry `apps/omaterm/src/shortcuts.rs` (`SHORTCUTS`,

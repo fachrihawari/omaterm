@@ -45,16 +45,12 @@ ssh -i ~/.ssh/aur aur@aur.archlinux.org help
 A command list means success. `Permission denied` means the key is not
 installed yet or was pasted incorrectly.
 
-## Step 3 — Submit both empty packages (one-off)
+## Step 3 — Prepare AUR package submission
 
-New packages **cannot** be pushed via git before they are registered
-through the web form. Do this for **both** names (reserves the brand):
-
-1. Open <https://aur.archlinux.org/packages/new>.
-2. Name: `omaterm`, Category: `system`, License: `MIT, Apache-2.0`.
-   Upload any minimal PKGBUILD + `.SRCINFO` — the files in
-   `packaging/arch/` work even with `sha256sums` still `SKIP`.
-3. Repeat for `omaterm-bin` with the files in `packaging/arch-bin/`.
+New packages are created by pushing valid PKGBUILD + `.SRCINFO` files
+to their AUR git repositories. There is no web-form pre-registration.
+Do not publish empty placeholders or packages pointing to nonexistent releases.
+The workflow can perform the first push once the actual release exists.
 
 Regenerate `.SRCINFO` if ever in doubt (needs `makepkg` on Arch):
 
@@ -62,7 +58,7 @@ Regenerate `.SRCINFO` if ever in doubt (needs `makepkg` on Arch):
 cd packaging/arch && makepkg --printsrcinfo > .SRCINFO
 ```
 
-After submission these pages must exist (content comes later via CI):
+After the first successful workflow push these pages should exist:
 <https://aur.archlinux.org/packages/omaterm> and
 <https://aur.archlinux.org/packages/omaterm-bin>.
 
@@ -75,6 +71,9 @@ The `release` workflow pushes to AUR over SSH and needs the private key:
    (the **private** file, `-----BEGIN...` through `-----END...`).
 
 No code change needed — the workflow already reads this secret name.
+Set repository **Settings → Secrets and variables → Actions → Variables**
+variable `AUR_ENABLED` to `true` to enable AUR publishing. Until an account
+is available, leave this unset; GitHub tarball releases work independently.
 
 ## Step 5 — Dry-run: build the tarball without touching AUR
 

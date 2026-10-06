@@ -7,6 +7,43 @@ entry, icon, and licenses.
 > Full publish runbook (one-off AUR setup, dry-run, first release,
 > routine, troubleshooting): [AUR-PUBLISHING.md](AUR-PUBLISHING.md).
 
+## Quick install (Linux x86_64, no AUR needed)
+
+Prebuilt x86_64 tarball from GitHub Releases, checksum-verified:
+
+```bash
+curl -sL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | bash
+```
+
+Variants: `--user` (into `~/.local`, no sudo), `--prefix PATH`,
+`--version X.Y.Z` (default: latest). Uninstall anytime:
+
+```bash
+curl -sL https://github.com/fachrihawari/omaterm/releases/latest/download/uninstall.sh | bash
+```
+
+(`--user` / `--system` / `--prefix PATH` supported; user data under
+`~/.config/omaterm` is left untouched.) Both scripts are attached to
+every GitHub Release by the `release` workflow alongside the tarball.
+
+For a user-only installation:
+
+```bash
+curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | bash -s -- --user
+curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/uninstall.sh | bash -s -- --user
+```
+
+Use the same `--prefix PATH` for custom installation and removal. The
+uninstaller never targets `/usr`; remove pacman/AUR packages with pacman.
+The installer checks missing dynamic libraries before installing. On Arch:
+
+```bash
+sudo pacman -S --needed gcc-libs fontconfig freetype2 libxkbcommon libx11 libxcb wayland vulkan-icd-loader
+```
+
+Run the GUI in a Wayland/X11 desktop with a working GPU driver. Library
+checks do not replace desktop validation. To update, run the installer again.
+
 | AUR package | In-repo source | Installs from |
 |---|---|---|
 | `omaterm` | `packaging/arch/` | source build (`cargo build --release --locked`) |
@@ -62,13 +99,15 @@ M1 record): `wayland`, `libxkbcommon`, `libx11`, `libxcb`, `fontconfig`,
 
 ## First-time AUR setup (one-off)
 
-1. Create an [AUR account](https://aur.archlinux.org/register), add an SSH
-   public key under My Account, and submit the empty `omaterm` and
-   `omaterm-bin` packages once (any minimal PKGBUILD; the workflow overwrites
-   on first release). Empty-package submission requires the web form.
+1. Create an [AUR account](https://aur.archlinux.org/register) when registration
+   is available, and add an SSH public key under My Account. New packages
+   are submitted by pushing a valid PKGBUILD and `.SRCINFO` to their AUR git
+   repositories; no web-form registration or empty placeholder is needed.
 2. Add the matching SSH **private** key as the `AUR_SSH_PRIVATE_KEY` repo
    secret (Settings → Secrets → Actions). The workflow pushes via
    `ssh://aur@aur.archlinux.org/<pkg>.git`.
+3. Set repository Actions variable `AUR_ENABLED` to `true` when ready.
+   Leave it unset while distributing through GitHub Releases only.
 
 To test the tarball build without tagging or touching AUR, run the `release`
 workflow manually (Actions → Release → Run workflow) with a version number.
