@@ -4,6 +4,9 @@ Two AUR packages reserve the OmaTerm brand; both install the same two
 binaries (`omaterm` CLI + `omaterm-desktop` GPUI window) plus the desktop
 entry, icon, and licenses.
 
+> Full publish runbook (one-off AUR setup, dry-run, first release,
+> routine, troubleshooting): [AUR-PUBLISHING.md](AUR-PUBLISHING.md).
+
 | AUR package | In-repo source | Installs from |
 |---|---|---|
 | `omaterm` | `packaging/arch/` | source build (`cargo build --release --locked`) |
