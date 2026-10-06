@@ -29,6 +29,15 @@ def main():
     for method in sorted(wire_methods - cli_methods):
         errors.append(f"IPC method missing from CLI table: {method}")
 
+    registry = (root / "apps/omaterm/src/shortcuts.rs").read_text()
+    registry_ids = set(re.findall(r'^\s*id: "([^"]+)"', registry, re.MULTILINE))
+    table = (root / "docs/shortcuts.md").read_text()
+    table_ids = set(re.findall(r"^\| `([^`]+)` \|", table, re.MULTILINE))
+    for shortcut in sorted(table_ids - registry_ids):
+        errors.append(f"Shortcuts table id missing from registry: {shortcut}")
+    for shortcut in sorted(registry_ids - table_ids):
+        errors.append(f"Registry shortcut id missing from table: {shortcut}")
+
     coverage_map = (root / "docs/blueprint-coverage-map.md").read_text()
     coverage_table = coverage_map.split("## Coverage Table\n", 1)[1].split(
         "\n## Open gaps", 1
@@ -67,6 +76,7 @@ def main():
     print(f"PASS: {len(files)} Markdown files, {links} local link targets, "
           f"{references} numbered blueprint references.")
     print(f"PASS: all {len(cli_methods)} CLI methods and {len(wire_methods)} IPC methods map both ways.")
+    print(f"PASS: all {len(registry_ids)} shortcut ids map both ways.")
     print("External URLs and heading anchors require separate review.")
     return 0
 

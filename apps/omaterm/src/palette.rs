@@ -32,6 +32,9 @@ pub enum PaletteKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaletteTarget {
     Semantic(OmaCommand),
+    /// View-local UI action (no core command): the confirm handler matches
+    /// the candidate key and performs the overlay transition itself.
+    ViewAction,
     PaneFocus {
         pane: PaneId,
         expected_session: Option<SessionId>,

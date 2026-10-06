@@ -43,6 +43,7 @@ mod ipc_bridge;
 mod metrics;
 mod palette;
 mod router;
+mod shortcuts;
 mod ui;
 mod workbench;
 
@@ -90,9 +91,18 @@ struct WorkspaceView {
     /// register the document without stealing focus after a target switch.
     pending_native_opens: HashMap<u64, NativeOpenTarget>,
     launch_poller_active: bool,
-    /// True while Control or Shift is held: the sidebar then shows the
-    /// `Ctrl+Shift+1..9` jump index next to each project.
+    /// True while `Alt+Shift` is held: the sidebar then shows the
+    /// `Alt+Shift+1..9` jump index next to each project. Plain `Ctrl`
+    /// never shows digits it does not honor (its bytes belong to the PTY).
     show_project_hints: bool,
+    /// True while `Alt` (without `Ctrl`) is held: tab-strip chips show
+    /// their `Alt+1..9` jump digit.
+    show_strip_hints: bool,
+    /// `Alt+Shift+K` keybinding cheatsheet overlay: filter text and the
+    /// selected row into the registry table.
+    keybindings_open: bool,
+    keybindings_query: String,
+    keybindings_selected: usize,
     /// Project whose context menu is open. The menu is transient view chrome;
     /// keeping it outside the card preserves the reference card height.
     project_context_menu: Option<ProjectId>,
@@ -282,7 +292,7 @@ struct WorkspaceView {
     editor_active: HashMap<ProjectId, DocumentId>,
     editor_selected: HashMap<ProjectId, DocumentId>,
     /// Explicit main-area surface per project (S7). Kept in sync with
-    /// `editor_active` and the diff preview so Ctrl+1/2/3 can route without
+    /// `editor_active` and the diff preview so `Alt+<n>` can route without
     /// mutating terminal selection.
     active_surface: HashMap<ProjectId, ActiveSurface>,
     editor_carets: HashMap<DocumentId, editor::EditorCaret>,
@@ -500,6 +510,7 @@ enum InputOwner {
     Editor(DocumentId),
     Diff,
     Palette,
+    Keybindings,
     FilesFilter,
     GitCommit,
     Confirmation,
@@ -755,49 +766,31 @@ enum FileActivation {
     Terminal,
 }
 
-/// Ctrl+1/2/3 routing outcome (S7). `Unavailable` carries the digit so the
-/// notice can name the surface instead of opening a fake default file.
+/// Unified `Alt+<n>` strip jump target: terminal tabs first, then the diff
+/// chip, then editor documents — the same order the tab strip renders.
+/// Past-the-end slots produce a truthful notice instead of a fake default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SurfaceRoute {
-    Terminal,
+enum StripRoute {
+    Terminal(TabId),
     Editor(DocumentId),
     Diff,
     Unavailable(u8),
 }
 
-/// The Ctrl+1/2/3 slot for a key name, or `None` for every other key.
-/// Distinct from `project_jump_index`, which is Ctrl+Shift+<digit>.
-fn ctrl_surface_slot(key_name: &str) -> Option<u8> {
-    match key_name {
-        "1" => Some(1),
-        "2" => Some(2),
-        "3" => Some(3),
-        _ => None,
-    }
-}
-
-/// Decide the surface Ctrl+<slot> should reveal. Terminal always routes (the
-/// remembered core tab is legitimate); editor and diff route only when a real
-/// document/preview exists, otherwise a truthful unavailable notice.
-fn route_ctrl_surface(
-    slot: u8,
-    active_document: Option<DocumentId>,
+/// Decide the `Alt+<slot>` target from live strip state. Terminal tabs are
+/// always legitimate; editor/diff route only when a real document/preview
+/// exists. Pure over GPUI-free inputs so the rule is unit-testable.
+fn route_alt_strip(
+    tab_ids: &[TabId],
     has_preview: bool,
-) -> SurfaceRoute {
-    match slot {
-        1 => SurfaceRoute::Terminal,
-        2 => match active_document {
-            Some(document) => SurfaceRoute::Editor(document),
-            None => SurfaceRoute::Unavailable(2),
-        },
-        3 => {
-            if has_preview {
-                SurfaceRoute::Diff
-            } else {
-                SurfaceRoute::Unavailable(3)
-            }
-        }
-        other => SurfaceRoute::Unavailable(other),
+    doc_ids: &[DocumentId],
+    slot: u8,
+) -> StripRoute {
+    match shortcuts::strip_index_target(tab_ids, has_preview, doc_ids, slot) {
+        Some(shortcuts::StripTarget::Terminal(tab)) => StripRoute::Terminal(tab),
+        Some(shortcuts::StripTarget::Editor(document)) => StripRoute::Editor(document),
+        Some(shortcuts::StripTarget::Diff) => StripRoute::Diff,
+        None => StripRoute::Unavailable(slot),
     }
 }
 
@@ -1602,6 +1595,10 @@ impl WorkspaceView {
             pending_native_opens: HashMap::new(),
             launch_poller_active: false,
             show_project_hints: false,
+            show_strip_hints: false,
+            keybindings_open: false,
+            keybindings_query: String::new(),
+            keybindings_selected: 0,
             project_context_menu: None,
             ipc_server: None,
             ipc_receiver: None,
@@ -2748,7 +2745,12 @@ impl WorkspaceView {
                     }
                 }
                 router::CommandEffect::SessionStarted(session) => self.start_runtime(cx, session),
-                router::CommandEffect::SessionClosed(closed) => self.finish_close(closed),
+                router::CommandEffect::SessionClosed(closed) => {
+                    self.finish_close(closed);
+                    // An exited shell can empty the last tab; fall back to a
+                    // live document/diff instead of the empty prompt.
+                    self.ensure_selected_surface_fallback(cx);
+                }
                 router::CommandEffect::PersistenceDirty => self.mark_persistence_dirty(cx),
                 router::CommandEffect::EditorSaveTiming(elapsed) => {
                     self.metrics.record_timing("save_to_commit", elapsed)
@@ -3376,13 +3378,6 @@ impl WorkspaceView {
         }
     }
 
-    fn equalize(&mut self, cx: &mut Context<Self>) {
-        if self.shutting_down {
-            return;
-        }
-        let _ = self.dispatch_command(OmaCommand::Pane(PaneCommand::EqualizeSelected), cx);
-    }
-
     fn new_terminal_for_empty(&mut self, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
@@ -3570,6 +3565,9 @@ impl WorkspaceView {
         }
         let _ = project;
         let _ = self.dispatch_command(OmaCommand::Tab(TabCommand::Close { tab }), cx);
+        // Closing the last tab must not strand the main area on an empty
+        // prompt while a document or diff is open.
+        self.ensure_selected_surface_fallback(cx);
     }
 
     /// Request deletion of a project. Dirty documents owned by the project
@@ -4706,6 +4704,9 @@ impl WorkspaceView {
         if self.ctrlp_open {
             return Some(InputOwner::Palette);
         }
+        if self.keybindings_open {
+            return Some(InputOwner::Keybindings);
+        }
         if self.files_search_focused
             && self.inspector_visible
             && self.inspector_tab == InspectorTab::Files
@@ -5281,8 +5282,8 @@ impl WorkspaceView {
     }
 
     /// Return focus to an already-open diff preview (same steps as the
-    /// Ctrl+3 route): the chip is only rendered while open, so there is
-    /// always a preview to reveal.
+    /// `Alt+<n>` diff route): the chip is only rendered while open, so there
+    /// is always a preview to reveal.
     fn reveal_diff_surface(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         self.user_focus_action();
         self.editor_active.remove(&project);
@@ -5291,64 +5292,98 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Route Ctrl+1/2/3 to the distinct main-area surfaces (S7). Slots 2/3
-    /// never mutate the selected core terminal tab; an absent real
-    /// document/preview produces a truthful notice rather than a fake default.
-    fn route_ctrl_surface_key(&mut self, slot: u8, cx: &mut Context<Self>) {
+    /// Route `Alt+<slot>` to the nth tab-strip entry in render order:
+    /// terminal tabs, then the diff chip, then editor documents. Terminal
+    /// jumps re-select the target core tab; editor/diff jumps never mutate
+    /// core tab selection. A past-the-end slot produces a truthful notice
+    /// rather than a fake default.
+    fn route_alt_strip_key(&mut self, slot: u8, cx: &mut Context<Self>) {
         let Some(project) = self.coordinator.selected_project_id() else {
             self.input_notice = Some("No project selected.".into());
             cx.notify();
             return;
         };
-        // Prefer the currently active document; otherwise fall back to the
-        // retained editor selection so Ctrl+2 can return to the remembered
-        // real document after a diff/terminal detour. Never invent one.
-        let active_document = self.editor_active_doc(project).or_else(|| {
-            self.editor_selected
-                .get(&project)
-                .copied()
-                .filter(|doc| self.coordinator.documents().project_of(*doc) == Some(project))
-        });
+        let tab_ids: Vec<TabId> = self
+            .coordinator
+            .active_project()
+            .map(|owner| owner.tabs.iter().map(|tab| tab.id).collect())
+            .unwrap_or_default();
         let has_preview = self.diff_panel.preview_open(project);
-        match route_ctrl_surface(slot, active_document, has_preview) {
-            SurfaceRoute::Terminal => {
+        let doc_ids: Vec<DocumentId> = self.coordinator.documents().project_documents(project);
+        match route_alt_strip(&tab_ids, has_preview, &doc_ids, slot) {
+            StripRoute::Terminal(tab) => {
                 self.reveal_terminal_surface(project);
-                if let Some(tab) = self
-                    .coordinator
-                    .active_project()
-                    .and_then(|owner| {
-                        owner
-                            .tabs
-                            .iter()
-                            .find(|tab| Some(tab.id) == owner.selected_tab)
-                    })
-                    .map(|tab| tab.id)
-                {
-                    let _ = self.dispatch_command(OmaCommand::Tab(TabCommand::Select { tab }), cx);
-                }
+                let _ = self.dispatch_command(OmaCommand::Tab(TabCommand::Select { tab }), cx);
                 self.input_notice = None;
                 cx.notify();
             }
-            SurfaceRoute::Editor(document) => {
+            StripRoute::Editor(document) => {
                 self.user_focus_action();
                 self.editor_activate(project, document, cx);
             }
-            SurfaceRoute::Diff => {
+            StripRoute::Diff => {
                 self.user_focus_action();
                 self.editor_active.remove(&project);
                 self.active_surface.insert(project, ActiveSurface::Diff);
                 self.restore_input_owner();
                 cx.notify();
             }
-            SurfaceRoute::Unavailable(2) => {
-                self.input_notice = Some("No open document for this project.".into());
+            StripRoute::Unavailable(_) => {
+                let total = tab_ids.len() + usize::from(has_preview) + doc_ids.len();
+                self.input_notice = Some(if total == 0 {
+                    "No tabs open for this project.".into()
+                } else {
+                    format!("Tab {slot} is past the end ({total} open).")
+                });
                 cx.notify();
             }
-            SurfaceRoute::Unavailable(3) => {
-                self.input_notice = Some("No diff preview for this project.".into());
+        }
+    }
+
+    /// Keep the main area on a live surface after tabs disappear. When the
+    /// selected project has no terminal tabs left, prefer the active editor
+    /// document (else the remembered selection, else the first document),
+    /// then the open diff preview, and only then the empty prompt. The main
+    /// render already prefers Editor/Diff surfaces over the terminal tree,
+    /// so setting the surface is sufficient. No-op while tabs remain.
+    fn ensure_selected_surface_fallback(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        let has_tabs = self
+            .coordinator
+            .active_project()
+            .is_some_and(|owner| !owner.tabs.is_empty());
+        if has_tabs {
+            return;
+        }
+        let active_document = self.editor_active_doc(project);
+        let remembered = self
+            .editor_selected
+            .get(&project)
+            .copied()
+            .filter(|doc| self.coordinator.documents().project_of(*doc) == Some(project));
+        let first = self
+            .coordinator
+            .documents()
+            .project_documents(project)
+            .into_iter()
+            .next();
+        let has_preview = self.diff_panel.preview_open(project);
+        match shortcuts::fallback_without_tabs(active_document, remembered, first, has_preview) {
+            shortcuts::TablessFallback::Editor(document) => {
+                self.user_focus_action();
+                self.editor_activate(project, document, cx);
+            }
+            shortcuts::TablessFallback::Diff => {
+                self.reveal_diff_surface(project, cx);
+            }
+            shortcuts::TablessFallback::Empty => {
+                self.editor_active.remove(&project);
+                self.active_surface.insert(project, ActiveSurface::Terminal);
+                self.restore_input_owner();
                 cx.notify();
             }
-            SurfaceRoute::Unavailable(_) => {}
         }
     }
 
@@ -5534,6 +5569,9 @@ impl WorkspaceView {
                     self.editor_selected.remove(&project);
                 }
                 self.restore_input_owner();
+                // Closing the visible document can reveal a preview (or the
+                // empty prompt when the project also has no tabs left).
+                self.ensure_selected_surface_fallback(cx);
                 self.metrics
                     .record_timing("close_to_retirement", close_started.elapsed());
                 self.schedule_metrics_flush(cx);
@@ -7874,6 +7912,129 @@ impl WorkspaceView {
         }
     }
 
+    /// Open the `Alt+Shift+K` keybinding cheatsheet: a read-only,
+    /// filterable view over `shortcuts::SHORTCUTS`. Like the palette it
+    /// owns input until dismissed; unlike the palette it dispatches nothing.
+    fn open_keybindings(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        self.keybindings_open = true;
+        self.set_input_owner(InputOwner::Keybindings);
+        self.keybindings_query.clear();
+        self.keybindings_selected = 0;
+        cx.notify();
+    }
+
+    fn close_keybindings(&mut self, cx: &mut Context<Self>) {
+        self.keybindings_open = false;
+        self.keybindings_query.clear();
+        self.keybindings_selected = 0;
+        self.restore_input_owner();
+        cx.notify();
+    }
+
+    fn toggle_keybindings(&mut self, cx: &mut Context<Self>) {
+        if self.keybindings_open {
+            self.close_keybindings(cx);
+        } else {
+            if self.ctrlp_open {
+                self.ctrlp_open = false;
+                self.palette_search_worker.cancel_current();
+                self.restore_palette_origin(cx);
+            }
+            self.open_keybindings(cx);
+        }
+    }
+
+    /// Rows matching the cheatsheet filter (case-insensitive substring over
+    /// chord, action, and context). Empty query lists the whole registry in
+    /// declared order.
+    fn keybindings_rows(&self) -> Vec<&'static shortcuts::Shortcut> {
+        let query = self.keybindings_query.to_lowercase();
+        shortcuts::SHORTCUTS
+            .iter()
+            .filter(|shortcut| {
+                query.is_empty()
+                    || shortcut.chord.to_lowercase().contains(&query)
+                    || shortcut.action.to_lowercase().contains(&query)
+                    || shortcut.context.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    /// Keyboard while the cheatsheet is open: typing filters, arrows/page
+    /// keys move, `Enter`/`Esc`/`Alt+Shift+K` dismisses back to the previous
+    /// surface. Nothing reaches the shell.
+    fn on_keybindings_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        if shortcuts::is_cheatsheet_toggle(
+            &key_name,
+            event.keystroke.modifiers.control,
+            event.keystroke.modifiers.shift,
+            event.keystroke.modifiers.alt,
+        ) {
+            self.close_keybindings(cx);
+            return;
+        }
+        match key_name.as_str() {
+            "escape" | "enter" | "return" | "kpenter" => {
+                self.close_keybindings(cx);
+            }
+            "backspace" => {
+                self.keybindings_query.pop();
+                self.keybindings_selected = 0;
+                cx.notify();
+            }
+            "up" => {
+                self.keybindings_selected = self.keybindings_selected.saturating_sub(1);
+                cx.notify();
+            }
+            "down" => {
+                let rows = self.keybindings_rows().len();
+                if self.keybindings_selected + 1 < rows.max(1) {
+                    self.keybindings_selected += 1;
+                    cx.notify();
+                }
+            }
+            "home" => {
+                self.keybindings_selected = 0;
+                cx.notify();
+            }
+            "end" => {
+                self.keybindings_selected = self.keybindings_rows().len().saturating_sub(1);
+                cx.notify();
+            }
+            "pageup" => {
+                self.keybindings_selected = self.keybindings_selected.saturating_sub(8);
+                cx.notify();
+            }
+            "pagedown" => {
+                let last = self.keybindings_rows().len().saturating_sub(1);
+                self.keybindings_selected = (self.keybindings_selected + 8).min(last);
+                cx.notify();
+            }
+            _ => {
+                if event.keystroke.modifiers.control || event.keystroke.modifiers.alt {
+                    return;
+                }
+                let ch = event
+                    .keystroke
+                    .key_char
+                    .as_ref()
+                    .and_then(|s| s.chars().next());
+                if let Some(ch) = ch
+                    && !ch.is_control()
+                    && self.keybindings_query.len() < 64
+                {
+                    self.keybindings_query.push(ch);
+                    self.keybindings_selected = 0;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
     fn open_palette(&mut self, command_mode: bool, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
@@ -8061,6 +8222,23 @@ impl WorkspaceView {
                     &["pane equalize", "equalize"],
                     OmaCommand::Pane(PaneCommand::EqualizeSelected),
                 );
+                // View-local overlay transition (no core command): the
+                // confirm handler matches this key and opens the cheatsheet.
+                add(Candidate {
+                    key: "command.keys.cheatsheet".into(),
+                    label: "Show Keybindings".into(),
+                    detail: "View · Alt+Shift+K".into(),
+                    aliases: vec![
+                        "keybindings".into(),
+                        "shortcuts".into(),
+                        "keys".into(),
+                        "cheatsheet".into(),
+                    ],
+                    kind: Kind::Command,
+                    target: PaletteTarget::ViewAction,
+                    file_root: None,
+                    mru_rank: None,
+                });
             }
         } else {
             for (project_index, project) in projects.iter().enumerate() {
@@ -8378,6 +8556,16 @@ impl WorkspaceView {
             return;
         }
         let outcome = match entry.target.clone() {
+            palette::PaletteTarget::ViewAction => {
+                // View-local overlay transition: no core command, no effects.
+                // The palette closes first (origin restored), then the
+                // cheatsheet owns input until dismissed.
+                self.ctrlp_open = false;
+                self.palette_search_worker.cancel_current();
+                self.restore_palette_origin(cx);
+                self.open_keybindings(cx);
+                None
+            }
             palette::PaletteTarget::Semantic(command) => {
                 let requires_origin = matches!(
                     &command,
@@ -8937,23 +9125,18 @@ impl WorkspaceView {
             return self.on_ctrlp_key(event, cx);
         }
 
+        // The keybindings overlay owns input like the palette: typing
+        // filters, arrows navigate, Esc/`Alt+Shift+K` closes. Nothing
+        // reaches the shell while open.
+        if self.keybindings_open {
+            return self.on_keybindings_key(event, cx);
+        }
         if event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
             && !event.keystroke.modifiers.alt
             && key_name == "o"
         {
             self.open_project_directory(cx);
-            return;
-        }
-        // S7 surface routing: Ctrl+1/2/3 show Terminal/Editor/Diff. This is
-        // distinct from Ctrl+Shift+<digit> project jumps, so it requires plain
-        // Ctrl with no Shift/Alt and is consumed before terminal encoding.
-        if event.keystroke.modifiers.control
-            && !event.keystroke.modifiers.shift
-            && !event.keystroke.modifiers.alt
-            && let Some(slot) = ctrl_surface_slot(&key_name)
-        {
-            self.route_ctrl_surface_key(slot, cx);
             return;
         }
         if event.keystroke.modifiers.control
@@ -8966,6 +9149,48 @@ impl WorkspaceView {
         }
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "p" {
             self.open_palette(true, cx);
+            return;
+        }
+        // Keybindings cheatsheet: `Alt+Shift+K` toggles from any surface
+        // (editor, terminal, inspector fields). Plain `Ctrl+K` (`0x0B`,
+        // readline kill-line) is never chrome and keeps reaching the PTY.
+        if shortcuts::is_cheatsheet_toggle(
+            &key_name,
+            event.keystroke.modifiers.control,
+            event.keystroke.modifiers.shift,
+            event.keystroke.modifiers.alt,
+        ) {
+            self.toggle_keybindings(cx);
+            return;
+        }
+        // Unified tab-strip jump: `Alt+1..9` selects the nth entry in
+        // render order (terminal tabs, diff chip, editor documents).
+        // Plain `Alt` with no Shift/Ctrl; consumed before terminal
+        // encoding, which would otherwise prefix it with ESC.
+        if event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && let Some(slot) = shortcuts::alt_strip_slot(&key_name)
+        {
+            self.route_alt_strip_key(slot, cx);
+            return;
+        }
+        // Direct project jump: `Alt+Shift+1..9` selects the nth project in
+        // sidebar order. Shift applies to the character before GPUI reports
+        // it (US layout: `!` for `1`, `@` for `2`, …), so both forms map.
+        if event.keystroke.modifiers.alt
+            && event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.control
+            && let Some(index) = shortcuts::alt_shift_project_index(&key_name)
+        {
+            let projects = self.coordinator.projects();
+            if index < projects.len() {
+                let id = projects[index].id;
+                let _ = self.dispatch_command(
+                    OmaCommand::Project(ProjectCommand::Select { project: id }),
+                    cx,
+                );
+            }
             return;
         }
         // M14 commit input: while focused (Git tab), plain keys type the
@@ -9046,8 +9271,8 @@ impl WorkspaceView {
             return;
         }
         // M15 hunk navigation: Alt+N next / Alt+P previous within the
-        // main-area diff preview tab. Plain Alt+letter is otherwise free
-        // (Alt only pairs with PageUp/PageDown for tab/project jumps).
+        // main-area diff preview tab. Plain-Alt digits are tab jumps
+        // (handled above); letter chords stay hunk-scoped here.
         if event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
@@ -9120,24 +9345,8 @@ impl WorkspaceView {
             }
             return;
         }
-        // Direct project jump: Ctrl+Shift+1..9 selects the n-th project in
-        // sidebar order. Shift applies to the character before GPUI reports
-        // it (US layout: `!` for `1`, `@` for `2`, …), so both forms map.
-        if event.keystroke.modifiers.control
-            && event.keystroke.modifiers.shift
-            && !event.keystroke.modifiers.alt
-            && let Some(index) = project_jump_index(&key_name)
-        {
-            let projects = self.coordinator.projects();
-            if index < projects.len() {
-                let id = projects[index].id;
-                let _ = self.dispatch_command(
-                    OmaCommand::Project(ProjectCommand::Select { project: id }),
-                    cx,
-                );
-            }
-            return;
-        }
+        // (Project jumps live above as `Alt+Shift+1..9`; plain `Ctrl`
+        // digits belong to the PTY and are never chrome.)
         if (event.keystroke.modifiers.control || event.keystroke.modifiers.alt)
             && (key_name == "pageup" || key_name == "pagedown")
         {
@@ -9259,14 +9468,10 @@ impl WorkspaceView {
                     self.focus_neighbor(SplitDirection::Right, cx);
                     return;
                 }
-                "e" => {
-                    self.equalize(cx);
-                    return;
-                }
-                "t" => {
-                    self.new_terminal_for_empty(cx);
-                    return;
-                }
+                // `Ctrl+Shift+E` stays the Inspector Files tab (handled
+                // above); equalize moved to the palette/registry row and
+                // `Ctrl+Shift+T` stays new-tab (handled above), so neither
+                // is rebound here. See `shortcuts::SHORTCUTS`.
                 // History controls (M10). Shortcuts dispatch the same
                 // semantic commands as IPC and CLI; destructive or
                 // secret-disclosing actions use the two-step arm pattern.
@@ -11976,7 +12181,7 @@ impl WorkspaceView {
             let pick_id = id;
             let context_menu_open = self.project_context_menu == Some(id);
             let label = if self.show_project_hints && index < 9 {
-                format!("{} · {name}", index + 1)
+                format!("Alt+Shift+{} · {name}", index + 1)
             } else {
                 name
             };
@@ -12347,6 +12552,18 @@ impl WorkspaceView {
             )
     }
 
+    /// Prefix a tab-strip chip label with its 1-based `Alt+<n>` jump digit
+    /// while strip hints are visible (plain `Alt` held). Slots past 9 have
+    /// no chord and stay unlabeled so the hint never promises more than the
+    /// `Alt+1..9` router honors.
+    fn strip_chip_label(&self, slot: usize, label: String) -> String {
+        if self.show_strip_hints && (1..=9).contains(&slot) {
+            format!("{slot} · {label}")
+        } else {
+            label
+        }
+    }
+
     /// UI v5 header row (42px): reveal-projects control when hidden, the
     /// terminal tab strip, new-tab control, then search and inspector
     /// toggle pinned right. Exactly one visible surface is active.
@@ -12443,7 +12660,7 @@ impl WorkspaceView {
                     }),
                 )
                 .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
-                .child(tab.display_name(index + 1));
+                .child(self.strip_chip_label(index + 1, tab.display_name(index + 1)));
                 if active {
                     chip = chip.border_t_2().border_color(rgb(crate::ui::theme::BLUE));
                 }
@@ -12488,6 +12705,8 @@ impl WorkspaceView {
                     .unwrap_or_else(|| path.to_string_lossy().into_owned());
                 let preview_id = project.id;
                 let diff_active = active_kind == Some(ActiveTabKind::Diff);
+                let diff_label =
+                    self.strip_chip_label(project.tabs.len() + 1, format!("Diff: {name}"));
                 tabs = tabs.child(
                     div()
                         .flex()
@@ -12522,7 +12741,7 @@ impl WorkspaceView {
                                 view.reveal_diff_surface(preview_id, cx);
                             }),
                         )
-                        .child(format!("Diff: {name}"))
+                        .child(diff_label)
                         .child(
                             div()
                                 .px_1()
@@ -12543,6 +12762,11 @@ impl WorkspaceView {
                                             view.active_surface
                                                 .insert(preview_id, ActiveSurface::Terminal);
                                             view.restore_input_owner();
+                                            // With no tabs left this falls
+                                            // through to a live document (or
+                                            // the empty prompt); otherwise it
+                                            // is a no-op.
+                                            view.ensure_selected_surface_fallback(cx);
                                         }
                                         cx.notify();
                                     }),
@@ -12558,8 +12782,17 @@ impl WorkspaceView {
             // M19 editor document chips: view-local activation over
             // router-owned buffers. Click activates; the terminal-tab and
             // new-tab controls return to the terminal surface without
-            // closing documents.
-            for document in self.coordinator.documents().project_documents(project.id) {
+            // closing documents. Strip slots continue past the diff chip
+            // so `Alt+<n>` matches this render order exactly.
+            let editor_base =
+                project.tabs.len() + usize::from(self.diff_panel.preview_open(project.id));
+            for (doc_offset, document) in self
+                .coordinator
+                .documents()
+                .project_documents(project.id)
+                .into_iter()
+                .enumerate()
+            {
                 let path = self.coordinator.documents().relative_path(document);
                 let name = path
                     .as_ref()
@@ -12575,6 +12808,7 @@ impl WorkspaceView {
                     .unwrap_or(false);
                 let active = active_kind == Some(ActiveTabKind::Editor(document));
                 let open_project = project.id;
+                let doc_label = self.strip_chip_label(editor_base + doc_offset + 1, name);
                 tabs = tabs.child(
                     div()
                         .flex()
@@ -12615,7 +12849,7 @@ impl WorkspaceView {
                             14.0,
                             crate::ui::theme::BLUE,
                         ))
-                        .child(name)
+                        .child(doc_label)
                         .child(
                             div()
                                 .text_color(rgb(if dirty {
@@ -13500,6 +13734,25 @@ impl WorkspaceView {
                             }
                             cx.stop_propagation();
                             window.focus(&view.focus_handle);
+                            view.toggle_keybindings(cx);
+                        }),
+                    )
+                    .child("Alt+Shift+K keys"),
+            );
+            right = right.child(
+                div()
+                    .px(px(10.0))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
                             view.history_opt_in_key(cx);
                         }),
                     )
@@ -13747,6 +14000,93 @@ impl WorkspaceView {
             .py_1()
             .text_color(rgb(0x71717A))
             .child("up/down navigate · enter run/open · type `>` for commands · esc dismiss")
+    }
+
+    /// `Alt+Shift+K` cheatsheet: read-only filterable view over the central
+    /// `shortcuts::SHORTCUTS` registry (the Omarchy `Super+K` analog; `Super`
+    /// stays with the compositor). Same floating frame as the finder; rows
+    /// never dispatch, `Enter`/`Esc` just closes.
+    fn render_keybindings(&mut self, box_x: f32, box_w: f32) -> Div {
+        let rows = self.keybindings_rows();
+        let selected = self.keybindings_selected.min(rows.len().saturating_sub(1));
+        let query = if self.keybindings_query.is_empty() {
+            "Type to filter…".to_string()
+        } else {
+            self.keybindings_query.clone()
+        };
+        let mut list = div().flex().flex_col();
+        if rows.is_empty() {
+            list = list.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_color(rgb(0x71717A))
+                    .child("No matches."),
+            );
+        }
+        for (index, shortcut) in rows.iter().enumerate().take(24) {
+            let active = index == selected;
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(if active { 0x27272A } else { 0x18181B }))
+                    .child(
+                        div()
+                            .w(px(150.0))
+                            .flex_shrink_0()
+                            .text_color(rgb(0xE4E4E7))
+                            .child(shortcut.chord.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .truncate()
+                            .text_color(rgb(0xA1A1AA))
+                            .child(shortcut.action.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(rgb(0x71717A))
+                            .child(shortcut.context.to_string()),
+                    ),
+            );
+        }
+        let overlay = div()
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x52525B))
+            .shadow_lg()
+            .bg(rgb(0x18181B))
+            .text_color(rgb(0xE4E4E7))
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_color(rgb(0x71717A)).child("Keys"))
+                    .child(query),
+            )
+            .child(div().h(px(1.0)).w_full().bg(rgb(0x2E2E33)))
+            .child(list)
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_color(rgb(0x71717A))
+                    .child("up/down navigate · enter/esc close · Alt+Shift+K toggle"),
+            );
+        self.ctrlp_frame(overlay, box_x, box_w)
     }
 
     /// True floating layer, VSCode Quick Open style: absolutely positioned
@@ -14410,6 +14750,22 @@ impl Render for WorkspaceView {
             let box_x = ((pane_w - box_w) / 2.0).max(0.0);
             pane_area = pane_area.child(self.render_ctrlp(box_x, box_w, cx));
         }
+        if self.keybindings_open {
+            let viewport_w: f32 = window.viewport_size().width.into();
+            let viewport_h: f32 = window.viewport_size().height.into();
+            let shell = crate::ui::geometry::shell_rects(
+                viewport_w,
+                viewport_h,
+                self.projects_visible,
+                self.projects_width,
+                self.inspector_visible,
+                self.inspector_width,
+            );
+            let pane_w = shell.main_view.2.max(1.0);
+            let box_w = (pane_w - 32.0).clamp(200.0, 640.0);
+            let box_x = ((pane_w - box_w) / 2.0).max(0.0);
+            pane_area = pane_area.child(self.render_keybindings(box_x, box_w));
+        }
         // UI v5 frame: Projects | resizer | (header over main+inspector,
         // then main | resizer | inspector), then the global status bar.
         let viewport_h: f32 = window.viewport_size().height.into();
@@ -14470,8 +14826,10 @@ impl Render for WorkspaceView {
         }
         content_row = content_row.child(center_row);
         let status_bar = self.render_status_bar(cx);
-        // Reveal the Ctrl+Shift+1..9 jump indexes in the sidebar only while
-        // Control or Shift is held.
+        // Reveal jump digits only while the chord that honors them is
+        // held: `Alt+Shift` for sidebar project jumps, plain `Alt` for
+        // tab-strip jumps. Bare `Ctrl` never shows digits (its bytes belong
+        // to the PTY and no `Ctrl` chord honors them).
         let weak = cx.entity().downgrade();
         let drop_weak = weak.clone();
         div()
@@ -14488,10 +14846,20 @@ impl Render for WorkspaceView {
                 });
             })
             .on_modifiers_changed(move |event: &ModifiersChangedEvent, _, cx| {
-                let show = event.modifiers.control || event.modifiers.shift;
+                let project = shortcuts::show_project_hints(
+                    event.modifiers.control,
+                    event.modifiers.shift,
+                    event.modifiers.alt,
+                );
+                let strip = shortcuts::show_strip_hints(
+                    event.modifiers.control,
+                    event.modifiers.shift,
+                    event.modifiers.alt,
+                );
                 let _ = weak.update(cx, |view: &mut WorkspaceView, cx| {
-                    if view.show_project_hints != show {
-                        view.show_project_hints = show;
+                    if view.show_project_hints != project || view.show_strip_hints != strip {
+                        view.show_project_hints = project;
+                        view.show_strip_hints = strip;
                         cx.notify();
                     }
                 });
@@ -14760,27 +15128,6 @@ fn summarize_paths(paths: &[std::path::PathBuf]) -> String {
             .unwrap_or_else(|| "file".to_string());
     }
     format!("{} files", paths.len())
-}
-
-/// Map a Ctrl+Shift+<n> key name to a 0-based project index.
-///
-/// Shift applies to the character before GPUI reports it, so on a US layout
-/// `Ctrl+Shift+1` arrives as `!`, `Ctrl+Shift+2` as `@`, and so on. Both the
-/// shifted symbol and the raw digit map to the same slot.
-fn project_jump_index(key_name: &str) -> Option<usize> {
-    let slot = match key_name {
-        "1" | "!" => 1,
-        "2" | "@" => 2,
-        "3" | "#" => 3,
-        "4" | "$" => 4,
-        "5" | "%" => 5,
-        "6" | "^" => 6,
-        "7" | "&" => 7,
-        "8" | "*" => 8,
-        "9" | "(" => 9,
-        _ => return None,
-    };
-    Some(slot - 1)
 }
 
 /// Translate a GPUI key event into the GPUI-free [`KeyEvent`].
@@ -15351,10 +15698,10 @@ mod tests {
     use super::{
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
         FileActivation, InputOwner, InspectorTab, NativeOpenTarget, PaletteFileIndexCache,
-        PaletteSearchRequest, PaletteSearchWorker, SurfaceRoute, WorkspaceView,
-        captured_targets_stale, ctrl_surface_slot, discard_before_action, file_activation,
-        metrics_job_counts, native_open_may_activate, pending_timing_elapsed, project_jump_index,
-        revalidate_captured_targets, route_ctrl_surface, select_mono_family,
+        PaletteSearchRequest, PaletteSearchWorker, StripRoute, WorkspaceView,
+        captured_targets_stale, discard_before_action, file_activation, metrics_job_counts,
+        native_open_may_activate, pending_timing_elapsed, revalidate_captured_targets,
+        route_alt_strip, select_mono_family,
     };
     use crate::editor::DocumentStore;
     use crate::editor::EditorCaret;
@@ -15986,35 +16333,6 @@ mod tests {
     }
 
     #[test]
-    fn jump_index_maps_digits_and_shifted_symbols_to_slots() {
-        for (key, slot) in [
-            ("1", 0),
-            ("2", 1),
-            ("3", 2),
-            ("4", 3),
-            ("5", 4),
-            ("6", 5),
-            ("7", 6),
-            ("8", 7),
-            ("9", 8),
-            ("!", 0),
-            ("@", 1),
-            ("#", 2),
-            ("$", 3),
-            ("%", 4),
-            ("^", 5),
-            ("&", 6),
-            ("*", 7),
-            ("(", 8),
-        ] {
-            assert_eq!(project_jump_index(key), Some(slot), "key {key}");
-        }
-        for key in ["0", ")", "a", "p", "pageup", ""] {
-            assert_eq!(project_jump_index(key), None, "key {key}");
-        }
-    }
-
-    #[test]
     fn configured_font_family_wins_when_installed() {
         let installed = [
             "JetBrainsMono Nerd Font".to_string(),
@@ -16125,6 +16443,7 @@ mod tests {
         // Overlays and focused fields route neither editor nor terminal.
         for owner in [
             InputOwner::Palette,
+            InputOwner::Keybindings,
             InputOwner::FilesFilter,
             InputOwner::GitCommit,
             InputOwner::Confirmation,
@@ -16249,41 +16568,45 @@ mod tests {
     }
 
     #[test]
-    fn ctrl1_2_3_route_surfaces_without_core_tab_mutation() {
+    fn alt_digits_route_strip_entries_in_render_order() {
+        let tabs = vec![TabId::new(), TabId::new()];
         let document = DocumentId::new();
-        assert_eq!(ctrl_surface_slot("1"), Some(1));
-        assert_eq!(ctrl_surface_slot("2"), Some(2));
-        assert_eq!(ctrl_surface_slot("3"), Some(3));
-        assert_eq!(ctrl_surface_slot("4"), None);
-        assert_eq!(ctrl_surface_slot("p"), None);
-        // The routing decision is a pure surface intent. Slot 1 may re-select
-        // the remembered terminal tab; slots 2/3 return only a surface and can
-        // never request a core tab mutation.
+        let docs = vec![document];
         assert_eq!(
-            route_ctrl_surface(1, Some(document), true),
-            SurfaceRoute::Terminal
+            route_alt_strip(&tabs, true, &docs, 1),
+            StripRoute::Terminal(tabs[0])
         );
         assert_eq!(
-            route_ctrl_surface(2, Some(document), true),
-            SurfaceRoute::Editor(document)
+            route_alt_strip(&tabs, true, &docs, 2),
+            StripRoute::Terminal(tabs[1])
         );
+        // With two terminal tabs the diff chip is third and the first
+        // document fourth; only terminal jumps may request a core tab
+        // mutation, editor/diff jumps never do.
+        assert_eq!(route_alt_strip(&tabs, true, &docs, 3), StripRoute::Diff);
         assert_eq!(
-            route_ctrl_surface(3, Some(document), true),
-            SurfaceRoute::Diff
+            route_alt_strip(&tabs, true, &docs, 4),
+            StripRoute::Editor(document)
+        );
+        // Without a preview the document slides into the freed slot.
+        assert_eq!(
+            route_alt_strip(&tabs, false, &docs, 3),
+            StripRoute::Editor(document)
         );
     }
 
     #[test]
-    fn unavailable_surface_shows_truthful_notice() {
-        // No real document: slot 2 is unavailable, never a fake default file.
+    fn unavailable_strip_slot_shows_truthful_notice() {
+        // No real document and no preview: slots past the terminals are
+        // unavailable, never a fake default file or diff.
+        let tabs = vec![TabId::new()];
         assert_eq!(
-            route_ctrl_surface(2, None, true),
-            SurfaceRoute::Unavailable(2)
+            route_alt_strip(&tabs, false, &[], 2),
+            StripRoute::Unavailable(2)
         );
-        // No retained preview: slot 3 is unavailable, never a fake diff.
         assert_eq!(
-            route_ctrl_surface(3, Some(DocumentId::new()), false),
-            SurfaceRoute::Unavailable(3)
+            route_alt_strip(&[], false, &[], 1),
+            StripRoute::Unavailable(1)
         );
     }
 

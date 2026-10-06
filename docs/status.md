@@ -2,6 +2,50 @@
 
 ## Current position
 
+### Keybinding overhaul: Alt tab/project jumps + cheatsheet + tabless fallback — 2026-10-06
+
+- New GPUI-free registry `apps/omaterm/src/shortcuts.rs` (`SHORTCUTS`,
+  35 ids): `Alt+1..9` unified strip jump (terminal tabs → diff chip →
+  editor docs, render order), `Alt+Shift+1..9` project jump (digits +
+  shifted `!@#$%^&*(`), `Alt+Shift+K` cheatsheet. Plain `Ctrl` owns no
+  navigation chord; its bytes return to the PTY (M11 no-steal rule
+  restored; the UI-v5 `Ctrl+1/2/3` surface binding is removed).
+- Hints are honest: sidebar shows `Alt+Shift+n · name` only while
+  `Alt+Shift` held; strip chips show `n · label` only while plain `Alt`
+  held; bare `Ctrl` shows nothing (`show_strip_hints` /
+  `show_project_hints` predicates, `on_modifiers_changed` re-gated).
+- Removed two dead arms the sequential `if`-returns had shadowed:
+  `Ctrl+Shift+E` equalize (Inspector Files wins; equalize stays via the
+  `Equalize Panes` palette command, IPC, CLI) and `Ctrl+Shift+T`
+  new-terminal (new-tab wins). Deleted the dead `equalize` view method.
+- Tabless fallback (`ensure_selected_surface_fallback`, pure selector
+  `fallback_without_tabs`): closing the last terminal tab (tab close,
+  pane close, shell exit, doc close, diff `×`) reveals a live editor
+  document, then the open diff preview, and only then the empty prompt.
+  Main render already preferred Editor/Diff surfaces, so no render-path
+  change was needed.
+- `Alt+Shift+K` cheatsheet overlay (Omarchy `Super+K` analog; `Super`
+  stays with the compositor, plain `Ctrl+K`/kill-line untouched):
+  filterable `SHORTCUTS` list, `Esc`/`Enter`/`Alt+Shift+K` dismiss,
+  `InputOwner::Keybindings` ownership, status-bar `Alt+Shift+K keys`
+  pill, and a `Show Keybindings` palette command (`ViewAction` target).
+- Contract docs: new `docs/shortcuts.md` (35-row table);
+  `scripts/check-docs.py` now asserts registry ↔ table id parity both
+  ways. Old M11/UI-v5 shortcut rows are left as history; this table is
+  current.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace
+  -- --test-threads=1` PASS (649 tests: 642 prior + 8 new registry −
+  1 superseded jump test), `cargo clippy --workspace --all-targets --
+  -D warnings` PASS (only the known transitive `proc-macro-error2`
+  notice), `cargo build --release --bin omaterm-desktop` PASS,
+  `python3 scripts/check-docs.py` PASS (45 files, 35 shortcut ids),
+  `git diff --check` PASS. Not committed.
+- Manual Wayland validation pending: `Alt`/`Alt+Shift` hints, `Alt+3`
+  cross-kind jump, `Alt+Shift+2` project jump, last-tab-close fallback
+  to doc then diff then empty, `Ctrl+1`/`Ctrl+K` reaching PTY
+  (`cat -v`), cheatsheet open/filter/close from terminal/editor/
+  palette, `Alt+Shift` layout-switch fallback via palette pill.
+
 ### AUR packaging Fase 1 (Arch/Omarchy focus) — 2026-10-06
 
 - Dual AUR brand reservation: `packaging/arch/` (`omaterm`, source build)
