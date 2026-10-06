@@ -2,6 +2,25 @@
 
 ## Current position
 
+### Git history graph and commit-file diff planning — 2026-10-06
+
+- Added the [comprehensive Git history plan](git-history-plan.md) against
+  clean baseline `f4f8907`. Graph sits below Staged Changes/Changes and stays
+  visible in clean repositories; commits expand into files whose clicks open
+  parent-specific historical Split/Inline previews.
+- The plan covers actual merge lanes, root/shallow/merge-parent semantics,
+  SHA-1/SHA-256 OIDs, stable paging, project/subdirectory boundaries, framed
+  metadata/raw paths, read-only preview capabilities, bounded shared async
+  dispatch, IPC/CLI parity, keyboard ownership and native acceptance.
+- Execution is H0 baseline/fixtures → H1 identity/contracts → H2 Git reads →
+  H3 async commands/parity → H4 graph → H5 historical previews → H6 acceptance.
+  Implementation checks use `mbx`. No feature or milestone is marked complete.
+- Verification: `python3 scripts/check-docs.py` PASS (46 Markdown files, 328
+  local link targets, 325 blueprint references; all 41 CLI/IPC mappings and 35
+  shortcut ids), `git diff --check` and the new plan's no-index whitespace check
+  PASS. Link/contract consistency reviewed. Rust/native checks are not applicable
+  to this planning-only change. Next action: H0, then H1 historical-source tests.
+
 ### Diff viewer syntax highlight (user-directed M15 scope change) — 2026-10-06
 
 - `AlignedRow`/`SplitCell` carry presentation-only `tokens` over the final

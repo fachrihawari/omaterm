@@ -135,6 +135,7 @@ If this works, OmaTerm has proven the architecture for future agent control.
 - [M16 Implementation Plan](m16-implementation-plan.md) — unified command/file palette, typed catalog, bounded search, focus, parity and release acceptance
 - [M15 + M16 Remaining-Work Plan](m15-m16-remaining-work-plan.md) — current execution sequence for diff closure, async process queries, palette lifecycle/catalog/focus and final acceptance
 - [M19 Comprehensive Completion Plan](m19-completion-plan.md) — audited remaining editor work: root identity, async I/O, bounded store, registry persistence, lifecycle/input/entry integration and final native acceptance
+- [Git History Graph and Commit File Diffs Plan](git-history-plan.md) — Graph below Source Control changes, merge lanes, expandable commit files, parent-specific historical diffs, bounded async UI/IPC/CLI queries and mbx acceptance gates
 - [VS Code Workbench UI Redesign Plan](ui-workbench-redesign-plan.md) — superseded visual direction; retained implementation history
 - Blueprint §22 — First-Run Product Scope
 - Blueprint §23 — Suggested Version Progression
