@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
@@ -18,9 +18,9 @@ use gpui::{
 };
 use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
-    ErrorCode, FileCommand, FileEntry, GitBranchList, GitCommand, OmaCommand, Pane, PaneCommand,
-    PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis, SplitDirection,
-    TabCommand, TabId, TerminalCommand,
+    ErrorCode, FileCommand, FileEntry, GitBranchList, GitCommand, GitStashList, OmaCommand, Pane,
+    PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis,
+    SplitDirection, TabCommand, TabId, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -303,6 +303,17 @@ struct WorkspaceView {
     /// synchronous dispatch (bounded 60s), so buttons disable while held
     /// instead of queueing duplicate fetches/pulls/pushes.
     sync_busy: bool,
+    /// Stash message drafts per project (like commit drafts).
+    stash_drafts: HashMap<ProjectId, String>,
+    /// Project whose stash input owns the keyboard.
+    stash_focused: Option<ProjectId>,
+    /// Projects with `-u` (include untracked) armed for the next push.
+    stash_untracked: HashSet<ProjectId>,
+    /// Projects with a stash-list fetch in flight.
+    stash_in_flight: HashSet<ProjectId>,
+    /// Background stash-list completions `(project, outcome)`.
+    stash_tx: std::sync::mpsc::Sender<(ProjectId, Result<GitStashList, String>)>,
+    stash_rx: std::sync::mpsc::Receiver<(ProjectId, Result<GitStashList, String>)>,
     /// Branch picker overlay (C9.1, `None` when closed).
     branch_picker: Option<BranchPicker>,
     /// Last-good branch lists per project (fetched on picker open and
@@ -2176,6 +2187,7 @@ impl WorkspaceView {
         // Background branch-list channel: fetched on picker open and after
         // mutations only, generation-guarded like the status worker.
         let (branch_tx, branch_rx) = std::sync::mpsc::channel();
+        let (stash_tx, stash_rx) = std::sync::mpsc::channel();
         // Background history channels: page fetches and per-commit file
         // listings both run off the UI thread with generation guards.
         let (history_tx, history_rx) = std::sync::mpsc::channel();
@@ -2233,6 +2245,10 @@ impl WorkspaceView {
             shutting_down: false,
             history_arm: None,
             sync_busy: false,
+            stash_drafts: HashMap::new(),
+            stash_focused: None,
+            stash_untracked: HashSet::new(),
+            stash_in_flight: HashSet::new(),
             paste_arm: None,
             input_notice: None,
             editor_save_warning: None,
@@ -2300,6 +2316,8 @@ impl WorkspaceView {
             git_generation: 0,
             git_in_flight: None,
             branch_picker: None,
+            stash_tx,
+            stash_rx,
             branch_lists: HashMap::new(),
             branch_tx,
             branch_rx,
@@ -4683,8 +4701,10 @@ impl WorkspaceView {
         self.history_tick(cx);
         self.commit_diff_tick(cx);
         // Branch lists fetch on picker open and after mutations only
-        // (never polled): one fetch per tick while wanted.
+        // (never polled): one fetch per tick while wanted. Stash lists
+        // land the same way (first view + after mutations).
         self.branch_tick(cx);
+        self.stash_tick(cx);
         if self.ctrlp_open
             && (git_landed || self.coordinator.selected_project_id() != self.ctrlp_project)
         {
@@ -6347,6 +6367,7 @@ impl WorkspaceView {
             .insert(project, ActiveSurface::Editor(document));
         self.files_search_focused = false;
         self.git_panel.set_commit_focused(false);
+        self.stash_focused = None;
         self.editor_carets.entry(document).or_default();
         // The activated document owns typing until another surface claims it.
         self.set_input_owner(InputOwner::Editor(document));
@@ -8894,6 +8915,7 @@ impl WorkspaceView {
         match key_name.as_str() {
             "escape" => {
                 self.git_panel.set_commit_focused(false);
+                self.stash_focused = None;
                 cx.notify();
             }
             "enter" | "return" | "kpenter" => self.git_commit_submit(project, cx),
@@ -9036,6 +9058,7 @@ impl WorkspaceView {
         ) {
             Ok(CommandOutput::GitCommitted { oid }) => {
                 self.git_panel.set_commit_focused(false);
+                self.stash_focused = None;
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
                 // A new commit extends the immutable history: surviving
@@ -10526,6 +10549,17 @@ impl WorkspaceView {
         {
             return self.on_commit_key(event, cx);
         }
+        // Stash input: while focused (Git tab), plain keys type the stash
+        // message; Ctrl/Alt combinations fall through to global shortcuts
+        // so they keep working while typing.
+        if self.stash_focused.is_some()
+            && self.inspector_tab == InspectorTab::Git
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && let Some(project) = self.stash_focused
+        {
+            return self.on_stash_key(project, event, cx);
+        }
         // Inspector search input: while focused (Files tab), plain keys
         // edit the filter; Ctrl/Alt combinations fall through. Esc clears
         // and releases, Enter opens the first match.
@@ -10577,6 +10611,7 @@ impl WorkspaceView {
                 };
                 self.inspector_visible = true;
                 self.git_panel.set_commit_focused(false);
+                self.stash_focused = None;
                 self.files_search_focused = false;
                 self.files_vdrag = None;
                 cx.notify();
@@ -11187,6 +11222,7 @@ impl WorkspaceView {
         }
         // Typing belongs to the terminal again once its pane is clicked.
         self.git_panel.set_commit_focused(false);
+        self.stash_focused = None;
         self.files_search_focused = false;
         window.focus(&self.focus_handle);
         self.set_input_owner(InputOwner::Terminal(pane));
@@ -13022,6 +13058,10 @@ impl WorkspaceView {
                 );
             }
         }
+        // Stash group: on-demand list with pop/apply/drop per row and a
+        // push input. Fetches once per view (and after mutations), never
+        // on the status poller — stashes change only through us.
+        bar = self.render_stash_group(project, bar, cx);
         // The history Graph lives inside the Git tab, below both change
         // groups (and below the clean line when there is nothing to show
         // above). It stays visible however the Changes groups collapse.
@@ -13046,6 +13086,538 @@ impl WorkspaceView {
                 ),
         );
         bar
+    }
+
+    /// Stash group inside the Git tab: collapsible header with a push
+    /// input (message + optional untracked toggle + Stash button), plus
+    /// one row per entry with Pop/Apply/Drop. Read through the shared
+    /// `GitCommand::Stash*` dispatcher (same path as IPC/CLI); failures
+    /// surface as input notices with stable codes.
+    fn render_stash_group(
+        &mut self,
+        project: ProjectId,
+        mut bar: Div,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let collapsed = self.git_panel.is_stash_collapsed(project);
+        let count = self
+            .git_panel
+            .stashes_for(project)
+            .map(|list| list.stashes.len())
+            .unwrap_or(0);
+        let header = div()
+            .h(px(32.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_2()
+            .gap_1()
+            .role(crate::ui::metrics::META_10)
+            .text_color(rgb(crate::ui::theme::MUTED))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.git_panel.toggle_stash_collapsed(project);
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(14.0))
+                    .flex_shrink_0()
+                    .child(crate::ui::assets::icon(
+                        if collapsed {
+                            crate::ui::assets::CHEVRON_RIGHT
+                        } else {
+                            crate::ui::assets::CHEVRON_DOWN
+                        },
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            )
+            .child("STASH")
+            .child(
+                div()
+                    .ml(px(8.0))
+                    .px(px(6.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                    .bg(rgb(crate::ui::theme::PILL_BG))
+                    .role(crate::ui::metrics::META_9)
+                    .child(format!("{count}")),
+            )
+            .child(div().flex_1());
+        // Push input: message draft (view-local, like the commit draft) +
+        // untracked toggle + Stash button. Commits through the dispatcher.
+        if !collapsed {
+            let draft = self.stash_drafts.get(&project).cloned().unwrap_or_default();
+            let untracked = self.stash_untracked.contains(&project);
+            bar = bar.child(header);
+            bar = bar.child(
+                div().px_2().py_1().flex().flex_col().gap_1().child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(7.0))
+                                .border_1()
+                                .border_color(rgb(crate::ui::theme::BORDER))
+                                .bg(rgb(crate::ui::theme::PILL_BG))
+                                .role(crate::ui::metrics::BODY_11)
+                                .text_color(rgb(if draft.is_empty() {
+                                    crate::ui::theme::MUTED
+                                } else {
+                                    crate::ui::theme::TEXT
+                                }))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.stash_focused = Some(project);
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(if draft.is_empty() {
+                                    "Stash message…".to_string()
+                                } else {
+                                    draft
+                                }),
+                        )
+                        .child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(7.0))
+                                .role(crate::ui::metrics::META_10)
+                                .text_color(rgb(if untracked {
+                                    crate::ui::theme::TEXT
+                                } else {
+                                    crate::ui::theme::MUTED
+                                }))
+                                .border_1()
+                                .border_color(rgb(crate::ui::theme::BORDER2))
+                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        if !view.stash_untracked.remove(&project) {
+                                            view.stash_untracked.insert(project);
+                                        }
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(if untracked { "-u on" } else { "-u" }),
+                        )
+                        .child(
+                            div()
+                                .px(px(10.0))
+                                .py(px(4.0))
+                                .rounded(px(7.0))
+                                .border_1()
+                                .border_color(rgb(crate::ui::theme::BORDER2))
+                                .role(crate::ui::metrics::BODY_11)
+                                .text_color(rgb(crate::ui::theme::TEXT2))
+                                .hover(|s| {
+                                    s.bg(gpui::rgb(crate::ui::theme::CMD_HOVER_BG))
+                                        .border_color(gpui::rgb(crate::ui::theme::CMD_HOVER_BORDER))
+                                })
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.stash_push_submit(project, cx);
+                                    }),
+                                )
+                                .child("Stash"),
+                        ),
+                ),
+            );
+            // Loaded rows, or a fetch-on-first-view trigger.
+            match self.git_panel.stashes_for(project).cloned() {
+                None => {
+                    self.stash_fetch(project, cx);
+                    bar = bar.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child("Loading stashes…"),
+                    );
+                }
+                Some(list) => {
+                    if list.stashes.is_empty() {
+                        bar = bar.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child("No stashes."),
+                        );
+                    }
+                    let selected = self.git_panel.stash_selection(project);
+                    for (position, stash) in list.stashes.iter().enumerate() {
+                        let stash_index = stash.index;
+                        let active = Some(position) == selected;
+                        bar = bar.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .h(px(28.0))
+                                .rounded(px(7.0))
+                                .bg(rgb(if active {
+                                    crate::ui::theme::TREE_SELECTED_BG
+                                } else {
+                                    crate::ui::theme::PANEL
+                                }))
+                                .hover(|s| {
+                                    if active {
+                                        s
+                                    } else {
+                                        s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG))
+                                    }
+                                })
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.git_panel.select_stash(project, position);
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(52.0))
+                                        .flex_shrink_0()
+                                        .role(crate::ui::metrics::META_10)
+                                        .text_color(rgb(crate::ui::theme::MUTED))
+                                        .child(format!("#{}", stash.index)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .truncate()
+                                        .role(crate::ui::metrics::BODY_11)
+                                        .text_color(rgb(crate::ui::theme::TEXT))
+                                        .child(stash.subject.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(7.0))
+                                        .role(crate::ui::metrics::META_10)
+                                        .text_color(rgb(crate::ui::theme::MUTED))
+                                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |view, _, window, cx| {
+                                                if view.shutting_down {
+                                                    return;
+                                                }
+                                                cx.stop_propagation();
+                                                window.focus(&view.focus_handle);
+                                                view.stash_index_action(
+                                                    project,
+                                                    stash_index,
+                                                    false,
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                        .child("Pop"),
+                                )
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(7.0))
+                                        .role(crate::ui::metrics::META_10)
+                                        .text_color(rgb(crate::ui::theme::MUTED))
+                                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |view, _, window, cx| {
+                                                if view.shutting_down {
+                                                    return;
+                                                }
+                                                cx.stop_propagation();
+                                                window.focus(&view.focus_handle);
+                                                view.stash_index_action(
+                                                    project,
+                                                    stash_index,
+                                                    true,
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                        .child("Apply"),
+                                )
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(7.0))
+                                        .role(crate::ui::metrics::META_10)
+                                        .text_color(rgb(crate::ui::theme::RED))
+                                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |view, _, window, cx| {
+                                                if view.shutting_down {
+                                                    return;
+                                                }
+                                                cx.stop_propagation();
+                                                window.focus(&view.focus_handle);
+                                                view.git_panel.select_stash(project, position);
+                                                if view
+                                                    .git_panel
+                                                    .stash_drop_confirmed(project, stash_index)
+                                                {
+                                                    view.stash_drop(project, stash_index, cx);
+                                                } else {
+                                                    view.input_notice =
+                                                        Some("Drop: press again to confirm".into());
+                                                    cx.notify();
+                                                }
+                                            }),
+                                        )
+                                        .child("Drop"),
+                                ),
+                        );
+                    }
+                    if list.truncated {
+                        bar = bar.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child("(stash list capped; use the CLI for the tail)"),
+                        );
+                    }
+                }
+            }
+        } else {
+            bar = bar.child(header);
+        }
+        bar
+    }
+
+    /// Drain landed stash lists and clear in-flight flags. Fetches are
+    /// triggered by first view and by mutations, never polled.
+    fn stash_tick(&mut self, cx: &mut Context<Self>) {
+        let mut landed = false;
+        while let Ok((project, result)) = self.stash_rx.try_recv() {
+            self.stash_in_flight.remove(&project);
+            match result {
+                Ok(list) => self.git_panel.set_stashes(project, list),
+                Err(message) => {
+                    self.input_notice = Some(format!("Stashes: {message}"));
+                }
+            }
+            landed = true;
+        }
+        if landed {
+            cx.notify();
+        }
+    }
+
+    /// Keyboard for the focused stash input (single-line): Esc releases,
+    /// Enter submits, Backspace deletes, printable characters append.
+    /// Ctrl/Alt combinations fall through to global shortcuts so they
+    /// keep working while typing (mirrors the commit input contract).
+    fn on_stash_key(&mut self, project: ProjectId, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        match key_name.as_str() {
+            "escape" => {
+                self.stash_focused = None;
+                cx.notify();
+            }
+            "enter" | "return" | "kpenter" => self.stash_push_submit(project, cx),
+            "backspace" => {
+                if let Some(draft) = self.stash_drafts.get_mut(&project) {
+                    draft.pop();
+                    cx.notify();
+                }
+            }
+            _ => {
+                if event.keystroke.modifiers.control || event.keystroke.modifiers.alt {
+                    return;
+                }
+                let char = event
+                    .keystroke
+                    .key_char
+                    .as_ref()
+                    .and_then(|text| text.chars().next());
+                if let Some(char) = char
+                    && !char.is_control()
+                {
+                    let draft = self.stash_drafts.entry(project).or_default();
+                    if draft.chars().count() < 4096 {
+                        draft.push(char);
+                    }
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Fetch one stash list off-thread after mutations or first view.
+    /// Synchronous dispatch is fine here (bounded, local, fast) — but the
+    /// first-view path must not block render, so it spawns like status.
+    fn stash_fetch(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        if self.stash_in_flight.contains(&project) {
+            return;
+        }
+        self.stash_in_flight.insert(project);
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let tx = self.stash_tx.clone();
+        std::thread::spawn(move || {
+            let resolved = omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref());
+            let result = match resolved.root {
+                None => Err("no project root".to_string()),
+                Some(root) => omaterm_context::git_stash_list(&root)
+                    .map(|list| omaterm_core::GitStashList {
+                        stashes: list
+                            .stashes
+                            .into_iter()
+                            .map(|stash| omaterm_core::GitStashEntry {
+                                index: stash.index,
+                                name: stash.name,
+                                subject: stash.subject,
+                                oid: stash.oid,
+                            })
+                            .collect(),
+                        truncated: list.truncated,
+                    })
+                    .map_err(|error| error.to_string()),
+            };
+            let _ = tx.send((project, result));
+        });
+        cx.notify();
+    }
+
+    /// Push the stash draft through the shared dispatcher. Success clears
+    /// the draft and refetches; failure keeps the draft for retry.
+    fn stash_push_submit(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let message = self.stash_drafts.get(&project).cloned().unwrap_or_default();
+        if message.trim().is_empty() {
+            self.input_notice = Some("Stash: type a message first.".into());
+            cx.notify();
+            return;
+        }
+        let untracked = self.stash_untracked.contains(&project);
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::StashPush {
+                project,
+                message: message.clone(),
+                untracked,
+            }),
+            cx,
+        ) {
+            Ok(_) => {
+                self.stash_drafts.remove(&project);
+                self.stash_focused = None;
+                self.git_panel.clear_stashes(project);
+                self.stash_fetch(project, cx);
+                self.git_dirty_hint = true;
+                self.show_toast("Stashed".into(), cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Stash: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Pop or apply one stash entry through the dispatcher, then refetch
+    /// and hint the status poller (the worktree moved).
+    fn stash_index_action(
+        &mut self,
+        project: ProjectId,
+        index: usize,
+        apply: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let command = if apply {
+            OmaCommand::Git(GitCommand::StashApply { project, index })
+        } else {
+            OmaCommand::Git(GitCommand::StashPop { project, index })
+        };
+        match self.dispatch_command(command, cx) {
+            Ok(_) => {
+                self.git_panel.clear_stashes(project);
+                self.stash_fetch(project, cx);
+                self.git_dirty_hint = true;
+                self.show_toast(
+                    if apply {
+                        "Stash applied".into()
+                    } else {
+                        "Stash popped".into()
+                    },
+                    cx,
+                );
+            }
+            Err(error) => {
+                self.input_notice =
+                    Some(format!("{}: {error}", if apply { "Apply" } else { "Pop" }));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Drop one stash entry through the dispatcher (two-step armed by the
+    /// row button), then refetch.
+    fn stash_drop(&mut self, project: ProjectId, index: usize, cx: &mut Context<Self>) {
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::StashDrop { project, index }),
+            cx,
+        ) {
+            Ok(_) => {
+                self.git_panel.clear_stashes(project);
+                self.stash_fetch(project, cx);
+                self.show_toast("Stash dropped".into(), cx);
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Drop: {error}"));
+                cx.notify();
+            }
+        }
     }
 
     /// GRAPH section inside the Git tab, below both change groups: a
@@ -14801,6 +15373,7 @@ impl WorkspaceView {
         self.inspector_tab = tab;
         self.inspector_visible = true;
         self.git_panel.set_commit_focused(false);
+        self.stash_focused = None;
         self.files_search_focused = false;
         self.files_vdrag = None;
         // M18: arm the debounced process poller when Info becomes visible.

@@ -71,6 +71,14 @@ pub struct GitPanel {
     /// Collapsed change groups per project (`true` = staged group,
     /// `false` = working-tree group). View-local, never persisted.
     collapsed: HashSet<(ProjectId, bool)>,
+    /// Collapsed stash groups per project. View-local, never persisted.
+    stash_collapsed: HashSet<ProjectId>,
+    /// Last-good stash lists per project (fetched on demand, not polled).
+    stashes: HashMap<ProjectId, omaterm_core::GitStashList>,
+    /// Selected stash index per project (row highlight + actions).
+    stash_selected: HashMap<ProjectId, usize>,
+    /// Two-step stash-drop arm per project (name + armed-at).
+    stash_drop_arm: HashMap<ProjectId, (usize, std::time::Instant)>,
     /// Commit message drafts, one per project so switching never loses
     /// typed text. Single-line (the desktop input submits on Enter).
     commit_drafts: HashMap<ProjectId, String>,
@@ -126,9 +134,96 @@ impl GitPanel {
         self.selected.remove(&project);
         self.commit_drafts.remove(&project);
         self.collapsed.retain(|(owner, _)| *owner != project);
+        self.stash_collapsed.remove(&project);
+        self.stashes.remove(&project);
+        self.stash_selected.remove(&project);
+        self.stash_drop_arm.remove(&project);
     }
 
-    /// Whether a change group is collapsed (`staged` selects the staged
+    /// Last-good stash list for a project, if fetched.
+    pub fn stashes_for(&self, project: ProjectId) -> Option<&omaterm_core::GitStashList> {
+        self.stashes.get(&project)
+    }
+
+    /// Install a freshly fetched stash list (loadings clears on error).
+    pub fn set_stashes(&mut self, project: ProjectId, list: omaterm_core::GitStashList) {
+        // Keep the selection on a surviving index; default to newest.
+        if self
+            .stash_selected
+            .get(&project)
+            .is_none_or(|selected| *selected >= list.stashes.len() && !list.stashes.is_empty())
+        {
+            if list.stashes.is_empty() {
+                self.stash_selected.remove(&project);
+            } else {
+                self.stash_selected.insert(project, 0);
+            }
+        }
+        self.stash_drop_arm.remove(&project);
+        self.stashes.insert(project, list);
+    }
+
+    /// Drop the stash list (fetch failures keep last-good rows elsewhere;
+    /// here an explicit clear precedes a refetch after mutations).
+    pub fn clear_stashes(&mut self, project: ProjectId) {
+        self.stashes.remove(&project);
+        self.stash_drop_arm.remove(&project);
+    }
+
+    /// Selected stash index for a project, if any rows exist.
+    pub fn stash_selection(&self, project: ProjectId) -> Option<usize> {
+        self.stash_selected.get(&project).copied()
+    }
+
+    /// Select a stash row by index (clamped to the loaded list).
+    pub fn select_stash(&mut self, project: ProjectId, index: usize) {
+        let len = self
+            .stashes
+            .get(&project)
+            .map(|list| list.stashes.len())
+            .unwrap_or(0);
+        if len == 0 {
+            self.stash_selected.remove(&project);
+        } else {
+            self.stash_selected.insert(project, index.min(len - 1));
+        }
+        self.stash_drop_arm.remove(&project);
+    }
+
+    /// Whether the stash group is collapsed for a project.
+    pub fn is_stash_collapsed(&self, project: ProjectId) -> bool {
+        self.stash_collapsed.contains(&project)
+    }
+
+    /// Toggle the stash group collapse.
+    pub fn toggle_stash_collapsed(&mut self, project: ProjectId) -> bool {
+        if self.stash_collapsed.remove(&project) {
+            false
+        } else {
+            self.stash_collapsed.insert(project);
+            true
+        }
+    }
+
+    /// Two-step drop arm: first call arms ("press again"), second call
+    /// within 8s confirms. Returns true on confirm.
+    pub fn stash_drop_confirmed(&mut self, project: ProjectId, index: usize) -> bool {
+        const WINDOW: std::time::Duration = std::time::Duration::from_secs(8);
+        let armed = self
+            .stash_drop_arm
+            .get(&project)
+            .is_some_and(|(armed, at)| *armed == index && at.elapsed() < WINDOW);
+        if armed {
+            self.stash_drop_arm.remove(&project);
+            true
+        } else {
+            self.stash_drop_arm
+                .insert(project, (index, std::time::Instant::now()));
+            false
+        }
+    }
+
+    /// Whether the change group is collapsed (`staged` selects the staged
     /// group, otherwise the working-tree group).
     pub fn is_collapsed(&self, project: ProjectId, staged: bool) -> bool {
         self.collapsed.contains(&(project, staged))
