@@ -670,7 +670,7 @@ fn active_tab_kind(surface: ActiveSurface, selected_tab: Option<TabId>) -> Optio
 fn sidebar_toggle(visible: bool) -> Div {
     div()
         .p(px(6.0))
-        .rounded_sm()
+        .rounded(px(7.0))
         .border_1()
         .border_color(rgb(if visible {
             crate::ui::theme::BORDER2
@@ -7990,7 +7990,7 @@ impl WorkspaceView {
                     .cursor_pointer()
                     .px_2()
                     .py_1()
-                    .rounded_sm()
+                    .rounded(px(7.0))
                     .text_color(rgb(crate::ui::theme::TEXT2))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -11195,7 +11195,7 @@ impl WorkspaceView {
             .unwrap_or_default();
         let shell = shell_name();
         let header = div()
-            .h(px(31.0))
+            .h(px(32.0))
             .flex()
             .flex_row()
             .items_center()
@@ -11217,7 +11217,7 @@ impl WorkspaceView {
                     .child(format!("{shell} · pid {pid}")),
             );
         let footer = div()
-            .h(px(27.0))
+            .h(px(28.0))
             .flex()
             .flex_row()
             .items_center()
@@ -11306,7 +11306,7 @@ impl WorkspaceView {
             leaf = leaf.child(
                 div()
                     .absolute()
-                    .top(px(39.0))
+                    .top(px(7.0))
                     .right(px(8.0))
                     .flex()
                     .flex_row()
@@ -11314,7 +11314,8 @@ impl WorkspaceView {
                     .gap(px(2.0))
                     .px_1()
                     .py(px(2.0))
-                    .rounded_md()
+                    .rounded(px(6.0))
+                    .shadow_lg()
                     .border_1()
                     .border_color(rgb(crate::ui::theme::BORDER2))
                     .bg(rgba(crate::ui::theme::with_alpha(
@@ -11325,7 +11326,7 @@ impl WorkspaceView {
                     .child(
                         div()
                             .p(px(6.0))
-                            .rounded_sm()
+                            .rounded(px(7.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |view, _, window, cx| {
@@ -11352,7 +11353,7 @@ impl WorkspaceView {
                     .child(
                         div()
                             .p(px(6.0))
-                            .rounded_sm()
+                            .rounded(px(7.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |view, _, window, cx| {
@@ -11379,7 +11380,7 @@ impl WorkspaceView {
                     .child(
                         div()
                             .p(px(6.0))
-                            .rounded_sm()
+                            .rounded(px(7.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |view, _, window, cx| {
@@ -12029,7 +12030,7 @@ impl WorkspaceView {
                                 crate::ui::primitives::pill()
                                     .px(px(6.0))
                                     .py(px(2.0))
-                                    .rounded_sm(),
+                                    .rounded_full(),
                                 crate::ui::metrics::META_9,
                             )
                             .text_color(rgb(crate::ui::theme::MUTED))
@@ -12039,7 +12040,7 @@ impl WorkspaceView {
                         .child(
                             div()
                                 .p(px(6.0))
-                                .rounded_sm()
+                                .rounded(px(7.0))
                                 .text_color(rgb(crate::ui::theme::MUTED))
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -12064,7 +12065,7 @@ impl WorkspaceView {
                     div()
                         .min_h(px(56.0))
                         .p_2()
-                        .rounded_md()
+                        .rounded(px(8.0))
                         .border_1()
                         .border_color(rgb(if input_focused {
                             crate::ui::theme::BLUE2
@@ -12098,7 +12099,7 @@ impl WorkspaceView {
                             .flex_row()
                             .items_center()
                             .justify_center()
-                            .rounded_md()
+                            .rounded(px(7.0))
                             .bg(rgb(if can_commit {
                                 crate::ui::theme::BLUE2
                             } else {
@@ -12311,7 +12312,7 @@ impl WorkspaceView {
                 div()
                     .px(px(6.0))
                     .py(px(2.0))
-                    .rounded_sm()
+                    .rounded(px(7.0))
                     .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
                     .child(scope_label)
                     .on_mouse_down(
@@ -12345,7 +12346,7 @@ impl WorkspaceView {
             .child(
                 div()
                     .p(px(6.0))
-                    .rounded_sm()
+                    .rounded(px(7.0))
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -12407,7 +12408,7 @@ impl WorkspaceView {
                         .ml(px(8.0))
                         .px(px(6.0))
                         .py(px(2.0))
-                        .rounded_sm()
+                        .rounded(px(7.0))
                         .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
                         .text_color(rgb(crate::ui::theme::TEXT))
                         .child("Retry")
@@ -12662,7 +12663,7 @@ impl WorkspaceView {
                             div()
                                 .px(px(6.0))
                                 .py(px(2.0))
-                                .rounded_sm()
+                                .rounded(px(7.0))
                                 .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
                                 .text_color(rgb(crate::ui::theme::TEXT))
                                 .child("Retry")
@@ -12926,7 +12927,7 @@ impl WorkspaceView {
     ) -> Div {
         div()
             .p(px(6.0))
-            .rounded_sm()
+            .rounded(px(7.0))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -13031,7 +13032,7 @@ impl WorkspaceView {
             header = header.child(
                 div()
                     .p(px(6.0))
-                    .rounded_sm()
+                    .rounded(px(7.0))
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -13055,7 +13056,7 @@ impl WorkspaceView {
                 .child(
                     div()
                         .p(px(6.0))
-                        .rounded_sm()
+                        .rounded(px(7.0))
                         .text_color(rgb(crate::ui::theme::MUTED))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -13077,7 +13078,7 @@ impl WorkspaceView {
                 .child(
                     div()
                         .p(px(6.0))
-                        .rounded_sm()
+                        .rounded(px(7.0))
                         .text_color(rgb(crate::ui::theme::MUTED))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -13360,7 +13361,7 @@ impl WorkspaceView {
                 div()
                     .px(px(10.0))
                     .py(px(4.0))
-                    .rounded_md()
+                    .rounded(px(7.0))
                     .border_1()
                     .border_color(rgb(crate::ui::theme::PILL_BORDER))
                     .bg(rgb(crate::ui::theme::PILL_BG))
@@ -13388,7 +13389,7 @@ impl WorkspaceView {
                 div()
                     .px(px(10.0))
                     .py(px(4.0))
-                    .rounded_md()
+                    .rounded(px(7.0))
                     .text_color(rgb(crate::ui::theme::RED))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -13412,7 +13413,7 @@ impl WorkspaceView {
                 div()
                     .px(px(10.0))
                     .py(px(4.0))
-                    .rounded_md()
+                    .rounded(px(7.0))
                     .border_1()
                     .border_color(rgb(crate::ui::theme::PILL_BORDER))
                     .bg(rgb(crate::ui::theme::PILL_BG))
@@ -13449,7 +13450,7 @@ impl WorkspaceView {
                     div()
                         .px(px(10.0))
                         .py(px(4.0))
-                        .rounded_md()
+                        .rounded(px(4.0))
                         .border_1()
                         .border_color(rgb(if selected {
                             crate::ui::theme::PILL_BORDER
@@ -15056,7 +15057,7 @@ impl WorkspaceView {
                 .child(
                     div()
                         .p(px(6.0))
-                        .rounded_sm()
+                        .rounded(px(7.0))
                         .text_color(rgb(crate::ui::theme::MUTED))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -15254,7 +15255,7 @@ impl WorkspaceView {
                             .items_center()
                             .px_2()
                             .gap_2()
-                            .rounded_md()
+                            .rounded(px(7.0))
                             .border_1()
                             .border_color(rgb(if search_focused {
                                 crate::ui::theme::BLUE2
@@ -15373,7 +15374,7 @@ impl WorkspaceView {
                                     div()
                                         .w(px(28.0))
                                         .h(px(28.0))
-                                        .rounded_md()
+                                        .rounded(px(7.0))
                                         .border_1()
                                         .border_color(rgb(crate::ui::theme::BORDER2))
                                         .bg(rgb(crate::ui::theme::INFO_ICON_BOX_BG))
@@ -15415,7 +15416,7 @@ impl WorkspaceView {
                                         crate::ui::primitives::pill()
                                             .px(px(6.0))
                                             .py(px(2.0))
-                                            .rounded_sm(),
+                                            .rounded_full(),
                                         crate::ui::metrics::META_9,
                                     )
                                     .text_color(rgb(crate::ui::theme::MUTED))
@@ -15896,7 +15897,7 @@ impl WorkspaceView {
         let mut overlay = div()
             .flex()
             .flex_col()
-            .rounded_md()
+            .rounded(px(8.0))
             .border_1()
             .border_color(rgb(crate::ui::theme::BORDER2))
             .shadow_lg()
@@ -15959,7 +15960,7 @@ impl WorkspaceView {
                             .items_center()
                             .px_2()
                             .h(px(32.0))
-                            .rounded_sm()
+                            .rounded(px(7.0))
                             .bg(rgb(if selected {
                                 crate::ui::theme::TREE_SELECTED_BG
                             } else {
@@ -16111,7 +16112,7 @@ impl WorkspaceView {
         let overlay = div()
             .flex()
             .flex_col()
-            .rounded_md()
+            .rounded(px(8.0))
             .border_1()
             .border_color(rgb(crate::ui::theme::BORDER2))
             .shadow_lg()
@@ -16768,7 +16769,7 @@ impl Render for WorkspaceView {
                         div()
                             .px(px(12.0))
                             .py(px(8.0))
-                            .rounded_md()
+                            .rounded(px(8.0))
                             .border_1()
                             .border_color(rgb(crate::ui::theme::BORDER2))
                             .bg(rgb(crate::ui::theme::PANEL3))

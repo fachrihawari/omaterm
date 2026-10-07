@@ -112,7 +112,7 @@ impl Render for ThemedPrompt {
                 div()
                     .w(px(440.0))
                     .max_w_full()
-                    .rounded(px(10.0))
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(rgb(theme::BORDER2))
                     .bg(rgb(theme::PANEL))
