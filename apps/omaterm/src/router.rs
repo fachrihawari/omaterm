@@ -7079,6 +7079,112 @@ mod tests {
     }
 
     #[test]
+    fn git_sync_fetch_pull_push_flow() {
+        use omaterm_core::GitCommand;
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let base = std::env::temp_dir().join(format!("omaterm-c92-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let remote = base.join("remote.git");
+        let _ = std::process::Command::new("git")
+            .args(["init", "--quiet", "--bare", "-b", "main"])
+            .arg(&remote)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .expect("bare remote");
+        let root = base.join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-b", "main"]);
+        git(&root, &["config", "user.email", "c92@test"]);
+        git(&root, &["config", "user.name", "c92"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        git(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        std::fs::write(root.join("a.txt"), b"v1\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "init"]);
+        git(&root, &["push", "--quiet", "-u", "origin", "main"]);
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // Already current: fetch + pull succeed without moving HEAD.
+        let fetched = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::SyncFetch {
+                project,
+                remote: None,
+            }),
+        );
+        assert_eq!(fetched.result, CommandResult::Ok(CommandOutput::Unit));
+        let pulled = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::SyncPull {
+                project,
+                remote: None,
+            }),
+        );
+        assert_eq!(pulled.result, CommandResult::Ok(CommandOutput::Unit));
+
+        // Push with nothing new still succeeds (fast-forward, empty delta).
+        let pushed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::SyncPush {
+                project,
+                set_upstream: false,
+            }),
+        );
+        assert_eq!(pushed.result, CommandResult::Ok(CommandOutput::Unit));
+
+        // Push without an upstream is explicit, not silent.
+        git(&root, &["checkout", "--quiet", "-b", "lonely"]);
+        std::fs::write(root.join("b.txt"), b"b\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "lonely"]);
+        let no_upstream = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::SyncPush {
+                project,
+                set_upstream: false,
+            }),
+        );
+        assert!(matches!(
+            no_upstream.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::NoUpstream,
+                ..
+            })
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn git_branch_list_checkout_and_delete_flow() {
         use omaterm_core::{GitBranchList, GitCommand};
 

@@ -1,9 +1,17 @@
 # OmaTerm — App Improvement Backlog
 
 > Kompilasi semua issue dari sesi audit UI/UX + fungsionalitas + laporan teman.
-> Status: Wave 1+2 IMPLEMENTED (item 1 dan 4b, belum commit, validasi Wayland
-> manual pending). Sisanya triage. Setiap item mencantumkan lokasi kode,
-> akar masalah, workaround saat ini, dan arah fix.
+> Status eksekusi (2026-10-07, branch `feat/git-history-graph`):
+> P0 semua IMPLEMENTED (1/`Alt+Shift+digit`, 2/clipboard, 3/menu overlay,
+> 4/dotfiles-default, 4b/huruf `f`); Fase A (pager + docs, coverage 44,
+> clear-removal) IMPLEMENTED; Fase B (search, zoom, ikon Lucide, tree-nav)
+> IMPLEMENTED; P1 item 5–11 IMPLEMENTED kecuali deferral tercatat
+> (keyboard-nav cards, kontras token, letter-spacing, notice-overlay,
+> finder-centering). Validasi Wayland manual pending untuk semua.
+> Sisa: P2 (terminal-search DONE, sisanya open) dan C9 Git proper
+> (C9.1–C9.4 IMPLEMENTED: branch, sync, stash, blame + history depth;
+> C9.5 automated PASS, Wayland PENDING — lihat checklist di bawah). Setiap item mencantumkan lokasi kode, akar masalah,
+> workaround saat ini, dan arah fix.
 
 ## Legenda severity
 
@@ -273,6 +281,44 @@ M17 pending; M19 melompat antrean. Sinyal perpetual-beta bagi pendatang baru.
 3. **P2 keputusan**: terminal-search / pane-zoom / shell-resurrect = build atau
    WONTFIX eksplisit dengan rasional. Jangan tambah surface baru sebelum ini.
 4. Tutup M15+M16+M18 atau potong scope; jangan biarkan 4 milestone terbuka bareng.
+
+## C9.5 acceptance (2026-10-07)
+
+Automated evidence (this machine, stable toolchain per
+`rust-toolchain.toml`):
+
+* `cargo fmt --all --check` PASS; `git diff --check` PASS.
+* `cargo test --workspace` PASS — 727/727 parallel and serial, 0 failed
+  (incl. 7 branch + 7 sync + 4 stash + 3 blame live-repo tests, router
+  branch/sync/stash/blame flows, 65-row CLI matrix, 58-method protocol
+  matrix).
+* `cargo clippy --workspace --all-targets -- -D warnings` PASS (only the
+  known transitive `proc-macro-error2` notice).
+* `python3 scripts/check-docs.py` PASS — 58/58 CLI↔IPC methods, 39
+  shortcut ids.
+* `cargo build --release --bin omaterm --bin omaterm-desktop` PASS;
+  all 14 new `git` subcommands parse (`--help` green).
+* Live paired-clone scenarios green at context level (fetch/pull move,
+  dirty/diverged/offline refusal, set-upstream publish, stash
+  apply-keeps/pop-drops/conflict-kept, blame attribution incl. boundary
+  hunks and uncommitted lines) and at router level (branch
+  list/create/checkout/delete + dirty/head guards, sync
+  fetch/pull/push + no-upstream, stash push/list/pop, blame envelope).
+
+Pending native Wayland validation (needs eyes + hands on a real window;
+nothing below is claimed):
+
+* Picker open/checkout/create/rename/two-step delete, toasts, card
+  `↑a ↓b` label, palette entry, picker close on project delete.
+* Fetch/Pull/Push buttons, busy spinner, toasts/notices (incl. offline,
+  diverged, no-upstream), post-sync refresh.
+* Stash group collapse/push rows/pop/apply/drop, draft retention on
+  failure, truncation notice.
+* Blame toggle + gutter chips, commit badges, parent selector switching
+  base, full body rendering.
+* Full flow: clone → branch → edit → stage (hunk) → commit → push →
+  pull; stash-pop conflict; diverged push refusal; detached HEAD;
+  unborn/shallow repos — via UI and via CLI against the live desktop.
 
 ## Verifikasi yang sudah dilakukan untuk audit ini
 
