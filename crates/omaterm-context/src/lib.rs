@@ -14,6 +14,7 @@ pub mod diff;
 pub mod editor;
 pub mod files;
 pub mod git;
+pub mod git_blame;
 pub mod git_branch;
 pub mod git_history;
 pub mod git_stash;
@@ -46,6 +47,7 @@ pub use git::{
     GIT_MUTATION_TIMEOUT, GIT_STATUS_TIMEOUT, GitError, git_commit, git_discard, git_stage,
     git_status, git_unstage, join_under_root,
 };
+pub use git_blame::{GitBlame, GitBlameLine, MAX_BLAME_LINES, git_blame};
 pub use git_branch::{
     MAX_BRANCHES, git_ahead_behind, git_branch_checkout, git_branch_create, git_branch_delete,
     git_branch_list, git_branch_rename,
