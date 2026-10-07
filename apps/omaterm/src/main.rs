@@ -299,6 +299,10 @@ struct WorkspaceView {
     /// Set by manual refresh, git mutations, and post-`terminal.run`
     /// submissions: the next tick refreshes immediately.
     git_dirty_hint: bool,
+    /// Set when a sync dispatch is running. The network call rides the
+    /// synchronous dispatch (bounded 60s), so buttons disable while held
+    /// instead of queueing duplicate fetches/pulls/pushes.
+    sync_busy: bool,
     /// Branch picker overlay (C9.1, `None` when closed).
     branch_picker: Option<BranchPicker>,
     /// Last-good branch lists per project (fetched on picker open and
@@ -2228,6 +2232,7 @@ impl WorkspaceView {
             ipc_pending: HashMap::new(),
             shutting_down: false,
             history_arm: None,
+            sync_busy: false,
             paste_arm: None,
             input_notice: None,
             editor_save_warning: None,
@@ -8912,6 +8917,93 @@ impl WorkspaceView {
         }
     }
 
+    /// Sync action from the Git tab header or the picker row: dispatches
+    /// through the shared command and surfaces the stable-code outcome as
+    /// a toast (success) or an input notice (failure). Always marks the
+    /// status/graph/branch readers dirty; network work stays in the
+    /// synchronous dispatch (bounded 60s), so the button disables while
+    /// `sync_busy` holds.
+    fn git_sync_action(&mut self, command: OmaCommand, success_noun: &str, cx: &mut Context<Self>) {
+        if self.sync_busy {
+            return;
+        }
+        self.sync_busy = true;
+        cx.notify();
+        match self.dispatch_command(command, cx) {
+            Ok(_) => {
+                self.show_toast(format!("{success_noun} done"), cx);
+                self.input_notice = None;
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("{success_noun}: {error}"));
+            }
+        }
+        self.sync_busy = false;
+        self.git_dirty_hint = true;
+        self.history_dirty_hint = true;
+        self.branch_dirty_hint = true;
+        cx.notify();
+    }
+
+    /// Sync button for the Git header (Fetch/Pull/Push): dispatches the
+    /// matching sync command with a spinner while `sync_busy` holds.
+    /// Push without upstream fails honestly (`no_upstream`, not silent).
+    fn git_sync_button(
+        &mut self,
+        project: ProjectId,
+        label: &'static str,
+        op: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let busy = self.sync_busy;
+        div()
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::BORDER2))
+            .role(crate::ui::metrics::BODY_11)
+            .text_color(rgb(if busy {
+                crate::ui::theme::MUTED
+            } else {
+                crate::ui::theme::TEXT2
+            }))
+            .hover(|s| {
+                if busy {
+                    s
+                } else {
+                    s.bg(gpui::rgb(crate::ui::theme::CMD_HOVER_BG))
+                        .border_color(gpui::rgb(crate::ui::theme::CMD_HOVER_BORDER))
+                }
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down || view.sync_busy {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    let command = match op {
+                        "fetch" => OmaCommand::Git(GitCommand::SyncFetch {
+                            project,
+                            remote: None,
+                        }),
+                        "pull" => OmaCommand::Git(GitCommand::SyncPull {
+                            project,
+                            remote: None,
+                        }),
+                        _ => OmaCommand::Git(GitCommand::SyncPush {
+                            project,
+                            set_upstream: false,
+                        }),
+                    };
+                    view.git_sync_action(command, label, cx);
+                }),
+            )
+            .child(if busy { "…" } else { label })
+    }
+
     /// Submit the draft through the dispatcher (same path as IPC/CLI).
     /// Success clears and releases the input; failure puts the message
     /// back so the user fixes and retries instead of retyping.
@@ -12767,6 +12859,9 @@ impl WorkspaceView {
                             .child(sync_pill),
                         )
                         .child(div().flex_1())
+                        .child(self.git_sync_button(project, "Fetch", "fetch", cx))
+                        .child(self.git_sync_button(project, "Pull", "pull", cx))
+                        .child(self.git_sync_button(project, "Push", "push", cx))
                         .child(
                             div()
                                 .p(px(6.0))
