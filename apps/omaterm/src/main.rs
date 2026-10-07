@@ -276,6 +276,11 @@ struct WorkspaceView {
     ports_section_collapsed: bool,
     ctrlp_caret_on: bool,
     ctrlp_blink_active: bool,
+    /// Commit-message caret blink (same ~530ms phase as the finder caret).
+    /// One task per focus session; exits on release/shutdown, and any
+    /// keystroke restores visibility (standard blink-phase reset).
+    commit_caret_on: bool,
+    commit_blink_active: bool,
     /// M14 Source Control panel: last-good statuses, explicit empty/error
     /// states and selection (GPUI-free).
     git_panel: git_panel::GitPanel,
@@ -2373,6 +2378,8 @@ impl WorkspaceView {
             ports_section_collapsed: false,
             ctrlp_caret_on: true,
             ctrlp_blink_active: false,
+            commit_caret_on: true,
+            commit_blink_active: false,
             git_panel: git_panel::GitPanel::default(),
             git_discard_prompt_open: false,
             git_tx,
@@ -9004,6 +9011,8 @@ impl WorkspaceView {
             "enter" | "return" | "kpenter" => self.git_commit_submit(project, cx),
             "backspace" => {
                 if self.git_panel.pop_commit_char(project) {
+                    self.commit_caret_on = true;
+                    self.ensure_commit_blink(cx);
                     cx.notify();
                 }
             }
@@ -9016,6 +9025,8 @@ impl WorkspaceView {
                 if let Some(char) = char
                     && self.git_panel.push_commit_char(project, char)
                 {
+                    self.commit_caret_on = true;
+                    self.ensure_commit_blink(cx);
                     cx.notify();
                 }
             }
@@ -9933,6 +9944,37 @@ impl WorkspaceView {
                             return false;
                         }
                         view.ctrlp_caret_on = !view.ctrlp_caret_on;
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Drives the commit-message caret blink (same ~530ms rate as the
+    /// finder caret). One task per focus session: it exits on release or
+    /// shutdown, and any keystroke restores visibility. No timers run
+    /// while the input is unfocused.
+    fn ensure_commit_blink(&mut self, cx: &mut Context<Self>) {
+        if self.commit_blink_active {
+            return;
+        }
+        self.commit_blink_active = true;
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                Timer::after(Duration::from_millis(530)).await;
+                let alive = weak
+                    .update(cx, |view, cx| {
+                        if view.shutting_down || !view.git_panel.commit_focused() {
+                            view.commit_blink_active = false;
+                            return false;
+                        }
+                        view.commit_caret_on = !view.commit_caret_on;
                         cx.notify();
                         true
                     })
@@ -12910,15 +12952,27 @@ impl WorkspaceView {
                 .text_color(rgb(crate::ui::theme::MUTED))
                 .child("Commit message")
         } else {
+            // Caret hugs the last character (never the far right edge: the
+            // text container must not stretch) and blinks via
+            // `commit_caret_on`, holding its 2px slot while hidden so typed
+            // text never shifts. Unfocused drafts keep a static muted caret.
+            let caret_bg = if input_focused {
+                if self.commit_caret_on {
+                    rgb(crate::ui::theme::TEXT)
+                } else {
+                    rgba(0x00000000)
+                }
+            } else {
+                rgb(crate::ui::theme::MUTED)
+            };
             div()
                 .flex()
                 .flex_row()
-                .child(div().flex_1().min_w(px(0.0)).child(draft))
-                .child(div().w(px(2.0)).h(px(15.0)).bg(rgb(if input_focused {
-                    crate::ui::theme::TEXT
-                } else {
-                    crate::ui::theme::MUTED
-                })))
+                .items_center()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(div().child(draft))
+                .child(div().w(px(2.0)).h(px(15.0)).bg(caret_bg))
         };
         bar = bar.child(
             div()
@@ -13050,6 +13104,8 @@ impl WorkspaceView {
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
                                 view.git_panel.set_commit_focused(true);
+                                view.commit_caret_on = true;
+                                view.ensure_commit_blink(cx);
                                 view.set_input_owner(InputOwner::GitCommit);
                                 cx.notify();
                             }),
