@@ -53,12 +53,12 @@ const NAME_ICONS: &[(&str, char, u32)] = &[
     ("docker-compose.yaml", '\u{e650}', 0x0DB7ED),
     ("makefile", '\u{e673}', 0x9A9A9A),
     ("package.json", '\u{e616}', 0xCB3837),
-    ("package-lock.json", '\u{e672}', 0x8A8A8A),
+    ("package-lock.json", '\u{e672}', crate::ui::theme::MUTED),
     ("cargo.toml", '\u{e6b2}', 0x9DACB7),
-    ("cargo.lock", '\u{e672}', 0x8A8A8A),
+    ("cargo.lock", '\u{e672}', crate::ui::theme::MUTED),
     (".gitignore", '\u{e65d}', 0xF05032),
     (".gitattributes", '\u{e65d}', 0xF05032),
-    (".editorconfig", '\u{e615}', 0x8A8A8A),
+    (".editorconfig", '\u{e615}', crate::ui::theme::MUTED),
 ];
 
 /// Lowercase extensions (after the last dot).
@@ -90,8 +90,8 @@ const EXT_ICONS: &[(&str, char, u32)] = &[
     ("bash", '\u{e691}', 0x89E051),
     ("zsh", '\u{e691}', 0x89E051),
     ("fish", '\u{e691}', 0x89E051),
-    ("c", '\u{e649}', 0x8A8A8A),
-    ("h", '\u{e649}', 0x8A8A8A),
+    ("c", '\u{e649}', crate::ui::theme::MUTED),
+    ("h", '\u{e649}', crate::ui::theme::MUTED),
     ("cpp", '\u{e646}', 0xF34B7D),
     ("cc", '\u{e646}', 0xF34B7D),
     ("cxx", '\u{e646}', 0xF34B7D),
@@ -149,15 +149,15 @@ const EXT_ICONS: &[(&str, char, u32)] = &[
 
 const FALLBACK_FILE_ICON: FileIcon = FileIcon {
     glyph: '\u{f15b}',
-    color: Some(0xA1A1AA),
+    color: Some(crate::ui::theme::MUTED),
 };
 const FOLDER_CLOSED_ICON: FileIcon = FileIcon {
     glyph: '\u{f07b}',
-    color: Some(0x8A8A8A),
+    color: Some(crate::ui::theme::MUTED),
 };
 const FOLDER_OPEN_ICON: FileIcon = FileIcon {
     glyph: '\u{f07c}',
-    color: Some(0xA1A1AA),
+    color: Some(crate::ui::theme::MUTED),
 };
 
 /// Exact inspector tree row height (mock): 28px rows, 11px labels.
