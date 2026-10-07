@@ -555,13 +555,15 @@ fn section_header(
         .gap_1()
         .cursor_pointer()
         .on_mouse_down(gpui::MouseButton::Left, on_toggle)
-        .child(
-            div()
-                .w(px(10.0))
-                .role(crate::ui::metrics::META_9)
-                .text_color(rgb(crate::ui::theme::MUTED))
-                .child(if collapsed { "▸" } else { "▾" }),
-        )
+        .child(crate::ui::primitives::cmd_icon(
+            if collapsed {
+                crate::ui::assets::CHEVRON_RIGHT
+            } else {
+                crate::ui::assets::CHEVRON_DOWN
+            },
+            14.0,
+            crate::ui::theme::MUTED,
+        ))
         .child(
             crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
                 .text_color(rgb(crate::ui::theme::MUTED))
@@ -7966,7 +7968,13 @@ impl WorkspaceView {
             .min_w(px(0.0))
             .overflow_hidden();
         if !parent.is_empty() {
-            breadcrumb = breadcrumb.child(div().truncate().child(parent)).child("›");
+            breadcrumb = breadcrumb.child(div().truncate().child(parent)).child(
+                crate::ui::primitives::cmd_icon(
+                    crate::ui::assets::CHEVRON_RIGHT,
+                    12.0,
+                    crate::ui::theme::MUTED,
+                ),
+            );
         }
         breadcrumb = breadcrumb.child(
             div()
@@ -11209,7 +11217,7 @@ impl WorkspaceView {
                 crate::ui::theme::PANE_HEADER_BG_OPACITY,
             )))
             .text_color(rgb(crate::ui::theme::TEXT2))
-            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(dot)))
+            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
             .child(div().flex_1().truncate().child(title))
             .child(
                 div()

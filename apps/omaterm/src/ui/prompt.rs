@@ -8,12 +8,13 @@ use gpui::{
 use super::{assets, metrics, theme};
 
 pub fn install(cx: &mut App) {
-    cx.set_prompt_builder(|_, message, detail, actions, handle, window, cx| {
-        build(message, detail, actions, handle, window, cx)
+    cx.set_prompt_builder(|level, message, detail, actions, handle, window, cx| {
+        build(level, message, detail, actions, handle, window, cx)
     });
 }
 
 fn build(
+    level: gpui::PromptLevel,
     message: &str,
     detail: Option<&str>,
     actions: &[PromptButton],
@@ -22,6 +23,7 @@ fn build(
     cx: &mut App,
 ) -> RenderablePromptHandle {
     let view = cx.new(|cx| ThemedPrompt {
+        level,
         message: message.into(),
         detail: detail.map(str::to_owned),
         actions: actions.to_vec(),
@@ -32,11 +34,24 @@ fn build(
 }
 
 struct ThemedPrompt {
+    level: gpui::PromptLevel,
     message: String,
     detail: Option<String>,
     actions: Vec<PromptButton>,
     selected: usize,
     focus: FocusHandle,
+}
+
+impl ThemedPrompt {
+    /// Severity icon: callers pass `PromptLevel`, so the icon reflects it
+    /// instead of always rendering undo/orange.
+    fn severity_icon(&self) -> (&'static str, u32) {
+        match self.level {
+            gpui::PromptLevel::Info => (assets::INFO, theme::BLUE),
+            gpui::PromptLevel::Warning => (assets::UNDO, theme::ORANGE),
+            gpui::PromptLevel::Critical => (assets::UNDO, theme::RED),
+        }
+    }
 }
 
 impl EventEmitter<PromptResponse> for ThemedPrompt {}
@@ -58,7 +73,7 @@ impl Render for ThemedPrompt {
                     .cursor_pointer()
                     .px(px(14.0))
                     .py(px(7.0))
-                    .rounded(px(6.0))
+                    .rounded(px(7.0))
                     .border_1()
                     .border_color(rgb(if self.selected == index {
                         theme::BLUE
@@ -73,7 +88,15 @@ impl Render for ThemedPrompt {
                         rgb(theme::PANEL3)
                     })
                     .text_color(rgb(if destructive { theme::RED } else { theme::TEXT }))
-                    .hover(|style| style.bg(rgb(theme::PANEL3)))
+                    .hover(|style| {
+                        if destructive {
+                            style.bg(rgba(theme::with_alpha(theme::RED, 0.2)))
+                        } else {
+                            style
+                                .bg(rgb(theme::CMD_HOVER_BG))
+                                .border_color(rgb(theme::CMD_HOVER_BORDER))
+                        }
+                    })
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(PromptResponse(index));
                     }))
@@ -123,11 +146,13 @@ impl Render for ThemedPrompt {
                             .p(px(20.0))
                             .flex()
                             .gap(px(14.0))
-                            .child(div().flex_shrink_0().pt(px(2.0)).child(assets::icon(
-                                assets::UNDO,
-                                20.0,
-                                theme::ORANGE,
-                            )))
+                            .child({
+                                let (icon, tint) = self.severity_icon();
+                                div()
+                                    .flex_shrink_0()
+                                    .pt(px(2.0))
+                                    .child(assets::icon(icon, 20.0, tint))
+                            })
                             .child(
                                 div()
                                     .flex_1()
