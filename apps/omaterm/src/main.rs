@@ -870,6 +870,16 @@ fn route_alt_strip(
     }
 }
 
+/// Whether an `Alt`-held key name invokes the project jump (`Alt+Shift+1..9`).
+/// Matching is name-based on purpose: GPUI strips the shift flag for
+/// digits/symbols, so `Alt+Shift+1` arrives as `key="!"` with `shift=false`
+/// while `Alt+Shift+K` keeps `shift=true`. Requiring `shift` here would make
+/// the chord backend-dependent. `Ctrl` always disqualifies (PTY/chrome).
+/// Pure over GPUI-free inputs so the rule is unit-testable.
+fn is_project_jump_key(key_name: &str, control: bool, alt: bool) -> bool {
+    alt && !control && shortcuts::alt_shift_project_index(key_name).is_some()
+}
+
 /// Primary file activation: plain activation is native; only an explicit
 /// terminal gesture (Alt) keeps semantic terminal submission.
 fn file_activation(alt: bool) -> FileActivation {
@@ -10049,10 +10059,17 @@ impl WorkspaceView {
         // Direct project jump: `Alt+Shift+1..9` selects the nth project in
         // sidebar order. Shift applies to the character before GPUI reports
         // it (US layout: `!` for `1`, `@` for `2`, …), so both forms map.
-        if event.keystroke.modifiers.alt
-            && event.keystroke.modifiers.shift
-            && !event.keystroke.modifiers.control
-            && let Some(index) = shortcuts::alt_shift_project_index(&key_name)
+        // NOTE: GPUI strips the shift flag for digits/symbols by convention
+        // (`Keystroke::from_xkb`), so `Alt+Shift+1` arrives as `key="!"`,
+        // `shift=false`. Matching is therefore name-based (see
+        // `is_project_jump_key`); requiring `shift` here would break every
+        // `Alt+Shift+<digit>` chord on Linux. Plain `Alt+<digit>` never
+        // reaches this arm: the strip jump above consumes digits first.
+        if is_project_jump_key(
+            &key_name,
+            event.keystroke.modifiers.control,
+            event.keystroke.modifiers.alt,
+        ) && let Some(index) = shortcuts::alt_shift_project_index(&key_name)
         {
             let projects = self.coordinator.projects();
             if index < projects.len() {
@@ -10061,7 +10078,15 @@ impl WorkspaceView {
                     OmaCommand::Project(ProjectCommand::Select { project: id }),
                     cx,
                 );
+                self.input_notice = None;
+            } else {
+                self.input_notice = Some(format!(
+                    "No project {} ({} open).",
+                    index + 1,
+                    projects.len()
+                ));
             }
+            cx.notify();
             return;
         }
         // M14 commit input: while focused (Git tab), plain keys type the
@@ -16989,6 +17014,18 @@ fn summarize_paths(paths: &[std::path::PathBuf]) -> String {
     format!("{} files", paths.len())
 }
 
+/// Map a normalized (lowercased, underscore-stripped) GPUI key name to a
+/// function-key number. Only F1..F12 match: bare "f" is a plain letter,
+/// and F13+ has no PTY encoding (`encode_function_key` emits empty).
+fn function_key_number(name: &str) -> Option<u8> {
+    let digits = name.strip_prefix('f')?;
+    if digits.is_empty() {
+        return None;
+    }
+    let n: u8 = digits.parse().ok()?;
+    (1..=12).contains(&n).then_some(n)
+}
+
 /// Translate a GPUI key event into the GPUI-free [`KeyEvent`].
 fn translate_key(event: &KeyDownEvent, app_cursor: bool, app_keypad: bool) -> Option<KeyEvent> {
     let modifiers = &event.keystroke.modifiers;
@@ -17016,7 +17053,11 @@ fn translate_key(event: &KeyDownEvent, app_cursor: bool, app_keypad: bool) -> Op
         "pagedown" => Key::PageDown,
         "insert" => Key::Insert,
         "delete" => Key::Delete,
-        name if name.starts_with('f') => Key::F(name[1..].parse().ok()?),
+        // Function keys F1..F12. The `len` guard matters: bare "f" is a
+        // plain letter, not `F<empty>` (its parse failure would make
+        // `translate_key` swallow the keystroke via `?`). Unsupported
+        // numbers (F13+) and non-numeric names also swallow, as before.
+        name if name.len() > 1 && name.starts_with('f') => Key::F(function_key_number(name)?),
         _ => {
             let ch = event
                 .keystroke
@@ -17559,9 +17600,9 @@ mod tests {
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
         FileActivation, InputOwner, InspectorTab, NativeOpenTarget, PaletteFileIndexCache,
         PaletteSearchRequest, PaletteSearchWorker, StripRoute, WorkspaceView,
-        captured_targets_stale, discard_before_action, file_activation, metrics_job_counts,
-        native_open_may_activate, pending_timing_elapsed, revalidate_captured_targets,
-        route_alt_strip, select_mono_family,
+        captured_targets_stale, discard_before_action, file_activation, function_key_number,
+        is_project_jump_key, metrics_job_counts, native_open_may_activate, pending_timing_elapsed,
+        revalidate_captured_targets, route_alt_strip, select_mono_family,
     };
     use crate::editor::DocumentStore;
     use crate::editor::EditorCaret;
@@ -18402,6 +18443,43 @@ mod tests {
             ),
             "explicit terminal activation must keep the unchanged FileCommand::Open"
         );
+    }
+
+    #[test]
+    fn bare_f_is_a_plain_letter_not_a_function_key() {
+        // Regression: `translate_key` matched `starts_with('f')`, so plain
+        // "f" parsed `""` as `F<empty>` and the keystroke was swallowed.
+        assert_eq!(function_key_number("f"), None);
+        for (name, n) in [
+            ("f1", 1),
+            ("f2", 2),
+            ("f9", 9),
+            ("f10", 10),
+            ("f11", 11),
+            ("f12", 12),
+        ] {
+            assert_eq!(function_key_number(name), Some(n), "key {name}");
+        }
+        // F13+ has no PTY encoding; non-numeric names are never function keys.
+        for name in ["f0", "f13", "f24", "forward", "ff", ""] {
+            assert_eq!(function_key_number(name), None, "key {name}");
+        }
+    }
+
+    #[test]
+    fn project_jump_matches_names_not_the_stripped_shift_flag() {
+        // GPUI strips shift for digits/symbols, so `Alt+Shift+1` arrives as
+        // `key="!"` with `shift=false`; matching must be name-based.
+        for key in ["1", "!", "2", "@", "9", "("] {
+            assert!(is_project_jump_key(key, false, true), "key {key}");
+        }
+        // Letters, empty names, missing Alt, or Ctrl never jump.
+        for key in ["n", "k", "p", "0", ")", "enter", "f1", ""] {
+            assert!(!is_project_jump_key(key, false, true), "key {key}");
+        }
+        assert!(!is_project_jump_key("!", true, true));
+        assert!(!is_project_jump_key("!", false, false));
+        assert!(!is_project_jump_key("1", false, false));
     }
 
     #[test]
