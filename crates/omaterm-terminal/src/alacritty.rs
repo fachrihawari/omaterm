@@ -247,6 +247,37 @@ impl TerminalEngine for AlacrittyEngine {
             .join("\n")
     }
 
+    fn scrollback_text(&self, max_lines: usize) -> Vec<String> {
+        use alacritty_terminal::index::{Column, Line, Point};
+        if self.is_alt_screen() || max_lines == 0 {
+            return Vec::new();
+        }
+        let screen_lines = self.term.screen_lines() as i32;
+        let history = self.term.history_size() as i32;
+        // Oldest first, ending at the live bottom; the walk is capped so a
+        // deep scrollback can never become an unbounded allocation.
+        let oldest = (-history).max(screen_lines - max_lines as i32);
+        (oldest..screen_lines)
+            .map(|line| {
+                let mut text = String::new();
+                for col in 0..self.term.columns() {
+                    let mapped = map_cell(
+                        &self.term,
+                        &self.term.grid()[Point::new(Line(line), Column(col))],
+                    );
+                    if mapped.width == CellWidth::WideContinuation {
+                        continue;
+                    }
+                    if mapped.flags.contains(CellFlags::HIDDEN) {
+                        continue;
+                    }
+                    text.push_str(&mapped.text);
+                }
+                text.trim_end().to_string()
+            })
+            .collect()
+    }
+
     fn scroll(&mut self, command: ScrollCommand) {
         let scroll = match command {
             ScrollCommand::Lines(n) => Scroll::Delta(n),
@@ -621,6 +652,24 @@ mod tests {
         let engine = AlacrittyEngine::new(80, 24);
         let text = engine.read_visible_text(2, 5);
         assert!(text.lines().count() <= 2);
+    }
+
+    #[test]
+    fn scrollback_dump_is_oldest_first_and_bounded() {
+        let mut engine = AlacrittyEngine::with_scrollback(20, 5, 100);
+        for i in 0..20 {
+            engine.advance_output(format!("line{i}\r\n").as_bytes());
+        }
+        let dump = engine.scrollback_text(1000);
+        assert!(dump.len() <= 25, "len {}", dump.len());
+        let joined = dump.join("\n");
+        assert!(joined.contains("line0"), "{joined}");
+        assert!(joined.contains("line19"), "{joined}");
+        // Oldest first: line0 precedes line19.
+        assert!(joined.find("line0") < joined.find("line19"));
+        // The walk is capped, never the whole history.
+        assert!(engine.scrollback_text(5).len() <= 5);
+        assert!(engine.scrollback_text(0).is_empty());
     }
 
     #[test]

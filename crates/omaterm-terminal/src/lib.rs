@@ -8,6 +8,7 @@ pub mod osc7;
 pub mod platform;
 pub mod pty;
 pub mod registry;
+pub mod search;
 pub mod selection;
 pub mod session;
 mod shell;
@@ -32,6 +33,10 @@ pub use platform::{
 };
 pub use pty::{PtyError, PtyProcess, poll_fd_readable};
 pub use registry::{RegistryError, TerminalConfig, TerminalRegistry};
+pub use search::{
+    MAX_SEARCH_HITS, MAX_SEARCH_QUERY_CHARS, SearchHit, char_range_to_cells, find_hits,
+    viewport_line_text,
+};
 pub use selection::{CellPoint, SelectionRange, extract_text};
 pub use session::{
     CurrentDirectory, CwdProvenance, LifecycleRecord, RunCommandError, SessionError,

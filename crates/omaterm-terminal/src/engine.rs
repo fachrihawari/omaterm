@@ -29,6 +29,12 @@ pub trait TerminalEngine: Send {
     /// Visible text with enforced bounds (automation contrato: never unbounded).
     fn read_visible_text(&self, max_lines: usize, max_columns: usize) -> String;
 
+    /// Full scrollback text, oldest line first, with enforced bounds for
+    /// search. Returns at most `max_lines` lines ending at the live bottom
+    /// (like the viewport, trimmed per row, hidden cells skipped). Empty on
+    /// the alternate screen, which has no scrollback.
+    fn scrollback_text(&self, max_lines: usize) -> Vec<String>;
+
     /// Scroll the viewport (history offset only, never mutates grid content).
     fn scroll(&mut self, command: ScrollCommand);
 

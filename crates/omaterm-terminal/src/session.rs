@@ -523,6 +523,11 @@ impl TerminalSession {
         self.engine.read_visible_text(max_lines, max_columns)
     }
 
+    /// Bounded full-scrollback dump for search, oldest line first.
+    pub fn scrollback_text(&self, max_lines: usize) -> Vec<String> {
+        self.engine.scrollback_text(max_lines)
+    }
+
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref().or_else(|| self.engine.title())
     }
