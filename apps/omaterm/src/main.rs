@@ -62,6 +62,10 @@ struct WheelMotion {
     handle: Option<ScrollHandle>,
     applied: f32,
     line_height: f32,
+    min: f32,
+    max: f32,
+    last_input_at: Instant,
+    last_touchpad_input_at: Option<Instant>,
 }
 
 /// M4 workspace: a recursive pane tree whose leaves reference
@@ -1664,16 +1668,16 @@ impl WorkspaceView {
         let Some((target, handle, line_height)) = destination else {
             return;
         };
-        let ScrollDelta::Lines(delta) = event.delta else {
-            // Direct touchpad input or thumb/caret motion must take ownership.
-            self.wheel_motions.remove(&target);
-            if let WheelTarget::Terminal(session) = target {
-                self.terminal_pixel_offsets.remove(&session);
-                self.terminal_scroll_tails.remove(&session);
+        let (delta, precise) = match event.delta {
+            ScrollDelta::Lines(delta) if delta.x == 0.0 => {
+                (delta.y * scroll::WHEEL_PIXELS_PER_LINE, false)
             }
-            return;
+            ScrollDelta::Pixels(delta) if delta.x == px(0.0) => {
+                (f32::from(delta.y) * scroll::TOUCHPAD_PIXELS_PER_PIXEL, true)
+            }
+            _ => return,
         };
-        if delta.y == 0.0 || delta.x != 0.0 || event.modifiers.shift {
+        if delta == 0.0 || event.modifiers.shift {
             return;
         }
         let (position, min, max) = if let Some(handle) = &handle {
@@ -1703,15 +1707,35 @@ impl WorkspaceView {
                 handle,
                 applied: position,
                 line_height,
+                min,
+                max,
+                last_input_at: Instant::now(),
+                last_touchpad_input_at: None,
             });
         if (motion.applied - position).abs() > 1.0 {
             motion.motion = scroll::Motion::new(position);
             motion.applied = position;
+            motion.last_touchpad_input_at = None;
         }
-        motion
-            .motion
-            .push(delta.y * scroll::WHEEL_PIXELS_PER_LINE, min, max);
-        if matches!(target, WheelTarget::Terminal(_)) {
+        motion.min = min;
+        motion.max = max;
+        let now = Instant::now();
+        if precise {
+            motion.motion.push_touchpad(
+                delta,
+                motion
+                    .last_touchpad_input_at
+                    .map(|last| now.saturating_duration_since(last)),
+                min,
+                max,
+            );
+            motion.last_touchpad_input_at = Some(now);
+        } else {
+            motion.motion.push_wheel(delta, min, max);
+            motion.last_touchpad_input_at = None;
+        }
+        motion.last_input_at = now;
+        if !precise && matches!(target, WheelTarget::Terminal(_)) {
             motion.motion.target = (motion.motion.target / line_height).round() * line_height;
         }
         cx.stop_propagation();
@@ -1778,7 +1802,12 @@ impl WorkspaceView {
                         }
                         continue;
                     }
-                    let continuing = motion.motion.advance(elapsed);
+                    let continuing = motion.motion.advance(
+                        elapsed,
+                        motion.last_input_at.elapsed(),
+                        motion.min,
+                        motion.max,
+                    );
                     tracing::debug!(target: "omaterm::render", ?target,
                         position = motion.motion.position, destination = motion.motion.target,
                         elapsed_ms = elapsed.as_secs_f32() * 1000.0, continuing,

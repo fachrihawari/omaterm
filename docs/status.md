@@ -2,7 +2,7 @@
 
 ## Current position
 
-### Mouse-wheel ease-out and terminal pixel interpolation — 2026-10-07
+### Mouse-wheel ease-out, touchpad momentum and terminal pixel interpolation — 2026-10-07
 
 - The preceding layout/I/O fixes did not add wheel animation. Confirmed against
   GPUI 0.2.2: Linux wheel deltas already contain three line units per detent;
@@ -13,7 +13,17 @@
   extend the destination, reversal drops old debt, and bounds clamp travel.
   One `Window::on_next_frame` loop services Files, editor, Git, diff and terminal
   surfaces; it stops when motion settles or loses ownership/visibility/focus.
-  Precise touchpad and horizontal/Shift-wheel input retain native routing.
+  Horizontal/Shift-wheel input retains native routing.
+- Precise vertical touchpad input is now captured by the same controller rather
+  than dispatched to immediate native handlers. Its reported pixel displacement
+  is applied directly, then it coasts using the measured final velocity after
+  42ms without new input. GPUI 0.2.2's Wayland backend emits only `Moved` for
+  pointer axes and does not forward `AxisStop`, so the quiet interval is the
+  explicit, documented gesture-end fallback. A new gesture or a boundary clears
+  prior velocity; fast flicks therefore coast farther than slow drags.
+- Precise touchpad displacement now uses a conservative 1.25x multiplier. It
+  raises direct travel and measured release velocity together, without changing
+  the easing/deceleration curve that determines the motion feel.
 - Terminal scrollback now paints fractional vertical positions over its stable
   grid snapshot with one following overscan row, settling at a whole-row
   boundary. `viewport_following_row` reads the neighbor without resizing or
@@ -21,13 +31,19 @@
   Extended scroll-indicator deadlines now actually expire via one waiting task.
 - Regression tests cover refresh-rate-independent convergence, bounds/reversal,
   and neighboring terminal rows at top/middle/bottom and alt-screen exclusion.
-- Verification: `mbx fmt --all --check`, `mbx test --workspace --quiet` (663 tests),
-  `mbx clippy --workspace --all-targets -- -D warnings`, release desktop/CLI build,
-  and `git diff --check` PASS (known transitive `proc-macro-error2` notice only).
-  Real release Wayland wheel injection confirmed intermediate positions and
-  settlement on all five surfaces; see [native evidence](evidence/wheel-easing.md).
-  Physical hardware subjective feel and precise touchpad behavior remain manual
-  validation items.
+  Controller tests additionally cover velocity-dependent touchpad coast and
+  boundary stops without residual momentum.
+- Verification: real release Wayland wheel injection confirmed intermediate
+  positions and settlement on all five surfaces; see [native evidence](evidence/wheel-easing.md).
+  Release Wayland smoke validation also injected a five-event
+  `axis_source=finger` pixel stream into the terminal: it rendered direct
+  positions and continued to a final settled position after input stopped.
+  This validates routing/coasting integration, not physical hardware feel.
+  `mbx fmt --all --check`, `mbx test --workspace --quiet` (666 tests),
+  `mbx clippy --workspace --all-targets -- -D warnings`, release desktop/CLI
+  build, `python3 scripts/check-docs.py`, and `git diff --check` PASS (known
+  transitive `proc-macro-error2` notice only). Physical trackpad feel remains
+  manual validation.
 
 ### Scroll-surface correctness and UI-thread hot-path removal — 2026-10-07
 

@@ -38,6 +38,19 @@ Each sequence reached `continuing=false` at its exact destination. The terminal
 renderer interpolated within rows using a following overscan row. No PTY resize
 or session replacement is part of the animation.
 
+## Synthetic touchpad integration — 2026-10-07
+
+The current release worktree was also exercised with five native virtual-pointer
+Wayland pixel-axis events using `axis_source=finger`, followed by `axis_stop`.
+GPUI 0.2.2 maps each event to `ScrollDelta::Pixels` with `TouchPhase::Moved`
+and does not expose `axis_stop`; OmaTerm therefore starts coasting after its
+42ms no-input interval. On the terminal, the preceding wheel sequence settled
+at `92.40px`; the finger stream produced intermediate positions through
+`276.55px` and settled at `277.20px`, with a total of 18 rendered frames after
+the first finger event. This confirms that pixel input is captured, followed
+directly, and continues after input stops. It is an integration smoke test, not
+a substitute for subjective physical-trackpad validation.
+
 ## Cleanup and limits
 
 The owned test window (PID 2813288) closed through the compositor, the process
