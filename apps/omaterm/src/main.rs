@@ -11241,11 +11241,17 @@ impl WorkspaceView {
             .relative()
             .bg(rgb(crate::ui::theme::BG2))
             .border_1()
-            .border_color(rgb(if focused {
-                crate::ui::theme::BLUE
+            // Focused stroke uses the measured inset alpha
+            // (`PANE_FOCUS_STROKE_ALPHA`); GPUI has no inset shadow, so the
+            // 1px border carries the color and only the color changes.
+            .border_color(if focused {
+                rgba(crate::ui::theme::with_alpha(
+                    crate::ui::theme::BLUE,
+                    crate::ui::theme::PANE_FOCUS_STROKE_ALPHA,
+                ))
             } else {
-                crate::ui::theme::BORDER
-            }))
+                rgb(crate::ui::theme::BORDER)
+            })
             .child(header);
         leaf = leaf
             .on_mouse_down(
@@ -12104,7 +12110,14 @@ impl WorkspaceView {
                                 crate::ui::theme::BLUE2
                             } else {
                                 crate::ui::theme::PANEL2
-                            })),
+                            }))
+                            .hover(|s| {
+                                if can_commit {
+                                    s.bg(rgb(crate::ui::theme::COMMIT_HOVER_BG))
+                                } else {
+                                    s
+                                }
+                            }),
                         crate::ui::metrics::BODY_11_MEDIUM,
                     )
                     .text_color(rgb(if can_commit {
@@ -14562,6 +14575,22 @@ impl WorkspaceView {
     /// while strip hints are visible (plain `Alt` held). Slots past 9 have
     /// no chord and stay unlabeled so the hint never promises more than the
     /// `Alt+1..9` router honors.
+    /// Active-tab top accent as an overlay bar instead of a layout border,
+    /// so activating a tab never shifts strip contents. Uses the measured
+    /// inset accent alpha (`TAB_ACTIVE_TOP_ACCENT_ALPHA`).
+    fn tab_accent_bar() -> Div {
+        div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .right(px(0.0))
+            .h(px(2.0))
+            .bg(rgba(crate::ui::theme::with_alpha(
+                crate::ui::theme::BLUE,
+                crate::ui::theme::TAB_ACTIVE_TOP_ACCENT_ALPHA,
+            )))
+    }
+
     fn strip_chip_label(&self, slot: usize, label: String) -> String {
         if self.show_strip_hints && (1..=9).contains(&slot) {
             format!("{slot} · {label}")
@@ -14631,6 +14660,7 @@ impl WorkspaceView {
                 };
                 let mut chip = crate::ui::metrics::text_role(
                     div()
+                        .relative()
                         .flex()
                         .flex_row()
                         .flex_shrink_0()
@@ -14640,11 +14670,18 @@ impl WorkspaceView {
                         .h_full(),
                     crate::ui::metrics::TAB_12,
                 )
-                .bg(rgb(if active {
-                    crate::ui::theme::ACTIVE_TAB_BG
+                .bg(if active {
+                    rgb(crate::ui::theme::ACTIVE_TAB_BG)
                 } else {
-                    crate::ui::theme::PANEL
-                }))
+                    gpui::rgba(0x00000000)
+                })
+                .hover(|s| {
+                    if active {
+                        s
+                    } else {
+                        s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG))
+                    }
+                })
                 .text_color(rgb(if active {
                     crate::ui::theme::WHITE
                 } else {
@@ -14668,7 +14705,7 @@ impl WorkspaceView {
                 .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
                 .child(self.strip_chip_label(index + 1, tab.display_name(index + 1)));
                 if active {
-                    chip = chip.border_t_2().border_color(rgb(crate::ui::theme::BLUE));
+                    chip = chip.child(Self::tab_accent_bar());
                 }
                 let close_project = project_id;
                 let close_tab = tab_id;
@@ -14732,30 +14769,36 @@ impl WorkspaceView {
                     None => format!("Diff: {name}"),
                 };
                 let diff_label = self.strip_chip_label(project.tabs.len() + 1, title);
+                let mut diff_chip = div()
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h_full()
+                    .bg(if diff_active {
+                        rgb(crate::ui::theme::ACTIVE_TAB_BG)
+                    } else {
+                        gpui::rgba(0x00000000)
+                    })
+                    .hover(|s| {
+                        if diff_active {
+                            s
+                        } else {
+                            s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG))
+                        }
+                    })
+                    .text_color(rgb(if diff_active {
+                        crate::ui::theme::WHITE
+                    } else {
+                        crate::ui::theme::TEXT2
+                    }));
+                if diff_active {
+                    diff_chip = diff_chip.child(Self::tab_accent_bar());
+                }
                 tabs = tabs.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .h_full()
-                        .border_t_2()
-                        .border_color(rgb(if diff_active {
-                            crate::ui::theme::BLUE
-                        } else {
-                            crate::ui::theme::BORDER
-                        }))
-                        .bg(rgb(if diff_active {
-                            crate::ui::theme::ACTIVE_TAB_BG
-                        } else {
-                            crate::ui::theme::PANEL
-                        }))
-                        .text_color(rgb(if diff_active {
-                            crate::ui::theme::WHITE
-                        } else {
-                            crate::ui::theme::TEXT2
-                        }))
+                    diff_chip
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -14834,30 +14877,36 @@ impl WorkspaceView {
                 let active = active_kind == Some(ActiveTabKind::Editor(document));
                 let open_project = project.id;
                 let doc_label = self.strip_chip_label(editor_base + doc_offset + 1, name);
+                let mut doc_chip = div()
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h_full()
+                    .bg(if active {
+                        rgb(crate::ui::theme::ACTIVE_TAB_BG)
+                    } else {
+                        gpui::rgba(0x00000000)
+                    })
+                    .hover(|s| {
+                        if active {
+                            s
+                        } else {
+                            s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG))
+                        }
+                    })
+                    .text_color(rgb(if active {
+                        crate::ui::theme::WHITE
+                    } else {
+                        crate::ui::theme::TEXT2
+                    }));
+                if active {
+                    doc_chip = doc_chip.child(Self::tab_accent_bar());
+                }
                 tabs = tabs.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .h_full()
-                        .border_t_2()
-                        .border_color(rgb(if active {
-                            crate::ui::theme::BLUE
-                        } else {
-                            crate::ui::theme::BORDER
-                        }))
-                        .bg(rgb(if active {
-                            crate::ui::theme::ACTIVE_TAB_BG
-                        } else {
-                            crate::ui::theme::PANEL
-                        }))
-                        .text_color(rgb(if active {
-                            crate::ui::theme::WHITE
-                        } else {
-                            crate::ui::theme::TEXT2
-                        }))
+                    doc_chip
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -15953,7 +16002,7 @@ impl WorkspaceView {
                                 .into_iter()
                                 .map(|range| (range, accent)),
                         );
-                        let mut row = div()
+                        let row = div()
                             .id(index)
                             .flex()
                             .flex_row()
@@ -15971,11 +16020,8 @@ impl WorkspaceView {
                             } else {
                                 crate::ui::theme::TEXT2
                             }));
-                        if selected {
-                            row = row
-                                .border_l_2()
-                                .border_color(rgb(crate::ui::theme::MATCH_ACCENT));
-                        }
+                        // Selected state is background-only: a layout border
+                        // would shift row contents by 2px on every move.
                         row.on_mouse_down(
                             MouseButton::Left,
                             _cx.listener(move |view, event: &MouseDownEvent, window, cx| {
