@@ -306,8 +306,26 @@ mod tests {
             &["omaterm", "diff", "show", "--path", "src/main.rs"],
             &["omaterm", "diff", "list-files"],
             &["omaterm", "diff", "list-files", "--staged"],
+            &["omaterm", "process", "list"],
+            &["omaterm", "process", "kill", "123"],
+            &["omaterm", "git", "log"],
+            &[
+                "omaterm",
+                "git",
+                "commit-files",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+            &[
+                "omaterm",
+                "diff",
+                "show-commit",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "--path",
+                "src/main.rs",
+            ],
+            &["omaterm", "git", "stage-hunk", "a.txt", "--hunk", "42"],
         ];
-        assert_eq!(cases.len(), 41);
+        assert_eq!(cases.len(), 47);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");
