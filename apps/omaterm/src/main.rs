@@ -891,6 +891,16 @@ fn is_project_jump_key(key_name: &str, control: bool, alt: bool) -> bool {
     alt && !control && shortcuts::alt_shift_project_index(key_name).is_some()
 }
 
+/// Next index cycling through `len` projects by `delta` (wraps both ends).
+/// `None` when there is nothing to cycle to. Pure for tests.
+fn cycle_project_index(current: usize, len: usize, delta: i32) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let current = current.min(len - 1) as i32;
+    Some(current.saturating_add(delta).rem_euclid(len as i32) as usize)
+}
+
 /// Clamp a context-menu anchor into the viewport so the whole menu box
 /// stays visible, with an 8px margin. Pure over floats so the geometry
 /// is unit-testable without a window.
@@ -6206,6 +6216,23 @@ impl WorkspaceView {
     /// jumps re-select the target core tab; editor/diff jumps never mutate
     /// core tab selection. A past-the-end slot produces a truthful notice
     /// rather than a fake default.
+    /// Cycle project selection by `delta` (wraps both ends). Shared by the
+    /// `Alt+PageUp/PageDown` chord and the sidebar pager buttons.
+    fn cycle_project(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let projects = self.coordinator.projects();
+        let index = projects
+            .iter()
+            .position(|p| Some(p.id) == self.coordinator.selected_project_id())
+            .unwrap_or(0);
+        if let Some(next) = cycle_project_index(index, projects.len(), delta) {
+            let id = projects[next].id;
+            let _ = self.dispatch_command(
+                OmaCommand::Project(ProjectCommand::Select { project: id }),
+                cx,
+            );
+        }
+    }
+
     fn route_alt_strip_key(&mut self, slot: u8, cx: &mut Context<Self>) {
         let Some(project) = self.coordinator.selected_project_id() else {
             self.input_notice = Some("No project selected.".into());
@@ -10365,21 +10392,8 @@ impl WorkspaceView {
             let projects = self.coordinator.projects();
             let is_project = event.keystroke.modifiers.alt;
             if is_project && !projects.is_empty() {
-                let current = self.coordinator.selected_project_id();
-                let index = projects
-                    .iter()
-                    .position(|p| Some(p.id) == current)
-                    .unwrap_or(0);
-                let next = if key_name == "pageup" {
-                    index.checked_sub(1).unwrap_or(projects.len() - 1)
-                } else {
-                    (index + 1) % projects.len()
-                };
-                let id = projects[next].id;
-                let _ = self.dispatch_command(
-                    OmaCommand::Project(ProjectCommand::Select { project: id }),
-                    cx,
-                );
+                let delta = if key_name == "pageup" { -1 } else { 1 };
+                self.cycle_project(delta, cx);
             } else if !is_project
                 && let Some(project) = self.coordinator.active_project()
                 && !project.tabs.is_empty()
@@ -14258,7 +14272,56 @@ impl WorkspaceView {
                             .text_color(rgb(crate::ui::theme::MUTED))
                             .child("OMATERM"),
                     )
-                    .child(div().flex_1()),
+                    .child(div().flex_1())
+                    // Project cycle pager: same target as `Alt+PageUp/PageDown`
+                    // (`cycle_project`), visible always so the chord is
+                    // discoverable without the cheatsheet.
+                    .child(
+                        div()
+                            .p(px(6.0))
+                            .rounded(px(7.0))
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.cycle_project(-1, cx);
+                                }),
+                            )
+                            .child(crate::ui::primitives::cmd_icon(
+                                crate::ui::assets::CHEVRON_LEFT,
+                                16.0,
+                                crate::ui::theme::MUTED,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .p(px(6.0))
+                            .rounded(px(7.0))
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.cycle_project(1, cx);
+                                }),
+                            )
+                            .child(crate::ui::primitives::cmd_icon(
+                                crate::ui::assets::CHEVRON_RIGHT,
+                                16.0,
+                                crate::ui::theme::MUTED,
+                            )),
+                    ),
             )
             .child(
                 div()
@@ -17924,9 +17987,10 @@ mod tests {
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
         FileActivation, InputOwner, InspectorTab, NativeOpenTarget, PaletteFileIndexCache,
         PaletteSearchRequest, PaletteSearchWorker, StripRoute, WorkspaceView,
-        captured_targets_stale, clamp_menu_anchor, discard_before_action, file_activation,
-        function_key_number, is_project_jump_key, metrics_job_counts, native_open_may_activate,
-        pending_timing_elapsed, revalidate_captured_targets, route_alt_strip, select_mono_family,
+        captured_targets_stale, clamp_menu_anchor, cycle_project_index, discard_before_action,
+        file_activation, function_key_number, is_project_jump_key, metrics_job_counts,
+        native_open_may_activate, pending_timing_elapsed, revalidate_captured_targets,
+        route_alt_strip, select_mono_family,
     };
     use crate::editor::DocumentStore;
     use crate::editor::EditorCaret;
@@ -18829,6 +18893,21 @@ mod tests {
             clamp_menu_anchor(50.0, 50.0, 100.0, 100.0, 132.0, 64.0),
             (8.0, 28.0)
         );
+    }
+
+    #[test]
+    fn project_cycle_wraps_both_ends() {
+        assert_eq!(cycle_project_index(0, 3, 1), Some(1));
+        assert_eq!(cycle_project_index(2, 3, 1), Some(0));
+        assert_eq!(cycle_project_index(0, 3, -1), Some(2));
+        assert_eq!(cycle_project_index(1, 3, -1), Some(0));
+        // Stale selections clamp instead of panicking; singletons stay put.
+        assert_eq!(cycle_project_index(9, 3, 1), Some(0));
+        assert_eq!(cycle_project_index(0, 1, 1), Some(0));
+        assert_eq!(cycle_project_index(0, 1, -1), Some(0));
+        // Nothing to cycle to.
+        assert_eq!(cycle_project_index(0, 0, 1), None);
+        assert_eq!(cycle_project_index(0, 0, -1), None);
     }
 
     #[test]

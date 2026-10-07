@@ -36,6 +36,7 @@ pub const STAGE: &str = "plus";
 pub const UNSTAGE: &str = "minus";
 pub const CHEVRON_DOWN: &str = "chevron-down";
 pub const CHEVRON_RIGHT: &str = "chevron-right";
+pub const CHEVRON_LEFT: &str = "chevron-left";
 
 macro_rules! icon_bytes {
     ($name:literal) => {
@@ -76,6 +77,7 @@ const ICONS: &[(&str, &[u8])] = &[
     icon_bytes!("undo-2"),
     icon_bytes!("chevron-down"),
     icon_bytes!("chevron-right"),
+    icon_bytes!("chevron-left"),
     icon_bytes!("split-square-vertical"),
     icon_bytes!("radio"),
     icon_bytes!("bell"),

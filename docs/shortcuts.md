@@ -15,7 +15,11 @@ Design rules:
   notice, never a fake tab.
 - `Alt+Shift+1..9` jumps between projects in sidebar order.
 - Hints are honest: sidebar digits appear only while `Alt+Shift` is held
-  (labeled `Alt+Shift+n`), strip digits only while plain `Alt` is held.
+  (labeled `Alt+Shift+1` … `Alt+Shift+9`, digits — never the letter N),
+  strip digits only while plain `Alt` is held.
+- The sidebar header `‹` `›` pager cycles projects like
+  `Alt+PageUp/PageDown`, so the cycle chord is discoverable without the
+  cheatsheet.
 - The Omarchy `Super+K` binding list is the model for the cheatsheet, but
   `Super` stays with the compositor, so the in-app chord is `Alt+Shift+K`.
   Plain `Ctrl+K` (`0x0B`) keeps reaching the shell.
