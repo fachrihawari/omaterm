@@ -169,10 +169,6 @@ const FOLDER_OPEN_ICON: FileIcon = FileIcon {
 
 /// Exact inspector tree row height (mock): 28px rows, 11px labels.
 pub const TREE_ROW_H: f32 = 28.0;
-/// Search-box chrome above the tree rows: 16px padding + 32px box + 1px
-/// border. Subtracted with the tab/status bars when estimating the
-/// visible-row budget for the scrollbar thumb.
-pub const FILES_SEARCH_H: f32 = 49.0;
 
 /// Text badge for a tree/Git row: TypeScript families render `TS`,
 /// JSON renders `{ }` (mock); everything else uses the icon glyph.
@@ -193,19 +189,6 @@ pub fn file_badge(path: &Path) -> Option<(&'static str, u32)> {
         }
     }
     None
-}
-
-/// Case-insensitive substring filter for the inspector search box.
-/// Empty queries match everything; matching is over the file name.
-pub fn row_matches_query(path: &Path, query: &str) -> bool {
-    if query.is_empty() {
-        return true;
-    }
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    name.contains(&query.to_lowercase())
 }
 
 /// Convert skim char `indices` into byte ranges over `text` for
@@ -1217,17 +1200,6 @@ mod tests {
         assert_eq!(file_badge(Path::new("data.json")), Some(("{ }", 0xCBCB41)));
         assert_eq!(file_badge(Path::new("notes.txt")), None);
         assert_eq!(file_badge(Path::new("src")), None);
-    }
-
-    #[test]
-    fn row_matches_query_is_case_insensitive_substring() {
-        assert!(row_matches_query(Path::new("src/App.tsx"), ""));
-        assert!(row_matches_query(Path::new("src/App.tsx"), "app"));
-        assert!(row_matches_query(Path::new("src/App.tsx"), "APP"));
-        assert!(row_matches_query(Path::new("src/App.tsx"), ".tsx"));
-        assert!(!row_matches_query(Path::new("src/App.tsx"), "zzz"));
-        // Matches the file name, not the parent chain.
-        assert!(!row_matches_query(Path::new("src/main.rs"), "src"));
     }
 
     #[test]

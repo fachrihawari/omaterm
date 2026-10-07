@@ -94,7 +94,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         id: "pane.close",
         chord: "Ctrl+Shift+W",
-        action: "Close focused pane",
+        action: "Close focused pane / active editor / diff",
         context: "Terminal",
     },
     Shortcut {

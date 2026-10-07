@@ -2,6 +2,125 @@
 
 ## Current position
 
+### Git/header/toast/editor UX batch — 2026-10-07
+
+- Sync buttons no longer hang the UI: `git_sync_action` now resolves the
+  root and runs `git fetch/pull/push` on a worker thread (same
+  generation-free project-scoped channel pattern as branch/stash), with
+  `sync_tick` draining completions on the 250ms poller. The running op
+  swaps its label for a refresh spinner; all three disable while one runs.
+  `sync_busy` is now `Option<&'static str>`. Completion reuses the shared
+  `GitChanged` effects so diff caches/readers stay consistent. Note: the
+  desktop async path calls `omaterm-context` directly (like the existing
+  branch/stash workers); IPC/CLI keep the synchronous dispatcher path.
+- Stackable floating toasts (sonner-style): `toast: Option<…>` became
+  `toasts: Vec<Toast>` (`Success`/`Error` + deadline, capped at 4,
+  duplicates coalesce), rendered bottom-right newest-nearest-corner with a
+  green/red accent bar. `show_toast` keeps its signature; timers prune
+  expired entries. The transient `input_notice` and the risky-paste arm
+  now float in the same stack instead of shifting pane/editor/diff layout;
+  persistent system warnings (persistence, config, files, history arm,
+  spawn failure) stay as in-flow banners.
+- `Ctrl+Shift+W` (`pane.close`) now closes the active surface: open editor
+  document (dirty buffers still refuse with the explicit decision flow),
+  diff preview, else the focused terminal pane. Registry + `shortcuts.md`
+  updated to "Close focused pane / active editor / diff".
+- Header trailing cluster unified: `+`, finder, and inspector toggle share
+  one `gap_1`/`px_2` cluster with equal hover pills (the `+` button moves
+  into the cluster and gains hover).
+- Stash rows match change-row chrome (40px, same hover/typography) with
+  icon actions (`undo-2` pop, `check` apply, red `trash-2` drop) and an
+  archive badge instead of the `#N` column; new `archive` icon vendored.
+- Graph scope is a two-icon segmented control (`git-branch` current,
+  `git-fork` all-local, active filled) instead of the `Scope: …` text
+  toggle; the confusing `scope_label` strings are gone.
+- Upstream folded into the header branch row (muted, truncating,
+  right-aligned); the standalone git footer is removed.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (727 passed, 0 failed), `cargo clippy --workspace --all-targets --
+  -D warnings` PASS (known transitive `proc-macro-error2` notice only),
+  `cargo build --release --bin omaterm-desktop` PASS, `git diff --check`
+  PASS. Native Wayland visual/interaction validation remains manual.
+
+### Sidebar/git/file UX cleanup — 2026-10-07
+
+- Project cards no longer show a branch indicator or branch picker trigger;
+  the card is identity + live dot + path only. `WorkspaceView::branch_for`
+  is now used solely by the Inspector Info pill and the status bar.
+- Branch picker rows use real icons instead of text/symbols: the `=` / `↑` /
+  `↓` / `⇅` track marks are gone (upstream name stays as text), and the
+  Rename/Delete actions are now pencil / trash icon buttons (delete still
+  two-steps to a red check). Added five vendored Lucide icons
+  (`pencil`, `check`, `arrow-up`, `arrow-down`, `arrow-up-down`).
+- Removed the Files-tab inline search box: `Ctrl+P` is the single fuzzy
+  finder. Dropped `files_search`, `files_search_focused`,
+  `InputOwner::FilesFilter`, `on_files_search_key`, `files::FILES_SEARCH_H`
+  and `files::row_matches_query` (with its unit test); tree render,
+  keyboard nav, and follow-selection now use the full cached row list.
+- Git tab header reorganized: branch identity + sync status + refresh on
+  one row, and Fetch/Pull/Push as an equal-width segmented row below, so
+  the remote actions never overflow the narrow inspector. The `↑0 ↓0`
+  sync pill is hidden unless there is an upstream and a nonzero count. The
+  footer fallback now reads `no upstream` instead of leaking an inert
+  branch name.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (727 passed, 0 failed; one removed with the deleted filter test),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS (known
+  transitive `proc-macro-error2` notice only),
+  `cargo build --release --bin omaterm-desktop` PASS, `git diff --check`
+  PASS. Native Wayland visual validation remains manual.
+
+### Grid-only terminal panes (header/footer removal) — 2026-10-07
+
+- Removed the per-pane 32px header (status dot, OSC title, `shell · pid`)
+  and 28px footer (shell, cwd, grid dims) from `render_pane_leaf` in
+  `apps/omaterm/src/main.rs`: both duplicated what the shell prompt
+  already shows. Tab strip keeps tab identity, the focus border keeps
+  focus, and the Info panel keeps PID/CWD for the focused shell; restore
+  attention still surfaces on the tab chip. Reclaims 60px per pane.
+- `LEAF_CHROME_H` drops 62.0 → 2.0 (1px top + 1px bottom leaf border) so
+  PTY rows match the larger canvas exactly; geometry (`shell_rects`) only
+  ever subtracted the app header/status bar and is unchanged.
+- Floating split/close toolbar now aligns by construction: the leaf is the
+  grid, so `top:8 right:8` insets sit on the grid instead of overflowing
+  7px past the old 32px header into terminal text. Still focused-pane
+  only. Deleted the now-unused `shell_name()` and `short_home_path()`
+  helpers; `PANE_HEADER_BG_OPACITY` stays as a (tested) theme token.
+- Dims-in-Info-panel addition deferred (offered, not requested).
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (728 passed, 0 failed), `cargo clippy --workspace --all-targets --
+  -D warnings` PASS incl. forced recompile of the app crate (only the
+  known transitive `proc-macro-error2` notice),
+  `cargo build --release --bin omaterm-desktop` PASS,
+  `python3 scripts/check-docs.py` (below) PASS, `git diff --check` PASS.
+  Native Wayland visual validation (splits/focus/zoom, toolbar reach,
+  no grid-size regression) remains manual.
+
+### Unified branch-picker triggers — 2026-10-07
+
+- New shared `branch_picker_trigger` in `apps/omaterm/src/main.rs` (free
+  function beside `section_header`): label + chevron-down with hover,
+  pointer cursor and click → `open_branch_picker(project)`. Typography
+  inherits from each caller so measured roles are unchanged.
+- Every current-branch surface now opens the same picker: Git-tab header
+  branch name, project sidebar card (was the only entry; `no branch` stays
+  inert), Inspector Info branch pill (keeps pill chrome), status-bar
+  branch. Palette `command.git.branches` entry unchanged.
+- Graph scope toggle keeps its history-scope function but now reads
+  `Scope: Current branch / Current HEAD / All local branches` with a
+  pointer cursor so it cannot be mistaken for a branch switcher. Git
+  footer stays informational (upstream identity, not clickable).
+- Detached HEAD shows `detached` with chevron and still opens the picker;
+  non-repo projects omit the trigger instead of inventing metadata. No git
+  runs on the UI thread (triggers only call `open_branch_picker`; list
+  fetch stays on the generation-guarded worker).
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (all suites green), `cargo clippy --workspace --all-targets --
+  -D warnings` PASS (only the known transitive `proc-macro-error2`
+  notice), `cargo build --release --bin omaterm-desktop` PASS,
+  `python3 scripts/check-docs.py` PASS, `git diff --check` PASS. Native
+  Wayland click-through of all four triggers remains manual validation.
+
 ### Git history Graph inside the Git tab — 2026-10-07
 
 - GRAPH renders inside the Git tab below Staged/Changes (clean trees show

@@ -39,7 +39,7 @@ Design rules:
 | `project.cycle` | `Alt+PageUp/PageDown` | Previous/next project | Global |
 | `pane.split-right` | `Ctrl+Shift+R` | Split focused pane right | Terminal |
 | `pane.split-down` | `Ctrl+Shift+D` | Split focused pane down | Terminal |
-| `pane.close` | `Ctrl+Shift+W` | Close focused pane | Terminal |
+| `pane.close` | `Ctrl+Shift+W` | Close focused pane / active editor / diff | Terminal |
 | `pane.focus` | `Ctrl+Shift+H/J/K/L` | Focus left/down/up/right pane | Terminal |
 | `pane.resize` | `Ctrl+[/]` | Shrink/grow focused pane | Terminal |
 | `panel.projects` | `Ctrl+B` | Toggle Projects sidebar | Global |

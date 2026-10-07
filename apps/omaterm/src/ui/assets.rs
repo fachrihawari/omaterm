@@ -25,11 +25,18 @@ pub const FOLDER_OPEN: &str = "folder-open";
 pub const FOLDER_GIT: &str = "folder-git-2";
 pub const FILE_TEXT: &str = "file-text";
 pub const GIT_BRANCH: &str = "git-branch";
+pub const GIT_FORK: &str = "git-fork";
+pub const STASH: &str = "archive";
 pub const GIT_COMPARE: &str = "git-compare-arrows";
 pub const EXTERNAL: &str = "external-link";
 pub const COLUMNS: &str = "columns-2";
 pub const ROWS: &str = "rows-2";
 pub const TRASH: &str = "trash-2";
+pub const PENCIL: &str = "pencil";
+pub const CHECK: &str = "check";
+pub const ARROW_UP: &str = "arrow-up";
+pub const ARROW_DOWN: &str = "arrow-down";
+pub const ARROW_UP_DOWN: &str = "arrow-up-down";
 pub const REFRESH: &str = "refresh-cw";
 pub const UNDO: &str = "undo-2";
 pub const STAGE: &str = "plus";
@@ -82,6 +89,8 @@ const ICONS: &[(&str, &[u8])] = &[
     icon_bytes!("file-text"),
     icon_bytes!("file-code-2"),
     icon_bytes!("git-branch"),
+    icon_bytes!("git-fork"),
+    icon_bytes!("archive"),
     icon_bytes!("git-compare-arrows"),
     icon_bytes!("globe-2"),
     icon_bytes!("external-link"),
@@ -91,6 +100,11 @@ const ICONS: &[(&str, &[u8])] = &[
     icon_bytes!("ellipsis"),
     icon_bytes!("more-horizontal"),
     icon_bytes!("trash-2"),
+    icon_bytes!("pencil"),
+    icon_bytes!("check"),
+    icon_bytes!("arrow-up"),
+    icon_bytes!("arrow-down"),
+    icon_bytes!("arrow-up-down"),
     icon_bytes!("refresh-cw"),
     icon_bytes!("undo-2"),
     icon_bytes!("chevron-down"),
