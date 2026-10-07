@@ -65,6 +65,7 @@ Design rules:
 | `editor.redo` | `Ctrl+Shift+Z / Ctrl+Y` | Redo | Editor |
 | `editor.clipboard` | `Ctrl+A/X/C/V` | Select all, cut, copy, paste | Editor |
 | `git.nav` | `Alt+Up/Down/Enter` | Move Git selection / open diff | Git tab |
+| `files.nav` | `Alt+Up/Down/Left/Right/Enter` | Move tree selection, collapse/expand, open file | Files tab |
 | `overlay.dismiss` | `Esc` | Close overlay or dialog | Overlay |
 
 Notes:

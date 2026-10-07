@@ -300,6 +300,77 @@ pub fn icon_for(path: &Path, kind: FileKind, expanded: bool) -> FileIcon {
     FALLBACK_FILE_ICON
 }
 
+/// Keyboard navigation intent over the visible (filtered) tree rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeKey {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// Keyboard navigation outcome: select a row, or toggle a directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeNav {
+    Select(PathBuf),
+    Toggle(PathBuf),
+    None,
+}
+
+/// Keyboard target over visible rows, mirroring the Git-tab Alt chords so
+/// plain arrows keep reaching the PTY. Up/Down clamp at the ends (no
+/// wrap); Left collapses an expanded directory else selects the parent;
+/// Right expands a collapsed directory else selects the first child.
+/// Pure for tests.
+pub fn tree_key_target(rows: &[FileRow], current: Option<&Path>, key: TreeKey) -> TreeNav {
+    if rows.is_empty() {
+        return TreeNav::None;
+    }
+    let at = current.and_then(|path| rows.iter().position(|row| row.path == path));
+    match key {
+        TreeKey::Up | TreeKey::Down => {
+            let delta = if key == TreeKey::Up { -1 } else { 1 };
+            let next = match at {
+                Some(i) => (i as i32 + delta).clamp(0, rows.len() as i32 - 1) as usize,
+                None => {
+                    if delta < 0 {
+                        rows.len() - 1
+                    } else {
+                        0
+                    }
+                }
+            };
+            TreeNav::Select(rows[next].path.clone())
+        }
+        TreeKey::Left => match at {
+            Some(i) if rows[i].kind == omaterm_core::FileKind::Directory && rows[i].expanded => {
+                TreeNav::Toggle(rows[i].path.clone())
+            }
+            Some(i) => {
+                let depth = rows[i].depth;
+                rows[..i]
+                    .iter()
+                    .rev()
+                    .find(|row| row.depth < depth)
+                    .map(|row| TreeNav::Select(row.path.clone()))
+                    .unwrap_or(TreeNav::None)
+            }
+            None => TreeNav::None,
+        },
+        TreeKey::Right => match at {
+            Some(i) if rows[i].kind == omaterm_core::FileKind::Directory && !rows[i].expanded => {
+                TreeNav::Toggle(rows[i].path.clone())
+            }
+            Some(i) => rows[i + 1..]
+                .iter()
+                .find(|row| row.depth > rows[i].depth)
+                .map(|row| TreeNav::Select(row.path.clone()))
+                .unwrap_or(TreeNav::None),
+            None => TreeNav::None,
+        },
+    }
+}
+
 /// One visible tree row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRow {
@@ -955,6 +1026,65 @@ mod tests {
         assert!(kept.contains(Path::new("a/b/c")));
         assert!(kept.contains(Path::new("a/b/c/d")));
         assert!(kept.contains(Path::new("a/b/c/d/e")));
+    }
+
+    #[test]
+    fn tree_key_moves_selects_and_toggles() {
+        use omaterm_core::FileKind;
+        let row = |path: &str, depth: usize, kind: FileKind, expanded: bool| FileRow {
+            path: PathBuf::from(path),
+            depth,
+            kind,
+            expanded,
+            loading: false,
+        };
+        let rows = vec![
+            row("src", 0, FileKind::Directory, true),
+            row("src/main.rs", 1, FileKind::File, false),
+            row("src/lib.rs", 1, FileKind::File, false),
+            row("docs", 0, FileKind::Directory, false),
+        ];
+        // Up/Down clamp at the ends; no selection starts at an end.
+        assert_eq!(
+            tree_key_target(&rows, None, TreeKey::Down),
+            TreeNav::Select(PathBuf::from("src"))
+        );
+        assert_eq!(
+            tree_key_target(&rows, None, TreeKey::Up),
+            TreeNav::Select(PathBuf::from("docs"))
+        );
+        assert_eq!(
+            tree_key_target(&rows, Some(Path::new("src/lib.rs")), TreeKey::Down),
+            TreeNav::Select(PathBuf::from("docs"))
+        );
+        assert_eq!(
+            tree_key_target(&rows, Some(Path::new("docs")), TreeKey::Down),
+            TreeNav::Select(PathBuf::from("docs"))
+        );
+        // Left collapses an expanded directory, else selects the parent.
+        assert_eq!(
+            tree_key_target(&rows, Some(Path::new("src")), TreeKey::Left),
+            TreeNav::Toggle(PathBuf::from("src"))
+        );
+        assert_eq!(
+            tree_key_target(&rows, Some(Path::new("src/main.rs")), TreeKey::Left),
+            TreeNav::Select(PathBuf::from("src"))
+        );
+        // Right expands a collapsed directory, else selects the first child.
+        assert_eq!(
+            tree_key_target(&rows, Some(Path::new("docs")), TreeKey::Right),
+            TreeNav::Toggle(PathBuf::from("docs"))
+        );
+        assert_eq!(
+            tree_key_target(&rows, Some(Path::new("src")), TreeKey::Right),
+            TreeNav::Select(PathBuf::from("src/main.rs"))
+        );
+        // Empty input never navigates.
+        assert_eq!(tree_key_target(&[], None, TreeKey::Down), TreeNav::None);
+        assert_eq!(
+            tree_key_target(&[], Some(Path::new("x")), TreeKey::Left),
+            TreeNav::None
+        );
     }
 
     #[test]

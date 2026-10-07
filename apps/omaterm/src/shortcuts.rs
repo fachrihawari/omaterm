@@ -248,6 +248,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
         context: "Git tab",
     },
     Shortcut {
+        id: "files.nav",
+        chord: "Alt+Up/Down/Left/Right/Enter",
+        action: "Move tree selection, collapse/expand, open file",
+        context: "Files tab",
+    },
+    Shortcut {
         id: "overlay.dismiss",
         chord: "Esc",
         action: "Close overlay or dialog",

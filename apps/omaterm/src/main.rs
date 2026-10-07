@@ -10526,6 +10526,44 @@ impl WorkspaceView {
                 return;
             }
         }
+        // Files-tree keyboard navigation: Alt+Up/Down moves the tree
+        // selection, Alt+Left/Right collapse/expand (or step to the parent
+        // / first child), Alt+Enter opens natively like a plain click.
+        // Same Alt discipline as the Git tab above: plain arrows belong to
+        // the PTY. Guarded to the visible Files tab with the filter box
+        // unfocused (typing there edits the filter, handled above).
+        if event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && self.inspector_visible
+            && self.inspector_tab == InspectorTab::Files
+            && !self.files_search_focused
+            && let Some(project) = self.coordinator.selected_project_id()
+        {
+            match key_name.as_str() {
+                "up" => {
+                    self.files_keyboard(project, files::TreeKey::Up, cx);
+                    return;
+                }
+                "down" => {
+                    self.files_keyboard(project, files::TreeKey::Down, cx);
+                    return;
+                }
+                "left" => {
+                    self.files_keyboard(project, files::TreeKey::Left, cx);
+                    return;
+                }
+                "right" => {
+                    self.files_keyboard(project, files::TreeKey::Right, cx);
+                    return;
+                }
+                "enter" | "return" | "kpenter" => {
+                    self.files_keyboard_open(project, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
         if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "t" {
             self.create_tab(cx);
             return;
@@ -11307,6 +11345,87 @@ impl WorkspaceView {
                 )
                 .child(div().text_color(rgb(crate::ui::theme::MUTED)).child(status)),
         )
+    }
+
+    /// Files-tab keyboard navigation (Alt+Up/Down/Left/Right), mirroring
+    /// the Git-tab chords. Operates on the same filtered rows the tree
+    /// renders; selection drives the existing highlight (the focus ring),
+    /// and the list scrolls to follow. Plain arrows keep reaching the PTY.
+    fn files_keyboard(&mut self, project: ProjectId, key: files::TreeKey, cx: &mut Context<Self>) {
+        let rows: Vec<files::FileRow> = self
+            .files_panel
+            .rows_for(project)
+            .unwrap_or_default()
+            .iter()
+            .filter(|row| files::row_matches_query(&row.path, &self.files_search))
+            .cloned()
+            .collect();
+        let current = self
+            .files_panel
+            .selected_path(project)
+            .map(|path| path.to_path_buf());
+        match files::tree_key_target(&rows, current.as_deref(), key) {
+            files::TreeNav::None => {}
+            files::TreeNav::Select(path) => {
+                self.files_panel.select(project, path);
+                self.files_follow_selection(project);
+                cx.notify();
+            }
+            files::TreeNav::Toggle(path) => {
+                self.files_panel.select(project, path.clone());
+                self.toggle_file_row(project, path, true, cx);
+                self.files_follow_selection(project);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Scroll the native tree list to the selected row so keyboard
+    /// navigation never walks out of view. Index runs over the same
+    /// filtered rows the renderer feeds the virtual list.
+    fn files_follow_selection(&mut self, project: ProjectId) {
+        let paths: Vec<std::path::PathBuf> = self
+            .files_panel
+            .rows_for(project)
+            .unwrap_or_default()
+            .iter()
+            .filter(|row| files::row_matches_query(&row.path, &self.files_search))
+            .map(|row| row.path.clone())
+            .collect();
+        if let Some(selected) = self
+            .files_panel
+            .selected_path(project)
+            .map(|path| path.to_path_buf())
+            && let Some(index) = paths.iter().position(|path| *path == selected)
+        {
+            self.files_scroll_handle
+                .scroll_to_item(index, ScrollStrategy::Top);
+        }
+    }
+
+    /// Files-tab keyboard open (Alt+Enter): directories toggle, files open
+    /// natively like a plain click (the Alt chord is the navigation prefix;
+    /// Alt+click keeps the explicit terminal fallback for pointer users).
+    fn files_keyboard_open(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .files_panel
+            .selected_path(project)
+            .map(|path| path.to_path_buf())
+        else {
+            return;
+        };
+        let is_dir = self
+            .files_panel
+            .rows_for(project)
+            .unwrap_or_default()
+            .iter()
+            .find(|row| row.path == path)
+            .is_some_and(|row| row.kind == omaterm_core::FileKind::Directory);
+        if is_dir {
+            self.toggle_file_row(project, path, true, cx);
+        } else {
+            self.editor_open_document(project, path, cx);
+        }
     }
 
     /// Explicit clipboard copy of the focused pane's selection (Ctrl+Shift+C).
