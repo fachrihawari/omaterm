@@ -53,6 +53,8 @@ Design rules:
 | `terminal.paste` | `Ctrl+Shift+V` | Paste (two-step for risky content) | Terminal |
 | `terminal.scroll` | `Shift+PageUp/PageDown` | Scrollback (not in alt-screen) | Terminal |
 | `terminal.search` | `Ctrl+Shift+F` | Find in terminal scrollback (Enter next, Shift+Enter previous) | Terminal |
+| `pane.zoom` | `Alt+Z` | Toggle pane zoom (maximize focused pane) | Terminal |
+| `terminal.font-zoom` | `Ctrl +/-/0` | Terminal font size (step in/out, reset) | Terminal |
 | `history.opt-in` | `Ctrl+Shift+O` | Encrypted history opt-in/out (two-step) | Global |
 | `history.pause` | `Ctrl+Shift+G` | Pause/resume history capture | Global |
 | `history.clear` | `Ctrl+Shift+X` | Clear pane history (two-step) | Global |

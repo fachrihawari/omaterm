@@ -176,6 +176,18 @@ pub const SHORTCUTS: &[Shortcut] = &[
         context: "Terminal",
     },
     Shortcut {
+        id: "pane.zoom",
+        chord: "Alt+Z",
+        action: "Toggle pane zoom (maximize focused pane)",
+        context: "Terminal",
+    },
+    Shortcut {
+        id: "terminal.font-zoom",
+        chord: "Ctrl +/-/0",
+        action: "Terminal font size (step in/out, reset)",
+        context: "Terminal",
+    },
+    Shortcut {
         id: "history.opt-in",
         chord: "Ctrl+Shift+O",
         action: "Encrypted history opt-in/out (two-step)",

@@ -140,6 +140,14 @@ struct WorkspaceView {
     keybindings_open: bool,
     keybindings_query: String,
     keybindings_selected: usize,
+    /// Zoomed pane per tab (Alt+Z): the maximized leaf view-local state.
+    /// Absent means no zoom. Stale ids prune lazily on read; zoom never
+    /// touches the core tree, splits, or sessions — purely a render/resize
+    /// override. No IPC/CLI surface (view chrome, like active_surface).
+    zoomed_panes: HashMap<TabId, PaneId>,
+    /// Terminal font zoom multiplier (Ctrl +/-/0). Multiplies the configured
+    /// `terminal.font-size`; session-local, never persisted.
+    font_zoom: f32,
     /// Open project context menu: owning project plus the window-relative
     /// click anchor it is rendered at. The menu is a single window-level
     /// overlay (see `render_project_menu_overlay`), never a child of a card:
@@ -881,6 +889,14 @@ fn route_alt_strip(
         Some(shortcuts::StripTarget::Diff) => StripRoute::Diff,
         None => StripRoute::Unavailable(slot),
     }
+}
+
+/// Terminal font zoom direction for the Ctrl +/-/0 chords.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontZoom {
+    In,
+    Out,
+    Reset,
 }
 
 /// Whether an `Alt`-held key name invokes the project jump (`Alt+Shift+1..9`).
@@ -2155,6 +2171,8 @@ impl WorkspaceView {
             keybindings_query: String::new(),
             keybindings_selected: 0,
             project_context_menu: None,
+            zoomed_panes: HashMap::new(),
+            font_zoom: 1.0,
             terminal_menu: None,
             ipc_server: None,
             ipc_receiver: None,
@@ -6301,6 +6319,55 @@ impl WorkspaceView {
     /// jumps re-select the target core tab; editor/diff jumps never mutate
     /// core tab selection. A past-the-end slot produces a truthful notice
     /// rather than a fake default.
+    /// Zoomed leaf for the selected tab, if the zoomed pane still exists.
+    /// Stale ids (closed panes/tabs) prune lazily here so no close path
+    /// needs zoom bookkeeping.
+    fn zoomed_leaf(&mut self) -> Option<Pane> {
+        let tab = self.coordinator.selected_tab_id()?;
+        let pane = *self.zoomed_panes.get(&tab)?;
+        let found = self.coordinator.tree().find(pane).is_some();
+        if !found {
+            self.zoomed_panes.remove(&tab);
+            return None;
+        }
+        self.coordinator
+            .tree()
+            .panes()
+            .into_iter()
+            .find(|leaf| leaf.id == pane)
+            .cloned()
+    }
+
+    /// Toggle pane zoom (Alt+Z) for the focused pane of the selected tab.
+    fn toggle_pane_zoom(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.coordinator.selected_tab_id() else {
+            return;
+        };
+        if self.zoomed_panes.remove(&tab).is_some() {
+            self.show_toast("Zoom off".into(), cx);
+            return;
+        }
+        let Some(pane) = self.coordinator.focused() else {
+            return;
+        };
+        self.zoomed_panes.insert(tab, pane);
+        self.show_toast("Pane zoomed".into(), cx);
+    }
+
+    /// Terminal font zoom step (Ctrl +/-) and reset (Ctrl+0). Multiplier
+    /// on the configured size; the grid resize path follows automatically.
+    fn zoom_font(&mut self, step: FontZoom, cx: &mut Context<Self>) {
+        const FACTOR: f32 = 1.125;
+        const MIN: f32 = 0.5;
+        const MAX: f32 = 3.0;
+        self.font_zoom = match step {
+            FontZoom::In => (self.font_zoom * FACTOR).min(MAX),
+            FontZoom::Out => (self.font_zoom / FACTOR).max(MIN),
+            FontZoom::Reset => 1.0,
+        };
+        cx.notify();
+    }
+
     /// Cycle project selection by `delta` (wraps both ends). Shared by the
     /// `Alt+PageUp/PageDown` chord and the sidebar pager buttons.
     fn cycle_project(&mut self, delta: i32, cx: &mut Context<Self>) {
@@ -9870,7 +9937,10 @@ impl WorkspaceView {
 
     /// Resolve (once per font size) and cache the terminal font set.
     fn fonts(&mut self, cx: &App) -> ResolvedFonts {
-        let font_size = px(self.font_size);
+        // Effective size includes the session zoom multiplier; the cache
+        // keys on it so zooming re-resolves metrics (and the PTY grid
+        // follows through the normal resize path).
+        let font_size = px(self.font_size * self.font_zoom);
         if self
             .fonts
             .as_ref()
@@ -10552,6 +10622,39 @@ impl WorkspaceView {
             && self.terminal_search.contains_key(&session)
         {
             return self.on_search_key(event, session, cx);
+        }
+
+        // Pane zoom toggle: global workspace chrome (`Alt+Z` is otherwise
+        // unused by any surface, editor included).
+        if event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && key_name == "z"
+        {
+            self.toggle_pane_zoom(cx);
+            return;
+        }
+        // Terminal font zoom: Ctrl +/- steps, Ctrl+0 resets. Global chrome;
+        // only the terminal grid consumes the size (the editor keeps its
+        // own metrics), so this never disturbs document layout. Names are
+        // raw GPUI keysyms here (`-`, not `minus`); note `key_name` above
+        // strips underscores, so `_` would arrive empty.
+        if event.keystroke.modifiers.control && !event.keystroke.modifiers.alt {
+            match event.keystroke.key.to_lowercase().as_str() {
+                "-" | "_" => {
+                    self.zoom_font(FontZoom::Out, cx);
+                    return;
+                }
+                "=" | "+" => {
+                    self.zoom_font(FontZoom::In, cx);
+                    return;
+                }
+                "0" | ")" => {
+                    self.zoom_font(FontZoom::Reset, cx);
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // Workspace commands (M2 bindings, preserved for M4). These take
@@ -11863,17 +11966,23 @@ impl WorkspaceView {
         );
         let window_width: f32 = px(shell.main_view.2).max(px(1.0)).into();
         let window_height: f32 = px(shell.main_view.3).max(px(1.0)).into();
+        // A zoomed pane owns the whole main view; hidden siblings keep
+        // their stale grids and resize back on unzoom (grid_sizes compare).
+        let zoomed_pane = self.zoomed_leaf().map(|leaf| leaf.id);
         for pane_rect in self.coordinator.tree().pane_rects() {
             let Some(session_id) = self.coordinator.session_id_for_pane(pane_rect.pane) else {
                 continue;
             };
-            let cols =
-                ((window_width * pane_rect.rect.width / cell_width).floor() as u16).clamp(2, 500);
+            let (w_frac, h_frac) = if Some(pane_rect.pane) == zoomed_pane {
+                (1.0, 1.0)
+            } else {
+                (pane_rect.rect.width, pane_rect.rect.height)
+            };
+            let cols = ((window_width * w_frac / cell_width).floor() as u16).clamp(2, 500);
             // Every leaf carries the v5 header (32px + 1px border) and
             // footer (28px + 1px border): the grid gets the canvas remainder
             // so rows are never hidden behind the chrome.
-            let rows = ((window_height * pane_rect.rect.height - LEAF_CHROME_H) / line_height)
-                .floor() as u16;
+            let rows = ((window_height * h_frac - LEAF_CHROME_H) / line_height).floor() as u16;
             let rows = rows.clamp(1, 500);
             if cols < 2 || rows < 2 {
                 continue;
@@ -16311,7 +16420,7 @@ impl WorkspaceView {
                 .h_full()
                 .flex()
                 .items_center()
-                .child(format!("{:.0}px", self.font_size)),
+                .child(format!("{:.0}px", self.font_size * self.font_zoom)),
         );
         right = right.child(
             div()
@@ -16895,12 +17004,16 @@ impl Render for WorkspaceView {
         )
         .main_view
         .2;
-        let content = self
-            .coordinator
-            .tree()
-            .root()
-            .cloned()
-            .map(|root| self.render_node(&root, window, cx))
+        // Zoomed panes bypass the split tree: the maximized leaf renders
+        // full-area while splits, sessions, and focus stay intact.
+        let node: Option<PaneNode> = if let Some(leaf) = self.zoomed_leaf() {
+            Some(PaneNode::Pane(leaf))
+        } else {
+            self.coordinator.tree().root().cloned()
+        };
+        let content = node
+            .as_ref()
+            .map(|root| self.render_node(root, window, cx))
             .unwrap_or_else(|| {
                 if let Some((message, _)) = self.spawn_failure.clone() {
                     return div()
