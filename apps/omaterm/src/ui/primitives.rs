@@ -31,8 +31,8 @@ pub fn kbd() -> Div {
     div()
         .rounded(px(4.0))
         .border_1()
-        .border_color(rgb(0x313B48))
-        .bg(rgb(0x161B22))
+        .border_color(rgb(theme::KBD_BORDER))
+        .bg(rgb(theme::KBD_BG))
         .px(px(6.0))
         .py(px(2.0))
 }
@@ -42,5 +42,5 @@ pub fn kbd() -> Div {
 /// the element's own text color, so the parent tint is not inherited).
 pub fn cmd_icon(asset: &'static str, size_px: f32, color: u32) -> gpui::Svg {
     use gpui::prelude::InteractiveElement as _;
-    assets::icon(asset, size_px, color).hover(|s| s.text_color(rgb(0xFFFFFF)))
+    assets::icon(asset, size_px, color).hover(|s| s.text_color(rgb(theme::WHITE)))
 }

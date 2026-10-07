@@ -41,6 +41,20 @@ pub const INFO_ICON_BOX_BG: u32 = 0x10151A;
 pub const GIT_BADGE_BG: u32 = 0x222B36;
 pub const COMMIT_HOVER_BG: u32 = 0x3D8BF8;
 pub const TERMINAL_CURSOR: u32 = 0x95D7FF;
+/// Plain white for pressed toggle icons and `cmd:hover` foreground.
+pub const WHITE: u32 = 0xFFFFFF;
+/// Keyboard-hint badge fill and border (see `primitives::kbd`).
+pub const KBD_BG: u32 = 0x161B22;
+pub const KBD_BORDER: u32 = 0x313B48;
+/// Active editor line number (brighter than `LINE_NO`); hue reserved for
+/// the full syntax palette.
+pub const ACTIVE_LINE_NO: u32 = 0x768193;
+/// Comment-token approximation until the full syntax palette lands.
+pub const COMMENT_TOKEN: u32 = 0x6A9955;
+/// Finder match-highlight accent (VSCode-style); hue reserved vs `BLUE2`.
+pub const MATCH_ACCENT: u32 = 0x4C9AFF;
+/// Editor selection wash as HSLA components (GPUI `hsla` has no hex form).
+pub const SELECTION_HSLA: (f32, f32, f32, f32) = (0.591, 0.92, 0.578, 0.35);
 
 pub const LINE_NO: u32 = 0x515D6D;
 pub const LINE_NO_ADD: u32 = 0x5D8A67;

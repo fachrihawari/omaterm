@@ -160,9 +160,6 @@ const FOLDER_OPEN_ICON: FileIcon = FileIcon {
     color: Some(0xA1A1AA),
 };
 
-/// VSCode-style match-highlight accent for finder results.
-pub const MATCH_ACCENT: u32 = 0x4C9AFF;
-
 /// Exact inspector tree row height (mock): 28px rows, 11px labels.
 pub const TREE_ROW_H: f32 = 28.0;
 

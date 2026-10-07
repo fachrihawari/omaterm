@@ -681,7 +681,7 @@ fn sidebar_toggle(visible: bool) -> Div {
             crate::ui::theme::HEADER_BG
         }))
         .text_color(rgb(if visible {
-            0xFFFFFF
+            crate::ui::theme::WHITE
         } else {
             crate::ui::theme::MUTED
         }))
@@ -691,7 +691,7 @@ fn sidebar_toggle(visible: bool) -> Div {
 /// is visible, muted otherwise.
 fn sidebar_toggle_icon(visible: bool) -> u32 {
     if visible {
-        0xFFFFFF
+        crate::ui::theme::WHITE
     } else {
         crate::ui::theme::MUTED
     }
@@ -8119,7 +8119,8 @@ impl WorkspaceView {
                                     HighlightStyle {
                                         color: Some(rgb(fg).into()),
                                         background_color: if in_selection {
-                                            Some(hsla(0.591, 0.92, 0.578, 0.35))
+                                            let (h, s, l, a) = crate::ui::theme::SELECTION_HSLA;
+                                            Some(hsla(h, s, l, a))
                                         } else {
                                             None
                                         },
@@ -8139,7 +8140,7 @@ impl WorkspaceView {
                                 .text_size(px(EDITOR_FONT_SIZE))
                                 .text_color(rgb(crate::ui::theme::TEXT));
                             if line == caret_line {
-                                row = row.bg(rgb(0x141A21));
+                                row = row.bg(rgb(crate::ui::theme::ACTIVE_TAB_BG));
                             }
                             row = row
                                 .child(
@@ -8152,9 +8153,9 @@ impl WorkspaceView {
                                         .pr(px(14.0))
                                         .text_size(px(10.0))
                                         .text_color(rgb(if line == caret_line {
-                                            0x768193
+                                            crate::ui::theme::ACTIVE_LINE_NO
                                         } else {
-                                            0x515D6D
+                                            crate::ui::theme::LINE_NO
                                         }))
                                         // Gutter presses select the whole line
                                         // (and begin a drag like the code area).
@@ -11144,7 +11145,7 @@ impl WorkspaceView {
         {
             snapshot.rows.push(tail.clone());
         }
-        let cursor_color: Hsla = rgb(0xE4E4E7).into();
+        let cursor_color: Hsla = rgb(crate::ui::theme::TERMINAL_CURSOR).into();
         let show_scrollbar = self
             .scroll_indicator_until
             .get(&session_id)
@@ -12096,7 +12097,7 @@ impl WorkspaceView {
                         crate::ui::metrics::BODY_11_MEDIUM,
                     )
                     .text_color(rgb(if can_commit {
-                        0xFFFFFF
+                        crate::ui::theme::WHITE
                     } else {
                         crate::ui::theme::MUTED
                     }))
@@ -13451,7 +13452,7 @@ impl WorkspaceView {
                             crate::ui::theme::EDITOR_BG
                         }))
                         .text_color(rgb(if selected {
-                            0xFFFFFF
+                            crate::ui::theme::WHITE
                         } else {
                             crate::ui::theme::MUTED
                         }))
@@ -14626,7 +14627,7 @@ impl WorkspaceView {
                     crate::ui::theme::PANEL
                 }))
                 .text_color(rgb(if active {
-                    0xFFFFFF
+                    crate::ui::theme::WHITE
                 } else {
                     crate::ui::theme::TEXT2
                 }))
@@ -14732,7 +14733,7 @@ impl WorkspaceView {
                             crate::ui::theme::PANEL
                         }))
                         .text_color(rgb(if diff_active {
-                            0xFFFFFF
+                            crate::ui::theme::WHITE
                         } else {
                             crate::ui::theme::TEXT2
                         }))
@@ -14834,7 +14835,7 @@ impl WorkspaceView {
                             crate::ui::theme::PANEL
                         }))
                         .text_color(rgb(if active {
-                            0xFFFFFF
+                            crate::ui::theme::WHITE
                         } else {
                             crate::ui::theme::TEXT2
                         }))
@@ -15111,7 +15112,7 @@ impl WorkspaceView {
         ] {
             let active = self.inspector_tab == tab;
             let glyph_color = if active {
-                0xFFFFFF
+                crate::ui::theme::WHITE
             } else {
                 crate::ui::theme::MUTED
             };
@@ -15127,7 +15128,7 @@ impl WorkspaceView {
                 crate::ui::metrics::BODY_11,
             )
             .text_color(rgb(if active {
-                0xFFFFFF
+                crate::ui::theme::WHITE
             } else {
                 crate::ui::theme::MUTED
             }))
@@ -15945,7 +15946,9 @@ impl WorkspaceView {
                             .bg(rgb(if selected { 0x27272A } else { 0x18181B }))
                             .text_color(rgb(if selected { 0xFAFAFA } else { 0xA1A1AA }));
                         if selected {
-                            row = row.border_l_2().border_color(rgb(files::MATCH_ACCENT));
+                            row = row
+                                .border_l_2()
+                                .border_color(rgb(crate::ui::theme::MATCH_ACCENT));
                         }
                         row.on_mouse_down(
                             MouseButton::Left,
@@ -17007,7 +17010,7 @@ fn diff_row_decor(kind: omaterm_core::DiffLineKind) -> Div {
 /// full token palette lands.
 fn token_color(kind: editor::TokenKind) -> u32 {
     match kind {
-        editor::TokenKind::Comment => 0x6A9955,
+        editor::TokenKind::Comment => crate::ui::theme::COMMENT_TOKEN,
         editor::TokenKind::String => crate::ui::theme::ORANGE,
         editor::TokenKind::Number => crate::ui::theme::CYAN,
         editor::TokenKind::Keyword => crate::ui::theme::PURPLE,
