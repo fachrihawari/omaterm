@@ -106,6 +106,11 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `git fetch [--remote NAME]` | `git.fetch` | Git Fetch | Fetch + prune from the default remote; never touches the worktree |
 | `git pull [--remote NAME]` | `git.pull` | Git Pull | Pull --ff-only the upstream; refused on dirty/diverged/no-upstream |
 | `git push [--set-upstream]` | `git.push` | Git Push | Push the current branch; refused on detached/no-upstream/non-fast-forward |
+| `git stash-list` | `git.stash-list` | Git StashList | Bounded stash entries, newest first |
+| `git stash-push MESSAGE [--untracked]` | `git.stash-push` | Git StashPush | Stash tracked changes with a message (`-u` for untracked) |
+| `git stash-apply INDEX` | `git.stash-apply` | Git StashApply | Re-apply an entry without dropping it |
+| `git stash-pop INDEX` | `git.stash-pop` | Git StashPop | Re-apply an entry and drop it on success |
+| `git stash-drop INDEX` | `git.stash-drop` | Git StashDrop | Drop a stash entry (destructive) |
 | `diff show-commit COMMIT --path PATH [--old-path PATH] [--parent OID|empty_tree]` | `diff.show-commit` | Diff ShowCommit | One committed path pair against a chosen base; strictly read-only historical preview |
 | `git stage PATHS...` | `git.stage` | Git Stage | Stages 1–100 explicit root-relative paths (`git add --`) |
 | `git unstage PATHS...` | `git.unstage` | Git Unstage | Restores the index for 1–100 paths, worktree kept |

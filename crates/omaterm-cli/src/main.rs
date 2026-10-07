@@ -342,8 +342,14 @@ mod tests {
             &["omaterm", "git", "pull"],
             &["omaterm", "git", "push"],
             &["omaterm", "git", "push", "--set-upstream"],
+            &["omaterm", "git", "stash-list"],
+            &["omaterm", "git", "stash-push", "wip"],
+            &["omaterm", "git", "stash-push", "wip", "--untracked"],
+            &["omaterm", "git", "stash-apply", "0"],
+            &["omaterm", "git", "stash-pop", "0"],
+            &["omaterm", "git", "stash-drop", "0"],
         ];
-        assert_eq!(cases.len(), 58);
+        assert_eq!(cases.len(), 64);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");

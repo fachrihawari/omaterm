@@ -285,6 +285,33 @@ pub enum GitCommand {
         project: ProjectId,
         set_upstream: bool,
     },
+    /// Bounded stash listing, newest first (C9.3). Non-repos return the
+    /// empty envelope, like status.
+    StashList {
+        project: ProjectId,
+    },
+    /// Stash tracked changes with `message`; `untracked` adds `-u`.
+    /// Nothing-to-stash fails honestly through git.
+    StashPush {
+        project: ProjectId,
+        message: String,
+        untracked: bool,
+    },
+    /// Re-apply an entry without dropping it (conflicts fail honestly).
+    StashApply {
+        project: ProjectId,
+        index: usize,
+    },
+    /// Re-apply an entry and drop it on success (conflicts keep it).
+    StashPop {
+        project: ProjectId,
+        index: usize,
+    },
+    /// Drop an entry (destructive; the desktop arms two-step).
+    StashDrop {
+        project: ProjectId,
+        index: usize,
+    },
 }
 
 /// Read-only unified-diff viewer over `git diff` (M15, blueprint §33).

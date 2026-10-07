@@ -253,6 +253,14 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
                 return invalid("git remote must be 1 to 255 bytes with no control characters");
             }
         }
+        OmaCommand::Git(GitCommand::StashPush { message, .. }) => {
+            if message.is_empty()
+                || message.len() > MAX_GIT_MESSAGE_BYTES
+                || message.chars().any(char::is_control)
+            {
+                return invalid("stash message must be 1 to 4096 bytes with no control characters");
+            }
+        }
         OmaCommand::Diff(DiffCommand::ShowCommit {
             old_path,
             path,
@@ -403,6 +411,36 @@ mod tests {
             }))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn git_stash_push_rejects_empty_and_control_messages() {
+        let project = ProjectId::new();
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::StashPush {
+                project,
+                message: String::new(),
+                untracked: false,
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::StashPush {
+                project,
+                message: "bad\nmessage".into(),
+                untracked: false,
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::StashPush {
+                project,
+                message: "wip".into(),
+                untracked: true,
+            }))
+            .is_ok()
+        );
+        assert!(validate(&OmaCommand::Git(GitCommand::StashList { project })).is_ok());
     }
 
     #[test]

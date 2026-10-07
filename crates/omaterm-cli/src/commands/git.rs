@@ -102,6 +102,52 @@ pub enum GitCmd {
         #[arg(long)]
         set_upstream: bool,
     },
+    /// List stashes, newest first.
+    #[command(name = "stash-list")]
+    StashList {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Stash tracked changes with a message.
+    #[command(name = "stash-push")]
+    StashPush {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Stash message (single line).
+        message: String,
+        /// Also stash untracked files (-u).
+        #[arg(long)]
+        untracked: bool,
+    },
+    /// Re-apply a stash entry without dropping it.
+    #[command(name = "stash-apply")]
+    StashApply {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Stash index (newest is 0).
+        index: usize,
+    },
+    /// Re-apply a stash entry and drop it on success.
+    #[command(name = "stash-pop")]
+    StashPop {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Stash index (newest is 0).
+        index: usize,
+    },
+    /// Drop a stash entry (destructive).
+    #[command(name = "stash-drop")]
+    StashDrop {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Stash index (newest is 0).
+        index: usize,
+    },
     /// List local branches with HEAD identity and upstream tracking.
     BranchList {
         /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
@@ -360,6 +406,45 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 "set_upstream": set_upstream,
             }),
         }),
+        GitCmd::StashList { project } => Ok(WireCall {
+            method: "git.stash-list".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+            }),
+        }),
+        GitCmd::StashPush {
+            project,
+            message,
+            untracked,
+        } => Ok(WireCall {
+            method: "git.stash-push".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "message": message,
+                "untracked": untracked,
+            }),
+        }),
+        GitCmd::StashApply { project, index } => Ok(WireCall {
+            method: "git.stash-apply".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "index": index,
+            }),
+        }),
+        GitCmd::StashPop { project, index } => Ok(WireCall {
+            method: "git.stash-pop".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "index": index,
+            }),
+        }),
+        GitCmd::StashDrop { project, index } => Ok(WireCall {
+            method: "git.stash-drop".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "index": index,
+            }),
+        }),
         GitCmd::CommitFiles {
             project,
             commit,
@@ -406,6 +491,46 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn stash_commands_map_to_wire() {
+        let call = build(&GitCmd::StashList { project: None }).unwrap();
+        assert_eq!(call.method, "git.stash-list");
+        let call = build(&GitCmd::StashPush {
+            project: None,
+            message: "wip".into(),
+            untracked: true,
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.stash-push");
+        assert_eq!(call.params["untracked"], true);
+        for (cmd, method) in [
+            (
+                GitCmd::StashApply {
+                    project: None,
+                    index: 0,
+                },
+                "git.stash-apply",
+            ),
+            (
+                GitCmd::StashPop {
+                    project: None,
+                    index: 1,
+                },
+                "git.stash-pop",
+            ),
+            (
+                GitCmd::StashDrop {
+                    project: None,
+                    index: 2,
+                },
+                "git.stash-drop",
+            ),
+        ] {
+            let call = build(&cmd).unwrap();
+            assert_eq!(call.method, method);
+        }
     }
 
     #[test]

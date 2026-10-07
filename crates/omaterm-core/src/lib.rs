@@ -27,10 +27,10 @@ pub use result::{
     FileEntry, FileKind, FileListInfo, GitBranch, GitBranchList, GitBranchTrack, GitCommitDetails,
     GitCommitFile, GitCommitFileKind, GitCommitFiles, GitCommitSummary, GitComparisonBase,
     GitEntry, GitHistoryCursor, GitHistoryCursorError, GitHistoryPage, GitHistoryScope,
-    GitObjectId, GitObjectIdError, GitRef, GitRefKind, GitStatusInfo, GitTimestamp,
-    HistoryStatusInfo, JournalEntryInfo, MAX_GIT_HISTORY_CURSOR_BYTES, MAX_PROCESS_ENTRIES,
-    PaneInfo, ProcessEntryInfo, ProcessListInfo, ProjectInfo, ProjectRootInfo, RootSource, TabInfo,
-    TerminalInfo,
+    GitObjectId, GitObjectIdError, GitRef, GitRefKind, GitStashEntry, GitStashList, GitStatusInfo,
+    GitTimestamp, HistoryStatusInfo, JournalEntryInfo, MAX_GIT_HISTORY_CURSOR_BYTES,
+    MAX_PROCESS_ENTRIES, PaneInfo, ProcessEntryInfo, ProcessListInfo, ProjectInfo, ProjectRootInfo,
+    RootSource, TabInfo, TerminalInfo,
 };
 pub use tab::Tab;
 pub use workspace::{Workspace, WorkspaceWindow};

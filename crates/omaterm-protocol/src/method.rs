@@ -188,6 +188,24 @@ pub struct GitSyncPush {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitStashList {
+    pub project_id: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitStashPush {
+    pub project_id: Option<String>,
+    pub message: String,
+    pub untracked: Option<bool>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitStashIndex {
+    pub project_id: Option<String>,
+    pub index: usize,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiffShowCommit {
     pub project_id: Option<String>,
     pub commit: String,
@@ -286,6 +304,11 @@ pub enum Method {
     GitSyncFetch(GitSyncFetch),
     GitSyncPull(GitSyncPull),
     GitSyncPush(GitSyncPush),
+    GitStashList(GitStashList),
+    GitStashPush(GitStashPush),
+    GitStashApply(GitStashIndex),
+    GitStashPop(GitStashIndex),
+    GitStashDrop(GitStashIndex),
     GitStage(GitPaths),
     GitStageHunk(GitStageHunk),
     GitUnstage(GitPaths),
@@ -355,6 +378,11 @@ impl Method {
             "git.fetch" => decode!(GitSyncFetch, GitSyncFetch),
             "git.pull" => decode!(GitSyncPull, GitSyncPull),
             "git.push" => decode!(GitSyncPush, GitSyncPush),
+            "git.stash-list" => decode!(GitStashList, GitStashList),
+            "git.stash-push" => decode!(GitStashPush, GitStashPush),
+            "git.stash-apply" => decode!(GitStashIndex, GitStashApply),
+            "git.stash-pop" => decode!(GitStashIndex, GitStashPop),
+            "git.stash-drop" => decode!(GitStashIndex, GitStashDrop),
             "git.stage" => decode!(GitPaths, GitStage),
             "git.stage-hunk" => decode!(GitStageHunk, GitStageHunk),
             "git.unstage" => decode!(GitPaths, GitUnstage),
@@ -477,8 +505,13 @@ mod tests {
             ("git.fetch", serde_json::json!({})),
             ("git.pull", serde_json::json!({})),
             ("git.push", serde_json::json!({})),
+            ("git.stash-list", serde_json::json!({})),
+            ("git.stash-push", serde_json::json!({"message": "wip"})),
+            ("git.stash-apply", serde_json::json!({"index": 0})),
+            ("git.stash-pop", serde_json::json!({"index": 0})),
+            ("git.stash-drop", serde_json::json!({"index": 0})),
         ];
-        assert_eq!(cases.len(), 52);
+        assert_eq!(cases.len(), 57);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

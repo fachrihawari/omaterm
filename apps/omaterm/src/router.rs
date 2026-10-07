@@ -13,11 +13,11 @@ use crate::editor::{
 use crate::history::HistoryManager;
 use omaterm_core::{
     CommandContext, CommandError, CommandOutput, CommandResult, DiffCommand, EditorCommand,
-    ErrorCode, FileCommand, FileListInfo, GitBranchList, GitCommand, GitStatusInfo, HistoryCommand,
-    HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES, OmaCommand, PaneCommand, PaneContent,
-    PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo, ProcessListInfo, ProjectCommand, ProjectId,
-    ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand, TabId, TabInfo,
-    TerminalCommand, TerminalInfo,
+    ErrorCode, FileCommand, FileListInfo, GitBranchList, GitCommand, GitStashList, GitStatusInfo,
+    HistoryCommand, HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES, OmaCommand,
+    PaneCommand, PaneContent, PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo, ProcessListInfo,
+    ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand,
+    TabId, TabInfo, TerminalCommand, TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
@@ -1662,7 +1662,12 @@ impl CommandRouter {
             | OmaCommand::Git(GitCommand::BranchRename { project, .. })
             | OmaCommand::Git(GitCommand::SyncFetch { project, .. })
             | OmaCommand::Git(GitCommand::SyncPull { project, .. })
-            | OmaCommand::Git(GitCommand::SyncPush { project, .. }) => Some(*project),
+            | OmaCommand::Git(GitCommand::SyncPush { project, .. })
+            | OmaCommand::Git(GitCommand::StashList { project })
+            | OmaCommand::Git(GitCommand::StashPush { project, .. })
+            | OmaCommand::Git(GitCommand::StashApply { project, .. })
+            | OmaCommand::Git(GitCommand::StashPop { project, .. })
+            | OmaCommand::Git(GitCommand::StashDrop { project, .. }) => Some(*project),
             OmaCommand::Diff(DiffCommand::Show { project, .. })
             | OmaCommand::Diff(DiffCommand::ListFiles { project, .. })
             | OmaCommand::Diff(DiffCommand::ShowCommit { project, .. }) => Some(*project),
@@ -1750,7 +1755,11 @@ impl CommandRouter {
                 | GitCommand::BranchRename { project, .. }
                 | GitCommand::SyncFetch { project, .. }
                 | GitCommand::SyncPull { project, .. }
-                | GitCommand::SyncPush { project, .. },
+                | GitCommand::SyncPush { project, .. }
+                | GitCommand::StashPush { project, .. }
+                | GitCommand::StashApply { project, .. }
+                | GitCommand::StashPop { project, .. }
+                | GitCommand::StashDrop { project, .. },
             ) => Some(*project),
             _ => None,
         };
@@ -3052,6 +3061,56 @@ impl CommandRouter {
             }) => self.git_branch_mutation(context, project, |root| {
                 omaterm_context::git_push(root, set_upstream).map(|_| ())
             }),
+            OmaCommand::Git(GitCommand::StashList { project }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return ok(Out::GitStashList(GitStashList::empty()));
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_stash_list(&root) {
+                    Ok(list) => ok(Out::GitStashList(GitStashList {
+                        stashes: list
+                            .stashes
+                            .into_iter()
+                            .map(|stash| omaterm_core::GitStashEntry {
+                                index: stash.index,
+                                name: stash.name,
+                                subject: stash.subject,
+                                oid: stash.oid,
+                            })
+                            .collect(),
+                        truncated: list.truncated,
+                    })),
+                    Err(omaterm_context::GitError::NotARepo) => {
+                        ok(Out::GitStashList(GitStashList::empty()))
+                    }
+                    Err(error) => git_error(error),
+                }
+            }
+            OmaCommand::Git(GitCommand::StashPush {
+                project,
+                message,
+                untracked,
+            }) => self.git_branch_mutation(context, project, |root| {
+                omaterm_context::git_stash_push(root, message.as_str(), untracked).map(|_| ())
+            }),
+            OmaCommand::Git(GitCommand::StashApply { project, index }) => {
+                self.git_branch_mutation(context, project, |root| {
+                    omaterm_context::git_stash_apply(root, index)
+                })
+            }
+            OmaCommand::Git(GitCommand::StashPop { project, index }) => {
+                self.git_branch_mutation(context, project, |root| {
+                    omaterm_context::git_stash_pop(root, index)
+                })
+            }
+            OmaCommand::Git(GitCommand::StashDrop { project, index }) => {
+                self.git_branch_mutation(context, project, |root| {
+                    omaterm_context::git_stash_drop(root, index)
+                })
+            }
             OmaCommand::Git(GitCommand::Stage { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Stage)
             }
@@ -6817,6 +6876,99 @@ mod tests {
             CommandContext::LocalUser,
             OmaCommand::Project(ProjectCommand::Delete { project }),
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_stash_push_list_pop_round_trip() {
+        use omaterm_core::GitCommand;
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let root = std::env::temp_dir().join(format!("omaterm-c93-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-b", "main"]);
+        git(&root, &["config", "user.email", "c93@test"]);
+        git(&root, &["config", "user.name", "c93"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), b"v1\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "init"]);
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        std::fs::write(root.join("a.txt"), b"v2\n").unwrap();
+        let pushed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::StashPush {
+                project,
+                message: "wip".into(),
+                untracked: false,
+            }),
+        );
+        assert_eq!(pushed.result, CommandResult::Ok(CommandOutput::Unit));
+        assert!(
+            matches!(pushed.effects.as_slice(), [CommandEffect::GitChanged(owner)] if *owner == project)
+        );
+
+        let listed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::StashList { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStashList(list)) = listed.result else {
+            panic!("stash list");
+        };
+        assert_eq!(list.stashes.len(), 1);
+        assert_eq!(list.stashes[0].index, 0);
+        assert!(listed.effects.is_empty());
+
+        let popped = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::StashPop { project, index: 0 }),
+        );
+        assert_eq!(popped.result, CommandResult::Ok(CommandOutput::Unit));
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "v2\n");
+
+        // Empty stash message is rejected by validation, not git.
+        let invalid = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::StashPush {
+                project,
+                message: String::new(),
+                untracked: false,
+            }),
+        );
+        assert!(matches!(
+            invalid.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 

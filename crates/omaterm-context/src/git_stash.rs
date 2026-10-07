@@ -104,7 +104,10 @@ pub fn git_stash_list(root: &Path) -> Result<GitStashList, GitError> {
         let Ok(index) = index.parse::<usize>() else {
             continue;
         };
-        let subject = rest.splitn(2, ": ").nth(1).unwrap_or("").trim().to_owned();
+        let subject = rest
+            .split_once(": ")
+            .map(|(_, subject)| subject.trim().to_owned())
+            .unwrap_or_default();
         stashes.push(GitStash {
             index,
             name: format!("stash@{{{index}}}"),

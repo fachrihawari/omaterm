@@ -212,6 +212,7 @@ pub enum CommandOutput {
     GitStatus(GitStatusInfo),
     GitHistory(GitHistoryPage),
     GitBranchList(GitBranchList),
+    GitStashList(GitStashList),
     GitCommitFiles(GitCommitFiles),
     GitCommitted {
         oid: String,
@@ -448,6 +449,33 @@ impl GitBranchList {
             head: None,
             detached_oid: None,
             branches: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+/// One stash entry (C9.3): stable reflog index, description, commit oid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStashEntry {
+    pub index: usize,
+    pub name: String,
+    pub subject: String,
+    pub oid: String,
+}
+
+/// Bounded stash listing, newest first. `truncated` is accurate whenever
+/// the entry cap drops stashes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStashList {
+    pub stashes: Vec<GitStashEntry>,
+    pub truncated: bool,
+}
+
+impl GitStashList {
+    /// Explicit empty envelope for pinned non-repo directories.
+    pub const fn empty() -> Self {
+        Self {
+            stashes: Vec::new(),
             truncated: false,
         }
     }

@@ -86,6 +86,16 @@ fn git_branch_name(raw: &str) -> Result<String, &'static str> {
     }
 }
 
+/// Bounded stash message: non-empty single line, 4096 bytes max (mirrors
+/// core validation; the router re-validates).
+fn stash_message(raw: &str) -> Result<&str, &'static str> {
+    if raw.is_empty() || raw.len() > 4096 || raw.chars().any(char::is_control) {
+        Err("stash message must be 1 to 4096 bytes with no control characters")
+    } else {
+        Ok(raw)
+    }
+}
+
 fn git_paths(raw: &[String]) -> Result<Vec<std::path::PathBuf>, &'static str> {
     if raw.is_empty() || raw.len() > MAX_GIT_PATHS {
         return Err("git paths must contain 1 to 100 entries");
@@ -398,6 +408,26 @@ pub fn map_request(
                 project: resolve_project(p.project_id)?,
                 set_upstream: p.set_upstream.unwrap_or(false),
             }),
+            Method::GitStashList(p) => OmaCommand::Git(GitCommand::StashList {
+                project: resolve_project(p.project_id)?,
+            }),
+            Method::GitStashPush(p) => OmaCommand::Git(GitCommand::StashPush {
+                project: resolve_project(p.project_id)?,
+                message: stash_message(&p.message)?.to_owned(),
+                untracked: p.untracked.unwrap_or(false),
+            }),
+            Method::GitStashApply(p) => OmaCommand::Git(GitCommand::StashApply {
+                project: resolve_project(p.project_id)?,
+                index: p.index,
+            }),
+            Method::GitStashPop(p) => OmaCommand::Git(GitCommand::StashPop {
+                project: resolve_project(p.project_id)?,
+                index: p.index,
+            }),
+            Method::GitStashDrop(p) => OmaCommand::Git(GitCommand::StashDrop {
+                project: resolve_project(p.project_id)?,
+                index: p.index,
+            }),
             Method::GitStage(p) => OmaCommand::Git(GitCommand::Stage {
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,
@@ -600,6 +630,10 @@ fn output_json(output: CommandOutput) -> Value {
             }
             let truncated = list.truncated || list.branches.len() > LIST_LIMIT;
             json!({"head":list.head,"detached_oid":list.detached_oid,"branches":list.branches.into_iter().take(LIST_LIMIT).map(|branch| json!({"name":branch.name,"upstream":branch.upstream,"track":track(&branch.track),"is_head":branch.is_head})).collect::<Vec<_>>(),"truncated":truncated})
+        }
+        CommandOutput::GitStashList(list) => {
+            let truncated = list.truncated || list.stashes.len() > LIST_LIMIT;
+            json!({"stashes":list.stashes.into_iter().take(LIST_LIMIT).map(|stash| json!({"index":stash.index,"name":stash.name,"subject":stash.subject,"oid":stash.oid})).collect::<Vec<_>>(),"truncated":truncated})
         }
         CommandOutput::GitHistory(page) => {
             let truncated = page.truncated || page.commits.len() > LIST_LIMIT;
