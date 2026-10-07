@@ -382,6 +382,39 @@ pub struct GitStatusInfo {
     pub truncated: bool,
 }
 
+/// One local branch from `git for-each-ref` (C9.1). `upstream` is the
+/// configured upstream short name, if any; `track` is the symbolic
+/// tracking state (`=`/`>`/`<`/`<>`/none) — exact ahead/behind numbers
+/// are read on demand for the current branch only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitBranch {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub track: GitBranchTrack,
+    pub is_head: bool,
+}
+
+/// Symbolic upstream tracking state from `%(upstream:trackshort)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitBranchTrack {
+    UpToDate,
+    Ahead(usize),
+    Behind(usize),
+    Diverged { ahead: usize, behind: usize },
+    NoUpstream,
+}
+
+/// Bounded local branch listing with HEAD identity. `head` is `None` on
+/// detached HEAD (then `detached_oid` carries the short oid); `truncated`
+/// is accurate whenever the ref cap drops branches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitBranchList {
+    pub head: Option<String>,
+    pub detached_oid: Option<String>,
+    pub branches: Vec<GitBranch>,
+    pub truncated: bool,
+}
+
 /// A canonical full Git object ID. History operations deliberately accept full
 /// SHA-1 (40 hex) or SHA-256 (64 hex) IDs only: abbreviated revisions and rev
 /// expressions make a selected historical comparison ambiguous or mutable.

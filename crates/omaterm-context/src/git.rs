@@ -61,6 +61,10 @@ pub enum GitError {
     Timeout,
     #[error("git operation was cancelled")]
     Cancelled,
+    #[error("worktree has staged or unstaged changes")]
+    DirtyWorktree,
+    #[error("branch is currently checked out")]
+    CurrentBranch,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -76,6 +80,8 @@ impl GitError {
             Self::PathOutsideRoot => "path_outside_root",
             Self::Timeout => "timeout",
             Self::Cancelled => "cancelled",
+            Self::DirtyWorktree => "dirty_worktree",
+            Self::CurrentBranch => "current_branch",
             Self::Io(_) => "io_error",
         }
     }
