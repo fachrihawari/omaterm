@@ -136,9 +136,12 @@ struct WorkspaceView {
     keybindings_open: bool,
     keybindings_query: String,
     keybindings_selected: usize,
-    /// Project whose context menu is open. The menu is transient view chrome;
-    /// keeping it outside the card preserves the reference card height.
-    project_context_menu: Option<ProjectId>,
+    /// Open project context menu: owning project plus the window-relative
+    /// click anchor it is rendered at. The menu is a single window-level
+    /// overlay (see `render_project_menu_overlay`), never a child of a card:
+    /// a card child would paint behind later sibling cards and clip inside
+    /// the scrolling project list.
+    project_context_menu: Option<(ProjectId, gpui::Point<Pixels>)>,
     ipc_server: Option<IpcServer>,
     ipc_receiver: Option<async_channel::Receiver<IpcWork>>,
     ipc_pending: HashMap<u64, IpcWork>,
@@ -878,6 +881,24 @@ fn route_alt_strip(
 /// Pure over GPUI-free inputs so the rule is unit-testable.
 fn is_project_jump_key(key_name: &str, control: bool, alt: bool) -> bool {
     alt && !control && shortcuts::alt_shift_project_index(key_name).is_some()
+}
+
+/// Clamp a context-menu anchor into the viewport so the whole menu box
+/// stays visible, with an 8px margin. Pure over floats so the geometry
+/// is unit-testable without a window.
+fn clamp_menu_anchor(
+    anchor_x: f32,
+    anchor_y: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    menu_w: f32,
+    menu_h: f32,
+) -> (f32, f32) {
+    const MARGIN: f32 = 8.0;
+    (
+        anchor_x.min(viewport_w - menu_w - MARGIN).max(MARGIN),
+        anchor_y.min(viewport_h - menu_h - MARGIN).max(MARGIN),
+    )
 }
 
 /// Primary file activation: plain activation is native; only an explicit
@@ -10012,6 +10033,14 @@ impl WorkspaceView {
         if self.keybindings_open {
             return self.on_keybindings_key(event, cx);
         }
+        // The project context menu is transient chrome: Esc dismisses it
+        // without touching selection. Palette/cheatsheet own Esc while open
+        // (handled above), so this arm runs only when neither owns input.
+        if self.project_context_menu.is_some() && key_name == "escape" {
+            self.project_context_menu = None;
+            cx.notify();
+            return;
+        }
         if event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
             && !event.keystroke.modifiers.alt
@@ -13969,9 +13998,6 @@ impl WorkspaceView {
             );
             let path = self.project_path_label(project);
             let active = selected == Some(id);
-            let close_id = id;
-            let pick_id = id;
-            let context_menu_open = self.project_context_menu == Some(id);
             let label = if self.show_project_hints && index < 9 {
                 format!("Alt+Shift+{} · {name}", index + 1)
             } else {
@@ -13984,8 +14010,10 @@ impl WorkspaceView {
             };
             // Measured card: 8px radius, 1px border (transparent when
             // inactive), 10px padding; name 12px (500 active / 400 idle),
-            // branch 10px, path 9px; inactive hover #171d25.
-            let mut card = div()
+            // branch 10px, path 9px; inactive hover #171d25. The card owns
+            // no menu chrome: the context menu is a window-level overlay
+            // anchored at the right-click point (card geometry is fixed).
+            let card = div()
                 .w_full()
                 .relative()
                 .rounded(px(8.0))
@@ -14025,13 +14053,13 @@ impl WorkspaceView {
                 )
                 .on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(move |view, _, window, cx| {
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                         if view.shutting_down {
                             return;
                         }
                         cx.stop_propagation();
                         window.focus(&view.focus_handle);
-                        view.project_context_menu = Some(id);
+                        view.project_context_menu = Some((id, event.position));
                         cx.notify();
                     }),
                 )
@@ -14075,67 +14103,6 @@ impl WorkspaceView {
                     .truncate()
                     .child(path),
                 );
-            // Actions live in a transient context menu so selection never
-            // changes the measured 57.5px card geometry.
-            if context_menu_open {
-                card = card.child(
-                    div()
-                        .absolute()
-                        .top(px(60.0))
-                        .right(px(0.0))
-                        .w(px(132.0))
-                        .p(px(4.0))
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(rgb(crate::ui::theme::BORDER2))
-                        .bg(rgb(crate::ui::theme::PANEL2))
-                        .text_color(rgb(crate::ui::theme::TEXT2))
-                        .child(
-                            div()
-                                .h(px(28.0))
-                                .flex()
-                                .items_center()
-                                .px(px(8.0))
-                                .rounded(px(4.0))
-                                .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        view.project_context_menu = None;
-                                        view.pick_project_directory(pick_id, cx);
-                                    }),
-                                )
-                                .child("Change directory"),
-                        )
-                        .child(
-                            div()
-                                .h(px(28.0))
-                                .flex()
-                                .items_center()
-                                .px(px(8.0))
-                                .rounded(px(4.0))
-                                .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        view.project_context_menu = None;
-                                        view.close_project(close_id, cx);
-                                    }),
-                                )
-                                .child("Close project"),
-                        ),
-                );
-            }
             cards.push(card);
         }
         div()
@@ -14251,6 +14218,88 @@ impl WorkspaceView {
                             ),
                     ),
             )
+    }
+
+    /// Window-level project context menu overlay, anchored at the right-click
+    /// point and clamped into the viewport. Rendered once at the window root
+    /// (after all panels) so it always paints above sibling cards and never
+    /// clips inside the scrolling project list. `None` renders nothing.
+    fn render_project_menu_overlay(
+        &self,
+        viewport: gpui::Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement;
+        let Some((id, anchor)) = self.project_context_menu else {
+            return div().into_any_element();
+        };
+        // Menu box: 132px wide, two 28px rows + 8px padding = 64px tall.
+        const MENU_W: f32 = 132.0;
+        const MENU_H: f32 = 64.0;
+        let viewport_w: f32 = viewport.width.into();
+        let viewport_h: f32 = viewport.height.into();
+        let anchor_x: f32 = anchor.x.into();
+        let anchor_y: f32 = anchor.y.into();
+        let (left, top) =
+            clamp_menu_anchor(anchor_x, anchor_y, viewport_w, viewport_h, MENU_W, MENU_H);
+        let pick_id = id;
+        let close_id = id;
+        div()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(MENU_W))
+            .p(px(4.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::BORDER2))
+            .bg(rgb(crate::ui::theme::PANEL2))
+            .text_color(rgb(crate::ui::theme::TEXT2))
+            .child(
+                div()
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .px(px(8.0))
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.project_context_menu = None;
+                            view.pick_project_directory(pick_id, cx);
+                        }),
+                    )
+                    .child("Change directory"),
+            )
+            .child(
+                div()
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .px(px(8.0))
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.project_context_menu = None;
+                            view.close_project(close_id, cx);
+                        }),
+                    )
+                    .child("Close project"),
+            )
+            .into_any_element()
     }
 
     /// 4px Projects resizer: transparent at rest, highlighted while the
@@ -16663,7 +16712,14 @@ impl Render for WorkspaceView {
         div()
             .relative()
             .track_focus(&self.focus_handle)
-            .on_any_mouse_down(cx.listener(|view, _, _, cx| {
+            .on_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                // Click-outside dismiss for the project context menu.
+                // Menu rows stop propagation, but closing here too is
+                // the same outcome; Right is ignored so the opener
+                // (right-click on a card) never immediately closes.
+                if event.button == MouseButton::Left && view.project_context_menu.take().is_some() {
+                    cx.notify();
+                }
                 if !view.wheel_motions.is_empty() {
                     view.wheel_motions.clear();
                     view.terminal_pixel_offsets.clear();
@@ -16725,6 +16781,9 @@ impl Render for WorkspaceView {
                 .absolute()
                 .size_full(),
             )
+            // Window-level overlay: paints above every panel (including
+            // later sibling project cards) and never clips in the scroll list.
+            .child(self.render_project_menu_overlay(viewport, cx))
     }
 }
 
@@ -17600,9 +17659,9 @@ mod tests {
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
         FileActivation, InputOwner, InspectorTab, NativeOpenTarget, PaletteFileIndexCache,
         PaletteSearchRequest, PaletteSearchWorker, StripRoute, WorkspaceView,
-        captured_targets_stale, discard_before_action, file_activation, function_key_number,
-        is_project_jump_key, metrics_job_counts, native_open_may_activate, pending_timing_elapsed,
-        revalidate_captured_targets, route_alt_strip, select_mono_family,
+        captured_targets_stale, clamp_menu_anchor, discard_before_action, file_activation,
+        function_key_number, is_project_jump_key, metrics_job_counts, native_open_may_activate,
+        pending_timing_elapsed, revalidate_captured_targets, route_alt_strip, select_mono_family,
     };
     use crate::editor::DocumentStore;
     use crate::editor::EditorCaret;
@@ -18480,6 +18539,31 @@ mod tests {
         assert!(!is_project_jump_key("!", true, true));
         assert!(!is_project_jump_key("!", false, false));
         assert!(!is_project_jump_key("1", false, false));
+    }
+
+    #[test]
+    fn project_menu_anchor_stays_inside_the_viewport() {
+        // Interior clicks keep their position.
+        assert_eq!(
+            clamp_menu_anchor(100.0, 100.0, 1440.0, 900.0, 132.0, 64.0),
+            (100.0, 100.0)
+        );
+        // Near the right/bottom edges the box shifts so it stays visible.
+        assert_eq!(
+            clamp_menu_anchor(1400.0, 860.0, 1440.0, 900.0, 132.0, 64.0),
+            (1300.0, 828.0)
+        );
+        // Tiny viewports and negative anchors clamp to the margin, never off-screen.
+        assert_eq!(
+            clamp_menu_anchor(-20.0, -20.0, 1440.0, 900.0, 132.0, 64.0),
+            (8.0, 8.0)
+        );
+        // A 100px viewport is smaller than the box: x pins to the margin,
+        // y sits as high as possible while keeping the bottom visible.
+        assert_eq!(
+            clamp_menu_anchor(50.0, 50.0, 100.0, 100.0, 132.0, 64.0),
+            (8.0, 28.0)
+        );
     }
 
     #[test]
