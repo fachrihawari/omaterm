@@ -687,6 +687,9 @@ pub struct GitCommitSummary {
     pub author_time: GitTimestamp,
     pub subject: String,
     pub refs: Vec<GitRef>,
+    /// Full commit body (may be empty); truncated at read time with
+    /// `body_truncated` semantics owned by the reader contract.
+    pub body: String,
     /// The history walk reached a shallow boundary whose unavailable parent is
     /// not represented as a root commit.
     pub shallow_boundary: bool,

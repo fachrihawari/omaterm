@@ -11,7 +11,8 @@ use std::os::unix::ffi::OsStringExt;
 
 use omaterm_core::{
     DiffInfo, GitCommitFile, GitCommitFileKind, GitCommitFiles, GitCommitSummary,
-    GitComparisonBase, GitHistoryPage, GitHistoryScope, GitObjectId, GitRef, GitTimestamp,
+    GitComparisonBase, GitHistoryPage, GitHistoryScope, GitObjectId, GitRef, GitRefKind,
+    GitTimestamp,
 };
 
 use crate::diff::{MAX_DIFF_BYTES, MAX_DIFF_CONTEXT_LINES, parse_diff};
@@ -26,12 +27,15 @@ pub const MAX_GIT_HISTORY_BYTES: usize = 1024 * 1024;
 /// Maximum author/subject display fields retained in a graph row.
 pub const MAX_GIT_HISTORY_AUTHOR_BYTES: usize = 256;
 pub const MAX_GIT_HISTORY_SUBJECT_BYTES: usize = 1024;
+/// Largest full commit body kept per history row (C9.4). Subjects stay
+/// capped separately; parsing truncates bodies at this bound.
+pub const MAX_GIT_COMMIT_BODY_BYTES: usize = 8 * 1024;
 /// Maximum changed-file records retained for one expanded commit.
 pub const MAX_GIT_COMMIT_FILES: usize = 500;
 /// Maximum raw `git diff --raw` output retained for one commit file listing.
 pub const MAX_GIT_COMMIT_FILES_BYTES: usize = 1024 * 1024;
 
-const FIELDS_PER_COMMIT: usize = 7;
+const FIELDS_PER_COMMIT: usize = 9;
 
 /// Read the first page of commit graph metadata. The extra record establishes
 /// `has_more` without a second subprocess. No path limiting is used because it
@@ -53,7 +57,9 @@ pub fn git_history(
         "--no-patch".to_owned(),
         "-z".to_owned(),
         format!("--max-count={count}"),
-        "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%aI%x00%s".to_owned(),
+        // %D is the decoration list (`HEAD -> main, origin/main, tag: v1`);
+        // parsed into GitRef entries for badges, never shown raw.
+        "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%aI%x00%s%x00%D%x00%B".to_owned(),
     ];
     match scope {
         GitHistoryScope::CurrentHead => args.push("HEAD".to_owned()),
@@ -422,9 +428,51 @@ fn parse_record(record: &[&[u8]]) -> Option<GitCommitSummary> {
             offset_minutes,
         },
         subject: truncate_utf8(record[6], MAX_GIT_HISTORY_SUBJECT_BYTES),
-        refs: Vec::<GitRef>::new(),
+        refs: parse_decorations(record[7]),
+        body: truncate_utf8(record[8], MAX_GIT_COMMIT_BODY_BYTES),
         shallow_boundary: false,
     })
+}
+
+/// Parse `%D` decoration text (`HEAD -> main, origin/main, tag: v1`) into
+/// `GitRef` entries. `HEAD -> x` marks the ref HEAD points at; bare `HEAD`
+/// (detached) becomes a head-kind entry. Unknown shapes drop (never fabricate).
+fn parse_decorations(raw: &[u8]) -> Vec<GitRef> {
+    let text = String::from_utf8_lossy(raw);
+    let mut refs = Vec::new();
+    for part in text.split(", ") {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(target) = part.strip_prefix("HEAD -> ") {
+            refs.push(GitRef {
+                name: target.to_owned(),
+                kind: GitRefKind::Head,
+            });
+        } else if part == "HEAD" {
+            refs.push(GitRef {
+                name: "HEAD".to_owned(),
+                kind: GitRefKind::Head,
+            });
+        } else if let Some(tag) = part.strip_prefix("tag: ") {
+            refs.push(GitRef {
+                name: tag.to_owned(),
+                kind: GitRefKind::Tag,
+            });
+        } else if part.contains('/') {
+            refs.push(GitRef {
+                name: part.to_owned(),
+                kind: GitRefKind::RemoteTracking,
+            });
+        } else {
+            refs.push(GitRef {
+                name: part.to_owned(),
+                kind: GitRefKind::LocalBranch,
+            });
+        }
+    }
+    refs
 }
 
 fn parse_iso_offset(value: &str) -> Option<i16> {
@@ -473,6 +521,33 @@ mod tests {
             "10",
             "1970-01-01T00:00:10+05:30",
             subject,
+            "",
+            "",
+        ]
+        .join("\0")
+        .into_bytes()
+        .into_iter()
+        .chain(std::iter::once(0))
+        .collect()
+    }
+
+    fn record_full(
+        id: &str,
+        parents: &str,
+        subject: &str,
+        decorations: &str,
+        body: &str,
+    ) -> Vec<u8> {
+        [
+            id,
+            parents,
+            "Ada",
+            "ada@example.test",
+            "10",
+            "1970-01-01T00:00:10+05:30",
+            subject,
+            decorations,
+            body,
         ]
         .join("\0")
         .into_bytes()
@@ -496,6 +571,28 @@ mod tests {
     }
 
     #[test]
+    fn decorations_and_body_parse_into_badges_and_text() {
+        let mut bytes = record_full(
+            SHA1_A,
+            SHA1_B,
+            "first",
+            "HEAD -> main, origin/main, tag: v1",
+            "multi\nline body",
+        );
+        bytes.extend(record(SHA1_B, "", "second"));
+        let page = parse_history_log(&bytes, false, 10);
+        assert!(!page.truncated);
+        assert_eq!(page.commits.len(), 2);
+        let kinds: Vec<GitRefKind> = page.commits[0].refs.iter().map(|r| r.kind).collect();
+        assert!(kinds.contains(&GitRefKind::Head));
+        assert!(kinds.contains(&GitRefKind::RemoteTracking));
+        assert!(kinds.contains(&GitRefKind::Tag));
+        assert_eq!(page.commits[0].body, "multi\nline body");
+        assert!(page.commits[1].refs.is_empty());
+        assert_eq!(page.commits[1].body, "");
+    }
+
+    #[test]
     fn drops_partial_or_invalid_tail_without_fabricating_a_commit() {
         let mut bytes = record(SHA1_A, "", "first");
         bytes.extend_from_slice(SHA1_B.as_bytes());
@@ -511,7 +608,7 @@ mod tests {
     fn invalid_complete_record_is_reported_as_truncation() {
         let mut bytes = b"not-an-oid\0\0Ada\0a@b\0".to_vec();
         bytes.extend([b'0', 0]);
-        bytes.extend(b"1970-01-01T00:00:00+00:00\0x\0");
+        bytes.extend(b"1970-01-01T00:00:00+00:00\0x\0\0\0");
         let page = parse_history_log(&bytes, false, 10);
 
         assert!(page.truncated);

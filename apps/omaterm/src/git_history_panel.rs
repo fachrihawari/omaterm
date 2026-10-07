@@ -648,6 +648,7 @@ mod tests {
             },
             subject: subject.into(),
             refs: Vec::<GitRef>::new(),
+            body: String::new(),
             shallow_boundary: false,
         }
     }
