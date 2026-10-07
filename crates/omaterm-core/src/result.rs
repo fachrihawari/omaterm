@@ -213,6 +213,7 @@ pub enum CommandOutput {
     GitHistory(GitHistoryPage),
     GitBranchList(GitBranchList),
     GitStashList(GitStashList),
+    GitBlame(GitBlame),
     GitCommitFiles(GitCommitFiles),
     GitCommitted {
         oid: String,
@@ -476,6 +477,37 @@ impl GitStashList {
     pub const fn empty() -> Self {
         Self {
             stashes: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+/// One blamed line (C9.4): 1-based final line number, short commit oid,
+/// author, commit time, subject, and whether the line is uncommitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitBlameLine {
+    pub line: usize,
+    pub commit: String,
+    pub author: String,
+    pub author_time: i64,
+    pub subject: String,
+    pub uncommitted: bool,
+}
+
+/// Bounded per-file blame, final-line order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitBlame {
+    pub path: PathBuf,
+    pub lines: Vec<GitBlameLine>,
+    pub truncated: bool,
+}
+
+impl GitBlame {
+    /// Explicit empty envelope for pinned non-repo directories.
+    pub const fn empty() -> Self {
+        Self {
+            path: PathBuf::new(),
+            lines: Vec::new(),
             truncated: false,
         }
     }

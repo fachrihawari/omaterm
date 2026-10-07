@@ -13,11 +13,11 @@ use crate::editor::{
 use crate::history::HistoryManager;
 use omaterm_core::{
     CommandContext, CommandError, CommandOutput, CommandResult, DiffCommand, EditorCommand,
-    ErrorCode, FileCommand, FileListInfo, GitBranchList, GitCommand, GitStashList, GitStatusInfo,
-    HistoryCommand, HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES, OmaCommand,
-    PaneCommand, PaneContent, PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo, ProcessListInfo,
-    ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand,
-    TabId, TabInfo, TerminalCommand, TerminalInfo,
+    ErrorCode, FileCommand, FileListInfo, GitBlame, GitBranchList, GitCommand, GitStashList,
+    GitStatusInfo, HistoryCommand, HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES,
+    OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo,
+    ProcessListInfo, ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo, SessionId,
+    SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand, TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
@@ -1667,7 +1667,8 @@ impl CommandRouter {
             | OmaCommand::Git(GitCommand::StashPush { project, .. })
             | OmaCommand::Git(GitCommand::StashApply { project, .. })
             | OmaCommand::Git(GitCommand::StashPop { project, .. })
-            | OmaCommand::Git(GitCommand::StashDrop { project, .. }) => Some(*project),
+            | OmaCommand::Git(GitCommand::StashDrop { project, .. })
+            | OmaCommand::Git(GitCommand::Blame { project, .. }) => Some(*project),
             OmaCommand::Diff(DiffCommand::Show { project, .. })
             | OmaCommand::Diff(DiffCommand::ListFiles { project, .. })
             | OmaCommand::Diff(DiffCommand::ShowCommit { project, .. }) => Some(*project),
@@ -3085,6 +3086,37 @@ impl CommandRouter {
                     })),
                     Err(omaterm_context::GitError::NotARepo) => {
                         ok(Out::GitStashList(GitStashList::empty()))
+                    }
+                    Err(error) => git_error(error),
+                }
+            }
+            OmaCommand::Git(GitCommand::Blame { project, path }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return ok(Out::GitBlame(GitBlame::empty()));
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_blame(&root, path.as_path()) {
+                    Ok(blame) => ok(Out::GitBlame(GitBlame {
+                        path: blame.path,
+                        lines: blame
+                            .lines
+                            .into_iter()
+                            .map(|line| omaterm_core::GitBlameLine {
+                                line: line.line,
+                                commit: line.commit,
+                                author: line.author,
+                                author_time: line.author_time,
+                                subject: line.subject,
+                                uncommitted: line.uncommitted,
+                            })
+                            .collect(),
+                        truncated: blame.truncated,
+                    })),
+                    Err(omaterm_context::GitError::NotARepo) => {
+                        ok(Out::GitBlame(GitBlame::empty()))
                     }
                     Err(error) => git_error(error),
                 }
@@ -6876,6 +6908,80 @@ mod tests {
             CommandContext::LocalUser,
             OmaCommand::Project(ProjectCommand::Delete { project }),
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_blame_attributes_lines_through_the_bus() {
+        use omaterm_core::GitCommand;
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let root = std::env::temp_dir().join(format!("omaterm-c94-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-b", "main"]);
+        git(&root, &["config", "user.email", "c94@test"]);
+        git(&root, &["config", "user.name", "c94"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), b"one\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "init"]);
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        let blamed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Blame {
+                project,
+                path: std::path::PathBuf::from("a.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::GitBlame(blame)) = blamed.result else {
+            panic!("git blame");
+        };
+        assert_eq!(blame.lines.len(), 1);
+        assert_eq!(blame.lines[0].line, 1);
+        assert!(!blame.truncated);
+        assert!(blamed.effects.is_empty());
+
+        // Uncommitted edits flag without hiding the line.
+        std::fs::write(root.join("a.txt"), b"one\nTWO\n").unwrap();
+        let blamed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Blame {
+                project,
+                path: std::path::PathBuf::from("a.txt"),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::GitBlame(blame)) = blamed.result else {
+            panic!("git blame dirty");
+        };
+        assert_eq!(blame.lines.len(), 2);
+        assert!(blame.lines[1].uncommitted);
         let _ = std::fs::remove_dir_all(&root);
     }
 

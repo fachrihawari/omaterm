@@ -312,6 +312,11 @@ pub enum GitCommand {
         project: ProjectId,
         index: usize,
     },
+    /// Bounded per-file blame (C9.4). Non-repos return the empty envelope.
+    Blame {
+        project: ProjectId,
+        path: PathBuf,
+    },
 }
 
 /// Read-only unified-diff viewer over `git diff` (M15, blueprint §33).

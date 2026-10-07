@@ -206,6 +206,12 @@ pub struct GitStashIndex {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitBlame {
+    pub project_id: Option<String>,
+    pub path: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiffShowCommit {
     pub project_id: Option<String>,
     pub commit: String,
@@ -309,6 +315,7 @@ pub enum Method {
     GitStashApply(GitStashIndex),
     GitStashPop(GitStashIndex),
     GitStashDrop(GitStashIndex),
+    GitBlame(GitBlame),
     GitStage(GitPaths),
     GitStageHunk(GitStageHunk),
     GitUnstage(GitPaths),
@@ -383,6 +390,7 @@ impl Method {
             "git.stash-apply" => decode!(GitStashIndex, GitStashApply),
             "git.stash-pop" => decode!(GitStashIndex, GitStashPop),
             "git.stash-drop" => decode!(GitStashIndex, GitStashDrop),
+            "git.blame" => decode!(GitBlame, GitBlame),
             "git.stage" => decode!(GitPaths, GitStage),
             "git.stage-hunk" => decode!(GitStageHunk, GitStageHunk),
             "git.unstage" => decode!(GitPaths, GitUnstage),
@@ -510,8 +518,9 @@ mod tests {
             ("git.stash-apply", serde_json::json!({"index": 0})),
             ("git.stash-pop", serde_json::json!({"index": 0})),
             ("git.stash-drop", serde_json::json!({"index": 0})),
+            ("git.blame", serde_json::json!({"path": "src/main.rs"})),
         ];
-        assert_eq!(cases.len(), 57);
+        assert_eq!(cases.len(), 58);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

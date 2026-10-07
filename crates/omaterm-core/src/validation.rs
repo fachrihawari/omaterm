@@ -261,6 +261,16 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
                 return invalid("stash message must be 1 to 4096 bytes with no control characters");
             }
         }
+        OmaCommand::Git(GitCommand::Blame { path, .. }) => {
+            if path.as_os_str().is_empty()
+                || path.as_os_str().len() > MAX_GIT_PATH_BYTES
+                || path.to_string_lossy().chars().any(char::is_control)
+            {
+                return invalid(
+                    "blame path must be non-empty, at most 4096 bytes, with no control characters",
+                );
+            }
+        }
         OmaCommand::Diff(DiffCommand::ShowCommit {
             old_path,
             path,
@@ -408,6 +418,25 @@ mod tests {
             validate(&OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "subject\n\nbody\twith tab".into(),
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn git_blame_rejects_empty_and_control_paths() {
+        let project = ProjectId::new();
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Blame {
+                project,
+                path: std::path::PathBuf::new(),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::Blame {
+                project,
+                path: std::path::PathBuf::from("src/main.rs"),
             }))
             .is_ok()
         );

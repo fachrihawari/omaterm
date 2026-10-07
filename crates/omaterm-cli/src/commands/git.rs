@@ -148,6 +148,15 @@ pub enum GitCmd {
         /// Stash index (newest is 0).
         index: usize,
     },
+    /// Blame one file, line by line.
+    #[command(name = "blame")]
+    Blame {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Root-relative file path.
+        path: PathBuf,
+    },
     /// List local branches with HEAD identity and upstream tracking.
     BranchList {
         /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
@@ -205,6 +214,19 @@ pub enum GitCmd {
         #[arg(long)]
         parent: Option<String>,
     },
+}
+
+/// Single-path variant of `check_paths` for blame.
+fn check_path(path: &PathBuf) -> Result<(), String> {
+    if path.as_os_str().is_empty()
+        || path.as_os_str().len() > 4096
+        || path.to_string_lossy().chars().any(char::is_control)
+    {
+        return Err(
+            "blame path must be non-empty, at most 4096 bytes, with no control characters".into(),
+        );
+    }
+    Ok(())
 }
 
 fn check_paths(paths: &[PathBuf], verb: &str) -> Result<(), String> {
@@ -445,6 +467,16 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 "index": index,
             }),
         }),
+        GitCmd::Blame { project, path } => {
+            check_path(path)?;
+            Ok(WireCall {
+                method: "git.blame".into(),
+                params: json!({
+                    "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                    "path": path.to_string_lossy(),
+                }),
+            })
+        }
         GitCmd::CommitFiles {
             project,
             commit,
@@ -488,6 +520,24 @@ mod tests {
                 project: None,
                 path: PathBuf::from("a"),
                 hunk: 0
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn blame_maps_path_to_wire() {
+        let call = build(&GitCmd::Blame {
+            project: None,
+            path: PathBuf::from("src/main.rs"),
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.blame");
+        assert_eq!(call.params["path"], "src/main.rs");
+        assert!(
+            build(&GitCmd::Blame {
+                project: None,
+                path: PathBuf::new(),
             })
             .is_err()
         );

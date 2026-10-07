@@ -86,6 +86,16 @@ fn git_branch_name(raw: &str) -> Result<String, &'static str> {
     }
 }
 
+/// Bounded blame path: non-empty, 4096 bytes max, no control characters
+/// (mirrors core validation; the router re-validates and git resolves).
+fn git_blame_path(raw: &str) -> Result<std::path::PathBuf, &'static str> {
+    if raw.is_empty() || raw.len() > MAX_GIT_PATH_BYTES || raw.chars().any(char::is_control) {
+        Err("blame path must be non-empty, at most 4096 bytes, with no control characters")
+    } else {
+        Ok(std::path::PathBuf::from(raw))
+    }
+}
+
 /// Bounded stash message: non-empty single line, 4096 bytes max (mirrors
 /// core validation; the router re-validates).
 fn stash_message(raw: &str) -> Result<&str, &'static str> {
@@ -428,6 +438,10 @@ pub fn map_request(
                 project: resolve_project(p.project_id)?,
                 index: p.index,
             }),
+            Method::GitBlame(p) => OmaCommand::Git(GitCommand::Blame {
+                project: resolve_project(p.project_id)?,
+                path: git_blame_path(&p.path)?,
+            }),
             Method::GitStage(p) => OmaCommand::Git(GitCommand::Stage {
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,
@@ -634,6 +648,10 @@ fn output_json(output: CommandOutput) -> Value {
         CommandOutput::GitStashList(list) => {
             let truncated = list.truncated || list.stashes.len() > LIST_LIMIT;
             json!({"stashes":list.stashes.into_iter().take(LIST_LIMIT).map(|stash| json!({"index":stash.index,"name":stash.name,"subject":stash.subject,"oid":stash.oid})).collect::<Vec<_>>(),"truncated":truncated})
+        }
+        CommandOutput::GitBlame(blame) => {
+            let truncated = blame.truncated || blame.lines.len() > LIST_LIMIT;
+            json!({"path":blame.path,"lines":blame.lines.into_iter().take(LIST_LIMIT).map(|line| json!({"line":line.line,"commit":line.commit,"author":line.author,"author_time":line.author_time,"subject":line.subject,"uncommitted":line.uncommitted})).collect::<Vec<_>>(),"truncated":truncated})
         }
         CommandOutput::GitHistory(page) => {
             let truncated = page.truncated || page.commits.len() > LIST_LIMIT;

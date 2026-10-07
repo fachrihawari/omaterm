@@ -141,6 +141,7 @@ crates/omaterm-ipc/
 | `git.stash-apply` | `GitCommand::StashApply` |
 | `git.stash-pop` | `GitCommand::StashPop` |
 | `git.stash-drop` | `GitCommand::StashDrop` |
+| `git.blame` | `GitCommand::Blame` |
 | `git.stage` | `GitCommand::Stage` |
 | `git.stage-hunk` | `GitCommand::StageHunk` |
 | `git.unstage` | `GitCommand::Unstage` |

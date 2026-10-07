@@ -348,8 +348,9 @@ mod tests {
             &["omaterm", "git", "stash-apply", "0"],
             &["omaterm", "git", "stash-pop", "0"],
             &["omaterm", "git", "stash-drop", "0"],
+            &["omaterm", "git", "blame", "src/main.rs"],
         ];
-        assert_eq!(cases.len(), 64);
+        assert_eq!(cases.len(), 65);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");
