@@ -258,7 +258,9 @@ M17 pending; M19 melompat antrean. Sinyal perpetual-beta bagi pendatang baru.
 * Equalize chord mati → palette/IPC/CLI saja (`shortcuts.md:65-66`).
 * Empty-workspace terminal chord mati → `Ctrl+Shift+T` = new-tab (`:68`).
 * `Ctrl+P` finder lama → migrasi ke unified overlay (koeksistensi sementara).
-* `terminal.clear` stub `not implemented` (`router.rs:3355`).
+* ~~`terminal.clear` stub `not implemented`~~ — REMOVED (`844eb1b`):
+  variant + arm + test dihapus (tak terekspos IPC/CLI, tanpa engine support;
+  clear tetap kerjaan shell via `Ctrl+L`).
 * CLI 41 baris vs protokol 44 method (`process.*`, `git.history`,
   `git.commit-files`, `diff.show-commit` ada kode tapi coverage/docs lag).
 
