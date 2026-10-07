@@ -52,6 +52,7 @@ Design rules:
 | `diff.hunk-copy` | `Ctrl+Shift+C` | Copy hunk, selection, or editor text | Diff/Terminal/Editor |
 | `terminal.paste` | `Ctrl+Shift+V` | Paste (two-step for risky content) | Terminal |
 | `terminal.scroll` | `Shift+PageUp/PageDown` | Scrollback (not in alt-screen) | Terminal |
+| `terminal.search` | `Ctrl+Shift+F` | Find in terminal scrollback (Enter next, Shift+Enter previous) | Terminal |
 | `history.opt-in` | `Ctrl+Shift+O` | Encrypted history opt-in/out (two-step) | Global |
 | `history.pause` | `Ctrl+Shift+G` | Pause/resume history capture | Global |
 | `history.clear` | `Ctrl+Shift+X` | Clear pane history (two-step) | Global |

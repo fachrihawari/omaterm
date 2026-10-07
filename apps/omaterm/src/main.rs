@@ -29,9 +29,9 @@ use omaterm_state::{
     SnapshotStore, SnapshotWriter, WorkspaceSnapshot,
 };
 use omaterm_terminal::{
-    CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SelectionRange, TermColor,
-    TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
-    format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
+    CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SearchHit, SelectionRange,
+    TermColor, TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
+    find_hits, format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
 };
 mod credentials;
 mod diff_panel;
@@ -92,6 +92,8 @@ struct WorkspaceView {
     snapshots: HashMap<SessionId, TerminalViewport>,
     receivers: HashMap<SessionId, async_channel::Receiver<TerminalViewport>>,
     selections: HashMap<SessionId, SelectionRange>,
+    /// Open terminal find per session (Ctrl+Shift+F). Absent means closed.
+    terminal_search: HashMap<SessionId, TerminalSearch>,
     selecting: Option<PaneId>,
     scroll_indicator_until: HashMap<SessionId, Instant>,
     /// Fractional terminal wheel remainder in line units, per session.
@@ -899,6 +901,84 @@ fn cycle_project_index(current: usize, len: usize, delta: i32) -> Option<usize> 
     }
     let current = current.min(len - 1) as i32;
     Some(current.saturating_add(delta).rem_euclid(len as i32) as usize)
+}
+
+/// Cap on scrollback lines dumped per search scan. Matches the default
+/// engine scrollback so a full history is searchable without an unbounded
+/// allocation; deeper histories search their newest lines.
+const SEARCH_MAX_LINES: usize = 10_000;
+
+/// One painted search hit: viewport row, inclusive cell columns, and
+/// whether it is the current (selected) hit.
+struct SearchPaint {
+    row: usize,
+    c0: usize,
+    c1: usize,
+    current: bool,
+}
+
+/// Open per-session terminal find state. `hits` use dump coordinates
+/// (`line` counts from `dump[0]`); `base` is the absolute line of
+/// `dump[0]` so hits map onto the live viewport as history grows.
+struct TerminalSearch {
+    query: String,
+    hits: Vec<SearchHit>,
+    selected: usize,
+    base: usize,
+    total: usize,
+    screen: usize,
+    truncated: bool,
+}
+
+/// Target display offset revealing absolute line `hit` with minimal
+/// scroll (top-align hits above the viewport, bottom-align hits below).
+/// `None` when already visible. Pure for tests.
+fn search_target_offset(
+    hit: usize,
+    total: usize,
+    screen: usize,
+    offset: usize,
+    history: usize,
+) -> Option<usize> {
+    let screen = screen.max(1);
+    let low = total.saturating_sub(screen + offset);
+    let target = if hit < low {
+        total.saturating_sub(screen + hit)
+    } else if hit >= low + screen {
+        total.saturating_sub(hit + 1)
+    } else {
+        return None;
+    };
+    let target = target.min(history);
+    (target != offset).then_some(target)
+}
+
+/// Map open search hits onto viewport rows for painting. Pure over the
+/// state and snapshot so the row math is unit-testable without a window.
+fn search_paint_rows(search: &TerminalSearch, snapshot: &TerminalViewport) -> Vec<SearchPaint> {
+    let screen = search.screen.max(1);
+    let bottom = search.total.saturating_sub(snapshot.display_offset);
+    let top = bottom.saturating_sub(screen);
+    let mut painted = Vec::new();
+    for (index, hit) in search.hits.iter().enumerate() {
+        let absolute = search.base.saturating_add(hit.line);
+        if absolute < top || absolute >= top + screen {
+            continue;
+        }
+        let row = absolute - top;
+        let Some(cells) = snapshot.rows.get(row) else {
+            continue;
+        };
+        if let Some((c0, c1)) = omaterm_terminal::char_range_to_cells(cells, hit.col, hit.len) {
+            painted.push(SearchPaint {
+                row,
+                c0,
+                c1,
+                current: index == search.selected,
+            });
+        }
+    }
+    painted
 }
 
 /// Clamp a context-menu anchor into the viewport so the whole menu box
@@ -2046,6 +2126,7 @@ impl WorkspaceView {
             snapshots: HashMap::new(),
             receivers: HashMap::new(),
             selections: HashMap::new(),
+            terminal_search: HashMap::new(),
             selecting: None,
             scroll_indicator_until: HashMap::new(),
             terminal_scroll_remainder: HashMap::new(),
@@ -3102,6 +3183,9 @@ impl WorkspaceView {
                             return true;
                         }
                         view.snapshots.insert(session_id, viewport);
+                        // An open find follows live output: refresh hits
+                        // without revealing, so scroll never yanks.
+                        view.search_recompute(session_id, false, cx);
                         view.detect_cwd_changes(cx);
                         if view
                             .coordinator
@@ -3661,6 +3745,7 @@ impl WorkspaceView {
             rx.close();
         }
         self.selections.remove(&session_id);
+        self.terminal_search.remove(&session_id);
         self.scroll_indicator_until.remove(&session_id);
         self.terminal_scroll_remainder.remove(&session_id);
         self.wheel_motions
@@ -10447,6 +10532,28 @@ impl WorkspaceView {
             return;
         }
 
+        // Terminal find: Ctrl+Shift+F opens for the focused session; while
+        // open the session owns every key (see on_search_key) so nothing
+        // leaks into the PTY. Editor-owned input keeps editor behavior.
+        if event.keystroke.modifiers.control && event.keystroke.modifiers.shift && key_name == "f" {
+            if self
+                .input_owner
+                .is_some_and(|owner| owner.terminal_pane().is_some())
+                && let Some(session) = self.focused_session_id()
+            {
+                self.search_open(session, cx);
+            } else {
+                self.input_notice = Some("Search: no focused terminal".into());
+                cx.notify();
+            }
+            return;
+        }
+        if let Some(session) = self.focused_session_id()
+            && self.terminal_search.contains_key(&session)
+        {
+            return self.on_search_key(event, session, cx);
+        }
+
         // Workspace commands (M2 bindings, preserved for M4). These take
         // precedence over terminal input so layout never depends on the
         // foreground program.
@@ -10857,6 +10964,248 @@ impl WorkspaceView {
         true
     }
 
+    /// Open terminal find for `session` (Ctrl+Shift+F). Refused on the
+    /// alternate screen, which has no scrollback to search.
+    fn search_open(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        if self
+            .snapshots
+            .get(&session_id)
+            .is_some_and(|snapshot| snapshot.is_alt_screen)
+        {
+            self.input_notice = Some("Search unavailable in alternate screen".into());
+            cx.notify();
+            return;
+        }
+        self.terminal_search
+            .entry(session_id)
+            .or_insert(TerminalSearch {
+                query: String::new(),
+                hits: Vec::new(),
+                selected: 0,
+                base: 0,
+                total: 0,
+                screen: 0,
+                truncated: false,
+            });
+        self.input_notice = None;
+        cx.notify();
+    }
+
+    /// Close terminal find for `session`, leaving scroll position alone.
+    fn search_close(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        if self.terminal_search.remove(&session_id).is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Recompute hits for an open search from a fresh bounded dump.
+    /// `reveal` jumps to the current hit (query edits, navigation); the
+    /// snapshot poller passes false so flowing output never yanks scroll.
+    fn search_recompute(&mut self, session_id: SessionId, reveal: bool, cx: &mut Context<Self>) {
+        if !self.terminal_search.contains_key(&session_id) {
+            return;
+        }
+        let Some(snapshot) = self.snapshots.get(&session_id).cloned() else {
+            return;
+        };
+        if snapshot.is_alt_screen {
+            self.terminal_search.remove(&session_id);
+            self.input_notice = Some("Search unavailable in alternate screen".into());
+            cx.notify();
+            return;
+        }
+        let dump = self
+            .coordinator
+            .registry()
+            .get(session_id)
+            .and_then(|handle| {
+                handle
+                    .lock()
+                    .ok()
+                    .map(|session| session.scrollback_text(SEARCH_MAX_LINES))
+            })
+            .unwrap_or_default();
+        let total = snapshot.history_size + snapshot.lines as usize;
+        let screen = snapshot.lines as usize;
+        let base = total.saturating_sub(dump.len());
+        let Some(state) = self.terminal_search.get_mut(&session_id) else {
+            return;
+        };
+        let query = state.query.clone();
+        let hits = find_hits(&dump, &query);
+        state.truncated = hits.len() >= omaterm_terminal::MAX_SEARCH_HITS;
+        state.hits = hits;
+        state.base = base;
+        state.total = total;
+        state.screen = screen;
+        if state.hits.is_empty() {
+            state.selected = 0;
+        } else {
+            state.selected = state.selected.min(state.hits.len() - 1);
+        }
+        if reveal {
+            self.search_reveal(session_id, &snapshot);
+        }
+        cx.notify();
+    }
+
+    /// Scroll the viewport just enough to show the selected hit (no-op
+    /// when already visible). Minimal scroll: top-align hits above the
+    /// viewport, bottom-align hits below it.
+    fn search_reveal(&mut self, session_id: SessionId, snapshot: &TerminalViewport) {
+        let Some(state) = self.terminal_search.get(&session_id) else {
+            return;
+        };
+        let Some(hit) = state.hits.get(state.selected) else {
+            return;
+        };
+        let (absolute, total, screen, offset) = (
+            state.base.saturating_add(hit.line),
+            state.total,
+            state.screen,
+            snapshot.display_offset,
+        );
+        let Some(target) =
+            search_target_offset(absolute, total, screen, offset, snapshot.history_size)
+        else {
+            return;
+        };
+        if let Some(handle) = self.coordinator.registry().get(session_id)
+            && let Ok(mut session) = handle.lock()
+        {
+            session.scroll(ScrollCommand::Lines(target as i32 - offset as i32));
+        }
+    }
+
+    /// Step the selected hit with wraparound, revealing as needed.
+    fn search_step(&mut self, session_id: SessionId, delta: i32, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.snapshots.get(&session_id).cloned() else {
+            return;
+        };
+        let len = self
+            .terminal_search
+            .get(&session_id)
+            .map(|state| state.hits.len())
+            .unwrap_or(0);
+        if len == 0 {
+            return;
+        }
+        if let Some(state) = self.terminal_search.get_mut(&session_id) {
+            state.selected = (state.selected as i32 + delta).rem_euclid(len as i32) as usize;
+        }
+        self.search_reveal(session_id, &snapshot);
+        cx.notify();
+    }
+
+    /// Keyboard while a session find is open. Typing edits the query,
+    /// Enter/Shift+Enter steps through hits, Esc and Ctrl+Shift+F close.
+    /// Everything else is swallowed so nothing leaks into the PTY.
+    fn on_search_key(
+        &mut self,
+        event: &KeyDownEvent,
+        session_id: SessionId,
+        cx: &mut Context<Self>,
+    ) {
+        let modifiers = &event.keystroke.modifiers;
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        if key_name == "escape" {
+            self.search_close(session_id, cx);
+            return;
+        }
+        if key_name == "enter" || key_name == "return" || key_name == "kpenter" {
+            self.search_step(session_id, if modifiers.shift { -1 } else { 1 }, cx);
+            return;
+        }
+        if modifiers.control && modifiers.shift && key_name == "f" {
+            self.search_close(session_id, cx);
+            return;
+        }
+        if key_name == "backspace" && !modifiers.control && !modifiers.alt {
+            if let Some(state) = self.terminal_search.get_mut(&session_id) {
+                state.query.pop();
+            }
+            self.search_recompute(session_id, true, cx);
+            return;
+        }
+        if !modifiers.control
+            && !modifiers.alt
+            && let Some(text) = event.keystroke.key_char.as_ref()
+        {
+            let full = self.terminal_search.get(&session_id).is_some_and(|state| {
+                state.query.chars().count() >= omaterm_terminal::MAX_SEARCH_QUERY_CHARS
+            });
+            if full {
+                return;
+            }
+            let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+            if clean.is_empty() {
+                return;
+            }
+            if let Some(state) = self.terminal_search.get_mut(&session_id) {
+                state.query.push_str(&clean);
+            }
+            self.search_recompute(session_id, true, cx);
+        }
+    }
+
+    /// Floating find bar for an open session search: query (or a dimmed
+    /// prompt) plus position (`i/n`), `No matches`, or a `1000+` cap mark.
+    /// Clicking focuses without starting a drag selection; keys route
+    /// globally while open, so the bar itself owns no input.
+    fn render_search_bar(&self, session_id: SessionId, cx: &mut Context<Self>) -> Option<Div> {
+        let state = self.terminal_search.get(&session_id)?;
+        let status = if state.query.is_empty() {
+            "Type to search".to_string()
+        } else if state.hits.is_empty() {
+            "No matches".to_string()
+        } else {
+            let mark = if state.truncated { "+" } else { "" };
+            format!("{}/{}{}", state.selected + 1, state.hits.len(), mark)
+        };
+        Some(
+            div()
+                .absolute()
+                .top(px(34.0))
+                .right(px(8.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(rgb(crate::ui::theme::BORDER2))
+                .bg(rgb(crate::ui::theme::PANEL2))
+                .role(crate::ui::metrics::BODY_11)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&view.focus_handle);
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(if state.query.is_empty() {
+                            crate::ui::theme::MUTED
+                        } else {
+                            crate::ui::theme::TEXT
+                        }))
+                        .child(if state.query.is_empty() {
+                            "Search…".to_string()
+                        } else {
+                            state.query.clone()
+                        }),
+                )
+                .child(div().text_color(rgb(crate::ui::theme::MUTED)).child(status)),
+        )
+    }
+
     /// Explicit clipboard copy of the focused pane's selection (Ctrl+Shift+C).
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.focused_session_id() else {
@@ -11181,6 +11530,14 @@ impl WorkspaceView {
                 Some(range.normalized())
             }
         });
+        // Find hits mapped onto viewport rows for this frame. Empty unless
+        // a search is open for the session (recomputed on query edits and
+        // on every landed snapshot while open).
+        let search_paint = self
+            .terminal_search
+            .get(&session_id)
+            .map(|state| search_paint_rows(state, &snapshot))
+            .unwrap_or_default();
 
         // UI v5 pane chrome: 32px header (status dot, OSC title, pid),
         // hover-equivalent toolbar on the focused pane (hover-to-focus
@@ -11459,6 +11816,7 @@ impl WorkspaceView {
                                 cursor_color,
                                 show_scrollbar,
                                 selection,
+                                search: &search_paint,
                                 pixel_offset,
                             },
                             window,
@@ -11467,6 +11825,9 @@ impl WorkspaceView {
                     },
                 )),
         );
+        if let Some(bar) = self.render_search_bar(session_id, cx) {
+            leaf = leaf.child(bar);
+        }
         leaf.child(footer).into_any_element()
     }
 
@@ -17653,6 +18014,7 @@ struct PaintArgs<'a> {
     cursor_color: Hsla,
     show_scrollbar: bool,
     selection: Option<(CellPoint, CellPoint)>,
+    search: &'a [SearchPaint],
     pixel_offset: f32,
 }
 
@@ -17668,6 +18030,7 @@ fn paint_terminal(
     let cursor_color = args.cursor_color;
     let show_scrollbar = args.show_scrollbar;
     let selection = args.selection;
+    let search = args.search;
     let origin = origin_bounds.origin + gpui::point(px(0.0), px(args.pixel_offset));
     let cell_width = fonts.cell_width;
     let line_height = fonts.line_height;
@@ -17747,6 +18110,33 @@ fn paint_terminal(
                         },
                     },
                     rgba(0x3B82F64D),
+                ));
+            }
+        }
+
+        // Terminal find hits: every hit gets a yellow wash, the current
+        // hit a stronger orange one. Painted after selection so matches
+        // stay visible under an overlapping drag selection.
+        for hit in search.iter().filter(|hit| hit.row == row_idx) {
+            let last = row.cells.len().saturating_sub(1);
+            let (c0, c1) = (hit.c0.min(last), hit.c1.min(last));
+            if c1 >= c0 && !row.cells.is_empty() {
+                let x0 = origin.x + cell_width * (c0 as f32);
+                let x1 = origin.x + cell_width * ((c1 + 1) as f32);
+                let color = if hit.current {
+                    rgba(crate::ui::theme::with_alpha(crate::ui::theme::ORANGE, 0.5))
+                } else {
+                    rgba(crate::ui::theme::with_alpha(crate::ui::theme::YELLOW, 0.25))
+                };
+                window.paint_quad(gpui::fill(
+                    Bounds {
+                        origin: gpui::Point { x: x0, y },
+                        size: gpui::Size {
+                            width: x1 - x0,
+                            height: line_height,
+                        },
+                    },
+                    color,
                 ));
             }
         }
@@ -17986,11 +18376,11 @@ mod tests {
     use super::{
         CapturedVersion, DirtyAction, DirtyChoice, DirtyDecision, DocSaveOutcome, EditorLifecycle,
         FileActivation, InputOwner, InspectorTab, NativeOpenTarget, PaletteFileIndexCache,
-        PaletteSearchRequest, PaletteSearchWorker, StripRoute, WorkspaceView,
+        PaletteSearchRequest, PaletteSearchWorker, StripRoute, TerminalSearch, WorkspaceView,
         captured_targets_stale, clamp_menu_anchor, cycle_project_index, discard_before_action,
         file_activation, function_key_number, is_project_jump_key, metrics_job_counts,
         native_open_may_activate, pending_timing_elapsed, revalidate_captured_targets,
-        route_alt_strip, select_mono_family,
+        route_alt_strip, search_paint_rows, search_target_offset, select_mono_family,
     };
     use crate::editor::DocumentStore;
     use crate::editor::EditorCaret;
@@ -18893,6 +19283,77 @@ mod tests {
             clamp_menu_anchor(50.0, 50.0, 100.0, 100.0, 132.0, 64.0),
             (8.0, 28.0)
         );
+    }
+
+    #[test]
+    fn search_reveal_scrolls_minimally_and_stays_put_when_visible() {
+        // 100 total lines, 24-row viewport, bottom-anchored (offset 0):
+        // visible absolute lines are 76..100.
+        assert_eq!(search_target_offset(50, 100, 24, 0, 76), Some(26));
+        assert_eq!(search_target_offset(90, 100, 24, 0, 76), None);
+        assert_eq!(search_target_offset(99, 100, 24, 0, 76), None);
+        // Below the viewport bottom-aligns; above top-aligns.
+        assert_eq!(search_target_offset(99, 100, 24, 10, 76), Some(0));
+        // Never scrolls past scrollback top.
+        assert_eq!(search_target_offset(0, 100, 24, 50, 76), Some(76));
+        assert_eq!(search_target_offset(0, 10, 24, 0, 0), None);
+    }
+
+    #[test]
+    fn search_hits_map_onto_viewport_rows() {
+        use omaterm_terminal::{TerminalCell, TerminalRow};
+        let row = |text: &str| TerminalRow {
+            cells: text
+                .chars()
+                .map(|c| TerminalCell {
+                    text: c.to_string(),
+                    width: omaterm_terminal::CellWidth::Single,
+                    fg: omaterm_terminal::TermColor::DefaultFg,
+                    bg: omaterm_terminal::TermColor::DefaultBg,
+                    flags: omaterm_terminal::CellFlags::default(),
+                })
+                .collect(),
+        };
+        let snapshot = omaterm_terminal::TerminalViewport {
+            rows: vec![row("hello world"), row("nothing here")],
+            cursor: omaterm_terminal::CursorState {
+                row: 0,
+                col: 0,
+                shape: omaterm_terminal::CursorShape::Block,
+                visible: false,
+            },
+            cols: 11,
+            lines: 2,
+            display_offset: 0,
+            history_size: 0,
+            is_alt_screen: false,
+        };
+        let search = TerminalSearch {
+            query: "o".into(),
+            hits: vec![
+                omaterm_terminal::SearchHit {
+                    line: 0,
+                    col: 4,
+                    len: 1,
+                },
+                omaterm_terminal::SearchHit {
+                    line: 1,
+                    col: 1,
+                    len: 1,
+                },
+            ],
+            selected: 1,
+            base: 0,
+            total: 2,
+            screen: 2,
+            truncated: false,
+        };
+        let painted = search_paint_rows(&search, &snapshot);
+        assert_eq!(painted.len(), 2);
+        assert_eq!((painted[0].row, painted[0].c0, painted[0].c1), (0, 4, 4));
+        assert!(!painted[0].current);
+        assert_eq!((painted[1].row, painted[1].c0, painted[1].c1), (1, 1, 1));
+        assert!(painted[1].current);
     }
 
     #[test]

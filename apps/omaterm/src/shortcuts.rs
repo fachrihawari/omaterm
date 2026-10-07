@@ -170,6 +170,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
         context: "Terminal",
     },
     Shortcut {
+        id: "terminal.search",
+        chord: "Ctrl+Shift+F",
+        action: "Find in terminal scrollback (Enter next, Shift+Enter previous)",
+        context: "Terminal",
+    },
+    Shortcut {
         id: "history.opt-in",
         chord: "Ctrl+Shift+O",
         action: "Encrypted history opt-in/out (two-step)",
