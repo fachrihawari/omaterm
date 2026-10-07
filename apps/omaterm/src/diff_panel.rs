@@ -36,6 +36,12 @@ pub struct CommitPreviewSel {
     /// Bounded row metadata for the preview header (never refetched).
     pub subject: String,
     pub author_name: String,
+    /// Full commit message body for the expanded header (C9.4). `None`
+    /// until the details worker lands; worktree previews never set it.
+    pub body: Option<String>,
+    /// Parent oids for the merge parent selector (C9.4). Empty until the
+    /// details worker lands.
+    pub parents: Vec<GitObjectId>,
 }
 
 impl CommitPreviewSel {
@@ -1563,6 +1569,8 @@ mod tests {
                 path: PathBuf::from("a.txt"),
                 subject: "second".into(),
                 author_name: "Ada".into(),
+                body: None,
+                parents: Vec::new(),
             },
         );
         assert!(panel.selected_commit(project).is_some());
@@ -1611,6 +1619,8 @@ mod tests {
                 path: PathBuf::from("a.txt"),
                 subject: "second".into(),
                 author_name: "Ada".into(),
+                body: None,
+                parents: Vec::new(),
             },
         );
         panel.retain_project(Some(ProjectId::new()));

@@ -18,9 +18,9 @@ use gpui::{
 };
 use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
-    ErrorCode, FileCommand, FileEntry, GitBranchList, GitCommand, GitStashList, OmaCommand, Pane,
-    PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis,
-    SplitDirection, TabCommand, TabId, TerminalCommand,
+    ErrorCode, FileCommand, FileEntry, GitBlame, GitBranchList, GitCommand, GitStashList,
+    OmaCommand, Pane, PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId,
+    SessionId, SplitAxis, SplitDirection, TabCommand, TabId, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -303,6 +303,12 @@ struct WorkspaceView {
     /// synchronous dispatch (bounded 60s), so buttons disable while held
     /// instead of queueing duplicate fetches/pulls/pushes.
     sync_busy: bool,
+    /// Per-file blame, keyed by project/side/path/mode like the scroll
+    /// handles. Last-good rows with explicit empty states; fetched
+    /// on-demand when the blame toggle arms, never polled.
+    blame_rows: HashMap<(ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode), GitBlame>,
+    /// Paths with blame visible (toggled per preview file).
+    blame_visible: HashSet<(ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode)>,
     /// Stash message drafts per project (like commit drafts).
     stash_drafts: HashMap<ProjectId, String>,
     /// Project whose stash input owns the keyboard.
@@ -2245,6 +2251,8 @@ impl WorkspaceView {
             shutting_down: false,
             history_arm: None,
             sync_busy: false,
+            blame_rows: HashMap::new(),
+            blame_visible: HashSet::new(),
             stash_drafts: HashMap::new(),
             stash_focused: None,
             stash_untracked: HashSet::new(),
@@ -5477,6 +5485,8 @@ impl WorkspaceView {
                 path,
                 subject: summary.subject.clone(),
                 author_name: summary.author_name.clone(),
+                body: None,
+                parents: summary.parents.clone(),
             },
             cx,
         );
@@ -9024,6 +9034,80 @@ impl WorkspaceView {
                 }),
             )
             .child(if busy { "…" } else { label })
+    }
+
+    /// Toggle per-file blame for a worktree preview. Fetch rides the
+    /// shared dispatcher (bounded, synchronous like other git queries);
+    /// rows cache by project/side/path/mode and clear with the file.
+    fn toggle_blame(
+        &mut self,
+        project: ProjectId,
+        staged: bool,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (
+            project,
+            staged,
+            path.clone(),
+            self.diff_panel.diff_mode(project),
+        );
+        if self.blame_visible.remove(&key) {
+            cx.notify();
+            return;
+        }
+        match self.dispatch_command(
+            OmaCommand::Git(GitCommand::Blame {
+                project,
+                path: path.clone(),
+            }),
+            cx,
+        ) {
+            Ok(CommandOutput::GitBlame(blame)) => {
+                self.blame_rows.insert(key.clone(), blame);
+                self.blame_visible.insert(key);
+                cx.notify();
+            }
+            Ok(_) => {}
+            Err(error) => {
+                self.input_notice = Some(format!("Blame: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Blame chip text for a new-side line number, if blame is visible and
+    /// loaded for this preview file. `None` renders no chip (loading,
+    /// hidden, or unmapped line).
+    fn blame_chip(
+        &self,
+        project: ProjectId,
+        staged: bool,
+        path: &std::path::Path,
+        new_no: Option<u32>,
+    ) -> Option<String> {
+        let key = (
+            project,
+            staged,
+            path.to_path_buf(),
+            self.diff_panel.diff_mode(project),
+        );
+        if !self.blame_visible.contains(&key) {
+            return None;
+        }
+        let line = usize::try_from(new_no?).ok()?;
+        self.blame_rows
+            .get(&key)?
+            .lines
+            .iter()
+            .find(|entry| entry.line == line)
+            .map(|entry| {
+                if entry.uncommitted {
+                    "uncommitted".to_string()
+                } else {
+                    format!("{} {}", entry.commit, entry.author)
+                }
+            })
     }
 
     /// Submit the draft through the dispatcher (same path as IPC/CLI).
@@ -13943,11 +14027,38 @@ impl WorkspaceView {
                     div()
                         .flex_1()
                         .min_w(px(0.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .text_color(rgb(crate::ui::theme::TEXT))
-                        .child(subject),
+                        .child(div().truncate().child(subject))
+                        .children(commit.refs.iter().take(3).map(|reference| {
+                            let (label, tint) = match reference.kind {
+                                omaterm_core::GitRefKind::Head => ("HEAD", crate::ui::theme::BLUE),
+                                omaterm_core::GitRefKind::LocalBranch => {
+                                    ("branch", crate::ui::theme::GREEN)
+                                }
+                                omaterm_core::GitRefKind::RemoteTracking => {
+                                    ("remote", crate::ui::theme::PURPLE)
+                                }
+                                omaterm_core::GitRefKind::Tag => ("tag", crate::ui::theme::YELLOW),
+                                omaterm_core::GitRefKind::Other => ("ref", crate::ui::theme::MUTED),
+                            };
+                            div()
+                                .flex_shrink_0()
+                                .px(px(6.0))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                                .bg(rgb(crate::ui::theme::PILL_BG))
+                                .role(crate::ui::metrics::META_9)
+                                .text_color(rgb(tint))
+                                .child(format!("{label}: {}", reference.name))
+                        })),
                 )
                 .child(
                     div()
@@ -14727,6 +14838,140 @@ impl WorkspaceView {
                 }
             }
         };
+        // Commit provenance card (C9.4): author, full subject + body, and
+        // the parent selector for merges. Body comes from the history
+        // summary row (already on the summary); parents switch the
+        // comparison base through the existing selection path.
+        if let Some(sel) = commit_sel.as_ref() {
+            let body = self
+                .history_panel
+                .commits_for(project)
+                .iter()
+                .find(|summary| summary.id == sel.commit)
+                .map(|summary| summary.body.clone())
+                .unwrap_or_default();
+            let parent_count = sel.parents.len();
+            let mut card = div()
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .border_b_1()
+                .border_color(rgb(crate::ui::theme::BORDER))
+                .role(crate::ui::metrics::META_10)
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(sel.author_name.clone())
+                        .child(sel.commit.short().to_owned()),
+                )
+                .child(
+                    div()
+                        .role(crate::ui::metrics::BODY_11)
+                        .text_color(rgb(crate::ui::theme::TEXT))
+                        .child(sel.subject.clone()),
+                );
+            if !body.trim().is_empty() {
+                card = card.child(
+                    div()
+                        .role(crate::ui::metrics::BODY_11)
+                        .text_color(rgb(crate::ui::theme::TEXT2))
+                        .child(body),
+                );
+            }
+            if parent_count > 1 {
+                let base_short = match &sel.base {
+                    omaterm_core::GitComparisonBase::Parent(parent) => parent.short().to_owned(),
+                    omaterm_core::GitComparisonBase::EmptyTree => "root".to_owned(),
+                };
+                card = card.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .role(crate::ui::metrics::META_10)
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(format!("{} parents · base:", parent_count))
+                        .children(sel.parents.iter().enumerate().map(|(index, parent)| {
+                            let short = parent.short().to_owned();
+                            let selected = short == base_short;
+                            let parent = parent.clone();
+                            let commit = sel.commit.clone();
+                            let path = sel.path.clone();
+                            let old_path = sel.old_path.clone();
+                            div()
+                                .px(px(6.0))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(rgb(if selected {
+                                    crate::ui::theme::BLUE
+                                } else {
+                                    crate::ui::theme::PILL_BORDER
+                                }))
+                                .bg(rgb(if selected {
+                                    crate::ui::theme::TREE_SELECTED_BG
+                                } else {
+                                    crate::ui::theme::PILL_BG
+                                }))
+                                .text_color(rgb(if selected {
+                                    crate::ui::theme::TEXT
+                                } else {
+                                    crate::ui::theme::TEXT2
+                                }))
+                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.history_select_commit_file(
+                                            project,
+                                            diff_panel::CommitPreviewSel {
+                                                commit: commit.clone(),
+                                                base: omaterm_core::GitComparisonBase::Parent(
+                                                    parent.clone(),
+                                                ),
+                                                old_path: old_path.clone(),
+                                                path: path.clone(),
+                                                subject: view
+                                                    .diff_panel
+                                                    .selected_commit(project)
+                                                    .map(|sel| sel.subject.clone())
+                                                    .unwrap_or_default(),
+                                                author_name: view
+                                                    .diff_panel
+                                                    .selected_commit(project)
+                                                    .map(|sel| sel.author_name.clone())
+                                                    .unwrap_or_default(),
+                                                body: view
+                                                    .diff_panel
+                                                    .selected_commit(project)
+                                                    .and_then(|sel| sel.body.clone()),
+                                                parents: view
+                                                    .diff_panel
+                                                    .selected_commit(project)
+                                                    .map(|sel| sel.parents.clone())
+                                                    .unwrap_or_default(),
+                                            },
+                                            cx,
+                                        );
+                                    }),
+                                )
+                                .child(format!("P{} {}", index + 1, short))
+                        })),
+                );
+            }
+            bar = bar.child(card);
+        }
         // Deleted committed files have no working file to open.
         let commit_deleted = commit_sel.as_ref().is_some_and(|sel| {
             self.diff_panel
@@ -14798,6 +15043,53 @@ impl WorkspaceView {
             );
         }
         if caps.is_none_or(|caps| caps.open_working_file) && !commit_deleted {
+            // Blame toggle (worktree previews only): per-line commit chips
+            // in the gutter, fetched on demand through the shared command.
+            let blame_key = (project, staged, path.clone());
+            let blame_on = self.blame_visible.contains(&(
+                blame_key.0,
+                blame_key.1,
+                blame_key.2.clone(),
+                self.diff_panel.diff_mode(project),
+            ));
+            actions = actions.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(rgb(if blame_on {
+                        crate::ui::theme::BLUE
+                    } else {
+                        crate::ui::theme::PILL_BORDER
+                    }))
+                    .bg(rgb(if blame_on {
+                        crate::ui::theme::TREE_SELECTED_BG
+                    } else {
+                        crate::ui::theme::PILL_BG
+                    }))
+                    .text_color(rgb(if blame_on {
+                        crate::ui::theme::TEXT
+                    } else {
+                        crate::ui::theme::TEXT2
+                    }))
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener({
+                            let path = path.clone();
+                            move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.toggle_blame(project, staged, path.clone(), cx);
+                            }
+                        }),
+                    )
+                    .child("Blame"),
+            );
             // S7: explicit native Open File using the typed project/path. The
             // optional source line is supplied by the per-hunk action row.
             let open_path = path.clone();
@@ -15128,11 +15420,29 @@ impl WorkspaceView {
             let old_scroll = scroll.old.clone();
             let new_scroll = scroll.new.clone();
             let inline_scroll = scroll.inline.clone();
+            // Blame chips precomputed per row (owned): the virtual-list
+            // closure cannot borrow self, so chips resolve here.
+            let blame_chips: std::sync::Arc<Vec<Option<String>>> = std::sync::Arc::new(
+                rows.iter()
+                    .map(|preview| {
+                        let new_no = match preview {
+                            diff_panel::PreviewRow::Split(row) => {
+                                row.new.as_ref().and_then(|cell| cell.line_no)
+                            }
+                            diff_panel::PreviewRow::Inline(row) => row.new_no.or(row.old_no),
+                            _ => None,
+                        };
+                        self.blame_chip(project, staged, &path, new_no)
+                    })
+                    .collect(),
+            );
             let rows = uniform_list(
                 "diff-preview-rows",
                 row_count,
-                cx.processor(move |_view, range: std::ops::Range<usize>, _window, _cx| {
-                    range
+                cx.processor({
+                    let blame_chips = std::sync::Arc::clone(&blame_chips);
+                    move |_view, range: std::ops::Range<usize>, _window, _cx| {
+                        range
                         .map(|row_index| {
                             let row = rows[row_index].clone();
                             let element = match row {
@@ -15283,6 +15593,12 @@ impl WorkspaceView {
                                     .flex_shrink_0()
                                     .flex()
                                     .flex_row()
+                                    .child(blame_gutter(
+                                        blame_chips
+                                            .get(row_index)
+                                            .cloned()
+                                            .unwrap_or(None),
+                                    ))
                                     .child(split_cell(row.old.as_ref(), &row_mono, &old_scroll, code_width).id("diff-old-side"))
                                     .child(
                                         div()
@@ -15291,7 +15607,16 @@ impl WorkspaceView {
                                             .bg(rgb(crate::ui::theme::BORDER)),
                                     )
                                     .child(split_cell(row.new.as_ref(), &row_mono, &new_scroll, code_width).id("diff-new-side")),
-                                diff_panel::PreviewRow::Inline(row) => inline_row(&row, &row_mono)
+                                diff_panel::PreviewRow::Inline(row) => div()
+                                    .flex()
+                                    .flex_row()
+                                    .child(blame_gutter(
+                                        blame_chips
+                                            .get(row_index)
+                                            .cloned()
+                                            .unwrap_or(None),
+                                    ))
+                                    .child(inline_row(&row, &row_mono))
                                     .id(row_index)
                                     .flex_shrink_0(),
                                 diff_panel::PreviewRow::NoNewline { old, new } => div()
@@ -15339,8 +15664,8 @@ impl WorkspaceView {
                             element.w(px(row_width))
                         })
                         .collect::<Vec<_>>()
-                }),
-            )
+                    }
+                }))
             .track_scroll(diff_scroll)
             .w(px(row_width))
             .flex_shrink_0()
@@ -19158,6 +19483,22 @@ fn diff_highlighted_text(text: &str, tokens: &[editor::TokenSpan]) -> StyledText
 
 /// One Split cell: gutter + its own code/text, or a blank spacer when the
 /// paired edit has no line on this side.
+/// One blamed-line chip for the diff gutter: short oid + author, or
+/// `uncommitted`. `None` renders nothing (keeps row geometry identical
+/// when blame is off or a line has no entry).
+fn blame_gutter(chip: Option<String>) -> Div {
+    match chip {
+        Some(text) => div()
+            .w(px(120.0))
+            .flex_shrink_0()
+            .truncate()
+            .role(crate::ui::metrics::META_9)
+            .text_color(rgb(crate::ui::theme::MUTED))
+            .child(text),
+        None => div().w(px(0.0)).flex_shrink_0(),
+    }
+}
+
 fn split_cell(
     cell: Option<&diff_panel::SplitCell>,
     mono: &str,
