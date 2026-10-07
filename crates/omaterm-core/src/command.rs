@@ -126,9 +126,6 @@ pub enum TerminalCommand {
         max_lines: usize,
         max_columns: usize,
     },
-    Clear {
-        session: SessionId,
-    },
     List,
 }
 

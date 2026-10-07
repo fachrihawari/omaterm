@@ -1584,8 +1584,7 @@ impl CommandRouter {
             OmaCommand::Terminal(
                 TerminalCommand::SendBytes { session, .. }
                 | TerminalCommand::RunCommand { session, .. }
-                | TerminalCommand::ReadVisible { session, .. }
-                | TerminalCommand::Clear { session },
+                | TerminalCommand::ReadVisible { session, .. },
             ) => owner_session(*session),
             OmaCommand::Terminal(TerminalCommand::RestorePane { project, .. }) => Some(*project),
             OmaCommand::History(
@@ -3350,10 +3349,6 @@ impl CommandRouter {
                     _ => err(ErrorCode::SessionExited, "terminal session has exited"),
                 }
             }
-            OmaCommand::Terminal(TerminalCommand::Clear { .. }) => err(
-                ErrorCode::UnsupportedOperation,
-                "terminal.clear is not implemented",
-            ),
             OmaCommand::History(HistoryCommand::EnablePersistence) => {
                 let manager = match self.history_manager_or_unavailable() {
                     Ok(manager) => manager,
@@ -8249,7 +8244,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_pane_and_explicit_unsupported_clear_have_stable_results() {
+    fn restored_pane_has_stable_result() {
         let directory = std::env::temp_dir();
         let pane = Pane::empty();
         let pane_id = pane.id;
@@ -8277,26 +8272,13 @@ mod tests {
             CommandResult::Ok(CommandOutput::Unit)
         ));
         let [
-            CommandEffect::SessionStarted(session),
+            CommandEffect::SessionStarted(_session),
             CommandEffect::WorkspaceChanged,
             CommandEffect::PersistenceDirty,
         ] = restored.effects.as_slice()
         else {
             panic!("restore binds the session before publishing ordered effects");
         };
-
-        let clear = router.dispatch(
-            CommandContext::LocalUser,
-            OmaCommand::Terminal(TerminalCommand::Clear { session: *session }),
-        );
-        assert!(matches!(
-            clear.result,
-            CommandResult::Err(CommandError {
-                code: ErrorCode::UnsupportedOperation,
-                ..
-            })
-        ));
-        assert!(clear.effects.is_empty());
 
         let closed = router.dispatch(
             CommandContext::LocalUser,
