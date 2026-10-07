@@ -49,6 +49,8 @@ mod shortcuts;
 mod ui;
 mod workbench;
 
+use crate::ui::metrics::DivRole as _;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum WheelTarget {
     Files,
@@ -556,7 +558,7 @@ fn section_header(
         .child(
             div()
                 .w(px(10.0))
-                .text_size(px(9.0))
+                .role(crate::ui::metrics::META_9)
                 .text_color(rgb(crate::ui::theme::MUTED))
                 .child(if collapsed { "▸" } else { "▾" }),
         )
@@ -7951,7 +7953,7 @@ impl WorkspaceView {
             .border_b_1()
             .border_color(rgb(crate::ui::theme::BORDER))
             .bg(rgb(crate::ui::theme::PANEL))
-            .text_size(px(10.0))
+            .role(crate::ui::metrics::META_10)
             .text_color(rgb(crate::ui::theme::MUTED));
         // Breadcrumb group shrinks and truncates so the fixed action buttons
         // remain reachable no matter how narrow the window gets.
@@ -8151,7 +8153,7 @@ impl WorkspaceView {
                                         .flex_row()
                                         .justify_end()
                                         .pr(px(14.0))
-                                        .text_size(px(10.0))
+                                        .role(crate::ui::metrics::META_10)
                                         .text_color(rgb(if line == caret_line {
                                             crate::ui::theme::ACTIVE_LINE_NO
                                         } else {
@@ -8318,7 +8320,7 @@ impl WorkspaceView {
             .border_t_1()
             .border_color(rgb(crate::ui::theme::BORDER))
             .bg(rgb(0x0F1216))
-            .text_size(px(10.0))
+            .role(crate::ui::metrics::META_10)
             .text_color(rgb(crate::ui::theme::MUTED))
             .child(format!(
                 "Ln {}, Col {}",
@@ -11810,7 +11812,7 @@ impl WorkspaceView {
                                 } else {
                                     crate::ui::theme::PANEL
                                 }))
-                                .text_size(px(11.0))
+                                .role(crate::ui::metrics::BODY_11)
                                 .text_color(rgb(if is_selected {
                                     crate::ui::theme::TEXT
                                 } else if dimmed {
@@ -12014,7 +12016,7 @@ impl WorkspaceView {
                         .flex_row()
                         .items_center()
                         .gap_2()
-                        .text_size(px(11.0))
+                        .role(crate::ui::metrics::BODY_11)
                         .text_color(rgb(crate::ui::theme::TEXT))
                         .child(crate::ui::assets::icon(
                             crate::ui::assets::GIT_BRANCH,
@@ -12070,7 +12072,7 @@ impl WorkspaceView {
                             crate::ui::theme::BORDER
                         }))
                         .bg(rgb(crate::ui::theme::PILL_BG))
-                        .text_size(px(11.0))
+                        .role(crate::ui::metrics::BODY_11)
                         .text_color(rgb(crate::ui::theme::TEXT))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -12201,7 +12203,7 @@ impl WorkspaceView {
                 .flex()
                 .flex_row()
                 .items_center()
-                .text_size(px(10.0))
+                .role(crate::ui::metrics::META_10)
                 .text_color(rgb(crate::ui::theme::MUTED))
                 .child(
                     status
@@ -12264,7 +12266,7 @@ impl WorkspaceView {
             .items_center()
             .px_2()
             .gap_1()
-            .text_size(px(10.0))
+            .role(crate::ui::metrics::META_10)
             .text_color(rgb(crate::ui::theme::MUTED))
             .on_mouse_down(
                 MouseButton::Left,
@@ -12301,7 +12303,7 @@ impl WorkspaceView {
                     .border_1()
                     .border_color(rgb(crate::ui::theme::PILL_BORDER))
                     .bg(rgb(crate::ui::theme::PILL_BG))
-                    .text_size(px(9.0))
+                    .role(crate::ui::metrics::META_9)
                     .child(format!("{loaded}")),
             )
             .child(div().flex_1())
@@ -12375,7 +12377,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .text_size(px(10.0))
+                    .role(crate::ui::metrics::META_10)
                     .text_color(rgb(0xFDE68A))
                     .child(format!("History refresh failed: {short}")),
             );
@@ -12396,7 +12398,7 @@ impl WorkspaceView {
             let mut row = div()
                 .px_3()
                 .py_1()
-                .text_size(px(11.0))
+                .role(crate::ui::metrics::BODY_11)
                 .text_color(rgb(crate::ui::theme::MUTED))
                 .child(message);
             if retry {
@@ -12431,7 +12433,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .text_size(px(11.0))
+                    .role(crate::ui::metrics::BODY_11)
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .child("Loading history…"),
             );
@@ -12498,7 +12500,7 @@ impl WorkspaceView {
                 .gap(px(8.0))
                 .overflow_hidden()
                 .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                .text_size(px(11.0))
+                .role(crate::ui::metrics::BODY_11)
                 .text_color(rgb(if is_selected {
                     crate::ui::theme::TEXT
                 } else {
@@ -12546,7 +12548,7 @@ impl WorkspaceView {
                     div()
                         .flex_shrink_0()
                         .pr(px(8.0))
-                        .text_size(px(10.0))
+                        .role(crate::ui::metrics::META_10)
                         .text_color(rgb(crate::ui::theme::MUTED))
                         .child(age),
                 );
@@ -12561,7 +12563,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .text_size(px(10.0))
+                    .role(crate::ui::metrics::META_10)
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .child("(truncated: bounded history output)"),
             );
@@ -12571,7 +12573,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .text_size(px(11.0))
+                    .role(crate::ui::metrics::BODY_11)
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .child("Loading more…"),
             );
@@ -12580,7 +12582,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .text_size(px(10.0))
+                    .role(crate::ui::metrics::META_10)
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .child("(history limit reached: showing 100 commits)"),
             );
@@ -12592,7 +12594,7 @@ impl WorkspaceView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .text_size(px(11.0))
+                    .role(crate::ui::metrics::BODY_11)
                     .text_color(rgb(crate::ui::theme::TEXT))
                     .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
                     .child("Load more")
@@ -12636,7 +12638,7 @@ impl WorkspaceView {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(Self::history_lane_line())
-                    .text_size(px(10.0))
+                    .role(crate::ui::metrics::META_10)
                     .text_color(rgb(crate::ui::theme::MUTED))
                     .child("Loading changed files…"),
             ),
@@ -12653,7 +12655,7 @@ impl WorkspaceView {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .child(Self::history_lane_line())
-                        .text_size(px(10.0))
+                        .role(crate::ui::metrics::META_10)
                         .text_color(rgb(0xFDE68A))
                         .child(format!("Files unavailable: {short}"))
                         .child(
@@ -12690,7 +12692,7 @@ impl WorkspaceView {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .child(Self::history_lane_line())
-                            .text_size(px(10.0))
+                            .role(crate::ui::metrics::META_10)
                             .text_color(rgb(crate::ui::theme::MUTED))
                             .child("No files changed against selected parent"),
                     );
@@ -12757,7 +12759,7 @@ impl WorkspaceView {
                             .overflow_hidden()
                             .pr(px(12.0))
                             .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                            .text_size(px(11.0))
+                            .role(crate::ui::metrics::BODY_11)
                             .text_color(rgb(if is_selected {
                                 crate::ui::theme::TEXT
                             } else {
@@ -12789,7 +12791,7 @@ impl WorkspaceView {
                                     .items_center()
                                     .justify_center()
                                     .flex_shrink_0()
-                                    .text_size(px(10.0))
+                                    .role(crate::ui::metrics::META_10)
                                     .font_weight(crate::ui::metrics::BADGE_600)
                                     .text_color(rgb(color))
                                     .child(text),
@@ -12836,7 +12838,7 @@ impl WorkspaceView {
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .text_size(px(10.0))
+                                    .role(crate::ui::metrics::META_10)
                                     .text_color(rgb(crate::ui::theme::MUTED))
                                     .child(dir),
                             )
@@ -12859,7 +12861,7 @@ impl WorkspaceView {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .child(Self::history_lane_line())
-                            .text_size(px(10.0))
+                            .role(crate::ui::metrics::META_10)
                             .text_color(rgb(crate::ui::theme::MUTED))
                             .child(format!("(+{} more files)", listed.files.len() - rendered)),
                     )
@@ -12982,7 +12984,7 @@ impl WorkspaceView {
             .items_center()
             .px_2()
             .gap_1()
-            .text_size(px(10.0))
+            .role(crate::ui::metrics::META_10)
             .text_color(rgb(crate::ui::theme::MUTED))
             .on_mouse_down(
                 MouseButton::Left,
@@ -13019,7 +13021,7 @@ impl WorkspaceView {
                     .border_1()
                     .border_color(rgb(crate::ui::theme::PILL_BORDER))
                     .bg(rgb(crate::ui::theme::PILL_BG))
-                    .text_size(px(9.0))
+                    .role(crate::ui::metrics::META_9)
                     .child(format!("{count}")),
             )
             .child(div().flex_1());
@@ -13130,7 +13132,7 @@ impl WorkspaceView {
                 .gap_2()
                 .px_3()
                 .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                .text_size(px(11.0))
+                .role(crate::ui::metrics::BODY_11)
                 .text_color(rgb(if is_selected {
                     crate::ui::theme::TEXT
                 } else {
@@ -13170,7 +13172,7 @@ impl WorkspaceView {
                                 .items_center()
                                 .justify_center()
                                 .flex_shrink_0()
-                                .text_size(px(10.0))
+                                .role(crate::ui::metrics::META_10)
                                 .font_weight(crate::ui::metrics::BADGE_600)
                                 .text_color(rgb(color))
                                 .child(text),
@@ -13256,7 +13258,7 @@ impl WorkspaceView {
                     div()
                         .w(px(14.0))
                         .flex_shrink_0()
-                        .text_size(px(10.0))
+                        .role(crate::ui::metrics::META_10)
                         .text_color(rgb(mark_color))
                         .child(mark),
                 );
@@ -13352,7 +13354,7 @@ impl WorkspaceView {
             .flex_row()
             .items_center()
             .gap(px(6.0))
-            .text_size(px(10.0));
+            .role(crate::ui::metrics::META_10);
         if caps.is_none() {
             actions = actions.child(
                 div()
@@ -13512,13 +13514,13 @@ impl WorkspaceView {
                 ))
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .role(crate::ui::metrics::NAME_12)
                         .text_color(rgb(crate::ui::theme::TEXT))
                         .child(file_name),
                 )
                 .child(
                     div()
-                        .text_size(px(10.0))
+                        .role(crate::ui::metrics::META_10)
                         .text_color(rgb(crate::ui::theme::MUTED))
                         .child(scope_label),
                 )
@@ -13658,7 +13660,7 @@ impl WorkspaceView {
                         .border_b_1()
                         .border_color(rgb(crate::ui::theme::BORDER))
                         .bg(rgb(crate::ui::theme::EDITOR_SIDE_HEADER_BG))
-                        .text_size(px(10.0))
+                        .role(crate::ui::metrics::META_10)
                         .text_color(rgb(crate::ui::theme::MUTED))
                         .child(format!(
                             "{rev} · {}",
@@ -13749,12 +13751,12 @@ impl WorkspaceView {
                                     let current = hunk == cursor;
                                     div()
                                         .id(row_index)
-                                        .h(px(21.0))
+                                        .h(px(EDITOR_ROW_H))
                                         .flex_shrink_0()
                                         .px_2()
                                         .flex()
                                         .items_center()
-                                        .text_size(px(10.0))
+                                        .role(crate::ui::metrics::META_10)
                                         .text_color(rgb(if current {
                                             crate::ui::theme::TEXT2
                                         } else {
@@ -13771,13 +13773,13 @@ impl WorkspaceView {
                                 } => {
                                     let mut actions = div()
                                         .id(row_index)
-                                        .h(px(21.0))
+                                        .h(px(EDITOR_ROW_H))
                                         .flex_shrink_0()
                                         .px_2()
                                         .flex()
                                         .items_center()
                                         .gap_2()
-                                        .text_size(px(10.0))
+                                        .role(crate::ui::metrics::META_10)
                                         .text_color(rgb(crate::ui::theme::TEXT2));
                                     if can_copy {
                                         let copy_info = Arc::clone(&copy_info);
@@ -13884,7 +13886,7 @@ impl WorkspaceView {
                                 }
                                 diff_panel::PreviewRow::Split(row) => div()
                                     .id(row_index)
-                                    .h(px(21.0))
+                                    .h(px(EDITOR_ROW_H))
                                     .flex_shrink_0()
                                     .flex()
                                     .flex_row()
@@ -13901,13 +13903,13 @@ impl WorkspaceView {
                                     .flex_shrink_0(),
                                 diff_panel::PreviewRow::NoNewline { old, new } => div()
                                     .id(row_index)
-                                    .h(px(21.0))
+                                    .h(px(EDITOR_ROW_H))
                                     .flex_shrink_0()
                                     .px_2()
                                     .flex()
                                     .items_center()
                                     .font_family(row_mono.clone())
-                                    .text_size(px(10.0))
+                                    .role(crate::ui::metrics::META_10)
                                     .text_color(rgb(crate::ui::theme::MUTED))
                                     .child(format!(
                                         "\\ No newline at end of {}{}",
@@ -13922,22 +13924,22 @@ impl WorkspaceView {
                                     )),
                                 diff_panel::PreviewRow::HunkTruncated => div()
                                     .id(row_index)
-                                    .h(px(21.0))
+                                    .h(px(EDITOR_ROW_H))
                                     .flex_shrink_0()
                                     .px_2()
                                     .flex()
                                     .items_center()
-                                    .text_size(px(10.0))
+                                    .role(crate::ui::metrics::META_10)
                                     .text_color(rgb(crate::ui::theme::MUTED))
                                     .child("… (hunk truncated)"),
                                 diff_panel::PreviewRow::FileTruncated => div()
                                     .id(row_index)
-                                    .h(px(21.0))
+                                    .h(px(EDITOR_ROW_H))
                                     .flex_shrink_0()
                                     .px_2()
                                     .flex()
                                     .items_center()
-                                    .text_size(px(10.0))
+                                    .role(crate::ui::metrics::META_10)
                                     .text_color(rgb(crate::ui::theme::MUTED))
                                     .child("… (file truncated)"),
                             };
@@ -15260,7 +15262,7 @@ impl WorkspaceView {
                                 crate::ui::theme::BORDER
                             }))
                             .bg(rgb(crate::ui::theme::PILL_BG))
-                            .text_size(px(11.0))
+                            .role(crate::ui::metrics::BODY_11)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|view, _, window, cx| {
@@ -15526,7 +15528,7 @@ impl WorkspaceView {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .text_size(px(11.0))
+                    .role(crate::ui::metrics::BODY_11)
                     .child(div().text_color(rgb(crate::ui::theme::BLUE)).child("●"))
                     .child(
                         div()
@@ -15578,7 +15580,7 @@ impl WorkspaceView {
                         .flex_row()
                         .items_center()
                         .gap_2()
-                        .text_size(px(11.0))
+                        .role(crate::ui::metrics::BODY_11)
                         .text_color(rgb(crate::ui::theme::TEXT2))
                         .child(format!("{port} · {}", entry.name)),
                 );
@@ -15603,7 +15605,7 @@ impl WorkspaceView {
                 .child(
                     div()
                         .cursor_pointer()
-                        .text_size(px(10.0))
+                        .role(crate::ui::metrics::META_10)
                         .text_color(rgb(crate::ui::theme::BLUE))
                         .child("Refresh")
                         .on_mouse_down(
@@ -15871,7 +15873,10 @@ impl WorkspaceView {
                     ),
                 ))
                 .child({
-                    let caret_h = px(f32::from(self.fonts(&*cx).line_height));
+                    // Finder caret follows the UI body role, never the
+                    // terminal font: UI text must not depend on
+                    // `terminal.font-size` (plan §5).
+                    let caret_h = px(crate::ui::metrics::BODY_11.line_height_px);
                     let before = self.ctrlp_query[..self.ctrlp_caret_byte].to_owned();
                     let after = self.ctrlp_query[self.ctrlp_caret_byte..].to_owned();
                     let caret_bg = if self.ctrlp_caret_on {
@@ -15998,7 +16003,7 @@ impl WorkspaceView {
                                         .flex_shrink_0()
                                         .items_center()
                                         .justify_center()
-                                        .text_size(px(9.0))
+                                        .role(crate::ui::metrics::META_9)
                                         .text_color(rgb(crate::ui::theme::MUTED))
                                         .child(format!("{:?}", entry.kind)),
                                 )
@@ -16016,7 +16021,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .text_size(px(10.0))
+                    .role(crate::ui::metrics::META_10)
                     .text_color(rgb(crate::ui::theme::YELLOW))
                     .child("File search unavailable; other matching sources remain available."),
             );
@@ -16768,7 +16773,7 @@ impl Render for WorkspaceView {
                             .border_color(rgb(crate::ui::theme::BORDER2))
                             .bg(rgb(crate::ui::theme::PANEL3))
                             .shadow_lg()
-                            .text_size(px(11.0))
+                            .role(crate::ui::metrics::BODY_11)
                             .text_color(rgb(crate::ui::theme::TEXT))
                             .child(message),
                     ),
@@ -17068,7 +17073,7 @@ fn split_cell(
     content_width: f32,
 ) -> Div {
     let Some(cell) = cell else {
-        return div().flex_1().min_w(px(0.0)).h(px(21.0));
+        return div().flex_1().min_w(px(0.0)).h(px(EDITOR_ROW_H));
     };
     let no_color = match cell.kind {
         omaterm_core::DiffLineKind::Addition => crate::ui::theme::LINE_NO_ADD,
@@ -17081,9 +17086,9 @@ fn split_cell(
         .flex()
         .flex_row()
         .items_center()
-        .h(px(21.0))
+        .h(px(EDITOR_ROW_H))
         .font_family(mono.to_string())
-        .text_size(px(12.0))
+        .role(crate::ui::metrics::TAB_12)
         .text_color(rgb(crate::ui::theme::TEXT))
         .child(
             diff_row_decor(cell.kind)
@@ -17163,9 +17168,9 @@ fn inline_row(row: &diff_panel::AlignedRow, mono: &str) -> Div {
         .flex_row()
         .items_center()
         .w_full()
-        .h(px(21.0))
+        .h(px(EDITOR_ROW_H))
         .font_family(mono.to_string())
-        .text_size(px(12.0))
+        .role(crate::ui::metrics::TAB_12)
         .text_color(rgb(crate::ui::theme::TEXT))
         .child(
             diff_row_decor(row.kind)

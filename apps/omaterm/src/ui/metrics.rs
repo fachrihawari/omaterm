@@ -57,3 +57,25 @@ pub fn text_role(div: Div, role: TypeRole) -> Div {
         .font_weight(role.weight)
         .line_height(px(role.line_height_px))
 }
+
+/// Chained role application for builders that already hold a `Div`
+/// (e.g. `.px_3().role(metrics::META_10)`). Identical to `text_role`.
+pub trait DivRole {
+    fn role(self, role: TypeRole) -> Self;
+}
+
+impl DivRole for Div {
+    fn role(self, role: TypeRole) -> Self {
+        text_role(self, role)
+    }
+}
+
+/// `div().id(..)` chains yield `Stateful<Div>`; roles apply there too so
+/// call sites never reorder builders around typing.
+impl DivRole for gpui::Stateful<Div> {
+    fn role(self, role: TypeRole) -> Self {
+        self.text_size(px(role.size_px))
+            .font_weight(role.weight)
+            .line_height(px(role.line_height_px))
+    }
+}
