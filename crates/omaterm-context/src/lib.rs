@@ -16,6 +16,7 @@ pub mod files;
 pub mod git;
 pub mod git_branch;
 pub mod git_history;
+pub mod git_stash;
 pub mod git_sync;
 pub mod ignore;
 pub mod resolve;
@@ -53,6 +54,10 @@ pub use git_history::{
     MAX_GIT_COMMIT_FILES, MAX_GIT_COMMIT_FILES_BYTES, MAX_GIT_HISTORY_AUTHOR_BYTES,
     MAX_GIT_HISTORY_BYTES, MAX_GIT_HISTORY_COMMITS, MAX_GIT_HISTORY_SUBJECT_BYTES, git_commit_diff,
     git_commit_files, git_commit_parents, git_history, parse_history_log,
+};
+pub use git_stash::{
+    GitStash, GitStashList, MAX_STASHES, git_stash_apply, git_stash_drop, git_stash_list,
+    git_stash_pop, git_stash_push, git_stash_show,
 };
 pub use git_sync::{GIT_SYNC_TIMEOUT, GitSyncReport, git_fetch, git_pull, git_push};
 pub use ignore::IgnoreFilter;
