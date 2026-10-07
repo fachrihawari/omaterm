@@ -137,9 +137,10 @@ impl AppConfig {
         self.files.max_results.unwrap_or(DEFAULT_MAX_RESULTS)
     }
 
-    /// Whether dotfiles are included in file listings.
+    /// Whether dotfiles are included in file listings. Defaults to true:
+    /// the file tree shows everything, including dotfiles.
     pub fn show_hidden(&self) -> bool {
-        self.files.show_hidden.unwrap_or(false)
+        self.files.show_hidden.unwrap_or(true)
     }
 
     /// Effective git status refresh interval in seconds.
@@ -309,7 +310,8 @@ mod tests {
         assert_eq!(config.theme(), "system");
         assert!(config.automation_enabled());
         assert_eq!(config.resolved_max_results(), DEFAULT_MAX_RESULTS);
-        assert!(!config.show_hidden());
+        // The file tree shows everything by default, including dotfiles.
+        assert!(config.show_hidden());
         assert_eq!(config.resolved_git_refresh_secs(), DEFAULT_GIT_REFRESH_SECS);
         let _ = fs::remove_dir_all(&dir);
     }
