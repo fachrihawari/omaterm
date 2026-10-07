@@ -186,6 +186,7 @@ pub enum CommandOutput {
     EditorSaved(EditorDocumentInfo),
     GitStatus(GitStatusInfo),
     GitHistory(GitHistoryPage),
+    GitCommitFiles(GitCommitFiles),
     GitCommitted {
         oid: String,
     },

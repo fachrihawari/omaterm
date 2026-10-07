@@ -73,7 +73,9 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "git.unstage" => "Unstaged paths.".into(),
         "git.discard" => "Discarded paths.".into(),
         "git.commit" => format!("Committed {}.", string(&result, "oid")),
+        "git.commit-files" => render_git_commit_files(&result),
         "diff.show" => render_diff(&result),
+        "diff.show-commit" => render_diff(&result),
         "diff.list-files" => render_diff_files(&result),
         "process.list" => render_process_list(&result),
         "process.kill" => render_process_kill(&result),
@@ -477,6 +479,36 @@ fn render_git_history(result: &Value) -> String {
         .unwrap_or(false)
     {
         out.push_str("(truncated: bounded git history)\n");
+    }
+    out.trim_end().to_owned()
+}
+
+/// Parent-specific commit file listing: kind badge plus new and pre-rename
+/// paths, mirroring the desktop Graph expansion rows.
+fn render_git_commit_files(result: &Value) -> String {
+    let files = result
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if files.is_empty() {
+        return "No files changed against the selected parent.".into();
+    }
+    let mut out = String::from("KIND\tPATH\n");
+    for file in &files {
+        let kind = file.get("kind").and_then(Value::as_str).unwrap_or("-");
+        let path = file.get("path").and_then(Value::as_str).unwrap_or("-");
+        match file.get("old_path").and_then(Value::as_str) {
+            Some(old) => out.push_str(&format!("{kind}\t{old} -> {path}\n")),
+            None => out.push_str(&format!("{kind}\t{path}\n")),
+        }
+    }
+    if result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        out.push_str("(truncated: bounded commit file listing)\n");
     }
     out.trim_end().to_owned()
 }

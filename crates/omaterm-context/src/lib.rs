@@ -44,8 +44,9 @@ pub use git::{
     git_status, git_unstage, join_under_root,
 };
 pub use git_history::{
-    MAX_GIT_HISTORY_AUTHOR_BYTES, MAX_GIT_HISTORY_BYTES, MAX_GIT_HISTORY_COMMITS,
-    MAX_GIT_HISTORY_SUBJECT_BYTES, git_history, parse_history_log,
+    MAX_GIT_COMMIT_FILES, MAX_GIT_COMMIT_FILES_BYTES, MAX_GIT_HISTORY_AUTHOR_BYTES,
+    MAX_GIT_HISTORY_BYTES, MAX_GIT_HISTORY_COMMITS, MAX_GIT_HISTORY_SUBJECT_BYTES, git_commit_diff,
+    git_commit_files, git_commit_parents, git_history, parse_history_log,
 };
 pub use ignore::IgnoreFilter;
 pub use resolve::{

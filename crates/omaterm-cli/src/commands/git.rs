@@ -72,6 +72,17 @@ pub enum GitCmd {
         #[arg(short, long)]
         message: String,
     },
+    /// List the changed files of one commit against a parent.
+    CommitFiles {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Full commit object ID (40 or 64 hexadecimal characters).
+        commit: String,
+        /// Full parent object ID; omit or pass `empty_tree` for a root commit.
+        #[arg(long)]
+        parent: Option<String>,
+    },
 }
 
 fn check_paths(paths: &[PathBuf], verb: &str) -> Result<(), String> {
@@ -88,6 +99,19 @@ fn check_paths(paths: &[PathBuf], verb: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn check_object_id(value: &str, field: &str) -> Result<(), String> {
+    let valid = matches!(value.len(), 40 | 64)
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !value.chars().any(char::is_control);
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "git {field} must be a full 40- or 64-character hexadecimal object ID"
+        ))
+    }
 }
 
 pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
@@ -188,6 +212,26 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 params: json!({
                     "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
                     "message": message,
+                }),
+            })
+        }
+        GitCmd::CommitFiles {
+            project,
+            commit,
+            parent,
+        } => {
+            check_object_id(commit, "commit")?;
+            if let Some(parent) = parent
+                && parent != "empty_tree"
+            {
+                check_object_id(parent, "parent")?;
+            }
+            Ok(WireCall {
+                method: "git.commit-files".into(),
+                params: json!({
+                    "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                    "commit": commit,
+                    "parent": parent,
                 }),
             })
         }

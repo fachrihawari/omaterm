@@ -206,6 +206,13 @@ pub enum GitCommand {
         scope: crate::GitHistoryScope,
         limit: usize,
     },
+    /// Parent-specific changed-file listing for one expanded commit. `base`
+    /// must be one of the commit's real parents, or the empty tree for a root.
+    CommitFiles {
+        project: ProjectId,
+        commit: crate::GitObjectId,
+        base: crate::GitComparisonBase,
+    },
     Stage {
         project: ProjectId,
         paths: Vec<PathBuf>,
@@ -253,6 +260,17 @@ pub enum DiffCommand {
     /// File headers + hunk counts without bodies (the fast 1000-file
     /// surface).
     ListFiles { project: ProjectId, staged: bool },
+    /// One committed path pair against a chosen parent/base. Historical and
+    /// strictly read-only: the desktop derives its action set from
+    /// [`omaterm_core::DiffSource::Commit`], never from a staged flag.
+    ShowCommit {
+        project: ProjectId,
+        commit: crate::GitObjectId,
+        base: crate::GitComparisonBase,
+        old_path: Option<PathBuf>,
+        path: PathBuf,
+        context_lines: u8,
+    },
 }
 
 /// Bounded, project-scoped process inspection (M18 query slice).

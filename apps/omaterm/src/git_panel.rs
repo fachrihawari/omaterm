@@ -148,6 +148,12 @@ impl GitPanel {
         self.selected.insert(project, path);
     }
 
+    /// Drop the row selection so keyboard navigation can hand the cursor
+    /// to the history Graph (single cursor across the Git tab).
+    pub fn clear_selection(&mut self, project: ProjectId) {
+        self.selected.remove(&project);
+    }
+
     /// Move the row selection by `delta` (clamped, no wrap). Selects the
     /// first row when nothing is selected. Returns the newly selected row,
     /// if any. Drives Alt+Up/Down keyboard navigation.

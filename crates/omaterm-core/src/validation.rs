@@ -207,6 +207,26 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
         {
             return invalid("git history limit must be between 1 and 100 entries");
         }
+        OmaCommand::Diff(DiffCommand::ShowCommit {
+            old_path,
+            path,
+            context_lines,
+            ..
+        }) => {
+            if *context_lines > MAX_DIFF_CONTEXT_LINES {
+                return invalid("diff context lines must be between 0 and 10");
+            }
+            for candidate in old_path.iter().chain(std::iter::once(path)) {
+                if candidate.as_os_str().is_empty()
+                    || candidate.as_os_str().len() > MAX_GIT_PATH_BYTES
+                    || candidate.to_string_lossy().chars().any(char::is_control)
+                {
+                    return invalid(
+                        "diff path must be non-empty, at most 4096 bytes, with no control characters",
+                    );
+                }
+            }
+        }
         OmaCommand::Diff(DiffCommand::Show {
             path,
             context_lines,

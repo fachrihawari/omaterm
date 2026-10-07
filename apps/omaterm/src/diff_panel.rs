@@ -20,9 +20,37 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 
-use omaterm_core::{DiffInfo, ProjectId};
+use omaterm_core::{DiffInfo, GitComparisonBase, GitObjectId, ProjectId};
 
 use crate::editor::{TokenSpan, tokenize};
+
+/// One historical file selection from an expanded Graph commit. The base is
+/// always explicit (first parent, or the resolved empty tree for roots);
+/// merge parent switching reuses this selection with a different base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitPreviewSel {
+    pub commit: GitObjectId,
+    pub base: GitComparisonBase,
+    pub old_path: Option<PathBuf>,
+    pub path: PathBuf,
+    /// Bounded row metadata for the preview header (never refetched).
+    pub subject: String,
+    pub author_name: String,
+}
+
+impl CommitPreviewSel {
+    /// Provenance identity for rendering capabilities. Every control derives
+    /// from this source: a commit preview never offers stage/unstage,
+    /// discard or hunk-stage actions.
+    pub fn source(&self) -> omaterm_core::DiffSource {
+        omaterm_core::DiffSource::Commit {
+            commit: self.commit.clone(),
+            base: self.base.clone(),
+            old_path: self.old_path.clone(),
+            path: self.path.clone(),
+        }
+    }
+}
 
 /// Explicit non-data state for a project+side. `NoRoot` (M12 `none`) and
 /// `NotRepo` render the empty state, never an error; failures name the
@@ -453,6 +481,19 @@ pub struct DiffPanel {
     /// Flattened presentation rows are immutable and reused across GPUI
     /// frames. Invalidated only when the source side, selection, or mode changes.
     preview_rows: HashMap<(ProjectId, bool, PathBuf, DiffMode), CachedPreviewRows>,
+    /// Historical commit selection per project. Present means the preview
+    /// shows that immutable comparison instead of the worktree side.
+    selected_commit: HashMap<ProjectId, CommitPreviewSel>,
+    /// Landed historical patches per project (one preview per project).
+    commit_diffs: HashMap<ProjectId, Arc<DiffInfo>>,
+    commit_empties: HashMap<ProjectId, DiffEmpty>,
+    /// The exact request key that produced the stored historical patch or
+    /// error. The tick compares this before reusing anything: commit, base,
+    /// paths, roots and context all gate validity.
+    commit_keys: HashMap<ProjectId, CommitDiffKey>,
+    /// Flattened rows for commit previews, keyed by full commit OID (never
+    /// an abbreviation) plus path and mode.
+    commit_rows: HashMap<(ProjectId, String, PathBuf, DiffMode), CachedPreviewRows>,
 }
 
 impl DiffPanel {
@@ -526,6 +567,11 @@ impl DiffPanel {
         self.empties.retain(|(owner, _), _| *owner != project);
         self.preview_rows
             .retain(|(owner, _, _, _), _| *owner != project);
+        self.commit_diffs.remove(&project);
+        self.commit_empties.remove(&project);
+        self.commit_keys.remove(&project);
+        self.commit_rows
+            .retain(|(owner, _, _, _), _| *owner != project);
     }
 
     /// Includes closed projects, which no longer appear in the workspace.
@@ -542,6 +588,14 @@ impl DiffPanel {
         self.diff_mode.retain(|owner, _| Some(*owner) == project);
         self.preview_rows
             .retain(|(owner, _, _, _), _| Some(*owner) == project);
+        self.selected_commit
+            .retain(|owner, _| Some(*owner) == project);
+        self.commit_diffs.retain(|owner, _| Some(*owner) == project);
+        self.commit_empties
+            .retain(|owner, _| Some(*owner) == project);
+        self.commit_keys.retain(|owner, _| Some(*owner) == project);
+        self.commit_rows
+            .retain(|(owner, _, _, _), _| Some(*owner) == project);
     }
 
     pub fn apply_refresh(&mut self, project: ProjectId, staged: bool, refresh: DiffRefresh) {
@@ -557,8 +611,11 @@ impl DiffPanel {
                 self.diffs.remove(&(project, staged));
                 self.empties.insert((project, staged), empty);
                 // The errored side is the visible one: its selection
-                // no longer names anything real.
-                if self.show_staged(project) == staged {
+                // no longer names anything real. A historical preview owns
+                // the hunk cursor instead, so worktree errors leave it alone.
+                if self.show_staged(project) == staged
+                    && !self.selected_commit.contains_key(&project)
+                {
                     self.selected_file.remove(&project);
                     self.selected_hunk.remove(&project);
                 }
@@ -567,12 +624,132 @@ impl DiffPanel {
     }
 
     /// Select a file and reset its hunk cursor. Called by file-row clicks
-    /// and by diff-on-select from the Source Control panel.
+    /// and by diff-on-select from the Source Control panel. A worktree
+    /// selection replaces any historical preview (one preview per project).
     pub fn select_file(&mut self, project: ProjectId, path: PathBuf) {
         self.preview_rows
             .retain(|(owner, _, cached, _), _| *owner != project || cached == &path);
         self.selected_file.insert(project, path);
         self.selected_hunk.insert(project, 0);
+        self.clear_commit_preview(project);
+    }
+    /// Select a historical comparison from the Graph. Replaces any worktree
+    /// file selection; the tick fetches the patch for exactly this base.
+    /// Stored patches belong to the previous selection and are dropped so
+    /// the preview shows the new request's loading state immediately.
+    pub fn select_commit(&mut self, project: ProjectId, sel: CommitPreviewSel) {
+        self.commit_rows.retain(|(owner, commit, cached, _), _| {
+            *owner != project || commit != sel.commit.as_str() || cached == &sel.path
+        });
+        self.selected_file.remove(&project);
+        self.selected_commit.insert(project, sel);
+        self.selected_hunk.insert(project, 0);
+        self.commit_diffs.remove(&project);
+        self.commit_empties.remove(&project);
+        self.commit_keys.remove(&project);
+    }
+    /// Drop the historical selection and its cached rows/diffs. Called by
+    /// worktree selection and preview close paths.
+    pub fn clear_commit_preview(&mut self, project: ProjectId) {
+        self.selected_commit.remove(&project);
+        self.commit_diffs.remove(&project);
+        self.commit_empties.remove(&project);
+        self.commit_keys.remove(&project);
+        self.commit_rows
+            .retain(|(owner, _, _, _), _| *owner != project);
+    }
+
+    pub fn selected_commit(&self, project: ProjectId) -> Option<&CommitPreviewSel> {
+        self.selected_commit.get(&project)
+    }
+
+    pub fn commit_diff_for(&self, project: ProjectId) -> Option<&DiffInfo> {
+        self.commit_diffs.get(&project).map(Arc::as_ref)
+    }
+
+    pub fn commit_shared_for(&self, project: ProjectId) -> Option<Arc<DiffInfo>> {
+        self.commit_diffs.get(&project).cloned()
+    }
+
+    pub fn commit_empty_for(&self, project: ProjectId) -> Option<&DiffEmpty> {
+        self.commit_empties.get(&project)
+    }
+
+    /// The request key behind the stored historical patch or error, if any.
+    pub fn commit_key_for(&self, project: ProjectId) -> Option<&CommitDiffKey> {
+        self.commit_keys.get(&project)
+    }
+
+    /// Record a landed historical patch. Empty states replace the diff and
+    /// vice versa; unlike worktree sides there is no cross-side pruning.
+    /// The caller matches the result key against the pending/current
+    /// request first (stale landings drop before reaching this method).
+    pub fn apply_commit_refresh(&mut self, project: ProjectId, landed: CommitDiffResult) {
+        self.commit_rows
+            .retain(|(owner, _, _, _), _| *owner != project);
+        self.commit_keys.insert(project, landed.key);
+        match landed.result {
+            Ok(info) => {
+                self.commit_empties.remove(&project);
+                self.commit_diffs.insert(project, Arc::new(info));
+                let count = self.commit_hunk_count_for(project);
+                if self.selected_hunk(project) >= count.max(1) {
+                    self.selected_hunk.insert(project, 0);
+                }
+            }
+            Err(empty) => {
+                self.commit_diffs.remove(&project);
+                self.commit_empties.insert(project, empty);
+            }
+        }
+    }
+
+    /// Parsed hunk count for the selected historical file.
+    pub fn commit_hunk_count_for(&self, project: ProjectId) -> usize {
+        let selected = self.selected_commit.get(&project);
+        self.commit_diffs
+            .get(&project)
+            .and_then(|info| {
+                selected.and_then(|sel| {
+                    info.files
+                        .iter()
+                        .find(|file| file.path == sel.path)
+                        .map(|file| file.hunks.len())
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    /// Flattened rows for the selected historical file. Built with
+    /// `staged = true` so `Stage Hunk` can never appear: `can_stage_hunk`
+    /// requires the worktree side, and every other row is side-agnostic.
+    /// Split side headers are labeled by the renderer from the selection.
+    pub fn commit_preview_rows_for(&mut self, project: ProjectId) -> Option<Arc<[PreviewRow]>> {
+        let sel = self.selected_commit.get(&project)?.clone();
+        let mode = self.diff_mode(project);
+        let key = (
+            project,
+            sel.commit.as_str().to_owned(),
+            sel.path.clone(),
+            mode,
+        );
+        if let Some(rows) = self.commit_rows.get(&key) {
+            return Some(Arc::clone(&rows.rows));
+        }
+        let file = self
+            .commit_diffs
+            .get(&project)?
+            .files
+            .iter()
+            .find(|file| file.path == sel.path)?;
+        let rows: Arc<[PreviewRow]> = preview_rows(file, mode, true).into();
+        self.commit_rows.insert(
+            key,
+            CachedPreviewRows {
+                rows: Arc::clone(&rows),
+            },
+        );
+        Some(rows)
     }
 
     pub fn selected_file(&self, project: ProjectId) -> Option<&PathBuf> {
@@ -600,9 +777,14 @@ impl DiffPanel {
         self.selected_hunk.get(&project).copied().unwrap_or(0)
     }
 
-    /// Parsed hunk count for the selected file; presentation virtualization
-    /// controls the number of rows laid out in any one frame.
+    /// Parsed hunk count for the visible preview: the historical file when
+    /// a commit is selected, else the worktree side. Hunk navigation
+    /// (Alt+N/P) therefore follows the visible preview without branching
+    /// at every call site.
     pub fn hunk_count_for(&self, project: ProjectId) -> usize {
+        if self.selected_commit.contains_key(&project) {
+            return self.commit_hunk_count_for(project);
+        }
         let staged = self.show_staged(project);
         let selected = self.selected_file.get(&project);
         self.diffs
@@ -678,7 +860,12 @@ impl DiffPanel {
     /// clamp the hunk cursor into the parsed hunk range. Untracked files
     /// never appear in `git diff`, so they are kept selected: the renderer
     /// shows an explicit untracked state instead of closing the preview.
+    /// A selected historical preview is immutable: worktree refreshes never
+    /// prune its selection or cursor.
     fn prune_selection(&mut self, project: ProjectId, staged: bool) {
+        if self.selected_commit.contains_key(&project) {
+            return;
+        }
         if self.show_staged(project) != staged {
             return;
         }
@@ -870,6 +1057,221 @@ impl Drop for DiffWorker {
     }
 }
 
+/// Request key for one historical patch fetch. Equality (commit, base,
+/// paths, roots) gates admission so a stale landing never replaces the
+/// visible preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDiffKey {
+    pub generation: u64,
+    pub project: ProjectId,
+    pub commit: GitObjectId,
+    pub base: GitComparisonBase,
+    pub old_path: Option<PathBuf>,
+    pub path: PathBuf,
+    pub pinned_root: Option<PathBuf>,
+    pub active_cwd: Option<PathBuf>,
+    pub context_lines: u8,
+}
+
+/// Spawn parameters for one historical patch. Sent through a dedicated
+/// latest-only worker so a rapid Graph walk cannot stack subprocesses.
+pub struct CommitDiffSpawn {
+    pub key: CommitDiffKey,
+    pub cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Outcome of one historical patch fetch.
+#[derive(Debug)]
+pub struct CommitDiffResult {
+    pub key: CommitDiffKey,
+    pub worker: ThreadId,
+    pub result: Result<DiffInfo, DiffEmpty>,
+}
+
+#[derive(Default)]
+struct CommitDiffWorkerState {
+    pending: Option<CommitDiffSpawn>,
+    active_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    result: Option<CommitDiffResult>,
+    shutdown: bool,
+}
+
+/// One actual Git worker and one latest-only pending historical request.
+/// Same publication/supersession contract as [`DiffWorker`]: a cancelled
+/// request never refills the mailbox. The underlying `git diff` call is
+/// bounded by the shared runner deadline; cancellation here drops the
+/// landing rather than killing the subprocess mid-read.
+pub struct CommitDiffWorker {
+    state: Arc<(Mutex<CommitDiffWorkerState>, Condvar)>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CommitDiffWorker {
+    pub fn new() -> Self {
+        let state = Arc::new((Mutex::new(CommitDiffWorkerState::default()), Condvar::new()));
+        let worker_state = Arc::clone(&state);
+        let thread = std::thread::spawn(move || {
+            loop {
+                let spawn = {
+                    let (lock, ready) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    while state.pending.is_none() && !state.shutdown {
+                        state = ready
+                            .wait(state)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                    if state.shutdown {
+                        return;
+                    }
+                    let spawn = state.pending.take().expect("pending commit request exists");
+                    state.active_cancel = Some(Arc::clone(&spawn.cancelled));
+                    spawn
+                };
+                let cancel = Arc::clone(&spawn.cancelled);
+                let landed = run_commit_spawn(spawn);
+                {
+                    let (lock, _) = &*worker_state;
+                    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if state
+                        .active_cancel
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &cancel))
+                    {
+                        state.active_cancel = None;
+                    }
+                    // Publication and supersession share a lock. A cancelled
+                    // request cannot refill the mailbox after cancel/close.
+                    if !state.shutdown && !cancel.load(std::sync::atomic::Ordering::Acquire) {
+                        state.result = Some(landed);
+                    }
+                }
+            }
+        });
+        Self {
+            state,
+            thread: Some(thread),
+        }
+    }
+
+    pub fn submit(&self, spawn: CommitDiffSpawn) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutdown {
+            return;
+        }
+        if let Some(active) = &state.active_cancel {
+            active.store(true, std::sync::atomic::Ordering::Release);
+        }
+        let mut spawn = spawn;
+        spawn.cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state.pending = Some(spawn);
+        state.result = None;
+        ready.notify_one();
+    }
+
+    pub fn cancel(&self) {
+        let (lock, _) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(active) = &state.active_cancel {
+            active.store(true, std::sync::atomic::Ordering::Release);
+        }
+        state.pending = None;
+        state.result = None;
+    }
+
+    pub fn shutdown(&self) {
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.shutdown = true;
+        if let Some(active) = &state.active_cancel {
+            active.store(true, std::sync::atomic::Ordering::Release);
+        }
+        state.pending = None;
+        state.result = None;
+        ready.notify_one();
+    }
+
+    /// Transfer the join to desktop shutdown's background cleanup thread.
+    pub fn take_shutdown_thread(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.shutdown();
+        self.thread.take()
+    }
+
+    pub fn take_result(&self) -> Option<CommitDiffResult> {
+        self.state
+            .0
+            .lock()
+            .ok()
+            .and_then(|mut state| state.result.take())
+    }
+}
+
+impl Default for CommitDiffWorker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for CommitDiffWorker {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn run_commit_spawn(spawn: CommitDiffSpawn) -> CommitDiffResult {
+    let worker = std::thread::current().id();
+    let cancelled = Arc::clone(&spawn.cancelled);
+    let result = commit_diff_off_thread(&spawn.key, &cancelled);
+    CommitDiffResult {
+        key: spawn.key,
+        worker,
+        result,
+    }
+}
+
+fn commit_diff_off_thread(
+    key: &CommitDiffKey,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<DiffInfo, DiffEmpty> {
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(DiffEmpty::Cancelled);
+    }
+    let resolved =
+        omaterm_context::resolve_root(key.pinned_root.as_deref(), key.active_cwd.as_deref());
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(DiffEmpty::Cancelled);
+    }
+    let Some(root) = resolved.root else {
+        return Err(DiffEmpty::NoRoot);
+    };
+    match omaterm_context::git_commit_diff(
+        &root,
+        &key.commit,
+        &key.base,
+        key.old_path.as_deref(),
+        &key.path,
+        key.context_lines,
+    ) {
+        Ok(mut info) => {
+            info.staged = false;
+            Ok(info)
+        }
+        Err(omaterm_context::GitError::NotARepo) => Err(DiffEmpty::NotRepo),
+        Err(omaterm_context::GitError::GitUnavailable(message)) => {
+            Err(DiffEmpty::Unavailable(message))
+        }
+        Err(omaterm_context::GitError::Timeout) => {
+            Err(DiffEmpty::Failed("historical diff timed out".into()))
+        }
+        Err(omaterm_context::GitError::Cancelled) => Err(DiffEmpty::Cancelled),
+        Err(omaterm_context::GitError::GitFailed(message)) => Err(DiffEmpty::Failed(message)),
+        Err(omaterm_context::GitError::PathOutsideRoot) => {
+            Err(DiffEmpty::Failed("path escapes the project root".into()))
+        }
+        Err(omaterm_context::GitError::Io(error)) => Err(DiffEmpty::Failed(error.to_string())),
+    }
+}
+
 /// One-off worker entry retained for focused tests.
 #[cfg(test)]
 pub fn spawn_diff_thread(
@@ -1018,6 +1420,20 @@ mod tests {
         }
     }
 
+    fn commit_key(project: ProjectId, commit: &omaterm_core::GitObjectId) -> CommitDiffKey {
+        CommitDiffKey {
+            generation: 1,
+            project,
+            commit: commit.clone(),
+            base: omaterm_core::GitComparisonBase::EmptyTree,
+            old_path: None,
+            path: PathBuf::from("a.txt"),
+            pinned_root: Some(PathBuf::from("/repo")),
+            active_cwd: None,
+            context_lines: 3,
+        }
+    }
+
     #[test]
     fn stale_completions_cannot_replace_the_visible_diff() {
         let project = ProjectId::new();
@@ -1093,6 +1509,194 @@ mod tests {
         panel.retain_project(Some(ProjectId::new()));
         assert!(panel.selected_file(project).is_none());
         assert!(!panel.preview_open(project));
+    }
+
+    #[test]
+    fn commit_selection_replaces_worktree_and_hides_stage_actions() {
+        use omaterm_core::{GitComparisonBase, GitObjectId};
+        let project = ProjectId::new();
+        let mut panel = panel_with(project, vec![file("a.txt", 1)]);
+        panel.select_file(project, PathBuf::from("a.txt"));
+        assert!(panel.selected_commit(project).is_none());
+        assert!(panel.commit_preview_rows_for(project).is_none());
+
+        // The worktree side offers hunk staging; the historical rows never do.
+        let worktree_rows = panel
+            .preview_rows_for(project, false)
+            .expect("worktree rows");
+        assert!(worktree_rows.iter().any(|row| matches!(
+            row,
+            PreviewRow::HunkActions {
+                can_stage: true,
+                ..
+            }
+        )));
+
+        let commit = GitObjectId::parse("b".repeat(40)).expect("fixture oid");
+        panel.select_commit(
+            project,
+            CommitPreviewSel {
+                commit: commit.clone(),
+                base: GitComparisonBase::EmptyTree,
+                old_path: None,
+                path: PathBuf::from("a.txt"),
+                subject: "second".into(),
+                author_name: "Ada".into(),
+            },
+        );
+        assert!(panel.selected_commit(project).is_some());
+        assert!(panel.selected_file(project).is_none());
+        let sel = panel.selected_commit(project).expect("commit selection");
+        assert!(!sel.source().capabilities().stage_hunk);
+
+        panel.apply_commit_refresh(
+            project,
+            CommitDiffResult {
+                key: commit_key(project, &commit),
+                worker: std::thread::current().id(),
+                result: Ok(omaterm_core::DiffInfo {
+                    files: vec![file("a.txt", 2)],
+                    truncated: false,
+                    staged: false,
+                }),
+            },
+        );
+        assert_eq!(panel.commit_hunk_count_for(project), 2);
+        let rows = panel.commit_preview_rows_for(project).expect("commit rows");
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, PreviewRow::HunkActions { .. }))
+        );
+        assert!(rows.iter().all(|row| !matches!(
+            row,
+            PreviewRow::HunkActions {
+                can_stage: true,
+                ..
+            }
+        )));
+
+        // Selecting a worktree file replaces the historical preview.
+        panel.select_file(project, PathBuf::from("a.txt"));
+        assert!(panel.selected_commit(project).is_none());
+        assert!(panel.commit_preview_rows_for(project).is_none());
+
+        // Project retirement drops the commit slot with everything else.
+        panel.select_commit(
+            project,
+            CommitPreviewSel {
+                commit,
+                base: GitComparisonBase::EmptyTree,
+                old_path: None,
+                path: PathBuf::from("a.txt"),
+                subject: "second".into(),
+                author_name: "Ada".into(),
+            },
+        );
+        panel.retain_project(Some(ProjectId::new()));
+        assert!(panel.selected_commit(project).is_none());
+    }
+
+    /// The historical fetch runs off the caller thread and reads committed
+    /// content, never the dirty worktree.
+    #[test]
+    fn commit_worker_runs_off_the_caller_thread() {
+        use omaterm_core::{GitComparisonBase, GitObjectId};
+        use std::time::{Duration, Instant};
+        let caller = std::thread::current().id();
+        let repo: PathBuf =
+            std::env::temp_dir().join(format!("omaterm-commit-diff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&repo)
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .expect("git must spawn")
+                    .success()
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "history@test"]);
+        git(&["config", "user.name", "history"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("a.txt"), b"committed one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+        std::fs::write(repo.join("a.txt"), b"committed two\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "second"]);
+        // Dirty the worktree; the historical patch must ignore it entirely.
+        std::fs::write(repo.join("a.txt"), b"uncommitted scratch\n").unwrap();
+
+        let head =
+            omaterm_context::git_history(&repo, omaterm_core::GitHistoryScope::CurrentHead, 1)
+                .expect("history page")
+                .commits
+                .pop()
+                .expect("head commit");
+        let base = GitComparisonBase::Parent(head.parents[0].clone());
+        let project = ProjectId::new();
+        let worker = CommitDiffWorker::new();
+        worker.submit(CommitDiffSpawn {
+            key: CommitDiffKey {
+                generation: 1,
+                project,
+                commit: head.id.clone(),
+                base,
+                old_path: None,
+                path: PathBuf::from("a.txt"),
+                pinned_root: Some(repo.clone()),
+                active_cwd: None,
+                context_lines: 3,
+            },
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let landed = loop {
+            if let Some(result) = worker.take_result() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "worker must answer");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_ne!(landed.worker, caller, "git must run off the caller thread");
+        let info = landed.result.expect("historical patch");
+        assert_eq!(info.files.len(), 1);
+        let body: String = info.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter().map(|line| line.text.clone()))
+            .collect();
+        assert!(body.contains("committed two"), "patch body: {body:?}");
+        assert!(!body.contains("uncommitted"), "patch body: {body:?}");
+
+        // Cancelling drops the landing instead of publishing it.
+        worker.submit(CommitDiffSpawn {
+            key: CommitDiffKey {
+                generation: 2,
+                project,
+                commit: GitObjectId::parse("f".repeat(40)).expect("fixture oid"),
+                base: GitComparisonBase::EmptyTree,
+                old_path: None,
+                path: PathBuf::from("a.txt"),
+                pinned_root: Some(repo.clone()),
+                active_cwd: None,
+                context_lines: 3,
+            },
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        worker.cancel();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(worker.take_result().is_none());
+
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

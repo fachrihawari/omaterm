@@ -37,6 +37,7 @@ mod credentials;
 mod diff_panel;
 mod editor;
 mod files;
+mod git_history_panel;
 mod git_panel;
 mod history;
 mod ipc_bridge;
@@ -284,6 +285,43 @@ struct WorkspaceView {
     git_refresh_interval: Duration,
     /// Last project the git poller served (switch detection).
     git_last_project: Option<ProjectId>,
+    /// Git history Graph (inside the Git tab, below Changes): last-good
+    /// pages, expansions, file metadata and selection (GPUI-free).
+    history_panel: git_history_panel::HistoryPanel,
+    /// Background history-page completions `(generation, project,
+    /// outcome)`. Root resolution and `git log` both run on the worker
+    /// (never the UI thread); stale generations drop on project switch.
+    history_tx: std::sync::mpsc::Sender<(u64, ProjectId, git_history_panel::HistoryRefresh)>,
+    history_rx: std::sync::mpsc::Receiver<(u64, ProjectId, git_history_panel::HistoryRefresh)>,
+    /// Background changed-file completions for expanded Graph commits.
+    history_files_tx:
+        std::sync::mpsc::Sender<(u64, ProjectId, git_history_panel::CommitFilesRefresh)>,
+    history_files_rx:
+        std::sync::mpsc::Receiver<(u64, ProjectId, git_history_panel::CommitFilesRefresh)>,
+    history_generation: u64,
+    /// Project with a page fetch in flight, if any (one history call at a
+    /// time; the rest wait for the next poller tick).
+    history_in_flight: Option<ProjectId>,
+    /// Expanded commits with a file-metadata fetch in flight.
+    history_files_in_flight: std::collections::HashSet<(ProjectId, String)>,
+    /// Last landed page per project (interval source).
+    history_refreshed_at: HashMap<ProjectId, Instant>,
+    /// Set by manual refresh, scope switch, and committed changes: the next
+    /// tick refreshes immediately. Stage/unstage/discard never set this —
+    /// immutable history does not rerun for worktree mutations.
+    history_dirty_hint: bool,
+    /// Last project the history poller served (switch detection).
+    history_last_project: Option<ProjectId>,
+    /// Latest-only historical patch worker (one active + one pending
+    /// Graph preview request).
+    commit_diff_worker: diff_panel::CommitDiffWorker,
+    commit_diff_generation: u64,
+    /// Historical patch request in flight, if any.
+    commit_diff_in_flight: Option<diff_panel::CommitDiffKey>,
+    /// Native per-file scroll offsets for historical previews, keyed by
+    /// full commit OID so another commit's file cannot inherit the offset.
+    commit_scroll_handles:
+        HashMap<(ProjectId, String, std::path::PathBuf, diff_panel::DiffMode), DiffPreviewScroll>,
     /// UI v5 shell: independent Projects (left) and Inspector (right)
     /// panels. View chrome, never persisted. Widths clamp to the v5 ranges
     /// on every resize; visibility toggles remember the last nonzero width.
@@ -1610,21 +1648,39 @@ impl WorkspaceView {
             && let Some(project) = self.coordinator.selected_project_id()
             && self.diff_is_active(project)
         {
-            let path = self
-                .git_panel
-                .selected_path(project)
-                .or_else(|| self.diff_panel.selected_file(project));
-            if let Some(path) = path
-                && let Some(scroll) = self.diff_scroll_handles.get(&(
+            // Historical previews scroll through their own handle map
+            // (keyed by full commit OID); worktree previews use the
+            // project/side/path map.
+            if let Some(sel) = self.diff_panel.selected_commit(project).cloned() {
+                let mode = self.diff_panel.diff_mode(project);
+                if let Some(scroll) = self.commit_scroll_handles.get(&(
                     project,
-                    self.diff_panel.show_staged(project),
-                    path.clone(),
-                    self.diff_panel.diff_mode(project),
-                ))
-            {
-                let handle = scroll.rows.0.borrow().base_handle.clone();
-                if handle.bounds().contains(&event.position) {
-                    destination = Some((WheelTarget::Diff(project), Some(handle), 1.0));
+                    sel.commit.as_str().to_owned(),
+                    sel.path.clone(),
+                    mode,
+                )) {
+                    let handle = scroll.rows.0.borrow().base_handle.clone();
+                    if handle.bounds().contains(&event.position) {
+                        destination = Some((WheelTarget::Diff(project), Some(handle), 1.0));
+                    }
+                }
+            } else {
+                let path = self
+                    .git_panel
+                    .selected_path(project)
+                    .or_else(|| self.diff_panel.selected_file(project));
+                if let Some(path) = path
+                    && let Some(scroll) = self.diff_scroll_handles.get(&(
+                        project,
+                        self.diff_panel.show_staged(project),
+                        path.clone(),
+                        self.diff_panel.diff_mode(project),
+                    ))
+                {
+                    let handle = scroll.rows.0.borrow().base_handle.clone();
+                    if handle.bounds().contains(&event.position) {
+                        destination = Some((WheelTarget::Diff(project), Some(handle), 1.0));
+                    }
                 }
             }
         }
@@ -1922,6 +1978,10 @@ impl WorkspaceView {
         // Background git-status channel (M14): root resolution and the
         // status subprocess both run on the worker, never the UI thread.
         let (git_tx, git_rx) = std::sync::mpsc::channel();
+        // Background history channels: page fetches and per-commit file
+        // listings both run off the UI thread with generation guards.
+        let (history_tx, history_rx) = std::sync::mpsc::channel();
+        let (history_files_tx, history_files_rx) = std::sync::mpsc::channel();
         let palette_file_index = Arc::new(PaletteFileIndexCache::default());
         let palette_search_worker = PaletteSearchWorker::new(Arc::clone(&palette_file_index));
         let mut view = Self {
@@ -2042,6 +2102,21 @@ impl WorkspaceView {
                 app_config.resolved_git_refresh_secs().clamp(1, 300),
             ),
             git_last_project: None,
+            history_panel: git_history_panel::HistoryPanel::default(),
+            history_tx,
+            history_rx,
+            history_files_tx,
+            history_files_rx,
+            history_generation: 0,
+            history_in_flight: None,
+            history_files_in_flight: std::collections::HashSet::new(),
+            history_refreshed_at: HashMap::new(),
+            history_dirty_hint: true,
+            history_last_project: None,
+            commit_diff_worker: diff_panel::CommitDiffWorker::new(),
+            commit_diff_generation: 0,
+            commit_diff_in_flight: None,
+            commit_scroll_handles: HashMap::new(),
             projects_visible: true,
             projects_width: crate::ui::geometry::PROJECTS_DEFAULT,
             projects_resize: None,
@@ -2678,6 +2753,7 @@ impl WorkspaceView {
         }
         self.shutting_down = true;
         let diff_thread = self.diff_worker.take_shutdown_thread();
+        let commit_diff_thread = self.commit_diff_worker.take_shutdown_thread();
         let highlight_thread = self.editor_highlight_worker.take_shutdown_thread();
         self.palette_search_worker.shutdown();
         if let Some(receiver) = self.ipc_receiver.take() {
@@ -2762,6 +2838,9 @@ impl WorkspaceView {
                 let _ = thread.join();
             }
             if let Some(thread) = diff_thread {
+                let _ = thread.join();
+            }
+            if let Some(thread) = commit_diff_thread {
                 let _ = thread.join();
             }
             if let Some(thread) = highlight_thread {
@@ -4365,9 +4444,13 @@ impl WorkspaceView {
         self.poll_process_refresh(cx);
         // M14 status refresh rides the same 250ms poller: drains landed
         // workers and spawns at most one fetch per tick. M15 diff rides
-        // along with the same one-fetch-per-tick bound per surface.
+        // along with the same one-fetch-per-tick bound per surface. The
+        // history Graph and its historical previews ride along too: page
+        // fetches pause while the section is collapsed.
         let git_landed = self.git_tick(cx);
         self.diff_tick(cx);
+        self.history_tick(cx);
+        self.commit_diff_tick(cx);
         if self.ctrlp_open
             && (git_landed || self.coordinator.selected_project_id() != self.ctrlp_project)
         {
@@ -4845,6 +4928,341 @@ impl WorkspaceView {
         self.diff_dirty_hint = false;
     }
 
+    /// History Graph poller section: drain landed page and file-metadata
+    /// workers (stale generations drop), then spawn one page fetch when the
+    /// selected project is new, dirty-hinted, or past its refresh interval.
+    /// Skipped while the GRAPH section is collapsed (no hidden polling) and
+    /// for non-repo roots (the section never renders there). Only cheap
+    /// clones happen on this thread; root resolution and every git
+    /// subprocess run on the workers.
+    fn history_tick(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let mut landed = false;
+        while let Ok((generation, project, refresh)) = self.history_rx.try_recv() {
+            if generation != self.history_generation {
+                continue;
+            }
+            // Landed work ran off this thread by construction; pin it.
+            debug_assert_ne!(refresh.worker, std::thread::current().id());
+            if self.history_in_flight == Some(project) {
+                self.history_in_flight = None;
+            }
+            self.history_panel.apply_history_refresh(project, refresh);
+            self.history_refreshed_at.insert(project, Instant::now());
+            landed = true;
+        }
+        while let Ok((generation, project, refresh)) = self.history_files_rx.try_recv() {
+            if generation != self.history_generation {
+                continue;
+            }
+            debug_assert_ne!(refresh.worker, std::thread::current().id());
+            self.history_files_in_flight
+                .remove(&(project, refresh.commit.as_str().to_owned()));
+            self.history_panel.apply_files_refresh(project, refresh);
+            landed = true;
+        }
+        if landed {
+            cx.notify();
+        }
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return;
+        };
+        // A switch retires in-flight work (landings drop by generation)
+        // and bounds memory to one project (files panel precedent).
+        if self.history_last_project != Some(project) {
+            self.history_last_project = Some(project);
+            self.history_generation = self.history_generation.wrapping_add(1);
+            self.history_in_flight = None;
+            self.history_files_in_flight.clear();
+            for other in self
+                .coordinator
+                .projects()
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>()
+            {
+                if other != project {
+                    self.history_panel.clear_project(other);
+                    self.history_refreshed_at.remove(&other);
+                }
+            }
+        }
+        if self.history_panel.is_graph_collapsed(project) {
+            return;
+        }
+        // Non-repo roots never render the section; don't poll them.
+        if let Some(empty) = self.git_panel.empty_for(project)
+            && matches!(
+                empty,
+                git_panel::GitEmpty::NoRoot | git_panel::GitEmpty::NotRepo
+            )
+        {
+            return;
+        }
+        if self.history_in_flight.is_some() {
+            return;
+        }
+        let interval = self.git_refresh_interval;
+        if !git_history_panel::history_should_refresh(
+            self.history_panel.known(project),
+            self.history_dirty_hint,
+            self.history_refreshed_at.get(&project).copied(),
+            interval,
+            Instant::now(),
+        ) {
+            return;
+        }
+        let loaded = self.history_panel.loaded_limit(project);
+        let limit = if loaded == 0 {
+            git_history_panel::HISTORY_PAGE_SIZE
+        } else {
+            loaded
+        };
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let fetch = git_history_panel::HistoryFetch {
+            scope: self.history_panel.scope_for(project),
+            limit,
+        };
+        let tx = self.history_tx.clone();
+        git_history_panel::spawn_history_thread(
+            std::thread::current().id(),
+            project,
+            self.history_generation,
+            pinned,
+            active_cwd,
+            fetch,
+            tx,
+        );
+        self.history_panel.note_fetch_limit(project, limit);
+        self.history_in_flight = Some(project);
+        self.history_dirty_hint = false;
+    }
+
+    /// Historical preview poller: drains the latest-only patch worker and
+    /// submits at most one fetch per tick for the selected Graph file.
+    /// Stale keys drop on selection or project switch.
+    fn commit_diff_tick(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            return;
+        }
+        let current_project = self.coordinator.selected_project_id();
+        let current_key = current_project.and_then(|project| self.commit_diff_key(project));
+        let mut landed = false;
+        while let Some(result) = self.commit_diff_worker.take_result() {
+            let key = result.key.clone();
+            debug_assert_ne!(result.worker, std::thread::current().id());
+            if self.commit_diff_in_flight.as_ref() != Some(&key)
+                || current_key.as_ref() != Some(&key)
+            {
+                continue;
+            }
+            self.diff_panel.apply_commit_refresh(key.project, result);
+            self.commit_diff_in_flight = None;
+            landed = true;
+        }
+        if landed {
+            cx.notify();
+        }
+        let (Some(project), Some(key)) = (current_project, current_key) else {
+            // No historical selection: retire stray work (e.g. after a
+            // worktree click replaced the preview).
+            if self.commit_diff_in_flight.is_some() {
+                self.commit_diff_worker.cancel();
+                self.commit_diff_in_flight = None;
+            }
+            return;
+        };
+        // A project switch retires in-flight commit work (landings drop by
+        // key); other projects' commit state clears with the diff panel's
+        // own switch handling.
+        if self
+            .commit_diff_in_flight
+            .as_ref()
+            .is_some_and(|in_flight| in_flight.project != project)
+        {
+            self.commit_diff_worker.cancel();
+            self.commit_diff_in_flight = None;
+        }
+        self.commit_scroll_handles
+            .retain(|(owner, _, _, _), _| *owner == project);
+        if self.commit_diff_in_flight.as_ref() == Some(&key) {
+            return;
+        }
+        // The stored patch is valid only for the exact key that fetched it
+        // (commit, base, paths, roots and context all participate).
+        let fresh = self.diff_panel.commit_key_for(project) == Some(&key)
+            && (self.diff_panel.commit_diff_for(project).is_some()
+                || self.diff_panel.commit_empty_for(project).is_some());
+        if fresh {
+            self.commit_diff_in_flight = None;
+            return;
+        }
+        self.commit_diff_worker.submit(diff_panel::CommitDiffSpawn {
+            key: key.clone(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        });
+        self.commit_diff_in_flight = Some(key);
+    }
+
+    /// Request key for the selected historical preview, if any. Roots and
+    /// context participate so a stale patch can never pose as the current
+    /// selection after a root change.
+    fn commit_diff_key(&self, project: ProjectId) -> Option<diff_panel::CommitDiffKey> {
+        let sel = self.diff_panel.selected_commit(project)?;
+        Some(diff_panel::CommitDiffKey {
+            generation: self.commit_diff_generation,
+            project,
+            commit: sel.commit.clone(),
+            base: sel.base.clone(),
+            old_path: sel.old_path.clone(),
+            path: sel.path.clone(),
+            pinned_root: self.coordinator.pinned_for(project),
+            active_cwd: self.coordinator.cached_shell_cwd_for(project),
+            context_lines: 3,
+        })
+    }
+
+    /// Fetch changed-file metadata for one expanded Graph commit, unless a
+    /// fetch for it is already in flight. Called from expansion clicks, not
+    /// the poller: expansions are event-driven, pages are polled.
+    fn history_fetch_files(&mut self, project: ProjectId, commit: omaterm_core::GitObjectId) {
+        let flight = (project, commit.as_str().to_owned());
+        if self.history_files_in_flight.contains(&flight) {
+            return;
+        }
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.shell_cwd_for(project);
+        self.history_panel.mark_files_loading(project, &commit);
+        git_history_panel::spawn_commit_files_thread(
+            std::thread::current().id(),
+            project,
+            self.history_generation,
+            pinned,
+            active_cwd,
+            commit,
+            self.history_files_tx.clone(),
+        );
+        self.history_files_in_flight.insert(flight);
+    }
+
+    /// `Load more`: re-request the page at the loaded-history cap. Rows,
+    /// expansions and selection survive (the panel merges by OID order);
+    /// reaching the cap with `has_more` renders the limit notice.
+    fn history_load_more(&mut self, project: ProjectId) {
+        if self.history_in_flight.is_some() || self.history_panel.loading_more(project) {
+            return;
+        }
+        if !self.history_panel.has_more(project) {
+            return;
+        }
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let fetch = git_history_panel::HistoryFetch {
+            scope: self.history_panel.scope_for(project),
+            limit: git_history_panel::HISTORY_MAX_LOADED,
+        };
+        git_history_panel::spawn_history_thread(
+            std::thread::current().id(),
+            project,
+            self.history_generation,
+            pinned,
+            active_cwd,
+            fetch,
+            self.history_tx.clone(),
+        );
+        self.history_panel
+            .note_fetch_limit(project, git_history_panel::HISTORY_MAX_LOADED);
+        self.history_in_flight = Some(project);
+        self.history_dirty_hint = false;
+    }
+
+    /// Open a Graph file row as the historical preview. Shared by mouse
+    /// clicks and keyboard: resolves the explicit comparison base plus the
+    /// header metadata from the landed expansion, then selects the
+    /// immutable preview. No-ops unless the expansion landed with the file.
+    fn history_open_commit_file(
+        &mut self,
+        project: ProjectId,
+        commit: omaterm_core::GitObjectId,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let key = commit.as_str().to_owned();
+        let files = match self.history_panel.files_for(project, &key) {
+            Some(git_history_panel::CommitFilesState::Loaded(listed)) => listed.clone(),
+            _ => return,
+        };
+        let Some(entry) = files.files.iter().find(|entry| entry.path == path).cloned() else {
+            return;
+        };
+        let Some(summary) = self
+            .history_panel
+            .commits_for(project)
+            .iter()
+            .find(|summary| summary.id == commit)
+            .cloned()
+        else {
+            return;
+        };
+        self.history_panel.select(
+            project,
+            git_history_panel::HistoryRow::File {
+                commit: key,
+                path: path.clone(),
+            },
+        );
+        self.history_select_commit_file(
+            project,
+            diff_panel::CommitPreviewSel {
+                commit,
+                base: files.base.clone(),
+                old_path: entry.old_path.clone(),
+                path,
+                subject: summary.subject.clone(),
+                author_name: summary.author_name.clone(),
+            },
+            cx,
+        );
+    }
+
+    /// Select a Graph file as the historical preview: supersede worktree
+    /// fetching, record the immutable selection, open the preview tab and
+    /// hint the commit worker. Mirrors `git_select_path` without touching
+    /// the worktree selection it replaces.
+    fn history_select_commit_file(
+        &mut self,
+        project: ProjectId,
+        sel: diff_panel::CommitPreviewSel,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        self.commit_diff_generation = self.commit_diff_generation.wrapping_add(1);
+        self.commit_diff_worker.cancel();
+        self.commit_diff_in_flight = None;
+        self.commit_scroll_handles
+            .retain(|(owner, _, selected, _), _| *owner != project || selected == &sel.path);
+        // Single cursor across the Git tab: a Graph selection releases the
+        // change-list cursor (the preview resolves its path from the
+        // commit selection, never from the change selection).
+        self.git_panel.clear_selection(project);
+        self.diff_panel.select_commit(project, sel);
+        self.diff_panel.open_preview(project);
+        self.editor_active.remove(&project);
+        self.active_surface.insert(project, ActiveSurface::Diff);
+        self.restore_input_owner();
+        tracing::debug!(
+            target: "omaterm::git",
+            project_id = %project.0,
+            "graph file selected (historical preview opened)",
+        );
+        cx.notify();
+    }
+
     /// Stage one whole file through the dispatcher
     /// (same path as the Source Control panel and IPC/CLI), then hint
     /// both refreshers. Visible only for unstaged-side files.
@@ -4911,6 +5329,27 @@ impl WorkspaceView {
     }
 
     fn reveal_current_diff_hunk(&mut self, project: ProjectId) {
+        if let Some(sel) = self.diff_panel.selected_commit(project).cloned() {
+            let mode = self.diff_panel.diff_mode(project);
+            let Some(rows) = self.diff_panel.commit_preview_rows_for(project) else {
+                return;
+            };
+            if let Some(row) =
+                diff_panel::hunk_row_index(&rows, self.diff_panel.selected_hunk(project))
+            {
+                self.commit_scroll_handles
+                    .entry((
+                        project,
+                        sel.commit.as_str().to_owned(),
+                        sel.path.clone(),
+                        mode,
+                    ))
+                    .or_default()
+                    .rows
+                    .scroll_to_item(row, ScrollStrategy::Center);
+            }
+            return;
+        }
         let staged = self.diff_panel.show_staged(project);
         let Some(path) = self.diff_panel.selected_file(project).cloned() else {
             return;
@@ -4930,6 +5369,41 @@ impl WorkspaceView {
     }
 
     fn switch_diff_mode(&mut self, project: ProjectId, next: diff_panel::DiffMode) {
+        if let Some(sel) = self.diff_panel.selected_commit(project).cloned() {
+            let previous_mode = self.diff_panel.diff_mode(project);
+            let previous_rows = self.diff_panel.commit_preview_rows_for(project);
+            let previous_offset = self
+                .commit_scroll_handles
+                .get(&(
+                    project,
+                    sel.commit.as_str().to_owned(),
+                    sel.path.clone(),
+                    previous_mode,
+                ))
+                .map(|scroll| f32::from(scroll.rows.0.borrow().base_handle.offset().y))
+                .unwrap_or(0.0);
+            self.diff_panel.set_diff_mode(project, next);
+            if let (Some(previous), Some(rows)) = (
+                previous_rows,
+                self.diff_panel.commit_preview_rows_for(project),
+            ) {
+                let offset = diff_panel::remap_preview_offset(&previous, &rows, previous_offset);
+                self.commit_scroll_handles
+                    .entry((
+                        project,
+                        sel.commit.as_str().to_owned(),
+                        sel.path.clone(),
+                        next,
+                    ))
+                    .or_default()
+                    .rows
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(gpui::point(px(0.0), px(offset)));
+            }
+            return;
+        }
         let staged = self.diff_panel.show_staged(project);
         let path = self.diff_panel.selected_file(project).cloned();
         let previous_mode = self.diff_panel.diff_mode(project);
@@ -4961,6 +5435,13 @@ impl WorkspaceView {
     }
 
     fn stage_current_diff_hunk(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        // Historical previews are immutable: the keyboard stage chord is a
+        // no-op here, like the hidden toolbar and row buttons.
+        if self.diff_panel.selected_commit(project).is_some() {
+            self.input_notice = Some("Historical previews are read-only.".into());
+            cx.notify();
+            return;
+        }
         let staged = self.diff_panel.show_staged(project);
         let selected = self.diff_panel.selected_file(project).cloned();
         let hunk_index = self.diff_panel.selected_hunk(project);
@@ -4983,6 +5464,28 @@ impl WorkspaceView {
     }
 
     fn copy_current_diff_hunk(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        // Copy works from the visible preview: the historical patch when a
+        // Graph file is selected, else the worktree side.
+        if self.diff_panel.selected_commit(project).is_some() {
+            let hunk_index = self.diff_panel.selected_hunk(project);
+            let text = self.diff_panel.commit_diff_for(project).and_then(|info| {
+                let sel = self.diff_panel.selected_commit(project)?;
+                let file = info.files.iter().find(|file| file.path == sel.path)?;
+                if file.binary || file.truncated {
+                    return None;
+                }
+                let hunk = file.hunks.get(hunk_index)?;
+                (!hunk.truncated).then(|| diff_panel::unified_hunk_text(hunk))
+            });
+            if let Some(text) = text {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.show_toast("Copied hunk".into(), cx);
+            } else {
+                self.input_notice = Some("Selected hunk cannot be copied completely.".into());
+                cx.notify();
+            }
+            return;
+        }
         let staged = self.diff_panel.show_staged(project);
         let selected = self.diff_panel.selected_file(project);
         let hunk_index = self.diff_panel.selected_hunk(project);
@@ -8052,6 +8555,10 @@ impl WorkspaceView {
             .retain(|(owner, _, selected, _), _| *owner != project || selected == &path);
         self.git_panel.select(project, path.clone());
         self.diff_panel.select_file(project, path);
+        // Single cursor across the Git tab: a change selection releases
+        // the Graph cursor (selecting a worktree file also replaces any
+        // historical preview inside `select_file`).
+        self.history_panel.clear_selection(project);
         self.diff_panel.set_show_staged(project, staged);
         self.diff_panel.open_preview(project);
         self.editor_active.remove(&project);
@@ -8134,6 +8641,9 @@ impl WorkspaceView {
                 self.git_panel.set_commit_focused(false);
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
+                // A new commit extends the immutable history: surviving
+                // expansions and selections are preserved by OID.
+                self.history_dirty_hint = true;
                 self.show_toast(format!("Committed {oid}"), cx);
             }
             Ok(_) => {
@@ -9655,8 +10165,11 @@ impl WorkspaceView {
         }
         // Git row keyboard navigation: Alt+Up/Down moves the Source
         // Control selection, Alt+Enter opens the selected row's diff.
-        // Guarded to the visible Git tab with the commit box unfocused so
-        // terminal input (including plain arrows) never leaks.
+        // The Graph shares the cursor: once a history row is selected,
+        // Alt+Up/Down walks commits and files; Alt+Left/Right collapse and
+        // expand; Alt+Enter toggles a commit or opens a file. Guarded to
+        // the visible Git tab with the commit box unfocused so terminal
+        // input (including plain arrows) never leaks.
         if event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.shift
@@ -9665,14 +10178,80 @@ impl WorkspaceView {
             && !self.git_panel.commit_focused()
             && let Some(project) = self.coordinator.selected_project_id()
         {
-            if key_name == "up" {
-                self.git_panel.move_selection(project, -1);
+            if key_name == "up" || key_name == "down" {
+                let delta = if key_name == "up" { -1 } else { 1 };
+                if self.history_panel.selected_row(project).is_some() {
+                    self.history_panel.move_selection(project, delta);
+                } else if !self.git_panel.rows_for(project).is_empty() {
+                    self.git_panel.move_selection(project, delta);
+                } else {
+                    self.history_panel.move_selection(project, delta);
+                }
                 cx.notify();
                 return;
             }
-            if key_name == "down" {
-                self.git_panel.move_selection(project, 1);
-                cx.notify();
+            if key_name == "left"
+                && let Some(row) = self.history_panel.selected_row(project).cloned()
+            {
+                match row {
+                    git_history_panel::HistoryRow::File { commit, .. } => {
+                        self.history_panel
+                            .select(project, git_history_panel::HistoryRow::Commit(commit));
+                        cx.notify();
+                    }
+                    git_history_panel::HistoryRow::Commit(key) => {
+                        if self.history_panel.is_expanded(project, &key)
+                            && let Ok(oid) = omaterm_core::GitObjectId::parse(&key)
+                        {
+                            self.history_panel.toggle_expanded(project, oid);
+                            cx.notify();
+                        }
+                    }
+                }
+                return;
+            }
+            if key_name == "right"
+                && let Some(row) = self.history_panel.selected_row(project).cloned()
+            {
+                match row {
+                    git_history_panel::HistoryRow::Commit(key) => {
+                        if !self.history_panel.is_expanded(project, &key)
+                            && let Ok(oid) = omaterm_core::GitObjectId::parse(&key)
+                        {
+                            self.git_panel.clear_selection(project);
+                            if self.history_panel.toggle_expanded(project, oid.clone()) {
+                                self.history_fetch_files(project, oid);
+                            }
+                            cx.notify();
+                        }
+                    }
+                    git_history_panel::HistoryRow::File { commit, path } => {
+                        if let Ok(oid) = omaterm_core::GitObjectId::parse(&commit) {
+                            self.history_open_commit_file(project, oid, path, cx);
+                        }
+                    }
+                }
+                return;
+            }
+            if (key_name == "enter" || key_name == "return" || key_name == "kpenter")
+                && let Some(row) = self.history_panel.selected_row(project).cloned()
+            {
+                match row {
+                    git_history_panel::HistoryRow::Commit(key) => {
+                        if let Ok(oid) = omaterm_core::GitObjectId::parse(&key) {
+                            self.git_panel.clear_selection(project);
+                            if self.history_panel.toggle_expanded(project, oid.clone()) {
+                                self.history_fetch_files(project, oid);
+                            }
+                            cx.notify();
+                        }
+                    }
+                    git_history_panel::HistoryRow::File { commit, path } => {
+                        if let Ok(oid) = omaterm_core::GitObjectId::parse(&commit) {
+                            self.history_open_commit_file(project, oid, path, cx);
+                        }
+                    }
+                }
                 return;
             }
             if (key_name == "enter" || key_name == "return" || key_name == "kpenter")
@@ -11429,64 +12008,72 @@ impl WorkspaceView {
                     .child("Commit"),
                 ),
         );
+        // A clean worktree still shows the Graph below: compose Changes and
+        // history independently instead of returning early.
         if status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty() {
-            return bar.child(
+            bar = bar.child(
                 div()
                     .px_2()
                     .py_1()
                     .text_color(rgb(0x71717A))
                     .child("Working tree clean"),
             );
+        } else {
+            let selected = self
+                .git_panel
+                .selected_path(project)
+                .map(|path| path.to_path_buf());
+            // Two visible groups (mock): Staged Changes, then Changes holding
+            // unstaged + untracked. Backend group identity still drives row
+            // actions and the diff side; untracked rows open the unstaged side
+            // (empty/error states render there, as before).
+            let staged_count = status.staged.len();
+            let changes_count = status.unstaged.len() + status.untracked.len();
+            let staged_entries: Vec<(bool, omaterm_core::GitEntry)> = status
+                .staged
+                .iter()
+                .take(git_panel::MAX_GIT_RENDER_ROWS)
+                .map(|entry| (false, entry.clone()))
+                .collect();
+            let changes_entries: Vec<(bool, omaterm_core::GitEntry)> = status
+                .unstaged
+                .iter()
+                .map(|entry| (false, entry.clone()))
+                .chain(status.untracked.iter().map(|entry| (true, entry.clone())))
+                .take(git_panel::MAX_GIT_RENDER_ROWS)
+                .collect();
+            let capped =
+                staged_count + changes_count > staged_entries.len() + changes_entries.len();
+            bar = bar.child(self.render_change_group(
+                project,
+                true,
+                staged_count,
+                staged_entries,
+                selected.clone(),
+                cx,
+            ));
+            bar = bar.child(self.render_change_group(
+                project,
+                false,
+                changes_count,
+                changes_entries,
+                selected,
+                cx,
+            ));
+            if capped || status.truncated {
+                bar = bar.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_color(rgb(0x71717A))
+                        .child("(truncated: bounded change list)"),
+                );
+            }
         }
-        let selected = self
-            .git_panel
-            .selected_path(project)
-            .map(|path| path.to_path_buf());
-        // Two visible groups (mock): Staged Changes, then Changes holding
-        // unstaged + untracked. Backend group identity still drives row
-        // actions and the diff side; untracked rows open the unstaged side
-        // (empty/error states render there, as before).
-        let staged_count = status.staged.len();
-        let changes_count = status.unstaged.len() + status.untracked.len();
-        let staged_entries: Vec<(bool, omaterm_core::GitEntry)> = status
-            .staged
-            .iter()
-            .take(git_panel::MAX_GIT_RENDER_ROWS)
-            .map(|entry| (false, entry.clone()))
-            .collect();
-        let changes_entries: Vec<(bool, omaterm_core::GitEntry)> = status
-            .unstaged
-            .iter()
-            .map(|entry| (false, entry.clone()))
-            .chain(status.untracked.iter().map(|entry| (true, entry.clone())))
-            .take(git_panel::MAX_GIT_RENDER_ROWS)
-            .collect();
-        let capped = staged_count + changes_count > staged_entries.len() + changes_entries.len();
-        bar = bar.child(self.render_change_group(
-            project,
-            true,
-            staged_count,
-            staged_entries,
-            selected.clone(),
-            cx,
-        ));
-        bar = bar.child(self.render_change_group(
-            project,
-            false,
-            changes_count,
-            changes_entries,
-            selected,
-            cx,
-        ));
-        if capped || status.truncated {
-            bar = bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(0x71717A))
-                    .child("(truncated: bounded change list)"),
-            );
-        }
+        // The history Graph lives inside the Git tab, below both change
+        // groups (and below the clean line when there is nothing to show
+        // above). It stays visible however the Changes groups collapse.
+        bar = bar.child(self.render_history_graph(project, cx));
         // Footer: upstream identity left; the short HEAD hash has no
         // semantic query yet, so nothing renders on the right (recorded).
         bar = bar.child(
@@ -11507,6 +12094,663 @@ impl WorkspaceView {
                 ),
         );
         bar
+    }
+
+    /// GRAPH section inside the Git tab, below both change groups: a
+    /// 32px collapsible header (chevron, title, scope, refresh) plus
+    /// commit rows that expand into changed-file rows. Clicking a file
+    /// opens that commit's patch as a read-only historical preview.
+    /// Rendering never runs git: the poller owns every fetch.
+    ///
+    /// Every row is single-line truncated (`whitespace_nowrap` plus
+    /// `text_ellipsis` inside an `overflow_hidden` bound): subjects and
+    /// paths must clip with an ellipsis, never wrap over neighbors.
+    /// Plain lane segment for expanded file/state rows: the 18px gutter
+    /// with a full-height 2px line so the commit lane visibly continues
+    /// through the expansion.
+    fn history_lane_line() -> Div {
+        div()
+            .w(px(18.0))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(
+                div()
+                    .w(px(2.0))
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .bg(rgb(crate::ui::theme::BLUE))
+                    .flex_shrink_0(),
+            )
+    }
+
+    fn render_history_graph(&mut self, project: ProjectId, cx: &mut Context<Self>) -> Div {
+        let collapsed = self.history_panel.is_graph_collapsed(project);
+        let mut section = div().flex().flex_col().flex_shrink_0();
+        let scope = self.history_panel.scope_for(project);
+        let detached = self
+            .git_panel
+            .status_for(project)
+            .is_some_and(|status| status.branch.is_none());
+        let scope_label = match scope {
+            omaterm_core::GitHistoryScope::CurrentHead if detached => "Current HEAD",
+            omaterm_core::GitHistoryScope::CurrentHead => "Current branch",
+            omaterm_core::GitHistoryScope::AllLocalBranches => "All local branches",
+        };
+        let loaded = self.history_panel.commits_for(project).len();
+        let header = div()
+            .h(px(32.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_2()
+            .gap_1()
+            .text_size(px(10.0))
+            .text_color(rgb(crate::ui::theme::MUTED))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.history_panel.toggle_graph_collapsed(project);
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(14.0))
+                    .flex_shrink_0()
+                    .child(crate::ui::assets::icon(
+                        if collapsed {
+                            crate::ui::assets::CHEVRON_RIGHT
+                        } else {
+                            crate::ui::assets::CHEVRON_DOWN
+                        },
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            )
+            .child("GRAPH")
+            .child(
+                div()
+                    .ml(px(8.0))
+                    .px(px(6.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::PILL_BORDER))
+                    .bg(rgb(crate::ui::theme::PILL_BG))
+                    .text_size(px(9.0))
+                    .child(format!("{loaded}")),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded_sm()
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                    .child(scope_label)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            let next = match view.history_panel.scope_for(project) {
+                                omaterm_core::GitHistoryScope::CurrentHead => {
+                                    omaterm_core::GitHistoryScope::AllLocalBranches
+                                }
+                                omaterm_core::GitHistoryScope::AllLocalBranches => {
+                                    omaterm_core::GitHistoryScope::CurrentHead
+                                }
+                            };
+                            if view.history_panel.set_scope(project, next) {
+                                // A scope switch retires in-flight page and
+                                // file work; stale landings drop by generation.
+                                view.history_generation = view.history_generation.wrapping_add(1);
+                                view.history_in_flight = None;
+                                view.history_files_in_flight.clear();
+                                view.history_dirty_hint = true;
+                                cx.notify();
+                            }
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .p(px(6.0))
+                    .rounded_sm()
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.history_dirty_hint = true;
+                            cx.notify();
+                        }),
+                    )
+                    .child(crate::ui::primitives::cmd_icon(
+                        crate::ui::assets::REFRESH,
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    )),
+            );
+        section = section.child(header);
+        if collapsed {
+            return section;
+        }
+        // Last-good rows survive failed refreshes; the notice names the
+        // cause without paths or contents.
+        if let Some(error) = self.history_panel.last_error(project).map(str::to_owned) {
+            let short: String = error.chars().take(160).collect();
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(10.0))
+                    .text_color(rgb(0xFDE68A))
+                    .child(format!("History refresh failed: {short}")),
+            );
+        }
+        if let Some(empty) = self.history_panel.empty_for(project).cloned() {
+            let (message, retry) = match &empty {
+                git_history_panel::HistoryEmpty::NoCommits => ("No commits yet".to_owned(), false),
+                git_history_panel::HistoryEmpty::NoRoot => ("No project root".to_owned(), false),
+                git_history_panel::HistoryEmpty::NotRepo => {
+                    ("Not a git repository".to_owned(), false)
+                }
+                git_history_panel::HistoryEmpty::Unavailable(detail)
+                | git_history_panel::HistoryEmpty::Failed(detail) => {
+                    let short: String = detail.chars().take(160).collect();
+                    (format!("History unavailable: {short}"), true)
+                }
+            };
+            let mut row = div()
+                .px_3()
+                .py_1()
+                .text_size(px(11.0))
+                .text_color(rgb(0x71717A))
+                .child(message);
+            if retry {
+                row = row.child(
+                    div()
+                        .ml(px(8.0))
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded_sm()
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                        .text_color(rgb(crate::ui::theme::TEXT))
+                        .child("Retry")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.history_dirty_hint = true;
+                                cx.notify();
+                            }),
+                        ),
+                );
+            }
+            return section.child(row);
+        }
+        let commits = self.history_panel.commits_for(project).to_vec();
+        if commits.is_empty() {
+            return section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x71717A))
+                    .child("Loading history…"),
+            );
+        }
+        let selected = self.history_panel.selected_row(project).cloned();
+        let now_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|age| age.as_secs() as i64)
+            .unwrap_or(0);
+        let shown: Vec<_> = commits
+            .iter()
+            .take(git_history_panel::MAX_HISTORY_RENDER_COMMITS)
+            .collect();
+        // One continuous lane spine: every commit row draws its dot plus
+        // the line segments above/below it (end rows draw one side only),
+        // and expanded file rows draw the plain line so the lane visibly
+        // continues through the expansion.
+        let lane = crate::ui::theme::BLUE;
+        for (index, commit) in shown.iter().enumerate() {
+            let key = commit.id.as_str().to_owned();
+            let expanded = self.history_panel.is_expanded(project, &key);
+            let is_selected =
+                selected.as_ref() == Some(&git_history_panel::HistoryRow::Commit(key.clone()));
+            let is_first = index == 0;
+            let is_last = index + 1 >= shown.len() && !expanded;
+            let oid = commit.id.clone();
+            let age =
+                git_history_panel::relative_time(commit.author_time.unix_seconds, now_seconds);
+            let marker = match commit.parents.len() {
+                0 => " · root".to_owned(),
+                1 => String::new(),
+                count => format!(" · {count} parents"),
+            };
+            let subject = format!("{}{}", commit.subject, marker);
+            let line = || {
+                div()
+                    .w(px(2.0))
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .bg(rgb(lane))
+                    .flex_shrink_0()
+            };
+            let dot = if expanded || is_selected {
+                div()
+                    .w(px(10.0))
+                    .h(px(10.0))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .border_2()
+                    .border_color(rgb(lane))
+            } else {
+                div()
+                    .w(px(8.0))
+                    .h(px(8.0))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(rgb(lane))
+            };
+            let commit_row = div()
+                .h(px(32.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                .text_size(px(11.0))
+                .text_color(rgb(if is_selected {
+                    0xFAFAFA
+                } else {
+                    crate::ui::theme::TEXT2
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&view.focus_handle);
+                        view.files_search_focused = false;
+                        view.git_panel.clear_selection(project);
+                        if view.history_panel.toggle_expanded(project, oid.clone()) {
+                            view.history_fetch_files(project, oid.clone());
+                        }
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .w(px(18.0))
+                        .h_full()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .child(if is_first { div() } else { line() })
+                        .child(dot)
+                        .child(if is_last { div() } else { line() }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(rgb(crate::ui::theme::TEXT))
+                        .child(subject),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .pr(px(8.0))
+                        .text_size(px(10.0))
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(age),
+                );
+            section = section.child(commit_row);
+            if !expanded {
+                continue;
+            }
+            section = self.render_history_files(section, project, commit, selected.clone(), cx);
+        }
+        if self.history_panel.truncated(project) {
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(10.0))
+                    .text_color(rgb(0x71717A))
+                    .child("(truncated: bounded history output)"),
+            );
+        }
+        if self.history_panel.loading_more(project) {
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x71717A))
+                    .child("Loading more…"),
+            );
+        } else if self.history_panel.limit_reached(project) {
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(10.0))
+                    .text_color(rgb(0x71717A))
+                    .child("(history limit reached: showing 100 commits)"),
+            );
+        } else if self.history_panel.has_more(project) {
+            section = section.child(
+                div()
+                    .px_3()
+                    .h(px(32.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .text_size(px(11.0))
+                    .text_color(rgb(crate::ui::theme::TEXT))
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                    .child("Load more")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.history_load_more(project);
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+        section
+    }
+
+    /// Expanded changed-file rows for one Graph commit: status letter,
+    /// filename plus muted directory, rename old → new. Loading and error
+    /// rows stay inside the expansion; retries never collapse neighbors.
+    fn render_history_files(
+        &mut self,
+        mut section: Div,
+        project: ProjectId,
+        commit: &omaterm_core::GitCommitSummary,
+        selected: Option<git_history_panel::HistoryRow>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let key = commit.id.as_str().to_owned();
+        let files = self.history_panel.files_for(project, &key).cloned();
+        match files {
+            None | Some(git_history_panel::CommitFilesState::Loading) => section.child(
+                div()
+                    .h(px(28.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(Self::history_lane_line())
+                    .text_size(px(10.0))
+                    .text_color(rgb(0x71717A))
+                    .child("Loading changed files…"),
+            ),
+            Some(git_history_panel::CommitFilesState::Failed(detail)) => {
+                let short: String = detail.chars().take(120).collect();
+                let oid = commit.id.clone();
+                section.child(
+                    div()
+                        .h(px(28.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(Self::history_lane_line())
+                        .text_size(px(10.0))
+                        .text_color(rgb(0xFDE68A))
+                        .child(format!("Files unavailable: {short}"))
+                        .child(
+                            div()
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded_sm()
+                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                .text_color(rgb(crate::ui::theme::TEXT))
+                                .child("Retry")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.history_fetch_files(project, oid.clone());
+                                        cx.notify();
+                                    }),
+                                ),
+                        ),
+                )
+            }
+            Some(git_history_panel::CommitFilesState::Loaded(listed)) => {
+                if listed.files.is_empty() {
+                    return section.child(
+                        div()
+                            .h(px(28.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(Self::history_lane_line())
+                            .text_size(px(10.0))
+                            .text_color(rgb(0x71717A))
+                            .child("No files changed against selected parent"),
+                    );
+                }
+                let commit_id = commit.id.clone();
+                let rendered = listed
+                    .files
+                    .iter()
+                    .take(git_history_panel::MAX_HISTORY_RENDER_FILES)
+                    .count();
+                for file in listed
+                    .files
+                    .iter()
+                    .take(git_history_panel::MAX_HISTORY_RENDER_FILES)
+                {
+                    let (mark, mark_color) = match file.kind {
+                        omaterm_core::GitCommitFileKind::Added => ("A", crate::ui::theme::GREEN),
+                        omaterm_core::GitCommitFileKind::Deleted => ("D", crate::ui::theme::RED),
+                        omaterm_core::GitCommitFileKind::Modified => {
+                            ("M", crate::ui::theme::YELLOW)
+                        }
+                        omaterm_core::GitCommitFileKind::ModeChanged => {
+                            ("M", crate::ui::theme::YELLOW)
+                        }
+                        omaterm_core::GitCommitFileKind::Renamed => ("R", crate::ui::theme::PURPLE),
+                        omaterm_core::GitCommitFileKind::Copied => ("C", crate::ui::theme::PURPLE),
+                        omaterm_core::GitCommitFileKind::TypeChanged => {
+                            ("T", crate::ui::theme::YELLOW)
+                        }
+                        omaterm_core::GitCommitFileKind::Submodule => {
+                            ("S", crate::ui::theme::MUTED)
+                        }
+                    };
+                    let name = file
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| file.path.to_string_lossy().into_owned());
+                    let dir = file
+                        .path
+                        .parent()
+                        .map(|parent| parent.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let label = match &file.old_path {
+                        Some(old) if old != &file.path => {
+                            format!("{} → {}", old.to_string_lossy(), name)
+                        }
+                        _ => name,
+                    };
+                    let is_selected = selected.as_ref()
+                        == Some(&git_history_panel::HistoryRow::File {
+                            commit: key.clone(),
+                            path: file.path.clone(),
+                        });
+                    let row_path = file.path.clone();
+                    let row_commit = commit_id.clone();
+                    section = section.child(
+                        div()
+                            .h(px(32.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .overflow_hidden()
+                            .pr(px(12.0))
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                            .text_size(px(11.0))
+                            .text_color(rgb(if is_selected {
+                                0xFAFAFA
+                            } else {
+                                crate::ui::theme::TEXT2
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.files_search_focused = false;
+                                    view.history_open_commit_file(
+                                        project,
+                                        row_commit.clone(),
+                                        row_path.clone(),
+                                        cx,
+                                    );
+                                }),
+                            )
+                            .child(Self::history_lane_line())
+                            .child(match files::file_badge(&file.path) {
+                                Some((text, color)) => div()
+                                    .w(px(20.0))
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .flex_shrink_0()
+                                    .text_size(px(10.0))
+                                    .font_weight(crate::ui::metrics::BADGE_600)
+                                    .text_color(rgb(color))
+                                    .child(text),
+                                None => div()
+                                    .w(px(20.0))
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .flex_shrink_0()
+                                    .text_color(rgb(files::icon_for(
+                                        &file.path,
+                                        omaterm_core::FileKind::File,
+                                        false,
+                                    )
+                                    .color
+                                    .unwrap_or(crate::ui::theme::MUTED)))
+                                    .font_family("JetBrainsMono Nerd Font")
+                                    .text_size(px(16.0))
+                                    .child(
+                                        files::icon_for(
+                                            &file.path,
+                                            omaterm_core::FileKind::File,
+                                            false,
+                                        )
+                                        .glyph
+                                        .to_string(),
+                                    ),
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(rgb(crate::ui::theme::TEXT))
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(112.0))
+                                    .flex_shrink_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(crate::ui::theme::MUTED))
+                                    .child(dir),
+                            )
+                            .child(
+                                div()
+                                    .w(px(14.0))
+                                    .flex_shrink_0()
+                                    .text_color(rgb(mark_color))
+                                    .child(mark),
+                            ),
+                    );
+                }
+                if listed.truncated || rendered < listed.files.len() {
+                    section.child(
+                        div()
+                            .h(px(24.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(Self::history_lane_line())
+                            .text_size(px(10.0))
+                            .text_color(rgb(0x71717A))
+                            .child(format!("(+{} more files)", listed.files.len() - rendered)),
+                    )
+                } else {
+                    section
+                }
+            }
+        }
     }
 
     /// Per-row Git actions in the reserved 56px slot: staged rows offer
@@ -11925,12 +13169,17 @@ impl WorkspaceView {
             .size_full()
             .min_h(px(0.0))
             .bg(rgb(crate::ui::theme::EDITOR_BG));
-        let Some(path) = self
-            .git_panel
-            .selected_path(project)
-            .or_else(|| self.diff_panel.selected_file(project))
-            .map(|path| path.to_path_buf())
-        else {
+        // A selected Graph file replaces the worktree preview: every header
+        // control and body lookup below derives from this source, never from
+        // staged flags. Historical previews are read-only (the commit rows
+        // that feed them already hide Stage Hunk via `staged = true`).
+        let commit_sel = self.diff_panel.selected_commit(project).cloned();
+        let Some(path) = commit_sel.as_ref().map(|sel| sel.path.clone()).or_else(|| {
+            self.git_panel
+                .selected_path(project)
+                .or_else(|| self.diff_panel.selected_file(project))
+                .map(|path| path.to_path_buf())
+        }) else {
             return bar.child(
                 div()
                     .px_2()
@@ -11943,15 +13192,41 @@ impl WorkspaceView {
         // scope left; whole-file Stage/Unstage, Discard (working tree
         // only), and Split/Inline toggle right. Stage buttons act on the
         // whole file through the shared Git path — never per-hunk.
+        // Historical previews show the committed comparison instead and
+        // offer no mutation actions; Open File stays only for files that
+        // still exist (deleted committed paths hide it, like per-hunk rows).
         let file_name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
-        let scope_label = if staged {
-            "Staged · HEAD ↔ INDEX"
-        } else {
-            "Working Tree · INDEX ↔ WORKING TREE"
+        let scope_label = match &commit_sel {
+            Some(sel) => {
+                let base = match &sel.base {
+                    omaterm_core::GitComparisonBase::Parent(parent) => parent.short().to_owned(),
+                    omaterm_core::GitComparisonBase::EmptyTree => "root".to_owned(),
+                };
+                format!("{} → {} · {}", base, sel.commit.short(), sel.subject)
+            }
+            None => {
+                if staged {
+                    "Staged · HEAD ↔ INDEX".to_owned()
+                } else {
+                    "Working Tree · INDEX ↔ WORKING TREE".to_owned()
+                }
+            }
         };
+        // Deleted committed files have no working file to open.
+        let commit_deleted = commit_sel.as_ref().is_some_and(|sel| {
+            self.diff_panel
+                .commit_diff_for(project)
+                .and_then(|info| info.files.iter().find(|file| file.path == sel.path))
+                .is_some_and(|file| file.status == omaterm_core::DiffFileStatus::Deleted)
+        });
+        // Action affordances derive from the preview source contract, never
+        // from staged flags: a historical selection offers no mutations,
+        // and only surviving files open (deleted committed paths hide Open
+        // File, like the per-hunk rows).
+        let caps = commit_sel.as_ref().map(|sel| sel.source().capabilities());
         let mode = self.diff_panel.diff_mode(project);
         let stage_path = path.clone();
         let discard_path = path.clone();
@@ -11960,8 +13235,9 @@ impl WorkspaceView {
             .flex_row()
             .items_center()
             .gap(px(6.0))
-            .text_size(px(10.0))
-            .child(
+            .text_size(px(10.0));
+        if caps.is_none() {
+            actions = actions.child(
                 div()
                     .px(px(10.0))
                     .py(px(4.0))
@@ -11987,7 +13263,8 @@ impl WorkspaceView {
                     )
                     .child(if staged { "Unstage File" } else { "Stage File" }),
             );
-        if !staged {
+        }
+        if !staged && caps.is_none_or(|caps| caps.discard_file) {
             actions = actions.child(
                 div()
                     .px(px(10.0))
@@ -12008,7 +13285,7 @@ impl WorkspaceView {
                     .child("Discard"),
             );
         }
-        {
+        if caps.is_none_or(|caps| caps.open_working_file) && !commit_deleted {
             // S7: explicit native Open File using the typed project/path. The
             // optional source line is supplied by the per-hunk action row.
             let open_path = path.clone();
@@ -12132,8 +13409,19 @@ impl WorkspaceView {
                 .child(actions),
         );
         // Explicit empty/error states (never a spinner forever). Details
-        // are bounded; diff bodies and stderr never enter logs.
-        if let Some(empty) = self.diff_panel.empty_for(project, staged).cloned() {
+        // are bounded; diff bodies and stderr never enter logs. Historical
+        // previews read the commit slot; anything else reads the worktree.
+        let (empty, info) = match &commit_sel {
+            Some(_) => (
+                self.diff_panel.commit_empty_for(project).cloned(),
+                self.diff_panel.commit_shared_for(project),
+            ),
+            None => (
+                self.diff_panel.empty_for(project, staged).cloned(),
+                self.diff_panel.diff_shared_for(project, staged),
+            ),
+        };
+        if let Some(empty) = empty {
             let short = |detail: &str| {
                 let text: String = detail.chars().take(160).collect();
                 if detail.chars().count() > 160 {
@@ -12167,14 +13455,14 @@ impl WorkspaceView {
                     .child(message),
             );
         }
-        let Some(info) = self.diff_panel.diff_shared_for(project, staged) else {
-            return bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(0x71717A))
-                    .child("Loading diff…"),
-            );
+        let Some(info) = info else {
+            return bar.child(div().px_2().py_1().text_color(rgb(0x71717A)).child(
+                if commit_sel.is_some() {
+                    "Loading historical diff…"
+                } else {
+                    "Loading diff…"
+                },
+            ));
         };
         if info.files.is_empty() {
             return bar.child(
@@ -12212,12 +13500,26 @@ impl WorkspaceView {
             let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
             let mode = self.diff_panel.diff_mode(project);
             // Split side headers identify the compared revisions once per
-            // file (mock): staged HEAD↔INDEX, working tree INDEX↔WORKTREE.
+            // file: staged HEAD↔INDEX, working tree INDEX↔WORKTREE, and
+            // historical previews parent↔commit (never INDEX/WORKING TREE).
             if mode == diff_panel::DiffMode::Split {
-                let (left_rev, right_rev) = if staged {
-                    ("HEAD", "INDEX")
-                } else {
-                    ("INDEX", "WORKING TREE")
+                let (left_rev, right_rev): (String, String) = match &commit_sel {
+                    Some(sel) => {
+                        let base = match &sel.base {
+                            omaterm_core::GitComparisonBase::Parent(parent) => {
+                                parent.short().to_owned()
+                            }
+                            omaterm_core::GitComparisonBase::EmptyTree => "root".to_owned(),
+                        };
+                        (base, sel.commit.short().to_owned())
+                    }
+                    None => {
+                        if staged {
+                            ("HEAD".to_owned(), "INDEX".to_owned())
+                        } else {
+                            ("INDEX".to_owned(), "WORKING TREE".to_owned())
+                        }
+                    }
                 };
                 let side_header = |rev: &str| {
                     div()
@@ -12243,29 +13545,46 @@ impl WorkspaceView {
                         .flex()
                         .flex_row()
                         .flex_shrink_0()
-                        .child(side_header(left_rev))
+                        .child(side_header(&left_rev))
                         .child(
                             div()
                                 .w(px(1.0))
                                 .flex_shrink_0()
                                 .bg(rgb(crate::ui::theme::BORDER)),
                         )
-                        .child(side_header(right_rev)),
+                        .child(side_header(&right_rev)),
                 );
             }
-            let rows = self
-                .diff_panel
-                .preview_rows_for(project, staged)
-                .unwrap_or_else(|| std::sync::Arc::from([]));
+            let rows = if commit_sel.is_some() {
+                self.diff_panel
+                    .commit_preview_rows_for(project)
+                    .unwrap_or_else(|| std::sync::Arc::from([]))
+            } else {
+                self.diff_panel
+                    .preview_rows_for(project, staged)
+                    .unwrap_or_else(|| std::sync::Arc::from([]))
+            };
             let row_count = rows.len();
             let stage_path = path.clone();
             let copy_info = Arc::clone(&info);
             let copy_path = path.clone();
             let row_mono = mono.clone();
-            let scroll = self
-                .diff_scroll_handles
-                .entry((project, staged, path.clone(), mode))
-                .or_default();
+            // Historical previews keep their own scroll offsets keyed by
+            // full commit OID: another commit's file never inherits them.
+            let scroll = if let Some(sel) = &commit_sel {
+                self.commit_scroll_handles
+                    .entry((
+                        project,
+                        sel.commit.as_str().to_owned(),
+                        sel.path.clone(),
+                        mode,
+                    ))
+                    .or_default()
+            } else {
+                self.diff_scroll_handles
+                    .entry((project, staged, path.clone(), mode))
+                    .or_default()
+            };
             if !scroll
                 .widths
                 .as_ref()
@@ -13147,16 +14466,35 @@ impl WorkspaceView {
             // (only its own × closes it); clicking it reveals the preview
             // again while terminal tabs and editor chips keep working.
             if self.diff_panel.preview_open(project.id)
-                && let Some(path) = self.diff_panel.selected_file(project.id).cloned()
+                && let Some((name, commit_short)) = self
+                    .diff_panel
+                    .selected_commit(project.id)
+                    .map(|sel| {
+                        let name = sel
+                            .path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| sel.path.to_string_lossy().into_owned());
+                        (name, Some(sel.commit.short().to_owned()))
+                    })
+                    .or_else(|| {
+                        self.diff_panel.selected_file(project.id).map(|path| {
+                            let name = path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                            (name, None)
+                        })
+                    })
             {
-                let name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
                 let preview_id = project.id;
                 let diff_active = active_kind == Some(ActiveTabKind::Diff);
-                let diff_label =
-                    self.strip_chip_label(project.tabs.len() + 1, format!("Diff: {name}"));
+                // Historical previews name the commit: `Diff: <file> @ <oid>`.
+                let title = match commit_short {
+                    Some(short) => format!("Diff: {name} @ {short}"),
+                    None => format!("Diff: {name}"),
+                };
+                let diff_label = self.strip_chip_label(project.tabs.len() + 1, title);
                 tabs = tabs.child(
                     div()
                         .flex()

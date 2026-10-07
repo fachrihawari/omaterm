@@ -34,6 +34,27 @@ pub enum DiffCmd {
         #[arg(long)]
         staged: bool,
     },
+    /// Show one committed file's patch against a chosen parent/base. Strictly
+    /// read-only: no stage/unstage channel is exposed.
+    ShowCommit {
+        /// Full commit object ID (40 or 64 hexadecimal characters).
+        commit: String,
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Single commit-relative path (old path via `--old-path` for renames).
+        #[arg(long)]
+        path: PathBuf,
+        /// Pre-rename path for `R`/`C` entries.
+        #[arg(long)]
+        old_path: Option<PathBuf>,
+        /// Full parent object ID, or `empty_tree` for a root commit.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Unified context lines, 0–10 (default 3).
+        #[arg(long)]
+        context: Option<u8>,
+    },
 }
 
 fn check_path(path: &Path) -> Result<(), String> {
@@ -46,6 +67,19 @@ fn check_path(path: &Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+fn check_object_id(value: &str, field: &str) -> Result<(), String> {
+    let valid = matches!(value.len(), 40 | 64)
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !value.chars().any(char::is_control);
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "diff {field} must be a full 40- or 64-character hexadecimal object ID"
+        ))
+    }
 }
 
 pub fn build(cmd: &DiffCmd) -> Result<WireCall, String> {
@@ -80,6 +114,40 @@ pub fn build(cmd: &DiffCmd) -> Result<WireCall, String> {
                 "staged": staged,
             }),
         }),
+        DiffCmd::ShowCommit {
+            commit,
+            project,
+            path,
+            old_path,
+            parent,
+            context,
+        } => {
+            check_object_id(commit, "commit")?;
+            if let Some(parent) = parent
+                && parent != "empty_tree"
+            {
+                check_object_id(parent, "parent")?;
+            }
+            check_path(path)?;
+            if let Some(old) = old_path {
+                check_path(old)?;
+            }
+            let context = context.unwrap_or(3);
+            if context > 10 {
+                return Err("diff context lines must be between 0 and 10".into());
+            }
+            Ok(WireCall {
+                method: "diff.show-commit".into(),
+                params: json!({
+                    "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                    "commit": commit,
+                    "parent": parent,
+                    "old_path": old_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                    "path": path.to_string_lossy(),
+                    "context_lines": context,
+                }),
+            })
+        }
     }
 }
 

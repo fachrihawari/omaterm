@@ -4,12 +4,17 @@
 //! immutable commit graph metadata only; changed-file and patch queries are
 //! added after the shared command/IPC boundary exists.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 
 use omaterm_core::{
-    GitCommitSummary, GitHistoryPage, GitHistoryScope, GitObjectId, GitRef, GitTimestamp,
+    DiffInfo, GitCommitFile, GitCommitFileKind, GitCommitFiles, GitCommitSummary,
+    GitComparisonBase, GitHistoryPage, GitHistoryScope, GitObjectId, GitRef, GitTimestamp,
 };
 
+use crate::diff::{MAX_DIFF_BYTES, MAX_DIFF_CONTEXT_LINES, parse_diff};
 use crate::git::{GIT_STATUS_TIMEOUT, GitError, run_git};
 
 /// Maximum commits returned from one low-level read. The router's snapshot
@@ -21,6 +26,10 @@ pub const MAX_GIT_HISTORY_BYTES: usize = 1024 * 1024;
 /// Maximum author/subject display fields retained in a graph row.
 pub const MAX_GIT_HISTORY_AUTHOR_BYTES: usize = 256;
 pub const MAX_GIT_HISTORY_SUBJECT_BYTES: usize = 1024;
+/// Maximum changed-file records retained for one expanded commit.
+pub const MAX_GIT_COMMIT_FILES: usize = 500;
+/// Maximum raw `git diff --raw` output retained for one commit file listing.
+pub const MAX_GIT_COMMIT_FILES_BYTES: usize = 1024 * 1024;
 
 const FIELDS_PER_COMMIT: usize = 7;
 
@@ -79,6 +88,283 @@ pub fn git_history(
         output.stdout_capped,
         limit,
     ))
+}
+
+/// Read the ordered parent object IDs of `commit`. Used to validate a requested
+/// comparison parent against the commit's real parents (a nonparent would
+/// produce a diff between two unrelated trees).
+pub fn git_commit_parents(root: &Path, commit: &GitObjectId) -> Result<Vec<GitObjectId>, GitError> {
+    let output = run_git(
+        root,
+        &[("LC_ALL", "C")],
+        &["rev-list", "--parents", "-n", "1", commit.as_str()],
+        GIT_STATUS_TIMEOUT,
+        4096,
+    )?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut fields = text.split_ascii_whitespace();
+    let Some(first) = fields.next() else {
+        return Err(GitError::GitFailed("commit not found".into()));
+    };
+    if first != commit.as_str() {
+        return Err(GitError::GitFailed("commit not found".into()));
+    }
+    fields
+        .map(GitObjectId::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| GitError::GitFailed("git returned an invalid parent object ID".into()))
+}
+
+/// List the changed files of `commit` against one parent. `parent` must be one
+/// of the commit's actual parents; a root commit uses [`GitComparisonBase::EmptyTree`]
+/// (resolved here for the repository's object format). Uses raw NUL-separated
+/// records so rename pairs and mode bits survive arbitrary path bytes.
+pub fn git_commit_files(
+    root: &Path,
+    commit: &GitObjectId,
+    base: &GitComparisonBase,
+) -> Result<GitCommitFiles, GitError> {
+    validate_commit_base(root, commit, base)?;
+    let empty_tree;
+    let base_arg = match base {
+        GitComparisonBase::Parent(parent) => parent.as_str(),
+        GitComparisonBase::EmptyTree => {
+            empty_tree = empty_tree_oid(root)?;
+            empty_tree.as_str()
+        }
+    };
+    let args = [
+        "--no-optional-locks",
+        "-c",
+        "core.quotepath=false",
+        "diff",
+        "--raw",
+        "-z",
+        "-M",
+        "-l0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        base_arg,
+        commit.as_str(),
+    ];
+    let output = run_git(
+        root,
+        &[("LC_ALL", "C")],
+        &args,
+        GIT_STATUS_TIMEOUT,
+        MAX_GIT_COMMIT_FILES_BYTES,
+    )?;
+    let (mut files, mut truncated) = parse_raw_changes(&output.stdout);
+    if files.len() > MAX_GIT_COMMIT_FILES {
+        files.truncate(MAX_GIT_COMMIT_FILES);
+        truncated = true;
+    }
+    truncated |= output.stdout_capped;
+    Ok(GitCommitFiles {
+        commit: commit.clone(),
+        base: base.clone(),
+        files,
+        truncated,
+    })
+}
+
+/// Read one commit's patch against a chosen parent/base, reusing the shared
+/// bounded unified-diff parser. `path` selects one committed path pair; a
+/// rename supplies both old and new paths so Git emits the rename form rather
+/// than a synthetic add/delete. Context is clamped to the M15 ceiling.
+pub fn git_commit_diff(
+    root: &Path,
+    commit: &GitObjectId,
+    base: &GitComparisonBase,
+    old_path: Option<&Path>,
+    path: &Path,
+    context_lines: u8,
+) -> Result<DiffInfo, GitError> {
+    validate_commit_base(root, commit, base)?;
+    let empty_tree;
+    let base_arg = match base {
+        GitComparisonBase::Parent(parent) => parent.as_str(),
+        GitComparisonBase::EmptyTree => {
+            empty_tree = empty_tree_oid(root)?;
+            empty_tree.as_str()
+        }
+    };
+    let context = context_lines.min(MAX_DIFF_CONTEXT_LINES);
+    let context_arg = format!("-U{context}");
+    let mut args = vec![
+        "--literal-pathspecs".to_owned(),
+        "--no-optional-locks".to_owned(),
+        "-c".to_owned(),
+        "core.quotepath=false".to_owned(),
+        "diff".to_owned(),
+        "--no-color".to_owned(),
+        "--no-ext-diff".to_owned(),
+        "--no-textconv".to_owned(),
+        "--src-prefix=a/".to_owned(),
+        "--dst-prefix=b/".to_owned(),
+        "-M".to_owned(),
+        context_arg,
+        base_arg.to_owned(),
+        commit.as_str().to_owned(),
+        "--".to_owned(),
+    ];
+    if let Some(old) = old_path {
+        args.push(old.to_string_lossy().into_owned());
+    }
+    args.push(path.to_string_lossy().into_owned());
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_git(
+        root,
+        &[("LC_ALL", "C")],
+        &arg_refs,
+        GIT_STATUS_TIMEOUT,
+        MAX_DIFF_BYTES,
+    )?;
+    let mut info = parse_diff(&output.stdout, output.stdout_capped, false);
+    info.staged = false;
+    Ok(info)
+}
+
+/// Resolve the empty-tree object ID for the repository's object format. Asking
+/// Git avoids hardcoding a SHA-1 constant that is wrong in a SHA-256 repo.
+fn empty_tree_oid(root: &Path) -> Result<GitObjectId, GitError> {
+    let output = run_git(
+        root,
+        &[("LC_ALL", "C")],
+        &["hash-object", "-t", "tree", "--stdin"],
+        GIT_STATUS_TIMEOUT,
+        1024,
+    )?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    GitObjectId::parse(text.trim())
+        .map_err(|_| GitError::GitFailed("git returned an invalid empty-tree object ID".into()))
+}
+
+fn validate_commit_base(
+    root: &Path,
+    commit: &GitObjectId,
+    base: &GitComparisonBase,
+) -> Result<(), GitError> {
+    let parents = git_commit_parents(root, commit)?;
+    match base {
+        GitComparisonBase::Parent(parent) if parents.contains(parent) => Ok(()),
+        GitComparisonBase::EmptyTree if parents.is_empty() => Ok(()),
+        GitComparisonBase::Parent(_) => Err(GitError::GitFailed(
+            "comparison parent is not a parent of the selected commit".into(),
+        )),
+        GitComparisonBase::EmptyTree => Err(GitError::GitFailed(
+            "empty-tree comparison is valid only for a root commit".into(),
+        )),
+    }
+}
+
+/// Parse `git diff --raw -z` records: `:oldmode newmode oldoid newoid status\0
+/// path\0` plus a second `\0`-terminated path for `R`/`C`. A capped read that
+/// ends mid-record drops the partial tail rather than fabricating a file.
+fn parse_raw_changes(bytes: &[u8]) -> (Vec<GitCommitFile>, bool) {
+    let complete = bytes.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut files = Vec::new();
+    let mut index = 0;
+    let mut truncated = false;
+    while index < complete.len() {
+        let header = complete[index];
+        if header.is_empty() {
+            index += 1;
+            continue;
+        }
+        if !header.starts_with(b":") {
+            // A record cut mid-way cannot be trusted.
+            truncated = true;
+            break;
+        }
+        let header = String::from_utf8_lossy(header);
+        let mut parts = header.split(' ');
+        let old_mode = parse_octal_mode(parts.next());
+        let new_mode = parse_octal_mode(parts.next());
+        let _old_oid = parts.next();
+        let _new_oid = parts.next();
+        let Some(status) = parts.next() else {
+            truncated = true;
+            break;
+        };
+        let Some(first_path) = complete.get(index + 1) else {
+            truncated = true;
+            break;
+        };
+        if first_path.is_empty() {
+            truncated = true;
+            break;
+        }
+        let first_path = git_path_from_bytes(first_path);
+        let status_char = status.chars().next().unwrap_or('M');
+        if matches!(status_char, 'R' | 'C') {
+            // Raw diff order for R/C is `<source>\0<destination>\0`.
+            let Some(destination) = complete.get(index + 2) else {
+                truncated = true;
+                break;
+            };
+            if destination.is_empty() {
+                truncated = true;
+                break;
+            }
+            files.push(GitCommitFile {
+                old_path: Some(first_path),
+                path: git_path_from_bytes(destination),
+                kind: kind_from_status(status_char, old_mode, new_mode),
+                old_mode,
+                new_mode,
+            });
+            index += 3;
+        } else {
+            files.push(GitCommitFile {
+                old_path: None,
+                path: first_path,
+                kind: kind_from_status(status_char, old_mode, new_mode),
+                old_mode,
+                new_mode,
+            });
+            index += 2;
+        }
+    }
+    (files, truncated)
+}
+
+fn git_path_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+fn parse_octal_mode(value: Option<&str>) -> Option<u32> {
+    u32::from_str_radix(value?.trim(), 8).ok()
+}
+
+fn kind_from_status(
+    status: char,
+    old_mode: Option<u32>,
+    new_mode: Option<u32>,
+) -> GitCommitFileKind {
+    match status {
+        'A' => GitCommitFileKind::Added,
+        'D' => GitCommitFileKind::Deleted,
+        'R' => GitCommitFileKind::Renamed,
+        'C' => GitCommitFileKind::Copied,
+        'T' => GitCommitFileKind::TypeChanged,
+        'M' => {
+            // A mode-only edit reports `M` with differing modes and no hunks.
+            match (old_mode, new_mode) {
+                (Some(old), Some(new)) if old != new => GitCommitFileKind::ModeChanged,
+                _ => GitCommitFileKind::Modified,
+            }
+        }
+        _ => GitCommitFileKind::Modified,
+    }
 }
 
 /// Parse the NUL-framed format emitted by [`git_history`]. Git commit subjects
@@ -232,6 +518,19 @@ mod tests {
         assert!(page.commits.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn raw_change_paths_preserve_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let bytes = b":100644 100644 aaaa bbbb M\0bad\xff.txt\0";
+        let (files, truncated) = parse_raw_changes(bytes);
+
+        assert!(!truncated);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path.as_os_str().as_bytes(), b"bad\xff.txt");
+    }
+
     #[test]
     fn git_history_reads_empty_and_linear_repositories() {
         let repo = TestRepo::new();
@@ -249,6 +548,118 @@ mod tests {
         assert_eq!(page.commits[0].subject, "second");
         assert!(page.has_more);
         assert_eq!(page.commits[0].parents.len(), 1);
+    }
+
+    #[test]
+    fn commit_files_classify_modify_add_delete_and_rename() {
+        let repo = TestRepo::new();
+        repo.write("sub/old.txt", "renamed body\n");
+        repo.write("keep.txt", "keep\n");
+        repo.commit("first", "sub/old.txt", "renamed body\n");
+        repo.write("keep.txt", "keep modified\n");
+        repo.write("added.txt", "new\n");
+        repo.rename("sub/old.txt", "sub/new.txt");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "--quiet", "-m", "second"]);
+
+        let head = repo.head_oid();
+        let parents = git_commit_parents(repo.path(), &head).unwrap();
+        assert_eq!(parents.len(), 1);
+        let files = git_commit_files(
+            repo.path(),
+            &head,
+            &GitComparisonBase::Parent(parents[0].clone()),
+        )
+        .unwrap();
+        assert!(!files.truncated);
+        let rename = files
+            .files
+            .iter()
+            .find(|file| file.path == Path::new("sub/new.txt"))
+            .unwrap_or_else(|| panic!("rename present: {:?}", files.files));
+        assert_eq!(rename.kind, GitCommitFileKind::Renamed);
+        assert_eq!(rename.old_path.as_deref(), Some(Path::new("sub/old.txt")));
+        assert!(files.files.iter().any(
+            |file| file.path == Path::new("added.txt") && file.kind == GitCommitFileKind::Added
+        ));
+    }
+
+    #[test]
+    fn root_commit_uses_resolved_empty_tree_and_rejects_nonparents() {
+        let repo = TestRepo::new();
+        repo.commit("root", "a.txt", "a\n");
+        repo.commit("child", "a.txt", "b\n");
+
+        let root = repo.head_oid();
+        let parents = git_commit_parents(repo.path(), &root).unwrap();
+        let root_parents = git_commit_parents(repo.path(), &parents[0]).unwrap();
+        assert!(root_parents.is_empty());
+
+        let files =
+            git_commit_files(repo.path(), &parents[0], &GitComparisonBase::EmptyTree).unwrap();
+        assert_eq!(files.files.len(), 1);
+        assert_eq!(files.files[0].kind, GitCommitFileKind::Added);
+        assert!(matches!(
+            git_commit_files(repo.path(), &root, &GitComparisonBase::EmptyTree),
+            Err(GitError::GitFailed(message)) if message.contains("root commit")
+        ));
+    }
+
+    #[test]
+    fn commit_diff_reads_committed_content_not_the_worktree() {
+        let repo = TestRepo::new();
+        repo.commit("first", "a.txt", "committed one\n");
+        repo.commit("second", "a.txt", "committed two\n");
+        // Dirty the worktree; a committed diff must ignore it entirely.
+        repo.write("a.txt", "uncommitted scratch\n");
+
+        let head = repo.head_oid();
+        let parents = git_commit_parents(repo.path(), &head).unwrap();
+        let info = git_commit_diff(
+            repo.path(),
+            &head,
+            &GitComparisonBase::Parent(parents[0].clone()),
+            None,
+            Path::new("a.txt"),
+            3,
+        )
+        .unwrap();
+        assert_eq!(info.files.len(), 1);
+        let body = info.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>();
+        assert!(body.iter().any(|text| text.contains("committed two")));
+        assert!(!body.iter().any(|text| text.contains("scratch")));
+    }
+
+    #[test]
+    fn commit_diff_keeps_rename_form_when_both_paths_are_supplied() {
+        let repo = TestRepo::new();
+        repo.commit("first", "old.txt", "body\n");
+        repo.rename("old.txt", "new.txt");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "--quiet", "-m", "rename"]);
+
+        let head = repo.head_oid();
+        let parents = git_commit_parents(repo.path(), &head).unwrap();
+        let info = git_commit_diff(
+            repo.path(),
+            &head,
+            &GitComparisonBase::Parent(parents[0].clone()),
+            Some(Path::new("old.txt")),
+            Path::new("new.txt"),
+            3,
+        )
+        .unwrap();
+        assert_eq!(info.files.len(), 1);
+        assert_eq!(
+            info.files[0].old_path.as_deref(),
+            Some(Path::new("old.txt"))
+        );
+        assert_eq!(info.files[0].status, omaterm_core::DiffFileStatus::Renamed);
     }
 
     struct TestRepo {
@@ -275,8 +686,30 @@ mod tests {
             &self.path
         }
 
+        fn write(&self, path: &str, contents: &str) {
+            let full = self.path.join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(full, contents).unwrap();
+        }
+
+        fn rename(&self, from: &str, to: &str) {
+            self.git(&["mv", "--", from, to]);
+        }
+
+        fn head_oid(&self) -> GitObjectId {
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&self.path)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            GitObjectId::parse(String::from_utf8_lossy(&output.stdout).trim()).unwrap()
+        }
+
         fn commit(&self, message: &str, path: &str, contents: &str) {
-            std::fs::write(self.path.join(path), contents).unwrap();
+            self.write(path, contents);
             self.git(&["add", "--", path]);
             self.git(&["commit", "--quiet", "-m", message]);
         }

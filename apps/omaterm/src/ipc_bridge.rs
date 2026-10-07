@@ -335,6 +335,24 @@ pub fn map_request(
                     limit,
                 })
             }
+            Method::GitCommitFiles(p) => {
+                let commit = omaterm_core::GitObjectId::parse(&p.commit)
+                    .map_err(|_| "git commit must be a full hexadecimal object ID")?;
+                // A missing or explicit empty-tree base is accepted only for
+                // root commits; the context reader rejects misuse against Git.
+                let base = match p.parent.as_deref() {
+                    None | Some("empty_tree") => omaterm_core::GitComparisonBase::EmptyTree,
+                    Some(parent) => omaterm_core::GitComparisonBase::Parent(
+                        omaterm_core::GitObjectId::parse(parent)
+                            .map_err(|_| "git parent must be a full hexadecimal object ID")?,
+                    ),
+                };
+                OmaCommand::Git(GitCommand::CommitFiles {
+                    project: resolve_project(p.project_id)?,
+                    commit,
+                    base,
+                })
+            }
             Method::GitStage(p) => OmaCommand::Git(GitCommand::Stage {
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,
@@ -383,6 +401,36 @@ pub fn map_request(
                 project: resolve_project(p.project_id)?,
                 staged: p.staged.unwrap_or(false),
             }),
+            Method::DiffShowCommit(p) => {
+                let context = p.context_lines.unwrap_or(3);
+                if context > MAX_DIFF_CONTEXT_LINES {
+                    return Err("diff.show-commit exceeds the context-line limit");
+                }
+                let commit = omaterm_core::GitObjectId::parse(&p.commit)
+                    .map_err(|_| "git commit must be a full hexadecimal object ID")?;
+                let base = match p.parent.as_deref() {
+                    // A missing or explicit empty-tree base is accepted only for
+                    // root commits; the context reader rejects misuse against Git.
+                    None | Some("empty_tree") => omaterm_core::GitComparisonBase::EmptyTree,
+                    Some(parent) => omaterm_core::GitComparisonBase::Parent(
+                        omaterm_core::GitObjectId::parse(parent)
+                            .map_err(|_| "git parent must be a full hexadecimal object ID")?,
+                    ),
+                };
+                OmaCommand::Diff(DiffCommand::ShowCommit {
+                    project: resolve_project(p.project_id)?,
+                    commit,
+                    base,
+                    old_path: p
+                        .old_path
+                        .as_deref()
+                        .map(text)
+                        .transpose()?
+                        .map(std::path::PathBuf::from),
+                    path: std::path::PathBuf::from(text(&p.path)?),
+                    context_lines: context,
+                })
+            }
             Method::ProcessList(p) => OmaCommand::Process(omaterm_core::ProcessCommand::List {
                 project: resolve_project(p.project_id)?,
             }),
@@ -501,6 +549,10 @@ fn output_json(output: CommandOutput) -> Value {
         }
         CommandOutput::GitCommitted { oid } => {
             json!({"oid":oid})
+        }
+        CommandOutput::GitCommitFiles(files) => {
+            let truncated = files.truncated || files.files.len() > LIST_LIMIT;
+            json!({"commit":files.commit.as_str(),"base":match &files.base { omaterm_core::GitComparisonBase::Parent(parent) => parent.as_str().to_owned(), omaterm_core::GitComparisonBase::EmptyTree => "empty_tree".to_owned() },"files":files.files.into_iter().take(LIST_LIMIT).map(|file| json!({"path":file.path,"old_path":file.old_path,"kind":file.kind.as_str(),"old_mode":file.old_mode,"new_mode":file.new_mode})).collect::<Vec<_>>(),"truncated":truncated})
         }
         CommandOutput::Diff(info) => {
             // Bridge wire cap mirrors the list surfaces: files fill in

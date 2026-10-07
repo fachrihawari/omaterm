@@ -2,6 +2,72 @@
 
 ## Current position
 
+### Git history Graph inside the Git tab — 2026-10-07
+
+- GRAPH renders inside the Git tab below Staged/Changes (clean trees show
+  the clean line above it instead of returning early). Header: collapse
+  chevron, count pill, scope toggle (Current branch / Current HEAD when
+  detached / All local branches), Refresh. Commit rows show subject, short
+  OID, author, relative age and root/merge markers; expansion loads
+  parent-specific file rows lazily with status letters, rename old → new,
+  and inline loading/error/empty states with Retry.
+- Clicking a file opens `Diff: <file> @ <short>` in the main area with
+  `parent → commit · subject` provenance, the shared Split/Inline body,
+  hunk navigation, Copy Hunk and Open File (hidden for deleted paths).
+  Stage/Unstage/Discard/Stage-Hunk controls and the Ctrl+Shift+S chord are
+  gated by the `DiffSource::Commit` capability contract; Copy reads the
+  committed patch, never worktree data.
+- Fetching rides the 250ms poller: generation-guarded page + file drains,
+  one page fetch per tick, no polling while collapsed or for non-repo
+  roots. The historical patch uses a latest-only worker with exact-key
+  admission (commit, base, paths, roots, context). Load more grows to the
+  100-commit cap with an explicit limit notice. Commits set the history
+  dirty hint; stage/unstage/discard never refetch immutable history.
+- Keyboard reuses the Git-tab chords: Alt+Up/Down walks the section owning
+  the single cursor (cross-selection clears the other section), Alt+Left/
+  Right collapse/expand, Alt+Enter toggles a commit or opens a file. No new
+  global shortcuts; the shortcut table is unchanged.
+- Visual rework against the VS Code Graph reference: every Graph row is
+  single-line truncated (`whitespace_nowrap` + `text_ellipsis` in an
+  `overflow_hidden` bound) so subjects/paths clip with an ellipsis instead
+  of wrapping over neighbors; commit rows show a continuous lane spine
+  (blue dots, hollow when expanded/selected, line continuing through file
+  expansions), subject, truncated author and muted age; file rows show the
+  lane, icon badge, truncated name/dir and right-edge status letter.
+  Ref badges remain pending (context emits no decorations yet).
+- Verification: `mbx fmt --all --check`, `mbx test --workspace`,
+  `mbx clippy --workspace --all-targets -- -D warnings`,
+  `mbx build --release --bin omaterm --bin omaterm-desktop`,
+  `python3 scripts/check-docs.py`, `git diff --check`. Native Wayland
+  click/expand/preview interaction on a real window remains manual.
+- Known follow-ups: merge parent selector (first parent is the default),
+  ref badges (context emits none yet), full commit message detail (no
+  CommitDetails reader yet), true subprocess cancellation (generation
+  supersession plus bounded timeouts, M14 precedent), lane layout for
+  forks/merges (linear spine is the intermediate).
+
+### Git history commit files and historical diffs — 2026-10-07
+
+- Added `GitCommand::CommitFiles` and `DiffCommand::ShowCommit`, with strict
+  `git.commit-files` and `diff.show-commit` IPC methods plus `omaterm git
+  commit-files` and `omaterm diff show-commit` CLI parity. All routes share the
+  context reader rather than duplicating Git process invocation.
+- Context reads bounded `git diff --raw -z -M` commit-file records and
+  parent-specific patches. Raw change paths are byte-preserving on Unix
+  (`OsString::from_vec`) so non-UTF-8 filenames survive; commit bases are
+  now enforced: a selected parent must be an actual parent of the commit,
+  and the empty tree is valid only for root commits. Historical diff
+  capabilities remain read-only.
+- Router and context fixtures cover linear history, root commits, rename
+  metadata, dirty-worktree isolation, invalid project credentials and unknown
+  object IDs. The Graph/sidebar state, cancellable worker and historical preview
+  rendering remain pending.
+- Verification: `mbx fmt --all` PASS; `mbx test --workspace` PASS; `mbx clippy
+  --workspace --all-targets -- -D warnings` PASS; `git diff --check` PASS.
+  The known transitive `proc-macro-error2` future-incompatibility notice remains.
+  Native Wayland validation is not applicable until Graph/history preview UI
+  exists.
+
 ### Mouse-wheel ease-out, touchpad momentum and terminal pixel interpolation — 2026-10-07
 
 - The preceding layout/I/O fixes did not add wheel animation. Confirmed against

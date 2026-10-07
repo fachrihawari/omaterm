@@ -130,6 +130,25 @@ pub struct GitHistory {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitCommitFiles {
+    pub project_id: Option<String>,
+    pub commit: String,
+    /// Full parent OID, or `"empty_tree"` for a root commit.
+    pub parent: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffShowCommit {
+    pub project_id: Option<String>,
+    pub commit: String,
+    /// Full parent OID, or `"empty_tree"` for a root commit.
+    pub parent: Option<String>,
+    pub old_path: Option<String>,
+    pub path: String,
+    pub context_lines: Option<u8>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitPaths {
     pub project_id: Option<String>,
     pub paths: Vec<String>,
@@ -208,12 +227,14 @@ pub enum Method {
     FileOpen(FileOpen),
     GitStatus(GitStatus),
     GitHistory(GitHistory),
+    GitCommitFiles(GitCommitFiles),
     GitStage(GitPaths),
     GitStageHunk(GitStageHunk),
     GitUnstage(GitPaths),
     GitDiscard(GitPaths),
     GitCommit(GitCommit),
     DiffShow(DiffShow),
+    DiffShowCommit(DiffShowCommit),
     DiffListFiles(DiffListFiles),
     ProcessList(ProcessList),
     ProcessKill(ProcessKill),
@@ -267,12 +288,14 @@ impl Method {
             "file.open" => decode!(FileOpen, FileOpen),
             "git.status" => decode!(GitStatus, GitStatus),
             "git.history" => decode!(GitHistory, GitHistory),
+            "git.commit-files" => decode!(GitCommitFiles, GitCommitFiles),
             "git.stage" => decode!(GitPaths, GitStage),
             "git.stage-hunk" => decode!(GitStageHunk, GitStageHunk),
             "git.unstage" => decode!(GitPaths, GitUnstage),
             "git.discard" => decode!(GitPaths, GitDiscard),
             "git.commit" => decode!(GitCommit, GitCommit),
             "diff.show" => decode!(DiffShow, DiffShow),
+            "diff.show-commit" => decode!(DiffShowCommit, DiffShowCommit),
             "diff.list-files" => decode!(DiffListFiles, DiffListFiles),
             "process.list" => decode!(ProcessList, ProcessList),
             "process.kill" => decode!(ProcessKill, ProcessKill),
@@ -349,6 +372,10 @@ mod tests {
                 "git.history",
                 serde_json::json!({"scope":"current_head","limit":50}),
             ),
+            (
+                "git.commit-files",
+                serde_json::json!({"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+            ),
             ("git.stage", serde_json::json!({"paths": ["a.txt"]})),
             ("git.unstage", serde_json::json!({"paths": ["a.txt"]})),
             ("git.discard", serde_json::json!({"paths": ["a.txt"]})),
@@ -357,11 +384,15 @@ mod tests {
                 "diff.show",
                 serde_json::json!({"path": "src/main.rs", "staged": true, "context_lines": 5}),
             ),
+            (
+                "diff.show-commit",
+                serde_json::json!({"commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "path": "src/main.rs"}),
+            ),
             ("diff.list-files", serde_json::json!({"staged": false})),
             ("process.list", serde_json::json!({})),
             ("process.kill", serde_json::json!({"pid": 123})),
         ];
-        assert_eq!(cases.len(), 42);
+        assert_eq!(cases.len(), 44);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

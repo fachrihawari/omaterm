@@ -1617,13 +1617,15 @@ impl CommandRouter {
             ) => self.documents.project_of(*document),
             OmaCommand::Git(GitCommand::Status { project })
             | OmaCommand::Git(GitCommand::History { project, .. })
+            | OmaCommand::Git(GitCommand::CommitFiles { project, .. })
             | OmaCommand::Git(GitCommand::Stage { project, .. })
             | OmaCommand::Git(GitCommand::StageHunk { project, .. })
             | OmaCommand::Git(GitCommand::Unstage { project, .. })
             | OmaCommand::Git(GitCommand::Discard { project, .. })
             | OmaCommand::Git(GitCommand::Commit { project, .. }) => Some(*project),
             OmaCommand::Diff(DiffCommand::Show { project, .. })
-            | OmaCommand::Diff(DiffCommand::ListFiles { project, .. }) => Some(*project),
+            | OmaCommand::Diff(DiffCommand::ListFiles { project, .. })
+            | OmaCommand::Diff(DiffCommand::ShowCommit { project, .. }) => Some(*project),
             OmaCommand::Process(ProcessCommand::List { project })
             | OmaCommand::Process(ProcessCommand::Kill { project, .. }) => Some(*project),
             OmaCommand::Pane(
@@ -2966,6 +2968,35 @@ impl CommandRouter {
                     Err(error) => git_error(error),
                 }
             }
+            OmaCommand::Git(GitCommand::CommitFiles {
+                project,
+                commit,
+                base,
+            }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return err(
+                            ErrorCode::NotARepo,
+                            "project is not inside a git repository",
+                        );
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_commit_files(&root, &commit, &base) {
+                    Ok(files) => {
+                        tracing::debug!(
+                            target: "omaterm::git",
+                            project_id = %project.0,
+                            files = files.files.len(),
+                            truncated = files.truncated,
+                            "git commit files served",
+                        );
+                        ok(Out::GitCommitFiles(files))
+                    }
+                    Err(error) => git_error(error),
+                }
+            }
             OmaCommand::Git(GitCommand::Unstage { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Unstage)
             }
@@ -3010,6 +3041,45 @@ impl CommandRouter {
             ),
             OmaCommand::Diff(DiffCommand::ListFiles { project, staged }) => {
                 self.diff_query(context, project, None, staged, 0, true)
+            }
+            OmaCommand::Diff(DiffCommand::ShowCommit {
+                project,
+                commit,
+                base,
+                old_path,
+                path,
+                context_lines,
+            }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return err(
+                            ErrorCode::NotARepo,
+                            "project is not inside a git repository",
+                        );
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_commit_diff(
+                    &root,
+                    &commit,
+                    &base,
+                    old_path.as_deref(),
+                    &path,
+                    context_lines,
+                ) {
+                    Ok(info) => {
+                        tracing::debug!(
+                            target: "omaterm::diff",
+                            project_id = %project.0,
+                            files = info.files.len(),
+                            truncated = info.truncated,
+                            "commit diff served",
+                        );
+                        ok(CommandOutput::Diff(info))
+                    }
+                    Err(error) => git_error(error),
+                }
             }
             OmaCommand::Process(ProcessCommand::List { .. }) => err(
                 ErrorCode::RuntimeFailure,
@@ -6628,6 +6698,141 @@ mod tests {
         assert!(matches!(
             foreign.result,
             CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_history_commit_files_and_show_commit_share_one_read_path() {
+        use omaterm_core::{
+            DiffCommand, GitCommand, GitComparisonBase, GitHistoryScope, GitObjectId,
+        };
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("omaterm-history-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init"]);
+        git(&root, &["config", "user.email", "history@test"]);
+        git(&root, &["config", "user.name", "history"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), b"v1\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "first"]);
+        std::fs::write(root.join("a.txt"), b"v2\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "second"]);
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // History lists newest-first; root-less projects stay empty.
+        let history = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::History {
+                project,
+                scope: GitHistoryScope::CurrentHead,
+                limit: 50,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::GitHistory(page)) = history.result else {
+            panic!("git history");
+        };
+        assert_eq!(page.commits.len(), 2);
+        assert_eq!(page.commits[0].subject, "second");
+        assert!(!page.has_more);
+        assert!(history.effects.is_empty());
+        let head = page.commits[0].id.clone();
+        let parent = page.commits[0].parents[0].clone();
+        let base = GitComparisonBase::Parent(parent);
+
+        // Parent-specific files, then the same selection as a read-only diff.
+        let files = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::CommitFiles {
+                project,
+                commit: head.clone(),
+                base: base.clone(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::GitCommitFiles(listed)) = files.result else {
+            panic!("commit files");
+        };
+        assert_eq!(listed.files.len(), 1);
+        assert_eq!(listed.files[0].path, std::path::PathBuf::from("a.txt"));
+        assert!(files.effects.is_empty());
+
+        let show = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::ShowCommit {
+                project,
+                commit: head.clone(),
+                base,
+                old_path: None,
+                path: std::path::PathBuf::from("a.txt"),
+                context_lines: 3,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Diff(info)) = show.result else {
+            panic!("show commit");
+        };
+        assert_eq!(info.files.len(), 1);
+        assert!(!info.staged);
+        assert!(show.effects.is_empty());
+
+        // An invalid project credential and an unknown full OID are rejected.
+        let foreign = router.dispatch(
+            CommandContext::Project(omaterm_core::ProjectId::new()),
+            OmaCommand::Git(GitCommand::History {
+                project,
+                scope: GitHistoryScope::CurrentHead,
+                limit: 10,
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::PermissionDenied
+        ));
+        let bad = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::CommitFiles {
+                project,
+                commit: GitObjectId::parse("f".repeat(40)).unwrap(),
+                base: GitComparisonBase::EmptyTree,
+            }),
+        );
+        assert!(matches!(
+            bad.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::GitFailed
         ));
 
         let _ = router.dispatch(
