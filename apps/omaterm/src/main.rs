@@ -15829,18 +15829,16 @@ impl WorkspaceView {
                 .flex_row()
                 .items_center()
                 .gap_2()
+                .child(div().text_color(rgb(crate::ui::theme::MUTED)).child(
+                    crate::ui::assets::icon(
+                        crate::ui::assets::SEARCH,
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    ),
+                ))
                 .child(
                     div()
-                        .text_color(rgb(0x71717A))
-                        .child(crate::ui::assets::icon(
-                            crate::ui::assets::SEARCH,
-                            14.0,
-                            0x71717A,
-                        )),
-                )
-                .child(
-                    div()
-                        .text_color(rgb(0x71717A))
+                        .text_color(rgb(crate::ui::theme::MUTED))
                         .child("Search files by name…"),
                 )
         } else {
@@ -15849,21 +15847,19 @@ impl WorkspaceView {
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .child(
-                    div()
-                        .text_color(rgb(0x71717A))
-                        .child(crate::ui::assets::icon(
-                            crate::ui::assets::SEARCH,
-                            14.0,
-                            0x71717A,
-                        )),
-                )
+                .child(div().text_color(rgb(crate::ui::theme::MUTED)).child(
+                    crate::ui::assets::icon(
+                        crate::ui::assets::SEARCH,
+                        14.0,
+                        crate::ui::theme::MUTED,
+                    ),
+                ))
                 .child({
                     let caret_h = px(f32::from(self.fonts(&*cx).line_height));
                     let before = self.ctrlp_query[..self.ctrlp_caret_byte].to_owned();
                     let after = self.ctrlp_query[self.ctrlp_caret_byte..].to_owned();
                     let caret_bg = if self.ctrlp_caret_on {
-                        rgb(0x71717A)
+                        rgb(crate::ui::theme::TEXT)
                     } else {
                         rgba(0x00000000)
                     };
@@ -15881,12 +15877,12 @@ impl WorkspaceView {
             .flex_col()
             .rounded_md()
             .border_1()
-            .border_color(rgb(0x52525B))
+            .border_color(rgb(crate::ui::theme::BORDER2))
             .shadow_lg()
-            .bg(rgb(0x18181B))
-            .text_color(rgb(0xE4E4E7))
+            .bg(rgb(crate::ui::theme::PANEL))
+            .text_color(rgb(crate::ui::theme::TEXT))
             .child(div().px_3().py_2().child(input))
-            .child(div().h(px(1.0)).w_full().bg(rgb(0x2E2E33)));
+            .child(div().h(px(1.0)).w_full().bg(rgb(crate::ui::theme::BORDER)));
         if self.ctrlp_results.is_empty() {
             let empty_message = if self.ctrlp_source_error.is_some() {
                 "File search unavailable; workspace results may still be shown."
@@ -15902,9 +15898,9 @@ impl WorkspaceView {
                     .px_3()
                     .py_2()
                     .text_color(rgb(if self.ctrlp_source_error.is_some() {
-                        0xFBBF24
+                        crate::ui::theme::YELLOW
                     } else {
-                        0x71717A
+                        crate::ui::theme::MUTED
                     }))
                     .child(empty_message),
             );
@@ -15924,7 +15920,7 @@ impl WorkspaceView {
                         let entry = list_entries[index].clone();
                         let selected = index == selected;
                         let accent = HighlightStyle {
-                            color: Some(hsla(0.594, 1.0, 0.649, 1.0)),
+                            color: Some(rgb(crate::ui::theme::BLUE).into()),
                             ..Default::default()
                         };
                         let label_hits = omaterm_context::fuzzy_match_indices(&entry.label, &query)
@@ -15943,8 +15939,16 @@ impl WorkspaceView {
                             .px_2()
                             .h(px(32.0))
                             .rounded_sm()
-                            .bg(rgb(if selected { 0x27272A } else { 0x18181B }))
-                            .text_color(rgb(if selected { 0xFAFAFA } else { 0xA1A1AA }));
+                            .bg(rgb(if selected {
+                                crate::ui::theme::TREE_SELECTED_BG
+                            } else {
+                                crate::ui::theme::PANEL
+                            }))
+                            .text_color(rgb(if selected {
+                                crate::ui::theme::TEXT
+                            } else {
+                                crate::ui::theme::TEXT2
+                            }));
                         if selected {
                             row = row
                                 .border_l_2()
@@ -15997,7 +16001,7 @@ impl WorkspaceView {
                     .px_3()
                     .py_1()
                     .text_size(px(10.0))
-                    .text_color(rgb(0xFBBF24))
+                    .text_color(rgb(crate::ui::theme::YELLOW))
                     .child("File search unavailable; other matching sources remain available."),
             );
         }
@@ -16006,7 +16010,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_1()
-                    .text_color(rgb(0x71717A))
+                    .text_color(rgb(crate::ui::theme::MUTED))
                     .child("(results capped at 100; some source results omitted)"),
             );
         }
@@ -16020,7 +16024,7 @@ impl WorkspaceView {
         div()
             .px_3()
             .py_1()
-            .text_color(rgb(0x71717A))
+            .text_color(rgb(crate::ui::theme::MUTED))
             .child("up/down navigate · enter run/open · type `>` for commands · esc dismiss")
     }
 
@@ -16042,7 +16046,7 @@ impl WorkspaceView {
                 div()
                     .px_3()
                     .py_2()
-                    .text_color(rgb(0x71717A))
+                    .text_color(rgb(crate::ui::theme::MUTED))
                     .child("No matches."),
             );
         }
@@ -16056,25 +16060,29 @@ impl WorkspaceView {
                     .gap_2()
                     .px_3()
                     .py_1()
-                    .bg(rgb(if active { 0x27272A } else { 0x18181B }))
+                    .bg(rgb(if active {
+                        crate::ui::theme::TREE_SELECTED_BG
+                    } else {
+                        crate::ui::theme::PANEL
+                    }))
                     .child(
                         div()
                             .w(px(150.0))
                             .flex_shrink_0()
-                            .text_color(rgb(0xE4E4E7))
+                            .text_color(rgb(crate::ui::theme::TEXT))
                             .child(shortcut.chord.to_string()),
                     )
                     .child(
                         div()
                             .flex_1()
                             .truncate()
-                            .text_color(rgb(0xA1A1AA))
+                            .text_color(rgb(crate::ui::theme::TEXT2))
                             .child(shortcut.action.to_string()),
                     )
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_color(rgb(0x71717A))
+                            .text_color(rgb(crate::ui::theme::MUTED))
                             .child(shortcut.context.to_string()),
                     ),
             );
@@ -16084,10 +16092,10 @@ impl WorkspaceView {
             .flex_col()
             .rounded_md()
             .border_1()
-            .border_color(rgb(0x52525B))
+            .border_color(rgb(crate::ui::theme::BORDER2))
             .shadow_lg()
-            .bg(rgb(0x18181B))
-            .text_color(rgb(0xE4E4E7))
+            .bg(rgb(crate::ui::theme::PANEL))
+            .text_color(rgb(crate::ui::theme::TEXT))
             .child(
                 div()
                     .px_3()
@@ -16096,16 +16104,16 @@ impl WorkspaceView {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .child(div().text_color(rgb(0x71717A)).child("Keys"))
+                    .child(div().text_color(rgb(crate::ui::theme::MUTED)).child("Keys"))
                     .child(query),
             )
-            .child(div().h(px(1.0)).w_full().bg(rgb(0x2E2E33)))
+            .child(div().h(px(1.0)).w_full().bg(rgb(crate::ui::theme::BORDER)))
             .child(list)
             .child(
                 div()
                     .px_3()
                     .py_1()
-                    .text_color(rgb(0x71717A))
+                    .text_color(rgb(crate::ui::theme::MUTED))
                     .child("up/down navigate · enter/esc close · Alt+Shift+K toggle"),
             );
         self.ctrlp_frame(overlay, box_x, box_w)
