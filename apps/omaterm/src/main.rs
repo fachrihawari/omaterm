@@ -18,9 +18,9 @@ use gpui::{
 };
 use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
-    ErrorCode, FileCommand, FileEntry, GitCommand, OmaCommand, Pane, PaneCommand, PaneContent,
-    PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis, SplitDirection, TabCommand,
-    TabId, TerminalCommand,
+    ErrorCode, FileCommand, FileEntry, GitBranchList, GitCommand, OmaCommand, Pane, PaneCommand,
+    PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId, SessionId, SplitAxis, SplitDirection,
+    TabCommand, TabId, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -299,6 +299,21 @@ struct WorkspaceView {
     /// Set by manual refresh, git mutations, and post-`terminal.run`
     /// submissions: the next tick refreshes immediately.
     git_dirty_hint: bool,
+    /// Branch picker overlay (C9.1, `None` when closed).
+    branch_picker: Option<BranchPicker>,
+    /// Last-good branch lists per project (fetched on picker open and
+    /// after mutations, never polled).
+    branch_lists: HashMap<ProjectId, GitBranchList>,
+    /// Background branch-list completions `(generation, project, outcome)`.
+    /// Root resolution and `git branch` both run on the worker (never the
+    /// UI thread); stale generations drop on close/switch.
+    branch_tx: std::sync::mpsc::Sender<(u64, ProjectId, Result<GitBranchList, String>)>,
+    branch_rx: std::sync::mpsc::Receiver<(u64, ProjectId, Result<GitBranchList, String>)>,
+    branch_generation: u64,
+    /// Project with a branch fetch in flight, if any (one at a time).
+    branch_in_flight: Option<ProjectId>,
+    /// Set on picker open and after branch mutations: the next tick fetches.
+    branch_dirty_hint: bool,
     /// Startup configuration captured once. The 250ms poller must never
     /// synchronously reopen and parse config.toml on the UI thread.
     git_refresh_interval: Duration,
@@ -897,6 +912,37 @@ enum FontZoom {
     In,
     Out,
     Reset,
+}
+
+/// Branch picker overlay state (C9.1): project scope, list cursor, an
+/// optional create/rename input, and a two-step delete arm. The list itself
+/// lives in `branch_lists` (fetched off-thread); the picker only owns chrome.
+struct BranchPicker {
+    project: ProjectId,
+    selected: usize,
+    delete_arm: Option<(String, Instant)>,
+    input: String,
+    input_mode: Option<BranchInputMode>,
+}
+
+/// Which mutation the picker input feeds: a fresh branch (from HEAD) or a
+/// rename of the captured old name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BranchInputMode {
+    Create,
+    Rename { old: String },
+}
+
+impl BranchPicker {
+    fn new(project: ProjectId) -> Self {
+        Self {
+            project,
+            selected: 0,
+            delete_arm: None,
+            input: String::new(),
+            input_mode: None,
+        }
+    }
 }
 
 /// Whether an `Alt`-held key name invokes the project jump (`Alt+Shift+1..9`).
@@ -2123,6 +2169,9 @@ impl WorkspaceView {
         // Background git-status channel (M14): root resolution and the
         // status subprocess both run on the worker, never the UI thread.
         let (git_tx, git_rx) = std::sync::mpsc::channel();
+        // Background branch-list channel: fetched on picker open and after
+        // mutations only, generation-guarded like the status worker.
+        let (branch_tx, branch_rx) = std::sync::mpsc::channel();
         // Background history channels: page fetches and per-commit file
         // listings both run off the UI thread with generation guards.
         let (history_tx, history_rx) = std::sync::mpsc::channel();
@@ -2245,6 +2294,13 @@ impl WorkspaceView {
             git_rx,
             git_generation: 0,
             git_in_flight: None,
+            branch_picker: None,
+            branch_lists: HashMap::new(),
+            branch_tx,
+            branch_rx,
+            branch_generation: 0,
+            branch_in_flight: None,
+            branch_dirty_hint: false,
             git_refreshed_at: HashMap::new(),
             git_dirty_hint: true,
             git_refresh_interval: Duration::from_secs(
@@ -3385,6 +3441,15 @@ impl WorkspaceView {
                     cx.notify();
                 }
                 router::CommandEffect::GitChanged(project) => {
+                    // An open branch picker re-reads: IPC/CLI-driven branch
+                    // mutations land here too, not just picker dispatches.
+                    if self
+                        .branch_picker
+                        .as_ref()
+                        .is_some_and(|picker| picker.project == project)
+                    {
+                        self.branch_dirty_hint = true;
+                    }
                     self.diff_panel.invalidate_data(project);
                     self.diff_refreshed_at.remove(&(project, false));
                     self.diff_refreshed_at.remove(&(project, true));
@@ -4198,6 +4263,14 @@ impl WorkspaceView {
 
     /// Dispatch the actual project deletion through shared semantics.
     fn delete_project(&mut self, project: omaterm_core::ProjectId, cx: &mut Context<Self>) {
+        if self
+            .branch_picker
+            .as_ref()
+            .is_some_and(|picker| picker.project == project)
+        {
+            self.branch_picker = None;
+        }
+        self.branch_lists.remove(&project);
         match self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx) {
             Ok(_) => {}
             Err(error) => {
@@ -4604,6 +4677,9 @@ impl WorkspaceView {
         self.diff_tick(cx);
         self.history_tick(cx);
         self.commit_diff_tick(cx);
+        // Branch lists fetch on picker open and after mutations only
+        // (never polled): one fetch per tick while wanted.
+        self.branch_tick(cx);
         if self.ctrlp_open
             && (git_landed || self.coordinator.selected_project_id() != self.ctrlp_project)
         {
@@ -9323,6 +9399,24 @@ impl WorkspaceView {
                     OmaCommand::Pane(PaneCommand::EqualizeSelected),
                 );
                 // View-local overlay transition (no core command): the
+                // confirm handler matches this key and opens the branch
+                // picker for the palette's project.
+                add(Candidate {
+                    key: "command.git.branches".into(),
+                    label: "Git: Branches…".into(),
+                    detail: "View · checkout, create, rename, delete".into(),
+                    aliases: vec![
+                        "branches".into(),
+                        "branch".into(),
+                        "checkout".into(),
+                        "git branch".into(),
+                    ],
+                    kind: Kind::Command,
+                    target: PaletteTarget::ViewAction,
+                    file_root: None,
+                    mru_rank: None,
+                });
+                // View-local overlay transition (no core command): the
                 // confirm handler matches this key and opens the cheatsheet.
                 add(Candidate {
                     key: "command.keys.cheatsheet".into(),
@@ -9659,11 +9753,17 @@ impl WorkspaceView {
             palette::PaletteTarget::ViewAction => {
                 // View-local overlay transition: no core command, no effects.
                 // The palette closes first (origin restored), then the
-                // cheatsheet owns input until dismissed.
+                // target overlay owns input until dismissed.
+                let branches = entry.key == "command.git.branches";
+                let project = self.coordinator.selected_project_id().filter(|_| branches);
                 self.ctrlp_open = false;
                 self.palette_search_worker.cancel_current();
                 self.restore_palette_origin(cx);
-                self.open_keybindings(cx);
+                if let Some(project) = project {
+                    self.open_branch_picker(project, cx);
+                } else {
+                    self.open_keybindings(cx);
+                }
                 None
             }
             palette::PaletteTarget::Semantic(command) => {
@@ -10233,6 +10333,12 @@ impl WorkspaceView {
         // reaches the shell while open.
         if self.keybindings_open {
             return self.on_keybindings_key(event, cx);
+        }
+        // The branch picker owns keyboard input like the palette: typing
+        // feeds the create/rename input, arrows navigate, Enter checks
+        // out, Esc closes. Nothing reaches the shell while open.
+        if self.branch_picker.is_some() {
+            return self.on_branch_key(event, cx);
         }
         // Context menus are transient chrome: Esc dismisses them without
         // touching selection. Palette/cheatsheet own Esc while open
@@ -14626,7 +14732,280 @@ impl WorkspaceView {
         let dirty = !(status.staged.is_empty()
             && status.unstaged.is_empty()
             && status.untracked.is_empty());
-        status.branch.clone().map(|branch| (branch, dirty))
+        status.branch.clone().map(|branch| {
+            // Ahead/behind from the same status read (no extra query):
+            // `main* ↑2 ↓1`. Shown only with an upstream and nonzero counts.
+            let sync = match (status.upstream.is_some(), status.ahead, status.behind) {
+                (true, ahead, behind) if ahead > 0 && behind > 0 => {
+                    format!(" ↑{ahead} ↓{behind}")
+                }
+                (true, ahead, _) if ahead > 0 => format!(" ↑{ahead}"),
+                (true, _, behind) if behind > 0 => format!(" ↓{behind}"),
+                _ => String::new(),
+            };
+            (format!("{branch}{sync}"), dirty)
+        })
+    }
+
+    /// Open the branch picker overlay for `project`, fetching the list.
+    fn open_branch_picker(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        self.branch_picker = Some(BranchPicker::new(project));
+        self.branch_lists.remove(&project);
+        self.branch_in_flight = None;
+        self.branch_generation = self.branch_generation.wrapping_add(1);
+        self.branch_dirty_hint = true;
+        cx.notify();
+    }
+
+    /// Dispatch a picker mutation, then refetch the list and nudge the
+    /// status/graph pollers (HEAD may have moved). Errors surface as an
+    /// input notice with the stable code text; checkout success toasts
+    /// (HEAD visibly moved).
+    fn branch_mutate(
+        &mut self,
+        command: OmaCommand,
+        toast: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.branch_picker.is_none() {
+            return;
+        }
+        match self.dispatch_command(command, cx) {
+            Ok(_) => {
+                if let Some(message) = toast {
+                    self.show_toast(message, cx);
+                }
+                self.input_notice = None;
+                self.branch_dirty_hint = true;
+                self.git_dirty_hint = true;
+                self.history_dirty_hint = true;
+                cx.notify();
+            }
+            Err(error) => {
+                self.input_notice = Some(format!("Branches: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Checkout the picker's selected row (Enter/click).
+    fn branch_checkout_selected(&mut self, cx: &mut Context<Self>) {
+        let (project, name) = match &self.branch_picker {
+            Some(picker) => (
+                picker.project,
+                self.branch_lists
+                    .get(&picker.project)
+                    .and_then(|list| list.branches.get(picker.selected))
+                    .map(|branch| branch.name.clone()),
+            ),
+            None => return,
+        };
+        if let Some(name) = name {
+            let toast = format!("Switched to {name}");
+            self.branch_mutate(
+                OmaCommand::Git(GitCommand::BranchCheckout { project, name }),
+                Some(toast),
+                cx,
+            );
+        }
+    }
+
+    /// Two-step delete of the picker's selected row: first press arms
+    /// ("press again"), second press within 8s dispatches (unmerged
+    /// branches fail honestly unless the row was force-armed — force is
+    /// CLI-only in v1, the notice says so).
+    fn branch_delete_selected(&mut self, cx: &mut Context<Self>) {
+        let (project, name) = match &self.branch_picker {
+            Some(picker) => (
+                picker.project,
+                self.branch_lists
+                    .get(&picker.project)
+                    .and_then(|list| list.branches.get(picker.selected))
+                    .map(|branch| branch.name.clone()),
+            ),
+            None => return,
+        };
+        let Some(name) = name else {
+            return;
+        };
+        let armed = self
+            .branch_picker
+            .as_ref()
+            .and_then(|picker| picker.delete_arm.clone())
+            .is_some_and(|(armed, at)| armed == name && at.elapsed() < Duration::from_secs(8));
+        if !armed {
+            if let Some(picker) = self.branch_picker.as_mut() {
+                picker.delete_arm = Some((name, Instant::now()));
+            }
+            self.input_notice = Some("Delete: press again within 8s to confirm".into());
+            cx.notify();
+            return;
+        }
+        if let Some(picker) = self.branch_picker.as_mut() {
+            picker.delete_arm = None;
+        }
+        self.branch_mutate(
+            OmaCommand::Git(GitCommand::BranchDelete {
+                project,
+                name,
+                force: false,
+            }),
+            None,
+            cx,
+        );
+    }
+
+    /// Commit the picker input as a create or rename.
+    fn branch_commit_input(&mut self, cx: &mut Context<Self>) {
+        let (project, mode, name) = match &self.branch_picker {
+            Some(picker) => (
+                picker.project,
+                picker.input_mode.clone(),
+                picker.input.trim().to_owned(),
+            ),
+            None => return,
+        };
+        if name.is_empty() {
+            return;
+        }
+        let (command, toast) = match mode {
+            Some(BranchInputMode::Rename { old }) => (
+                OmaCommand::Git(GitCommand::BranchRename {
+                    project,
+                    old,
+                    new: name.clone(),
+                }),
+                Some(format!("Renamed to {name}")),
+            ),
+            _ => (
+                OmaCommand::Git(GitCommand::BranchCreate {
+                    project,
+                    name: name.clone(),
+                    start: None,
+                }),
+                Some(format!("Created {name}")),
+            ),
+        };
+        if let Some(picker) = self.branch_picker.as_mut() {
+            picker.input.clear();
+            picker.input_mode = None;
+        }
+        self.branch_mutate(command, toast, cx);
+    }
+
+    /// Keyboard while the branch picker is open. Up/Down move, Enter
+    /// checks out, typing feeds the create/rename input, Esc closes.
+    /// Nothing reaches the shell while open.
+    fn on_branch_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key_name = event.keystroke.key.to_lowercase().replace('_', "");
+        match key_name.as_str() {
+            "escape" => {
+                self.branch_picker = None;
+                cx.notify();
+            }
+            "up" => {
+                if let Some(picker) = self.branch_picker.as_mut() {
+                    picker.selected = picker.selected.saturating_sub(1);
+                    picker.delete_arm = None;
+                }
+                cx.notify();
+            }
+            "down" => {
+                if let Some(picker) = self.branch_picker.as_mut() {
+                    picker.selected = picker.selected.saturating_add(1);
+                }
+                cx.notify();
+            }
+            "enter" | "return" | "kpenter" => {
+                self.branch_checkout_selected(cx);
+            }
+            "backspace" if !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt => {
+                if let Some(picker) = self.branch_picker.as_mut() {
+                    picker.input.pop();
+                }
+                cx.notify();
+            }
+            _ => {
+                if !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && let Some(text) = event.keystroke.key_char.as_ref()
+                {
+                    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+                    if clean.is_empty() {
+                        return;
+                    }
+                    if let Some(picker) = self.branch_picker.as_mut() {
+                        if picker.input.chars().count() >= 255 {
+                            return;
+                        }
+                        if picker.input_mode.is_none() {
+                            picker.input_mode = Some(BranchInputMode::Create);
+                        }
+                        picker.input.push_str(&clean);
+                    }
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Fetch the picker list off-thread (generation-guarded, one in flight).
+    /// Called from the 250ms poller while the picker is open.
+    fn branch_tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(picker) = &self.branch_picker else {
+            return false;
+        };
+        let project = picker.project;
+        let mut landed = false;
+        while let Ok((generation, landed_project, result)) = self.branch_rx.try_recv() {
+            if generation != self.branch_generation || landed_project != project {
+                continue;
+            }
+            self.branch_in_flight = None;
+            match result {
+                Ok(list) => {
+                    self.branch_lists.insert(project, list);
+                    if let Some(picker) = self.branch_picker.as_mut()
+                        && picker.project == project
+                    {
+                        let count = self
+                            .branch_lists
+                            .get(&project)
+                            .map(|l| l.branches.len())
+                            .unwrap_or(0);
+                        picker.selected = picker.selected.min(count.saturating_sub(1));
+                    }
+                }
+                Err(message) => {
+                    self.branch_lists.remove(&project);
+                    self.input_notice = Some(format!("Branches: {message}"));
+                }
+            }
+            landed = true;
+        }
+        if landed {
+            cx.notify();
+        }
+        if self.branch_in_flight.is_some() || !self.branch_dirty_hint {
+            return landed;
+        }
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let tx = self.branch_tx.clone();
+        let generation = self.branch_generation;
+        std::thread::spawn(move || {
+            let resolved = omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref());
+            let result = match resolved.root {
+                None => Err("no project root".to_string()),
+                Some(root) => {
+                    omaterm_context::git_branch_list(&root).map_err(|error| error.to_string())
+                }
+            };
+            let _ = tx.send((generation, project, result));
+        });
+        self.branch_in_flight = Some(project);
+        self.branch_dirty_hint = false;
+        landed
     }
 
     /// Pane count plus attention flag for a tab: attention when any pane
@@ -14782,9 +15161,26 @@ impl WorkspaceView {
                             .child(label),
                         )
                         .child(
-                            crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10)
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .child(branch.unwrap_or_default()),
+                            crate::ui::metrics::text_role(
+                                div()
+                                    .px_1()
+                                    .rounded(px(4.0))
+                                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            view.open_branch_picker(id, cx);
+                                        }),
+                                    ),
+                                crate::ui::metrics::META_10,
+                            )
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child(branch.unwrap_or("no branch".into())),
                         ),
                 )
                 .child(
@@ -15131,6 +15527,287 @@ impl WorkspaceView {
         let had_project = self.project_context_menu.take().is_some();
         let had_terminal = self.terminal_menu.take().is_some();
         had_project || had_terminal
+    }
+
+    /// Branch picker overlay (C9.1): project branches with checkout on
+    /// click/Enter, two-step delete per row, and a create/rename input.
+    /// Same floating frame as the finder; typing always feeds the input,
+    /// arrows move without checking out, Esc closes. Nothing reaches the
+    /// shell while open.
+    fn render_branch_picker(&mut self, box_x: f32, box_w: f32, cx: &mut Context<Self>) -> Div {
+        let (project, selected, input, input_mode, delete_arm) = match &self.branch_picker {
+            Some(picker) => (
+                picker.project,
+                picker.selected,
+                picker.input.clone(),
+                picker.input_mode.clone(),
+                picker.delete_arm.clone(),
+            ),
+            None => return div(),
+        };
+        // Clone out: row listeners borrow nothing from self, and the frame
+        // builder below needs `&mut self`.
+        let list = self.branch_lists.get(&project).cloned();
+        let mut body = div().flex().flex_col();
+        // Input row: create, or rename when armed by the Rename button.
+        let (placeholder, commit_label) = match &input_mode {
+            Some(BranchInputMode::Rename { .. }) => ("Rename to…", "Rename"),
+            _ => ("New branch…", "Create"),
+        };
+        body = body.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(rgb(crate::ui::theme::BORDER2))
+                        .bg(rgb(crate::ui::theme::PILL_BG))
+                        .role(crate::ui::metrics::BODY_11)
+                        .text_color(rgb(if input.is_empty() {
+                            crate::ui::theme::MUTED
+                        } else {
+                            crate::ui::theme::TEXT
+                        }))
+                        .child(if input.is_empty() {
+                            placeholder.to_string()
+                        } else {
+                            input.clone()
+                        }),
+                )
+                .child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(rgb(crate::ui::theme::BORDER2))
+                        .role(crate::ui::metrics::BODY_11)
+                        .text_color(rgb(crate::ui::theme::TEXT2))
+                        .hover(|s| {
+                            s.bg(gpui::rgb(crate::ui::theme::CMD_HOVER_BG))
+                                .border_color(gpui::rgb(crate::ui::theme::CMD_HOVER_BORDER))
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.branch_commit_input(cx);
+                            }),
+                        )
+                        .child(commit_label),
+                ),
+        );
+        body = body.child(div().h(px(1.0)).w_full().bg(rgb(crate::ui::theme::BORDER)));
+        match list {
+            None => {
+                body = body.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child("Loading branches…"),
+                );
+            }
+            Some(list) => {
+                if list.branches.is_empty() {
+                    body = body.child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child("No branches (unborn HEAD or empty repo)."),
+                    );
+                }
+                let count = list.branches.len();
+                let selected = selected.min(count.saturating_sub(1));
+                for (index, branch) in list.branches.iter().enumerate() {
+                    let active = index == selected;
+                    let armed = delete_arm
+                        .as_ref()
+                        .is_some_and(|(name, _)| *name == branch.name);
+                    let track = match branch.track {
+                        omaterm_core::GitBranchTrack::UpToDate => "=",
+                        omaterm_core::GitBranchTrack::Ahead(_) => "↑",
+                        omaterm_core::GitBranchTrack::Behind(_) => "↓",
+                        omaterm_core::GitBranchTrack::Diverged { .. } => "⇅",
+                        omaterm_core::GitBranchTrack::NoUpstream => "",
+                    };
+                    let upstream = match &branch.upstream {
+                        Some(upstream) if !track.is_empty() => {
+                            format!("{upstream} {track}")
+                        }
+                        _ => String::new(),
+                    };
+                    let name = branch.name.clone();
+                    let rename_old = branch.name.clone();
+                    let is_head = branch.is_head;
+                    let mut row = div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .h(px(32.0))
+                        .rounded(px(7.0))
+                        .bg(rgb(if active {
+                            crate::ui::theme::TREE_SELECTED_BG
+                        } else {
+                            crate::ui::theme::PANEL
+                        }))
+                        .text_color(rgb(if active {
+                            crate::ui::theme::TEXT
+                        } else {
+                            crate::ui::theme::TEXT2
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                if let Some(picker) = view.branch_picker.as_mut() {
+                                    picker.selected = index;
+                                }
+                                view.branch_checkout_selected(cx);
+                            }),
+                        )
+                        .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(
+                            if branch.is_head {
+                                crate::ui::theme::BLUE
+                            } else {
+                                crate::ui::theme::BORDER2
+                            },
+                        )))
+                        .child(div().flex_1().truncate().child(name))
+                        .child(
+                            div()
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .child(upstream),
+                        );
+                    row = row
+                        .child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(7.0))
+                                .role(crate::ui::metrics::META_10)
+                                .text_color(rgb(crate::ui::theme::MUTED))
+                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        if let Some(picker) = view.branch_picker.as_mut() {
+                                            picker.selected = index;
+                                            picker.input = rename_old.clone();
+                                            picker.input_mode = Some(BranchInputMode::Rename {
+                                                old: rename_old.clone(),
+                                            });
+                                        }
+                                        cx.notify();
+                                    }),
+                                )
+                                .child("Rename"),
+                        )
+                        .child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(7.0))
+                                .role(crate::ui::metrics::META_10)
+                                .text_color(rgb(if armed {
+                                    crate::ui::theme::RED
+                                } else {
+                                    crate::ui::theme::MUTED
+                                }))
+                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        if is_head {
+                                            view.input_notice =
+                                                Some("Delete: branch is checked out".into());
+                                            cx.notify();
+                                            return;
+                                        }
+                                        // Two-step arm lives in
+                                        // branch_delete_selected: first press
+                                        // arms ("Sure?"), second confirms.
+                                        if let Some(picker) = view.branch_picker.as_mut() {
+                                            picker.selected = index;
+                                        }
+                                        view.branch_delete_selected(cx);
+                                    }),
+                                )
+                                .child(if armed { "Sure?" } else { "Delete" }),
+                        );
+                    body = body.child(row);
+                }
+                if list.truncated {
+                    body = body.child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .text_color(rgb(crate::ui::theme::MUTED))
+                            .child("(branch list capped; refine or use the CLI)"),
+                    );
+                }
+            }
+        }
+        let overlay = div()
+            .flex()
+            .flex_col()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::BORDER2))
+            .shadow_lg()
+            .bg(rgb(crate::ui::theme::PANEL))
+            .text_color(rgb(crate::ui::theme::TEXT))
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .role(crate::ui::metrics::BODY_11)
+                    .child("Branches"),
+            )
+            .child(div().h(px(1.0)).w_full().bg(rgb(crate::ui::theme::BORDER)))
+            .child(body)
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_color(rgb(crate::ui::theme::MUTED))
+                    .child("up/down move · enter checkout · type + Create/Rename · esc close"),
+            );
+        self.ctrlp_frame(overlay, box_x, box_w)
     }
 
     /// 4px Projects resizer: transparent at rest, highlighted while the
@@ -17501,6 +18178,22 @@ impl Render for WorkspaceView {
             // not the window: the finder floats over the main view only.
             let box_x = ((pane_w - box_w) / 2.0).max(0.0);
             pane_area = pane_area.child(self.render_ctrlp(box_x, box_w, cx));
+        }
+        if self.branch_picker.is_some() {
+            let viewport_w: f32 = window.viewport_size().width.into();
+            let viewport_h: f32 = window.viewport_size().height.into();
+            let shell = crate::ui::geometry::shell_rects(
+                viewport_w,
+                viewport_h,
+                self.projects_visible,
+                self.projects_width,
+                self.inspector_visible,
+                self.inspector_width,
+            );
+            let pane_w = shell.main_view.2.max(1.0);
+            let box_w = (pane_w - 32.0).clamp(200.0, 600.0);
+            let box_x = ((pane_w - box_w) / 2.0).max(0.0);
+            pane_area = pane_area.child(self.render_branch_picker(box_x, box_w, cx));
         }
         if self.keybindings_open {
             let viewport_w: f32 = window.viewport_size().width.into();
