@@ -142,6 +142,10 @@ struct WorkspaceView {
     /// a card child would paint behind later sibling cards and clip inside
     /// the scrolling project list.
     project_context_menu: Option<(ProjectId, gpui::Point<Pixels>)>,
+    /// Open terminal context menu: owning session plus the window-relative
+    /// click anchor. Window-level overlay like the project menu; Copy reads
+    /// the stored session's selection, Paste targets the focused session.
+    terminal_menu: Option<(SessionId, gpui::Point<Pixels>)>,
     ipc_server: Option<IpcServer>,
     ipc_receiver: Option<async_channel::Receiver<IpcWork>>,
     ipc_pending: HashMap<u64, IpcWork>,
@@ -2056,6 +2060,7 @@ impl WorkspaceView {
             keybindings_query: String::new(),
             keybindings_selected: 0,
             project_context_menu: None,
+            terminal_menu: None,
             ipc_server: None,
             ipc_receiver: None,
             ipc_pending: HashMap::new(),
@@ -7481,7 +7486,10 @@ impl WorkspaceView {
             && let Some(payload) = snapshot.text().get(start..end)
             && !payload.is_empty()
         {
+            // Both clipboards, like terminal drag selection: PRIMARY for
+            // middle-click, CLIPBOARD for Ctrl+V and other applications.
             cx.write_to_primary(ClipboardItem::new_string(payload.to_owned()));
+            cx.write_to_clipboard(ClipboardItem::new_string(payload.to_owned()));
         }
         cx.notify();
     }
@@ -10033,11 +10041,10 @@ impl WorkspaceView {
         if self.keybindings_open {
             return self.on_keybindings_key(event, cx);
         }
-        // The project context menu is transient chrome: Esc dismisses it
-        // without touching selection. Palette/cheatsheet own Esc while open
+        // Context menus are transient chrome: Esc dismisses them without
+        // touching selection. Palette/cheatsheet own Esc while open
         // (handled above), so this arm runs only when neither owns input.
-        if self.project_context_menu.is_some() && key_name == "escape" {
-            self.project_context_menu = None;
+        if key_name == "escape" && self.close_transient_menus() {
             cx.notify();
             return;
         }
@@ -10785,7 +10792,11 @@ impl WorkspaceView {
                 if let Some(snapshot) = self.snapshots.get(&session_id) {
                     let text = extract_text(snapshot, range);
                     if !text.is_empty() {
-                        cx.write_to_primary(ClipboardItem::new_string(text));
+                        // Both clipboards: PRIMARY keeps middle-click paste,
+                        // CLIPBOARD makes the selection pastable via
+                        // Ctrl+Shift+V and into other applications.
+                        cx.write_to_primary(ClipboardItem::new_string(text.clone()));
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
                 }
             }
@@ -10794,25 +10805,41 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Copy one session's drag selection to both clipboards. Success toasts;
+    /// a missing/empty selection sets an input notice instead of failing
+    /// silently. Returns true when text was copied.
+    fn copy_session_selection(&mut self, session_id: SessionId, cx: &mut Context<Self>) -> bool {
+        let text = self
+            .selections
+            .get(&session_id)
+            .copied()
+            .filter(|range| !range.is_empty())
+            .and_then(|range| {
+                self.snapshots
+                    .get(&session_id)
+                    .map(|snapshot| extract_text(snapshot, range))
+            })
+            .filter(|text| !text.is_empty());
+        let Some(text) = text else {
+            self.input_notice = Some("Copy: no selection".into());
+            cx.notify();
+            return false;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        cx.write_to_primary(ClipboardItem::new_string(text));
+        self.input_notice = None;
+        self.show_toast("Copied to clipboard".into(), cx);
+        true
+    }
+
     /// Explicit clipboard copy of the focused pane's selection (Ctrl+Shift+C).
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.focused_session_id() else {
+            self.input_notice = Some("Copy: no focused terminal".into());
+            cx.notify();
             return;
         };
-        let Some(range) = self.selections.get(&session_id).copied() else {
-            return;
-        };
-        if range.is_empty() {
-            return;
-        };
-        let Some(snapshot) = self.snapshots.get(&session_id) else {
-            return;
-        };
-        let text = extract_text(snapshot, range);
-        if text.is_empty() {
-            return;
-        }
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.copy_session_selection(session_id, cx);
     }
 
     /// Flash the scroll thumb for [`SCROLL_INDICATOR_FADE_MS`], then hide it.
@@ -11222,6 +11249,33 @@ impl WorkspaceView {
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     view.on_mouse_down(pane_id, event, window, cx);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    if view.coordinator.tree().find(pane_id).is_none() {
+                        return;
+                    }
+                    // Focus first so Copy/Paste resolve the right session,
+                    // mirroring the Left-button focus path (without starting
+                    // a drag selection).
+                    let _ = view.dispatch_command(
+                        OmaCommand::Pane(PaneCommand::Focus { pane: pane_id }),
+                        cx,
+                    );
+                    view.git_panel.set_commit_focused(false);
+                    view.files_search_focused = false;
+                    window.focus(&view.focus_handle);
+                    view.set_input_owner(InputOwner::Terminal(pane_id));
+                    if let Some(session) = view.session_id_for_pane(pane_id) {
+                        view.terminal_menu = Some((session, event.position));
+                        cx.notify();
+                    }
                 }),
             )
             .on_mouse_move(
@@ -14302,6 +14356,95 @@ impl WorkspaceView {
             .into_any_element()
     }
 
+    /// Window-level terminal context menu overlay (Copy/Paste), anchored at
+    /// the right-click point and clamped into the viewport. Same overlay
+    /// discipline as the project menu: rendered once at the window root so
+    /// it paints above every pane. `None` renders nothing.
+    fn render_terminal_menu_overlay(
+        &self,
+        viewport: gpui::Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement;
+        let Some((session, anchor)) = self.terminal_menu else {
+            return div().into_any_element();
+        };
+        // Menu box: 132px wide, two 28px rows + 8px padding = 64px tall.
+        const MENU_W: f32 = 132.0;
+        const MENU_H: f32 = 64.0;
+        let viewport_w: f32 = viewport.width.into();
+        let viewport_h: f32 = viewport.height.into();
+        let anchor_x: f32 = anchor.x.into();
+        let anchor_y: f32 = anchor.y.into();
+        let (left, top) =
+            clamp_menu_anchor(anchor_x, anchor_y, viewport_w, viewport_h, MENU_W, MENU_H);
+        let copy_session = session;
+        div()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(MENU_W))
+            .p(px(4.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::BORDER2))
+            .bg(rgb(crate::ui::theme::PANEL2))
+            .text_color(rgb(crate::ui::theme::TEXT2))
+            .child(
+                div()
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .px(px(8.0))
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.terminal_menu = None;
+                            view.copy_session_selection(copy_session, cx);
+                        }),
+                    )
+                    .child("Copy"),
+            )
+            .child(
+                div()
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .px(px(8.0))
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(rgb(crate::ui::theme::ROW_HOVER_BG)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.terminal_menu = None;
+                            view.paste(cx);
+                        }),
+                    )
+                    .child("Paste"),
+            )
+            .into_any_element()
+    }
+
+    /// Close transient window overlays (project/terminal context menus).
+    /// Returns true when anything was open (callers notify on true).
+    fn close_transient_menus(&mut self) -> bool {
+        let had_project = self.project_context_menu.take().is_some();
+        let had_terminal = self.terminal_menu.take().is_some();
+        had_project || had_terminal
+    }
+
     /// 4px Projects resizer: transparent at rest, highlighted while the
     /// pointer drags. Pointer capture ends on release anywhere.
     fn render_projects_resizer(&mut self, cx: &mut Context<Self>) -> Div {
@@ -16713,11 +16856,11 @@ impl Render for WorkspaceView {
             .relative()
             .track_focus(&self.focus_handle)
             .on_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
-                // Click-outside dismiss for the project context menu.
-                // Menu rows stop propagation, but closing here too is
-                // the same outcome; Right is ignored so the opener
-                // (right-click on a card) never immediately closes.
-                if event.button == MouseButton::Left && view.project_context_menu.take().is_some() {
+                // Click-outside dismiss for context menus. Menu rows
+                // stop propagation, but closing here too is the same
+                // outcome; Right is ignored so an opener right-click
+                // never immediately closes.
+                if event.button == MouseButton::Left && view.close_transient_menus() {
                     cx.notify();
                 }
                 if !view.wheel_motions.is_empty() {
@@ -16781,9 +16924,10 @@ impl Render for WorkspaceView {
                 .absolute()
                 .size_full(),
             )
-            // Window-level overlay: paints above every panel (including
-            // later sibling project cards) and never clips in the scroll list.
+            // Window-level overlays: paint above every panel (including
+            // later sibling project cards) and never clip in scroll lists.
             .child(self.render_project_menu_overlay(viewport, cx))
+            .child(self.render_terminal_menu_overlay(viewport, cx))
     }
 }
 
