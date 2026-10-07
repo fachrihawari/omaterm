@@ -72,6 +72,52 @@ pub enum GitCmd {
         #[arg(short, long)]
         message: String,
     },
+    /// List local branches with HEAD identity and upstream tracking.
+    BranchList {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Create a local branch without checking out.
+    BranchCreate {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// New branch name.
+        name: String,
+        /// Start revision (defaults to HEAD).
+        #[arg(long)]
+        start: Option<String>,
+    },
+    /// Check out a local branch (refused on dirty worktrees).
+    BranchCheckout {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Branch name.
+        name: String,
+    },
+    /// Delete a local branch (head refused; unmerged needs --force).
+    BranchDelete {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Branch name.
+        name: String,
+        /// Delete even when not fully merged (like -D).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Rename a branch, including the checked-out one.
+    BranchRename {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Current branch name.
+        old: String,
+        /// New branch name.
+        new: String,
+    },
     /// List the changed files of one commit against a parent.
     CommitFiles {
         /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
@@ -165,6 +211,51 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 }),
             })
         }
+        GitCmd::BranchList { project } => Ok(WireCall {
+            method: "git.branch-list".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+            }),
+        }),
+        GitCmd::BranchCreate {
+            project,
+            name,
+            start,
+        } => Ok(WireCall {
+            method: "git.branch-create".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "name": name,
+                "start": start,
+            }),
+        }),
+        GitCmd::BranchCheckout { project, name } => Ok(WireCall {
+            method: "git.branch-checkout".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "name": name,
+            }),
+        }),
+        GitCmd::BranchDelete {
+            project,
+            name,
+            force,
+        } => Ok(WireCall {
+            method: "git.branch-delete".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "name": name,
+                "force": force,
+            }),
+        }),
+        GitCmd::BranchRename { project, old, new } => Ok(WireCall {
+            method: "git.branch-rename".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "old": old,
+                "new": new,
+            }),
+        }),
         GitCmd::Stage { project, paths } => {
             check_paths(paths, "stage")?;
             Ok(WireCall {
@@ -261,6 +352,44 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn branch_commands_map_to_wire() {
+        let call = build(&GitCmd::BranchList { project: None }).unwrap();
+        assert_eq!(call.method, "git.branch-list");
+        assert_eq!(call.params, serde_json::json!({"project_id": null}));
+        let call = build(&GitCmd::BranchCreate {
+            project: Some("p".into()),
+            name: "feature".into(),
+            start: Some("main".into()),
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.branch-create");
+        assert_eq!(call.params["name"], "feature");
+        assert_eq!(call.params["start"], "main");
+        let call = build(&GitCmd::BranchCheckout {
+            project: None,
+            name: "feature".into(),
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.branch-checkout");
+        let call = build(&GitCmd::BranchDelete {
+            project: None,
+            name: "feature".into(),
+            force: true,
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.branch-delete");
+        assert_eq!(call.params["force"], true);
+        let call = build(&GitCmd::BranchRename {
+            project: None,
+            old: "feature".into(),
+            new: "topic".into(),
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.branch-rename");
+        assert_eq!(call.params["new"], "topic");
     }
 
     #[test]

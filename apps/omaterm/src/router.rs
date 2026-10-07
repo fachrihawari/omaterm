@@ -13,7 +13,7 @@ use crate::editor::{
 use crate::history::HistoryManager;
 use omaterm_core::{
     CommandContext, CommandError, CommandOutput, CommandResult, DiffCommand, EditorCommand,
-    ErrorCode, FileCommand, FileListInfo, GitCommand, GitStatusInfo, HistoryCommand,
+    ErrorCode, FileCommand, FileListInfo, GitBranchList, GitCommand, GitStatusInfo, HistoryCommand,
     HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES, OmaCommand, PaneCommand, PaneContent,
     PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo, ProcessListInfo, ProjectCommand, ProjectId,
     ProjectInfo, ProjectRootInfo, SessionId, SplitDirection, TabCommand, TabId, TabInfo,
@@ -1149,6 +1149,39 @@ impl CommandRouter {
         }
     }
 
+    /// Root resolution plus a context branch mutation. Mutations need a
+    /// real repository (no empty envelope): a missing root or a non-repo
+    /// root is `NotARepo`, everything else maps through `git_error` with
+    /// stable codes (`dirty_worktree`, `current_branch`, `git_failed`).
+    fn git_branch_mutation(
+        &mut self,
+        context: CommandContext,
+        project: ProjectId,
+        mutation: impl FnOnce(&std::path::Path) -> Result<(), omaterm_context::GitError>,
+    ) -> CommandResult {
+        let root = match self.file_root(context, project) {
+            Ok(Some(root)) => root,
+            Ok(None) => {
+                return err(
+                    ErrorCode::NotARepo,
+                    "project is not inside a git repository",
+                );
+            }
+            Err(error) => return CommandResult::Err(error),
+        };
+        match mutation(&root) {
+            Ok(()) => {
+                tracing::debug!(
+                    target: "omaterm::git",
+                    project_id = %project.0,
+                    "git branch mutation applied",
+                );
+                ok(CommandOutput::Unit)
+            }
+            Err(error) => git_error(error),
+        }
+    }
+
     /// Scope check and shell-root capture for `process.list`. Runs on the
     /// owner thread but performs no `/proc` scan: it only reads cached child
     /// PIDs from live sessions. Returns `(pane, session, root_pid)` per live
@@ -1621,7 +1654,12 @@ impl CommandRouter {
             | OmaCommand::Git(GitCommand::StageHunk { project, .. })
             | OmaCommand::Git(GitCommand::Unstage { project, .. })
             | OmaCommand::Git(GitCommand::Discard { project, .. })
-            | OmaCommand::Git(GitCommand::Commit { project, .. }) => Some(*project),
+            | OmaCommand::Git(GitCommand::Commit { project, .. })
+            | OmaCommand::Git(GitCommand::BranchList { project })
+            | OmaCommand::Git(GitCommand::BranchCreate { project, .. })
+            | OmaCommand::Git(GitCommand::BranchCheckout { project, .. })
+            | OmaCommand::Git(GitCommand::BranchDelete { project, .. })
+            | OmaCommand::Git(GitCommand::BranchRename { project, .. }) => Some(*project),
             OmaCommand::Diff(DiffCommand::Show { project, .. })
             | OmaCommand::Diff(DiffCommand::ListFiles { project, .. })
             | OmaCommand::Diff(DiffCommand::ShowCommit { project, .. }) => Some(*project),
@@ -1702,7 +1740,11 @@ impl CommandRouter {
                 | GitCommand::StageHunk { project, .. }
                 | GitCommand::Unstage { project, .. }
                 | GitCommand::Discard { project, .. }
-                | GitCommand::Commit { project, .. },
+                | GitCommand::Commit { project, .. }
+                | GitCommand::BranchCreate { project, .. }
+                | GitCommand::BranchCheckout { project, .. }
+                | GitCommand::BranchDelete { project, .. }
+                | GitCommand::BranchRename { project, .. },
             ) => Some(*project),
             _ => None,
         };
@@ -2941,6 +2983,53 @@ impl CommandRouter {
                     Err(error) => git_error(error),
                 }
             }
+            OmaCommand::Git(GitCommand::BranchList { project }) => {
+                let root = match self.file_root(context, project) {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
+                        return ok(Out::GitBranchList(GitBranchList::empty()));
+                    }
+                    Err(error) => return CommandResult::Err(error),
+                };
+                match omaterm_context::git_branch_list(&root) {
+                    Ok(list) => {
+                        tracing::debug!(
+                            target: "omaterm::git",
+                            project_id = %project.0,
+                            branches = list.branches.len(),
+                            truncated = list.truncated,
+                            "git branch list served",
+                        );
+                        ok(Out::GitBranchList(list))
+                    }
+                    Err(omaterm_context::GitError::NotARepo) => {
+                        ok(Out::GitBranchList(GitBranchList::empty()))
+                    }
+                    Err(error) => git_error(error),
+                }
+            }
+            OmaCommand::Git(GitCommand::BranchCreate {
+                project,
+                name,
+                start,
+            }) => self.git_branch_mutation(context, project, |root| {
+                omaterm_context::git_branch_create(root, name.as_str(), start.as_deref())
+            }),
+            OmaCommand::Git(GitCommand::BranchCheckout { project, name }) => self
+                .git_branch_mutation(context, project, |root| {
+                    omaterm_context::git_branch_checkout(root, name.as_str())
+                }),
+            OmaCommand::Git(GitCommand::BranchDelete {
+                project,
+                name,
+                force,
+            }) => self.git_branch_mutation(context, project, |root| {
+                omaterm_context::git_branch_delete(root, name.as_str(), force)
+            }),
+            OmaCommand::Git(GitCommand::BranchRename { project, old, new }) => self
+                .git_branch_mutation(context, project, |root| {
+                    omaterm_context::git_branch_rename(root, old.as_str(), new.as_str())
+                }),
             OmaCommand::Git(GitCommand::Stage { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Stage)
             }
@@ -3572,6 +3661,8 @@ fn git_error(error: omaterm_context::GitError) -> CommandResult {
         }
         Context::Timeout => err(ErrorCode::Timeout, error.to_string()),
         Context::Cancelled => err(ErrorCode::Timeout, error.to_string()),
+        Context::DirtyWorktree => err(ErrorCode::DirtyWorktree, error.to_string()),
+        Context::CurrentBranch => err(ErrorCode::CurrentBranch, error.to_string()),
         Context::Io(_) => err(ErrorCode::RuntimeFailure, error.to_string()),
     }
 }
@@ -6699,6 +6790,138 @@ mod tests {
             CommandContext::LocalUser,
             OmaCommand::Project(ProjectCommand::Delete { project }),
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_branch_list_checkout_and_delete_flow() {
+        use omaterm_core::{GitBranchList, GitCommand};
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let root = std::env::temp_dir().join(format!("omaterm-c91-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-b", "main"]);
+        git(&root, &["config", "user.email", "c91@test"]);
+        git(&root, &["config", "user.name", "c91"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), b"v1\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "init"]);
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // List reports the single head branch; queries are effect-free.
+        let listed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::BranchList { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitBranchList(GitBranchList {
+            head, branches, ..
+        })) = listed.result
+        else {
+            panic!("branch list");
+        };
+        assert_eq!(head.as_deref(), Some("main"));
+        assert_eq!(branches.len(), 1);
+        assert!(listed.effects.is_empty());
+
+        // Create + checkout move HEAD; mutations emit GitChanged so the
+        // UI pollers re-read status, graph, and picker state.
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::BranchCreate {
+                project,
+                name: "feature".into(),
+                start: None,
+            }),
+        );
+        assert_eq!(created.result, CommandResult::Ok(CommandOutput::Unit));
+        assert!(
+            matches!(created.effects.as_slice(), [CommandEffect::GitChanged(owner)] if *owner == project)
+        );
+        let checkout = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::BranchCheckout {
+                project,
+                name: "feature".into(),
+            }),
+        );
+        assert_eq!(checkout.result, CommandResult::Ok(CommandOutput::Unit));
+
+        // Dirty worktree refuses checkout with a stable code, before git.
+        std::fs::write(root.join("a.txt"), b"v2\n").unwrap();
+        let refused = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::BranchCheckout {
+                project,
+                name: "main".into(),
+            }),
+        );
+        assert!(matches!(
+            refused.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::DirtyWorktree,
+                ..
+            })
+        ));
+
+        // Head delete is refused even when clean; validation rejects
+        // garbage names before dispatch reaches git.
+        std::fs::write(root.join("a.txt"), b"v1\n").unwrap();
+        let head_delete = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::BranchDelete {
+                project,
+                name: "feature".into(),
+                force: false,
+            }),
+        );
+        assert!(matches!(
+            head_delete.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::CurrentBranch,
+                ..
+            })
+        ));
+        let invalid = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::BranchCheckout {
+                project,
+                name: "".into(),
+            }),
+        );
+        assert!(matches!(
+            invalid.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 

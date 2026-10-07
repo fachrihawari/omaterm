@@ -98,6 +98,11 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `git status` | `git.status` | Git Status | Branch + ahead/behind + staged/unstaged/untracked groups, bounded + truncated; empty envelope for non-repos |
 | `git log [--limit N] [--all-local]` | `git.history` | Git History | First bounded immutable graph page (1–100); current HEAD by default, local branch tips with `--all-local`; UI graph/pagination follow the history plan |
 | `git commit-files COMMIT [--parent OID|empty_tree]` | `git.commit-files` | Git CommitFiles | Parent-specific changed files with kind badges and rename pairs; read-only expansion surface |
+| `git branch-list` | `git.branch-list` | Git BranchList | Local branches with HEAD identity and upstream tracking; empty envelope for non-repos |
+| `git branch-create NAME [--start REV]` | `git.branch-create` | Git BranchCreate | Create a local branch without checkout (start defaults to HEAD, verified via rev-parse) |
+| `git branch-checkout NAME` | `git.branch-checkout` | Git BranchCheckout | Check out a local branch; refused with `dirty_worktree` on staged/unstaged changes |
+| `git branch-delete NAME [--force]` | `git.branch-delete` | Git BranchDelete | Delete a local branch; head refused (`current_branch`), unmerged needs `--force` |
+| `git branch-rename OLD NEW` | `git.branch-rename` | Git BranchRename | Rename a branch, including the checked-out one |
 | `diff show-commit COMMIT --path PATH [--old-path PATH] [--parent OID|empty_tree]` | `diff.show-commit` | Diff ShowCommit | One committed path pair against a chosen base; strictly read-only historical preview |
 | `git stage PATHS...` | `git.stage` | Git Stage | Stages 1–100 explicit root-relative paths (`git add --`) |
 | `git unstage PATHS...` | `git.unstage` | Git Unstage | Restores the index for 1–100 paths, worktree kept |

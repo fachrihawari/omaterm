@@ -560,6 +560,10 @@ fn history_off_thread(
         Err(omaterm_context::GitError::PathOutsideRoot) => {
             Err(HistoryEmpty::Failed("path escapes the project root".into()))
         }
+        // Unreachable on the read-only history path (kept for exhaustiveness).
+        Err(
+            omaterm_context::GitError::DirtyWorktree | omaterm_context::GitError::CurrentBranch,
+        ) => Err(HistoryEmpty::Failed("branch state blocks git log".into())),
         Err(omaterm_context::GitError::Io(error)) => {
             Err(HistoryEmpty::Failed(bound_detail(error.to_string())))
         }

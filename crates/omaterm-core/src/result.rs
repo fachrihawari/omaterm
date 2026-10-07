@@ -45,6 +45,11 @@ pub enum ErrorCode {
     /// A git subprocess failed: the message carries bounded git stderr so
     /// agents never parse it for control flow (M14, blueprint §§32, 44).
     GitFailed,
+    /// Branch checkout refused: the worktree has staged or unstaged
+    /// changes (C9.1). Callers stash or discard first, then retry.
+    DirtyWorktree,
+    /// Branch delete refused: the branch is currently checked out (C9.1).
+    CurrentBranch,
     /// The system git binary is missing or cannot be spawned (M14,
     /// blueprint §32). Distinct from `GitFailed`: the tool is absent, not
     /// the repository.
@@ -89,6 +94,8 @@ impl ErrorCode {
             Self::NoProjectRoot => "no_project_root",
             Self::NotARepo => "not_a_repo",
             Self::GitFailed => "git_failed",
+            Self::DirtyWorktree => "dirty_worktree",
+            Self::CurrentBranch => "current_branch",
             Self::GitUnavailable => "git_unavailable",
             Self::DocumentNotOpen => "document_not_open",
             Self::DocumentConflict => "document_conflict",
@@ -186,6 +193,7 @@ pub enum CommandOutput {
     EditorSaved(EditorDocumentInfo),
     GitStatus(GitStatusInfo),
     GitHistory(GitHistoryPage),
+    GitBranchList(GitBranchList),
     GitCommitFiles(GitCommitFiles),
     GitCommitted {
         oid: String,
@@ -413,6 +421,18 @@ pub struct GitBranchList {
     pub detached_oid: Option<String>,
     pub branches: Vec<GitBranch>,
     pub truncated: bool,
+}
+
+impl GitBranchList {
+    /// Explicit empty envelope for pinned non-repo directories.
+    pub const fn empty() -> Self {
+        Self {
+            head: None,
+            detached_oid: None,
+            branches: Vec::new(),
+            truncated: false,
+        }
+    }
 }
 
 /// A canonical full Git object ID. History operations deliberately accept full

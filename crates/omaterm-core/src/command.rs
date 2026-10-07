@@ -236,6 +236,37 @@ pub enum GitCommand {
         project: ProjectId,
         message: String,
     },
+    /// Bounded local branch listing with HEAD identity (C9.1). A pinned
+    /// non-repo directory returns the empty envelope, like status.
+    BranchList {
+        project: ProjectId,
+    },
+    /// Create a local branch without checking out. `start` is an optional
+    /// revision (defaults to HEAD) resolved through `rev-parse --verify`.
+    BranchCreate {
+        project: ProjectId,
+        name: String,
+        start: Option<String>,
+    },
+    /// Check out a local branch. Refused with `dirty_worktree` when staged
+    /// or unstaged changes exist (stash or discard first).
+    BranchCheckout {
+        project: ProjectId,
+        name: String,
+    },
+    /// Delete a local branch. The checked-out branch is refused with
+    /// `current_branch`; unmerged branches need `force` (same as `-D`).
+    BranchDelete {
+        project: ProjectId,
+        name: String,
+        force: bool,
+    },
+    /// Rename a branch, including the checked-out one.
+    BranchRename {
+        project: ProjectId,
+        old: String,
+        new: String,
+    },
 }
 
 /// Read-only unified-diff viewer over `git diff` (M15, blueprint §33).

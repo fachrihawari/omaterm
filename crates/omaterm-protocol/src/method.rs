@@ -138,6 +138,38 @@ pub struct GitCommitFiles {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitBranchList {
+    pub project_id: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitBranchCreate {
+    pub project_id: Option<String>,
+    pub name: String,
+    pub start: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitBranchCheckout {
+    pub project_id: Option<String>,
+    pub name: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitBranchDelete {
+    pub project_id: Option<String>,
+    pub name: String,
+    pub force: bool,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitBranchRename {
+    pub project_id: Option<String>,
+    pub old: String,
+    pub new: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiffShowCommit {
     pub project_id: Option<String>,
     pub commit: String,
@@ -228,6 +260,11 @@ pub enum Method {
     GitStatus(GitStatus),
     GitHistory(GitHistory),
     GitCommitFiles(GitCommitFiles),
+    GitBranchList(GitBranchList),
+    GitBranchCreate(GitBranchCreate),
+    GitBranchCheckout(GitBranchCheckout),
+    GitBranchDelete(GitBranchDelete),
+    GitBranchRename(GitBranchRename),
     GitStage(GitPaths),
     GitStageHunk(GitStageHunk),
     GitUnstage(GitPaths),
@@ -289,6 +326,11 @@ impl Method {
             "git.status" => decode!(GitStatus, GitStatus),
             "git.history" => decode!(GitHistory, GitHistory),
             "git.commit-files" => decode!(GitCommitFiles, GitCommitFiles),
+            "git.branch-list" => decode!(GitBranchList, GitBranchList),
+            "git.branch-create" => decode!(GitBranchCreate, GitBranchCreate),
+            "git.branch-checkout" => decode!(GitBranchCheckout, GitBranchCheckout),
+            "git.branch-delete" => decode!(GitBranchDelete, GitBranchDelete),
+            "git.branch-rename" => decode!(GitBranchRename, GitBranchRename),
             "git.stage" => decode!(GitPaths, GitStage),
             "git.stage-hunk" => decode!(GitStageHunk, GitStageHunk),
             "git.unstage" => decode!(GitPaths, GitUnstage),
@@ -391,8 +433,25 @@ mod tests {
             ("diff.list-files", serde_json::json!({"staged": false})),
             ("process.list", serde_json::json!({})),
             ("process.kill", serde_json::json!({"pid": 123})),
+            ("git.branch-list", serde_json::json!({})),
+            (
+                "git.branch-create",
+                serde_json::json!({"name": "feature", "start": "main"}),
+            ),
+            (
+                "git.branch-checkout",
+                serde_json::json!({"name": "feature"}),
+            ),
+            (
+                "git.branch-delete",
+                serde_json::json!({"name": "feature", "force": false}),
+            ),
+            (
+                "git.branch-rename",
+                serde_json::json!({"old": "feature", "new": "topic"}),
+            ),
         ];
-        assert_eq!(cases.len(), 44);
+        assert_eq!(cases.len(), 49);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

@@ -25,6 +25,9 @@ pub const MAX_GIT_MESSAGE_BYTES: usize = 4 * 1024;
 /// snapshot-bound, so clients cannot turn an opaque cursor into an unbounded
 /// graph walk.
 pub const MAX_GIT_HISTORY_LIMIT: usize = 100;
+/// Largest accepted git branch name / start revision in bytes on the wire.
+/// `check-ref-format` / `rev-parse --verify` stay authoritative server-side.
+pub const MAX_GIT_BRANCH_BYTES: usize = 255;
 /// Largest accepted `diff.show` context size on the wire.
 pub const MAX_DIFF_CONTEXT_LINES: u8 = 10;
 

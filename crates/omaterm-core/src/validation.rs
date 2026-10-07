@@ -36,6 +36,15 @@ pub const MAX_DIFF_CONTEXT_LINES: u8 = 10;
 /// Largest accepted editor document path in bytes (M19). Matches the git
 /// path ceiling: generous for deep trees, small enough to keep argv bounded.
 pub const MAX_EDITOR_PATH_BYTES: usize = 4 * 1024;
+/// Largest accepted git branch name / start revision in bytes (C9.1).
+/// `check-ref-format` / `rev-parse --verify` stay authoritative; this only
+/// rejects garbage before dispatch.
+pub const MAX_GIT_BRANCH_BYTES: usize = 255;
+
+/// Branch-name shape check shared by the branch arms.
+fn is_branch_ref(name: &str) -> bool {
+    !name.is_empty() && name.len() <= MAX_GIT_BRANCH_BYTES && !name.chars().any(char::is_control)
+}
 /// Largest accepted editor document in bytes (M19, blueprint §64). Checked
 /// before allocation on both read and save; oversize files are rejected
 /// with `document_too_large`, never partially loaded.
@@ -207,6 +216,36 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
         {
             return invalid("git history limit must be between 1 and 100 entries");
         }
+        OmaCommand::Git(GitCommand::BranchCreate { name, start, .. }) => {
+            if !is_branch_ref(name) {
+                return invalid(
+                    "git branch name must be 1 to 255 bytes with no control characters",
+                );
+            }
+            if start.as_ref().is_some_and(|start| !is_branch_ref(start)) {
+                return invalid(
+                    "git branch start must be 1 to 255 bytes with no control characters",
+                );
+            }
+        }
+        OmaCommand::Git(
+            GitCommand::BranchCheckout { name, .. } | GitCommand::BranchDelete { name, .. },
+        ) => {
+            if !is_branch_ref(name) {
+                return invalid(
+                    "git branch name must be 1 to 255 bytes with no control characters",
+                );
+            }
+        }
+        OmaCommand::Git(GitCommand::BranchRename { old, new, .. }) => {
+            for name in [old, new] {
+                if !is_branch_ref(name) {
+                    return invalid(
+                        "git branch name must be 1 to 255 bytes with no control characters",
+                    );
+                }
+            }
+        }
         OmaCommand::Diff(DiffCommand::ShowCommit {
             old_path,
             path,
@@ -357,6 +396,51 @@ mod tests {
             }))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn git_branch_names_reject_empty_oversize_and_control() {
+        let project = ProjectId::new();
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::BranchCheckout {
+                project,
+                name: String::new(),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::BranchDelete {
+                project,
+                name: "x".repeat(MAX_GIT_BRANCH_BYTES + 1),
+                force: false,
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::BranchRename {
+                project,
+                old: "ok".into(),
+                new: "bad\nname".into(),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::BranchCreate {
+                project,
+                name: "feature".into(),
+                start: Some(String::new()),
+            }))
+            .is_err()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::BranchCreate {
+                project,
+                name: "feature".into(),
+                start: None,
+            }))
+            .is_ok()
+        );
+        assert!(validate(&OmaCommand::Git(GitCommand::BranchList { project })).is_ok());
     }
 
     #[test]

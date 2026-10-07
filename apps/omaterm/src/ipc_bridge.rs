@@ -8,9 +8,9 @@ use omaterm_core::{
 };
 use omaterm_protocol::{
     IpcRequest, IpcResponse, MAX_ARG_COUNT, MAX_ARGUMENT_BYTES, MAX_DIFF_CONTEXT_LINES,
-    MAX_FILE_ENTRIES, MAX_GIT_HISTORY_LIMIT, MAX_GIT_MESSAGE_BYTES, MAX_GIT_PATH_BYTES,
-    MAX_GIT_PATHS, MAX_JOURNAL_ENTRIES, MAX_READ_COLUMNS, MAX_READ_LINES, MAX_SEND_BYTES,
-    method::Method,
+    MAX_FILE_ENTRIES, MAX_GIT_BRANCH_BYTES, MAX_GIT_HISTORY_LIMIT, MAX_GIT_MESSAGE_BYTES,
+    MAX_GIT_PATH_BYTES, MAX_GIT_PATHS, MAX_JOURNAL_ENTRIES, MAX_READ_COLUMNS, MAX_READ_LINES,
+    MAX_SEND_BYTES, method::Method,
 };
 use serde_json::{Value, json};
 
@@ -75,6 +75,17 @@ fn git_message(raw: &str) -> Result<&str, &'static str> {
 
 /// Bounded git path vectors: 1–100 entries, each at most 4 KiB with no
 /// control characters (mirrors core validation; the router re-validates).
+/// Bounded branch name / start revision: non-empty, 255 bytes max, no
+/// control characters (mirrors core validation; the router re-validates
+/// and git itself is authoritative).
+fn git_branch_name(raw: &str) -> Result<String, &'static str> {
+    if raw.is_empty() || raw.len() > MAX_GIT_BRANCH_BYTES || raw.chars().any(char::is_control) {
+        Err("git branch name must be non-empty, at most 255 bytes, with no control characters")
+    } else {
+        Ok(raw.to_owned())
+    }
+}
+
 fn git_paths(raw: &[String]) -> Result<Vec<std::path::PathBuf>, &'static str> {
     if raw.is_empty() || raw.len() > MAX_GIT_PATHS {
         return Err("git paths must contain 1 to 100 entries");
@@ -353,6 +364,28 @@ pub fn map_request(
                     base,
                 })
             }
+            Method::GitBranchList(p) => OmaCommand::Git(GitCommand::BranchList {
+                project: resolve_project(p.project_id)?,
+            }),
+            Method::GitBranchCreate(p) => OmaCommand::Git(GitCommand::BranchCreate {
+                project: resolve_project(p.project_id)?,
+                name: git_branch_name(&p.name)?,
+                start: p.start.as_deref().map(git_branch_name).transpose()?,
+            }),
+            Method::GitBranchCheckout(p) => OmaCommand::Git(GitCommand::BranchCheckout {
+                project: resolve_project(p.project_id)?,
+                name: git_branch_name(&p.name)?,
+            }),
+            Method::GitBranchDelete(p) => OmaCommand::Git(GitCommand::BranchDelete {
+                project: resolve_project(p.project_id)?,
+                name: git_branch_name(&p.name)?,
+                force: p.force,
+            }),
+            Method::GitBranchRename(p) => OmaCommand::Git(GitCommand::BranchRename {
+                project: resolve_project(p.project_id)?,
+                old: git_branch_name(&p.old)?,
+                new: git_branch_name(&p.new)?,
+            }),
             Method::GitStage(p) => OmaCommand::Git(GitCommand::Stage {
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,
@@ -542,6 +575,19 @@ fn output_json(output: CommandOutput) -> Value {
                 }
             }
             json!({"branch":status.branch,"upstream":status.upstream,"ahead":status.ahead,"behind":status.behind,"staged":staged,"unstaged":unstaged,"untracked":untracked,"truncated":truncated})
+        }
+        CommandOutput::GitBranchList(list) => {
+            fn track(track: &omaterm_core::GitBranchTrack) -> &'static str {
+                match track {
+                    omaterm_core::GitBranchTrack::UpToDate => "up_to_date",
+                    omaterm_core::GitBranchTrack::Ahead(_) => "ahead",
+                    omaterm_core::GitBranchTrack::Behind(_) => "behind",
+                    omaterm_core::GitBranchTrack::Diverged { .. } => "diverged",
+                    omaterm_core::GitBranchTrack::NoUpstream => "no_upstream",
+                }
+            }
+            let truncated = list.truncated || list.branches.len() > LIST_LIMIT;
+            json!({"head":list.head,"detached_oid":list.detached_oid,"branches":list.branches.into_iter().take(LIST_LIMIT).map(|branch| json!({"name":branch.name,"upstream":branch.upstream,"track":track(&branch.track),"is_head":branch.is_head})).collect::<Vec<_>>(),"truncated":truncated})
         }
         CommandOutput::GitHistory(page) => {
             let truncated = page.truncated || page.commits.len() > LIST_LIMIT;

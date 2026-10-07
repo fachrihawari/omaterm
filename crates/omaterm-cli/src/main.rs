@@ -324,8 +324,22 @@ mod tests {
                 "src/main.rs",
             ],
             &["omaterm", "git", "stage-hunk", "a.txt", "--hunk", "42"],
+            &["omaterm", "git", "branch-list"],
+            &["omaterm", "git", "branch-create", "feature"],
+            &[
+                "omaterm",
+                "git",
+                "branch-create",
+                "feature",
+                "--start",
+                "main",
+            ],
+            &["omaterm", "git", "branch-checkout", "feature"],
+            &["omaterm", "git", "branch-delete", "feature"],
+            &["omaterm", "git", "branch-delete", "feature", "--force"],
+            &["omaterm", "git", "branch-rename", "feature", "topic"],
         ];
-        assert_eq!(cases.len(), 47);
+        assert_eq!(cases.len(), 54);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");
