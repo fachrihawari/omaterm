@@ -34,129 +34,136 @@ fn root_key() -> PathBuf {
     PathBuf::new()
 }
 
-/// A Nerd Font glyph with a VSCode-Seti-inspired color (`None` inherits the
-/// row color, used for chevrons). Codepoints verified against the official
-/// Nerd Fonts 3.5.1 reference plus the locally installed
-/// JetBrainsMonoNerdFont-Regular.ttf (see the `icon_glyphs_exist` test and
-/// the M13 status record); the app already resolves this family for its
-/// terminal grid, so no new font dependency is introduced.
+/// A vendored Lucide icon name with a VSCode-Seti-inspired color (`None`
+/// inherits the row color). No font dependency: glyphs render as SVG through
+/// `ui::assets`, so file rows never need the Nerd Font family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileIcon {
-    pub glyph: char,
+    pub icon: &'static str,
     pub color: Option<u32>,
 }
 
+use crate::ui::assets;
+
 /// Exact lowercase filenames first (VSCode gives these dedicated icons).
-const NAME_ICONS: &[(&str, char, u32)] = &[
-    ("dockerfile", '\u{e650}', 0x0DB7ED),
-    ("docker-compose.yml", '\u{e650}', 0x0DB7ED),
-    ("docker-compose.yaml", '\u{e650}', 0x0DB7ED),
-    ("makefile", '\u{e673}', 0x9A9A9A),
-    ("package.json", '\u{e616}', 0xCB3837),
-    ("package-lock.json", '\u{e672}', crate::ui::theme::MUTED),
-    ("cargo.toml", '\u{e6b2}', 0x9DACB7),
-    ("cargo.lock", '\u{e672}', crate::ui::theme::MUTED),
-    (".gitignore", '\u{e65d}', 0xF05032),
-    (".gitattributes", '\u{e65d}', 0xF05032),
-    (".editorconfig", '\u{e615}', crate::ui::theme::MUTED),
+const NAME_ICONS: &[(&str, &str, u32)] = &[
+    ("dockerfile", assets::FILE_CONTAINER, 0x0DB7ED),
+    ("docker-compose.yml", assets::FILE_CONTAINER, 0x0DB7ED),
+    ("docker-compose.yaml", assets::FILE_CONTAINER, 0x0DB7ED),
+    ("makefile", assets::FILE_TOOL, 0x9A9A9A),
+    ("package.json", assets::FILE_PACKAGE, 0xCB3837),
+    (
+        "package-lock.json",
+        assets::FILE_PACKAGE,
+        crate::ui::theme::MUTED,
+    ),
+    ("cargo.toml", assets::FILE_PACKAGE, 0x9DACB7),
+    ("cargo.lock", assets::FILE_PACKAGE, crate::ui::theme::MUTED),
+    (".gitignore", assets::FILE_TEXT, 0xF05032),
+    (".gitattributes", assets::FILE_TEXT, 0xF05032),
+    (
+        ".editorconfig",
+        assets::FILE_SETTINGS,
+        crate::ui::theme::MUTED,
+    ),
 ];
 
 /// Lowercase extensions (after the last dot).
-const EXT_ICONS: &[(&str, char, u32)] = &[
-    ("rs", '\u{e68b}', 0xDEA584),
-    ("toml", '\u{e6b2}', 0x9DACB7),
-    ("md", '\u{e609}', 0x519ABA),
-    ("markdown", '\u{e609}', 0x519ABA),
-    ("mkd", '\u{e609}', 0x519ABA),
-    ("json", '\u{e60b}', 0xCBCB41),
-    ("js", '\u{e60c}', 0xE8D44D),
-    ("mjs", '\u{e60c}', 0xE8D44D),
-    ("cjs", '\u{e60c}', 0xE8D44D),
-    ("jsx", '\u{e60c}', 0xE8D44D),
-    ("ts", '\u{e628}', 0x519ABA),
-    ("mts", '\u{e628}', 0x519ABA),
-    ("cts", '\u{e628}', 0x519ABA),
-    ("tsx", '\u{e628}', 0x519ABA),
-    ("py", '\u{e606}', 0x3572A5),
-    ("html", '\u{e60e}', 0xE34C26),
-    ("htm", '\u{e60e}', 0xE34C26),
-    ("css", '\u{e614}', 0x2965F1),
-    ("scss", '\u{e614}', 0x2965F1),
-    ("less", '\u{e614}', 0x2965F1),
-    ("yml", '\u{e6a8}', 0xCB171E),
-    ("yaml", '\u{e6a8}', 0xCB171E),
-    ("xml", '\u{e619}', 0xE37933),
-    ("sh", '\u{e691}', 0x89E051),
-    ("bash", '\u{e691}', 0x89E051),
-    ("zsh", '\u{e691}', 0x89E051),
-    ("fish", '\u{e691}', 0x89E051),
-    ("c", '\u{e649}', crate::ui::theme::MUTED),
-    ("h", '\u{e649}', crate::ui::theme::MUTED),
-    ("cpp", '\u{e646}', 0xF34B7D),
-    ("cc", '\u{e646}', 0xF34B7D),
-    ("cxx", '\u{e646}', 0xF34B7D),
-    ("hpp", '\u{e646}', 0xF34B7D),
-    ("cs", '\u{e648}', 0x178600),
-    ("go", '\u{e627}', 0x00ADD8),
-    ("java", '\u{e66d}', 0xED8B00),
-    ("rb", '\u{e605}', 0x701516),
-    ("php", '\u{e608}', 0x4F5D95),
-    ("swift", '\u{e699}', 0xF05138),
-    ("kt", '\u{e634}', 0x7F52FF),
-    ("kts", '\u{e634}', 0x7F52FF),
-    ("lua", '\u{e620}', 0x51A0D5),
-    ("tf", '\u{e69a}', 0x7B42BC),
-    ("png", '\u{e60d}', 0xA074C4),
-    ("jpg", '\u{e60d}', 0xA074C4),
-    ("jpeg", '\u{e60d}', 0xA074C4),
-    ("gif", '\u{e60d}', 0xA074C4),
-    ("svg", '\u{e60d}', 0xA074C4),
-    ("ico", '\u{e60d}', 0xA074C4),
-    ("webp", '\u{e60d}', 0xA074C4),
-    ("mp3", '\u{e638}', 0x7B83DB),
-    ("wav", '\u{e638}', 0x7B83DB),
-    ("ogg", '\u{e638}', 0x7B83DB),
-    ("flac", '\u{e638}', 0x7B83DB),
-    ("mp4", '\u{e69f}', 0xFD971F),
-    ("mkv", '\u{e69f}', 0xFD971F),
-    ("webm", '\u{e69f}', 0xFD971F),
-    ("mov", '\u{e69f}', 0xFD971F),
-    ("zip", '\u{e6aa}', 0x9A9A9A),
-    ("tar", '\u{e6aa}', 0x9A9A9A),
-    ("gz", '\u{e6aa}', 0x9A9A9A),
-    ("tgz", '\u{e6aa}', 0x9A9A9A),
-    ("bz2", '\u{e6aa}', 0x9A9A9A),
-    ("xz", '\u{e6aa}', 0x9A9A9A),
-    ("7z", '\u{e6aa}', 0x9A9A9A),
-    ("rar", '\u{e6aa}', 0x9A9A9A),
-    ("pdf", '\u{e67d}', 0xEC1C24),
-    ("ttf", '\u{e659}', 0x9A9A9A),
-    ("otf", '\u{e659}', 0x9A9A9A),
-    ("woff", '\u{e659}', 0x9A9A9A),
-    ("woff2", '\u{e659}', 0x9A9A9A),
-    ("csv", '\u{e64a}', 0x4CAF50),
-    ("sql", '\u{e64d}', 0x4B8BBE),
-    ("db", '\u{e64d}', 0x4B8BBE),
-    ("sqlite", '\u{e64d}', 0x4B8BBE),
-    ("sqlite3", '\u{e64d}', 0x4B8BBE),
-    ("log", '\u{e64e}', 0xB0B0B0),
-    ("txt", '\u{e64e}', 0xB0B0B0),
-    ("text", '\u{e64e}', 0xB0B0B0),
-    ("vim", '\u{e62b}', 0x019733),
-    ("vimrc", '\u{e62b}', 0x019733),
-    ("nvim", '\u{e62b}', 0x019733),
+const EXT_ICONS: &[(&str, &str, u32)] = &[
+    ("rs", assets::FILE_CODE_2, 0xDEA584),
+    ("toml", assets::FILE_CODE_2, 0x9DACB7),
+    ("md", assets::FILE_TEXT, 0x519ABA),
+    ("markdown", assets::FILE_TEXT, 0x519ABA),
+    ("mkd", assets::FILE_TEXT, 0x519ABA),
+    ("json", assets::FILE_JSON, 0xCBCB41),
+    ("js", assets::FILE_CODE, 0xE8D44D),
+    ("mjs", assets::FILE_CODE, 0xE8D44D),
+    ("cjs", assets::FILE_CODE, 0xE8D44D),
+    ("jsx", assets::FILE_CODE, 0xE8D44D),
+    ("ts", assets::FILE_CODE_2, 0x519ABA),
+    ("mts", assets::FILE_CODE_2, 0x519ABA),
+    ("cts", assets::FILE_CODE_2, 0x519ABA),
+    ("tsx", assets::FILE_CODE_2, 0x519ABA),
+    ("py", assets::FILE_CODE_2, 0x3572A5),
+    ("html", assets::FILE_CODE_2, 0xE34C26),
+    ("htm", assets::FILE_CODE_2, 0xE34C26),
+    ("css", assets::FILE_CODE_2, 0x2965F1),
+    ("scss", assets::FILE_CODE_2, 0x2965F1),
+    ("less", assets::FILE_CODE_2, 0x2965F1),
+    ("yml", assets::FILE_TEXT, 0xCB171E),
+    ("yaml", assets::FILE_TEXT, 0xCB171E),
+    ("xml", assets::FILE_CODE_2, 0xE37933),
+    ("sh", assets::FILE_TERMINAL, 0x89E051),
+    ("bash", assets::FILE_TERMINAL, 0x89E051),
+    ("zsh", assets::FILE_TERMINAL, 0x89E051),
+    ("fish", assets::FILE_TERMINAL, 0x89E051),
+    ("c", assets::FILE_CODE_2, crate::ui::theme::MUTED),
+    ("h", assets::FILE_CODE_2, crate::ui::theme::MUTED),
+    ("cpp", assets::FILE_CODE_2, 0xF34B7D),
+    ("cc", assets::FILE_CODE_2, 0xF34B7D),
+    ("cxx", assets::FILE_CODE_2, 0xF34B7D),
+    ("hpp", assets::FILE_CODE_2, 0xF34B7D),
+    ("cs", assets::FILE_CODE_2, 0x178600),
+    ("go", assets::FILE_CODE_2, 0x00ADD8),
+    ("java", assets::FILE_CODE_2, 0xED8B00),
+    ("rb", assets::FILE_CODE_2, 0x701516),
+    ("php", assets::FILE_CODE_2, 0x4F5D95),
+    ("swift", assets::FILE_CODE_2, 0xF05138),
+    ("kt", assets::FILE_CODE_2, 0x7F52FF),
+    ("kts", assets::FILE_CODE_2, 0x7F52FF),
+    ("lua", assets::FILE_CODE_2, 0x51A0D5),
+    ("tf", assets::FILE_CODE_2, 0x7B42BC),
+    ("png", assets::FILE_IMAGE, 0xA074C4),
+    ("jpg", assets::FILE_IMAGE, 0xA074C4),
+    ("jpeg", assets::FILE_IMAGE, 0xA074C4),
+    ("gif", assets::FILE_IMAGE, 0xA074C4),
+    ("svg", assets::FILE_IMAGE, 0xA074C4),
+    ("ico", assets::FILE_IMAGE, 0xA074C4),
+    ("webp", assets::FILE_IMAGE, 0xA074C4),
+    ("mp3", assets::FILE_AUDIO, 0x7B83DB),
+    ("wav", assets::FILE_AUDIO, 0x7B83DB),
+    ("ogg", assets::FILE_AUDIO, 0x7B83DB),
+    ("flac", assets::FILE_AUDIO, 0x7B83DB),
+    ("mp4", assets::FILE_VIDEO, 0xFD971F),
+    ("mkv", assets::FILE_VIDEO, 0xFD971F),
+    ("webm", assets::FILE_VIDEO, 0xFD971F),
+    ("mov", assets::FILE_VIDEO, 0xFD971F),
+    ("zip", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("tar", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("gz", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("tgz", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("bz2", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("xz", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("7z", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("rar", assets::FILE_ARCHIVE, 0x9A9A9A),
+    ("pdf", assets::FILE_TEXT, 0xEC1C24),
+    ("ttf", assets::FILE_TEXT, 0x9A9A9A),
+    ("otf", assets::FILE_TEXT, 0x9A9A9A),
+    ("woff", assets::FILE_TEXT, 0x9A9A9A),
+    ("woff2", assets::FILE_TEXT, 0x9A9A9A),
+    ("csv", assets::FILE_SHEET, 0x4CAF50),
+    ("sql", assets::FILE_DB, 0x4B8BBE),
+    ("db", assets::FILE_DB, 0x4B8BBE),
+    ("sqlite", assets::FILE_DB, 0x4B8BBE),
+    ("sqlite3", assets::FILE_DB, 0x4B8BBE),
+    ("log", assets::FILE_TEXT, 0xB0B0B0),
+    ("txt", assets::FILE_TEXT, 0xB0B0B0),
+    ("text", assets::FILE_TEXT, 0xB0B0B0),
+    ("vim", assets::FILE_SETTINGS, 0x019733),
+    ("vimrc", assets::FILE_SETTINGS, 0x019733),
+    ("nvim", assets::FILE_SETTINGS, 0x019733),
 ];
 
 const FALLBACK_FILE_ICON: FileIcon = FileIcon {
-    glyph: '\u{f15b}',
+    icon: assets::FILE,
     color: Some(crate::ui::theme::MUTED),
 };
 const FOLDER_CLOSED_ICON: FileIcon = FileIcon {
-    glyph: '\u{f07b}',
+    icon: assets::FOLDER,
     color: Some(crate::ui::theme::MUTED),
 };
 const FOLDER_OPEN_ICON: FileIcon = FileIcon {
-    glyph: '\u{f07c}',
+    icon: assets::FOLDER_OPEN,
     color: Some(crate::ui::theme::MUTED),
 };
 
@@ -244,13 +251,13 @@ pub fn icon_for(path: &Path, kind: FileKind, expanded: bool) -> FileIcon {
             .unwrap_or_default();
         if name == ".git" {
             return FileIcon {
-                glyph: '\u{e65d}',
+                icon: assets::FOLDER_GIT,
                 color: Some(0xF05032),
             };
         }
         if name == "node_modules" {
             return FileIcon {
-                glyph: '\u{e616}',
+                icon: assets::FILE_PACKAGE,
                 color: Some(0xCB3837),
             };
         }
@@ -266,28 +273,28 @@ pub fn icon_for(path: &Path, kind: FileKind, expanded: bool) -> FileIcon {
         .unwrap_or_default();
     if name.starts_with("readme") {
         return FileIcon {
-            glyph: '\u{e609}',
+            icon: assets::FILE_BOOK,
             color: Some(0x519ABA),
         };
     }
     if name.starts_with("license") || name.starts_with("licence") {
         return FileIcon {
-            glyph: '\u{e60a}',
+            icon: assets::FILE_TEXT,
             color: Some(0xD4A017),
         };
     }
-    if let Some((_, glyph, color)) = NAME_ICONS.iter().find(|(known, _, _)| *known == name) {
+    if let Some(&(_, icon, color)) = NAME_ICONS.iter().find(|(known, _, _)| *known == name) {
         return FileIcon {
-            glyph: *glyph,
-            color: Some(*color),
+            icon,
+            color: Some(color),
         };
     }
     if let Some(extension) = Path::new(&name).extension().and_then(|ext| ext.to_str())
-        && let Some((_, glyph, color)) = EXT_ICONS.iter().find(|(known, _, _)| *known == extension)
+        && let Some(&(_, icon, color)) = EXT_ICONS.iter().find(|(known, _, _)| *known == extension)
     {
         return FileIcon {
-            glyph: *glyph,
-            color: Some(*color),
+            icon,
+            color: Some(color),
         };
     }
     FALLBACK_FILE_ICON
@@ -954,22 +961,25 @@ mod tests {
     fn icon_table_covers_common_types_with_sane_fallbacks() {
         use omaterm_core::FileKind;
         let rust = icon_for(Path::new("src/main.rs"), FileKind::File, false);
-        assert_eq!((rust.glyph, rust.color), ('\u{e68b}', Some(0xDEA584)));
         assert_eq!(
-            icon_for(Path::new("Cargo.toml"), FileKind::File, false).glyph,
-            '\u{e6b2}'
+            (rust.icon, rust.color),
+            (crate::ui::assets::FILE_CODE_2, Some(0xDEA584))
         );
         assert_eq!(
-            icon_for(Path::new("README.md"), FileKind::File, false).glyph,
-            '\u{e609}'
+            icon_for(Path::new("Cargo.toml"), FileKind::File, false).icon,
+            crate::ui::assets::FILE_PACKAGE
         );
         assert_eq!(
-            icon_for(Path::new("LICENSE-MIT"), FileKind::File, false).glyph,
-            '\u{e60a}'
+            icon_for(Path::new("README.md"), FileKind::File, false).icon,
+            crate::ui::assets::FILE_BOOK
         );
         assert_eq!(
-            icon_for(Path::new("notes.txt"), FileKind::File, false).glyph,
-            '\u{e64e}'
+            icon_for(Path::new("LICENSE-MIT"), FileKind::File, false).icon,
+            crate::ui::assets::FILE_TEXT
+        );
+        assert_eq!(
+            icon_for(Path::new("notes.txt"), FileKind::File, false).icon,
+            crate::ui::assets::FILE_TEXT
         );
         // Unknown extensions fall back; folders pair open/closed.
         assert_eq!(
@@ -985,54 +995,63 @@ mod tests {
             FOLDER_OPEN_ICON
         );
         assert_eq!(
-            icon_for(Path::new(".git"), FileKind::Directory, false).glyph,
-            '\u{e65d}'
+            icon_for(Path::new(".git"), FileKind::Directory, false).icon,
+            crate::ui::assets::FOLDER_GIT
         );
         assert_eq!(
-            icon_for(Path::new("node_modules"), FileKind::Directory, false).glyph,
-            '\u{e616}'
+            icon_for(Path::new("node_modules"), FileKind::Directory, false).icon,
+            crate::ui::assets::FILE_PACKAGE
         );
     }
 
-    /// Every glyph in the icon table must exist in the shipped Nerd Font.
-    /// Skips gracefully where the font is not installed (CI runners).
+    /// Every icon name referenced by the tables and specials must be
+    /// vendored in `ui/assets.rs` ICONS (a typo would resolve to nothing
+    /// at runtime). Keep `VENDORED` in sync with that table.
     #[test]
-    fn icon_glyphs_exist_in_nerd_font() {
-        let candidates = [
-            "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
-            "/usr/share/fonts/JetBrainsMonoNerdFont-Regular.ttf",
+    fn mapped_icons_are_vendored() {
+        const VENDORED: &[&str] = &[
+            "file",
+            "file-text",
+            "file-code",
+            "file-code-2",
+            "file-json-2",
+            "file-terminal",
+            "file-image",
+            "file-audio",
+            "file-video",
+            "file-archive",
+            "file-spreadsheet",
+            "settings-2",
+            "database",
+            "package",
+            "container",
+            "hammer",
+            "book",
+            "folder",
+            "folder-open",
+            "folder-git-2",
         ];
-        let path = candidates
+        let mut names: Vec<&str> = NAME_ICONS
             .iter()
-            .find(|candidate| std::path::Path::new(candidate).is_file());
-        let Some(path) = path else {
-            eprintln!("nerd font not installed; skipping glyph coverage");
-            return;
-        };
-        let bytes = std::fs::read(path).expect("readable nerd font");
-        let face = ttf_parser::Face::parse(&bytes, 0).expect("parseable nerd font");
-        let mut glyphs: Vec<char> = NAME_ICONS
-            .iter()
-            .map(|(_, glyph, _)| *glyph)
-            .chain(EXT_ICONS.iter().map(|(_, glyph, _)| *glyph))
+            .map(|(_, icon, _)| *icon)
+            .chain(EXT_ICONS.iter().map(|(_, icon, _)| *icon))
             .chain([
-                FALLBACK_FILE_ICON.glyph,
-                FOLDER_CLOSED_ICON.glyph,
-                FOLDER_OPEN_ICON.glyph,
-                '\u{e609}',
-                '\u{e60a}',
-                '\u{e616}',
-                '\u{e65d}',
+                FALLBACK_FILE_ICON.icon,
+                FOLDER_CLOSED_ICON.icon,
+                FOLDER_OPEN_ICON.icon,
+                crate::ui::assets::FILE_BOOK,
+                crate::ui::assets::FILE_TEXT,
+                crate::ui::assets::FILE_PACKAGE,
+                crate::ui::assets::FOLDER_GIT,
             ])
             .collect();
-        glyphs.sort_unstable();
-        glyphs.dedup();
-        assert!(!glyphs.is_empty());
-        for glyph in glyphs {
+        names.sort_unstable();
+        names.dedup();
+        assert!(!names.is_empty());
+        for name in names {
             assert!(
-                face.glyph_index(glyph).is_some(),
-                "U+{:04X} missing from JetBrainsMono Nerd Font",
-                glyph as u32
+                VENDORED.contains(&name),
+                "{name} is mapped but not vendored in ui/assets.rs ICONS"
             );
         }
     }
@@ -1060,8 +1079,8 @@ mod tests {
     #[test]
     fn file_badge_marks_ts_and_json_families() {
         assert_eq!(
-            icon_for(Path::new("src/main.rs"), FileKind::File, false).glyph,
-            '\u{e68b}'
+            icon_for(Path::new("src/main.rs"), FileKind::File, false).icon,
+            crate::ui::assets::FILE_CODE_2
         );
         assert_eq!(file_badge(Path::new("src/App.TSX")), Some(("TS", 0x519ABA)));
         assert_eq!(file_badge(Path::new("src/main.ts")), Some(("TS", 0x519ABA)));

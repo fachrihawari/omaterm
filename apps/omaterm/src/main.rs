@@ -12261,9 +12261,8 @@ impl WorkspaceView {
                             } else {
                                 div().w(px(14.0)).flex_shrink_0()
                             };
-                            // Directories use Lucide folder glyphs (mock); other types
-                            // keep Nerd file marks plus TS/{ } badges until the full
-                            // Lucide file set lands (recorded P6 follow-up).
+                            // Directories use Lucide folder glyphs; files use the
+                            // Lucide file set (TS/{ } text badges excepted).
                             let badge: Div = match files::file_badge(&row.path) {
                                 Some((text, color)) => div()
                                     .w(px(18.0))
@@ -12288,8 +12287,7 @@ impl WorkspaceView {
                                     .flex_shrink_0()
                                     .items_center()
                                     .justify_center()
-                                    .text_color(rgb(icon_color))
-                                    .child(icon.glyph.to_string()),
+                                    .child(crate::ui::assets::icon(icon.icon, 14.0, icon_color)),
                             };
                             // Git decorations for tree rows: untracked → U,
                             // staged/unstaged → M.
@@ -13317,24 +13315,18 @@ impl WorkspaceView {
                                     .items_center()
                                     .justify_center()
                                     .flex_shrink_0()
-                                    .text_color(rgb(files::icon_for(
-                                        &file.path,
-                                        omaterm_core::FileKind::File,
-                                        false,
-                                    )
-                                    .color
-                                    .unwrap_or(crate::ui::theme::MUTED)))
-                                    .font_family("JetBrainsMono Nerd Font")
-                                    .text_size(px(16.0))
-                                    .child(
-                                        files::icon_for(
+                                    .child({
+                                        let icon = files::icon_for(
                                             &file.path,
                                             omaterm_core::FileKind::File,
                                             false,
+                                        );
+                                        crate::ui::assets::icon(
+                                            icon.icon,
+                                            14.0,
+                                            icon.color.unwrap_or(crate::ui::theme::MUTED),
                                         )
-                                        .glyph
-                                        .to_string(),
-                                    ),
+                                    }),
                             })
                             .child(
                                 div()
@@ -13698,24 +13690,18 @@ impl WorkspaceView {
                                 .items_center()
                                 .justify_center()
                                 .flex_shrink_0()
-                                .text_color(rgb(files::icon_for(
-                                    &entry.path,
-                                    omaterm_core::FileKind::File,
-                                    false,
-                                )
-                                .color
-                                .unwrap_or(crate::ui::theme::MUTED)))
-                                .font_family("JetBrainsMono Nerd Font")
-                                .text_size(px(16.0))
-                                .child(
-                                    files::icon_for(
+                                .child({
+                                    let icon = files::icon_for(
                                         &entry.path,
                                         omaterm_core::FileKind::File,
                                         false,
+                                    );
+                                    crate::ui::assets::icon(
+                                        icon.icon,
+                                        14.0,
+                                        icon.color.unwrap_or(crate::ui::theme::MUTED),
                                     )
-                                    .glyph
-                                    .to_string(),
-                                ),
+                                }),
                         })
                         .child(
                             div()

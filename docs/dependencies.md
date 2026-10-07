@@ -420,6 +420,16 @@ the app already resolves for its terminal grid, so no font dependency is
 added). The coverage test skips gracefully where the font is absent (CI
 runners).
 
+### File-icon Lucide migration follow-up — 2026-10-07
+
+The Nerd Font glyph system above is retired: file/Git rows now use the
+vendored Lucide file set (same =1.49.0 pin, same ISC terms), so tree
+icons have no font dependency at all. `ttf-parser` =0.25.1 left with it
+(dev-dependency removed from `apps/omaterm/Cargo.toml`; `Cargo.lock`
+updated by cargo). The `mapped_icons_are_vendored` unit test plus the
+pre-existing `every_vendored_icon_is_a_tint_safe_stroke_svg` asset test
+cover the mapping. Per-language hues are unchanged (glyph swap only).
+
 ### Milestone 14 record — 2026-10-01 (git status over the system binary)
 
 No new dependencies of any kind: `omaterm-context/src/git.rs` spawns
@@ -487,10 +497,16 @@ behavioral references only.
 ### UI v5 record — 2026-10-02 (Lucide icon vendoring)
 
 - Lucide `lucide-static` =1.49.0 (pinned; unpkg redirect and npm registry
-  agree on the version): 31 SVGs vendored at
+  agree on the version): 47 SVGs vendored at
   `apps/omaterm/assets/icons/*.svg`, embedded at compile time via
   `include_bytes!` and served through a GPUI `AssetSource`
   (`apps/omaterm/src/ui/assets.rs`, `OmaAssets`). No new Cargo dependency.
+  The 16 new file-tree glyphs (`file`, `file-text`, `file-code`,
+  `file-json-2`, `file-terminal`, `file-image`, `file-audio`,
+  `file-video`, `file-archive`, `file-spreadsheet`, `settings-2`,
+  `database`, `package`, `container`, `hammer`, `book`; `file-code-2`
+  was already vendored) were fetched from the pinned jsdelivr paths
+  with per-file license-header and path-count verification.
 - License ISC (per-file `@license lucide-static v1.49.0 - ISC` banner,
   e.g. `x.svg` SHA-256
   `f0c8edc0adc2dc42a45e286fb2342c164c761d52f3c366f20278f4e661a91745`).

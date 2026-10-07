@@ -37,6 +37,24 @@ pub const UNSTAGE: &str = "minus";
 pub const CHEVRON_DOWN: &str = "chevron-down";
 pub const CHEVRON_RIGHT: &str = "chevron-right";
 pub const CHEVRON_LEFT: &str = "chevron-left";
+/// File-tree document icons (one Lucide glyph per file family; hues stay
+/// in `files.rs` so the tree keeps its per-language colors).
+pub const FILE: &str = "file";
+pub const FILE_CODE: &str = "file-code";
+pub const FILE_CODE_2: &str = "file-code-2";
+pub const FILE_JSON: &str = "file-json-2";
+pub const FILE_TERMINAL: &str = "file-terminal";
+pub const FILE_IMAGE: &str = "file-image";
+pub const FILE_AUDIO: &str = "file-audio";
+pub const FILE_VIDEO: &str = "file-video";
+pub const FILE_ARCHIVE: &str = "file-archive";
+pub const FILE_SHEET: &str = "file-spreadsheet";
+pub const FILE_SETTINGS: &str = "settings-2";
+pub const FILE_DB: &str = "database";
+pub const FILE_PACKAGE: &str = "package";
+pub const FILE_CONTAINER: &str = "container";
+pub const FILE_TOOL: &str = "hammer";
+pub const FILE_BOOK: &str = "book";
 
 macro_rules! icon_bytes {
     ($name:literal) => {
@@ -78,6 +96,23 @@ const ICONS: &[(&str, &[u8])] = &[
     icon_bytes!("chevron-down"),
     icon_bytes!("chevron-right"),
     icon_bytes!("chevron-left"),
+    icon_bytes!("file"),
+    icon_bytes!("file-text"),
+    icon_bytes!("file-code"),
+    icon_bytes!("file-code-2"),
+    icon_bytes!("file-json-2"),
+    icon_bytes!("file-terminal"),
+    icon_bytes!("file-image"),
+    icon_bytes!("file-audio"),
+    icon_bytes!("file-video"),
+    icon_bytes!("file-archive"),
+    icon_bytes!("file-spreadsheet"),
+    icon_bytes!("settings-2"),
+    icon_bytes!("database"),
+    icon_bytes!("package"),
+    icon_bytes!("container"),
+    icon_bytes!("hammer"),
+    icon_bytes!("book"),
     icon_bytes!("split-square-vertical"),
     icon_bytes!("radio"),
     icon_bytes!("bell"),
