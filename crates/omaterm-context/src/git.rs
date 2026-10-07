@@ -65,6 +65,16 @@ pub enum GitError {
     DirtyWorktree,
     #[error("branch is currently checked out")]
     CurrentBranch,
+    #[error("git authentication failed")]
+    AuthFailed,
+    #[error("remote is unreachable")]
+    Offline,
+    #[error("local and remote histories have diverged")]
+    Diverged,
+    #[error("push would be non-fast-forward")]
+    NonFastForward,
+    #[error("branch has no upstream")]
+    NoUpstream,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -82,6 +92,11 @@ impl GitError {
             Self::Cancelled => "cancelled",
             Self::DirtyWorktree => "dirty_worktree",
             Self::CurrentBranch => "current_branch",
+            Self::AuthFailed => "auth_failed",
+            Self::Offline => "offline",
+            Self::Diverged => "diverged",
+            Self::NonFastForward => "non_fast_forward",
+            Self::NoUpstream => "no_upstream",
             Self::Io(_) => "io_error",
         }
     }

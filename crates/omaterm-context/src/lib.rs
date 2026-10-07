@@ -16,6 +16,7 @@ pub mod files;
 pub mod git;
 pub mod git_branch;
 pub mod git_history;
+pub mod git_sync;
 pub mod ignore;
 pub mod resolve;
 
@@ -53,6 +54,7 @@ pub use git_history::{
     MAX_GIT_HISTORY_BYTES, MAX_GIT_HISTORY_COMMITS, MAX_GIT_HISTORY_SUBJECT_BYTES, git_commit_diff,
     git_commit_files, git_commit_parents, git_history, parse_history_log,
 };
+pub use git_sync::{GIT_SYNC_TIMEOUT, GitSyncReport, git_fetch, git_pull, git_push};
 pub use ignore::IgnoreFilter;
 pub use resolve::{
     GIT_TOPLEVEL_TIMEOUT, git_toplevel_of, git_toplevel_of_with, resolve_root, resolve_root_with,
