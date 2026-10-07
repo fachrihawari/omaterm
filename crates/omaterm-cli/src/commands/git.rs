@@ -217,7 +217,7 @@ pub enum GitCmd {
 }
 
 /// Single-path variant of `check_paths` for blame.
-fn check_path(path: &PathBuf) -> Result<(), String> {
+fn check_path(path: &std::path::Path) -> Result<(), String> {
     if path.as_os_str().is_empty()
         || path.as_os_str().len() > 4096
         || path.to_string_lossy().chars().any(char::is_control)
