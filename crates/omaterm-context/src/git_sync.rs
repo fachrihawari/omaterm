@@ -62,8 +62,8 @@ fn classify_sync_error(stderr: &str) -> GitError {
     }
 }
 
-fn run_sync(root: &Path, args: &[&str], operation: &'static str) -> Result<String, GitError> {
-    let arg_refs: Vec<&str> = args.iter().copied().collect();
+fn run_sync(root: &Path, args: &[&str]) -> Result<String, GitError> {
+    let arg_refs: Vec<&str> = args.to_vec();
     match run_git(root, &[], &arg_refs, GIT_SYNC_TIMEOUT, MAX_SYNC_BYTES) {
         Ok(output) => Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
         Err(GitError::GitFailed(stderr)) => Err(classify_sync_error(&stderr)),
@@ -81,7 +81,7 @@ pub fn git_fetch(root: &Path, remote: Option<&str>) -> Result<GitSyncReport, Git
         }
         args.push(remote);
     }
-    let detail = run_sync(root, &args, "fetch")?;
+    let detail = run_sync(root, &args)?;
     Ok(GitSyncReport {
         operation: "fetch",
         detail,
@@ -130,7 +130,7 @@ pub fn git_pull(root: &Path, remote: Option<&str>) -> Result<GitSyncReport, GitE
         }
         args.push(remote);
     }
-    run_sync(root, &args, "pull")?;
+    run_sync(root, &args)?;
     let after = head_short(root)?;
     let detail = if before == after {
         "already up to date".to_string()
@@ -155,7 +155,7 @@ pub fn git_push(root: &Path, set_upstream: bool) -> Result<GitSyncReport, GitErr
         ));
     };
     if set_upstream {
-        run_sync(root, &["push", "-u", "origin", "HEAD"], "push")?;
+        run_sync(root, &["push", "-u", "origin", "HEAD"])?;
         return Ok(GitSyncReport {
             operation: "push",
             detail: format!("published {branch} to origin"),
@@ -170,7 +170,7 @@ pub fn git_push(root: &Path, set_upstream: bool) -> Result<GitSyncReport, GitErr
         }
         _ => {}
     }
-    run_sync(root, &["push"], "push")?;
+    run_sync(root, &["push"])?;
     Ok(GitSyncReport {
         operation: "push",
         detail: format!("pushed {branch}"),

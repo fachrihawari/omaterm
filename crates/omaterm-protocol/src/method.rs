@@ -170,6 +170,24 @@ pub struct GitBranchRename {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GitSyncFetch {
+    pub project_id: Option<String>,
+    pub remote: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitSyncPull {
+    pub project_id: Option<String>,
+    pub remote: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitSyncPush {
+    pub project_id: Option<String>,
+    pub set_upstream: Option<bool>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiffShowCommit {
     pub project_id: Option<String>,
     pub commit: String,
@@ -265,6 +283,9 @@ pub enum Method {
     GitBranchCheckout(GitBranchCheckout),
     GitBranchDelete(GitBranchDelete),
     GitBranchRename(GitBranchRename),
+    GitSyncFetch(GitSyncFetch),
+    GitSyncPull(GitSyncPull),
+    GitSyncPush(GitSyncPush),
     GitStage(GitPaths),
     GitStageHunk(GitStageHunk),
     GitUnstage(GitPaths),
@@ -331,6 +352,9 @@ impl Method {
             "git.branch-checkout" => decode!(GitBranchCheckout, GitBranchCheckout),
             "git.branch-delete" => decode!(GitBranchDelete, GitBranchDelete),
             "git.branch-rename" => decode!(GitBranchRename, GitBranchRename),
+            "git.fetch" => decode!(GitSyncFetch, GitSyncFetch),
+            "git.pull" => decode!(GitSyncPull, GitSyncPull),
+            "git.push" => decode!(GitSyncPush, GitSyncPush),
             "git.stage" => decode!(GitPaths, GitStage),
             "git.stage-hunk" => decode!(GitStageHunk, GitStageHunk),
             "git.unstage" => decode!(GitPaths, GitUnstage),
@@ -450,8 +474,11 @@ mod tests {
                 "git.branch-rename",
                 serde_json::json!({"old": "feature", "new": "topic"}),
             ),
+            ("git.fetch", serde_json::json!({})),
+            ("git.pull", serde_json::json!({})),
+            ("git.push", serde_json::json!({})),
         ];
-        assert_eq!(cases.len(), 49);
+        assert_eq!(cases.len(), 52);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

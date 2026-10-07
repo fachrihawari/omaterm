@@ -72,6 +72,36 @@ pub enum GitCmd {
         #[arg(short, long)]
         message: String,
     },
+    /// Fetch from the default remote (prunes stale remote-tracking refs).
+    #[command(name = "fetch")]
+    SyncFetch {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Remote name (defaults to the repo default).
+        #[arg(long)]
+        remote: Option<String>,
+    },
+    /// Pull --ff-only the upstream into the current branch.
+    #[command(name = "pull")]
+    SyncPull {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Remote name (defaults to the repo default).
+        #[arg(long)]
+        remote: Option<String>,
+    },
+    /// Push the current branch (refuses non-fast-forward).
+    #[command(name = "push")]
+    SyncPush {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+        /// Publish a new branch (`push -u origin HEAD`).
+        #[arg(long)]
+        set_upstream: bool,
+    },
     /// List local branches with HEAD identity and upstream tracking.
     BranchList {
         /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
@@ -306,6 +336,30 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 }),
             })
         }
+        GitCmd::SyncFetch { project, remote } => Ok(WireCall {
+            method: "git.fetch".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "remote": remote,
+            }),
+        }),
+        GitCmd::SyncPull { project, remote } => Ok(WireCall {
+            method: "git.pull".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "remote": remote,
+            }),
+        }),
+        GitCmd::SyncPush {
+            project,
+            set_upstream,
+        } => Ok(WireCall {
+            method: "git.push".into(),
+            params: json!({
+                "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
+                "set_upstream": set_upstream,
+            }),
+        }),
         GitCmd::CommitFiles {
             project,
             commit,
@@ -352,6 +406,30 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn sync_commands_map_to_wire() {
+        let call = build(&GitCmd::SyncFetch {
+            project: None,
+            remote: None,
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.fetch");
+        let call = build(&GitCmd::SyncPull {
+            project: Some("p".into()),
+            remote: Some("origin".into()),
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.pull");
+        assert_eq!(call.params["remote"], "origin");
+        let call = build(&GitCmd::SyncPush {
+            project: None,
+            set_upstream: true,
+        })
+        .unwrap();
+        assert_eq!(call.method, "git.push");
+        assert_eq!(call.params["set_upstream"], true);
     }
 
     #[test]

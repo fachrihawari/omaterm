@@ -1270,7 +1270,13 @@ fn commit_diff_off_thread(
         }
         // Unreachable on the read-only commit path (kept for exhaustiveness).
         Err(
-            omaterm_context::GitError::DirtyWorktree | omaterm_context::GitError::CurrentBranch,
+            omaterm_context::GitError::DirtyWorktree
+            | omaterm_context::GitError::CurrentBranch
+            | omaterm_context::GitError::AuthFailed
+            | omaterm_context::GitError::Offline
+            | omaterm_context::GitError::Diverged
+            | omaterm_context::GitError::NonFastForward
+            | omaterm_context::GitError::NoUpstream,
         ) => Err(DiffEmpty::Failed("branch state blocks this diff".into())),
         Err(omaterm_context::GitError::Io(error)) => Err(DiffEmpty::Failed(error.to_string())),
     }
@@ -1346,7 +1352,13 @@ fn refresh_off_thread(
         // Unreachable on the read-only worktree diff path (kept for
         // exhaustiveness).
         Err(
-            omaterm_context::GitError::DirtyWorktree | omaterm_context::GitError::CurrentBranch,
+            omaterm_context::GitError::DirtyWorktree
+            | omaterm_context::GitError::CurrentBranch
+            | omaterm_context::GitError::AuthFailed
+            | omaterm_context::GitError::Offline
+            | omaterm_context::GitError::Diverged
+            | omaterm_context::GitError::NonFastForward
+            | omaterm_context::GitError::NoUpstream,
         ) => Err(DiffEmpty::Failed("branch state blocks this diff".into())),
         Err(omaterm_context::GitError::Io(error)) => Err(DiffEmpty::Failed(error.to_string())),
     }

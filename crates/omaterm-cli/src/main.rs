@@ -338,8 +338,12 @@ mod tests {
             &["omaterm", "git", "branch-delete", "feature"],
             &["omaterm", "git", "branch-delete", "feature", "--force"],
             &["omaterm", "git", "branch-rename", "feature", "topic"],
+            &["omaterm", "git", "fetch"],
+            &["omaterm", "git", "pull"],
+            &["omaterm", "git", "push"],
+            &["omaterm", "git", "push", "--set-upstream"],
         ];
-        assert_eq!(cases.len(), 54);
+        assert_eq!(cases.len(), 58);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");

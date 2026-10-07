@@ -50,6 +50,19 @@ pub enum ErrorCode {
     DirtyWorktree,
     /// Branch delete refused: the branch is currently checked out (C9.1).
     CurrentBranch,
+    /// Git authentication failed: credentials or interaction needed (C9.2).
+    /// Auth reuses the user's helpers; nothing is stored.
+    AuthFailed,
+    /// The remote is unreachable: DNS, refused, or timed out (C9.2).
+    Offline,
+    /// Pull refused: local and remote histories diverged (C9.2). Resolve
+    /// in a shell, then retry.
+    Diverged,
+    /// Push refused: the remote moved (C9.2). Fetch, integrate, retry.
+    NonFastForward,
+    /// No upstream is configured for the current branch (C9.2). Push with
+    /// set-upstream, or set one, then retry.
+    NoUpstream,
     /// The system git binary is missing or cannot be spawned (M14,
     /// blueprint §32). Distinct from `GitFailed`: the tool is absent, not
     /// the repository.
@@ -96,6 +109,11 @@ impl ErrorCode {
             Self::GitFailed => "git_failed",
             Self::DirtyWorktree => "dirty_worktree",
             Self::CurrentBranch => "current_branch",
+            Self::AuthFailed => "auth_failed",
+            Self::Offline => "offline",
+            Self::Diverged => "diverged",
+            Self::NonFastForward => "non_fast_forward",
+            Self::NoUpstream => "no_upstream",
             Self::GitUnavailable => "git_unavailable",
             Self::DocumentNotOpen => "document_not_open",
             Self::DocumentConflict => "document_conflict",

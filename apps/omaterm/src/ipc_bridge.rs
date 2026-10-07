@@ -386,6 +386,18 @@ pub fn map_request(
                 old: git_branch_name(&p.old)?,
                 new: git_branch_name(&p.new)?,
             }),
+            Method::GitSyncFetch(p) => OmaCommand::Git(GitCommand::SyncFetch {
+                project: resolve_project(p.project_id)?,
+                remote: p.remote.as_deref().map(git_branch_name).transpose()?,
+            }),
+            Method::GitSyncPull(p) => OmaCommand::Git(GitCommand::SyncPull {
+                project: resolve_project(p.project_id)?,
+                remote: p.remote.as_deref().map(git_branch_name).transpose()?,
+            }),
+            Method::GitSyncPush(p) => OmaCommand::Git(GitCommand::SyncPush {
+                project: resolve_project(p.project_id)?,
+                set_upstream: p.set_upstream.unwrap_or(false),
+            }),
             Method::GitStage(p) => OmaCommand::Git(GitCommand::Stage {
                 project: resolve_project(p.project_id)?,
                 paths: git_paths(&p.paths)?,

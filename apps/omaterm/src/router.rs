@@ -1659,7 +1659,10 @@ impl CommandRouter {
             | OmaCommand::Git(GitCommand::BranchCreate { project, .. })
             | OmaCommand::Git(GitCommand::BranchCheckout { project, .. })
             | OmaCommand::Git(GitCommand::BranchDelete { project, .. })
-            | OmaCommand::Git(GitCommand::BranchRename { project, .. }) => Some(*project),
+            | OmaCommand::Git(GitCommand::BranchRename { project, .. })
+            | OmaCommand::Git(GitCommand::SyncFetch { project, .. })
+            | OmaCommand::Git(GitCommand::SyncPull { project, .. })
+            | OmaCommand::Git(GitCommand::SyncPush { project, .. }) => Some(*project),
             OmaCommand::Diff(DiffCommand::Show { project, .. })
             | OmaCommand::Diff(DiffCommand::ListFiles { project, .. })
             | OmaCommand::Diff(DiffCommand::ShowCommit { project, .. }) => Some(*project),
@@ -1744,7 +1747,10 @@ impl CommandRouter {
                 | GitCommand::BranchCreate { project, .. }
                 | GitCommand::BranchCheckout { project, .. }
                 | GitCommand::BranchDelete { project, .. }
-                | GitCommand::BranchRename { project, .. },
+                | GitCommand::BranchRename { project, .. }
+                | GitCommand::SyncFetch { project, .. }
+                | GitCommand::SyncPull { project, .. }
+                | GitCommand::SyncPush { project, .. },
             ) => Some(*project),
             _ => None,
         };
@@ -3030,6 +3036,22 @@ impl CommandRouter {
                 .git_branch_mutation(context, project, |root| {
                     omaterm_context::git_branch_rename(root, old.as_str(), new.as_str())
                 }),
+            OmaCommand::Git(GitCommand::SyncFetch { project, remote }) => {
+                self.git_branch_mutation(context, project, |root| {
+                    omaterm_context::git_fetch(root, remote.as_deref()).map(|_| ())
+                })
+            }
+            OmaCommand::Git(GitCommand::SyncPull { project, remote }) => {
+                self.git_branch_mutation(context, project, |root| {
+                    omaterm_context::git_pull(root, remote.as_deref()).map(|_| ())
+                })
+            }
+            OmaCommand::Git(GitCommand::SyncPush {
+                project,
+                set_upstream,
+            }) => self.git_branch_mutation(context, project, |root| {
+                omaterm_context::git_push(root, set_upstream).map(|_| ())
+            }),
             OmaCommand::Git(GitCommand::Stage { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Stage)
             }
@@ -3663,6 +3685,11 @@ fn git_error(error: omaterm_context::GitError) -> CommandResult {
         Context::Cancelled => err(ErrorCode::Timeout, error.to_string()),
         Context::DirtyWorktree => err(ErrorCode::DirtyWorktree, error.to_string()),
         Context::CurrentBranch => err(ErrorCode::CurrentBranch, error.to_string()),
+        Context::AuthFailed => err(ErrorCode::AuthFailed, error.to_string()),
+        Context::Offline => err(ErrorCode::Offline, error.to_string()),
+        Context::Diverged => err(ErrorCode::Diverged, error.to_string()),
+        Context::NonFastForward => err(ErrorCode::NonFastForward, error.to_string()),
+        Context::NoUpstream => err(ErrorCode::NoUpstream, error.to_string()),
         Context::Io(_) => err(ErrorCode::RuntimeFailure, error.to_string()),
     }
 }

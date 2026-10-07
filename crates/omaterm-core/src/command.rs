@@ -267,6 +267,24 @@ pub enum GitCommand {
         old: String,
         new: String,
     },
+    /// Fetch from the default remote (or `remote`), pruning stale
+    /// remote-tracking refs. Never touches the worktree.
+    SyncFetch {
+        project: ProjectId,
+        remote: Option<String>,
+    },
+    /// Pull `--ff-only` the upstream into the current branch. Refused on
+    /// dirty worktrees, diverged histories, or missing upstreams.
+    SyncPull {
+        project: ProjectId,
+        remote: Option<String>,
+    },
+    /// Push the current branch. Refused on detached HEAD, missing
+    /// upstreams (unless `set_upstream`), and non-fast-forwards.
+    SyncPush {
+        project: ProjectId,
+        set_upstream: bool,
+    },
 }
 
 /// Read-only unified-diff viewer over `git diff` (M15, blueprint §33).

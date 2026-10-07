@@ -246,6 +246,13 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
                 }
             }
         }
+        OmaCommand::Git(
+            GitCommand::SyncFetch { remote, .. } | GitCommand::SyncPull { remote, .. },
+        ) => {
+            if remote.as_ref().is_some_and(|remote| !is_branch_ref(remote)) {
+                return invalid("git remote must be 1 to 255 bytes with no control characters");
+            }
+        }
         OmaCommand::Diff(DiffCommand::ShowCommit {
             old_path,
             path,
