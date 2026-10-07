@@ -162,6 +162,10 @@ const FOLDER_OPEN_ICON: FileIcon = FileIcon {
 
 /// Exact inspector tree row height (mock): 28px rows, 11px labels.
 pub const TREE_ROW_H: f32 = 28.0;
+/// Search-box chrome above the tree rows: 16px padding + 32px box + 1px
+/// border. Subtracted with the tab/status bars when estimating the
+/// visible-row budget for the scrollbar thumb.
+pub const FILES_SEARCH_H: f32 = 49.0;
 
 /// Text badge for a tree/Git row: TypeScript families render `TS`,
 /// JSON renders `{ }` (mock); everything else uses the icon glyph.

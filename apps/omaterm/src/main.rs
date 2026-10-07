@@ -11494,8 +11494,8 @@ impl WorkspaceView {
             };
             let cols =
                 ((window_width * pane_rect.rect.width / cell_width).floor() as u16).clamp(2, 500);
-            // Every leaf carries the v5 header (31px + 1px border) and
-            // footer (27px + 1px border): the grid gets the canvas remainder
+            // Every leaf carries the v5 header (32px + 1px border) and
+            // footer (28px + 1px border): the grid gets the canvas remainder
             // so rows are never hidden behind the chrome.
             let rows = ((window_height * pane_rect.rect.height - LEAF_CHROME_H) / line_height)
                 .floor() as u16;
@@ -11657,7 +11657,16 @@ impl WorkspaceView {
         // search box filters cached rows by file-name substring (display
         // only, cache intact).
         let row_height = files::TREE_ROW_H;
-        let visible = ((viewport_height / row_height) as usize).clamp(1, files::MAX_RENDER_ROWS);
+        // `viewport_height` is the full window height; the list itself
+        // self-measures via flex, so this estimate only sizes the scrollbar
+        // thumb. Subtract the chrome above the rows (status bar, inspector
+        // tabs, search box) instead of dividing the whole window.
+        let list_height = (viewport_height
+            - crate::ui::geometry::STATUS_H
+            - crate::ui::geometry::HEADER_H
+            - files::FILES_SEARCH_H)
+            .max(row_height);
+        let visible = ((list_height / row_height) as usize).clamp(1, files::MAX_RENDER_ROWS);
         let query = self.files_search.clone();
         let all_rows: Arc<Vec<files::FileRow>> = Arc::new(
             self.files_panel
@@ -14643,14 +14652,21 @@ impl WorkspaceView {
                     )),
             );
         }
+        let mut new_tab: Option<Div> = None;
         let mut tabs = div()
+            .id("tab-strip")
             .flex()
             .flex_1()
             .flex_row()
             .items_end()
             .min_w(px(0.0))
             .h_full()
-            .overflow_hidden();
+            // Horizontal scroll instead of clipping: narrow windows keep
+            // every chip reachable. Chips are shrink-proof below so the
+            // strip overflows (and scrolls) instead of squeezing. The
+            // trailing new-tab button lives outside this container (added
+            // below) so it can never scroll or clip out of reach.
+            .overflow_x_scroll();
         if let Some(project) = self.coordinator.active_project() {
             // One highlight across all tab kinds: the visible surface
             // decides, never the retained editor selection.
@@ -14780,6 +14796,7 @@ impl WorkspaceView {
                 let mut diff_chip = div()
                     .relative()
                     .flex()
+                    .flex_shrink_0()
                     .flex_row()
                     .items_center()
                     .gap_2()
@@ -14888,6 +14905,7 @@ impl WorkspaceView {
                 let mut doc_chip = div()
                     .relative()
                     .flex()
+                    .flex_shrink_0()
                     .flex_row()
                     .items_center()
                     .gap_2()
@@ -14990,6 +15008,7 @@ impl WorkspaceView {
                 let open_project = project.id;
                 let mut chip = div()
                     .flex()
+                    .flex_shrink_0()
                     .flex_row()
                     .items_center()
                     .gap_2()
@@ -15065,11 +15084,15 @@ impl WorkspaceView {
                 );
                 tabs = tabs.child(chip);
             }
-            tabs = tabs.child(
+            // Trailing new-tab button: a sibling of the scrolling chip
+            // container (never inside it) so narrow windows may scroll
+            // chips but never lose the button.
+            new_tab = Some(
                 div()
                     .w(px(32.0))
                     .h_full()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .justify_center()
                     .text_color(rgb(crate::ui::theme::MUTED))
@@ -15103,6 +15126,9 @@ impl WorkspaceView {
             );
         }
         row = row.child(tabs);
+        if let Some(new_tab) = new_tab {
+            row = row.child(new_tab);
+        }
         row.child(
             div()
                 .flex()
@@ -16805,35 +16831,13 @@ impl Render for WorkspaceView {
                     .child(content),
             );
         }
-        // Toast paints last inside the relative pane area: bottom-center,
-        // above the status bar, pointer-transparent (no handlers).
-        if let Some((message, deadline)) = self.toast.clone()
-            && Instant::now() < deadline
-        {
-            pane_area = pane_area.child(
-                div()
-                    .absolute()
-                    .bottom(px(14.0))
-                    .left(px(0.0))
-                    .right(px(0.0))
-                    .flex()
-                    .flex_row()
-                    .justify_center()
-                    .child(
-                        div()
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(rgb(crate::ui::theme::BORDER2))
-                            .bg(rgb(crate::ui::theme::PANEL3))
-                            .shadow_lg()
-                            .role(crate::ui::metrics::BODY_11)
-                            .text_color(rgb(crate::ui::theme::TEXT))
-                            .child(message),
-                    ),
-            );
-        }
+        // Toast content is window-root overlay state now (bottom-center,
+        // 38px); see the root composition below. Nothing renders in-flow
+        // here so confirmations never resize the pane grid.
+        let toast = self
+            .toast
+            .clone()
+            .filter(|(_, deadline)| Instant::now() < *deadline);
         // Finder paints last so the floating layer sits above the terminal.
         // Box geometry is plain arithmetic from the v5 main-view rectangle
         // (the same helper that sizes PTY grids) — no reliance on
@@ -17015,6 +17019,36 @@ impl Render for WorkspaceView {
             // later sibling project cards) and never clip in scroll lists.
             .child(self.render_project_menu_overlay(viewport, cx))
             .child(self.render_terminal_menu_overlay(viewport, cx))
+            // Toast: window-centered bottom confirmation (38px), above the
+            // status bar, pointer-transparent (no handlers). Window-level so
+            // confirmations never resize the pane grid.
+            .child({
+                if let Some((message, _)) = toast {
+                    div()
+                        .absolute()
+                        .bottom(px(38.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .flex()
+                        .flex_row()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(rgb(crate::ui::theme::BORDER2))
+                                .bg(rgb(crate::ui::theme::PANEL3))
+                                .shadow_lg()
+                                .role(crate::ui::metrics::BODY_11)
+                                .text_color(rgb(crate::ui::theme::TEXT))
+                                .child(message),
+                        )
+                } else {
+                    div()
+                }
+            })
     }
 }
 
@@ -17276,10 +17310,10 @@ fn short_home_path(path: &std::path::Path) -> String {
     text
 }
 
-/// Vertical chrome inside every terminal leaf: 31px header + 1px border +
-/// 27px footer + 1px border. Subtracted from the leaf height before grid
+/// Vertical chrome inside every terminal leaf: 32px header + 1px border +
+/// 28px footer + 1px border. Subtracted from the leaf height before grid
 /// sizing so PTY rows match the visible canvas exactly.
-const LEAF_CHROME_H: f32 = 60.0;
+const LEAF_CHROME_H: f32 = 62.0;
 
 /// Git row action behind an inspector icon. Kept next to the renderer so
 /// the icon → dispatch mapping needs no string matching.
