@@ -274,7 +274,7 @@ fn spawn_detached(desktop: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use omaterm_ipc::IpcServer;
@@ -434,5 +434,13 @@ mod tests {
         if let Some(token) = saved_token {
             unsafe { std::env::set_var("OMATERM_TOKEN", token) };
         }
+    }
+}
+
+#[cfg(test)]
+mod desktop_lookup {
+    #[test]
+    fn desktop_binary_resolution_is_documented() {
+        let _ = super::desktop_binary();
     }
 }

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::time::{Duration, Instant};
 
 use omaterm_core::{SessionId, SplitDirection};

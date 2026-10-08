@@ -491,6 +491,7 @@ mod tests {
         assert!(Cli::try_parse_from(["omaterm", "terminal", "run", "--pane", "p1"]).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn end_to_end_success_failure_and_scoped_denial_against_a_fake_server() {
         use omaterm_ipc::{IpcServer, RequestHandler};

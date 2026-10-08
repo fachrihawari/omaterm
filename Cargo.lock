@@ -4005,6 +4005,7 @@ dependencies = [
  "omaterm-protocol",
  "serde_json",
  "thiserror 2.0.21",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4052,6 +4053,7 @@ dependencies = [
  "omaterm-core",
  "thiserror 2.0.21",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

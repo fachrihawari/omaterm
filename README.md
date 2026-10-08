@@ -116,7 +116,10 @@ UI thread.
 ## Install
 
 **Requirements:** Linux x86_64 with Wayland or X11 and working GPU drivers.
-Omarchy/Hyprland is the first-class target.
+Omarchy/Hyprland is the first-class target. Windows is a second build target:
+the desktop, terminal, and CLI compile there, while process listing stays empty
+until a native query exists. Dependency versions and licenses are tracked in
+[dependencies](docs/dependencies.md).
 
 Prebuilt binary tarball from GitHub Releases, checksum-verified:
 

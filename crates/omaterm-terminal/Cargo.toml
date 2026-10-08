@@ -11,3 +11,9 @@ libc = "0.2"
 omaterm-core = { path = "../omaterm-core" }
 thiserror = "=2.0.21"
 tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

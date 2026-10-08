@@ -541,6 +541,21 @@ struct GitInput<'a> {
     allow_exit_one: bool,
 }
 
+/// A GUI parent has no console. Windows 11 gives every new console to
+/// Windows Terminal, so each short-lived git process flashes a window and
+/// then closes it. `CREATE_NO_WINDOW` keeps that child headless; Git for
+/// Windows passes the same flag on to helpers it spawns.
+pub(crate) fn hide_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 /// Same spawn with an explicit binary path. Production always passes
 /// `"git"` (`PATH` lookup, blueprint §32); tests point it at a missing
 /// executable to prove the `git_unavailable` mapping without touching the
@@ -570,6 +585,7 @@ fn run_git_with(
     for (key, value) in extra_env {
         command.env(key, value);
     }
+    hide_console_window(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| GitError::GitUnavailable(format!("cannot spawn git: {error}")))?;
@@ -857,6 +873,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn blocked_stdin_is_covered_by_process_deadline() {
         use std::os::unix::fs::PermissionsExt;
@@ -881,6 +898,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(5));
     }
 
+    #[cfg(unix)]
     #[test]
     fn cancelled_git_process_is_killed_and_reaped() {
         use std::os::unix::fs::PermissionsExt;

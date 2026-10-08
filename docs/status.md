@@ -2,6 +2,34 @@
 
 ## Current position
 
+### Windows build target — 2026-10-08
+
+GPUI's Windows backend is selected by `target_os`, so the desktop crate enables
+`wayland`/`x11` only off Windows. The terminal uses Alacritty's ConPTY on
+Windows and keeps the Unix PTY on Linux. IPC keeps the Unix socket on Linux; on
+Windows the same filesystem path maps to a per-user named pipe, and the
+credential file stays beside that path. The process panel has no Windows
+query yet, so its snapshot is empty there.
+`cargo check --workspace --all-targets --target x86_64-pc-windows-msvc --exclude omaterm`
+passes from Linux. The desktop package is not part of that check: GPUI's
+`ring` build needs the MSVC librarian, and a release build also needs
+`fxc.exe` for GPUI's HLSL shaders, so the full Windows build runs on Windows.
+The Windows GPUI dependency enables `windows-manifest`: a release exe built
+without that feature has no application manifest, so the loader binds
+`comctl32` v5 and fails at startup with missing `TaskDialogIndirect`.
+`LockFileEx` on the IPC lock file passes a zeroed `OVERLAPPED`; a null
+pointer crashes in `KERNELBASE` while reading the lock offset at `0x10`.
+Windows startup uses `%APPDATA%` / `%LOCALAPPDATA%` when XDG and `HOME`
+are unset, maps the GPUI key name `space` to a space character, and
+prefers Cascadia Mono or Consolas so the block cursor stays on the grid.
+The desktop exe uses the Windows GUI subsystem and, when a terminal job
+allows it, relaunches once with `CREATE_BREAKAWAY_FROM_JOB` and
+`CREATE_NO_WINDOW`. A sentinel argument stops that relaunch from chaining,
+so closing the launching terminal does not kill the window.
+Git and its rev-parse helper are also started with `CREATE_NO_WINDOW`:
+a GUI parent otherwise makes Windows Terminal open and close a window for
+every status, diff, and history poll.
+
 ### Honest OSC 10/11/12 replies + mouse-wheel forwarding — 2026-10-08
 
 - User report: opencode with a light/white theme rendered unreadable inside

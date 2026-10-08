@@ -25,9 +25,9 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::ops::Range;
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -189,7 +189,7 @@ impl DocumentPlaceholder {
 
     /// Root-relative path as supplied on save (decoded from raw bytes).
     pub fn path(&self) -> PathBuf {
-        PathBuf::from(OsString::from_vec(self.path_bytes.clone()))
+        path_from_bytes(&self.path_bytes)
     }
 
     pub fn path_bytes(&self) -> &[u8] {
@@ -329,6 +329,18 @@ fn normalized_path_bytes(path: &Path) -> Vec<u8> {
 #[cfg(not(unix))]
 fn normalized_path_bytes(path: &Path) -> Vec<u8> {
     path_bytes_of(path)
+}
+
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(OsString::from_vec(bytes.to_vec()))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
 }
 
 /// Immutable, shared data for one render generation. Cloning this value only

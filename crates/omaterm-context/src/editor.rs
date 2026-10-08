@@ -514,6 +514,112 @@ pub fn read_text_file_cancellable(
     read_text_file_from_root_cancellable(&EditorRoot::open(root)?, user_path, cancelled)
 }
 
+/// Path-based root used where descriptor-relative `openat2` is unavailable.
+/// Reads and saves still go through [`canonical_document_path`].
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+pub struct EditorRoot {
+    canonical_path: PathBuf,
+    identity: RootIdentity,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl EditorRoot {
+    pub fn open(root: &Path) -> Result<Self, EditorError> {
+        let canonical_path = std::fs::canonicalize(root).map_err(map_not_found)?;
+        let metadata = std::fs::metadata(&canonical_path).map_err(map_not_found)?;
+        if !metadata.is_dir() {
+            return Err(EditorError::NotRegularFile);
+        }
+        Ok(Self {
+            canonical_path: canonical_path.clone(),
+            identity: root_identity_of(&canonical_path, &metadata),
+        })
+    }
+
+    pub fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+
+    pub const fn identity(&self) -> RootIdentity {
+        self.identity
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn root_identity_of(path: &Path, metadata: &std::fs::Metadata) -> RootIdentity {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        RootIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+    #[cfg(windows)]
+    {
+        // `MetadataExt::file_index` is still unstable. Mix the canonical path
+        // with the directory mtime so a replaced root does not keep the old id.
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in path.as_os_str().to_string_lossy().as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|span| span.as_nanos() as u64)
+            .unwrap_or(0);
+        RootIdentity {
+            device: modified,
+            inode: hash,
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn read_text_file_from_root(
+    root: &EditorRoot,
+    user_path: &Path,
+) -> Result<EditorFile, EditorError> {
+    read_text_file(&root.canonical_path, user_path)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn read_text_file_from_root_cancellable(
+    root: &EditorRoot,
+    user_path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<EditorFile, EditorError> {
+    check_cancelled(cancelled)?;
+    read_text_file(&root.canonical_path, user_path)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn write_text_file_from_root(
+    root: &EditorRoot,
+    user_path: &Path,
+    text: &str,
+    expected: Option<&FileRevision>,
+) -> Result<WriteTextOutcome, EditorError> {
+    write_text_file_from_root_cancellable(root, user_path, text, expected, &AtomicBool::new(false))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn write_text_file_from_root_cancellable(
+    root: &EditorRoot,
+    user_path: &Path,
+    text: &str,
+    expected: Option<&FileRevision>,
+    cancelled: &AtomicBool,
+) -> Result<WriteTextOutcome, EditorError> {
+    check_cancelled(cancelled)?;
+    let revision = write_text_file(&root.canonical_path, user_path, text, expected)?;
+    Ok(WriteTextOutcome::CommittedDurable { revision })
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn read_text_file(root: &Path, user_path: &Path) -> Result<EditorFile, EditorError> {
     let absolute = canonical_document_path(root, user_path)?;

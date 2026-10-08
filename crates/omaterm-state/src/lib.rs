@@ -1,6 +1,7 @@
 pub mod config;
 pub mod history;
 mod migration;
+mod paths;
 mod snapshot;
 mod store;
 

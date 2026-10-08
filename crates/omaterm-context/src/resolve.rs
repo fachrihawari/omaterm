@@ -72,7 +72,8 @@ pub fn git_toplevel_of(cwd: &Path) -> Option<PathBuf> {
 /// test points this at a fake `sleep`-ing executable; production passes
 /// `Path::new("git")`).
 pub fn git_toplevel_of_with(cwd: &Path, git_bin: &Path, timeout: Duration) -> Option<PathBuf> {
-    let mut child = Command::new(git_bin)
+    let mut command = Command::new(git_bin);
+    command
         .arg("--no-optional-locks")
         .arg("rev-parse")
         .arg("--show-toplevel")
@@ -80,9 +81,9 @@ pub fn git_toplevel_of_with(cwd: &Path, git_bin: &Path, timeout: Duration) -> Op
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    crate::git::hide_console_window(&mut command);
+    let mut child = command.spawn().ok()?;
     // The reader thread owns only the stdout pipe; the caller keeps the
     // child handle so every path below reaps it (no orphans, no leaked
     // waiter threads). Output is capped: a toplevel is one short line.

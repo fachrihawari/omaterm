@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -10,6 +9,24 @@ use omaterm_protocol::CapabilityToken;
 
 /// Owner-thread credential state. Three independently random UUID v4 values
 /// provide more than 256 bits of unpredictable material after version bits.
+fn file_identity(metadata: &fs::Metadata) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.dev(), metadata.ino())
+    }
+    #[cfg(windows)]
+    {
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|span| span.as_nanos() as u64)
+            .unwrap_or(0);
+        (metadata.len(), modified)
+    }
+}
+
 fn secret() -> String {
     (0..3)
         .map(|_| SessionId::new().0.simple().to_string())
@@ -31,16 +48,19 @@ impl Credentials {
         let temporary =
             socket.with_extension(format!("credential-{}", SessionId::new().0.simple()));
         let result = (|| {
-            let mut writer = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)?;
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut writer = options.open(&temporary)?;
             writer.write_all(local.as_bytes())?;
             writer.sync_all()?;
             fs::rename(&temporary, &file)?;
             let metadata = fs::symlink_metadata(&file)?;
-            Ok::<_, std::io::Error>((metadata.dev(), metadata.ino()))
+            Ok::<_, std::io::Error>(file_identity(&metadata))
         })();
         let _ = fs::remove_file(temporary);
         Ok(Self {
@@ -92,7 +112,7 @@ impl Credentials {
 impl Drop for Credentials {
     fn drop(&mut self) {
         if let Ok(metadata) = fs::symlink_metadata(&self.file)
-            && (metadata.dev(), metadata.ino()) == self.file_identity
+            && file_identity(&metadata) == self.file_identity
         {
             let _ = fs::remove_file(&self.file);
         }
@@ -110,7 +130,15 @@ mod tests {
         let socket = directory.join("omaterm.sock");
         let mut credentials = Credentials::create(&socket).unwrap();
         let metadata = fs::metadata(socket.with_extension("credential")).unwrap();
-        assert_eq!(metadata.mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(metadata.mode() & 0o777, 0o600);
+        }
+        #[cfg(windows)]
+        {
+            let _ = metadata;
+        }
         let local = CapabilityToken::from_secret(credentials.local.clone()).unwrap();
         assert_eq!(
             credentials.authenticate(Some(&local)),
