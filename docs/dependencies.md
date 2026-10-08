@@ -87,8 +87,11 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   checksum `979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707`;
   Apache-2.0 per its crate manifest and crates.io metadata. Both `wayland` and
   `x11` features are explicitly enabled with default features disabled on
-  non-Windows targets. The Windows target leaves those features off; GPUI
-  selects its Win32 backend from `target_os`. `windows-sys` 0.59.0
+  non-Windows targets. The Windows target leaves those features off and
+  enables `windows-manifest` instead, so the executable embeds GPUI's
+  Common Controls 6 manifest. Without it, `TaskDialogIndirect` is missing
+  from the `comctl32` Windows loads and the desktop process exits before
+  `main`. GPUI selects its Win32 backend from `target_os`. `windows-sys` 0.59.0
   (MIT OR Apache-2.0), already used by `alacritty_terminal`, is a direct
   dependency of the IPC and terminal crates on Windows only.
 - `Cargo.lock`: committed application resolution. A full transitive license

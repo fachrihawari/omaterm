@@ -88,19 +88,12 @@ impl HistoryConfig {
 }
 
 /// Config directory contract: `$XDG_CONFIG_HOME/omaterm/` with
-/// `$HOME/.config/omaterm/` fallback. History configuration lives in the
+/// `$HOME/.config/omaterm/` fallback. On Windows, where neither is set,
+/// this is `%APPDATA%\omaterm`. History configuration lives in the
 /// canonical `config.toml` under a `[history]` table and never inside
 /// workspace snapshots.
 fn config_base_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|p| p.join(".config"))
-        })?;
-    Some(base.join("omaterm"))
+    crate::paths::config_base_dir().map(|base| base.join("omaterm"))
 }
 
 /// Canonical history configuration path: `config.toml` in the config dir.
@@ -1095,19 +1088,12 @@ fn fit_journal_to_limits(
 // --- filesystem store -----------------------------------------------------
 
 /// Dedicated history directory: `$XDG_STATE_HOME/omaterm/history/` with the
-/// standard `$HOME/.local/state/omaterm/history/` fallback. Archive names are
-/// opaque pane UUIDs plus a revision; they disclose no command text, paths,
-/// or project names. History never lives in `workspace-v1.json`.
+/// standard `$HOME/.local/state/omaterm/history/` fallback. On Windows this
+/// is `%LOCALAPPDATA%\omaterm\history`. Archive names are opaque pane UUIDs
+/// plus a revision; they disclose no command text, paths, or project names.
+/// History never lives in `workspace-v1.json`.
 pub fn default_history_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|p| p.join(".local/state"))
-        })?;
-    Some(base.join("omaterm/history"))
+    crate::paths::state_base_dir().map(|base| base.join("omaterm/history"))
 }
 
 #[derive(Debug)]

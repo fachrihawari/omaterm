@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -7876,6 +7878,8 @@ impl WorkspaceView {
         {
             // Both clipboards, like terminal drag selection: PRIMARY for
             // middle-click, CLIPBOARD for Ctrl+V and other applications.
+            // Windows has no PRIMARY selection.
+            #[cfg(not(windows))]
             cx.write_to_primary(ClipboardItem::new_string(payload.to_owned()));
             cx.write_to_clipboard(ClipboardItem::new_string(payload.to_owned()));
         }
@@ -11494,6 +11498,8 @@ impl WorkspaceView {
                         // Both clipboards: PRIMARY keeps middle-click paste,
                         // CLIPBOARD makes the selection pastable via
                         // Ctrl+Shift+V and into other applications.
+                        // Windows has no PRIMARY selection.
+                        #[cfg(not(windows))]
                         cx.write_to_primary(ClipboardItem::new_string(text.clone()));
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
@@ -11524,8 +11530,15 @@ impl WorkspaceView {
             cx.notify();
             return false;
         };
-        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-        cx.write_to_primary(ClipboardItem::new_string(text));
+        // PRIMARY is the Linux middle-click selection. Windows only has
+        // the regular clipboard.
+        #[cfg(windows)]
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        #[cfg(not(windows))]
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            cx.write_to_primary(ClipboardItem::new_string(text));
+        }
         self.input_notice = None;
         self.show_toast("Copied to clipboard".into(), cx);
         true
@@ -19861,6 +19874,44 @@ fn function_key_number(name: &str) -> Option<u8> {
     (1..=12).contains(&n).then_some(n)
 }
 
+/// Map a normalized GPUI key name to a terminal key.
+///
+/// `normalized` is lowercased with underscores removed. Windows reports
+/// VK_SPACE as `"space"` and leaves `key_char` empty; taking the first
+/// character of that name would send `s`.
+fn terminal_key(normalized: &str, key_char: Option<&str>) -> Option<Key> {
+    match normalized {
+        // "return" is what some Wayland virtual keyboards (e.g. wtype
+        // `-k Return`) report for the main Enter key; "kpenter" is the
+        // keypad variant. Physical keyboards report "enter".
+        "enter" | "return" | "kpenter" => Some(Key::Enter),
+        "tab" => Some(Key::Tab),
+        "backspace" => Some(Key::Backspace),
+        "escape" => Some(Key::Escape),
+        "left" => Some(Key::Left),
+        "right" => Some(Key::Right),
+        "up" => Some(Key::Up),
+        "down" => Some(Key::Down),
+        "home" => Some(Key::Home),
+        "end" => Some(Key::End),
+        "pageup" => Some(Key::PageUp),
+        "pagedown" => Some(Key::PageDown),
+        "insert" => Some(Key::Insert),
+        "delete" => Some(Key::Delete),
+        "space" => Some(Key::Char(' ')),
+        // Function keys F1..F12. The `len` guard matters: bare "f" is a
+        // plain letter, not `F<empty>`. Unsupported numbers (F13+) and
+        // non-numeric names are swallowed, as before.
+        name if name.len() > 1 && name.starts_with('f') => function_key_number(name).map(Key::F),
+        _ => {
+            let ch = key_char
+                .and_then(|text| text.chars().next())
+                .or_else(|| normalized.chars().next())?;
+            Some(Key::Char(ch))
+        }
+    }
+}
+
 /// Translate a GPUI key event into the GPUI-free [`KeyEvent`].
 fn translate_key(event: &KeyDownEvent, app_cursor: bool, app_keypad: bool) -> Option<KeyEvent> {
     let modifiers = &event.keystroke.modifiers;
@@ -19870,39 +19921,8 @@ fn translate_key(event: &KeyDownEvent, app_cursor: bool, app_keypad: bool) -> Op
         shift: modifiers.shift,
         super_key: modifiers.platform,
     };
-    let key = match event.keystroke.key.to_lowercase().replace('_', "").as_str() {
-        // "return" is what some Wayland virtual keyboards (e.g. wtype
-        // `-k Return`) report for the main Enter key; "kpenter" is the
-        // keypad variant. Physical keyboards report "enter".
-        "enter" | "return" | "kpenter" => Key::Enter,
-        "tab" => Key::Tab,
-        "backspace" => Key::Backspace,
-        "escape" => Key::Escape,
-        "left" => Key::Left,
-        "right" => Key::Right,
-        "up" => Key::Up,
-        "down" => Key::Down,
-        "home" => Key::Home,
-        "end" => Key::End,
-        "pageup" => Key::PageUp,
-        "pagedown" => Key::PageDown,
-        "insert" => Key::Insert,
-        "delete" => Key::Delete,
-        // Function keys F1..F12. The `len` guard matters: bare "f" is a
-        // plain letter, not `F<empty>` (its parse failure would make
-        // `translate_key` swallow the keystroke via `?`). Unsupported
-        // numbers (F13+) and non-numeric names also swallow, as before.
-        name if name.len() > 1 && name.starts_with('f') => Key::F(function_key_number(name)?),
-        _ => {
-            let ch = event
-                .keystroke
-                .key_char
-                .as_ref()
-                .and_then(|s| s.chars().next())
-                .or_else(|| event.keystroke.key.chars().next())?;
-            Key::Char(ch)
-        }
-    };
+    let normalized = event.keystroke.key.to_lowercase().replace('_', "");
+    let key = terminal_key(&normalized, event.keystroke.key_char.as_deref())?;
     Some(KeyEvent {
         key,
         modifiers: mods,
@@ -19918,6 +19938,10 @@ const MONO_PREFERENCES: &[&str] = &[
     "DejaVu Sans Mono",
     "Liberation Mono",
     "Noto Sans Mono",
+    "Cascadia Mono",
+    "Cascadia Code",
+    "Consolas",
+    "Courier New",
     "monospace",
 ];
 
@@ -19927,6 +19951,8 @@ fn symbol_fallbacks() -> FontFallbacks {
         [
             "JetBrainsMono Nerd Font",
             "JetBrainsMono NF",
+            "Cascadia Mono",
+            "Consolas",
             "Noto Color Emoji",
             "DejaVu Sans Mono",
         ]
@@ -20416,7 +20442,42 @@ fn paint_terminal(
     }
 }
 
+/// Leave the Windows Terminal job before opening a window.
+///
+/// Closing that window kills every process still in its job. The relaunch
+/// uses a one-shot argument so it cannot chain, and it does not allocate a
+/// console. Breakaway is refused when there is no job (double-click), and
+/// the same process continues.
+#[cfg(all(windows, not(test)))]
+fn detach_from_launch_console() {
+    use std::os::windows::process::CommandExt;
+
+    const SENTINEL: &str = "--omaterm-detached";
+    let sentinel = std::ffi::OsStr::new(SENTINEL);
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.iter().any(|arg| arg.as_os_str() == sentinel) {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut child = std::process::Command::new(exe);
+    child.args(&args);
+    child.arg(SENTINEL);
+    child.stdin(std::process::Stdio::null());
+    child.stdout(std::process::Stdio::null());
+    child.stderr(std::process::Stdio::null());
+    child.creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW);
+    if child.spawn().is_ok() {
+        std::process::exit(0);
+    }
+}
+
 fn main() {
+    #[cfg(all(windows, not(test)))]
+    detach_from_launch_console();
     omaterm_logging::init_logging();
     Application::new()
         .with_assets(crate::ui::assets::OmaAssets)
@@ -20467,12 +20528,13 @@ mod tests {
         captured_targets_stale, clamp_menu_anchor, cycle_project_index, discard_before_action,
         file_activation, function_key_number, is_project_jump_key, metrics_job_counts,
         native_open_may_activate, pending_timing_elapsed, revalidate_captured_targets,
-        route_alt_strip, search_paint_rows, search_target_offset, select_mono_family,
+        route_alt_strip, search_paint_rows, search_target_offset, select_mono_family, terminal_key,
     };
     use crate::editor::DocumentStore;
     use crate::editor::EditorCaret;
     use crate::metrics::PendingTiming;
     use omaterm_core::{DocumentId, FileCommand, OmaCommand, ProjectId, TabId};
+    use omaterm_terminal::Key;
     use std::sync::Arc;
 
     /// Open one plain document in a fresh store for pure state-machine tests.
@@ -21118,6 +21180,18 @@ mod tests {
             "JetBrainsMono Nerd Font"
         );
         assert_eq!(select_mono_family(&[], None), "monospace");
+        assert_eq!(
+            select_mono_family(&["Consolas".into(), "Cascadia Mono".into()], None),
+            "Cascadia Mono"
+        );
+    }
+
+    #[test]
+    fn windows_space_key_is_a_space_not_the_letter_s() {
+        assert_eq!(terminal_key("space", None), Some(Key::Char(' ')));
+        assert_eq!(terminal_key("a", Some("A")), Some(Key::Char('A')));
+        assert_eq!(terminal_key("f", None), Some(Key::Char('f')));
+        assert_eq!(terminal_key("f1", None), Some(Key::F(1)));
     }
 
     #[test]

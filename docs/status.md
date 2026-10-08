@@ -14,6 +14,21 @@ query yet, so its snapshot is empty there.
 passes from Linux. The desktop package is not part of that check: GPUI's
 `ring` build needs the MSVC librarian, and a release build also needs
 `fxc.exe` for GPUI's HLSL shaders, so the full Windows build runs on Windows.
+The Windows GPUI dependency enables `windows-manifest`: a release exe built
+without that feature has no application manifest, so the loader binds
+`comctl32` v5 and fails at startup with missing `TaskDialogIndirect`.
+`LockFileEx` on the IPC lock file passes a zeroed `OVERLAPPED`; a null
+pointer crashes in `KERNELBASE` while reading the lock offset at `0x10`.
+Windows startup uses `%APPDATA%` / `%LOCALAPPDATA%` when XDG and `HOME`
+are unset, maps the GPUI key name `space` to a space character, and
+prefers Cascadia Mono or Consolas so the block cursor stays on the grid.
+The desktop exe uses the Windows GUI subsystem and, when a terminal job
+allows it, relaunches once with `CREATE_BREAKAWAY_FROM_JOB` and
+`CREATE_NO_WINDOW`. A sentinel argument stops that relaunch from chaining,
+so closing the launching terminal does not kill the window.
+Git and its rev-parse helper are also started with `CREATE_NO_WINDOW`:
+a GUI parent otherwise makes Windows Terminal open and close a window for
+every status, diff, and history poll.
 
 ### CI history-test fix: `%aI` Zulu timestamps — 2026-10-08
 

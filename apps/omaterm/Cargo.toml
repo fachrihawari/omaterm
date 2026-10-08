@@ -29,4 +29,4 @@ zeroize = "=1.9.0"
 gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x11"] }
 
 [target.'cfg(windows)'.dependencies]
-gpui = { version = "=0.2.2", default-features = false }
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }

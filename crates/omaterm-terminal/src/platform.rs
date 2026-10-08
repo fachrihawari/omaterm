@@ -26,11 +26,16 @@ use std::sync::{
 };
 use std::time::Instant;
 
+#[cfg(unix)]
 const MAX_SCANNED_PROCESSES: usize = 16_384;
+#[cfg(unix)]
 const MAX_FDS: usize = 65_536;
+#[cfg(unix)]
 const MAX_PORTS: usize = 4096;
 const MAX_PROC_BYTES: usize = 4096;
+#[cfg(unix)]
 const MAX_TCP_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(unix)]
 const MAX_ROOTS: usize = 512;
 
 /// Cooperative cancellation and a deadline shared by all stages of one scan.
@@ -181,6 +186,13 @@ impl WindowsProcessInspector {
     ) -> ProcessSnapshot {
         let _ = (roots, cap, control);
         ProcessSnapshot::default()
+    }
+
+    /// Ownership-checked termination has no Windows query yet, so kill fails
+    /// closed instead of signalling an unverified pid.
+    pub fn terminate_owned(&mut self, pid: u32, roots: &[u32]) -> Result<(), TerminateError> {
+        let _ = (pid, roots);
+        Err(TerminateError::Other(std::io::ErrorKind::Unsupported))
     }
 }
 

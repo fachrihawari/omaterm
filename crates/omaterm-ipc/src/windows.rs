@@ -29,6 +29,7 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::Storage::FileSystem::{
     LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, PIPE_ACCESS_DUPLEX,
 };
+use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PeekNamedPipe,
@@ -105,8 +106,12 @@ impl IpcServer {
             .write(true)
             .create(true)
             .open(&lock_path)?;
-        // SAFETY: the lock file is open and the call does not use an overlapped
-        // structure. A held lock means another desktop owns this endpoint.
+        // LockFileEx reads the lock offset from OVERLAPPED even for a
+        // synchronous file. A null pointer is a read at address 0x10.
+        let mut overlapped = unsafe { std::mem::zeroed::<OVERLAPPED>() };
+        // SAFETY: the lock file is open, `overlapped` is zeroed and live for
+        // this synchronous call, and its event handle is null. A held lock
+        // means another desktop owns this endpoint.
         let locked = unsafe {
             LockFileEx(
                 lock.as_raw_handle() as HANDLE,
@@ -114,7 +119,7 @@ impl IpcServer {
                 0,
                 1,
                 0,
-                std::ptr::null_mut(),
+                &mut overlapped,
             )
         };
         if locked == 0 {

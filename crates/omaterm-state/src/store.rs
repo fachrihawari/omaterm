@@ -7,15 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use crate::{SnapshotError, SnapshotLimits, WorkspaceSnapshot, migration};
 
 pub fn default_snapshot_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|p| p.join(".local/state"))
-        })?;
-    Some(base.join("omaterm/workspace-v1.json"))
+    crate::paths::state_base_dir().map(|base| base.join("omaterm/workspace-v1.json"))
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +343,7 @@ enum AtomicStage {
     WriteTemporary,
     SyncTemporary,
     Rename,
+    #[cfg(unix)]
     SyncDirectory,
 }
 
