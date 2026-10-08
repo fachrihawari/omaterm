@@ -21,7 +21,10 @@ use omaterm_state::{
     KeyProvider, KeyProviderError, history_status, load_history_config_migrated, opaque_pane_name,
     save_history_config_toml,
 };
-use omaterm_terminal::{TerminalSession, history::RecordedEvent};
+use omaterm_terminal::{
+    TerminalSession,
+    history::{RecordedEvent, compact_repaint_runs, replay_equivalent},
+};
 use zeroize::Zeroize;
 
 /// How long a failed key attempt suppresses keyring retries. The terminal
@@ -73,6 +76,53 @@ struct HistoryAck {
     error: Option<String>,
 }
 
+/// Collapse superseded repaint frames before encrypting, keeping the
+/// persisted stream only when it rebuilds the same visible state.
+///
+/// Animated redraws (spinners, progress blocks) store every intermediate
+/// frame; without this, short panes accumulate hundreds of logo copies per
+/// build in scrollback, re-seeded every restart. Runs on the background
+/// writer so the PTY hot path and flush ticks stay cheap. Any doubt —
+/// oversized snapshots included — persists the original stream, so the
+/// worst case is today's behavior.
+fn compacted_scrollback(
+    events: &[omaterm_state::HistoryEvent],
+) -> Vec<omaterm_state::HistoryEvent> {
+    /// Snapshots above this skip verification (and compaction) entirely.
+    const VERIFY_MAX_BYTES: usize = 2 * 1024 * 1024;
+    if events
+        .iter()
+        .map(omaterm_state::HistoryEvent::encoded_len)
+        .sum::<usize>()
+        > VERIFY_MAX_BYTES
+    {
+        return events.to_vec();
+    }
+    let record: Vec<RecordedEvent> = events
+        .iter()
+        .map(|event| match event {
+            omaterm_state::HistoryEvent::Output(bytes) => RecordedEvent::Output(bytes.clone()),
+            omaterm_state::HistoryEvent::Resize { cols, rows } => RecordedEvent::Resize {
+                cols: *cols,
+                rows: *rows,
+            },
+        })
+        .collect();
+    let compacted = compact_repaint_runs(&record);
+    if compacted == record || !replay_equivalent(&record, &compacted) {
+        return events.to_vec();
+    }
+    compacted
+        .into_iter()
+        .map(|event| match event {
+            RecordedEvent::Output(bytes) => omaterm_state::HistoryEvent::Output(bytes),
+            RecordedEvent::Resize { cols, rows } => {
+                omaterm_state::HistoryEvent::Resize { cols, rows }
+            }
+        })
+        .collect()
+}
+
 fn save_job(store: &HistoryStore, job: &HistoryJob) -> HistoryAck {
     let mut ok = true;
     let mut error = None;
@@ -82,7 +132,7 @@ fn save_job(store: &HistoryStore, job: &HistoryJob) -> HistoryAck {
             &job.pane,
             &job.pane_uuid,
             job.revision,
-            &job.scrollback,
+            &compacted_scrollback(&job.scrollback),
         )
     {
         ok = false;
@@ -1014,5 +1064,161 @@ mod tests {
         manager.clear_all().expect("clear all");
         assert_eq!(manager.status().archive_files, 0);
         assert_ne!(manager.key, before, "clear-all rotates the key");
+    }
+
+    #[test]
+    fn save_job_persists_compacted_repaint_stream() {
+        let dir = tempfile_dir::TempDir::new();
+        let store = HistoryStore::new(
+            dir.path().join("history"),
+            HistoryLimits {
+                max_workspace_bytes: 16 * 1024 * 1024,
+                ..HistoryLimits::default()
+            },
+        );
+        let mut provider = InMemoryKeyProvider::new();
+        let key = provider.get_or_create_master_key().expect("key");
+        let pane = "c".repeat(32);
+        // Fixed-width spinner frames plus one committed line: the worker
+        // must persist the collapsed stream, replaying to the same grid.
+        let job = HistoryJob {
+            pane: pane.clone(),
+            pane_uuid: [9u8; 16],
+            revision: 1,
+            scrollback: vec![
+                omaterm_state::HistoryEvent::Output(b"cargo build\r\n".to_vec()),
+                omaterm_state::HistoryEvent::Output(b"[1/3]\r".to_vec()),
+                omaterm_state::HistoryEvent::Output(b"[2/3]\r".to_vec()),
+                omaterm_state::HistoryEvent::Output(b"[10/10] done\r\n".to_vec()),
+            ],
+            journal: Vec::new(),
+            journal_seq: 0,
+            recorder_version: 1,
+            key,
+        };
+        let ack = save_job(&store, &job);
+        assert!(ack.ok, "compacted save succeeds");
+        match store.load_scrollback(&key, &pane).expect("load") {
+            HistoryLoad::Scrollback(events, _) => {
+                let text: Vec<u8> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        omaterm_state::HistoryEvent::Output(bytes) => Some(bytes.clone()),
+                        omaterm_state::HistoryEvent::Resize { .. } => None,
+                    })
+                    .flatten()
+                    .collect();
+                let text = String::from_utf8_lossy(&text);
+                assert!(
+                    !text.contains("[1/3]"),
+                    "superseded frame dropped: {text:?}"
+                );
+                assert!(text.contains("[10/10] done"), "final frame kept: {text:?}");
+                assert!(
+                    text.contains("cargo build"),
+                    "committed output kept: {text:?}"
+                );
+            }
+            other => panic!("expected scrollback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_job_compacts_animation_run_end_to_end() {
+        let dir = tempfile_dir::TempDir::new();
+        let store = HistoryStore::new(
+            dir.path().join("history"),
+            HistoryLimits {
+                max_workspace_bytes: 16 * 1024 * 1024,
+                ..HistoryLimits::default()
+            },
+        );
+        let mut provider = InMemoryKeyProvider::new();
+        let key = provider.get_or_create_master_key().expect("key");
+        let pane = "e".repeat(32);
+        // mbx-style in-place animation: committed output, an initial draw,
+        // then rewind-led reframes with a changing counter.
+        let frame = |counter: &str| {
+            omaterm_state::HistoryEvent::Output(
+                format!("\x1b[2A\x1b[Jbox {counter} line1\r\nbox {counter} line2\r\n").into_bytes(),
+            )
+        };
+        let job = HistoryJob {
+            pane: pane.clone(),
+            pane_uuid: [11u8; 16],
+            revision: 1,
+            scrollback: vec![
+                omaterm_state::HistoryEvent::Output(b"cargo build foo\r\n".to_vec()),
+                omaterm_state::HistoryEvent::Output(b"box 0 line1\r\nbox 0 line2\r\n".to_vec()),
+                frame("1"),
+                frame("2"),
+                frame("3"),
+                frame("4"),
+                omaterm_state::HistoryEvent::Output(b"finished ok\r\n".to_vec()),
+            ],
+            journal: Vec::new(),
+            journal_seq: 0,
+            recorder_version: 1,
+            key,
+        };
+        let ack = save_job(&store, &job);
+        assert!(ack.ok, "compacted save succeeds");
+        match store.load_scrollback(&key, &pane).expect("load") {
+            HistoryLoad::Scrollback(events, _) => {
+                let text: Vec<u8> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        omaterm_state::HistoryEvent::Output(bytes) => Some(bytes.clone()),
+                        omaterm_state::HistoryEvent::Resize { .. } => None,
+                    })
+                    .flatten()
+                    .collect();
+                let text = String::from_utf8_lossy(&text);
+                assert!(text.contains("box 1 line1"), "first frame kept: {text:?}");
+                assert!(text.contains("box 4 line1"), "last frame kept: {text:?}");
+                assert!(!text.contains("box 2 line1"), "middle dropped: {text:?}");
+                assert!(!text.contains("box 3 line1"), "middle dropped: {text:?}");
+                assert!(text.contains("cargo build foo"), "prelude kept: {text:?}");
+                assert!(text.contains("finished ok"), "tail kept: {text:?}");
+            }
+            other => panic!("expected scrollback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_job_keeps_original_stream_when_verify_rejects() {
+        let dir = tempfile_dir::TempDir::new();
+        let store = HistoryStore::new(
+            dir.path().join("history"),
+            HistoryLimits {
+                max_workspace_bytes: 16 * 1024 * 1024,
+                ..HistoryLimits::default()
+            },
+        );
+        let mut provider = InMemoryKeyProvider::new();
+        let key = provider.get_or_create_master_key().expect("key");
+        let pane = "d".repeat(32);
+        // Varying widths: collapsing would drop live trailing junk, so the
+        // worker must persist the stream untouched.
+        let job = HistoryJob {
+            pane: pane.clone(),
+            pane_uuid: [10u8; 16],
+            revision: 1,
+            scrollback: vec![omaterm_state::HistoryEvent::Output(
+                b"build 100%\rdone\r\n".to_vec(),
+            )],
+            journal: Vec::new(),
+            journal_seq: 0,
+            recorder_version: 1,
+            key,
+        };
+        let ack = save_job(&store, &job);
+        assert!(ack.ok, "fallback save succeeds");
+        match store.load_scrollback(&key, &pane).expect("load") {
+            HistoryLoad::Scrollback(events, _) => {
+                assert_eq!(events, job.scrollback, "original bytes preserved");
+            }
+            other => panic!("expected scrollback, got {other:?}"),
+        }
     }
 }

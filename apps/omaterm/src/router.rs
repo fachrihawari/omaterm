@@ -29,6 +29,12 @@ use omaterm_terminal::{
 
 const MAX_PENDING_LAUNCHES: usize = 8;
 
+/// Rejection message when no async launch slot is free, shared by the
+/// pending-map gate and the spawn-queue backpressure below. The desktop
+/// restore path matches on this to backlog excess panes instead of failing
+/// them (a workspace may hold more panes than launch slots).
+pub const LAUNCH_QUEUE_FULL_MESSAGE: &str = "terminal launch queue is full";
+
 fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     #[cfg(unix)]
     {
@@ -1840,6 +1846,14 @@ impl CommandRouter {
         !self.pending.is_empty()
     }
 
+    /// Whether another async launch may be submitted without hitting the
+    /// bounded queue. The desktop restore path consults this before each
+    /// dispatch so excess panes wait in a backlog instead of failing.
+    #[must_use]
+    pub fn launch_slots_available(&self) -> bool {
+        self.pending.len() < MAX_PENDING_LAUNCHES
+    }
+
     pub fn has_pending_editor_operations(&self) -> bool {
         !self.pending_editors.is_empty()
     }
@@ -2350,7 +2364,7 @@ impl CommandRouter {
             effects: vec![],
         };
         if self.pending.len() >= MAX_PENDING_LAUNCHES {
-            return error(ErrorCode::RuntimeFailure, "terminal launch queue is full");
+            return error(ErrorCode::RuntimeFailure, LAUNCH_QUEUE_FULL_MESSAGE);
         }
         let mut config = TerminalConfig::new(self.coordinator.working_directory().clone());
         config.shell = self
@@ -8924,6 +8938,108 @@ mod tests {
         else {
             panic!("restore binds the session before publishing ordered effects");
         };
+
+        let closed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete {
+                project: project_id,
+            }),
+        );
+        assert!(matches!(
+            closed.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
+        for effect in closed.effects {
+            if let CommandEffect::SessionClosed(closed) = effect
+                && let Some(handle) = closed.handle
+            {
+                assert!(handle.lock().unwrap().shutdown());
+            }
+        }
+    }
+
+    #[test]
+    fn restore_wave_beyond_launch_capacity_reports_full_then_drains() {
+        // A workspace may hold more panes than async launch slots. The
+        // excess pane must report the shared queue-full message (so the
+        // desktop backlogs it) while its pane stays untouched, and a freed
+        // slot must admit it afterwards.
+        let directory = std::env::temp_dir();
+        let mut project_model =
+            Project::new(Some("restore-wave-test".into()), Some(directory.clone()));
+        let mut targets = Vec::new();
+        for _ in 0..=MAX_PENDING_LAUNCHES {
+            let pane = Pane::empty();
+            let pane_id = pane.id;
+            let tab = Tab::new(PaneTree::new(pane), pane_id).expect("restored tab");
+            let tab_id = tab.id;
+            project_model.add_tab(tab).expect("restored project tab");
+            targets.push((tab_id, pane_id));
+        }
+        let project_id = project_model.id;
+        let mut window = WorkspaceWindow::new();
+        window.add_project(project_model).expect("restored window");
+        let mut router = CommandRouter::new(WorkspaceCoordinator::new(directory.clone()));
+        router
+            .restore_window(window)
+            .expect("install restored window");
+
+        assert!(router.launch_slots_available());
+        for (index, (tab_id, pane_id)) in targets.iter().enumerate() {
+            let outcome = router.dispatch_async(
+                CommandContext::LocalUser,
+                OmaCommand::Terminal(TerminalCommand::RestorePane {
+                    project: project_id,
+                    tab: *tab_id,
+                    pane: *pane_id,
+                    directory: directory.clone(),
+                    shell: None,
+                }),
+            );
+            if index < MAX_PENDING_LAUNCHES {
+                assert!(
+                    matches!(
+                        outcome.result,
+                        CommandResult::Ok(CommandOutput::Pending { .. })
+                    ),
+                    "pane {index} takes a launch slot"
+                );
+            } else {
+                assert!(
+                    matches!(&outcome.result, CommandResult::Err(error) if error.message == LAUNCH_QUEUE_FULL_MESSAGE),
+                    "pane {index} reports a full queue instead of failing: {:?}",
+                    outcome.result
+                );
+            }
+        }
+        assert!(!router.launch_slots_available());
+
+        // Drain every real PTY spawn; freed slots admit the backlogged pane.
+        let start = std::time::Instant::now();
+        while router.has_pending_launches() {
+            for _ in router.poll_launches() {}
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "launch wave drains"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(router.launch_slots_available());
+        let (tab_id, pane_id) = targets[MAX_PENDING_LAUNCHES];
+        let outcome = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Terminal(TerminalCommand::RestorePane {
+                project: project_id,
+                tab: tab_id,
+                pane: pane_id,
+                directory: directory.clone(),
+                shell: None,
+            }),
+        );
+        assert!(matches!(
+            outcome.result,
+            CommandResult::Ok(CommandOutput::Unit)
+        ));
 
         let closed = router.dispatch(
             CommandContext::LocalUser,

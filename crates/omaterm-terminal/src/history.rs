@@ -14,6 +14,8 @@
 
 use std::collections::VecDeque;
 
+use crate::TerminalEngine;
+
 /// One recorded event. Mirrors the persistence framing so the terminal crate
 /// stays free of crypto dependencies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -485,6 +487,240 @@ fn collapse_blank_only_record(stripped: &mut Vec<RecordedEvent>) {
         return;
     }
     stripped.retain(|event| matches!(event, RecordedEvent::Resize { .. }));
+}
+
+/// Re-emit frame bound for compacted output: matches the recorder's
+/// `max_frame_bytes` so compacted archives obey the same per-event ceiling.
+const COMPACT_FRAME_BYTES: usize = 64 * 1024;
+
+/// Collapse transient single-line repaint spans (`\r` without `\n`).
+///
+/// A spinner or progress bar rewrites one logical line many times: `12%`,
+/// `\r`, `34%`, `\r`, … Only the final rendering survives on screen, so a
+/// span collapses to its last non-empty segment plus a trailing `\r` when
+/// the span ended with one (preserving the end-of-span cursor column).
+/// Newlines are never added or removed, resize events are barriers, and
+/// spans without `\r` pass through byte-identical.
+///
+/// This is a structural attempt, not a proof: varying-width runs (a short
+/// final frame over a longer earlier one) leave trailing junk live that
+/// collapsing drops. Callers must gate on [`replay_equivalent`], which
+/// rejects exactly those cases; the fallback keeps the original bytes.
+#[must_use]
+pub fn compact_repaint_runs(events: &[RecordedEvent]) -> Vec<RecordedEvent> {
+    let mut out: Vec<RecordedEvent> = Vec::with_capacity(events.len());
+    // One segment = maximal Output run between resizes. Fragmentation is
+    // arbitrary (PTY chunks split anywhere), so collapse on the flat bytes
+    // and re-chunk; `\n` positions are preserved exactly. Segments that need
+    // no change keep their original events verbatim.
+    let mut group: Vec<&RecordedEvent> = Vec::new();
+    let flush_group = |out: &mut Vec<RecordedEvent>, group: &mut Vec<&RecordedEvent>| {
+        if group.is_empty() {
+            return;
+        }
+        let flat: Vec<u8> = group
+            .iter()
+            .flat_map(|event| match event {
+                RecordedEvent::Output(bytes) => bytes.as_slice(),
+                RecordedEvent::Resize { .. } => &[][..],
+            })
+            .copied()
+            .collect();
+        let mut collapsed: Vec<u8> = Vec::with_capacity(flat.len());
+        collapse_segment_lines(&flat, &mut collapsed);
+        if collapsed == flat {
+            out.extend(group.iter().map(|event| (*event).clone()));
+        } else {
+            for piece in collapsed.chunks(COMPACT_FRAME_BYTES) {
+                if !piece.is_empty() {
+                    out.push(RecordedEvent::Output(piece.to_vec()));
+                }
+            }
+        }
+        group.clear();
+    };
+    for event in events {
+        match event {
+            RecordedEvent::Output(_) => group.push(event),
+            resize @ RecordedEvent::Resize { .. } => {
+                flush_group(&mut out, &mut group);
+                out.push(resize.clone());
+            }
+        }
+    }
+    flush_group(&mut out, &mut group);
+    out
+}
+
+/// Byte length of the escape at `start` (which must hold `ESC`), or `None`
+/// when truncated. Mirrors [`skip_escape_sequence`] but stays total so the
+/// frame scanner can walk arbitrary output.
+fn escape_byte_len(bytes: &[u8], start: usize) -> Option<usize> {
+    skip_escape_sequence(bytes, start).map(|past| past - start)
+}
+
+/// Byte length of a vertical-rewind escape starting at `start`, or `None`.
+/// Frame rewinds move the write position back over already-drawn rows: CUU
+/// (`CSI n A`), CUP (`CSI r ; c H` / `f`, including bare home), or RI
+/// (`ESC M`, line down-up scroll). Anything else — SGR, modes, erases,
+/// OSC — is not a rewind.
+fn rewind_escape_len(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&0x1b) {
+        return None;
+    }
+    match bytes.get(start + 1) {
+        Some(b'M') => Some(2),
+        Some(b'[') => {
+            let mut i = start + 2;
+            while matches!(bytes.get(i), Some(0x30..=0x3f)) {
+                i += 1;
+            }
+            while matches!(bytes.get(i), Some(0x20..=0x2f)) {
+                i += 1;
+            }
+            match bytes.get(i) {
+                Some(b'A' | b'H' | b'f') => Some(i + 1 - start),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Collapse a multi-frame in-place animation run to its first and last
+/// frames.
+///
+/// An animated redraw (mbx's build box: `CUU 27`, erase-below, full block
+/// redraw, ×227) stores every intermediate frame although each frame after
+/// the first starts by rewinding over — and erasing — the previous one.
+/// Splitting the flat segment at top-level rewind escapes yields the
+/// prelude plus one piece per frame; keeping the prelude, the first frame
+/// (establishes the draw position) and the last frame (final content)
+/// replays the same trajectory endpoints, so the visible grid rebuilds
+/// identically with a fraction of the scrolled garbage.
+///
+/// Returns `None` when there is no run (fewer than three frames): the
+/// caller then keeps the original events verbatim. Soundness of an applied
+/// collapse is proven per snapshot by [`replay_equivalent`] in the worker,
+/// which persists the original stream on any mismatch.
+fn collapse_rewind_run(segment: &[u8]) -> Option<Vec<u8>> {
+    // Frame starts: top-level rewind escapes. Other escapes are skipped
+    // wholesale so their interiors (OSC strings, SGR params) can never
+    // fake a frame boundary; `ESC` itself never occurs inside UTF-8 data.
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i < segment.len() {
+        if segment[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        if let Some(len) = rewind_escape_len(segment, i) {
+            starts.push(i);
+            i += len;
+            continue;
+        }
+        // Truncated escape at the tail (torn PTY read): give up on
+        // this segment rather than mis-splitting it.
+        i += escape_byte_len(segment, i)?;
+    }
+    if starts.len() < 3 {
+        return None;
+    }
+    // Every fully-spanned reframed piece must redraw rows (hold a
+    // newline): this keeps degenerate runs out (bare cursor pulses with no
+    // redraw, whose drop would only waste a verification cycle before
+    // fallback). The open-ended last piece is exempt: a save may land
+    // mid-animation with no trailing newline yet.
+    for window in starts.windows(2) {
+        if !segment[window[0]..window[1]].contains(&b'\n') {
+            return None;
+        }
+    }
+    let mut compacted = Vec::with_capacity(segment.len());
+    compacted.extend_from_slice(&segment[..starts[1]]);
+    compacted.extend_from_slice(&segment[starts[starts.len() - 1]..]);
+    Some(compacted)
+}
+
+/// Collapse one Output-only segment line by line into `pending`.
+/// Rewind-led animation runs go first (they span lines), then single-line
+/// `\r` spans within the surviving bytes.
+fn collapse_segment_lines(segment: &[u8], pending: &mut Vec<u8>) {
+    let rerun: Vec<u8>;
+    let flat = match collapse_rewind_run(segment) {
+        Some(compacted) => {
+            rerun = compacted;
+            &rerun
+        }
+        None => segment,
+    };
+    let mut start = 0;
+    for (index, byte) in flat.iter().enumerate() {
+        if *byte != b'\n' {
+            continue;
+        }
+        collapse_line_span(&flat[start..index], pending);
+        pending.push(b'\n');
+        start = index + 1;
+    }
+    // Trailing partial span (an idle prompt tail or torn bytes): collapse
+    // the same way. Restore-time stripping still applies afterwards.
+    collapse_line_span(&flat[start..], pending);
+}
+
+/// Collapse one newline-free span. Spans without `\r` are literal output
+/// and pass through untouched. Otherwise the span is one logical line
+/// rewritten in place: it collapses to its final segment only when no
+/// earlier segment is longer (a longer predecessor would leave trailing
+/// junk live that collapsing drops). A trailing empty segment only homes
+/// the cursor and is preserved as one `\r`.
+fn collapse_line_span(span: &[u8], pending: &mut Vec<u8>) {
+    if !span.contains(&b'\r') {
+        pending.extend_from_slice(span);
+        return;
+    }
+    let mut segments: Vec<&[u8]> = span.split(|b| *b == b'\r').collect();
+    let ended_with_cr = segments.last().is_some_and(|last| last.is_empty());
+    if ended_with_cr {
+        segments.pop();
+    }
+    let Some(content) = segments.last() else {
+        pending.extend_from_slice(span);
+        return;
+    };
+    if segments.iter().any(|segment| segment.len() > content.len()) {
+        // Varying widths: the live line keeps trailing junk from the
+        // longer frame. Keep the span; verification would reject the loss.
+        pending.extend_from_slice(span);
+        return;
+    }
+    pending.extend_from_slice(content);
+    if ended_with_cr {
+        pending.push(b'\r');
+    }
+}
+
+/// Whether two event streams rebuild the same visible terminal state.
+///
+/// Replays both into fresh engines and compares the visible grid (cells
+/// carry text, colors and flags), cursor, dimensions and alt-screen state.
+/// Scrollback intentionally differs after compaction (superseded frames no
+/// longer scroll), so `history_size` is excluded. The persistence worker
+/// saves the compacted stream only on success; any doubt keeps the
+/// original bytes, so the worst case is today's behavior.
+#[must_use]
+pub fn replay_equivalent(first: &[RecordedEvent], second: &[RecordedEvent]) -> bool {
+    fn viewport_of(events: &[RecordedEvent]) -> crate::TerminalViewport {
+        let mut engine = crate::AlacrittyEngine::new(80, 24);
+        replay_into(&mut engine, events);
+        engine.viewport()
+    }
+    let (a, b) = (viewport_of(first), viewport_of(second));
+    a.rows == b.rows
+        && a.cursor == b.cursor
+        && a.cols == b.cols
+        && a.lines == b.lines
+        && a.is_alt_screen == b.is_alt_screen
 }
 
 /// Replay ordered events into a fresh engine. The caller creates the engine
@@ -1209,5 +1445,246 @@ mod tests {
         engine.advance_output(&later);
         let visible = engine.read_visible_text(24, 80);
         assert!(visible.contains("after"), "{visible}");
+    }
+
+    fn flat_output(events: &[RecordedEvent]) -> Vec<u8> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                RecordedEvent::Output(bytes) => Some(bytes.clone()),
+                RecordedEvent::Resize { .. } => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn compact_spinner_run_collapses_to_final_line() {
+        let events = vec![
+            output(b"[1/3]\r"),
+            output(b"[2/3]\r"),
+            output(b"[10/10] done\r\n"),
+        ];
+        let compacted = compact_repaint_runs(&events);
+        assert_eq!(compacted, vec![output(b"[10/10] done\r\n")]);
+        assert!(
+            replay_equivalent(&events, &compacted),
+            "fixed-width spinner replays identically"
+        );
+    }
+
+    #[test]
+    fn compact_varying_width_run_keeps_original_bytes() {
+        // A short final frame over a longer earlier one leaves trailing
+        // junk live (`done d 100%`); collapsing would drop it, so the rule
+        // keeps the span and the caller persists it as-is.
+        let events = vec![output(b"build 100%\r"), output(b"done\r\n")];
+        assert_eq!(compact_repaint_runs(&events), events);
+        // And the verification gate rejects exactly this lossy shape when
+        // handed one: a hand-collapsed stream is not equivalent.
+        let lossy = vec![output(b"done\r\n")];
+        assert!(
+            !replay_equivalent(&events, &lossy),
+            "verify must reject the lossy collapse"
+        );
+    }
+
+    #[test]
+    fn compact_leaves_plain_output_untouched() {
+        let events = vec![
+            output(b"line one\r\n"),
+            output(b"line two\r\n"),
+            output("❯ ".as_bytes()),
+        ];
+        assert_eq!(compact_repaint_runs(&events), events);
+        assert!(replay_equivalent(&events, &events));
+    }
+
+    #[test]
+    fn compact_treats_resizes_as_barriers() {
+        let events = vec![output(b"1%\r2%\r"), resize(80, 24), output(b"3%\r4%\r")];
+        assert_eq!(
+            compact_repaint_runs(&events),
+            vec![output(b"2%\r"), resize(80, 24), output(b"4%\r")]
+        );
+    }
+
+    #[test]
+    fn compact_preserves_newline_positions_and_handles_fragments() {
+        // PTY chunks split anywhere: the same logical stream fragmented
+        // differently must collapse identically, with `\n` counts intact.
+        let whole = vec![output(b"a 10%\ra 20%\r\ndone\r\n")];
+        let fragmented = vec![
+            output(b"a 10"),
+            output(b"%\ra"),
+            output(b" 20%\r\ndo"),
+            output(b"ne\r\n"),
+        ];
+        let from_whole = compact_repaint_runs(&whole);
+        let from_fragments = compact_repaint_runs(&fragmented);
+        assert_eq!(from_whole, from_fragments);
+        assert_eq!(from_whole, vec![output(b"a 20%\r\ndone\r\n")]);
+        let before: usize = flat_output(&whole).iter().filter(|b| **b == b'\n').count();
+        let after: usize = flat_output(&from_whole)
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count();
+        assert_eq!(before, after, "newlines are never added or removed");
+        assert!(replay_equivalent(&whole, &from_whole));
+    }
+
+    #[test]
+    fn compact_empty_stays_empty() {
+        assert!(compact_repaint_runs(&[]).is_empty());
+    }
+
+    #[test]
+    fn replay_equivalent_rejects_different_output() {
+        let first = vec![output(b"hello\r\n")];
+        let second = vec![output(b"bye\r\n")];
+        assert!(!replay_equivalent(&first, &second));
+    }
+
+    /// One mbx-style animation frame: rewind, erase-below, full redraw
+    /// with a changing counter (mirrors the captured `CUU 27` + `ED`
+    /// pattern at small scale).
+    fn anim_frame(counter: &str) -> Vec<u8> {
+        format!("\x1b[2A\x1b[Jbox {counter} line1\r\nbox {counter} line2\r\n").into_bytes()
+    }
+
+    #[test]
+    fn compact_rewind_run_keeps_first_and_last_frames() {
+        let mut events = vec![
+            output(b"cargo build foo\r\n"),
+            output(b"box 0 line1\r\nbox 0 line2\r\n"),
+        ];
+        for counter in ["1", "2", "3", "4"] {
+            events.push(output(&anim_frame(counter)));
+        }
+        events.push(output(b"finished ok\r\n"));
+        let compacted = compact_repaint_runs(&events);
+        let flat = flat_output(&compacted);
+        let text = String::from_utf8_lossy(&flat);
+        assert!(text.contains("box 1 line1"), "first frame kept: {text:?}");
+        assert!(text.contains("box 4 line1"), "last frame kept: {text:?}");
+        assert!(!text.contains("box 2 line1"), "middle dropped: {text:?}");
+        assert!(!text.contains("box 3 line1"), "middle dropped: {text:?}");
+        assert!(text.contains("cargo build foo"), "prelude kept: {text:?}");
+        assert!(text.contains("finished ok"), "tail kept: {text:?}");
+        assert!(
+            replay_equivalent(&events, &compacted),
+            "same visible grid after collapse"
+        );
+        assert_eq!(
+            compact_repaint_runs(&compacted),
+            compacted,
+            "compaction is idempotent: re-saving a compacted stream changes nothing"
+        );
+    }
+
+    #[test]
+    fn compact_rewind_run_dedupes_scrolled_copies() {
+        // The mbx scenario: a block taller than the grid, so every frame
+        // scrolls. Full replay stacks one copy per frame in scrollback;
+        // the collapsed replay must show the same viewport with a
+        // fraction of the scrolled copies.
+        let mut block = b"cargo build foo\r\n".to_vec();
+        block.extend_from_slice(b"block line 00\r\n");
+        for frame in 0..10 {
+            block.extend_from_slice(
+                format!(
+                    "\x1b[27A\x1b[J{}",
+                    (0..27)
+                        .map(|row| format!("frame {frame} row {row:02}\r\n"))
+                        .collect::<String>()
+                )
+                .as_bytes(),
+            );
+        }
+        block.extend_from_slice(b"finished ok\r\n");
+        let events = vec![output(&block)];
+        let compacted = compact_repaint_runs(&events);
+        for rows in [10u16, 40u16] {
+            let mut full = AlacrittyEngine::new(80, rows);
+            replay_into(&mut full, &events);
+            let mut slim = AlacrittyEngine::new(80, rows);
+            replay_into(&mut slim, &compacted);
+            assert_eq!(
+                full.read_visible_text(80, 400),
+                slim.read_visible_text(80, 400),
+                "same viewport at {rows} rows"
+            );
+            let full_dump = full.scrollback_text(10000);
+            let slim_dump = slim.scrollback_text(10000);
+            let full_copies = full_dump
+                .iter()
+                .filter(|line| line.contains(" row "))
+                .count();
+            let slim_copies = slim_dump
+                .iter()
+                .filter(|line| line.contains(" row "))
+                .count();
+            if rows == 10 {
+                assert!(
+                    full_copies > 10,
+                    "baseline really duplicates: {full_copies}"
+                );
+                assert!(
+                    slim_copies * 4 <= full_copies,
+                    "garbage collapses: {slim_copies} vs {full_copies}"
+                );
+            } else {
+                // Nothing scrolls on a tall grid: the collapsed replay must
+                // rebuild the scrollback byte-for-byte, not just the viewport.
+                assert_eq!(full_dump, slim_dump, "identical scrollback at {rows} rows");
+            }
+            assert!(
+                slim_copies <= full_copies,
+                "never more copies: {slim_copies} vs {full_copies}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_rewind_run_requires_three_frames() {
+        // Prelude + initial draw + two reframes: no run, verbatim.
+        let events = vec![
+            output(b"cmd\r\n"),
+            output(b"draw line1\r\ndraw line2\r\n"),
+            output(&anim_frame("1")),
+            output(&anim_frame("2")),
+        ];
+        assert_eq!(compact_repaint_runs(&events), events);
+    }
+
+    #[test]
+    fn compact_lone_rewind_passes_through() {
+        let events = vec![output(b"a\x1b[Ab\r\n"), output(b"plain\r\n")];
+        assert_eq!(compact_repaint_runs(&events), events);
+    }
+
+    #[test]
+    fn compact_rewind_run_stops_at_resize() {
+        // A resize barrier splits the run into two two-frame groups:
+        // neither collapses.
+        let events = vec![
+            output(b"draw\r\n"),
+            output(&anim_frame("1")),
+            resize(100, 30),
+            output(&anim_frame("2")),
+            output(&anim_frame("3")),
+        ];
+        assert_eq!(compact_repaint_runs(&events), events);
+    }
+
+    #[test]
+    fn compact_motionless_recolor_passes_through() {
+        // SGR-only restyling with no rewind is not a repaint run.
+        let events = vec![
+            output(b"\x1b[31mred\r\n"),
+            output(b"\x1b[32mgreen\r\n"),
+            output(b"\x1b[34mblue\r\n"),
+        ];
+        assert_eq!(compact_repaint_runs(&events), events);
     }
 }
