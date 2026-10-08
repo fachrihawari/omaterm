@@ -114,6 +114,9 @@ struct WorkspaceView {
     /// installed; otherwise the built-in preference stack wins and a warning
     /// names the missing family once.
     font_family: Option<String>,
+    /// Saved Windows shell id: `powershell`, `cmd`, or `git-bash`.
+    #[cfg(windows)]
+    shell_id: &'static str,
     spawn_failure: Option<(String, SpawnRetry)>,
     persistence_store: Option<SnapshotStore>,
     persistence_writer: Option<SnapshotWriter>,
@@ -124,6 +127,8 @@ struct WorkspaceView {
     config_warning: Option<String>,
     save_revision: u64,
     observed_cwds: HashMap<PaneId, PersistedCwd>,
+    /// Shell program saved with each pane, used if a restored launch is retried.
+    restored_shells: HashMap<PaneId, String>,
     restored_failures: HashMap<PaneId, (omaterm_core::ProjectId, omaterm_core::TabId, String)>,
     pending_ui_launches: HashMap<u64, PendingUiLaunch>,
     /// Identity/root/epoch captured when a native file open is dispatched
@@ -2241,6 +2246,27 @@ impl WorkspaceView {
         }
     }
 
+    /// Saved shell, or PowerShell when nothing is saved. A missing Git Bash
+    /// install falls back to PowerShell and explains why.
+    #[cfg(windows)]
+    fn windows_startup_shell(
+        choice: Option<&str>,
+    ) -> (&'static str, Option<String>, Option<String>) {
+        match omaterm_terminal::resolve_windows_shell(choice) {
+            Ok(shell) => (shell.id, Some(shell.program), None),
+            Err(omaterm_terminal::ShellResolveError::GitBashNotFound) => {
+                let fallback = omaterm_terminal::WindowsShell::Powershell
+                    .resolve()
+                    .expect("powershell needs no install");
+                (
+                    fallback.id,
+                    Some(fallback.program),
+                    Some("Config: Git Bash was not found; new terminals use PowerShell".into()),
+                )
+            }
+        }
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let metrics_started = Instant::now();
         let metrics_path = metrics::MetricsRecorder::output_path();
@@ -2254,9 +2280,22 @@ impl WorkspaceView {
             .map(|store| SnapshotWriter::new(store.clone()));
         // General config (11D): malformed files and invalid values warn and
         // fall back to defaults; unknown sections are never touched.
+        #[cfg(windows)]
+        let (app_config, mut config_warning) = Self::startup_config();
+        #[cfg(not(windows))]
         let (app_config, config_warning) = Self::startup_config();
         let mut coordinator = WorkspaceCoordinator::new(working_directory);
         coordinator.set_scrollback_lines(app_config.resolved_scrollback_lines());
+        #[cfg(windows)]
+        let shell_id = {
+            let (shell_id, program, warning) =
+                Self::windows_startup_shell(app_config.terminal.shell.as_deref());
+            coordinator.set_preferred_shell(program);
+            if config_warning.is_none() {
+                config_warning = warning;
+            }
+            shell_id
+        };
         // Background directory-fetch channel for lazy tree loading;
         // completions are generation-guarded in the files poller.
         let (files_fetch_tx, files_fetch_rx) = std::sync::mpsc::channel();
@@ -2299,6 +2338,8 @@ impl WorkspaceView {
             fonts: None,
             font_size: app_config.resolved_font_size(),
             font_family: app_config.terminal.font_family.clone(),
+            #[cfg(windows)]
+            shell_id,
             spawn_failure: None,
             persistence_store: store,
             persistence_writer,
@@ -2309,6 +2350,7 @@ impl WorkspaceView {
             config_warning,
             save_revision: 0,
             observed_cwds: HashMap::new(),
+            restored_shells: HashMap::new(),
             restored_failures: HashMap::new(),
             pending_ui_launches: HashMap::new(),
             pending_native_opens: HashMap::new(),
@@ -2702,7 +2744,9 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         let pane_cwds: HashMap<PaneId, PersistedCwd> = restored.pane_cwds.into_iter().collect();
+        let pane_shells: HashMap<PaneId, String> = restored.pane_shells.into_iter().collect();
         self.observed_cwds = pane_cwds.clone();
+        self.restored_shells = pane_shells;
         self.files_panel.restore(restored.expanded_dirs);
         // Force the watcher to re-arm on the restored selection.
         self.files_watcher = None;
@@ -2755,12 +2799,14 @@ impl WorkspaceView {
                     history::RestoreOutcome::Disabled | history::RestoreOutcome::Missing => {}
                 }
             }
+            let shell = self.launch_shell(pane);
             match self.dispatch_command(
                 OmaCommand::Terminal(TerminalCommand::RestorePane {
                     project,
                     tab,
                     pane,
                     directory: cwd,
+                    shell,
                 }),
                 cx,
             ) {
@@ -2868,7 +2914,30 @@ impl WorkspaceView {
             &self.current_cwds(),
             &self.files_panel.expanded_snapshot(),
             &registries,
+            &self.current_shells(),
         )
+    }
+
+    fn current_shells(&self) -> HashMap<PaneId, String> {
+        let mut shells = HashMap::new();
+        for project in self.coordinator.projects() {
+            for tab in &project.tabs {
+                for pane in tab.tree.panes() {
+                    let PaneContent::Terminal(session_id) = pane.content else {
+                        continue;
+                    };
+                    if let Some(handle) = self.coordinator.registry().get(session_id)
+                        && let Ok(session) = handle.lock()
+                    {
+                        let program = session.shell_program();
+                        if !program.is_empty() {
+                            shells.insert(pane.id, program.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        shells
     }
 
     fn current_cwds(&self) -> HashMap<PaneId, PersistedCwd> {
@@ -3222,12 +3291,14 @@ impl WorkspaceView {
             .get(&pane)
             .map(|cwd| cwd.path.clone())
             .unwrap_or_default();
+        let shell = self.launch_shell(pane);
         match self.dispatch_command(
             OmaCommand::Terminal(TerminalCommand::RestorePane {
                 project,
                 tab,
                 pane,
                 directory: cwd,
+                shell,
             }),
             cx,
         ) {
@@ -9584,6 +9655,120 @@ impl WorkspaceView {
         }
     }
 
+    /// Remember the shell. Open a new tab when the selected project has no
+    /// live terminal of that shell, including after the previous one was closed.
+    #[cfg(windows)]
+    fn choose_shell(&mut self, shell_id: &str, cx: &mut Context<Self>) {
+        let Some(shell) = omaterm_terminal::WindowsShell::parse(shell_id) else {
+            self.push_toast("Unknown shell".into(), ToastKind::Error, cx);
+            return;
+        };
+        let resolved = match shell.resolve() {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.push_toast(error.to_string(), ToastKind::Error, cx);
+                return;
+            }
+        };
+        let program = resolved.program.clone();
+        self.shell_id = resolved.id;
+        self.coordinator.set_preferred_shell(Some(program.clone()));
+        let saved = omaterm_state::default_config_toml_path()
+            .ok_or_else(|| "no config directory".to_string())
+            .and_then(|path| {
+                omaterm_state::save_terminal_shell(&path, resolved.id)
+                    .map_err(|error| error.to_string())
+            });
+        let project = self.coordinator.selected_project_id();
+        let live = project
+            .map(|project| self.live_shell_programs(project))
+            .unwrap_or_default();
+        let open_tab = project.is_some()
+            && omaterm_terminal::shell_tab_needed(live.iter().map(String::as_str), &program);
+        if open_tab
+            && let Some(project) = project
+            && let Err(error) = self.dispatch_command(
+                OmaCommand::Terminal(TerminalCommand::Create {
+                    project,
+                    directory: None,
+                }),
+                cx,
+            )
+        {
+            self.push_toast(
+                format!("Could not open a {} terminal: {error}", shell.label()),
+                ToastKind::Error,
+                cx,
+            );
+            return;
+        }
+        self.input_notice = None;
+        let (message, kind) = match (saved, open_tab) {
+            (Err(error), _) => (
+                format!(
+                    "New terminals use {} for this session, but the choice could not be saved ({error})",
+                    shell.label()
+                ),
+                ToastKind::Error,
+            ),
+            (Ok(()), true) => (
+                format!(
+                    "New terminals use {}. Terminals already open stay as they are",
+                    shell.label()
+                ),
+                ToastKind::Success,
+            ),
+            (Ok(()), false) => (
+                format!("New terminals use {}", shell.label()),
+                ToastKind::Success,
+            ),
+        };
+        self.push_toast(message, kind, cx);
+    }
+
+    #[cfg(windows)]
+    fn live_shell_programs(&self, project: omaterm_core::ProjectId) -> Vec<String> {
+        let Some(owner) = self.coordinator.window().project(project) else {
+            return Vec::new();
+        };
+        let mut programs = Vec::new();
+        for tab in &owner.tabs {
+            for pane in tab.tree.panes() {
+                let PaneContent::Terminal(session_id) = pane.content else {
+                    continue;
+                };
+                let Some(handle) = self.coordinator.registry().get(session_id) else {
+                    continue;
+                };
+                let Ok(session) = handle.lock() else {
+                    continue;
+                };
+                if session.exited().is_some() {
+                    continue;
+                }
+                let program = session.shell_program();
+                if !program.is_empty() {
+                    programs.push(program.to_string());
+                }
+            }
+        }
+        programs
+    }
+
+    fn launch_shell(&mut self, pane: PaneId) -> Option<String> {
+        let saved = self.restored_shells.get(&pane)?.clone();
+        if omaterm_terminal::shell_program_usable(&saved) {
+            Some(saved)
+        } else {
+            self.persistence_warning.get_or_insert_with(|| {
+                format!(
+                    "Saved shell {saved} is not available. That terminal opened with the current default shell."
+                )
+            });
+            None
+        }
+    }
+
     fn open_palette(&mut self, command_mode: bool, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
@@ -9640,6 +9825,31 @@ impl WorkspaceView {
         let active_pane = self.coordinator.focused();
 
         if command_mode {
+            #[cfg(windows)]
+            {
+                for shell in omaterm_terminal::WindowsShell::ALL {
+                    let aliases: &[&str] = match shell {
+                        omaterm_terminal::WindowsShell::Powershell => &["powershell", "pwsh"],
+                        omaterm_terminal::WindowsShell::Cmd => &["cmd", "command prompt"],
+                        omaterm_terminal::WindowsShell::GitBash => &["git bash", "bash"],
+                    };
+                    let current = shell.id() == self.shell_id;
+                    add(palette::PaletteCandidate {
+                        key: format!("command.shell.{}", shell.id()),
+                        label: format!("Use {}", shell.label()),
+                        detail: if current {
+                            "Shell · current".into()
+                        } else {
+                            "Shell".into()
+                        },
+                        aliases: aliases.iter().copied().map(str::to_string).collect(),
+                        kind: Kind::Command,
+                        target: palette::PaletteTarget::Shell(shell.id().into()),
+                        file_root: None,
+                        mru_rank: None,
+                    });
+                }
+            }
             let mut command = |key: &str, label: &str, aliases: &[&str], value: OmaCommand| {
                 add(palette::semantic_candidate(
                     key,
@@ -10154,6 +10364,13 @@ impl WorkspaceView {
             return;
         }
         let outcome = match entry.target.clone() {
+            palette::PaletteTarget::Shell(shell_id) => {
+                #[cfg(windows)]
+                self.choose_shell(&shell_id, cx);
+                #[cfg(not(windows))]
+                let _ = shell_id;
+                None
+            }
             palette::PaletteTarget::ViewAction => {
                 // View-local overlay transition: no core command, no effects.
                 // The palette closes first (origin restored), then the

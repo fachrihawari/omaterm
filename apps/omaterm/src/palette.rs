@@ -44,6 +44,8 @@ pub enum PaletteTarget {
         path: PathBuf,
         staged: bool,
     },
+    /// Windows shell choice. The id is `powershell`, `cmd`, or `git-bash`.
+    Shell(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

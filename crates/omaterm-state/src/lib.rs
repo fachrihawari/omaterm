@@ -6,8 +6,9 @@ mod snapshot;
 mod store;
 
 pub use config::{
-    AppConfig, AppearanceSettings, AutomationSettings, DEFAULT_FONT_SIZE, KNOWN_THEMES,
-    MAX_SCROLLBACK_LINES, TerminalSettings, load_app_config_toml,
+    AppConfig, AppearanceSettings, AutomationSettings, DEFAULT_FONT_SIZE, KNOWN_SHELLS,
+    KNOWN_THEMES, MAX_SCROLLBACK_LINES, TerminalSettings, load_app_config_toml,
+    save_terminal_shell,
 };
 
 pub use history::{

@@ -30,6 +30,9 @@ pub enum PaneNodeSnapshot {
         id: String,
         working_directory: PathBuf,
         cwd_provenance: CwdProvenance,
+        /// Shell program this pane last launched. Missing on older files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
     },
     Split {
         id: String,
@@ -139,7 +142,13 @@ impl WorkspaceSnapshot {
         pane_cwds: &HashMap<PaneId, PersistedCwd>,
         expanded: &HashMap<ProjectId, Vec<PathBuf>>,
     ) -> Self {
-        Self::capture_with_expanded_and_documents(window, pane_cwds, expanded, &HashMap::new())
+        Self::capture_with_expanded_and_documents(
+            window,
+            pane_cwds,
+            expanded,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
     }
 
     /// Capture terminal workspace state together with bounded, metadata-only
@@ -149,6 +158,7 @@ impl WorkspaceSnapshot {
         pane_cwds: &HashMap<PaneId, PersistedCwd>,
         expanded: &HashMap<ProjectId, Vec<PathBuf>>,
         document_registries: &HashMap<ProjectId, DocumentRegistry>,
+        pane_shells: &HashMap<PaneId, String>,
     ) -> Self {
         let limits = SnapshotLimits::default();
         let mut remaining_documents = limits.max_documents;
@@ -210,6 +220,7 @@ impl WorkspaceSnapshot {
                                     .root()
                                     .expect("validated tabs always contain a pane"),
                                 pane_cwds,
+                                pane_shells,
                             ),
                         })
                         .collect(),
@@ -291,8 +302,17 @@ impl WorkspaceSnapshot {
                 let tab_id = TabId(parse_uuid(&tab.id, &mut ids)?);
                 let focused = reference(&tab.focused_pane).map(PaneId)?;
                 let mut cwd = Vec::new();
+                let mut shells = Vec::new();
                 let mut count = 0;
-                let root = convert_node(&tab.root, 1, &mut count, limits, &mut ids, &mut cwd)?;
+                let root = convert_node(
+                    &tab.root,
+                    1,
+                    &mut count,
+                    limits,
+                    &mut ids,
+                    &mut cwd,
+                    &mut shells,
+                )?;
                 let tree = PaneTree::from_root(root)
                     .map_err(|error| SnapshotError::Invalid(error.to_string()))?;
                 let tab = Tab {
@@ -304,7 +324,7 @@ impl WorkspaceSnapshot {
                 if tab.tree.find(focused).is_none() {
                     return Err(SnapshotError::Invalid("focused pane does not exist".into()));
                 }
-                tabs.push((tab, cwd));
+                tabs.push((tab, cwd, shells));
             }
             let selected_tab = project
                 .selected_tab
@@ -316,7 +336,7 @@ impl WorkspaceSnapshot {
                 id: project_id,
                 custom_name: project.custom_name.clone(),
                 pinned_directory: project.pinned_directory.clone(),
-                tabs: tabs.iter().map(|(tab, _)| tab.clone()).collect(),
+                tabs: tabs.iter().map(|(tab, _, _)| tab.clone()).collect(),
                 selected_tab,
             };
             core_project
@@ -324,8 +344,11 @@ impl WorkspaceSnapshot {
                 .map_err(|error| SnapshotError::Invalid(error.to_string()))?;
             projects.push((
                 core_project,
+                tabs.iter()
+                    .flat_map(|(_, cwd, _)| cwd.clone())
+                    .collect::<Vec<_>>(),
                 tabs.into_iter()
-                    .flat_map(|(_, cwd)| cwd)
+                    .flat_map(|(_, _, shells)| shells)
                     .collect::<Vec<_>>(),
                 expanded_dirs,
                 documents,
@@ -341,7 +364,7 @@ impl WorkspaceSnapshot {
             id: window_id,
             projects: projects
                 .iter()
-                .map(|(project, _, _, _)| project.clone())
+                .map(|(project, _, _, _, _)| project.clone())
                 .collect(),
             selected_project,
         };
@@ -359,17 +382,20 @@ impl WorkspaceSnapshot {
         }
         let mut expanded_out = Vec::with_capacity(projects.len());
         let mut document_registries = Vec::with_capacity(projects.len());
+        let mut pane_shells = Vec::new();
         let pane_cwds = projects
             .into_iter()
-            .flat_map(|(project, cwds, expanded, documents)| {
+            .flat_map(|(project, cwds, shells, expanded, documents)| {
                 expanded_out.push((project.id, expanded));
                 document_registries.push((project.id, documents));
+                pane_shells.extend(shells);
                 cwds
             })
             .collect();
         Ok(ValidatedSnapshot {
             window: core_window,
             pane_cwds,
+            pane_shells,
             expanded_dirs: expanded_out,
             document_registries,
         })
@@ -461,17 +487,26 @@ fn check_document_path(path: &[u8], limits: SnapshotLimits) -> Result<(), Snapsh
     Ok(())
 }
 
-fn capture_node(node: &PaneNode, cwds: &HashMap<PaneId, PersistedCwd>) -> PaneNodeSnapshot {
+fn capture_node(
+    node: &PaneNode,
+    cwds: &HashMap<PaneId, PersistedCwd>,
+    shells: &HashMap<PaneId, String>,
+) -> PaneNodeSnapshot {
     match node {
         PaneNode::Pane(pane) => {
             let cwd = cwds.get(&pane.id).cloned().unwrap_or_else(|| PersistedCwd {
                 path: PathBuf::new(),
                 provenance: CwdProvenance::Launch,
             });
+            let shell = shells
+                .get(&pane.id)
+                .filter(|program| !program.is_empty())
+                .cloned();
             PaneNodeSnapshot::Pane {
                 id: pane.id.0.to_string(),
                 working_directory: cwd.path,
                 cwd_provenance: cwd.provenance,
+                shell,
             }
         }
         PaneNode::Split {
@@ -487,8 +522,8 @@ fn capture_node(node: &PaneNode, cwds: &HashMap<PaneId, PersistedCwd>) -> PaneNo
                 SplitAxis::Vertical => SplitAxisSnapshot::Vertical,
             },
             fraction: *fraction,
-            first: Box::new(capture_node(first, cwds)),
-            second: Box::new(capture_node(second, cwds)),
+            first: Box::new(capture_node(first, cwds, shells)),
+            second: Box::new(capture_node(second, cwds, shells)),
         },
     }
 }
@@ -500,6 +535,7 @@ fn convert_node(
     limits: SnapshotLimits,
     ids: &mut HashSet<Uuid>,
     cwds: &mut Vec<(PaneId, PersistedCwd)>,
+    shells: &mut Vec<(PaneId, String)>,
 ) -> Result<PaneNode, SnapshotError> {
     *count += 1;
     if depth > limits.max_tree_depth || *count > limits.max_nodes_per_tree {
@@ -510,9 +546,14 @@ fn convert_node(
             id,
             working_directory,
             cwd_provenance,
+            shell,
         } => {
             check_path(Some(working_directory), limits)?;
             let id = PaneId(parse_uuid(id, ids)?);
+            if let Some(program) = shell.as_deref().filter(|program| !program.is_empty()) {
+                check_shell(program, limits)?;
+                shells.push((id, program.to_string()));
+            }
             if !working_directory.is_absolute() {
                 return Err(SnapshotError::Invalid(
                     "working directory must be absolute".into(),
@@ -550,8 +591,24 @@ fn convert_node(
                     SplitAxisSnapshot::Vertical => SplitAxis::Vertical,
                 },
                 fraction: *fraction,
-                first: Box::new(convert_node(first, depth + 1, count, limits, ids, cwds)?),
-                second: Box::new(convert_node(second, depth + 1, count, limits, ids, cwds)?),
+                first: Box::new(convert_node(
+                    first,
+                    depth + 1,
+                    count,
+                    limits,
+                    ids,
+                    cwds,
+                    shells,
+                )?),
+                second: Box::new(convert_node(
+                    second,
+                    depth + 1,
+                    count,
+                    limits,
+                    ids,
+                    cwds,
+                    shells,
+                )?),
             })
         }
     }
@@ -580,6 +637,13 @@ fn check_name(name: Option<&str>, limits: SnapshotLimits) -> Result<(), Snapshot
     }
     Ok(())
 }
+fn check_shell(program: &str, limits: SnapshotLimits) -> Result<(), SnapshotError> {
+    if program.len() > limits.max_path_bytes || program.chars().any(char::is_control) {
+        return Err(SnapshotError::Invalid("shell program exceeds limit".into()));
+    }
+    Ok(())
+}
+
 fn check_path(path: Option<&std::path::Path>, limits: SnapshotLimits) -> Result<(), SnapshotError> {
     if path.is_some_and(|value| value.as_os_str().as_encoded_bytes().len() > limits.max_path_bytes)
     {
@@ -630,6 +694,9 @@ impl Default for SnapshotLimits {
 pub struct ValidatedSnapshot {
     pub window: WorkspaceWindow,
     pub pane_cwds: Vec<(PaneId, PersistedCwd)>,
+    /// Shell program last launched in each pane. Empty when the snapshot
+    /// predates per-pane shells; restore then uses the current default.
+    pub pane_shells: Vec<(PaneId, String)>,
     /// Per-project expanded file-tree directories (relative to root).
     pub expanded_dirs: Vec<(ProjectId, Vec<PathBuf>)>,
     /// Per-project validated open-document metadata. Desktop restore installs
@@ -767,6 +834,7 @@ mod tests {
                 &HashMap::new(),
                 &HashMap::new(),
                 &registries,
+                &HashMap::new(),
             );
             let projects = &captured.windows[0].projects;
             assert_eq!(
@@ -928,7 +996,39 @@ mod tests {
         let restored = decoded.validate(SnapshotLimits::default()).unwrap();
         assert_eq!(restored.window, window);
         assert_eq!(restored.pane_cwds, cwd.into_iter().collect::<Vec<_>>());
+        assert!(restored.pane_shells.is_empty());
         assert!(!String::from_utf8_lossy(&bytes).contains("session_id"));
+    }
+
+    #[test]
+    fn pane_shell_round_trips_and_old_files_omit_it() {
+        let (window, mut cwd) = sample();
+        let pane_id = window.projects[0].tabs[0].focused_pane;
+        cwd.get_mut(&pane_id).unwrap().path = std::env::temp_dir();
+        let shells = HashMap::from([(pane_id, "powershell.exe".to_string())]);
+        let snapshot = WorkspaceSnapshot::capture_with_expanded_and_documents(
+            &window,
+            &cwd,
+            &HashMap::new(),
+            &HashMap::new(),
+            &shells,
+        );
+        let restored = snapshot.validate(SnapshotLimits::default()).unwrap();
+        assert_eq!(
+            restored.pane_shells,
+            vec![(pane_id, "powershell.exe".to_string())]
+        );
+        let bare = WorkspaceSnapshot::capture(&window, &cwd);
+        let text = serde_json::to_string(&bare).unwrap();
+        assert!(!text.contains("\"shell\""));
+        let decoded: WorkspaceSnapshot = serde_json::from_str(&text).unwrap();
+        assert!(
+            decoded
+                .validate(SnapshotLimits::default())
+                .unwrap()
+                .pane_shells
+                .is_empty()
+        );
     }
 
     #[test]
@@ -944,11 +1044,13 @@ mod tests {
                 id: Uuid::new_v4().to_string(),
                 working_directory: PathBuf::from("/tmp"),
                 cwd_provenance: CwdProvenance::Launch,
+                shell: None,
             }),
             second: Box::new(PaneNodeSnapshot::Pane {
                 id: Uuid::new_v4().to_string(),
                 working_directory: PathBuf::from("/tmp"),
                 cwd_provenance: CwdProvenance::Launch,
+                shell: None,
             }),
         };
         assert!(matches!(
@@ -1154,6 +1256,7 @@ mod tests {
             &cwd,
             &HashMap::new(),
             &registries,
+            &HashMap::new(),
         );
         let bytes = serde_json::to_vec(&snapshot).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1205,6 +1308,7 @@ mod tests {
                     active_document,
                 },
             )]),
+            &HashMap::new(),
         );
         let project = &snapshot.windows[0].projects[0];
         assert_eq!(

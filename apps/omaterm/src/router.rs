@@ -2353,6 +2353,10 @@ impl CommandRouter {
             return error(ErrorCode::RuntimeFailure, "terminal launch queue is full");
         }
         let mut config = TerminalConfig::new(self.coordinator.working_directory().clone());
+        config.shell = self
+            .coordinator
+            .preferred_shell_program()
+            .map(str::to_string);
         let target = match command {
             OmaCommand::Project(ProjectCommand::Create { name, directory }) => {
                 let directory = directory
@@ -2454,6 +2458,7 @@ impl CommandRouter {
                 tab,
                 pane,
                 directory,
+                shell,
             }) => {
                 let Some(owner) = self.coordinator.window().project(project) else {
                     return error(ErrorCode::ProjectNotFound, "project does not exist");
@@ -2476,6 +2481,11 @@ impl CommandRouter {
                 } else {
                     return error(ErrorCode::RuntimeFailure, "home directory is unavailable");
                 };
+                if let Some(program) =
+                    shell.filter(|program| omaterm_terminal::shell_program_usable(program))
+                {
+                    config.shell = Some(program);
+                }
                 PendingTarget::Restore { project, tab, pane }
             }
             _ => unreachable!("only create commands reach prepare_launch"),
@@ -8899,6 +8909,7 @@ mod tests {
                 tab: tab_id,
                 pane: pane_id,
                 directory: directory.clone(),
+                shell: None,
             }),
         );
         assert!(matches!(
@@ -9244,6 +9255,7 @@ mod tests {
                 tab: tab_id,
                 pane: pane_id,
                 directory: std::env::temp_dir(),
+                shell: None,
             }),
         );
         assert!(matches!(
@@ -9340,6 +9352,7 @@ mod tests {
                 tab: tab_id,
                 pane: pane_id,
                 directory: std::env::temp_dir(),
+                shell: None,
             }),
         );
         assert!(matches!(
@@ -9421,6 +9434,7 @@ mod tests {
                     tab: *tab_id,
                     pane: *pane_id,
                     directory: std::env::temp_dir(),
+                    shell: None,
                 }),
             );
             assert!(

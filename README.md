@@ -118,7 +118,9 @@ UI thread.
 **Requirements:** Linux x86_64 with Wayland or X11 and working GPU drivers.
 Omarchy/Hyprland is the first-class target. Windows is a second build target:
 the desktop, terminal, and CLI compile there, while process listing stays empty
-until a native query exists. A Windows build needs the MSVC toolchain (Visual
+until a native query exists. On Windows, `Ctrl+Shift+P` switches new
+terminals among PowerShell, Command Prompt, and Git Bash; the choice is
+remembered. A Windows build needs the MSVC toolchain (Visual
 Studio 2022 or Build Tools, workload **Desktop development with C++**), the
 Windows SDK, and `fxc.exe` from that SDK on `PATH` — GPUI compiles its shaders
 with it. Dependency versions and licenses are tracked in

@@ -148,7 +148,7 @@ pub fn save_history_config(path: &Path, config: &HistoryConfig) -> Result<(), Co
 /// Write `bytes` to `path` atomically (same-directory unique temp + rename)
 /// with owner-only permissions. Used for config files, which are small and
 /// never under the workspace history quota.
-fn write_atomic_0600(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+pub(super) fn write_atomic_0600(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
     let temp = unique_temp_path(path);
     {
         let mut options = OpenOptions::new();
@@ -167,7 +167,7 @@ fn write_atomic_0600(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
 }
 
 fn history_section(doc: &toml_edit::DocumentMut) -> Option<HistoryConfig> {
-    let table = doc.get("history")?.as_table()?;
+    let table = doc.get("history")?.as_table_like()?;
     let enabled = table
         .get("enabled")
         .and_then(toml_edit::Item::as_bool)
