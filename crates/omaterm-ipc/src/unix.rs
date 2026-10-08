@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use omaterm_protocol::{
     IpcRequest, IpcResponse, MAX_CONNECTIONS, MAX_REQUEST_FRAME, MAX_RESPONSE_FRAME,
-    encode_response, validate_request,
 };
+
+use crate::frame::FrameIo;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IpcError {
@@ -278,98 +279,24 @@ fn handle_connection(
     if !peer_authorized(peer_uid(&stream)?, unsafe { libc::getuid() }) {
         return Ok(());
     }
-    loop {
-        if stopping.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let started = Instant::now();
-        let frame_deadline = started + timeouts.frame;
-        let request_deadline = started + timeouts.request;
-        let mut frame = Vec::with_capacity(1024);
-        let mut byte = [0u8; 1];
-        loop {
-            if stopping.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            let remaining = frame_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(());
-            }
-            stream.set_read_timeout(Some(remaining.min(Duration::from_millis(200))))?;
-            match stream.read(&mut byte) {
-                Ok(0) => return Ok(()),
-                Ok(_) if byte[0] == b'\n' => break,
-                Ok(_) => {
-                    if frame.len() >= MAX_REQUEST_FRAME - 1 {
-                        write_response(
-                            &mut stream,
-                            &IpcResponse::failure(
-                                String::new(),
-                                "invalid_request",
-                                "request exceeds the 64 KiB frame limit",
-                            ),
-                        )?;
-                        return Ok(());
-                    }
-                    frame.push(byte[0]);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let request: IpcRequest = match serde_json::from_slice(&frame) {
-            Ok(request) => request,
-            Err(_) => {
-                write_response(
-                    &mut stream,
-                    &IpcResponse::failure(
-                        String::new(),
-                        "invalid_request",
-                        "malformed JSON request",
-                    ),
-                )?;
-                return Ok(());
-            }
-        };
-        let request_id = request.request_id.clone();
-        let response = match validate_request(&request) {
-            Ok(()) => handler(request, request_deadline),
-            Err(error) => IpcResponse::failure(request_id, error.code, error.message),
-        };
-        let remaining = request_deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-            write_response(
-                &mut stream,
-                &IpcResponse::failure(response.request_id, "timeout", "request deadline exceeded"),
-            )?;
-            return Ok(());
-        }
-        stream.set_write_timeout(Some(remaining))?;
-        write_response(&mut stream, &response)?;
-    }
+    crate::frame::serve_requests(
+        &mut stream,
+        handler.as_ref(),
+        &stopping,
+        timeouts.frame,
+        timeouts.request,
+    )
 }
 
-fn write_response(stream: &mut UnixStream, response: &IpcResponse) -> std::io::Result<()> {
-    match encode_response(response) {
-        Ok(frame) => stream.write_all(&frame),
-        Err(_) => {
-            let frame = encode_response(&IpcResponse::failure(
-                response.request_id.clone(),
-                "response_too_large",
-                "response exceeds the 1 MiB frame limit",
-            ))
-            .unwrap_or_else(|_| b"{}\n".to_vec());
-            stream.write_all(&frame)
-        }
+impl crate::frame::FrameIo for UnixStream {
+    fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> std::io::Result<usize> {
+        self.set_read_timeout(Some(timeout))?;
+        self.read(buf)
+    }
+
+    fn write_all_with_timeout(&mut self, buf: &[u8], timeout: Duration) -> std::io::Result<()> {
+        self.set_write_timeout(Some(timeout))?;
+        self.write_all(buf)
     }
 }
 
@@ -424,31 +351,9 @@ impl IpcClient {
             ));
         }
         self.stream
-            .set_write_timeout(Some(Duration::from_secs(10)))?;
-        self.stream.write_all(&bytes)?;
-        let mut frame = Vec::with_capacity(1024);
-        let mut byte = [0u8; 1];
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "IPC request deadline exceeded",
-                ));
-            }
-            self.stream.set_read_timeout(Some(remaining))?;
-            self.stream.read_exact(&mut byte)?;
-            if byte[0] == b'\n' {
-                break;
-            }
-            if frame.len() >= MAX_RESPONSE_FRAME - 1 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "response exceeds frame limit",
-                ));
-            }
-            frame.push(byte[0]);
-        }
+            .write_all_with_timeout(&bytes, Duration::from_secs(10))?;
+        let frame =
+            crate::frame::read_delimited_frame(&mut self.stream, deadline, MAX_RESPONSE_FRAME)?;
         serde_json::from_slice(&frame).map_err(std::io::Error::other)
     }
 }

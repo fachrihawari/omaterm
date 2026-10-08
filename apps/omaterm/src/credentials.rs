@@ -9,22 +9,61 @@ use omaterm_protocol::CapabilityToken;
 
 /// Owner-thread credential state. Three independently random UUID v4 values
 /// provide more than 256 bits of unpredictable material after version bits.
-fn file_identity(metadata: &fs::Metadata) -> (u64, u64) {
+fn file_identity(path: &Path) -> std::io::Result<(u64, u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        (metadata.dev(), metadata.ino())
+        let metadata = fs::symlink_metadata(path)?;
+        Ok((metadata.dev(), metadata.ino()))
     }
     #[cfg(windows)]
     {
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|span| span.as_nanos() as u64)
-            .unwrap_or(0);
-        (metadata.len(), modified)
+        // `MetadataExt::file_index` is unstable. The volume serial plus the
+        // 64-bit file index identifies this file, not a path or an mtime.
+        windows_file_id(path)
     }
+}
+
+#[cfg(windows)]
+fn windows_file_id(path: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
+    };
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is NUL-terminated. OPEN_REPARSE_POINT identifies the
+    // object itself, so a swapped symlink does not report the target's id.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    // SAFETY: `handle` is open and `info` is a live out-param.
+    let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
+    unsafe { CloseHandle(handle) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
 }
 
 fn secret() -> String {
@@ -59,8 +98,9 @@ impl Credentials {
             writer.write_all(local.as_bytes())?;
             writer.sync_all()?;
             fs::rename(&temporary, &file)?;
-            let metadata = fs::symlink_metadata(&file)?;
-            Ok::<_, std::io::Error>(file_identity(&metadata))
+            #[cfg(windows)]
+            omaterm_ipc::restrict_to_current_user(&file)?;
+            file_identity(&file)
         })();
         let _ = fs::remove_file(temporary);
         Ok(Self {
@@ -111,9 +151,7 @@ impl Credentials {
 
 impl Drop for Credentials {
     fn drop(&mut self) {
-        if let Ok(metadata) = fs::symlink_metadata(&self.file)
-            && file_identity(&metadata) == self.file_identity
-        {
+        if file_identity(&self.file).ok() == Some(self.file_identity) {
             let _ = fs::remove_file(&self.file);
         }
     }

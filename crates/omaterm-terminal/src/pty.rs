@@ -235,6 +235,8 @@ impl PtyProcess {
         }
         #[cfg(windows)]
         {
+            // `TerminateProcess` is already final, so the force path does not
+            // wait for the child to exit before calling it again.
             true
         }
     }
@@ -307,7 +309,8 @@ impl OutputWait {
 
 /// ConPTY delivery is internal to Alacritty's reader thread, so there is no
 /// kernel fd to sleep on. The desktop reader wakes on this interval and pumps
-/// a non-blocking read.
+/// a non-blocking read. That wake is a sleep, so an idle terminal still
+/// burns a timer tick instead of blocking in the kernel.
 #[cfg(windows)]
 #[derive(Clone, Copy)]
 pub struct OutputWait;

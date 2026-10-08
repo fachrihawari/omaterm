@@ -29,6 +29,20 @@ so closing the launching terminal does not kill the window.
 Git and its rev-parse helper are also started with `CREATE_NO_WINDOW`:
 a GUI parent otherwise makes Windows Terminal open and close a window for
 every status, diff, and history poll.
+File identity on Windows is the volume serial plus file index from
+`GetFileInformationByHandle` (credential cleanup and editor roots). The
+named-pipe directory and credential file get a protected DACL for the
+current user; `bind` rejects a directory that is still shared, and one
+failed `CreateNamedPipe` no longer stops the accept loop. `process.kill`
+on Windows returns `unsupported_operation` with a readable message.
+Newline framing is shared by the Unix socket and the named pipe.
+`cargo test -p omaterm-ipc --lib` covers the pipe round trip and the ACL
+check (3 passed on this Windows machine). Clippy `-D warnings` passed for
+`omaterm-ipc` (all targets), `omaterm-context` lib, `omaterm-cli` bins,
+`omaterm-terminal` lib, and both desktop bins. `cargo check --workspace
+--all-targets --exclude omaterm` passed here. A `windows-latest` CI job
+runs that check plus the IPC tests. The desktop package stays out of that
+job because `fxc.exe` is not on the runner `PATH`.
 
 ### Honest OSC 10/11/12 replies + mouse-wheel forwarding — 2026-10-08
 

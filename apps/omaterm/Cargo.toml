@@ -30,3 +30,8 @@ gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x
 
 [target.'cfg(windows)'.dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+windows-sys = { version = "=0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }

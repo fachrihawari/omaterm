@@ -102,6 +102,19 @@ pub fn load_token(socket: &Path) -> Result<Option<CapabilityToken>, CliFailure> 
                 "OmaTerm credential path is a reparse point; refusing to use it",
             ));
         }
+        match omaterm_ipc::private_to_current_user(&credential) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(CliFailure::auth(
+                    "OmaTerm credential is not private to this user; refusing to use it",
+                ));
+            }
+            Err(error) => {
+                return Err(CliFailure::auth(format!(
+                    "OmaTerm credential permissions could not be verified ({error}); refusing to use it"
+                )));
+            }
+        }
     }
     let secret = fs::read_to_string(&credential).map_err(|error| {
         CliFailure::connection(format!(
