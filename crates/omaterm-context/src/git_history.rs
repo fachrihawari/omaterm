@@ -476,6 +476,13 @@ fn parse_decorations(raw: &[u8]) -> Vec<GitRef> {
 }
 
 fn parse_iso_offset(value: &str) -> Option<i16> {
+    // Strict ISO 8601 (`%aI`) uses `Z` for UTC instead of `+00:00` — this is
+    // what CI runners in UTC emit, while local zones emit `+HH:MM`. Without
+    // this arm every record in a UTC repository fails and history reads
+    // empty.
+    if value.len() > 10 && value.ends_with(['Z', 'z']) {
+        return Some(0);
+    }
     let offset = value.rsplit_once(['+', '-'])?.1;
     let sign = if value
         .as_bytes()
@@ -568,6 +575,45 @@ mod tests {
         assert_eq!(page.commits[0].id.as_str(), SHA1_A);
         assert_eq!(page.commits[0].parents[0].as_str(), SHA1_B);
         assert_eq!(page.commits[0].author_time.offset_minutes, 330);
+    }
+
+    #[test]
+    fn iso_offset_accepts_zulu_utc_and_signed_hours() {
+        // `%aI` emits a literal `Z` in UTC zones (CI runners) and `+HH:MM`
+        // elsewhere; both must parse or whole history pages drop to empty.
+        assert_eq!(parse_iso_offset("2026-10-08T04:38:12Z"), Some(0));
+        assert_eq!(parse_iso_offset("2026-10-08T04:38:12z"), Some(0));
+        assert_eq!(parse_iso_offset("2026-10-08T11:38:12+07:00"), Some(420));
+        assert_eq!(parse_iso_offset("1970-01-01T00:00:10+05:30"), Some(330));
+        assert_eq!(parse_iso_offset("1970-01-01T00:00:10-04:00"), Some(-240));
+        assert_eq!(parse_iso_offset("not-a-date"), None);
+        assert_eq!(parse_iso_offset("2026-10-08T04:38:12+25:00"), None);
+    }
+
+    #[test]
+    fn zulu_dated_records_parse_into_commits() {
+        // Exact CI shape: UTC `%aI` with `Z`, one NUL-framed record.
+        let bytes = [
+            SHA1_A,
+            "",
+            "Ada",
+            "ada@example.test",
+            "10",
+            "2026-10-08T04:38:12Z",
+            "second",
+            "HEAD -> master",
+            "second\n",
+        ]
+        .join("\0")
+        .into_bytes()
+        .into_iter()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+        let page = parse_history_log(&bytes, false, 10);
+        assert!(!page.truncated);
+        assert_eq!(page.commits.len(), 1);
+        assert_eq!(page.commits[0].subject, "second");
+        assert_eq!(page.commits[0].author_time.offset_minutes, 0);
     }
 
     #[test]

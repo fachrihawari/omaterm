@@ -2,6 +2,30 @@
 
 ## Current position
 
+### CI history-test fix: `%aI` Zulu timestamps — 2026-10-08
+
+- CI (`check` job) failed every run since Oct 6 on three history tests
+  (`history_workers_run_off_the_caller_thread`,
+  `commit_worker_runs_off_the_caller_thread`,
+  `git_history_commit_files_and_show_commit_share_one_read_path`), all
+  with `0` parsed commits; local runs always passed. A throwaway debug
+  branch dumping raw `git log` bytes on CI proved it: runners are UTC, so
+  `%aI` emits `…T04:38:12Z`, and `parse_iso_offset` had no `Z` arm — the
+  date-dash split poisoned hour parsing, every record dropped, pages came
+  back empty. Local zones emit `+HH:MM`, hiding the bug.
+- Fix: `parse_iso_offset` accepts trailing `Z`/`z` as offset 0, plus unit
+  tests (`iso_offset_accepts_zulu_utc_and_signed_hours`,
+  `zulu_dated_records_parse_into_commits` with exact CI byte shape).
+  Proven load-bearing: disabling the arm reproduces the CI failure under
+  local `TZ=UTC`; enabled, the full suite passes under both `TZ=UTC` and
+  the local zone.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS under `TZ=UTC` and normally (729 passed, 0 failed both),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS with
+  forced re-lint (known transitive `proc-macro-error2` notice only),
+  `git diff --check` PASS. Debug branch deleted; AUR skip remains
+  intentional per maintainer.
+
 ### Overlay row-overlap fix — 2026-10-07
 
 - Keybindings rows no longer paint over each other: chord strings run to
