@@ -8,8 +8,8 @@ use alacritty_terminal::vte::ansi::{
 };
 
 use crate::engine::{
-    CellFlags, CellWidth, CursorShape, CursorState, EngineOutput, ScrollCommand, TermColor,
-    TerminalCell, TerminalEngine, TerminalRow, TerminalViewport,
+    CellFlags, CellWidth, CursorShape, CursorState, EngineOutput, MouseMode, MouseModeKind,
+    ScrollCommand, TermColor, TerminalCell, TerminalEngine, TerminalRow, TerminalViewport,
 };
 use crate::events::TerminalEvent;
 
@@ -131,6 +131,23 @@ impl TerminalEngine for AlacrittyEngine {
 
     fn bracketed_paste(&self) -> bool {
         self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    fn mouse_mode(&self) -> MouseMode {
+        let mode = self.term.mode();
+        let kind = if mode.contains(TermMode::MOUSE_MOTION) {
+            MouseModeKind::Motion
+        } else if mode.contains(TermMode::MOUSE_DRAG) {
+            MouseModeKind::Drag
+        } else if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+            MouseModeKind::Click
+        } else {
+            MouseModeKind::Off
+        };
+        MouseMode {
+            kind,
+            sgr: mode.contains(TermMode::SGR_MOUSE),
+        }
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
@@ -460,6 +477,8 @@ fn resolve_index_color(
     index: usize,
 ) -> alacritty_terminal::vte::ansi::Rgb {
     use alacritty_terminal::vte::ansi::Rgb;
+    // A color explicitly set by the application (OSC 10/11/12/4 set) always
+    // wins, including the dynamic foreground/background/cursor slots.
     if index < alacritty_terminal::term::color::COUNT
         && let Some(rgb) = term.colors()[index]
     {
@@ -472,11 +491,18 @@ fn resolve_index_color(
         let (r, g, b) = xterm_palette(index as u8);
         Rgb { r, g, b }
     } else {
-        Rgb {
-            r: 255,
-            g: 255,
-            b: 255,
-        }
+        // Dynamic slots (Foreground=256, Background=257, Cursor=258, …).
+        // Report the colors the renderer actually paints instead of a
+        // hardcoded white: an application (e.g. opencode) derives its
+        // light/dark theme from the OSC 11 reply, so a false white makes it
+        // build a light theme on the dark pane.
+        let (r, g, b) = match index {
+            i if i == NamedColor::Foreground as usize => crate::color::DEFAULT_FG,
+            i if i == NamedColor::Background as usize => crate::color::DEFAULT_BG,
+            i if i == NamedColor::Cursor as usize => crate::color::CURSOR_COLOR,
+            _ => crate::color::DEFAULT_FG,
+        };
+        Rgb { r, g, b }
     }
 }
 
@@ -702,6 +728,64 @@ mod tests {
         }
         engine.advance_output(b"\x1b[?1049h");
         assert!(engine.viewport_following_row().is_none());
+    }
+
+    #[test]
+    fn osc_dynamic_color_queries_report_painted_defaults() {
+        let mut engine = AlacrittyEngine::new(80, 24);
+        // OSC 10/11/12 queries must answer with the colors the renderer
+        // actually paints, not a hardcoded white — opencode derives its
+        // light/dark theme from the OSC 11 reply.
+        let fg = engine.advance_output(b"\x1b]10;?\x07");
+        assert!(
+            String::from_utf8_lossy(&fg.reply_bytes).contains("rgb:e4e4/e4e4/e7e7"),
+            "fg reply: {:?}",
+            String::from_utf8_lossy(&fg.reply_bytes)
+        );
+        let bg = engine.advance_output(b"\x1b]11;?\x07");
+        assert!(
+            String::from_utf8_lossy(&bg.reply_bytes).contains("rgb:0f0f/1313/1818"),
+            "bg reply: {:?}",
+            String::from_utf8_lossy(&bg.reply_bytes)
+        );
+        let cursor = engine.advance_output(b"\x1b]12;?\x07");
+        assert!(
+            String::from_utf8_lossy(&cursor.reply_bytes).contains("rgb:9595/d7d7/ffff"),
+            "cursor reply: {:?}",
+            String::from_utf8_lossy(&cursor.reply_bytes)
+        );
+    }
+
+    #[test]
+    fn osc_dynamic_color_set_overrides_query_reply() {
+        let mut engine = AlacrittyEngine::new(80, 24);
+        // An application-set background must win over the built-in default.
+        engine.advance_output(b"\x1b]11;#ffffff\x07");
+        let bg = engine.advance_output(b"\x1b]11;?\x07");
+        assert!(
+            String::from_utf8_lossy(&bg.reply_bytes).contains("rgb:ffff/ffff/ffff"),
+            "bg reply: {:?}",
+            String::from_utf8_lossy(&bg.reply_bytes)
+        );
+    }
+
+    #[test]
+    fn mouse_mode_tracks_decset_and_sgr() {
+        let mut engine = AlacrittyEngine::new(80, 24);
+        assert!(!engine.mouse_mode().is_on());
+        engine.advance_output(b"\x1b[?1000h");
+        assert_eq!(engine.mouse_mode().kind, MouseModeKind::Click);
+        assert!(!engine.mouse_mode().sgr);
+        engine.advance_output(b"\x1b[?1002h");
+        assert_eq!(engine.mouse_mode().kind, MouseModeKind::Drag);
+        engine.advance_output(b"\x1b[?1003h");
+        assert_eq!(engine.mouse_mode().kind, MouseModeKind::Motion);
+        engine.advance_output(b"\x1b[?1006h");
+        assert!(engine.mouse_mode().sgr);
+        engine.advance_output(b"\x1b[?1003l");
+        engine.advance_output(b"\x1b[?1002l");
+        engine.advance_output(b"\x1b[?1000l");
+        assert!(!engine.mouse_mode().is_on());
     }
 
     #[test]

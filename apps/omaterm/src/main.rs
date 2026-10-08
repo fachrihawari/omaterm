@@ -29,9 +29,10 @@ use omaterm_state::{
     SnapshotStore, SnapshotWriter, WorkspaceSnapshot,
 };
 use omaterm_terminal::{
-    CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SearchHit, SelectionRange,
-    TermColor, TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
-    find_hits, format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
+    CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, MOUSE_WHEEL_DOWN, MOUSE_WHEEL_UP,
+    ScrollCommand, SearchHit, SelectionRange, TermColor, TerminalSession, TerminalViewport,
+    WorkspaceCoordinator, encode_key, encode_sgr_mouse, extract_text, find_hits,
+    format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
 };
 mod credentials;
 mod diff_panel;
@@ -11950,6 +11951,7 @@ impl WorkspaceView {
 
     fn on_scroll_wheel(
         &mut self,
+        pane_id: PaneId,
         session_id: SessionId,
         event: &ScrollWheelEvent,
         _: &mut Window,
@@ -11989,14 +11991,39 @@ impl WorkspaceView {
         let Ok(session) = handle.lock() else {
             return;
         };
-        if session.viewport().is_alt_screen {
-            let app_cursor = session.app_cursor();
-            drop(session);
-            let key = if steps > 0 { Key::Up } else { Key::Down };
-            // Full-screen apps (less, vim, …) consume arrow keys; bound the
-            // repeats so a large fling cannot flood the PTY, but allow more
-            // than a couple of lines so fast scrolling does not feel stuck.
+        let is_alt_screen = session.viewport().is_alt_screen;
+        let mouse_mode = session.mouse_mode();
+        let app_cursor = session.app_cursor();
+        drop(session);
+
+        if is_alt_screen {
+            // Full-screen apps consume either mouse reports (when they enable
+            // DECSET 1000/1002/1003/1006) or arrow keys. Wheel → arrows is the
+            // xterm `alternateScroll` convention, but apps like opencode bind
+            // Up to input-history recall; if the app asked for mouse events,
+            // forward the wheel so it can scroll its own content instead.
             let repeats = steps.unsigned_abs().min(MAX_ALT_SCREEN_WHEEL_REPEATS) as usize;
+            let button = if steps > 0 {
+                MOUSE_WHEEL_UP
+            } else {
+                MOUSE_WHEEL_DOWN
+            };
+            if mouse_mode.is_on() && mouse_mode.sgr {
+                if let Some(cell) = self.pos_to_cell(pane_id, event.position, cx) {
+                    for _ in 0..repeats {
+                        let bytes =
+                            encode_sgr_mouse(button, cell.col as u16, cell.row as u16, false);
+                        if let Ok(mut session) = handle.lock() {
+                            let _ = session.write_input(&bytes);
+                        }
+                    }
+                }
+                return;
+            }
+            let key = if steps > 0 { Key::Up } else { Key::Down };
+            // Bound the repeats so a large fling cannot flood the PTY, but
+            // allow more than a couple of lines so fast scrolling does not
+            // feel stuck.
             for _ in 0..repeats {
                 let bytes = encode_key(&KeyEvent {
                     key: key.clone(),
@@ -12010,7 +12037,6 @@ impl WorkspaceView {
             }
             return;
         }
-        drop(session);
         if let Ok(mut session) = handle.lock() {
             session.scroll(ScrollCommand::Lines(steps));
             self.snapshots.insert(session_id, session.viewport());
@@ -12279,7 +12305,7 @@ impl WorkspaceView {
             )
             .on_scroll_wheel(
                 cx.listener(move |view, event: &ScrollWheelEvent, window, cx| {
-                    view.on_scroll_wheel(session_id, event, window, cx);
+                    view.on_scroll_wheel(pane_id, session_id, event, window, cx);
                 }),
             );
         // Toolbar floats over the grid (never consumes grid space) and
@@ -20063,12 +20089,12 @@ fn fg_color(cell_fg: TermColor, inverse: bool) -> Hsla {
         return match cell_fg {
             TermColor::Rgb(r, g, b) => rgb(rgb_hex(r, g, b)).into(),
             TermColor::DefaultFg => rgb(0x18181B).into(),
-            TermColor::DefaultBg => rgb(0xE4E4E7).into(),
+            TermColor::DefaultBg => rgb(default_fg_hex()).into(),
         };
     }
     match cell_fg {
         TermColor::Rgb(r, g, b) => rgb(rgb_hex(r, g, b)).into(),
-        TermColor::DefaultFg => rgb(0xE4E4E7).into(),
+        TermColor::DefaultFg => rgb(default_fg_hex()).into(),
         TermColor::DefaultBg => rgb(0x18181B).into(),
     }
 }
@@ -20078,15 +20104,22 @@ fn bg_paint(cell_bg: TermColor, inverse: bool) -> Option<Hsla> {
     if inverse {
         return Some(match cell_bg {
             TermColor::Rgb(r, g, b) => rgb(rgb_hex(r, g, b)).into(),
-            TermColor::DefaultFg => rgb(0xE4E4E7).into(),
-            TermColor::DefaultBg => rgb(0xE4E4E7).into(),
+            TermColor::DefaultFg => rgb(default_fg_hex()).into(),
+            TermColor::DefaultBg => rgb(default_fg_hex()).into(),
         });
     }
     match cell_bg {
         TermColor::Rgb(r, g, b) => Some(rgb(rgb_hex(r, g, b)).into()),
-        TermColor::DefaultFg => Some(rgb(0xE4E4E7).into()),
+        TermColor::DefaultFg => Some(rgb(default_fg_hex()).into()),
         TermColor::DefaultBg => None,
     }
+}
+
+/// Default terminal foreground as a packed `0xRRGGBB`, sourced from the
+/// engine's shared constant so OSC query replies and rendering cannot drift.
+fn default_fg_hex() -> u32 {
+    let (r, g, b) = omaterm_terminal::DEFAULT_FG;
+    rgb_hex(r, g, b)
 }
 
 fn rgb_hex(r: u8, g: u8, b: u8) -> u32 {

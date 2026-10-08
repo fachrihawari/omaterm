@@ -218,7 +218,7 @@ workspace UI before checkpoint B establishes a working renderer.
 
 - No multiple terminals (just one fullscreen terminal)
 - No search
-- No application mouse-reporting protocol support required for this slice (selection uses pointer input)
+- No application mouse-reporting protocol support required for this slice (selection uses pointer input). *Amended 2026-10-08:* SGR mouse-wheel forwarding (DECSET 1000/1002/1003 + 1006) was added so full-screen TUIs can scroll their own content; click/drag reporting and legacy X10 encoding remain out of scope. See `docs/status.md`.
 - No image protocol
 - No OSC 52 clipboard read support; do not expose host clipboard implicitly
 - No pane splitting active in this milestone

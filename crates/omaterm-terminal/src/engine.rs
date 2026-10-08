@@ -61,6 +61,50 @@ pub trait TerminalEngine: Send {
 
     /// Whether bracketed paste is active.
     fn bracketed_paste(&self) -> bool;
+
+    /// Active application mouse-reporting mode. `Off` means the application
+    /// has not requested mouse events and the terminal owns the pointer.
+    fn mouse_mode(&self) -> MouseMode {
+        MouseMode::OFF
+    }
+}
+
+/// Application mouse-reporting mode, derived from DECSET 1000/1002/1003.
+/// `sgr` selects the SGR encoding (DECSET 1006) over legacy X10 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseMode {
+    pub kind: MouseModeKind,
+    pub sgr: bool,
+}
+
+impl MouseMode {
+    pub const OFF: Self = Self {
+        kind: MouseModeKind::Off,
+        sgr: false,
+    };
+
+    #[must_use]
+    pub fn is_on(self) -> bool {
+        self.kind != MouseModeKind::Off
+    }
+}
+
+impl Default for MouseMode {
+    fn default() -> Self {
+        Self::OFF
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseModeKind {
+    #[default]
+    Off,
+    /// DECSET 1000: press/release only.
+    Click,
+    /// DECSET 1002: press/release plus drag.
+    Drag,
+    /// DECSET 1003: all motion.
+    Motion,
 }
 
 /// Immutable snapshot of the visible terminal for the renderer.

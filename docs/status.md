@@ -2,6 +2,41 @@
 
 ## Current position
 
+### Honest OSC 10/11/12 replies + mouse-wheel forwarding — 2026-10-08
+
+- User report: opencode with a light/white theme rendered unreadable inside
+  OmaTerm, and scrolling up recalled input history instead of scrolling the
+  chat. Two independent root causes.
+- **Colors.** `resolve_index_color` (`crates/omaterm-terminal/src/alacritty.rs`)
+  answered every dynamic-slot query (Foreground=256, Background=257,
+  Cursor=258) with a hardcoded white. opencode queries `OSC 10/11/12 ?` at
+  startup and derives its light/dark theme from the OSC 11 luminance, so the
+  false white made it build a *light* theme on OmaTerm's dark pane. New
+  `omaterm_terminal::color` module holds the single-source defaults
+  (`DEFAULT_FG=#E4E4E7`, `DEFAULT_BG=#0F1318`, `CURSOR_COLOR=#95D7FF`); the
+  query reply and the GPUI renderer now import them, and an app-set
+  `OSC 10/11/12 set` still overrides. `COLORFGBG=15;0` is now exported to the
+  child (`pty.rs`) so a host terminal's leaked light hint cannot mislead apps
+  that read it before querying.
+- **Wheel.** `on_scroll_wheel` (`apps/omaterm/src/main.rs`) always translated
+  alt-screen wheel steps into Up/Down arrow keys (xterm `alternateScroll`),
+  which opencode binds to input-history recall. The engine now exposes the
+  active DECSET mouse mode (`MouseMode`/`MouseModeKind` + `TermMode`
+  read in `alacritty.rs`), `input.rs` gains `encode_sgr_mouse`, and the
+  alt-screen wheel branch forwards SGR wheel reports (`CSI < 64/65;Cx;Cy M`)
+  when the app enabled mouse tracking + SGR (1000/1002/1003 + 1006), falling
+  back to the existing arrow synthesis otherwise (so `less`/`vim` still
+  scroll). `TerminalSession::mouse_mode()` is the app-facing accessor.
+- Deferred (not bundled): light *pane* background, `INVERSE` over explicit RGB
+  cells, `DIM`, `HIDDEN` glyph handling, cursor honoring `OSC 12 set`.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace` PASS
+  (new tests: OSC 10/11/12 default replies, OSC 11 set-override, mouse-mode
+  DECSET tracking, SGR one-based encoding), `cargo clippy --workspace
+  --all-targets -- -D warnings` PASS (known transitive `proc-macro-error2`
+  future-incompat notice only). Native Wayland validation (opencode dark
+  theme on a light host, wheel scrolls chat, `vim`/`less` wheel unchanged)
+  remains manual.
+
 ### CI history-test fix: `%aI` Zulu timestamps — 2026-10-08
 
 - CI (`check` job) failed every run since Oct 6 on three history tests

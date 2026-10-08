@@ -641,6 +641,11 @@ impl TerminalSession {
         self.engine.bracketed_paste()
     }
 
+    /// Active application mouse-reporting mode (DECSET 1000/1002/1003/1006).
+    pub fn mouse_mode(&self) -> crate::engine::MouseMode {
+        self.engine.mouse_mode()
+    }
+
     pub fn engine(&self) -> &AlacrittyEngine {
         &self.engine
     }
