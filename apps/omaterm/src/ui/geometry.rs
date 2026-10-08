@@ -13,6 +13,8 @@ pub const INSPECTOR_MAX: f32 = 470.0;
 pub const RESIZER: f32 = 4.0;
 pub const HEADER_H: f32 = 42.0;
 pub const STATUS_H: f32 = 24.0;
+pub const WINDOW_GRIP: f32 = 6.0;
+pub const WINDOW_CORNER: f32 = 12.0;
 
 /// Clamp a Projects width; non-finite input falls back to default.
 pub fn clamp_projects_width(width: f32) -> f32 {
@@ -41,6 +43,46 @@ pub struct ShellRects {
     pub inspector_resizer: (f32, f32, f32, f32),
     pub inspector: (f32, f32, f32, f32),
     pub status: (f32, f32, f32, f32),
+}
+
+/// Client-side resize edges. Empty when the desktop, maximize, fullscreen, or a tiled edge owns that side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizeGrips {
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+    pub left: bool,
+}
+
+impl ResizeGrips {
+    pub const fn none() -> Self {
+        Self {
+            top: false,
+            right: false,
+            bottom: false,
+            left: false,
+        }
+    }
+}
+
+pub fn resize_grips(
+    client_decorations: bool,
+    maximized: bool,
+    fullscreen: bool,
+    tiled_top: bool,
+    tiled_right: bool,
+    tiled_bottom: bool,
+    tiled_left: bool,
+) -> ResizeGrips {
+    if !client_decorations || maximized || fullscreen {
+        return ResizeGrips::none();
+    }
+    ResizeGrips {
+        top: !tiled_top,
+        right: !tiled_right,
+        bottom: !tiled_bottom,
+        left: !tiled_left,
+    }
 }
 
 pub fn shell_rects(
@@ -121,5 +163,43 @@ mod tests {
         let r = shell_rects(1440.0, 900.0, true, 0.0, true, 9999.0);
         assert_eq!(r.projects.2, PROJECTS_MIN);
         assert_eq!(r.inspector.2, INSPECTOR_MAX);
+    }
+
+    #[test]
+    fn resize_grips_follow_client_frame_and_tiling() {
+        assert_eq!(
+            resize_grips(false, false, false, false, false, false, false),
+            ResizeGrips::none()
+        );
+        assert_eq!(
+            resize_grips(true, true, false, false, false, false, false),
+            ResizeGrips::none()
+        );
+        assert_eq!(
+            resize_grips(true, false, true, false, false, false, false),
+            ResizeGrips::none()
+        );
+        assert_eq!(
+            resize_grips(true, false, false, false, false, false, false),
+            ResizeGrips {
+                top: true,
+                right: true,
+                bottom: true,
+                left: true,
+            }
+        );
+        assert_eq!(
+            resize_grips(true, false, false, false, true, false, false),
+            ResizeGrips {
+                top: true,
+                right: false,
+                bottom: true,
+                left: true,
+            }
+        );
+        assert_eq!(
+            resize_grips(true, false, false, true, true, true, true),
+            ResizeGrips::none()
+        );
     }
 }

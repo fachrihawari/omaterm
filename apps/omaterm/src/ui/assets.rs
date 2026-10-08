@@ -17,6 +17,11 @@ pub const PANEL_LEFT: &str = "panel-left";
 pub const PANEL_RIGHT: &str = "panel-right";
 pub const FOLDER_PLUS: &str = "folder-plus";
 pub const CLOSE: &str = "x";
+pub const MINUS: &str = "minus";
+pub const SQUARE: &str = "square";
+pub const COPY: &str = "copy";
+pub const MAXIMIZE: &str = "maximize";
+pub const MINIMIZE: &str = "minimize";
 pub const PLUS: &str = "plus";
 pub const SEARCH: &str = "search";
 pub const INFO: &str = "info";
@@ -130,6 +135,10 @@ const ICONS: &[(&str, &[u8])] = &[
     icon_bytes!("split-square-vertical"),
     icon_bytes!("radio"),
     icon_bytes!("bell"),
+    icon_bytes!("square"),
+    icon_bytes!("copy"),
+    icon_bytes!("maximize"),
+    icon_bytes!("minimize"),
 ];
 
 /// One Lucide icon at an explicit logical size and tint. Size maps the

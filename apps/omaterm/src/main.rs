@@ -751,6 +751,24 @@ enum ActiveTabKind {
     Editor(DocumentId),
 }
 
+/// Present only after the compositor confirms a client-side frame.
+#[derive(Clone, Copy)]
+struct ClientWindowChrome {
+    minimize: bool,
+    maximize: bool,
+    maximized: bool,
+    fullscreen_toggle: bool,
+    fullscreen: bool,
+}
+
+#[derive(Clone, Copy)]
+enum WindowChromeAction {
+    Minimize,
+    Zoom,
+    Fullscreen,
+    Close,
+}
+
 fn active_tab_kind(surface: ActiveSurface, selected_tab: Option<TabId>) -> Option<ActiveTabKind> {
     match surface {
         ActiveSurface::Editor(document) => Some(ActiveTabKind::Editor(document)),
@@ -16204,7 +16222,7 @@ impl WorkspaceView {
     /// UI v5 Projects sidebar: 42px header (hide control, label, open
     /// action), project cards, bottom Open Project button. All actions go
     /// through the dispatcher; collapse only hides the panel.
-    fn render_projects_sidebar(&mut self, cx: &mut Context<Self>) -> Div {
+    fn render_projects_sidebar(&mut self, client_frame: bool, cx: &mut Context<Self>) -> Div {
         let mut cards: Vec<Div> = Vec::new();
         let selected = self.coordinator.selected_project_id();
         let mut label_counts = HashMap::<String, usize>::new();
@@ -16373,12 +16391,23 @@ impl WorkspaceView {
                                 sidebar_toggle_icon(true),
                             )),
                     )
-                    .child(
-                        div()
+                    .child({
+                        let mut brand = div()
                             .text_color(rgb(crate::ui::theme::MUTED))
-                            .child("OMATERM"),
-                    )
-                    .child(div().flex_1())
+                            .child("OMATERM");
+                        if client_frame {
+                            brand = brand.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(Self::begin_window_drag),
+                            );
+                        }
+                        brand
+                    })
+                    .child(if client_frame {
+                        self.window_drag_region(0.0, cx).into_any_element()
+                    } else {
+                        div().flex_1().into_any_element()
+                    })
                     // Project cycle pager: same target as `Alt+PageUp/PageDown`
                     // (`cycle_project`), visible always so the chord is
                     // discoverable without the cheatsheet.
@@ -17126,7 +17155,309 @@ impl WorkspaceView {
     /// UI v5 header row (42px): reveal-projects control when hidden, the
     /// terminal tab strip, new-tab control, then search and inspector
     /// toggle pinned right. Exactly one visible surface is active.
-    fn render_header(&mut self, cx: &mut Context<Self>) -> Div {
+    /// Client-side window frame. `None` when the desktop draws the frame.
+    fn client_window_chrome(window: &Window) -> Option<ClientWindowChrome> {
+        if !matches!(
+            window.window_decorations(),
+            gpui::Decorations::Client { .. }
+        ) {
+            return None;
+        }
+        let controls = window.window_controls();
+        let fullscreen = window.is_fullscreen();
+        Some(ClientWindowChrome {
+            minimize: controls.minimize && !fullscreen,
+            maximize: controls.maximize && !fullscreen,
+            maximized: window.is_maximized(),
+            fullscreen_toggle: controls.fullscreen,
+            fullscreen,
+        })
+    }
+
+    fn resize_grips_for(window: &Window) -> crate::ui::geometry::ResizeGrips {
+        match window.window_decorations() {
+            gpui::Decorations::Client { tiling } => crate::ui::geometry::resize_grips(
+                true,
+                window.is_maximized(),
+                window.is_fullscreen(),
+                tiling.top,
+                tiling.right,
+                tiling.bottom,
+                tiling.left,
+            ),
+            gpui::Decorations::Server => crate::ui::geometry::ResizeGrips::none(),
+        }
+    }
+
+    fn begin_window_drag(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down || event.button != MouseButton::Left {
+            return;
+        }
+        if !matches!(
+            window.window_decorations(),
+            gpui::Decorations::Client { .. }
+        ) || window.is_fullscreen()
+        {
+            return;
+        }
+        if event.click_count >= 2 {
+            if window.window_controls().maximize {
+                window.zoom_window();
+            }
+            return;
+        }
+        window.start_window_move();
+    }
+
+    fn begin_window_resize(
+        &mut self,
+        edge: gpui::ResizeEdge,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down || event.button != MouseButton::Left {
+            return;
+        }
+        let grips = Self::resize_grips_for(window);
+        let allowed = match edge {
+            gpui::ResizeEdge::Top => grips.top,
+            gpui::ResizeEdge::Bottom => grips.bottom,
+            gpui::ResizeEdge::Left => grips.left,
+            gpui::ResizeEdge::Right => grips.right,
+            gpui::ResizeEdge::TopLeft => grips.top && grips.left,
+            gpui::ResizeEdge::TopRight => grips.top && grips.right,
+            gpui::ResizeEdge::BottomLeft => grips.bottom && grips.left,
+            gpui::ResizeEdge::BottomRight => grips.bottom && grips.right,
+        };
+        if !allowed {
+            return;
+        }
+        cx.stop_propagation();
+        window.start_window_resize(edge);
+    }
+
+    fn on_window_chrome(
+        &mut self,
+        action: WindowChromeAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down {
+            return;
+        }
+        cx.stop_propagation();
+        window.focus(&self.focus_handle);
+        match action {
+            WindowChromeAction::Minimize => window.minimize_window(),
+            WindowChromeAction::Zoom => window.zoom_window(),
+            WindowChromeAction::Fullscreen => window.toggle_fullscreen(),
+            WindowChromeAction::Close => self.begin_shutdown(window.window_handle(), cx),
+        }
+    }
+
+    /// `min_w` of 0 lets the projects-header spacer shrink.
+    fn window_drag_region(&self, min_w: f32, cx: &mut Context<Self>) -> Div {
+        let mut region = div().flex_1().h_full();
+        if min_w > 0.0 {
+            region = region.min_w(px(min_w));
+        }
+        region.on_mouse_down(MouseButton::Left, cx.listener(Self::begin_window_drag))
+    }
+
+    fn window_chrome_button(
+        &self,
+        glyph: &'static str,
+        action: WindowChromeAction,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .p(px(6.0))
+            .rounded(px(7.0))
+            .flex_shrink_0()
+            .text_color(rgb(crate::ui::theme::MUTED))
+            .hover(|style| style.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    view.on_window_chrome(action, window, cx);
+                }),
+            )
+            .child(crate::ui::primitives::cmd_icon(
+                glyph,
+                16.0,
+                crate::ui::theme::MUTED,
+            ))
+    }
+
+    fn render_window_buttons(&self, chrome: ClientWindowChrome, cx: &mut Context<Self>) -> Div {
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .flex_shrink_0();
+        if chrome.minimize {
+            row = row.child(self.window_chrome_button(
+                crate::ui::assets::MINUS,
+                WindowChromeAction::Minimize,
+                cx,
+            ));
+        }
+        if chrome.maximize {
+            let glyph = if chrome.maximized {
+                crate::ui::assets::COPY
+            } else {
+                crate::ui::assets::SQUARE
+            };
+            row = row.child(self.window_chrome_button(glyph, WindowChromeAction::Zoom, cx));
+        }
+        if chrome.fullscreen_toggle {
+            let glyph = if chrome.fullscreen {
+                crate::ui::assets::MINIMIZE
+            } else {
+                crate::ui::assets::MAXIMIZE
+            };
+            row = row.child(self.window_chrome_button(glyph, WindowChromeAction::Fullscreen, cx));
+        }
+        row.child(self.window_chrome_button(
+            crate::ui::assets::CLOSE,
+            WindowChromeAction::Close,
+            cx,
+        ))
+    }
+
+    fn resize_grip(
+        &self,
+        edge: gpui::ResizeEdge,
+        cursor: gpui::CursorStyle,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div().absolute().occlude().cursor(cursor).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                view.begin_window_resize(edge, event, window, cx);
+            }),
+        )
+    }
+
+    fn attach_resize_grips(
+        &self,
+        mut root: Div,
+        grips: crate::ui::geometry::ResizeGrips,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let grip = crate::ui::geometry::WINDOW_GRIP;
+        let corner = crate::ui::geometry::WINDOW_CORNER;
+        if grips.top {
+            root = root.child(
+                self.resize_grip(gpui::ResizeEdge::Top, gpui::CursorStyle::ResizeUpDown, cx)
+                    .top(px(0.0))
+                    .left(px(if grips.left { corner } else { 0.0 }))
+                    .right(px(if grips.right { corner } else { 0.0 }))
+                    .h(px(grip)),
+            );
+        }
+        if grips.bottom {
+            root = root.child(
+                self.resize_grip(
+                    gpui::ResizeEdge::Bottom,
+                    gpui::CursorStyle::ResizeUpDown,
+                    cx,
+                )
+                .bottom(px(0.0))
+                .left(px(if grips.left { corner } else { 0.0 }))
+                .right(px(if grips.right { corner } else { 0.0 }))
+                .h(px(grip)),
+            );
+        }
+        if grips.left {
+            root = root.child(
+                self.resize_grip(
+                    gpui::ResizeEdge::Left,
+                    gpui::CursorStyle::ResizeLeftRight,
+                    cx,
+                )
+                .left(px(0.0))
+                .top(px(if grips.top { corner } else { 0.0 }))
+                .bottom(px(if grips.bottom { corner } else { 0.0 }))
+                .w(px(grip)),
+            );
+        }
+        if grips.right {
+            root = root.child(
+                self.resize_grip(
+                    gpui::ResizeEdge::Right,
+                    gpui::CursorStyle::ResizeLeftRight,
+                    cx,
+                )
+                .right(px(0.0))
+                .top(px(if grips.top { corner } else { 0.0 }))
+                .bottom(px(if grips.bottom { corner } else { 0.0 }))
+                .w(px(grip)),
+            );
+        }
+        if grips.top && grips.left {
+            root = root.child(
+                self.resize_grip(
+                    gpui::ResizeEdge::TopLeft,
+                    gpui::CursorStyle::ResizeUpLeftDownRight,
+                    cx,
+                )
+                .top(px(0.0))
+                .left(px(0.0))
+                .w(px(corner))
+                .h(px(corner)),
+            );
+        }
+        if grips.top && grips.right {
+            root = root.child(
+                self.resize_grip(
+                    gpui::ResizeEdge::TopRight,
+                    gpui::CursorStyle::ResizeUpRightDownLeft,
+                    cx,
+                )
+                .top(px(0.0))
+                .right(px(0.0))
+                .w(px(corner))
+                .h(px(corner)),
+            );
+        }
+        if grips.bottom && grips.left {
+            root = root.child(
+                self.resize_grip(
+                    gpui::ResizeEdge::BottomLeft,
+                    gpui::CursorStyle::ResizeUpRightDownLeft,
+                    cx,
+                )
+                .bottom(px(0.0))
+                .left(px(0.0))
+                .w(px(corner))
+                .h(px(corner)),
+            );
+        }
+        if grips.bottom && grips.right {
+            root = root.child(
+                self.resize_grip(
+                    gpui::ResizeEdge::BottomRight,
+                    gpui::CursorStyle::ResizeUpLeftDownRight,
+                    cx,
+                )
+                .bottom(px(0.0))
+                .right(px(0.0))
+                .w(px(corner))
+                .h(px(corner)),
+            );
+        }
+        root
+    }
+
+    fn render_header(&mut self, chrome: Option<ClientWindowChrome>, cx: &mut Context<Self>) -> Div {
         let mut row = div()
             .h(px(crate::ui::geometry::HEADER_H))
             .flex()
@@ -17630,6 +17961,9 @@ impl WorkspaceView {
                     .child("No project selected"),
             );
         }
+        if chrome.is_some() {
+            tabs = tabs.child(self.window_drag_region(24.0, cx));
+        }
         row = row.child(tabs);
         // One trailing cluster (new tab, finder, inspector toggle) so the
         // three controls share the same 4px gap and padding — previously the
@@ -17691,6 +18025,9 @@ impl WorkspaceView {
                         sidebar_toggle_icon(visible),
                     ))
             });
+        if let Some(chrome) = chrome {
+            trailing = trailing.child(self.render_window_buttons(chrome, cx));
+        }
         row.child(trailing)
     }
 
@@ -19385,7 +19722,8 @@ impl Render for WorkspaceView {
         // UI v5 frame: Projects | resizer | (header over main+inspector,
         // then main | resizer | inspector), then the global status bar.
         let viewport_h: f32 = window.viewport_size().height.into();
-        let header = self.render_header(cx);
+        let chrome = Self::client_window_chrome(window);
+        let header = self.render_header(chrome, cx);
         let mut center_row = div()
             .flex()
             .flex_1()
@@ -19437,7 +19775,7 @@ impl Render for WorkspaceView {
             .min_w(px(0.0))
             .min_h(px(0.0));
         if self.projects_visible {
-            content_row = content_row.child(self.render_projects_sidebar(cx));
+            content_row = content_row.child(self.render_projects_sidebar(chrome.is_some(), cx));
             content_row = content_row.child(self.render_projects_resizer(cx));
         }
         content_row = content_row.child(center_row);
@@ -19449,7 +19787,7 @@ impl Render for WorkspaceView {
         let weak = cx.entity().downgrade();
         let drop_weak = weak.clone();
         let wheel_weak = weak.clone();
-        div()
+        let shell = div()
             .relative()
             .track_focus(&self.focus_handle)
             .on_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
@@ -19568,7 +19906,8 @@ impl Render for WorkspaceView {
                     }
                     stack
                 }
-            })
+            });
+        self.attach_resize_grips(shell, Self::resize_grips_for(window), cx)
     }
 }
 
@@ -20437,6 +20776,8 @@ fn main() {
                 },
                 |window, cx| {
                     window.set_window_title("OmaTerm");
+                    // Ignored when the compositor keeps a server-side frame.
+                    window.request_decorations(gpui::WindowDecorations::Client);
                     let view = cx.new(|cx| WorkspaceView::new(window, cx));
                     let weak = view.downgrade();
                     let window_handle = window.window_handle();

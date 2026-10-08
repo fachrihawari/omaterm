@@ -2,6 +2,21 @@
 
 ## Current position
 
+### Client-side window frame — 2026-10-08
+
+- Windows that receive no desktop title bar can now be moved, resized,
+  maximized, and fullscreened from the app. OmaTerm requests client-side
+  decorations; the header drag region and window buttons render only after
+  the compositor confirms client mode. A server-side frame is left to the
+  desktop. Resize grips stay off while maximized, fullscreen, or on a tiled
+  edge. Close still goes through `begin_shutdown`.
+- Verification: `cargo fmt --all --check` PASS, `cargo clippy --release -p
+  omaterm --all-targets -- -D warnings` PASS (known transitive
+  `proc-macro-error2` notice only), `cargo test --release -p omaterm
+  resize_grips` PASS, `cargo test --release -p omaterm every_vendored_icon`
+  PASS. Full workspace suite was not re-run. Native Wayland drag, edge
+  resize, maximize, fullscreen, and dirty-editor close remain manual.
+
 ### CI history-test fix: `%aI` Zulu timestamps — 2026-10-08
 
 - CI (`check` job) failed every run since Oct 6 on three history tests
