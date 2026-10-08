@@ -2,6 +2,73 @@
 
 ## Current position
 
+### Overlay row-overlap fix — 2026-10-07
+
+- Keybindings rows no longer paint over each other: chord strings run to
+  28 chars (`Alt+Up/Down/Left/Right/Enter`) but the column was 150px with
+  no wrapping guard, so long chords wrapped to two lines inside fixed 28px
+  rows. The chord column is now 224px (fits the longest chord) with
+  `whitespace_nowrap` + `truncate` + `overflow_hidden`; the action column
+  and the row itself got the same guards.
+- Branch rows: the flex name div gains `min_w(0)` (matching the finder
+  rows it was copied from) plus row-level `overflow_hidden`, so rows size
+  to the box instead of mis-sizing past it.
+- Both overlay lists are now shrink-to-fit (`min(OVERLAY_LIST_H, n ×
+  row_h)`): a 1-branch picker or short cheatsheet no longer leaves a
+  cavernous empty box under the rows.
+- Follow-up: branch/keybindings rows force `w_full` (belt-and-braces
+  against under-fill regardless of list item sizing), and cheatsheet rows
+  relax 28px → 32px to match finder/branch density after "too compact"
+  feedback.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (727 passed, 0 failed), `cargo clippy --workspace --all-targets --
+  -D warnings` PASS with forced re-lint (known transitive
+  `proc-macro-error2` notice only), `cargo build --release --bin
+  omaterm-desktop` PASS, `git diff --check` PASS. Native Wayland
+  re-validation (same three screenshots, rebuilt binary) remains manual.
+
+### Overlay list bounds + clean-tree commit hiding — 2026-10-07
+
+- All floating overlay lists now share one bounded budget
+  (`OVERLAY_LIST_H = 360px`, same as the finder): the keybindings
+  cheatsheet (was up to 24 unbounded rows) and the branch picker (was up
+  to 500 unbounded rows) render through natively-scrolled `uniform_list`s
+  with `track_scroll`, so long lists clip inside the box instead of off the
+  window bottom. New `keybindings_scroll_handle` / `branch_scroll_handle`
+  fields; row chrome is unchanged (cheatsheet rows now fixed 28px,
+  branch rows keep 32px). This also fixes the 500-element picker blowup.
+- Keyboard selection follows into view in both overlays
+  (`keybindings_follow` / `branch_follow` with `scroll_to_item Center`,
+  reset to top on open/filter change); wheel scrolls natively inside the
+  lists like the finder.
+- Clean worktrees hide the commit draft box, the Commit button, and the
+  `Working tree clean` line (all dead space — Commit is a no-op with zero
+  staged files). Branch row, Fetch/Pull/Push, stash and graph stay visible,
+  so a clean tab reads branch → sync → stash → graph.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (727 passed, 0 failed), `cargo clippy --workspace --all-targets --
+  -D warnings` PASS with forced re-lint (known transitive
+  `proc-macro-error2` notice only), `cargo build --release --bin
+  omaterm-desktop` PASS, `git diff --check` PASS. Native Wayland check
+  (short-window cheatsheet scroll, 100+ branch repo scroll + row actions,
+  clean-tree layout) remains manual.
+
+### Branch picker auto-close + header upstream removal — 2026-10-07
+
+- Choosing a branch (click or Enter) now closes the picker on successful
+  checkout (`branch_mutate` gained `close_on_success`, true only for the
+  checkout path); rename/delete/create flows keep it open, and the
+  `Switched to …` toast confirms HEAD moved.
+- Removed the `origin/main` upstream label from the Git header branch row:
+  it repeated the branch name with a remote prefix. The row is now branch
+  trigger + optional sync pill + refresh; sync state still surfaces via the
+  pill and the Fetch/Pull/Push buttons.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (727 passed, 0 failed), `cargo clippy --workspace --all-targets --
+  -D warnings` PASS (known transitive `proc-macro-error2` notice only),
+  `git diff --check` PASS. Native Wayland check (checkout closes picker,
+  rename/delete keep it open) remains manual.
+
 ### Git/header/toast/editor UX batch — 2026-10-07
 
 - Sync buttons no longer hang the UI: `git_sync_action` now resolves the

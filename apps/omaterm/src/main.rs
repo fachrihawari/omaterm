@@ -140,6 +140,9 @@ struct WorkspaceView {
     keybindings_open: bool,
     keybindings_query: String,
     keybindings_selected: usize,
+    /// Native scroll handle for the cheatsheet list (bounded overlay list,
+    /// keyboard selection follows via `scroll_to_item`).
+    keybindings_scroll_handle: UniformListScrollHandle,
     /// Zoomed pane per tab (Alt+Z): the maximized leaf view-local state.
     /// Absent means no zoom. Stale ids prune lazily on read; zoom never
     /// touches the core tree, splits, or sessions — purely a render/resize
@@ -331,6 +334,9 @@ struct WorkspaceView {
     /// Last-good branch lists per project (fetched on picker open and
     /// after mutations, never polled).
     branch_lists: HashMap<ProjectId, GitBranchList>,
+    /// Native scroll handle for the branch picker list (bounded overlay
+    /// list, keyboard selection follows via `scroll_to_item`).
+    branch_scroll_handle: UniformListScrollHandle,
     /// Background branch-list completions `(generation, project, outcome)`.
     /// Root resolution and `git branch` both run on the worker (never the
     /// UI thread); stale generations drop on close/switch.
@@ -1449,6 +1455,11 @@ const TOAST_MS: u64 = 1400;
 /// Most transient toasts shown at once; older ones drop off the top.
 const MAX_TOASTS: usize = 4;
 
+/// Fixed list height for overlay pickers (finder, keybindings, branches).
+/// Overlay lists only scroll inside a bounded box, so every overlay list
+/// shares this budget while titles/inputs/footers stay fixed outside it.
+const OVERLAY_LIST_H: f32 = 360.0;
+
 /// Severity of a floating toast. Success/info are transient confirmations;
 /// error carries a stable-code failure message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2304,6 +2315,7 @@ impl WorkspaceView {
             keybindings_open: false,
             keybindings_query: String::new(),
             keybindings_selected: 0,
+            keybindings_scroll_handle: UniformListScrollHandle::new(),
             project_context_menu: None,
             zoomed_panes: HashMap::new(),
             font_zoom: 1.0,
@@ -2390,6 +2402,7 @@ impl WorkspaceView {
             stash_tx,
             stash_rx,
             branch_lists: HashMap::new(),
+            branch_scroll_handle: UniformListScrollHandle::new(),
             branch_tx,
             branch_rx,
             branch_generation: 0,
@@ -9430,6 +9443,8 @@ impl WorkspaceView {
         self.set_input_owner(InputOwner::Keybindings);
         self.keybindings_query.clear();
         self.keybindings_selected = 0;
+        self.keybindings_scroll_handle
+            .scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -9470,6 +9485,18 @@ impl WorkspaceView {
             .collect()
     }
 
+    /// Keep the cheatsheet highlight inside the bounded list after every
+    /// keyboard move or filter change.
+    fn keybindings_follow(&mut self) {
+        let count = self.keybindings_rows().len().min(24);
+        if count == 0 {
+            return;
+        }
+        self.keybindings_selected = self.keybindings_selected.min(count - 1);
+        self.keybindings_scroll_handle
+            .scroll_to_item(self.keybindings_selected, ScrollStrategy::Center);
+    }
+
     /// Keyboard while the cheatsheet is open: typing filters, arrows/page
     /// keys move, `Enter`/`Esc`/`Alt+Shift+K` dismisses back to the previous
     /// surface. Nothing reaches the shell.
@@ -9491,34 +9518,42 @@ impl WorkspaceView {
             "backspace" => {
                 self.keybindings_query.pop();
                 self.keybindings_selected = 0;
+                self.keybindings_scroll_handle
+                    .scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
             }
             "up" => {
                 self.keybindings_selected = self.keybindings_selected.saturating_sub(1);
+                self.keybindings_follow();
                 cx.notify();
             }
             "down" => {
                 let rows = self.keybindings_rows().len();
                 if self.keybindings_selected + 1 < rows.max(1) {
                     self.keybindings_selected += 1;
+                    self.keybindings_follow();
                     cx.notify();
                 }
             }
             "home" => {
                 self.keybindings_selected = 0;
+                self.keybindings_follow();
                 cx.notify();
             }
             "end" => {
                 self.keybindings_selected = self.keybindings_rows().len().saturating_sub(1);
+                self.keybindings_follow();
                 cx.notify();
             }
             "pageup" => {
                 self.keybindings_selected = self.keybindings_selected.saturating_sub(8);
+                self.keybindings_follow();
                 cx.notify();
             }
             "pagedown" => {
                 let last = self.keybindings_rows().len().saturating_sub(1);
                 self.keybindings_selected = (self.keybindings_selected + 8).min(last);
+                self.keybindings_follow();
                 cx.notify();
             }
             _ => {
@@ -9536,6 +9571,8 @@ impl WorkspaceView {
                 {
                     self.keybindings_query.push(ch);
                     self.keybindings_selected = 0;
+                    self.keybindings_scroll_handle
+                        .scroll_to_item(0, ScrollStrategy::Top);
                     cx.notify();
                 }
             }
@@ -12938,13 +12975,19 @@ impl WorkspaceView {
             .clone()
             .unwrap_or_else(|| "detached".to_string());
         // Only show the sync pill when there is an upstream and something to
-        // sync; `↑0 ↓0` is noise on every repo without a remote.
+        // sync; `↑0 ↓0` is noise on every repo without a remote. The raw
+        // upstream path (`origin/main`) is intentionally not shown: it
+        // repeats the branch name with a remote prefix.
         let sync_pill = (status.upstream.is_some() && (status.ahead > 0 || status.behind > 0))
             .then(|| format!("↑{} ↓{}", status.ahead, status.behind));
-        // Tracking identity lives here (muted, after the branch) instead of a
-        // separate footer line that read as an orphaned path.
-        let upstream_label = status.upstream.clone();
         let can_commit = !status.staged.is_empty();
+        // Commit UI only exists when there is something to commit: on a
+        // clean tree the draft box, the (always disabled) Commit button and
+        // the "Working tree clean" line are all dead space. Branch, sync
+        // actions, stash and graph stay visible either way.
+        let dirty = !status.staged.is_empty()
+            || !status.unstaged.is_empty()
+            || !status.untracked.is_empty();
         let input_focused = self.git_panel.commit_focused();
         let draft = self.git_panel.commit_draft(project).to_owned();
         let input_content = if draft.is_empty() && !input_focused {
@@ -12974,113 +13017,106 @@ impl WorkspaceView {
                 .child(div().child(draft))
                 .child(div().w(px(2.0)).h(px(15.0)).bg(caret_bg))
         };
-        bar = bar.child(
-            div()
-                .p_3()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .border_b_1()
-                .border_color(rgb(crate::ui::theme::BORDER))
-                .child(
-                    // Branch row: identity + sync status on the left, a
-                    // single refresh control on the right. Remote actions
-                    // live on their own row so they never crowd the branch.
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .role(crate::ui::metrics::BODY_11)
-                        .text_color(rgb(crate::ui::theme::TEXT))
-                        .child(crate::ui::assets::icon(
-                            crate::ui::assets::GIT_BRANCH,
-                            16.0,
-                            crate::ui::theme::PURPLE,
-                        ))
-                        .child(
-                            branch_picker_trigger(project, branch_name, cx)
-                                .px_1()
-                                .rounded(px(4.0)),
+        let mut header = div()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .border_b_1()
+            .border_color(rgb(crate::ui::theme::BORDER))
+            .child(
+                // Branch row: identity + sync status on the left, a
+                // single refresh control on the right. Remote actions
+                // live on their own row so they never crowd the branch.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .role(crate::ui::metrics::BODY_11)
+                    .text_color(rgb(crate::ui::theme::TEXT))
+                    .child(crate::ui::assets::icon(
+                        crate::ui::assets::GIT_BRANCH,
+                        16.0,
+                        crate::ui::theme::PURPLE,
+                    ))
+                    .child(
+                        branch_picker_trigger(project, branch_name, cx)
+                            .px_1()
+                            .rounded(px(4.0)),
+                    )
+                    .children(sync_pill.map(|sync_pill| {
+                        crate::ui::metrics::text_role(
+                            crate::ui::primitives::pill()
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded_full(),
+                            crate::ui::metrics::META_9,
                         )
-                        .children(sync_pill.map(|sync_pill| {
-                            crate::ui::metrics::text_role(
-                                crate::ui::primitives::pill()
-                                    .px(px(6.0))
-                                    .py(px(2.0))
-                                    .rounded_full(),
-                                crate::ui::metrics::META_9,
-                            )
+                        .text_color(rgb(crate::ui::theme::MUTED))
+                        .child(sync_pill)
+                    }))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .p(px(6.0))
+                            .rounded(px(7.0))
                             .text_color(rgb(crate::ui::theme::MUTED))
-                            .child(sync_pill)
-                        }))
-                        .child(div().flex_1())
-                        .children(upstream_label.map(|upstream| {
-                            crate::ui::metrics::text_role(
-                                div().min_w(px(0.0)).truncate(),
-                                crate::ui::metrics::META_9,
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.git_dirty_hint = true;
+                                    cx.notify();
+                                }),
                             )
-                            .text_color(rgb(crate::ui::theme::MUTED))
-                            .child(upstream)
-                        }))
-                        .child(
-                            div()
-                                .p(px(6.0))
-                                .rounded(px(7.0))
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        view.git_dirty_hint = true;
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(crate::ui::primitives::cmd_icon(
-                                    crate::ui::assets::REFRESH,
-                                    14.0,
-                                    crate::ui::theme::MUTED,
-                                )),
+                            .child(crate::ui::primitives::cmd_icon(
+                                crate::ui::assets::REFRESH,
+                                14.0,
+                                crate::ui::theme::MUTED,
+                            )),
+                    ),
+            )
+            .child(
+                // Remote actions: equal-width segmented row, so all three
+                // stay visible and aligned at any inspector width.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div().flex_1().min_w(px(0.0)).child(
+                            self.git_sync_button(project, "Fetch", "fetch", cx)
+                                .w_full()
+                                .flex()
+                                .justify_center(),
                         ),
-                )
-                .child(
-                    // Remote actions: equal-width segmented row, so all three
-                    // stay visible and aligned at any inspector width.
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div().flex_1().min_w(px(0.0)).child(
-                                self.git_sync_button(project, "Fetch", "fetch", cx)
-                                    .w_full()
-                                    .flex()
-                                    .justify_center(),
-                            ),
-                        )
-                        .child(
-                            div().flex_1().min_w(px(0.0)).child(
-                                self.git_sync_button(project, "Pull", "pull", cx)
-                                    .w_full()
-                                    .flex()
-                                    .justify_center(),
-                            ),
-                        )
-                        .child(
-                            div().flex_1().min_w(px(0.0)).child(
-                                self.git_sync_button(project, "Push", "push", cx)
-                                    .w_full()
-                                    .flex()
-                                    .justify_center(),
-                            ),
+                    )
+                    .child(
+                        div().flex_1().min_w(px(0.0)).child(
+                            self.git_sync_button(project, "Pull", "pull", cx)
+                                .w_full()
+                                .flex()
+                                .justify_center(),
                         ),
-                )
+                    )
+                    .child(
+                        div().flex_1().min_w(px(0.0)).child(
+                            self.git_sync_button(project, "Push", "push", cx)
+                                .w_full()
+                                .flex()
+                                .justify_center(),
+                        ),
+                    ),
+            );
+        if dirty {
+            header = header
                 .child(
                     div()
                         .min_h(px(56.0))
@@ -13154,19 +13190,13 @@ impl WorkspaceView {
                         }),
                     )
                     .child("Commit"),
-                ),
-        );
-        // A clean worktree still shows the Graph below: compose Changes and
-        // history independently instead of returning early.
-        if status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty() {
-            bar = bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(crate::ui::theme::MUTED))
-                    .child("Working tree clean"),
-            );
-        } else {
+                );
+        }
+        bar = bar.child(header);
+        // Change groups only exist on a dirty tree; a clean tree goes
+        // straight to stash + graph (the "Working tree clean" line and the
+        // commit UI above are hidden with it).
+        if dirty {
             let selected = self
                 .git_panel
                 .selected_path(project)
@@ -15855,17 +15885,40 @@ impl WorkspaceView {
         self.branch_in_flight = None;
         self.branch_generation = self.branch_generation.wrapping_add(1);
         self.branch_dirty_hint = true;
+        self.branch_scroll_handle
+            .scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
+    }
+
+    /// Keep the picker highlight inside the bounded list after keyboard
+    /// moves (the list only renders the visible window).
+    fn branch_follow(&mut self) {
+        let count = self
+            .branch_picker
+            .as_ref()
+            .and_then(|picker| self.branch_lists.get(&picker.project))
+            .map(|list| list.branches.len())
+            .unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        if let Some(picker) = self.branch_picker.as_mut() {
+            picker.selected = picker.selected.min(count - 1);
+            self.branch_scroll_handle
+                .scroll_to_item(picker.selected, ScrollStrategy::Center);
+        }
     }
 
     /// Dispatch a picker mutation, then refetch the list and nudge the
     /// status/graph pollers (HEAD may have moved). Errors surface as an
     /// input notice with the stable code text; checkout success toasts
-    /// (HEAD visibly moved).
+    /// (HEAD visibly moved). `close_on_success` dismisses the overlay so a
+    /// checkout returns to the panel; edit/delete flows keep it open.
     fn branch_mutate(
         &mut self,
         command: OmaCommand,
         toast: Option<String>,
+        close_on_success: bool,
         cx: &mut Context<Self>,
     ) {
         if self.branch_picker.is_none() {
@@ -15877,6 +15930,9 @@ impl WorkspaceView {
                     self.show_toast(message, cx);
                 }
                 self.input_notice = None;
+                if close_on_success {
+                    self.branch_picker = None;
+                }
                 self.branch_dirty_hint = true;
                 self.git_dirty_hint = true;
                 self.history_dirty_hint = true;
@@ -15889,7 +15945,8 @@ impl WorkspaceView {
         }
     }
 
-    /// Checkout the picker's selected row (Enter/click).
+    /// Checkout the picker's selected row (Enter/click). Success closes the
+    /// picker; rename/delete buttons never reach here.
     fn branch_checkout_selected(&mut self, cx: &mut Context<Self>) {
         let (project, name) = match &self.branch_picker {
             Some(picker) => (
@@ -15906,6 +15963,7 @@ impl WorkspaceView {
             self.branch_mutate(
                 OmaCommand::Git(GitCommand::BranchCheckout { project, name }),
                 Some(toast),
+                true,
                 cx,
             );
         }
@@ -15952,6 +16010,7 @@ impl WorkspaceView {
                 force: false,
             }),
             None,
+            false,
             cx,
         );
     }
@@ -15991,7 +16050,7 @@ impl WorkspaceView {
             picker.input.clear();
             picker.input_mode = None;
         }
-        self.branch_mutate(command, toast, cx);
+        self.branch_mutate(command, toast, false, cx);
     }
 
     /// Keyboard while the branch picker is open. Up/Down move, Enter
@@ -16009,12 +16068,14 @@ impl WorkspaceView {
                     picker.selected = picker.selected.saturating_sub(1);
                     picker.delete_arm = None;
                 }
+                self.branch_follow();
                 cx.notify();
             }
             "down" => {
                 if let Some(picker) = self.branch_picker.as_mut() {
                     picker.selected = picker.selected.saturating_add(1);
                 }
+                self.branch_follow();
                 cx.notify();
             }
             "enter" | "return" | "kpenter" => {
@@ -16707,154 +16768,197 @@ impl WorkspaceView {
                 }
                 let count = list.branches.len();
                 let selected = selected.min(count.saturating_sub(1));
-                for (index, branch) in list.branches.iter().enumerate() {
-                    let active = index == selected;
-                    let armed = delete_arm
-                        .as_ref()
-                        .is_some_and(|(name, _)| *name == branch.name);
-                    let track_icon = match branch.track {
-                        omaterm_core::GitBranchTrack::UpToDate => None,
-                        omaterm_core::GitBranchTrack::Ahead(_) => Some(crate::ui::assets::ARROW_UP),
-                        omaterm_core::GitBranchTrack::Behind(_) => {
-                            Some(crate::ui::assets::ARROW_DOWN)
-                        }
-                        omaterm_core::GitBranchTrack::Diverged { .. } => {
-                            Some(crate::ui::assets::ARROW_UP_DOWN)
-                        }
-                        omaterm_core::GitBranchTrack::NoUpstream => None,
-                    };
-                    let upstream = branch.upstream.clone();
-                    let name = branch.name.clone();
-                    let rename_old = branch.name.clone();
-                    let is_head = branch.is_head;
-                    let mut row = div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .h(px(32.0))
-                        .rounded(px(7.0))
-                        .bg(rgb(if active {
-                            crate::ui::theme::TREE_SELECTED_BG
-                        } else {
-                            crate::ui::theme::PANEL
-                        }))
-                        .text_color(rgb(if active {
-                            crate::ui::theme::TEXT
-                        } else {
-                            crate::ui::theme::TEXT2
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                if let Some(picker) = view.branch_picker.as_mut() {
-                                    picker.selected = index;
-                                }
-                                view.branch_checkout_selected(cx);
-                            }),
-                        )
-                        .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(
-                            if branch.is_head {
-                                crate::ui::theme::BLUE
-                            } else {
-                                crate::ui::theme::BORDER2
-                            },
-                        )))
-                        .child(div().flex_1().truncate().child(name))
-                        .children(upstream.map(|upstream| {
-                            div()
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .child(upstream)
-                        }))
-                        .children(track_icon.map(|track| {
-                            crate::ui::assets::icon(track, 12.0, crate::ui::theme::MUTED)
-                        }));
-                    row = row
-                        .child(
-                            div()
-                                .p(px(6.0))
-                                .rounded(px(7.0))
-                                .text_color(rgb(crate::ui::theme::MUTED))
-                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        if let Some(picker) = view.branch_picker.as_mut() {
-                                            picker.selected = index;
-                                            picker.input = rename_old.clone();
-                                            picker.input_mode = Some(BranchInputMode::Rename {
-                                                old: rename_old.clone(),
-                                            });
-                                        }
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(crate::ui::assets::icon(
-                                    crate::ui::assets::PENCIL,
-                                    14.0,
-                                    crate::ui::theme::MUTED,
-                                )),
-                        )
-                        .child(
-                            div()
-                                .p(px(6.0))
-                                .rounded(px(7.0))
-                                .text_color(rgb(if armed {
-                                    crate::ui::theme::RED
-                                } else {
-                                    crate::ui::theme::MUTED
-                                }))
-                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        if is_head {
-                                            view.input_notice =
-                                                Some("Delete: branch is checked out".into());
-                                            cx.notify();
-                                            return;
-                                        }
-                                        // Two-step arm lives in
-                                        // branch_delete_selected: first press
-                                        // arms ("Sure?"), second confirms.
-                                        if let Some(picker) = view.branch_picker.as_mut() {
-                                            picker.selected = index;
-                                        }
-                                        view.branch_delete_selected(cx);
-                                    }),
-                                )
-                                .child(crate::ui::assets::icon(
-                                    if armed {
-                                        crate::ui::assets::CHECK
+                // Bounded natively-scrolled list (same overlay budget as the
+                // finder): large branch sets clip inside the box instead of
+                // off the window bottom, and keyboard selection follows into
+                // view. Row chrome is unchanged; only the container scrolls.
+                let entries = Arc::new(list.branches.clone());
+                let armed_name: Option<String> = delete_arm.map(|(name, _)| name);
+                let branch_list = uniform_list(
+                    "branch-results",
+                    count,
+                    cx.processor(move |_view, range: std::ops::Range<usize>, _window, _cx| {
+                        range
+                            .map(|index| {
+                                let branch = &entries[index];
+                                let active = index == selected;
+                                let armed = armed_name.as_deref() == Some(branch.name.as_str());
+                                let track_icon = match branch.track {
+                                    omaterm_core::GitBranchTrack::UpToDate => None,
+                                    omaterm_core::GitBranchTrack::Ahead(_) => {
+                                        Some(crate::ui::assets::ARROW_UP)
+                                    }
+                                    omaterm_core::GitBranchTrack::Behind(_) => {
+                                        Some(crate::ui::assets::ARROW_DOWN)
+                                    }
+                                    omaterm_core::GitBranchTrack::Diverged { .. } => {
+                                        Some(crate::ui::assets::ARROW_UP_DOWN)
+                                    }
+                                    omaterm_core::GitBranchTrack::NoUpstream => None,
+                                };
+                                let upstream = branch.upstream.clone();
+                                let name = branch.name.clone();
+                                let rename_old = branch.name.clone();
+                                let is_head = branch.is_head;
+                                let mut row = div()
+                                    .id(index)
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_3()
+                                    .w_full()
+                                    .h(px(32.0))
+                                    .overflow_hidden()
+                                    .rounded(px(7.0))
+                                    .bg(rgb(if active {
+                                        crate::ui::theme::TREE_SELECTED_BG
                                     } else {
-                                        crate::ui::assets::TRASH
-                                    },
-                                    14.0,
-                                    if armed {
-                                        crate::ui::theme::RED
+                                        crate::ui::theme::PANEL
+                                    }))
+                                    .text_color(rgb(if active {
+                                        crate::ui::theme::TEXT
                                     } else {
-                                        crate::ui::theme::MUTED
-                                    },
-                                )),
-                        );
-                    body = body.child(row);
-                }
+                                        crate::ui::theme::TEXT2
+                                    }))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        _cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            if let Some(picker) = view.branch_picker.as_mut() {
+                                                picker.selected = index;
+                                            }
+                                            view.branch_checkout_selected(cx);
+                                        }),
+                                    )
+                                    .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(
+                                        if branch.is_head {
+                                            crate::ui::theme::BLUE
+                                        } else {
+                                            crate::ui::theme::BORDER2
+                                        },
+                                    )))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .truncate()
+                                            .child(name),
+                                    )
+                                    .children(upstream.map(|upstream| {
+                                        div()
+                                            .text_color(rgb(crate::ui::theme::MUTED))
+                                            .child(upstream)
+                                    }))
+                                    .children(track_icon.map(|track| {
+                                        crate::ui::assets::icon(
+                                            track,
+                                            12.0,
+                                            crate::ui::theme::MUTED,
+                                        )
+                                    }));
+                                row = row
+                                    .child(
+                                        div()
+                                            .p(px(6.0))
+                                            .rounded(px(7.0))
+                                            .text_color(rgb(crate::ui::theme::MUTED))
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG))
+                                            })
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                _cx.listener(move |view, _, window, cx| {
+                                                    if view.shutting_down {
+                                                        return;
+                                                    }
+                                                    cx.stop_propagation();
+                                                    window.focus(&view.focus_handle);
+                                                    if let Some(picker) =
+                                                        view.branch_picker.as_mut()
+                                                    {
+                                                        picker.selected = index;
+                                                        picker.input = rename_old.clone();
+                                                        picker.input_mode =
+                                                            Some(BranchInputMode::Rename {
+                                                                old: rename_old.clone(),
+                                                            });
+                                                    }
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child(crate::ui::assets::icon(
+                                                crate::ui::assets::PENCIL,
+                                                14.0,
+                                                crate::ui::theme::MUTED,
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .p(px(6.0))
+                                            .rounded(px(7.0))
+                                            .text_color(rgb(if armed {
+                                                crate::ui::theme::RED
+                                            } else {
+                                                crate::ui::theme::MUTED
+                                            }))
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(crate::ui::theme::ROW_HOVER_BG))
+                                            })
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                _cx.listener(move |view, _, window, cx| {
+                                                    if view.shutting_down {
+                                                        return;
+                                                    }
+                                                    cx.stop_propagation();
+                                                    window.focus(&view.focus_handle);
+                                                    if is_head {
+                                                        view.input_notice = Some(
+                                                            "Delete: branch is checked out".into(),
+                                                        );
+                                                        cx.notify();
+                                                        return;
+                                                    }
+                                                    // Two-step arm lives in
+                                                    // branch_delete_selected: first press
+                                                    // arms, second confirms.
+                                                    if let Some(picker) =
+                                                        view.branch_picker.as_mut()
+                                                    {
+                                                        picker.selected = index;
+                                                    }
+                                                    view.branch_delete_selected(cx);
+                                                }),
+                                            )
+                                            .child(crate::ui::assets::icon(
+                                                if armed {
+                                                    crate::ui::assets::CHECK
+                                                } else {
+                                                    crate::ui::assets::TRASH
+                                                },
+                                                14.0,
+                                                if armed {
+                                                    crate::ui::theme::RED
+                                                } else {
+                                                    crate::ui::theme::MUTED
+                                                },
+                                            )),
+                                    );
+                                row
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(self.branch_scroll_handle.clone())
+                .h(px((count as f32 * 32.0).min(OVERLAY_LIST_H)));
+                body = body.child(branch_list);
                 if list.truncated {
                     body = body.child(
                         div()
@@ -18480,7 +18584,8 @@ impl WorkspaceView {
     /// `shortcuts::SHORTCUTS` registry (the Omarchy `Super+K` analog; `Super`
     /// stays with the compositor). Same floating frame as the finder; rows
     /// never dispatch, `Enter`/`Esc` just closes.
-    fn render_keybindings(&mut self, box_x: f32, box_w: f32) -> Div {
+    fn render_keybindings(&mut self, box_x: f32, box_w: f32, cx: &mut Context<Self>) -> Div {
+        use gpui::IntoElement as _;
         let rows = self.keybindings_rows();
         let selected = self.keybindings_selected.min(rows.len().saturating_sub(1));
         let query = if self.keybindings_query.is_empty() {
@@ -18488,53 +18593,76 @@ impl WorkspaceView {
         } else {
             self.keybindings_query.clone()
         };
-        let mut list = div().flex().flex_col();
-        if rows.is_empty() {
-            list = list.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_color(rgb(crate::ui::theme::MUTED))
-                    .child("No matches."),
-            );
-        }
-        for (index, shortcut) in rows.iter().enumerate().take(24) {
-            let active = index == selected;
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
-                    .bg(rgb(if active {
-                        crate::ui::theme::TREE_SELECTED_BG
-                    } else {
-                        crate::ui::theme::PANEL
-                    }))
-                    .child(
-                        div()
-                            .w(px(150.0))
-                            .flex_shrink_0()
-                            .text_color(rgb(crate::ui::theme::TEXT))
-                            .child(shortcut.chord.to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .text_color(rgb(crate::ui::theme::TEXT2))
-                            .child(shortcut.action.to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_color(rgb(crate::ui::theme::MUTED))
-                            .child(shortcut.context.to_string()),
-                    ),
-            );
-        }
+        // Bounded natively-scrolled list (same overlay budget as the
+        // finder): long registries clip inside the box instead of off the
+        // window bottom, and keyboard selection follows into view.
+        let list_body = if rows.is_empty() {
+            div()
+                .px_3()
+                .py_2()
+                .text_color(rgb(crate::ui::theme::MUTED))
+                .child("No matches.")
+                .into_any_element()
+        } else {
+            let entries = Arc::new(rows);
+            let list_count = entries.len().min(24);
+            uniform_list(
+                "keybindings-results",
+                list_count,
+                cx.processor(move |_view, range: std::ops::Range<usize>, _window, _cx| {
+                    range
+                        .map(|index| {
+                            let shortcut = entries[index];
+                            let active = index == selected;
+                            div()
+                                .id(index)
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .px_3()
+                                .w_full()
+                                .h(px(32.0))
+                                .overflow_hidden()
+                                .bg(rgb(if active {
+                                    crate::ui::theme::TREE_SELECTED_BG
+                                } else {
+                                    crate::ui::theme::PANEL
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(224.0))
+                                        .flex_shrink_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .truncate()
+                                        .text_color(rgb(crate::ui::theme::TEXT))
+                                        .child(shortcut.chord.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .truncate()
+                                        .text_color(rgb(crate::ui::theme::TEXT2))
+                                        .child(shortcut.action.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_color(rgb(crate::ui::theme::MUTED))
+                                        .child(shortcut.context.to_string()),
+                                )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(self.keybindings_scroll_handle.clone())
+            .h(px((list_count as f32 * 32.0).min(OVERLAY_LIST_H)))
+            .into_any_element()
+        };
         let overlay = div()
             .flex()
             .flex_col()
@@ -18556,7 +18684,7 @@ impl WorkspaceView {
                     .child(query),
             )
             .child(div().h(px(1.0)).w_full().bg(rgb(crate::ui::theme::BORDER)))
-            .child(list)
+            .child(list_body)
             .child(
                 div()
                     .px_3()
@@ -19252,7 +19380,7 @@ impl Render for WorkspaceView {
             let pane_w = shell.main_view.2.max(1.0);
             let box_w = (pane_w - 32.0).clamp(200.0, 640.0);
             let box_x = ((pane_w - box_w) / 2.0).max(0.0);
-            pane_area = pane_area.child(self.render_keybindings(box_x, box_w));
+            pane_area = pane_area.child(self.render_keybindings(box_x, box_w, cx));
         }
         // UI v5 frame: Projects | resizer | (header over main+inspector,
         // then main | resizer | inspector), then the global status bar.
