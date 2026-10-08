@@ -118,8 +118,6 @@ UI thread.
 **Requirements:** Linux x86_64 with Wayland or X11 and working GPU drivers.
 Omarchy/Hyprland is the first-class target.
 
-### Option 1 — Quick install (no AUR needed)
-
 Prebuilt binary tarball from GitHub Releases, checksum-verified:
 
 ```bash
@@ -144,37 +142,9 @@ On Arch/Omarchy, make sure the runtime libraries are present:
 sudo pacman -S --needed gcc-libs fontconfig freetype2 libxkbcommon libx11 libxcb wayland vulkan-icd-loader
 ```
 
-### Option 2 — Arch / Omarchy (AUR)
-
-```bash
-yay -S omaterm-bin        # fast: prebuilt binary
-# or
-yay -S omaterm            # source build
-```
-
-### Option 3 — Build from source
-
-You need Rust (see `rust-toolchain.toml`, currently 1.98.1) plus the native
-GUI dependencies. On Arch:
-
-```bash
-sudo pacman -S --needed wayland libxkbcommon libx11 libxcb fontconfig freetype2 mesa vulkan-icd-loader pkgconf
-```
-
-On Ubuntu/Debian:
-
-```bash
-sudo apt install libfontconfig1-dev libfreetype-dev libvulkan1 libwayland-dev libx11-dev libxcb1-dev libxkbcommon-dev pkg-config
-```
-
-Then:
-
-```bash
-git clone https://github.com/fachrihawari/omaterm
-cd omaterm
-cargo build --release --bin omaterm --bin omaterm-desktop
-./target/release/omaterm-desktop
-```
+> **Note:** AUR packages (`omaterm` / `omaterm-bin`) are prepared in
+> [`packaging/`](packaging/) but not published yet — AUR submissions are
+> currently paused. The install script above is the supported method for now.
 
 ## Usage
 
@@ -275,6 +245,30 @@ Track live progress in [`docs/status.md`](docs/status.md), release gates in
 [`AGENTS.md`](AGENTS.md) is the entry point for AI-assisted development.
 
 ## Contributing
+
+You need Rust (see `rust-toolchain.toml`, currently 1.98.1) plus the native
+GUI dependencies. On Arch:
+
+```bash
+sudo pacman -S --needed wayland libxkbcommon libx11 libxcb fontconfig freetype2 mesa vulkan-icd-loader pkgconf
+```
+
+On Ubuntu/Debian:
+
+```bash
+sudo apt install libfontconfig1-dev libfreetype-dev libvulkan1 libwayland-dev libx11-dev libxcb1-dev libxkbcommon-dev pkg-config
+```
+
+Then:
+
+```bash
+git clone https://github.com/fachrihawari/omaterm
+cd omaterm
+cargo build --release --bin omaterm --bin omaterm-desktop
+./target/release/omaterm-desktop
+```
+
+Before submitting changes, run:
 
 ```bash
 cargo fmt --all --check
