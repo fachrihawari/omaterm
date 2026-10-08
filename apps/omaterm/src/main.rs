@@ -1,7 +1,7 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
@@ -125,6 +125,10 @@ struct WorkspaceView {
     save_revision: u64,
     observed_cwds: HashMap<PaneId, PersistedCwd>,
     restored_failures: HashMap<PaneId, (omaterm_core::ProjectId, omaterm_core::TabId, String)>,
+    /// Pane restores postponed because the launch queue was full, oldest
+    /// first. Drained by the launch poller as slots free up; cleared on
+    /// shutdown and pruned when their pane closes.
+    restore_backlog: VecDeque<RestoreRequest>,
     pending_ui_launches: HashMap<u64, PendingUiLaunch>,
     /// Identity/root/epoch captured when a native file open is dispatched
     /// (S7). A late async completion is compared against live state so it can
@@ -1879,6 +1883,19 @@ enum SpawnRetry {
     Tab(omaterm_core::ProjectId),
 }
 
+/// One postponed pane restore. The launch queue is bounded while a
+/// workspace may hold more panes, so excess restores wait here and are
+/// dispatched in waves as slots free up (see `drain_restore_backlog`).
+/// Staged scrollback stays in the router keyed by pane, so a postponed
+/// launch replays the same history when its turn comes.
+#[derive(Clone)]
+struct RestoreRequest {
+    project: omaterm_core::ProjectId,
+    tab: omaterm_core::TabId,
+    pane: PaneId,
+    directory: std::path::PathBuf,
+}
+
 /// How long the scroll thumb lingers after the last scroll input.
 const SCROLL_INDICATOR_FADE_MS: u64 = 800;
 /// Bound for the per-session terminal wheel accumulator (line units). A
@@ -2310,6 +2327,7 @@ impl WorkspaceView {
             save_revision: 0,
             observed_cwds: HashMap::new(),
             restored_failures: HashMap::new(),
+            restore_backlog: VecDeque::new(),
             pending_ui_launches: HashMap::new(),
             pending_native_opens: HashMap::new(),
             launch_poller_active: false,
@@ -2755,24 +2773,15 @@ impl WorkspaceView {
                     history::RestoreOutcome::Disabled | history::RestoreOutcome::Missing => {}
                 }
             }
-            match self.dispatch_command(
-                OmaCommand::Terminal(TerminalCommand::RestorePane {
+            self.enqueue_restore(
+                RestoreRequest {
                     project,
                     tab,
                     pane,
                     directory: cwd,
-                }),
+                },
                 cx,
-            ) {
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(target: "omaterm::terminal", "restored pane {pane:?} shell failed: {error}");
-                    self.persistence_warning =
-                        Some(format!("Some restored terminals could not start: {error}"));
-                    self.restored_failures
-                        .insert(pane, (project, tab, error.to_string()));
-                }
-            }
+            );
         }
         self.observed_cwds = self.current_cwds();
         // Terminal workspace is installed first; document restores are then
@@ -3135,6 +3144,7 @@ impl WorkspaceView {
             .as_mut()
             .and_then(metrics::MetricsEmitter::take_shutdown_thread);
         self.pending_ui_launches.clear();
+        self.restore_backlog.clear();
         self.pending_palette_mru.clear();
         self.pending_palette_origins.clear();
         self.save_revision = self.save_revision.wrapping_add(1);
@@ -3213,6 +3223,78 @@ impl WorkspaceView {
         .detach();
     }
 
+    /// Dispatch one pane restore, postponing into the backlog when the
+    /// launch queue is full. A restored workspace may hold more panes than
+    /// launch slots, so the excess waits for the poller instead of failing:
+    /// only genuine errors land in `restored_failures` with the banner.
+    fn enqueue_restore(&mut self, request: RestoreRequest, cx: &mut Context<Self>) {
+        if !self.coordinator.launch_slots_available() {
+            self.restore_backlog.push_back(request);
+            self.ensure_launch_poller(cx);
+            return;
+        }
+        match self.dispatch_restore(&request, cx) {
+            Ok(_) => {}
+            Err(error) if error.message == router::LAUNCH_QUEUE_FULL_MESSAGE => {
+                // Raced with another launch (IPC, split): wait like the rest.
+                self.restore_backlog.push_back(request);
+                self.ensure_launch_poller(cx);
+            }
+            Err(error) => self.note_restore_failure(&request, &error),
+        }
+    }
+
+    fn dispatch_restore(
+        &mut self,
+        request: &RestoreRequest,
+        cx: &mut Context<Self>,
+    ) -> Result<CommandOutput, omaterm_core::CommandError> {
+        self.dispatch_command(
+            OmaCommand::Terminal(TerminalCommand::RestorePane {
+                project: request.project,
+                tab: request.tab,
+                pane: request.pane,
+                directory: request.directory.clone(),
+            }),
+            cx,
+        )
+    }
+
+    fn note_restore_failure(
+        &mut self,
+        request: &RestoreRequest,
+        error: &omaterm_core::CommandError,
+    ) {
+        tracing::warn!(target: "omaterm::terminal", "restored pane {:?} shell failed: {error}", request.pane);
+        self.persistence_warning =
+            Some(format!("Some restored terminals could not start: {error}"));
+        self.restored_failures.insert(
+            request.pane,
+            (request.project, request.tab, error.to_string()),
+        );
+    }
+
+    /// Dispatch backlogged restores while launch slots are free. Runs on the
+    /// launch poller after completions land, so a large workspace starts in
+    /// waves instead of failing past the queue bound. Stops at the first
+    /// full-queue race (re-queued at the front, order preserved).
+    fn drain_restore_backlog(&mut self, cx: &mut Context<Self>) {
+        while self.coordinator.launch_slots_available() {
+            let Some(request) = self.restore_backlog.pop_front() else {
+                break;
+            };
+            match self.dispatch_restore(&request, cx) {
+                Ok(_) => {}
+                Err(error) if error.message == router::LAUNCH_QUEUE_FULL_MESSAGE => {
+                    self.restore_backlog.push_front(request);
+                    self.ensure_launch_poller(cx);
+                    break;
+                }
+                Err(error) => self.note_restore_failure(&request, &error),
+            }
+        }
+    }
+
     fn retry_restored_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
         let Some((project, tab, _)) = self.restored_failures.get(&pane).cloned() else {
             return;
@@ -3222,18 +3304,29 @@ impl WorkspaceView {
             .get(&pane)
             .map(|cwd| cwd.path.clone())
             .unwrap_or_default();
-        match self.dispatch_command(
-            OmaCommand::Terminal(TerminalCommand::RestorePane {
-                project,
-                tab,
-                pane,
-                directory: cwd,
-            }),
-            cx,
-        ) {
+        let request = RestoreRequest {
+            project,
+            tab,
+            pane,
+            directory: cwd,
+        };
+        if !self.coordinator.launch_slots_available() {
+            // Keep the failure entry (the pane still has no shell) and let
+            // the poller start it when a slot frees up.
+            self.restore_backlog.push_back(request);
+            self.ensure_launch_poller(cx);
+            cx.notify();
+            return;
+        }
+        match self.dispatch_restore(&request, cx) {
             Ok(CommandOutput::Pending { .. }) => {}
             Ok(_) => {
                 self.restored_failures.remove(&pane);
+            }
+            Err(error) if error.message == router::LAUNCH_QUEUE_FULL_MESSAGE => {
+                self.restore_backlog.push_back(request);
+                self.ensure_launch_poller(cx);
+                cx.notify();
             }
             Err(error) => {
                 if let Some((_, _, message)) = self.restored_failures.get_mut(&pane) {
@@ -3915,8 +4008,10 @@ impl WorkspaceView {
                 self.schedule_next_document_restore(cx);
             }
         }
+        self.drain_restore_backlog(cx);
         self.schedule_metrics_flush(cx);
         let pending = self.coordinator.has_pending_launches()
+            || !self.restore_backlog.is_empty()
             || self.coordinator.has_pending_editor_operations()
             || self.coordinator.has_pending_process_queries()
             || self.document_restore_in_flight.is_some()
@@ -4139,6 +4234,8 @@ impl WorkspaceView {
 
     fn finish_close(&mut self, closed: omaterm_terminal::ClosedPane) {
         self.restored_failures.remove(&closed.pane_id);
+        self.restore_backlog
+            .retain(|request| request.pane != closed.pane_id);
         self.coordinator.discard_restore_history(closed.pane_id);
         // Per-pane history follows pane lifetime, including panes closed
         // with their tab or project: every close path funnels through here.

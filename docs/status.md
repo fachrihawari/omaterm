@@ -2,6 +2,92 @@
 
 ## Current position
 
+### History repaint compaction (scrollback dedup) — 2026-10-08
+
+- User report: mbx repaints its logo block over and over (visible animation),
+  and after restart the restored scrollback holds many copies of it.
+- Capture (`script`/pty @120x40, forced rebuild): 2.8MB, 227 frames, each
+  `CUU 27` + `ED` + full SGR-styled block redraw, no alt-screen, no inner
+  rewinds. Empirical replay into `AlacrittyEngine`: replay is faithful
+  (`visible_match=true` always), but on grids shorter than the block every
+  frame scrolls — rows=24 → 227 `Compiling` copies / 937 scrollback lines;
+  rows=15 → 2971 lines. Tall grids (≥30) show zero copies. Copies persist
+  into archives and re-seed every restart, so garbage grows per cycle.
+- Fix (two phases, one worker gate): `compact_repaint_runs`
+  (`crates/omaterm-terminal/src/history.rs`) — Phase 1 collapses no-`\n`
+  `\r` spans to the final segment only when no earlier segment is longer
+  (varying widths keep trailing junk live, so they pass through); Phase 2
+  splits flat segments at top-level rewind escapes (`CUU`/`CUP`/`RI`,
+  other escapes skipped wholesale, torn escape aborts) and keeps
+  prelude + first + last frame of runs with ≥3 frames. Newlines never
+  added/removed, resizes are barriers, unchanged segments keep original
+  events verbatim, re-chunked at the recorder's 64KiB frame bound.
+- Soundness: `replay_equivalent` replays both streams into scratch engines
+  and compares visible cells (text+colors+flags), cursor, dims and alt
+  state (scrollback excluded by design). The background writer
+  (`compacted_scrollback` in `apps/omaterm/src/history.rs:save_job`, the
+  single persistence funnel) saves compacted bytes only on success, else
+  the original — worst case is today's behavior. Hot path untouched
+  (bounded memcpys only); journal untouched (not PTY bytes). Contract delta
+  recorded here: restore rebuilds the final visible state, not the
+  animation intermediates.
+- Tests: 13 new terminal unit tests (spinner collapse, width-vary
+  pass-through + gate rejection, resize barriers, fragmentation
+  independence, `\n` conservation, run first+last/middle-drop, 3-frame
+  minimum, lone-CUU/motionless/SGR-only pass-through, idempotency,
+  short-grid 4x garbage collapse with identical viewport, tall-grid
+  byte-identical scrollback) + 3 worker tests (compacted save loads
+  collapsed, verify-reject keeps original, animation run end-to-end).
+- Verification: `cargo fmt --all --check` PASS, full `cargo test
+  --workspace` PASS (all suites green, incl. 266-test desktop with 3 new
+  worker tests and 182-test terminal with 13 new compaction tests),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS (known
+  transitive `proc-macro-error2` notice only),
+  `cargo build --release --bin omaterm --bin omaterm-desktop` PASS,
+  `git diff --check` PASS. Note: 7 `omaterm-cli` wire-mapping tests failed
+  twice mid-session (full suite and stashed clean tree) but pass on
+  re-run with no repo change touching that crate — treated as
+  order-dependent flakes, not a regression. Native Wayland validation
+  (mbx build with history on → restart → one logo in scroll-up; restart
+  again → still one) remains manual.
+
+### Restore launch wave backlog (queue-full fix) — 2026-10-08
+
+- User report (screenshots): after restart, `Some restored terminals could not
+  start: terminal launch queue is full` with per-pane `Restored shell could
+  not start` + manual Retry. Sidebar held 5 projects; 8 shells started (the
+  queue bound), the rest failed.
+- Root cause: `restore_snapshot` (`apps/omaterm/src/main.rs`) dispatched one
+  `RestorePane` per pane in a tight synchronous loop, while
+  `prepare_launch` (`apps/omaterm/src/router.rs`) rejects everything past
+  `MAX_PENDING_LAUNCHES = 8` — completions only drain on the 20ms async
+  poller, so any workspace with >8 panes could never restart cleanly.
+- Fix: `RestoreRequest` backlog (`VecDeque`) on the view. `enqueue_restore`
+  postpones when `launch_slots_available()` is false; `drain_restore_backlog`
+  runs inside `finish_pending_launches` as slots free; the poller stays alive
+  while the backlog is non-empty. Queue-full is matched via the shared
+  `router::LAUNCH_QUEUE_FULL_MESSAGE` const (covers both the pending-map gate
+  and the spawn-queue backpressure arm, which share the string); genuine
+  errors keep the existing banner + `restored_failures` path. Manual Retry
+  routes full-queue to the backlog too; `finish_close` prunes and shutdown
+  clears it. Staged scrollback is keyed by pane in the router, so postponed
+  launches replay identical history.
+- Tests: new `restore_wave_beyond_launch_capacity_reports_full_then_drains`
+  (9 empty panes, 8 slots: 9th reports queue-full, drain frees slots, 9th
+  then commits; project deleted with session shutdown like neighboring
+  tests). Router contract pinned GPUI-free; view glue verified by review
+  (WorkspaceView needs a GPUI context, not unit-constructible).
+- Verification: `cargo fmt --all --check` PASS, full `cargo test
+  --workspace` PASS (all suites green, incl. 266-test desktop binary),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS (known
+  transitive `proc-macro-error2` notice only), `cargo build --release --bin
+  omaterm-desktop` PASS, `git diff --check` PASS. Note: 7 `omaterm-cli`
+  wire-mapping tests failed twice mid-session (full suite and stashed clean
+  tree) but pass on re-run with no repo change touching that crate —
+  treated as order-dependent flakes, not a regression. Native Wayland
+  validation (>8 panes across projects → restart with zero
+  banners/retries) remains manual.
+
 ### Windows build target — 2026-10-08
 
 GPUI's Windows backend is selected by `target_os`, so the desktop crate enables
