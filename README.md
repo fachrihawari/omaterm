@@ -23,6 +23,8 @@ current source-specific evidence and open acceptance gates.
 ## Development environment
 
 The target is Linux, with Omarchy/Wayland first and X11 build support.
+Windows is a second build target: the desktop, terminal, and CLI compile
+there, while process listing stays empty until a native query exists.
 `rust-toolchain.toml` and CI pin Rust 1.98.1 with `rustfmt` and `clippy`.
 Dependency versions, licenses, native packages, and any explicitly recorded local
 toolchain override are tracked in [dependencies](docs/dependencies.md).

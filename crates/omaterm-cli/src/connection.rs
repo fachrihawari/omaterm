@@ -5,7 +5,6 @@
 //! and returns the response. Subcommands never auto-launch the desktop.
 
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use omaterm_ipc::{IpcClient, IpcServer};
@@ -81,17 +80,26 @@ pub fn load_token(socket: &Path) -> Result<Option<CapabilityToken>, CliFailure> 
             "OmaTerm credential path is not a regular file; refusing to use it",
         ));
     }
-    if metadata.uid() != unsafe { libc::getuid() } {
-        return Err(CliFailure::auth(
-            "OmaTerm credential is not owned by this user; refusing to use it",
-        ));
-    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.uid() != unsafe { libc::getuid() } {
+            return Err(CliFailure::auth(
+                "OmaTerm credential is not owned by this user; refusing to use it",
+            ));
+        }
         if metadata.permissions().mode() & 0o077 != 0 {
             return Err(CliFailure::auth(
                 "OmaTerm credential file has unsafe permissions; refusing to use it",
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(CliFailure::auth(
+                "OmaTerm credential path is a reparse point; refusing to use it",
             ));
         }
     }

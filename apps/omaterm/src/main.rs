@@ -31,7 +31,7 @@ use omaterm_state::{
 use omaterm_terminal::{
     CellPoint, CellWidth, Key, KeyEvent, KeyModifiers, ScrollCommand, SearchHit, SelectionRange,
     TermColor, TerminalSession, TerminalViewport, WorkspaceCoordinator, encode_key, extract_text,
-    find_hits, format_dropped_paths, needs_paste_confirm, poll_fd_readable, prepare_paste,
+    find_hits, format_dropped_paths, needs_paste_confirm, prepare_paste,
 };
 mod credentials;
 mod diff_panel;
@@ -3270,13 +3270,13 @@ impl WorkspaceView {
         tx: async_channel::Sender<TerminalViewport>,
     ) {
         std::thread::spawn(move || {
-            let master_fd = match session.lock() {
-                Ok(session) => session.pty_fd(),
+            let wait = match session.lock() {
+                Ok(session) => session.output_wait(),
                 Err(_) => return,
             };
             let mut last: Option<TerminalViewport> = None;
             loop {
-                let readable = poll_fd_readable(master_fd, 200).unwrap_or(true);
+                let readable = wait.poll(200).unwrap_or(true);
                 let (snapshot, exited) = {
                     let mut session = match session.lock() {
                         Ok(guard) => guard,

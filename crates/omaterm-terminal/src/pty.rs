@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -65,7 +67,7 @@ impl PtyProcess {
             .map(str::to_string)
             .or_else(|| std::env::var("SHELL").ok())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "/bin/bash".to_string());
+            .unwrap_or_else(default_shell);
 
         let mut env = HashMap::new();
         // Honest capability advertisement: alacritty parser handles 256 +
@@ -92,6 +94,8 @@ impl PtyProcess {
             working_directory: Some(working_directory.to_path_buf()),
             drain_on_exit: true,
             env,
+            #[cfg(windows)]
+            escape_args: true,
         };
         let window_size = WindowSize {
             num_lines: rows.max(1),
@@ -112,7 +116,14 @@ impl PtyProcess {
                 });
             }
         };
+        #[cfg(unix)]
         let child_pid = pty.child().id();
+        #[cfg(windows)]
+        let child_pid = pty
+            .child_watcher()
+            .pid()
+            .map(std::num::NonZeroU32::get)
+            .unwrap_or(0);
         Ok(Self {
             pty,
             child_pid,
@@ -163,42 +174,64 @@ impl PtyProcess {
     /// Closing a terminal view calls this first so shutdown is explicit and
     /// testable rather than implicit in the drop path.
     pub fn terminate(&self) -> std::io::Result<()> {
-        // SAFETY: `kill` with a signal number touches no memory.
-        let result = unsafe { libc::kill(self.child_pid as libc::pid_t, libc::SIGHUP) };
-        if result != 0 {
-            return Err(std::io::Error::last_os_error());
+        #[cfg(unix)]
+        {
+            // SAFETY: `kill` with a signal number touches no memory.
+            let result = unsafe { libc::kill(self.child_pid as libc::pid_t, libc::SIGHUP) };
+            if result != 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
         }
-        Ok(())
+        #[cfg(windows)]
+        {
+            terminate_process(self.pty.child_watcher().raw_handle())
+        }
     }
 
     /// Escalate only while this PID is still our unreaped child. `WNOWAIT`
     /// leaves reaping to Alacritty's `Child`, avoiding PID reuse and a second
-    /// owner of the child's exit status.
+    /// owner of the child's exit status. Windows `TerminateProcess` is already
+    /// final, so the force path is the same call.
     pub fn terminate_force(&self) {
+        #[cfg(unix)]
         if !self.child_exit_ready() {
             // SAFETY: the unreaped child retains its PID; kill touches no memory.
             unsafe { libc::kill(self.child_pid as libc::pid_t, libc::SIGKILL) };
         }
+        #[cfg(windows)]
+        {
+            let _ = terminate_process(self.pty.child_watcher().raw_handle());
+        }
     }
 
     fn child_exit_ready(&self) -> bool {
-        // SAFETY: zero initialization is valid for siginfo_t and waitid fills
-        // the valid pointer. WNOWAIT observes exit without reaping the child.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let result = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                self.child_pid,
-                &mut info,
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        if result == 0 {
-            // SAFETY: waitid initializes the SIGCHLD payload; zero PID means
-            // the child has not exited yet under WNOHANG.
-            return unsafe { info.si_pid() } != 0;
+        #[cfg(unix)]
+        {
+            // SAFETY: zero initialization is valid for siginfo_t and waitid fills
+            // the valid pointer. WNOWAIT observes exit without reaping the child.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.child_pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result == 0 {
+                // SAFETY: waitid initializes the SIGCHLD payload; zero PID means
+                // the child has not exited yet under WNOHANG.
+                (unsafe { info.si_pid() }) != 0
+            } else {
+                std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
+            }
         }
-        std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
+        #[cfg(windows)]
+        {
+            true
+        }
     }
 
     pub fn child_pid(&self) -> u32 {
@@ -211,11 +244,34 @@ impl PtyProcess {
 
     /// Best-effort Linux CWD discovery via `/proc/<pid>/cwd`.
     pub fn child_cwd(&self) -> Option<PathBuf> {
-        let link = format!("/proc/{}/cwd", self.child_pid);
-        std::fs::read_link(link).ok()
+        #[cfg(unix)]
+        {
+            let link = format!("/proc/{}/cwd", self.child_pid);
+            std::fs::read_link(link).ok()
+        }
+        #[cfg(windows)]
+        {
+            None
+        }
+    }
+
+    /// Copy of the wait token. On Linux this is the PTY master fd, which stays
+    /// open for the session lifetime so the reader can sleep without the lock.
+    pub fn output_wait(&self) -> OutputWait {
+        #[cfg(unix)]
+        {
+            OutputWait {
+                fd: self.pty.file().as_raw_fd(),
+            }
+        }
+        #[cfg(windows)]
+        {
+            OutputWait
+        }
     }
 
     /// Raw master FD for `poll()`-based waiting. Stable for the session lifetime.
+    #[cfg(unix)]
     pub fn as_raw_fd(&self) -> RawFd {
         self.pty.file().as_raw_fd()
     }
@@ -225,13 +281,46 @@ impl PtyProcess {
     /// idle terminal near zero CPU: the reader thread sleeps in the kernel
     /// instead of spin-polling.
     pub fn poll_readable(&self, timeout_ms: i32) -> std::io::Result<bool> {
-        poll_fd_readable(self.as_raw_fd(), timeout_ms)
+        self.output_wait().poll(timeout_ms)
+    }
+}
+
+/// Wait token copied out of a session so the reader thread can sleep without
+/// holding the session lock.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+pub struct OutputWait {
+    fd: RawFd,
+}
+
+#[cfg(unix)]
+impl OutputWait {
+    pub fn poll(self, timeout_ms: i32) -> std::io::Result<bool> {
+        poll_fd_readable(self.fd, timeout_ms)
+    }
+}
+
+/// ConPTY delivery is internal to Alacritty's reader thread, so there is no
+/// kernel fd to sleep on. The desktop reader wakes on this interval and pumps
+/// a non-blocking read.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+pub struct OutputWait;
+
+#[cfg(windows)]
+impl OutputWait {
+    pub fn poll(self, timeout_ms: i32) -> std::io::Result<bool> {
+        if timeout_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
+        }
+        Ok(true)
     }
 }
 
 /// Block up to `timeout_ms` until `fd` is readable (or hung up / errored).
 /// Lock-free helper so the reader thread can wait without holding the
 /// session lock.
+#[cfg(unix)]
 pub fn poll_fd_readable(fd: RawFd, timeout_ms: i32) -> std::io::Result<bool> {
     let mut poll_fd = libc::pollfd {
         fd,
@@ -262,18 +351,55 @@ impl Drop for PtyProcess {
     }
 }
 
-fn write_bash_rcfile(token: &str) -> std::io::Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!(
-        "omaterm-bashrc-{}-{token}",
+fn bash_rc_owner() -> u32 {
+    #[cfg(unix)]
+    {
         // SAFETY: getuid has no preconditions and returns the current process UID.
         unsafe { libc::getuid() }
-    ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(&path)?;
+    }
+    #[cfg(windows)]
+    {
+        std::process::id()
+    }
+}
+
+fn default_shell() -> String {
+    #[cfg(windows)]
+    {
+        "powershell.exe".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "/bin/bash".to_string()
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process(handle: windows_sys::Win32::Foundation::HANDLE) -> std::io::Result<()> {
+    if handle.is_null() {
+        return Ok(());
+    }
+    // SAFETY: the handle is the child process owned by this PTY. The exit
+    // code is an arbitrary non-zero status.
+    let ok = unsafe { windows_sys::Win32::System::Threading::TerminateProcess(handle, 1) };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn write_bash_rcfile(token: &str) -> std::io::Result<PathBuf> {
+    let path = std::env::temp_dir().join(format!("omaterm-bashrc-{}-{token}", bash_rc_owner()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&path)?;
     if let Err(error) = file.write_all(crate::shell::bash_rcfile(token).as_bytes()) {
         let _ = std::fs::remove_file(&path);
         return Err(error);

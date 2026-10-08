@@ -540,7 +540,13 @@ impl TerminalSession {
         self.pty.child_pid()
     }
 
+    /// Wait token for the reader thread. On Linux this copies the PTY master fd.
+    pub fn output_wait(&self) -> crate::pty::OutputWait {
+        self.pty.output_wait()
+    }
+
     /// Raw PTY master FD for kernel-side waiting (stable for the lifetime).
+    #[cfg(unix)]
     pub fn pty_fd(&self) -> std::os::fd::RawFd {
         self.pty.as_raw_fd()
     }
@@ -607,7 +613,14 @@ impl TerminalSession {
     /// when the link resolves to an existing directory; records `Procfs`
     /// provenance so callers can distinguish it from shell reports.
     pub fn refresh_cwd_from_procfs(&mut self) -> bool {
-        self.refresh_cwd_with(&crate::platform::LinuxProcessInspector)
+        #[cfg(unix)]
+        {
+            self.refresh_cwd_with(&crate::platform::LinuxProcessInspector)
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
 
     /// CWD refresh through the [`ProcessInspector`] seam (unit-testable with

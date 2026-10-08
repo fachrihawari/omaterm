@@ -857,6 +857,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn blocked_stdin_is_covered_by_process_deadline() {
         use std::os::unix::fs::PermissionsExt;
@@ -881,6 +882,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(5));
     }
 
+    #[cfg(unix)]
     #[test]
     fn cancelled_git_process_is_killed_and_reaped() {
         use std::os::unix::fs::PermissionsExt;

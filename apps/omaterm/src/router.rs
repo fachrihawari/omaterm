@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,11 +23,23 @@ use omaterm_terminal::history::RecordedEvent;
 use omaterm_terminal::platform::{CpuSampler, ProcessScanControl, ProcessSnapshot, TerminateError};
 use omaterm_terminal::workspace::ClosedSessions;
 use omaterm_terminal::{
-    ClosedPane, CoordinatorError, LinuxProcessInspector, ProjectSessionCommit, SessionSpawnQueue,
+    ClosedPane, CoordinatorError, HostProcessInspector, ProjectSessionCommit, SessionSpawnQueue,
     SpawnCompletion, SplitSessionCommit, TerminalConfig, TerminalSession, WorkspaceCoordinator,
 };
 
 const MAX_PENDING_LAUNCHES: usize = 8;
+
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
 
 enum PendingTarget {
     Project {
@@ -203,7 +214,7 @@ impl Default for ProcessQueryState {
     }
 }
 
-/// One bounded background process-query worker. It owns the `LinuxProcessInspector`
+/// One bounded background process-query worker. It owns the `HostProcessInspector`
 /// and a long-lived `CpuSampler` so CPU deltas persist across queries, and
 /// never touches coordinator/UI state — the owner applies completions.
 struct ProcessQueryWorker {
@@ -213,7 +224,7 @@ struct ProcessQueryWorker {
 
 impl ProcessQueryWorker {
     fn new() -> Self {
-        let mut inspector = LinuxProcessInspector;
+        let mut inspector = HostProcessInspector::default();
         let mut sampler = CpuSampler::new();
         Self::with_runner(move |request, control| {
             run_process_query(&mut inspector, &mut sampler, request, control)
@@ -376,7 +387,7 @@ impl Drop for ProcessQueryWorker {
 /// previous query, ports attributed per pid, deduped and PID-sorted. Never
 /// touches the coordinator or UI.
 fn run_process_query(
-    inspector: &mut LinuxProcessInspector,
+    inspector: &mut HostProcessInspector,
     sampler: &mut CpuSampler,
     request: &ProcessQueryRequest,
     control: &ProcessScanControl,
@@ -490,7 +501,7 @@ pub struct CommandRouter {
     pending_editors: HashMap<u64, PendingEditor>,
     editor_project_generations: HashMap<ProjectId, u64>,
     editor_receipts: HashMap<EditorOperationId, u64>,
-    /// Bounded off-thread process query worker. Owns the `LinuxProcessInspector`
+    /// Bounded off-thread process query worker. Owns the `HostProcessInspector`
     /// and a persistent `CpuSampler`; the owner never scans `/proc` for `List`.
     process_query: Option<ProcessQueryWorker>,
     pending_process_queries: HashMap<u64, PendingProcessQuery>,
@@ -1034,7 +1045,7 @@ impl CommandRouter {
         {
             return unavailable(self, "editor I/O queue is full or closed");
         }
-        let path = PathBuf::from(std::ffi::OsString::from_vec(request.path_bytes.clone()));
+        let path = path_from_bytes(&request.path_bytes);
         let job = EditorIoJob::Open { path: path.clone() };
         let io_request = EditorIoRequest {
             root_inputs: Some(root.clone()),
@@ -1328,7 +1339,7 @@ impl CommandRouter {
             Ok(roots) => roots,
             Err(issue) => return CommandResult::Err(issue),
         };
-        let mut inspector = LinuxProcessInspector;
+        let mut inspector = HostProcessInspector::default();
         if pid == 0 || pid > i32::MAX as u32 {
             return err(ErrorCode::ProcessNotFound, "process does not exist");
         }

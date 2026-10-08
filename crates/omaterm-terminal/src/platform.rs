@@ -17,6 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::{
@@ -135,7 +136,15 @@ pub trait ProcessInspector {
     /// implementors (e.g. test stubs) do not have to grow a method they do not
     /// exercise.
     fn snapshot(&self, roots: &[u32], cap: usize) -> ProcessSnapshot {
-        linux_snapshot(roots, cap)
+        #[cfg(unix)]
+        {
+            linux_snapshot(roots, cap)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (roots, cap);
+            ProcessSnapshot::default()
+        }
     }
 
     /// Request termination of `pid` with `SIGTERM`.
@@ -144,9 +153,68 @@ pub trait ProcessInspector {
     /// of the contract even though this implementation is stateless, leaving
     /// room for adapters that track outstanding requests.
     fn terminate(&mut self, pid: u32) -> Result<(), TerminateError> {
-        linux_terminate(pid)
+        #[cfg(unix)]
+        {
+            linux_terminate(pid)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            Err(TerminateError::Other(std::io::ErrorKind::Unsupported))
+        }
     }
 }
+
+/// Windows adapter. Process listing stays empty until a native query exists;
+/// the terminal and CLI do not depend on it.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WindowsProcessInspector;
+
+#[cfg(windows)]
+impl WindowsProcessInspector {
+    pub fn snapshot_controlled(
+        &self,
+        roots: &[u32],
+        cap: usize,
+        control: &ProcessScanControl,
+    ) -> ProcessSnapshot {
+        let _ = (roots, cap, control);
+        ProcessSnapshot::default()
+    }
+}
+
+#[cfg(windows)]
+impl ProcessInspector for WindowsProcessInspector {
+    fn process_info(&self, _pid: u32) -> Option<ProcessInfo> {
+        None
+    }
+
+    fn descendants(&self, _pid: u32) -> Vec<ProcessInfo> {
+        Vec::new()
+    }
+
+    fn cwd_of(&self, _pid: u32) -> Option<PathBuf> {
+        None
+    }
+
+    fn listening_ports(&self, _pid: u32) -> Vec<ListeningPort> {
+        Vec::new()
+    }
+
+    fn snapshot(&self, _roots: &[u32], _cap: usize) -> ProcessSnapshot {
+        ProcessSnapshot::default()
+    }
+
+    fn terminate(&mut self, _pid: u32) -> Result<(), TerminateError> {
+        Err(TerminateError::Other(std::io::ErrorKind::Unsupported))
+    }
+}
+
+#[cfg(unix)]
+pub type HostProcessInspector = LinuxProcessInspector;
+#[cfg(windows)]
+pub type HostProcessInspector = WindowsProcessInspector;
 
 /// Clipboard seam. The desktop's GPUI clipboard remains the direct
 /// implementation until clipboard policy needs headless coverage.
@@ -161,9 +229,11 @@ pub trait NotificationProvider {
 }
 
 /// Linux adapter: `/proc` scan, no new dependencies.
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LinuxProcessInspector;
 
+#[cfg(unix)]
 impl LinuxProcessInspector {
     pub fn snapshot_controlled(
         &self,
@@ -296,6 +366,7 @@ impl LinuxProcessInspector {
     }
 }
 
+#[cfg(unix)]
 impl ProcessInspector for LinuxProcessInspector {
     fn process_info(&self, pid: u32) -> Option<ProcessInfo> {
         read_stat(pid)
@@ -328,6 +399,7 @@ impl ProcessInspector for LinuxProcessInspector {
 }
 
 /// Descendants of `pid` from an already-read process table (deduped, cycle-safe).
+#[cfg(unix)]
 fn collect_descendants(pid: u32, processes: &[ProcessInfo]) -> Vec<ProcessInfo> {
     let mut children: HashMap<u32, Vec<&ProcessInfo>> = HashMap::new();
     for process in processes {
@@ -350,6 +422,7 @@ fn collect_descendants(pid: u32, processes: &[ProcessInfo]) -> Vec<ProcessInfo> 
 }
 
 /// Build a bounded snapshot from a process table already read once.
+#[cfg(unix)]
 fn snapshot_from(roots: &[u32], cap: usize, processes: &[ProcessInfo]) -> ProcessSnapshot {
     if processes.is_empty() || roots.is_empty() {
         return ProcessSnapshot::default();
@@ -404,6 +477,7 @@ fn snapshot_from(roots: &[u32], cap: usize, processes: &[ProcessInfo]) -> Proces
 /// Parse `(comm)`, ppid, and memory from `/proc/<pid>/stat` + `statm`. The
 /// comm field may contain spaces and parentheses, so the split anchors on the
 /// last `)`. CPU is left `None`: one read has no delta.
+#[cfg(unix)]
 fn read_stat(pid: u32) -> Option<ProcessInfo> {
     let text = bounded_text(format!("/proc/{pid}/stat"), MAX_PROC_BYTES)?;
     let mut info = parse_stat(&text, pid)?;
@@ -411,6 +485,7 @@ fn read_stat(pid: u32) -> Option<ProcessInfo> {
     Some(info)
 }
 
+#[cfg(unix)]
 fn parse_stat(text: &str, pid: u32) -> Option<ProcessInfo> {
     let close = text.rfind(')')?;
     let (comm, rest) = text.split_at(close);
@@ -429,6 +504,7 @@ fn parse_stat(text: &str, pid: u32) -> Option<ProcessInfo> {
 
 /// Resident set size in bytes from `/proc/<pid>/statm` (field 2 = resident
 /// pages). Returns `None` if the file is unreadable or page size is unknown.
+#[cfg(unix)]
 fn read_statm(pid: u32) -> Option<u64> {
     let text = bounded_text(format!("/proc/{pid}/statm"), MAX_PROC_BYTES)?;
     let resident = parse_statm_resident(&text)?;
@@ -437,11 +513,13 @@ fn read_statm(pid: u32) -> Option<u64> {
 }
 
 /// Parse the resident field (second, 0-indexed first = size) of `statm`.
+#[cfg(unix)]
 fn parse_statm_resident(text: &str) -> Option<u64> {
     text.split_whitespace().nth(1)?.parse::<u64>().ok()
 }
 
 /// Page size in bytes via `sysconf(_SC_PAGESIZE)`, falling back to 4096.
+#[cfg(unix)]
 fn page_size() -> Option<u64> {
     // SAFETY: `sysconf` with a valid name is thread-safe and has no memory
     // preconditions; the result is checked before use.
@@ -456,9 +534,16 @@ fn page_size() -> Option<u64> {
 /// Clock ticks per second via `sysconf(_SC_CLK_TCK)`; 100 Hz is the Linux
 /// default assumed when the value is unavailable. Documented fallback only.
 fn clock_ticks_per_second() -> f64 {
-    // SAFETY: as above; `_SC_CLK_TCK` is a valid, side-effect-free name.
-    let value = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if value > 0 { value as f64 } else { 100.0 }
+    #[cfg(unix)]
+    {
+        // SAFETY: as above; `_SC_CLK_TCK` is a valid, side-effect-free name.
+        let value = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if value > 0 { value as f64 } else { 100.0 }
+    }
+    #[cfg(not(unix))]
+    {
+        100.0
+    }
 }
 
 /// `(start_time, utime, stime)` in clock ticks from `/proc/<pid>/stat`.
@@ -552,10 +637,12 @@ fn read_stat_times(pid: u32) -> Option<(u64, u64, u64)> {
 ///
 /// Mapping is by `errno`: `ESRCH` → [`TerminateError::NotFound`], `EPERM` →
 /// [`TerminateError::PermissionDenied`], anything else → [`TerminateError::Other`].
+#[cfg(unix)]
 fn linux_terminate(pid: u32) -> Result<(), TerminateError> {
     signal_pidfd(&open_pidfd(pid)?)
 }
 
+#[cfg(unix)]
 fn syscall_error() -> TerminateError {
     match std::io::Error::last_os_error().raw_os_error() {
         Some(code) if code == libc::ESRCH => TerminateError::NotFound,
@@ -564,6 +651,7 @@ fn syscall_error() -> TerminateError {
     }
 }
 
+#[cfg(unix)]
 fn open_pidfd(pid: u32) -> Result<OwnedFd, TerminateError> {
     if pid == 0 || pid > i32::MAX as u32 {
         return Err(TerminateError::NotFound);
@@ -577,6 +665,7 @@ fn open_pidfd(pid: u32) -> Result<OwnedFd, TerminateError> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 
+#[cfg(unix)]
 fn signal_pidfd(fd: &OwnedFd) -> Result<(), TerminateError> {
     // SAFETY: fd stays live, SIGTERM is valid, null siginfo and flags=0.
     let rc = unsafe {
@@ -595,6 +684,7 @@ fn signal_pidfd(fd: &OwnedFd) -> Result<(), TerminateError> {
     }
 }
 
+#[cfg(unix)]
 fn ancestry(pid: u32, roots: &[u32]) -> Result<Vec<(u32, u32, u64)>, TerminateError> {
     let mut chain = Vec::new();
     let mut current = pid;
@@ -621,10 +711,12 @@ fn ancestry(pid: u32, roots: &[u32]) -> Result<Vec<(u32, u32, u64)>, TerminateEr
 }
 
 /// Linux snapshot used by the trait default.
+#[cfg(unix)]
 fn linux_snapshot(roots: &[u32], cap: usize) -> ProcessSnapshot {
     LinuxProcessInspector.snapshot(roots, cap)
 }
 
+#[cfg(unix)]
 fn bounded_ports(pids: &HashSet<u32>, control: &ProcessScanControl) -> (Vec<ListeningPort>, bool) {
     if pids.is_empty() {
         return (Vec::new(), control.stopped());
@@ -699,6 +791,7 @@ fn bounded_ports(pids: &HashSet<u32>, control: &ProcessScanControl) -> (Vec<List
     (ports, truncated)
 }
 
+#[cfg(unix)]
 fn parse_listen_line(line: &str) -> Option<(u64, u16)> {
     let mut fields = line.split_whitespace();
     fields.next()?; // sl
@@ -716,7 +809,7 @@ fn parse_listen_line(line: &str) -> Option<(u64, u16)> {
     Some((inode, port))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

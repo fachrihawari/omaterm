@@ -2,6 +2,19 @@
 
 ## Current position
 
+### Windows build target — 2026-10-08
+
+GPUI's Windows backend is selected by `target_os`, so the desktop crate enables
+`wayland`/`x11` only off Windows. The terminal uses Alacritty's ConPTY on
+Windows and keeps the Unix PTY on Linux. IPC keeps the Unix socket on Linux; on
+Windows the same filesystem path maps to a per-user named pipe, and the
+credential file stays beside that path. The process panel has no Windows
+query yet, so its snapshot is empty there.
+`cargo check --workspace --all-targets --target x86_64-pc-windows-msvc --exclude omaterm`
+passes from Linux. The desktop package is not part of that check: GPUI's
+`ring` build needs the MSVC librarian, and a release build also needs
+`fxc.exe` for GPUI's HLSL shaders, so the full Windows build runs on Windows.
+
 ### CI history-test fix: `%aI` Zulu timestamps — 2026-10-08
 
 - CI (`check` job) failed every run since Oct 6 on three history tests

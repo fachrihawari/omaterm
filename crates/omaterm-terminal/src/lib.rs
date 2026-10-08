@@ -27,11 +27,15 @@ pub use input::{
 };
 pub use lifecycle::{LifecycleEvent, LifecycleKind, LifecycleParser, decode_command, decode_exit};
 pub use osc7::{Osc7Parser, parse_osc7_uri};
+#[cfg(unix)]
+pub use platform::LinuxProcessInspector;
 pub use platform::{
-    ClipboardProvider, LinuxProcessInspector, ListeningPort, NotificationProvider, ProcessInfo,
+    ClipboardProvider, HostProcessInspector, ListeningPort, NotificationProvider, ProcessInfo,
     ProcessInspector,
 };
-pub use pty::{PtyError, PtyProcess, poll_fd_readable};
+#[cfg(unix)]
+pub use pty::poll_fd_readable;
+pub use pty::{OutputWait, PtyError, PtyProcess};
 pub use registry::{RegistryError, TerminalConfig, TerminalRegistry};
 pub use search::{
     MAX_SEARCH_HITS, MAX_SEARCH_QUERY_CHARS, SearchHit, char_range_to_cells, find_hits,
