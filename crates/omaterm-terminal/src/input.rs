@@ -187,6 +187,26 @@ fn encode_function_key(n: u8, event: &KeyEvent) -> Vec<u8> {
     }
 }
 
+/// Mouse-wheel buttons in the xterm encoding (button 4 = up, 5 = down).
+pub const MOUSE_WHEEL_UP: u8 = 64;
+pub const MOUSE_WHEEL_DOWN: u8 = 65;
+
+/// Encode one SGR mouse report (DECSET 1006): `CSI < Cb ; Cx ; Cy M|m`.
+/// `button` is the xterm button code (wheel up/down are 64/65). `col` and
+/// `row` are zero-based cell coordinates; SGR reports are 1-based. `release`
+/// uses the trailing `m` instead of `M`.
+pub fn encode_sgr_mouse(button: u8, col: u16, row: u16, release: bool) -> Vec<u8> {
+    let final_byte = if release { 'm' } else { 'M' };
+    format!(
+        "\x1b[<{};{};{}{}",
+        button,
+        u32::from(col) + 1,
+        u32::from(row) + 1,
+        final_byte
+    )
+    .into_bytes()
+}
+
 /// Wrap paste content in bracketed-paste markers.
 pub fn wrap_bracketed_paste(text: &str) -> Vec<u8> {
     let mut out = b"\x1b[200~".to_vec();
@@ -322,6 +342,21 @@ mod tests {
             app_keypad: false,
         };
         assert_eq!(encode_key(&ev), b"\x1b[Z");
+    }
+
+    #[test]
+    fn sgr_mouse_encodes_one_based_wheel_reports() {
+        // SGR is 1-based; wheel up is button 64, down is 65, `M` press.
+        assert_eq!(
+            encode_sgr_mouse(MOUSE_WHEEL_UP, 0, 0, false),
+            b"\x1b[<64;1;1M"
+        );
+        assert_eq!(
+            encode_sgr_mouse(MOUSE_WHEEL_DOWN, 9, 4, false),
+            b"\x1b[<65;10;5M"
+        );
+        // Release uses the `m` terminator.
+        assert_eq!(encode_sgr_mouse(0, 2, 3, true), b"\x1b[<0;3;4m");
     }
 
     #[test]
