@@ -80,10 +80,17 @@ pub(crate) fn bash_directory(path: &Path) -> String {
     raw.replace('\\', "/")
 }
 
+/// Last path component of a shell program string.
+///
+/// Both separators count. `Path::file_name` only splits on the host separator,
+/// so `C:\Program Files\Git\bin\bash.exe` would stay one component on Linux
+/// and no longer match `bash.exe`.
 fn shell_file_name(program: &str) -> Option<&str> {
-    Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
+    program
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
 }
 
 /// `$SHELL` is the preferred program only when this process can start it.
@@ -193,8 +200,8 @@ pub fn same_shell_program(left: &str, right: &str) -> bool {
     if left.eq_ignore_ascii_case(right) {
         return true;
     }
-    let left_name = Path::new(left).file_name().and_then(|name| name.to_str());
-    let right_name = Path::new(right).file_name().and_then(|name| name.to_str());
+    let left_name = shell_file_name(left);
+    let right_name = shell_file_name(right);
     matches!(
         (left_name, right_name),
         (Some(left), Some(right)) if left.eq_ignore_ascii_case(right)

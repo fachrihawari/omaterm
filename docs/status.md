@@ -51,6 +51,8 @@ table (`terminal = { shell = "git-bash" }`) is read the same way as a
 snapshot and restored with that pane, so a Git Bash tab stays Git Bash
 after restart. `Use Git Bash` (and the other shell commands) opens a new
 tab whenever the selected project has no live terminal of that shell.
+A program matches its bare file name whether the separator is `\` or `/`,
+so those comparisons hold on the Linux CI host as well as on Windows.
 Git Bash is `Git\bin\bash.exe --rcfile <name> -i`. MSYS exits immediately on `--login`
 combined with `--rcfile`, on `-i` placed before `--rcfile`, and on an
 `--rcfile` path that contains a slash or colon. The rcfile `cd`s to the
@@ -64,7 +66,9 @@ screen. Those erase-display sequences are dropped and absolute cursor
 positions are shifted below the restored rows until that redraw finishes.
 Typing also ends the shift, so a later `clear` still works. Linux shells
 do not emit this sequence.
-Verified here: `cargo test -p omaterm-terminal --lib shell::tests` (12 passed),
+Verified here: `cargo test -p omaterm-terminal --lib shell::tests` (12 passed,
+including the Windows-path cases that failed on Linux CI when `Path`
+ignored `\`),
 `startup_clear_keeps_restored_text_and_a_later_clear_still_works` (passed),
 `git_bash_stays_open_in_the_requested_directory` (passed),
 `pane_shell_round_trips_and_old_files_omit_it` and
