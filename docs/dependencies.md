@@ -93,7 +93,9 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   from the `comctl32` Windows loads and the desktop process exits before
   `main`. GPUI selects its Win32 backend from `target_os`. `windows-sys` 0.59.0
   (MIT OR Apache-2.0), already used by `alacritty_terminal`, is a direct
-  dependency of the IPC and terminal crates on Windows only.
+  dependency of the IPC, terminal, context, and desktop crates on Windows
+  only. IPC uses it for the named pipe and the directory ACL. Context and
+  the desktop crate use it for `GetFileInformationByHandle`.
 - `Cargo.lock`: committed application resolution. A full transitive license
   review remains required before release; project license MIT OR Apache-2.0
   (decided 2026-09-29).

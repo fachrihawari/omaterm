@@ -1359,10 +1359,19 @@ impl CommandRouter {
             Err(TerminateError::PermissionDenied) => {
                 err(ErrorCode::PermissionDenied, "permission denied")
             }
-            Err(TerminateError::Other(kind)) => err(
-                ErrorCode::RuntimeFailure,
-                format!("failed to terminate process: {kind:?}"),
-            ),
+            Err(TerminateError::Other(kind)) => {
+                if kind == std::io::ErrorKind::Unsupported {
+                    err(
+                        ErrorCode::UnsupportedOperation,
+                        "terminating a process is not supported on this platform",
+                    )
+                } else {
+                    err(
+                        ErrorCode::RuntimeFailure,
+                        format!("failed to terminate process: {kind:?}"),
+                    )
+                }
+            }
         }
     }
 

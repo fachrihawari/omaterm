@@ -4,6 +4,8 @@
 //! name is derived from that same filesystem path, restricted to the current
 //! user. Callers still pass the path from [`IpcServer::default_socket_path`].
 
+mod frame;
+
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod imp;

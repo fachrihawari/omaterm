@@ -533,7 +533,7 @@ impl EditorRoot {
         }
         Ok(Self {
             canonical_path: canonical_path.clone(),
-            identity: root_identity_of(&canonical_path, &metadata),
+            identity: root_identity_of(&canonical_path, &metadata)?,
         })
     }
 
@@ -547,36 +547,71 @@ impl EditorRoot {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn root_identity_of(path: &Path, metadata: &std::fs::Metadata) -> RootIdentity {
+fn root_identity_of(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+) -> Result<RootIdentity, EditorError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let _ = path;
-        RootIdentity {
+        Ok(RootIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
-        }
+        })
     }
     #[cfg(windows)]
     {
-        // `MetadataExt::file_index` is still unstable. Mix the canonical path
-        // with the directory mtime so a replaced root does not keep the old id.
-        let mut hash = 0xcbf29ce484222325u64;
-        for byte in path.as_os_str().to_string_lossy().as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|span| span.as_nanos() as u64)
-            .unwrap_or(0);
-        RootIdentity {
-            device: modified,
-            inode: hash,
-        }
+        let _ = metadata;
+        let (device, inode) = windows_file_id(path)?;
+        Ok(RootIdentity { device, inode })
     }
+}
+
+/// Volume serial plus file index from `GetFileInformationByHandle`.
+/// Opening with `FILE_FLAG_OPEN_REPARSE_POINT` names this directory, not a
+/// target a reparse point was swapped to. A failed call is an I/O error:
+/// there is no mtime fallback.
+#[cfg(windows)]
+fn windows_file_id(path: &Path) -> Result<(u64, u64), EditorError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
+    };
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is NUL-terminated. BACKUP_SEMANTICS is required to open
+    // a directory. The handle is closed before this function returns.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(EditorError::Io(std::io::Error::last_os_error()));
+    }
+    let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    // SAFETY: `handle` is open and `info` is a live out-param.
+    let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
+    unsafe { CloseHandle(handle) };
+    if ok == 0 {
+        return Err(EditorError::Io(std::io::Error::last_os_error()));
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
 }
 
 #[cfg(not(target_os = "linux"))]

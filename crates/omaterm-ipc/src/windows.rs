@@ -15,16 +15,19 @@ use std::time::{Duration, Instant};
 
 use omaterm_protocol::{
     IpcRequest, IpcResponse, MAX_CONNECTIONS, MAX_REQUEST_FRAME, MAX_RESPONSE_FRAME,
-    encode_response, validate_request,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, FALSE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    ConvertStringSidToSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, EqualSid,
+    GetAce, GetAclInformation, GetSecurityDescriptorDacl, GetTokenInformation,
+    OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
+    TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, PIPE_ACCESS_DUPLEX,
@@ -37,8 +40,18 @@ use windows_sys::Win32::System::Pipes::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+use crate::frame::FrameIo;
+
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const PIPE_NOWAIT: u32 = 0x00000001;
+/// Polled wait while a pipe instance is not yet connected, and the pause
+/// after a failed `CreateNamedPipe`. Short enough that shutdown stays
+/// responsive, long enough that a failed create does not spin.
+const PIPE_ACCEPT_RETRY: Duration = Duration::from_millis(50);
+/// `ERROR_PIPE_BUSY` is normal while the server replaces an instance.
+/// Fifty attempts at 10 ms covers half a second of that race.
+const PIPE_CONNECT_ATTEMPTS: u32 = 50;
+const PIPE_CONNECT_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum IpcError {
@@ -85,6 +98,9 @@ impl IpcServer {
             .ok_or_else(|| IpcError::UnsafeDirectory(PathBuf::from("%LOCALAPPDATA%\\omaterm")))?;
         let directory = base.join("omaterm");
         fs::create_dir_all(&directory)?;
+        // The profile directory inherits Administrators and SYSTEM. Tighten it
+        // before the owner check, or the default endpoint can never bind.
+        restrict_to_current_user(&directory)?;
         validate_private_directory(&directory)?;
         Ok(directory.join("omaterm.sock"))
     }
@@ -105,6 +121,7 @@ impl IpcServer {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)?;
         // LockFileEx reads the lock offset from OVERLAPPED even for a
         // synchronous file. A null pointer is a read at address 0x10.
@@ -185,7 +202,10 @@ fn validate_private_directory(path: &Path) -> Result<(), IpcError> {
     if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(IpcError::UnsafeDirectory(path.to_path_buf()));
     }
-    Ok(())
+    match private_to_current_user(path) {
+        Ok(true) => Ok(()),
+        _ => Err(IpcError::UnsafeDirectory(path.to_path_buf())),
+    }
 }
 
 fn accept_loop(
@@ -204,7 +224,12 @@ fn accept_loop(
         }
         let pipe = match create_pipe(path) {
             Ok(pipe) => pipe,
-            Err(_) => break,
+            // One transient failure must not kill the server. Shutdown is
+            // observed on the next loop, so this sleep cannot outlive it.
+            Err(_) => {
+                thread::sleep(PIPE_ACCEPT_RETRY);
+                continue;
+            }
         };
         let connected = wait_for_client(&pipe, &stopping);
         if !connected {
@@ -259,29 +284,27 @@ fn wait_for_client(pipe: &File, stopping: &AtomicBool) -> bool {
                 switch_to_blocking(handle);
                 return true;
             }
-            Some(ERROR_PIPE_LISTENING) => thread::sleep(Duration::from_millis(10)),
+            // The pipe is non-blocking, so ConnectNamedPipe returns at once
+            // and this wait is polled. Shutdown is checked on every iteration
+            // instead of sitting inside a blocking connect.
+            Some(ERROR_PIPE_LISTENING) => thread::sleep(PIPE_ACCEPT_RETRY),
             _ => return false,
         }
     }
 }
 
 fn switch_to_blocking(handle: HANDLE) {
-    let mut mode = PIPE_WAIT | PIPE_READMODE_BYTE;
+    let mode = PIPE_WAIT | PIPE_READMODE_BYTE;
     // SAFETY: mode is a valid pipe-state flag for this live pipe handle.
     unsafe {
-        SetNamedPipeHandleState(
-            handle,
-            &mut mode,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
+        SetNamedPipeHandleState(handle, &mode, std::ptr::null_mut(), std::ptr::null_mut());
     }
 }
 
 fn create_pipe(path: &Path) -> std::io::Result<File> {
     let name = pipe_name(path);
     let descriptor = user_security_descriptor()?;
-    let mut attributes = SECURITY_ATTRIBUTES {
+    let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor,
         bInheritHandle: FALSE,
@@ -297,7 +320,7 @@ fn create_pipe(path: &Path) -> std::io::Result<File> {
             64 * 1024,
             64 * 1024,
             0,
-            &mut attributes,
+            &attributes,
         )
     };
     unsafe {
@@ -323,7 +346,142 @@ fn pipe_name(path: &Path) -> Vec<u16> {
         .collect()
 }
 
-fn user_security_descriptor() -> std::io::Result<*mut core::ffi::c_void> {
+/// Replace the DACL with one allow ACE for the current user and make that
+/// user the owner. Directories also inherit the ACE onto new children, which
+/// is the Windows equivalent of creating files `0600` inside a `0700` directory.
+/// A reparse point is left untouched.
+pub fn restrict_to_current_user(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refusing to change the ACL of a reparse point",
+        ));
+    }
+    let sid_text = current_user_sid_string()?;
+    let inherit = if metadata.is_dir() { "OICI" } else { "" };
+    let sddl = format!("D:P(A;{inherit};FA;;;{sid_text})");
+    let descriptor = security_descriptor(&sddl)?;
+    let dacl = descriptor_dacl(descriptor.0)?;
+    let owner = string_sid(&sid_text)?;
+    let mut wide = wide_path(path);
+    // SAFETY: `wide` is a mutable NUL-terminated path, `owner.0` is a SID this
+    // function frees later, and `dacl` lives inside `descriptor` until
+    // SetNamedSecurityInfoW copies it. The API may write a NUL into `wide`.
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            owner.0,
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null(),
+        )
+    };
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
+}
+
+/// True when `path` is not a reparse point, is owned by the current user, and
+/// every allow ACE names that user or LocalSystem. A null DACL, Everyone,
+/// Users, or Administrators allow fails closed. This is the named-pipe
+/// stand-in for the Unix owner-plus-`0700` check.
+pub fn private_to_current_user(path: &Path) -> std::io::Result<bool> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Ok(false);
+    }
+    let user = string_sid(&current_user_sid_string()?)?;
+    let system = string_sid("S-1-5-18")?;
+    let mut wide = wide_path(path);
+    let mut owner = std::ptr::null_mut();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated. On success, `owner` and `dacl` point
+    // into `descriptor`, which `LocalFree` releases below.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    let _descriptor = FreeLocal(descriptor);
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+    if owner.is_null() || dacl.is_null() || unsafe { EqualSid(owner, user.0) } == 0 {
+        return Ok(false);
+    }
+    let mut size = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    // SAFETY: `dacl` is the ACL returned above and `size` is a live out-param.
+    let ok = unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut size as *mut ACL_SIZE_INFORMATION).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut user_allowed = false;
+    for index in 0..size.AceCount {
+        let mut ace = std::ptr::null_mut();
+        // SAFETY: `index` is inside the ACE count just read.
+        if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: GetAce returns a pointer to an ACE_HEADER at the start of the ACE.
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        match header.AceType {
+            1 => {}
+            0 => {
+                // ACCESS_ALLOWED_ACE: header (4) + mask (4) + SID. Reject an
+                // ACE whose declared SID does not fit, instead of reading past it.
+                let sid = allow_ace_sid(ace, header.AceSize);
+                let Some(sid) = sid else {
+                    return Ok(false);
+                };
+                if unsafe { EqualSid(sid, user.0) } != 0 {
+                    user_allowed = true;
+                } else if unsafe { EqualSid(sid, system.0) } == 0 {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+    Ok(user_allowed)
+}
+
+struct FreeLocal(*mut core::ffi::c_void);
+
+impl Drop for FreeLocal {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the pointer came from a LocalAlloc-family API.
+            unsafe { LocalFree(self.0) };
+        }
+    }
+}
+
+fn current_user_sid_string() -> std::io::Result<String> {
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -353,22 +511,87 @@ fn user_security_descriptor() -> std::io::Result<*mut core::ffi::c_void> {
         }
         let sid_text = wide_to_string(sid);
         LocalFree(sid as _);
-        let sddl: Vec<u16> = std::ffi::OsStr::new(&format!("D:P(A;;GA;;;{sid_text})"))
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut descriptor = std::ptr::null_mut();
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
+        Ok(sid_text)
+    }
+}
+
+fn string_sid(text: &str) -> std::io::Result<FreeLocal> {
+    let wide: Vec<u16> = std::ffi::OsStr::new(text)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut sid = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated. On success the SID is a LocalAlloc block.
+    if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(FreeLocal(sid))
+}
+
+fn security_descriptor(sddl: &str) -> std::io::Result<FreeLocal> {
+    let wide: Vec<u16> = std::ffi::OsStr::new(sddl)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated SDDL. Revision 1 is SDDL_REVISION_1.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
             1,
             &mut descriptor,
             std::ptr::null_mut(),
-        ) == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(descriptor)
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(FreeLocal(descriptor))
+}
+
+fn descriptor_dacl(descriptor: *mut core::ffi::c_void) -> std::io::Result<*mut ACL> {
+    let mut present = FALSE;
+    let mut defaulted = FALSE;
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    // SAFETY: `descriptor` is a security descriptor this caller owns.
+    let ok =
+        unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) };
+    if ok == 0 || present == FALSE || dacl.is_null() {
+        return Err(std::io::Error::other(
+            "security descriptor has no DACL to apply",
+        ));
+    }
+    Ok(dacl)
+}
+
+/// SID inside an `ACCESS_ALLOWED_ACE`, or `None` when `ace_size` is too small
+/// for the sub-authority count stored in that SID.
+fn allow_ace_sid(ace: *mut core::ffi::c_void, ace_size: u16) -> Option<PSID> {
+    let ace_size = usize::from(ace_size);
+    if ace_size < 16 {
+        return None;
+    }
+    // SAFETY: GetAce returned this pointer and `ace_size` is the ACE length.
+    // Only the two SID header bytes are read before the length check.
+    let sid_bytes = unsafe { std::slice::from_raw_parts(ace.cast::<u8>().add(8), ace_size - 8) };
+    let needed = 8 + usize::from(sid_bytes[1]) * 4;
+    if needed > sid_bytes.len() {
+        return None;
+    }
+    Some(sid_bytes.as_ptr().cast_mut().cast())
+}
+
+fn wide_path(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+fn user_security_descriptor() -> std::io::Result<*mut core::ffi::c_void> {
+    let sid_text = current_user_sid_string()?;
+    let descriptor = security_descriptor(&format!("D:P(A;;GA;;;{sid_text})"))?;
+    Ok(std::mem::ManuallyDrop::new(descriptor).0)
 }
 
 fn wide_to_string(ptr: *const u16) -> String {
@@ -432,88 +655,24 @@ fn handle_connection(
     timeouts: ServerTimeouts,
 ) -> std::io::Result<()> {
     let mut stream = PipeStream { file };
-    loop {
-        if stopping.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let started = Instant::now();
-        let frame_deadline = started + timeouts.frame;
-        let request_deadline = started + timeouts.request;
-        let mut frame = Vec::with_capacity(1024);
-        let mut byte = [0u8; 1];
-        loop {
-            if stopping.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            let remaining = frame_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(());
-            }
-            match stream.read_timeout(&mut byte, remaining.min(Duration::from_millis(200))) {
-                Ok(0) => return Ok(()),
-                Ok(_) if byte[0] == b'\n' => break,
-                Ok(_) => {
-                    if frame.len() >= MAX_REQUEST_FRAME - 1 {
-                        write_response(
-                            &mut stream,
-                            &IpcResponse::failure(
-                                String::new(),
-                                "invalid_request",
-                                "request exceeds the 64 KiB frame limit",
-                            ),
-                        )?;
-                        return Ok(());
-                    }
-                    frame.push(byte[0]);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        let request: IpcRequest = match serde_json::from_slice(&frame) {
-            Ok(request) => request,
-            Err(_) => {
-                write_response(
-                    &mut stream,
-                    &IpcResponse::failure(
-                        String::new(),
-                        "invalid_request",
-                        "malformed JSON request",
-                    ),
-                )?;
-                return Ok(());
-            }
-        };
-        let request_id = request.request_id.clone();
-        let response = match validate_request(&request) {
-            Ok(()) => handler(request, request_deadline),
-            Err(error) => IpcResponse::failure(request_id, error.code, error.message),
-        };
-        let remaining = request_deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            write_response(
-                &mut stream,
-                &IpcResponse::failure(response.request_id, "timeout", "request deadline exceeded"),
-            )?;
-            return Ok(());
-        }
-        write_response(&mut stream, &response)?;
-    }
+    crate::frame::serve_requests(
+        &mut stream,
+        handler.as_ref(),
+        &stopping,
+        timeouts.frame,
+        timeouts.request,
+    )
 }
 
-fn write_response(stream: &mut PipeStream, response: &IpcResponse) -> std::io::Result<()> {
-    match encode_response(response) {
-        Ok(frame) => stream.file.write_all(&frame),
-        Err(_) => {
-            let frame = encode_response(&IpcResponse::failure(
-                response.request_id.clone(),
-                "response_too_large",
-                "response exceeds the 1 MiB frame limit",
-            ))
-            .unwrap_or_else(|_| b"{}\n".to_vec());
-            stream.file.write_all(&frame)
-        }
+impl crate::frame::FrameIo for PipeStream {
+    fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> std::io::Result<usize> {
+        self.read_timeout(buf, timeout)
+    }
+
+    fn write_all_with_timeout(&mut self, buf: &[u8], _timeout: Duration) -> std::io::Result<()> {
+        // A byte-mode pipe write blocks in the kernel. The request deadline is
+        // enforced on the following read, matching the previous pipe client.
+        self.file.write_all(buf)
     }
 }
 
@@ -525,7 +684,7 @@ impl IpcClient {
     pub fn connect(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let name = pipe_name(path.as_ref());
         let mut last_error = std::io::Error::from_raw_os_error(2);
-        for _ in 0..50 {
+        for _ in 0..PIPE_CONNECT_ATTEMPTS {
             // SAFETY: the name is NUL-terminated. The returned handle is owned.
             let handle = unsafe {
                 windows_sys::Win32::Storage::FileSystem::CreateFileW(
@@ -547,7 +706,7 @@ impl IpcClient {
                 });
             }
             last_error = std::io::Error::last_os_error();
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(PIPE_CONNECT_INTERVAL);
         }
         Err(last_error)
     }
@@ -562,34 +721,10 @@ impl IpcClient {
                 "request exceeds frame limit",
             ));
         }
-        self.stream.file.write_all(&bytes)?;
-        let mut frame = Vec::with_capacity(1024);
-        let mut byte = [0u8; 1];
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "IPC request deadline exceeded",
-                ));
-            }
-            if self.stream.read_timeout(&mut byte, remaining)? == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "IPC connection closed",
-                ));
-            }
-            if byte[0] == b'\n' {
-                break;
-            }
-            if frame.len() >= MAX_RESPONSE_FRAME - 1 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "response exceeds frame limit",
-                ));
-            }
-            frame.push(byte[0]);
-        }
+        self.stream
+            .write_all_with_timeout(&bytes, Duration::from_secs(10))?;
+        let frame =
+            crate::frame::read_delimited_frame(&mut self.stream, deadline, MAX_RESPONSE_FRAME)?;
         serde_json::from_slice(&frame).map_err(std::io::Error::other)
     }
 }
@@ -604,6 +739,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("omaterm-ipc-win-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
+        restrict_to_current_user(&root).unwrap();
         let path = root.join("omaterm.sock");
         let handler: RequestHandler = Arc::new(|request, _deadline| {
             IpcResponse::success(request.request_id, serde_json::json!({"pong": true}))
@@ -622,6 +758,33 @@ mod tests {
             .unwrap();
         assert_eq!(response.result, Some(serde_json::json!({"pong": true})));
         server.shutdown().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_is_private_only_after_restrict() {
+        let root = std::env::temp_dir().join(format!("omaterm-ipc-acl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        assert!(
+            validate_private_directory(&root).is_err(),
+            "a new directory still inherits a shared ACL"
+        );
+        restrict_to_current_user(&root).unwrap();
+        validate_private_directory(&root).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fresh_file_is_private_only_after_restrict() {
+        let root = std::env::temp_dir().join(format!("omaterm-ipc-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let file = root.join("omaterm.credential");
+        fs::write(&file, b"secret").unwrap();
+        assert!(!private_to_current_user(&file).unwrap());
+        restrict_to_current_user(&file).unwrap();
+        assert!(private_to_current_user(&file).unwrap());
         let _ = fs::remove_dir_all(root);
     }
 }

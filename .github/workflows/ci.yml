@@ -28,6 +28,21 @@ jobs:
       - run: mbx clippy --workspace --all-targets -- -D warnings
       - run: mbx build --workspace
 
+  windows-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      # The desktop package is excluded: GPUI's shader build needs fxc.exe,
+      # which windows-latest does not put on PATH. Library crates, including
+      # the named-pipe transport, do not.
+      - name: Check libraries
+        run: cargo check --workspace --all-targets --exclude omaterm
+      - name: Named-pipe round trip
+        run: cargo test -p omaterm-ipc --lib
+
   packaging:
     runs-on: ubuntu-latest
     steps:

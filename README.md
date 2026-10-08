@@ -118,7 +118,10 @@ UI thread.
 **Requirements:** Linux x86_64 with Wayland or X11 and working GPU drivers.
 Omarchy/Hyprland is the first-class target. Windows is a second build target:
 the desktop, terminal, and CLI compile there, while process listing stays empty
-until a native query exists. Dependency versions and licenses are tracked in
+until a native query exists. A Windows build needs the MSVC toolchain (Visual
+Studio 2022 or Build Tools, workload **Desktop development with C++**), the
+Windows SDK, and `fxc.exe` from that SDK on `PATH` — GPUI compiles its shaders
+with it. Dependency versions and licenses are tracked in
 [dependencies](docs/dependencies.md).
 
 Prebuilt binary tarball from GitHub Releases, checksum-verified:
@@ -261,6 +264,13 @@ On Ubuntu/Debian:
 ```bash
 sudo apt install libfontconfig1-dev libfreetype-dev libvulkan1 libwayland-dev libx11-dev libxcb1-dev libxkbcommon-dev pkg-config
 ```
+
+On Windows, install Visual Studio 2022 or the Build Tools with the **Desktop
+development with C++** workload, including the Windows SDK. GPUI's shader build
+calls `fxc.exe`. The kit copies it to
+`Windows Kits\10\bin\<sdk-version>\x64\fxc.exe`; that directory has to be on
+`PATH` before `cargo build --bin omaterm-desktop`. `link.exe` must be the MSVC
+linker, not the one Git for Windows puts on `PATH`.
 
 Then:
 
