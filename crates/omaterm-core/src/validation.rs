@@ -98,9 +98,16 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
                 return invalid("terminal directory must exist and be a directory");
             }
         }
-        OmaCommand::Terminal(TerminalCommand::RestorePane { directory, .. }) => {
+        OmaCommand::Terminal(TerminalCommand::RestorePane {
+            directory, shell, ..
+        }) => {
             if directory.as_os_str().is_empty() || (!directory.is_dir() && directory.exists()) {
                 return invalid("restore directory must be a valid directory path");
+            }
+            if shell.as_ref().is_some_and(|program| {
+                program.is_empty() || program.len() > 4096 || program.chars().any(char::is_control)
+            }) {
+                return invalid("restore shell must be a bounded program path");
             }
         }
         OmaCommand::Terminal(TerminalCommand::SendBytes { data, .. }) => {

@@ -120,6 +120,9 @@ pub enum TerminalCommand {
         tab: TabId,
         pane: PaneId,
         directory: PathBuf,
+        /// Program this pane last launched. Absent snapshots keep the
+        /// current default (`$SHELL` on Linux, the saved Windows shell).
+        shell: Option<String>,
     },
     ReadVisible {
         session: SessionId,

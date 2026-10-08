@@ -6,6 +6,7 @@
 //! font-family = "JetBrains Mono"
 //! font-size = 13
 //! scrollback-lines = 10000
+//! shell = "powershell"
 //!
 //! [appearance]
 //! theme = "system"
@@ -54,6 +55,8 @@ pub const MAX_GIT_REFRESH_SECS: u64 = 300;
 /// `dark`/`light` parse and validate so the key is reserved for the future
 /// theme engine (blueprint §58) without silently accepting typos.
 pub const KNOWN_THEMES: &[&str] = &["system", "dark", "light"];
+/// Windows shell ids the desktop palette can persist. Absent means PowerShell.
+pub const KNOWN_SHELLS: &[&str] = &["powershell", "cmd", "git-bash"];
 
 /// `[terminal]` section. All keys optional.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -61,6 +64,8 @@ pub struct TerminalSettings {
     pub font_family: Option<String>,
     pub font_size: Option<f32>,
     pub scrollback_lines: Option<u32>,
+    /// `powershell`, `cmd`, or `git-bash`. Storage for the in-app picker.
+    pub shell: Option<String>,
 }
 
 /// `[appearance]` section. All keys optional.
@@ -170,7 +175,7 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
         .map_err(|error| ConfigError::Parse(format!("config.toml parse failed: {error}")))?;
     let mut config = AppConfig::default();
 
-    if let Some(table) = doc.get("terminal").and_then(toml_edit::Item::as_table) {
+    if let Some(table) = doc.get("terminal").and_then(toml_edit::Item::as_table_like) {
         if let Some(item) = table.get("font-family") {
             let family = item
                 .as_str()
@@ -209,9 +214,24 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
             }
             config.terminal.scrollback_lines = Some(lines as u32);
         }
+        if let Some(item) = table.get("shell") {
+            let shell = item
+                .as_str()
+                .ok_or_else(|| invalid("terminal", "shell", "expected a string"))?;
+            if !KNOWN_SHELLS.contains(&shell) {
+                return Err(invalid(
+                    "terminal",
+                    "shell",
+                    format!("expected one of {}", KNOWN_SHELLS.join(", ")),
+                ));
+            }
+            config.terminal.shell = Some(shell.to_owned());
+        }
     }
 
-    if let Some(table) = doc.get("appearance").and_then(toml_edit::Item::as_table)
+    if let Some(table) = doc
+        .get("appearance")
+        .and_then(toml_edit::Item::as_table_like)
         && let Some(item) = table.get("theme")
     {
         let theme = item
@@ -227,7 +247,9 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
         config.appearance.theme = Some(theme.to_owned());
     }
 
-    if let Some(table) = doc.get("automation").and_then(toml_edit::Item::as_table)
+    if let Some(table) = doc
+        .get("automation")
+        .and_then(toml_edit::Item::as_table_like)
         && let Some(item) = table.get("enabled")
     {
         let enabled = item
@@ -236,7 +258,7 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
         config.automation.enabled = Some(enabled);
     }
 
-    if let Some(table) = doc.get("files").and_then(toml_edit::Item::as_table) {
+    if let Some(table) = doc.get("files").and_then(toml_edit::Item::as_table_like) {
         if let Some(item) = table.get("max-results") {
             let limit = item
                 .as_integer()
@@ -258,7 +280,7 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
         }
     }
 
-    if let Some(table) = doc.get("git").and_then(toml_edit::Item::as_table)
+    if let Some(table) = doc.get("git").and_then(toml_edit::Item::as_table_like)
         && let Some(item) = table.get("refresh-secs")
     {
         let secs = item
@@ -275,6 +297,40 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
     }
 
     Ok(config)
+}
+
+/// Write `terminal.shell` and leave every other key, comment, and section
+/// in place. The desktop calls this after a palette choice; it is not a
+/// file the user is expected to edit by hand.
+pub fn save_terminal_shell(path: &Path, shell: &str) -> Result<(), ConfigError> {
+    if !KNOWN_SHELLS.contains(&shell) {
+        return Err(invalid(
+            "terminal",
+            "shell",
+            format!("expected one of {}", KNOWN_SHELLS.join(", ")),
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(ConfigError::Io)?;
+    }
+    let mut doc: toml_edit::DocumentMut = match fs::read(path) {
+        Ok(bytes) => {
+            let text = String::from_utf8(bytes)
+                .map_err(|_| ConfigError::Parse("config.toml is not UTF-8".into()))?;
+            text.parse()
+                .map_err(|error| ConfigError::Parse(format!("config.toml parse failed: {error}")))?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(error) => return Err(ConfigError::Io(error)),
+    };
+    if !doc
+        .get("terminal")
+        .is_some_and(toml_edit::Item::is_table_like)
+    {
+        doc["terminal"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["terminal"]["shell"] = toml_edit::value(shell);
+    super::history::write_atomic_0600(path, doc.to_string().as_bytes())
 }
 
 #[cfg(test)]
@@ -360,6 +416,8 @@ mod tests {
             ("refresh-zero", "[git]\nrefresh-secs = 0\n"),
             ("refresh-huge", "[git]\nrefresh-secs = 9999\n"),
             ("refresh-type", "[git]\nrefresh-secs = 1.5\n"),
+            ("shell", "[terminal]\nshell = \"zsh\"\n"),
+            ("shell-type", "[terminal]\nshell = 1\n"),
         ] {
             let path = write_config(&dir, text);
             let error = load_app_config_toml(&path).expect_err(name);
@@ -368,6 +426,49 @@ mod tests {
                 "{name}: {error:?}"
             );
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn terminal_shell_round_trip_preserves_other_keys() {
+        let dir = temp_dir("shell");
+        let path = write_config(
+            &dir,
+            "[terminal]\nfont-size = 16\n\n[git]\nrefresh-secs = 9\n",
+        );
+        save_terminal_shell(&path, "git-bash").unwrap();
+        let loaded = load_app_config_toml(&path).unwrap();
+        assert_eq!(loaded.terminal.shell.as_deref(), Some("git-bash"));
+        assert_eq!(loaded.resolved_font_size(), 16.0);
+        assert_eq!(loaded.resolved_git_refresh_secs(), 9);
+        assert!(save_terminal_shell(&path, "zsh").is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inline_terminal_table_loads_and_updates_shell() {
+        let dir = temp_dir("inline-shell");
+        let path = write_config(
+            &dir,
+            "terminal = { shell = \"git-bash\", font-size = 16 }\n",
+        );
+        let loaded = load_app_config_toml(&path).unwrap();
+        assert_eq!(loaded.terminal.shell.as_deref(), Some("git-bash"));
+        assert_eq!(loaded.resolved_font_size(), 16.0);
+        save_terminal_shell(&path, "cmd").unwrap();
+        let updated = load_app_config_toml(&path).unwrap();
+        assert_eq!(updated.terminal.shell.as_deref(), Some("cmd"));
+        assert_eq!(updated.resolved_font_size(), 16.0);
+        let fresh = dir.join("fresh.toml");
+        save_terminal_shell(&fresh, "git-bash").unwrap();
+        assert_eq!(
+            load_app_config_toml(&fresh)
+                .unwrap()
+                .terminal
+                .shell
+                .as_deref(),
+            Some("git-bash")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

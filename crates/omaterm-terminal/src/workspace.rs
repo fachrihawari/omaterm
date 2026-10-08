@@ -81,6 +81,9 @@ pub struct WorkspaceCoordinator {
     /// Engine scrollback cap for sessions created after this is set. `None`
     /// keeps the engine default; `Some` comes only from validated config.
     scrollback_lines: Option<usize>,
+    /// Program for terminals created after this is set. `None` keeps the
+    /// platform default (`$SHELL`, else bash or PowerShell).
+    preferred_shell_program: Option<String>,
 }
 
 impl WorkspaceCoordinator {
@@ -102,7 +105,16 @@ impl WorkspaceCoordinator {
             home_directory_available,
             launch_directory,
             scrollback_lines: None,
+            preferred_shell_program: None,
         }
+    }
+
+    pub fn set_preferred_shell(&mut self, program: Option<String>) {
+        self.preferred_shell_program = program.filter(|value| !value.is_empty());
+    }
+
+    pub fn preferred_shell_program(&self) -> Option<&str> {
+        self.preferred_shell_program.as_deref()
     }
 
     pub fn window(&self) -> &WorkspaceWindow {
@@ -446,7 +458,7 @@ impl WorkspaceCoordinator {
         };
         let session_id = self.registry.create(TerminalConfig {
             working_directory: directory,
-            shell: None,
+            shell: self.preferred_shell_program.clone(),
             cols,
             rows,
             scrollback_lines: self.scrollback_lines,
@@ -495,7 +507,7 @@ impl WorkspaceCoordinator {
     fn config(&self, cols: u16, rows: u16, shell: Option<String>) -> TerminalConfig {
         TerminalConfig {
             working_directory: self.working_directory().clone(),
-            shell,
+            shell: shell.or_else(|| self.preferred_shell_program.clone()),
             cols,
             rows,
             scrollback_lines: self.scrollback_lines,

@@ -44,6 +44,10 @@ pub enum PaletteTarget {
         path: PathBuf,
         staged: bool,
     },
+    /// Windows shell choice. The id is `powershell`, `cmd`, or `git-bash`.
+    /// Absent on other platforms, where the palette never offers these shells.
+    #[cfg(windows)]
+    Shell(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

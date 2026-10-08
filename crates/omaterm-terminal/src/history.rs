@@ -751,6 +751,188 @@ pub fn replay_into<E: crate::TerminalEngine>(engine: &mut E, events: &[RecordedE
     }
 }
 
+/// Keeps restored scrollback visible across a fresh Windows console.
+/// ConPTY erases the display at startup, then the first pane resize homes
+/// the cursor and redraws the prompt over that screen. While armed,
+/// erase-display is dropped and absolute cursor positions are shifted below
+/// the restored rows. The filter disarms after that resize redraw shows the
+/// cursor, or when the user types, so a later `clear` still works.
+#[derive(Debug, Default)]
+pub struct StartupClearFilter {
+    active: bool,
+    /// 0-based grid row where the fresh shell may start writing.
+    origin_row: u16,
+    saw_resize_report: bool,
+    pending: Vec<u8>,
+}
+
+impl StartupClearFilter {
+    pub fn arm(&mut self, origin_row: u16) {
+        self.active = true;
+        self.origin_row = origin_row;
+        self.saw_resize_report = false;
+        self.pending.clear();
+    }
+
+    pub fn disarm(&mut self) {
+        self.active = false;
+        self.pending.clear();
+    }
+
+    #[must_use]
+    pub fn apply<'a>(&mut self, input: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        if !self.active && self.pending.is_empty() {
+            return std::borrow::Cow::Borrowed(input);
+        }
+        let mut data = std::mem::take(&mut self.pending);
+        data.extend_from_slice(input);
+        let mut out = Vec::with_capacity(data.len());
+        let mut index = 0;
+        while index < data.len() {
+            if !self.active {
+                out.extend_from_slice(&data[index..]);
+                break;
+            }
+            if data[index] != 0x1b {
+                out.push(data[index]);
+                index += 1;
+                continue;
+            }
+            match self.escape_action(&data[index..]) {
+                EscapeAction::NeedMore => {
+                    let rest = &data[index..];
+                    if rest.len() > 512 {
+                        self.disarm();
+                        out.extend_from_slice(rest);
+                    } else {
+                        self.pending = rest.to_vec();
+                    }
+                    break;
+                }
+                EscapeAction::Drop(len) => index += len,
+                EscapeAction::Keep(len) => {
+                    out.extend_from_slice(&data[index..index + len]);
+                    index += len;
+                }
+                EscapeAction::Replace { skip, bytes } => {
+                    out.extend_from_slice(&bytes);
+                    index += skip;
+                }
+            }
+        }
+        std::borrow::Cow::Owned(out)
+    }
+}
+
+enum EscapeAction {
+    NeedMore,
+    Drop(usize),
+    Keep(usize),
+    Replace { skip: usize, bytes: Vec<u8> },
+}
+
+impl StartupClearFilter {
+    fn escape_action(&mut self, bytes: &[u8]) -> EscapeAction {
+        if bytes.len() < 2 {
+            return EscapeAction::NeedMore;
+        }
+        match bytes[1] {
+            b'[' => self.csi_action(&bytes[2..]),
+            b']' => osc_action(&bytes[2..]),
+            _ => EscapeAction::Keep(2),
+        }
+    }
+
+    fn csi_action(&mut self, body: &[u8]) -> EscapeAction {
+        let mut index = 0;
+        while index < body.len() {
+            let byte = body[index];
+            if (0x40..=0x7e).contains(&byte) {
+                let params = &body[..index];
+                let param_end = params
+                    .iter()
+                    .position(|value| (0x20..0x30).contains(value))
+                    .unwrap_or(params.len());
+                let params = &params[..param_end];
+                let len = index + 3;
+                if byte == b't' && first_csi_param(params) == Some(8) {
+                    self.saw_resize_report = true;
+                }
+                if self.saw_resize_report && params == b"?25" && byte == b'h' {
+                    self.disarm();
+                }
+                if erase_display(params, byte) {
+                    return EscapeAction::Drop(len);
+                }
+                if let Some(bytes) = self.shifted_cursor(params, byte) {
+                    return EscapeAction::Replace { skip: len, bytes };
+                }
+                return EscapeAction::Keep(len);
+            }
+            if !(0x20..=0x3f).contains(&byte) || index > 64 {
+                return EscapeAction::Keep(2);
+            }
+            index += 1;
+        }
+        EscapeAction::NeedMore
+    }
+
+    fn shifted_cursor(&self, params: &[u8], final_byte: u8) -> Option<Vec<u8>> {
+        if !matches!(final_byte, b'H' | b'f')
+            || !params
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || *byte == b';')
+        {
+            return None;
+        }
+        let mut parts = params.split(|byte| *byte == b';');
+        let row = csi_number(parts.next().unwrap_or(b"")).unwrap_or(1);
+        let col = csi_number(parts.next().unwrap_or(b"")).unwrap_or(1);
+        let mapped = u32::from(self.origin_row) + u32::from(row);
+        let mapped = u16::try_from(mapped).unwrap_or(u16::MAX);
+        Some(format!("\u{1b}[{mapped};{col}{final}", final = final_byte as char).into_bytes())
+    }
+}
+
+fn osc_action(body: &[u8]) -> EscapeAction {
+    let mut index = 0;
+    while index < body.len() {
+        if body[index] == 0x07 {
+            return EscapeAction::Keep(index + 3);
+        }
+        if body[index] == 0x1b {
+            return if body.get(index + 1) == Some(&b'\\') {
+                EscapeAction::Keep(index + 4)
+            } else if index + 1 >= body.len() {
+                EscapeAction::NeedMore
+            } else {
+                EscapeAction::Keep(index + 2)
+            };
+        }
+        index += 1;
+    }
+    EscapeAction::NeedMore
+}
+
+fn erase_display(params: &[u8], final_byte: u8) -> bool {
+    final_byte == b'J'
+        && params
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || *byte == b';')
+        && first_csi_param(params).is_some_and(|value| value == 2 || value == 3)
+}
+
+fn first_csi_param(params: &[u8]) -> Option<u16> {
+    csi_number(params.split(|byte| *byte == b';').next()?)
+}
+
+fn csi_number(bytes: &[u8]) -> Option<u16> {
+    if bytes.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1219,6 +1401,50 @@ mod tests {
         let mut recorded = seed.clone();
         recorded.push(output(b"\r\nomaterm main \xe2\x9d\xaf "));
         assert_eq!(strip_trailing_partial_line(&recorded), seed);
+    }
+
+    #[test]
+    fn startup_clear_keeps_restored_text_and_a_later_clear_still_works() {
+        let prefix = b"\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[H";
+        let mut filter = StartupClearFilter::default();
+        filter.arm(1);
+        let mut split = Vec::new();
+        for byte in prefix {
+            split.extend_from_slice(&filter.apply(&[*byte]));
+        }
+        let whole = {
+            let mut once = StartupClearFilter::default();
+            once.arm(1);
+            once.apply(prefix).into_owned()
+        };
+        assert_eq!(split, whole);
+        assert!(!whole.windows(4).any(|window| window == *b"\x1b[2J"));
+        assert!(whole.windows(8).any(|window| window == *b"\x1b[?9001h"));
+        assert!(whole.windows(3).any(|window| window == *b"\x1b[m"));
+
+        let mut engine = AlacrittyEngine::new(80, 24);
+        replay_into(
+            &mut engine,
+            &[RecordedEvent::Output(b"restored line\r\n".to_vec())],
+        );
+        let mut live = StartupClearFilter::default();
+        live.arm(1);
+        engine.advance_output(&live.apply(b"\x1b[2J\x1b[H"));
+        engine.advance_output(&live.apply(b"prompt$ "));
+        let text = engine.scrollback_text(40).join("\n");
+        assert!(text.contains("restored line"), "{text}");
+        assert!(text.contains("prompt$"), "{text}");
+        engine.advance_output(&live.apply(b"\x1b[8;30;100t\x1b[Hredraw\x1b[?25h"));
+        let settled = engine.scrollback_text(40).join("\n");
+        assert!(settled.contains("restored line"), "{settled}");
+        let later = live.apply(b"\x1b[2J\x1b[Hafter");
+        assert!(
+            later.windows(4).any(|window| window == *b"\x1b[2J"),
+            "a clear after the prompt must still reach the terminal"
+        );
+        engine.advance_output(&later);
+        let visible = engine.read_visible_text(24, 80);
+        assert!(visible.contains("after"), "{visible}");
     }
 
     fn flat_output(events: &[RecordedEvent]) -> Vec<u8> {

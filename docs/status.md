@@ -129,6 +129,43 @@ check (3 passed on this Windows machine). Clippy `-D warnings` passed for
 --all-targets --exclude omaterm` passed here. A `windows-latest` CI job
 runs that check plus the IPC tests. The desktop package stays out of that
 job because `fxc.exe` is not on the runner `PATH`.
+On Windows, `Ctrl+Shift+P` offers PowerShell, Command Prompt, and Git Bash.
+The choice is stored as `terminal.shell` in `config.toml` and used for
+terminals created afterwards, including the tab bar `+` button. An inline
+table (`terminal = { shell = "git-bash" }`) is read the same way as a
+`[terminal]` section. Each pane's program is stored on the workspace
+snapshot and restored with that pane, so a Git Bash tab stays Git Bash
+after restart. `Use Git Bash` (and the other shell commands) opens a new
+tab whenever the selected project has no live terminal of that shell.
+A program matches its bare file name whether the separator is `\` or `/`,
+so those comparisons hold on the Linux CI host as well as on Windows.
+Git Bash is `Git\bin\bash.exe --rcfile <name> -i`. MSYS exits immediately on `--login`
+combined with `--rcfile`, on `-i` placed before `--rcfile`, and on an
+`--rcfile` path that contains a slash or colon. The rcfile `cd`s to the
+project and sources `/etc/profile`.
+The "New terminals use …" confirmation uses the auto-dismissing toast stack.
+A missing Git install stays on PowerShell. The palette `Shell` target
+exists only on Windows, so the Linux desktop build does not keep an unused
+variant. Linux still starts `$SHELL` or `/bin/bash` with an absolute
+`--rcfile` and no `--login`. A postponed restore wave keeps that pane's
+saved program. Restored scrollback is replayed before the shell starts. On Windows the fresh ConPTY erases the display, and the first real pane
+resize then homes the cursor and redraws the prompt over the restored
+screen. Those erase-display sequences are dropped and absolute cursor
+positions are shifted below the restored rows until that redraw finishes.
+Typing also ends the shift, so a later `clear` still works. Linux shells
+do not emit this sequence.
+Verified here: `cargo test -p omaterm-terminal --lib shell::tests` (12 passed,
+including the Windows-path cases that failed on Linux CI when `Path`
+ignored `\`),
+`startup_clear_keeps_restored_text_and_a_later_clear_still_works` (passed),
+`git_bash_stays_open_in_the_requested_directory` (passed),
+`pane_shell_round_trips_and_old_files_omit_it` and
+`inline_terminal_table_loads_and_updates_shell` (passed). Clippy `-D warnings`
+passed for `omaterm-terminal`, `omaterm-state`, and `omaterm-core` libs, and
+for `omaterm --bins`. `cargo check -p omaterm-terminal --all-targets` and
+`cargo check -p omaterm-state --all-targets`, both
+`--target x86_64-unknown-linux-gnu`, passed. Pre-existing Windows failures of
+snapshot fixtures that use `/tmp` were not treated as regressions.
 
 ### Honest OSC 10/11/12 replies + mouse-wheel forwarding — 2026-10-08
 

@@ -49,6 +49,10 @@ pub use session::{
     CurrentDirectory, CwdProvenance, LifecycleRecord, RunCommandError, SessionError,
     TerminalSession,
 };
+pub use shell::{
+    ResolvedShell, ShellResolveError, WindowsShell, resolve_windows_shell, same_shell_program,
+    shell_program_usable, shell_tab_needed,
+};
 pub use spawn_queue::{SessionSpawnQueue, SpawnCompletion, SpawnQueueError};
 pub use workspace::{
     ClosedPane, CoordinatorError, ProjectSessionCommit, SplitSessionCommit, WorkspaceCoordinator,

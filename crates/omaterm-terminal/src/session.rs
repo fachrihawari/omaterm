@@ -71,6 +71,11 @@ pub struct TerminalSession {
     recorder: HistoryRecorder,
     history_enabled: bool,
     history_paused: bool,
+    /// Armed only after restored scrollback is seeded. Drops the fresh
+    /// console's leading erase until the first graphic byte.
+    startup_clear: crate::history::StartupClearFilter,
+    /// Program passed to the PTY, after `$SHELL` / default resolution.
+    shell_program: String,
     prompt_ready: bool,
     /// A prompt has been observed at least once. Command starts reported
     /// before the first prompt are shell initialization (rcfile lines,
@@ -178,6 +183,7 @@ impl TerminalSession {
             path: working_directory.clone(),
             provenance: CwdProvenance::Launch,
         };
+        let shell_program = pty.program().to_string();
         Ok(Self {
             id,
             working_directory,
@@ -193,6 +199,8 @@ impl TerminalSession {
             recorder: HistoryRecorder::new(RecorderLimits::default()),
             history_enabled: false,
             history_paused: false,
+            startup_clear: crate::history::StartupClearFilter::default(),
+            shell_program,
             prompt_ready: false,
             seen_prompt: false,
         })
@@ -200,6 +208,12 @@ impl TerminalSession {
 
     pub fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// Program this session was spawned with.
+    #[must_use]
+    pub fn shell_program(&self) -> &str {
+        &self.shell_program
     }
 
     /// Pump available PTY output into the engine. Call from the reader thread.
@@ -219,7 +233,8 @@ impl TerminalSession {
                 Ok(0) => break, // EOF: child closed the PTY
                 Ok(n) => {
                     bytes_read += n;
-                    let chunk = &buf[..n];
+                    let filtered = self.startup_clear.apply(&buf[..n]);
+                    let chunk = filtered.as_ref();
                     let was_alt = self.engine.is_alt_screen();
                     let out = self.engine.advance_output(chunk);
                     if !out.reply_bytes.is_empty() {
@@ -255,6 +270,8 @@ impl TerminalSession {
 
     /// Feed bytes without PTY I/O (tests).
     pub fn advance_output(&mut self, bytes: &[u8]) -> EngineOutput {
+        let filtered = self.startup_clear.apply(bytes);
+        let bytes = filtered.as_ref();
         let was_alt = self.engine.is_alt_screen();
         let mut out = self.engine.advance_output(bytes);
         self.after_pump_collect(&out);
@@ -291,6 +308,12 @@ impl TerminalSession {
         self.history_enabled = true;
         self.recorder.set_enabled(true);
         self.recorder.seed(events);
+        if events
+            .iter()
+            .any(|event| matches!(event, RecordedEvent::Output(bytes) if !bytes.is_empty()))
+        {
+            self.startup_clear.arm(self.viewport().cursor.row);
+        }
     }
 
     /// Pause or resume capture for this session without dropping the record.
@@ -448,6 +471,7 @@ impl TerminalSession {
         }
         if !bytes.is_empty() {
             self.prompt_ready = false;
+            self.startup_clear.disarm();
         }
         self.pty.write_all(bytes)
     }

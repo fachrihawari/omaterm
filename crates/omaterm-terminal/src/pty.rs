@@ -34,6 +34,7 @@ pub struct PtyProcess {
     child_pid: u32,
     supports_run: bool,
     bash_rc_file: Option<PathBuf>,
+    program: String,
 }
 
 impl PtyProcess {
@@ -65,8 +66,12 @@ impl PtyProcess {
     ) -> Result<Self, PtyError> {
         let program = shell
             .map(str::to_string)
-            .or_else(|| std::env::var("SHELL").ok())
-            .filter(|s| !s.is_empty())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                std::env::var("SHELL")
+                    .ok()
+                    .filter(|value| crate::shell::accept_shell_env(value))
+            })
             .unwrap_or_else(default_shell);
 
         let mut env = HashMap::new();
@@ -85,18 +90,25 @@ impl PtyProcess {
 
         let supports_run = crate::shell::is_bash(&program);
         let bash_rc_file = if supports_run {
-            Some(write_bash_rcfile(prompt_token).map_err(PtyError::Io)?)
+            Some(write_bash_rcfile(prompt_token, working_directory).map_err(PtyError::Io)?)
         } else {
             None
         };
-        let shell_args = bash_rc_file
+        let launch = bash_rc_file
             .as_ref()
-            .map(|path| vec!["--rcfile".into(), path.to_string_lossy().into_owned()])
+            .map(|path| crate::shell::bash_shell_launch(&program, path, working_directory));
+        let shell_args = launch
+            .as_ref()
+            .map(|launch| launch.args.clone())
             .unwrap_or_default();
+        let launch_directory = launch
+            .as_ref()
+            .map(|launch| launch.directory.clone())
+            .unwrap_or_else(|| working_directory.to_path_buf());
 
         let options = Options {
             shell: Some(Shell::new(program.clone(), shell_args)),
-            working_directory: Some(working_directory.to_path_buf()),
+            working_directory: Some(launch_directory),
             drain_on_exit: true,
             env,
             #[cfg(windows)]
@@ -134,7 +146,14 @@ impl PtyProcess {
             child_pid,
             supports_run,
             bash_rc_file,
+            program,
         })
+    }
+
+    /// Program actually passed to the PTY, after `$SHELL` / default resolution.
+    #[must_use]
+    pub fn program(&self) -> &str {
+        &self.program
     }
 
     /// Non-blocking read. Returns `WouldBlock` when no output is available.
@@ -397,7 +416,7 @@ fn terminate_process(handle: windows_sys::Win32::Foundation::HANDLE) -> std::io:
     }
 }
 
-fn write_bash_rcfile(token: &str) -> std::io::Result<PathBuf> {
+fn write_bash_rcfile(token: &str, working_directory: &Path) -> std::io::Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("omaterm-bashrc-{}-{token}", bash_rc_owner()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -408,9 +427,95 @@ fn write_bash_rcfile(token: &str) -> std::io::Result<PathBuf> {
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
     }
     let mut file = options.open(&path)?;
-    if let Err(error) = file.write_all(crate::shell::bash_rcfile(token).as_bytes()) {
+    // Git Bash cannot be given `--login` and an absolute `--rcfile` (it exits
+    // before the prompt). The process starts in this file's directory, so the
+    // file moves to the requested directory and then loads the login profile
+    // the Git Bash shortcut would have loaded.
+    #[cfg(windows)]
+    let prelude = format!(
+        "cd {}\n[ -f /etc/profile ] && . /etc/profile\n",
+        crate::shell::quote_bash_argument(&crate::shell::bash_directory(working_directory))
+    );
+    #[cfg(not(windows))]
+    let prelude = String::new();
+    let _ = working_directory;
+    let body = format!("{prelude}{}", crate::shell::bash_rcfile(token));
+    if let Err(error) = file.write_all(body.as_bytes()) {
         let _ = std::fs::remove_file(&path);
         return Err(error);
     }
     Ok(path)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::PtyProcess;
+    use std::io::ErrorKind;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn git_bash_stays_open_in_the_requested_directory() {
+        let Ok(resolved) = crate::shell::WindowsShell::GitBash.resolve() else {
+            return;
+        };
+        let directory =
+            std::env::temp_dir().join(format!("omaterm-gitbash-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut pty = match PtyProcess::spawn(Some(&resolved.program), 80, 24, &directory, "probe")
+        {
+            Ok(pty) => pty,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&directory);
+                panic!("git bash did not start: {error}");
+            }
+        };
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        let mut saw_exit = false;
+        while Instant::now() < deadline {
+            if pty.try_child_event().is_some() {
+                saw_exit = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let write = pty.write_all(b"echo OMATERM_DIR:$PWD\n");
+        std::thread::sleep(Duration::from_millis(400));
+        let mut buf = vec![0u8; 16384];
+        let mut text = String::new();
+        let read_deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < read_deadline {
+            match pty.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => text.push_str(&String::from_utf8_lossy(&buf[..n])),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    if text.contains("OMATERM_DIR:") {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+        if pty.try_child_event().is_some() {
+            saw_exit = true;
+        }
+        let _ = pty.terminate();
+        let _ = std::fs::remove_dir_all(&directory);
+        let flat: String = text.chars().filter(|ch| !ch.is_control()).collect();
+        assert!(!saw_exit, "git bash exited before the prompt:\n{flat}");
+        assert!(write.is_ok(), "could not write to git bash: {write:?}");
+        let folder = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        assert!(
+            flat.contains("OMATERM_DIR:") && flat.contains(folder),
+            "git bash did not stay in the requested directory:\n{flat}"
+        );
+        assert!(
+            !flat.contains("invalid option"),
+            "git bash rejected its launch arguments:\n{flat}"
+        );
+    }
 }
