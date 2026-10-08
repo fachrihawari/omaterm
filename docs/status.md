@@ -58,8 +58,10 @@ combined with `--rcfile`, on `-i` placed before `--rcfile`, and on an
 `--rcfile` path that contains a slash or colon. The rcfile `cd`s to the
 project and sources `/etc/profile`.
 The "New terminals use …" confirmation uses the auto-dismissing toast stack.
-A missing Git install stays on PowerShell. Linux still starts `$SHELL` or
-`/bin/bash` with an absolute `--rcfile` and no `--login`. Restored
+A missing Git install stays on PowerShell. The palette `Shell` target
+exists only on Windows, so the Linux desktop build does not keep an unused
+variant. Linux still starts `$SHELL` or `/bin/bash` with an absolute
+`--rcfile` and no `--login`. Restored
 scrollback is replayed before the shell starts. On Windows the fresh ConPTY erases the display, and the first real pane
 resize then homes the cursor and redraws the prompt over the restored
 screen. Those erase-display sequences are dropped and absolute cursor

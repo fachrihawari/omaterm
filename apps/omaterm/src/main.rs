@@ -10364,11 +10364,9 @@ impl WorkspaceView {
             return;
         }
         let outcome = match entry.target.clone() {
+            #[cfg(windows)]
             palette::PaletteTarget::Shell(shell_id) => {
-                #[cfg(windows)]
                 self.choose_shell(&shell_id, cx);
-                #[cfg(not(windows))]
-                let _ = shell_id;
                 None
             }
             palette::PaletteTarget::ViewAction => {
