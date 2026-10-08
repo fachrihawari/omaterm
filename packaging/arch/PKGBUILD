@@ -10,7 +10,7 @@
 # tag tarball checksum (never ship SKIP) — see packaging/README.md.
 
 pkgname=omaterm
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Terminal-first developer workspace with semantic CLI automation'
 arch=('x86_64')
