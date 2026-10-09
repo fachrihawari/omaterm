@@ -44,6 +44,21 @@ pub struct KeyEvent {
 
 /// Encode a key event into PTY bytes.
 pub fn encode_key(event: &KeyEvent) -> Vec<u8> {
+    // Super key is reserved for desktop chrome; never sent to the PTY.
+    if event.modifiers.super_key {
+        return Vec::new();
+    }
+    // Modified Enter uses the Kitty `CSI u` form so full-screen apps can
+    // tell newline from submit: Shift+Enter -> `ESC[13;2u`, Alt -> `;3u`,
+    // Ctrl -> `;5u`, combos OR the bits (same scheme as `modifier_param`).
+    // Plain Enter stays bare CR for shells. Handled before the Alt ESC
+    // prefix so the alt bit lands inside the single sequence.
+    if matches!(event.key, Key::Enter)
+        && (event.modifiers.shift || event.modifiers.alt || event.modifiers.ctrl)
+    {
+        let param = modifier_param(event).unwrap_or(2);
+        return format!("\x1b[13;{param}u").into_bytes();
+    }
     // Alt prefixes ESC, then encodes the remainder without alt.
     if event.modifiers.alt {
         let mut plain = event.clone();
@@ -51,10 +66,6 @@ pub fn encode_key(event: &KeyEvent) -> Vec<u8> {
         let mut out = vec![0x1b];
         out.extend_from_slice(&encode_key(&plain));
         return out;
-    }
-    // Super key is reserved for desktop chrome; never sent to the PTY.
-    if event.modifiers.super_key {
-        return Vec::new();
     }
 
     match &event.key {
@@ -342,6 +353,27 @@ mod tests {
             app_keypad: false,
         };
         assert_eq!(encode_key(&ev), b"\x1b[Z");
+    }
+
+    #[test]
+    fn modified_enter_uses_kitty_csi_u_while_plain_stays_cr() {
+        assert_eq!(encode_key(&plain(Key::Enter)), b"\r");
+        let modified = |shift: bool, alt: bool, ctrl: bool| KeyEvent {
+            key: Key::Enter,
+            modifiers: KeyModifiers {
+                ctrl,
+                alt,
+                shift,
+                super_key: false,
+            },
+            app_cursor: false,
+            app_keypad: false,
+        };
+        assert_eq!(encode_key(&modified(true, false, false)), b"\x1b[13;2u");
+        assert_eq!(encode_key(&modified(false, true, false)), b"\x1b[13;3u");
+        assert_eq!(encode_key(&modified(false, false, true)), b"\x1b[13;5u");
+        assert_eq!(encode_key(&modified(true, false, true)), b"\x1b[13;6u");
+        assert_eq!(encode_key(&modified(true, true, true)), b"\x1b[13;8u");
     }
 
     #[test]

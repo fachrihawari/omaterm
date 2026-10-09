@@ -2,6 +2,88 @@
 
 ## Current position
 
+### Restored-scrollback leading-blank fix (`cd gat` -> `   gat`) — 2026-10-09 (uncommitted)
+
+User report with screenshot: after restart, restored command lines show
+leading blanks (`cd gat` as `   gat`, `ls -la` as `   -la`); fresh output
+is intact. Default bash; affected lines are edited commands with output.
+
+- Root cause (proven, not guessed): bash readline emits differential
+  redisplay spans (`\r` + cursor motions + partial rewrite + erase), ground
+  truth captured from real `bash --norc -i` (`cd gateway` + Ctrl-W ->
+  `\r` + five `\x1b[C` + `\x1b[K`). `collapse_line_span`
+  (`crates/omaterm-terminal/src/history.rs`) kept only the final
+  `\r`-segment whenever no earlier segment was byte-longer — and a span
+  starting with `\r` has an empty first segment, so the gate always
+  passed. The positioned/erase-bearing survivor replays cursor motions
+  over a fresh blank grid: leading cells stay spaces. Byte-level proof in
+  test output (compacted `cd gateway\r…` down to bare motions + erase).
+- Accomplice: `replay_equivalent` compared viewport only ("scrollback
+  excluded by design"), so scrollback-only damage persisted silently.
+- Fix F2': `collapse_line_span` refuses collapse when the final segment
+  contains anything beyond SGR/OSC (`final_segment_is_self_contained`:
+  motions, erases, edits, modes and other escapes force passthrough;
+  SGR attributes and OSC metadata travel with their text). Spinner/full
+  redraw collapsing is unchanged.
+- Fix F1: `replay_equivalent` additionally requires scrollback multiset
+  coverage (`scrollback_covered_by`): compaction may drop duplicate
+  animation copies (the mbx-dedup purpose, pinned by test) but never
+  fabricate or rewrite a line — any doubt saves original bytes.
+- Tests: 4 new terminal tests (positioned-span passthrough incl. the
+  real bash capture, differential end-to-end replay parity, fabricated
+  line rejection, dedup acceptance). The first three failed pre-fix;
+  all 13 pre-existing compaction tests still pass.
+- Contract delta to the Oct-08 compaction entry: restore still rebuilds
+  the final visible state without animation intermediates, plus no
+  fabricated scrollback lines (subset-covered).
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace
+  --no-fail-fast` PASS except the 7 known pre-existing `omaterm-cli`
+  wire-mapping failures (proven on the stashed clean tree earlier today),
+  desktop 291 PASS, terminal 196 PASS, `cargo clippy --workspace
+  --all-targets -- -D warnings` PASS (known transitive
+  `proc-macro-error2` notice only), `cargo build --release --bin
+  omaterm-desktop` PASS, `python3 scripts/check-docs.py` PASS,
+  `git diff --check` PASS. Native Wayland double-restart parity on
+  edited command lines remains manual.
+
+### Info dedup + Shift+Enter + mouse-click forwarding — 2026-10-09 (uncommitted)
+
+User-directed batch of four complaints, fixed in two files
+(`apps/omaterm/src/main.rs`, `crates/omaterm-terminal/src/input.rs`):
+
+- Branch switcher was in 3 places (status bar, Git tab header, Info PROJECT
+  card). Per user vote (Git + status, no Info), the Info pill trigger is
+  gone: the whole PROJECT card is removed from `render_inspector_info`, and
+  the now-single-use `branch_for` helper is deleted. Git header and status
+  bar keep sharing `branch_picker_trigger`.
+- Info panel had no purpose (screenshot: PROJECT card duplicating the sidebar
+  + third branch pill, then shell/PID/path/Copy path with equal weight). It
+  is now focused-shell only: `SHELL` heading, `{shell} · PID {pid}` title,
+  cwd + inline muted `Copy` on one row (was a standalone blue `Copy path`
+  row), then unchanged PROCESSES/PORTS. Spacing tightened `gap_4` → `gap_3`.
+- Shift+Enter sent bare `\r`, so opencode submitted instead of newline.
+  `encode_key` now emits Kitty `CSI u` for modified Enter (`Shift` →
+  `ESC[13;2u`, `Alt` → `;3u`, `Ctrl` → `;5u`, combos OR bits) before the Alt
+  ESC-prefix so the alt bit lands in the single sequence; plain Enter stays
+  `\r`; Super still swallowed. New unit test pins all five forms.
+- Left-click never reached mouse-aware TUIs: `on_mouse_down` always started
+  a desktop selection (click/drag was an explicit M3 non-goal). Presses now
+  forward SGR `CSI < 0 ; Cx ; Cy M` and releases `... m` when the session
+  reports mouse mode on + SGR (DECSET 1000/1002/1003 + 1006), mirroring the
+  wheel path; Shift+click bypasses to force selection; mode-off behavior
+  (selection + clipboard) is byte-identical.
+
+Verification: `cargo fmt --all --check` PASS, `cargo test --workspace
+--no-fail-fast` PASS except 7 `omaterm-cli` wire-mapping failures that also
+fail on the stashed clean tree (pre-existing, env-dependent, untouched
+crate), desktop 291 PASS, terminal 192 PASS (incl. new Enter test),
+`cargo clippy --workspace --all-targets -- -D warnings` PASS (known
+transitive `proc-macro-error2` notice only), `cargo build --release --bin
+omaterm-desktop` PASS, `git diff --check` PASS. Native Wayland validation
+remains manual: Info shows no card/branch, Git/status pickers match,
+opencode Shift+Enter newline vs Enter submit, opencode click popup vs
+Shift+click select, plain-shell selection unchanged.
+
 ### Theme follow-system + palette toggle — 2026-10-09 (uncommitted)
 
 System appearance was read once during view construction while GPUI/Linux

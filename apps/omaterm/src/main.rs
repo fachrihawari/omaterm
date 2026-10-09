@@ -11961,6 +11961,37 @@ impl WorkspaceView {
         self.stash_focused = None;
         window.focus(&self.focus_handle);
         self.set_input_owner(InputOwner::Terminal(pane));
+        // Mouse-aware full-screen apps (opencode, vim, less) own left-clicks
+        // once they enable DECSET 1000/1002/1003 with SGR (1006): forward the
+        // press as `CSI < 0 ; Cx ; Cy M` instead of starting a desktop
+        // selection, mirroring the wheel path. Shift+click bypasses to force
+        // text selection (standard terminal convention).
+        if !event.modifiers.shift
+            && let Some(session_id) = self.session_id_for_pane(pane)
+            && let Some(handle) = self.coordinator.registry().get(session_id)
+        {
+            let forward = handle
+                .lock()
+                .map(|s| {
+                    let mode = s.mouse_mode();
+                    mode.is_on() && mode.sgr
+                })
+                .unwrap_or(false);
+            if forward {
+                if let Some(cell) = self.pos_to_cell(pane, event.position, cx)
+                    && let Ok(mut session) = handle.lock()
+                {
+                    let _ = session.write_input(&encode_sgr_mouse(
+                        0,
+                        cell.col as u16,
+                        cell.row as u16,
+                        false,
+                    ));
+                }
+                cx.notify();
+                return;
+            }
+        }
         let Some(cell) = self.pos_to_cell(pane, event.position, cx) else {
             return;
         };
@@ -12018,7 +12049,33 @@ impl WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // No desktop selection in progress: a press previously forwarded to
+        // a mouse-aware app (see `on_mouse_down`) closes with an SGR release
+        // (`CSI < 0 ; Cx ; Cy m`) instead of touching the clipboard. A
+        // Shift+click selection still lands in the arm below via `selecting`.
         if self.selecting != Some(pane) {
+            if let Some(session_id) = self.session_id_for_pane(pane)
+                && let Some(handle) = self.coordinator.registry().get(session_id)
+            {
+                let forward = handle
+                    .lock()
+                    .map(|s| {
+                        let mode = s.mouse_mode();
+                        mode.is_on() && mode.sgr
+                    })
+                    .unwrap_or(false);
+                if forward
+                    && let Some(cell) = self.pos_to_cell(pane, event.position, cx)
+                    && let Ok(mut session) = handle.lock()
+                {
+                    let _ = session.write_input(&encode_sgr_mouse(
+                        0,
+                        cell.col as u16,
+                        cell.row as u16,
+                        true,
+                    ));
+                }
+            }
             return;
         }
         self.selecting = None;
@@ -16599,29 +16656,6 @@ impl WorkspaceView {
         })
     }
 
-    /// Branch name plus dirty flag for a project, from the last-good Git
-    /// status. `None` outside a repo so callers omit git rather than
-    /// inventing metadata.
-    fn branch_for(&self, project: ProjectId) -> Option<(String, bool)> {
-        let status = self.git_panel.status_for(project)?;
-        let dirty = !(status.staged.is_empty()
-            && status.unstaged.is_empty()
-            && status.untracked.is_empty());
-        status.branch.clone().map(|branch| {
-            // Ahead/behind from the same status read (no extra query):
-            // `main* ↑2 ↓1`. Shown only with an upstream and nonzero counts.
-            let sync = match (status.upstream.is_some(), status.ahead, status.behind) {
-                (true, ahead, behind) if ahead > 0 && behind > 0 => {
-                    format!(" ↑{ahead} ↓{behind}")
-                }
-                (true, ahead, _) if ahead > 0 => format!(" ↑{ahead}"),
-                (true, _, behind) if behind > 0 => format!(" ↓{behind}"),
-                _ => String::new(),
-            };
-            (format!("{branch}{sync}"), dirty)
-        })
-    }
-
     /// Open the branch picker overlay for `project`, fetching the list.
     fn open_branch_picker(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         self.branch_picker = Some(BranchPicker::new(project));
@@ -18618,7 +18652,9 @@ impl WorkspaceView {
     }
 
     /// Inspector Info body: focused shell identity, cached CWD and bounded
-    /// process/port snapshot. Loading and failed queries are not empty results.
+    /// process/port snapshot. Project identity lives in the sidebar and
+    /// branch switching lives in the Git tab + status bar, so this panel
+    /// carries neither — exactly one purpose, no duplication.
     fn render_inspector_info(&mut self, cx: &mut Context<Self>) -> Div {
         let mut body = div()
             .flex()
@@ -18627,111 +18663,7 @@ impl WorkspaceView {
             .min_h(px(0.0))
             .overflow_hidden()
             .p_3()
-            .gap_4();
-        let (name, path, branch, branch_project) =
-            if let Some(project) = self.coordinator.active_project() {
-                let index = self
-                    .coordinator
-                    .projects()
-                    .iter()
-                    .position(|p| p.id == project.id)
-                    .unwrap_or(0);
-                let branch = self.branch_for(project.id).map(|(branch, dirty)| {
-                    if dirty { format!("{branch}*") } else { branch }
-                });
-                (
-                    project.display_name(index + 1),
-                    self.project_path_label(project),
-                    branch,
-                    Some(project.id),
-                )
-            } else {
-                ("No project".to_string(), String::new(), None, None)
-            };
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .child("PROJECT"),
-                )
-                .child(
-                    div()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(rgb(crate::ui::theme::colors().border))
-                        .bg(rgb(crate::ui::theme::colors().info_card_bg))
-                        .p_3()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .w(px(28.0))
-                                        .h(px(28.0))
-                                        .rounded(px(7.0))
-                                        .border_1()
-                                        .border_color(rgb(crate::ui::theme::colors().border2))
-                                        .bg(rgb(crate::ui::theme::colors().info_icon_box_bg))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_color(rgb(crate::ui::theme::colors().blue))
-                                        .child(crate::ui::assets::icon(
-                                            crate::ui::assets::FOLDER_GIT,
-                                            16.0,
-                                            crate::ui::theme::colors().blue,
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_1()
-                                        .flex_col()
-                                        .min_w(px(0.0))
-                                        .child(
-                                            crate::ui::metrics::text_role(
-                                                div().truncate(),
-                                                crate::ui::metrics::NAME_12,
-                                            )
-                                            .text_color(rgb(crate::ui::theme::colors().text))
-                                            .child(name),
-                                        )
-                                        .child(
-                                            crate::ui::metrics::text_role(
-                                                div().truncate(),
-                                                crate::ui::metrics::META_10,
-                                            )
-                                            .text_color(rgb(crate::ui::theme::colors().muted))
-                                            .child(path),
-                                        ),
-                                )
-                                .child(match (branch, branch_project) {
-                                    (Some(branch), Some(project)) => crate::ui::metrics::text_role(
-                                        branch_picker_trigger(project, branch, cx)
-                                            .px(px(6.0))
-                                            .py(px(2.0))
-                                            .rounded_full()
-                                            .border_1()
-                                            .border_color(rgb(
-                                                crate::ui::theme::colors().pill_border
-                                            ))
-                                            .bg(rgb(crate::ui::theme::colors().pill_bg)),
-                                        crate::ui::metrics::META_9,
-                                    )
-                                    .text_color(rgb(crate::ui::theme::colors().muted))
-                                    .into_any_element(),
-                                    _ => div().into_any_element(),
-                                }),
-                        ),
-                ),
-        );
+            .gap_3();
         let focused_pane = self.coordinator.focused();
         let viewing_project = self.coordinator.selected_project_id();
         let shell = focused_pane
@@ -18756,31 +18688,46 @@ impl WorkspaceView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_1()
+                    .child(
+                        crate::ui::metrics::text_role(div(), crate::ui::metrics::HEADING_10)
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child("SHELL"),
+                    )
                     .child(
                         crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
+                            .text_color(rgb(crate::ui::theme::colors().text))
                             .child(format!("{shell_label} · PID {pid}")),
                     )
                     .child(
-                        crate::ui::metrics::text_role(
-                            div().truncate(),
-                            crate::ui::metrics::META_10,
-                        )
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .child(path_label.clone()),
-                    )
-                    .child(
-                        crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10)
-                            .cursor_pointer()
-                            .text_color(rgb(crate::ui::theme::colors().blue))
-                            .child("Copy path")
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |_, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        path_label.clone(),
-                                    ));
-                                }),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                crate::ui::metrics::text_role(
+                                    div().flex_1().min_w(px(0.0)).truncate(),
+                                    crate::ui::metrics::META_10,
+                                )
+                                .text_color(rgb(crate::ui::theme::colors().muted))
+                                .child(path_label.clone()),
+                            )
+                            .child(
+                                crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10)
+                                    .cursor_pointer()
+                                    .flex_shrink_0()
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .hover(|s| s.text_color(rgb(crate::ui::theme::colors().blue)))
+                                    .child("Copy")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |_, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                path_label.clone(),
+                                            ));
+                                        }),
+                                    ),
                             ),
                     ),
             );
