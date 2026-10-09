@@ -65,6 +65,10 @@ struct HistoryJob {
     journal_seq: u64,
     recorder_version: u64,
     key: [u8; 32],
+    /// Clear-generation stamped at enqueue. A job enqueued before a
+    /// clear/disable carries an older epoch than the manager; its ack must
+    /// not resurrect deleted data (see `apply_ack`).
+    epoch: u64,
 }
 
 /// Worker acknowledgement consumed on flush ticks and shutdown.
@@ -74,6 +78,7 @@ struct HistoryAck {
     recorder_version: u64,
     ok: bool,
     error: Option<String>,
+    epoch: u64,
 }
 
 /// Collapse superseded repaint frames before encrypting, keeping the
@@ -160,6 +165,7 @@ fn save_job(store: &HistoryStore, job: &HistoryJob) -> HistoryAck {
         recorder_version: job.recorder_version,
         ok,
         error,
+        epoch: job.epoch,
     }
 }
 
@@ -201,6 +207,10 @@ pub struct HistoryManager {
     inflight: HashMap<String, (u64, u64)>,
     seqs: HashMap<String, u64>,
     journals: HashMap<String, JournalBuffer>,
+    /// Per-pane clear generations. Deliberately NOT cleared by
+    /// `forget_pane`: a forgotten pane's stale acks must still mismatch so
+    /// they can never be mistaken for fresh work.
+    epochs: HashMap<String, u64>,
     warning: Option<String>,
     jobs: Option<mpsc::SyncSender<HistoryJob>>,
     acks: mpsc::Receiver<HistoryAck>,
@@ -234,6 +244,7 @@ impl HistoryManager {
             inflight: HashMap::new(),
             seqs: HashMap::new(),
             journals: HashMap::new(),
+            epochs: HashMap::new(),
             warning: None,
             jobs: Some(jobs_tx),
             acks: acks_rx,
@@ -293,8 +304,32 @@ impl HistoryManager {
         if !enabled {
             self.journals.clear();
             self.seqs.clear();
+            // Data captured before disabling must not land after it.
+            self.bump_all_epochs();
         }
         self.save_config();
+    }
+
+    fn epoch_of(&self, pane_opaque: &str) -> u64 {
+        self.epochs.get(pane_opaque).copied().unwrap_or(0)
+    }
+
+    fn bump_epoch(&mut self, pane_opaque: &str) {
+        *self.epochs.entry(pane_opaque.to_owned()).or_insert(0) += 1;
+    }
+
+    /// Invalidate every pane seen so far (clear-all / disable paths).
+    fn bump_all_epochs(&mut self) {
+        let mut panes: std::collections::HashSet<String> = self.epochs.keys().cloned().collect();
+        panes.extend(self.revisions.keys().cloned());
+        panes.extend(self.journals.keys().cloned());
+        panes.extend(self.inflight.keys().cloned());
+        panes.extend(self.flushed_versions.keys().cloned());
+        panes.extend(self.flushed_seqs.keys().cloned());
+        panes.extend(self.seqs.keys().cloned());
+        for pane in panes {
+            self.bump_epoch(&pane);
+        }
     }
 
     pub fn set_paused(&mut self, pane_opaque: &str, paused: bool) {
@@ -411,6 +446,7 @@ impl HistoryManager {
             journal_seq: seq,
             recorder_version: version,
             key,
+            epoch: self.epoch_of(&ctx.pane_opaque),
         };
         match self.jobs.as_ref() {
             Some(jobs) => match jobs.try_send(job) {
@@ -448,6 +484,19 @@ impl HistoryManager {
     }
 
     fn apply_ack(&mut self, ack: HistoryAck) {
+        if ack.epoch != self.epoch_of(&ack.pane) {
+            // Stale: enqueued before a clear/disable. The worker already
+            // wrote the file, so remove it — unless a newer job for this
+            // pane is outstanding, whose write supersedes ours (deleting
+            // would destroy fresh data). Never touch inflight/flushed
+            // state: entries present belong to the newer job.
+            if !self.inflight.contains_key(&ack.pane)
+                && let Some(store) = &self.store
+            {
+                let _ = store.clear_pane(&ack.pane);
+            }
+            return;
+        }
         let current = self.inflight.get(&ack.pane).copied();
         if current.is_some_and(|(v, s)| v == ack.recorder_version && s == ack.journal_seq) {
             self.inflight.remove(&ack.pane);
@@ -677,6 +726,9 @@ impl HistoryManager {
                 .map_err(|error| error.to_string())?,
             None => 0,
         };
+        // Invalidate jobs already queued with the worker: their acks must
+        // not resurrect this pane's data (see `apply_ack`).
+        self.bump_epoch(pane_opaque);
         self.forget_pane(pane_opaque);
         Ok(removed)
     }
@@ -689,6 +741,7 @@ impl HistoryManager {
             None => 0,
         };
         for pane in panes {
+            self.bump_epoch(pane);
             self.forget_pane(pane);
         }
         Ok(removed)
@@ -701,6 +754,7 @@ impl HistoryManager {
             Some(store) => store.clear_all().map_err(|error| error.to_string())?,
             None => 0,
         };
+        self.bump_all_epochs();
         self.journals.clear();
         self.revisions.clear();
         self.flushed_versions.clear();
@@ -717,6 +771,7 @@ impl HistoryManager {
             Some(store) => store.clear_all().map_err(|error| error.to_string())?,
             None => 0,
         };
+        self.bump_all_epochs();
         self.journals.clear();
         self.revisions.clear();
         self.flushed_versions.clear();
@@ -1067,6 +1122,46 @@ mod tests {
     }
 
     #[test]
+    fn stale_acks_cannot_resurrect_cleared_data() {
+        let (mut manager, dir) = test_manager();
+        manager.set_enabled(true);
+        let pane = "f".repeat(32);
+        // Stage the file a pre-clear worker write would have left behind.
+        let history_dir = dir.path().join("history");
+        std::fs::create_dir_all(&history_dir).expect("history dir");
+        let stale_file = history_dir.join(format!("{pane}.7.omhist"));
+        std::fs::write(&stale_file, b"stale-bytes").expect("stage stale archive");
+
+        // Simulate a job enqueued before a clear, acknowledged after it.
+        manager.bump_epoch(&pane);
+        assert_eq!(manager.epoch_of(&pane), 1);
+        manager.apply_ack(HistoryAck {
+            pane: pane.clone(),
+            journal_seq: 3,
+            recorder_version: 4,
+            ok: true,
+            error: None,
+            epoch: 0,
+        });
+        assert!(!stale_file.exists(), "stale archive must be deleted");
+        assert!(!manager.flushed_versions.contains_key(&pane));
+        assert!(!manager.inflight.contains_key(&pane));
+
+        // A fresh ack for the current epoch still applies normally.
+        manager.inflight.insert(pane.clone(), (5, 6));
+        manager.apply_ack(HistoryAck {
+            pane: pane.clone(),
+            journal_seq: 6,
+            recorder_version: 5,
+            ok: true,
+            error: None,
+            epoch: 1,
+        });
+        assert_eq!(manager.flushed_versions.get(&pane), Some(&5));
+        assert!(!manager.inflight.contains_key(&pane));
+    }
+
+    #[test]
     fn save_job_persists_compacted_repaint_stream() {
         let dir = tempfile_dir::TempDir::new();
         let store = HistoryStore::new(
@@ -1095,6 +1190,7 @@ mod tests {
             journal_seq: 0,
             recorder_version: 1,
             key,
+            epoch: 0,
         };
         let ack = save_job(&store, &job);
         assert!(ack.ok, "compacted save succeeds");
@@ -1160,6 +1256,7 @@ mod tests {
             journal_seq: 0,
             recorder_version: 1,
             key,
+            epoch: 0,
         };
         let ack = save_job(&store, &job);
         assert!(ack.ok, "compacted save succeeds");
@@ -1211,6 +1308,7 @@ mod tests {
             journal_seq: 0,
             recorder_version: 1,
             key,
+            epoch: 0,
         };
         let ack = save_job(&store, &job);
         assert!(ack.ok, "fallback save succeeds");

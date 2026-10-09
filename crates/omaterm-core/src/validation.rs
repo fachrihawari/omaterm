@@ -45,6 +45,19 @@ pub const MAX_GIT_BRANCH_BYTES: usize = 255;
 fn is_branch_ref(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_GIT_BRANCH_BYTES && !name.chars().any(char::is_control)
 }
+
+fn is_remote_name(name: &str) -> bool {
+    // Git remote names must not start with '-' (option injection), must not
+    // contain control chars, and must be reasonable length. Git's own grammar
+    // allows alphanumerics, dots, hyphens, underscores, and slashes.
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    if name.starts_with('-') {
+        return false;
+    }
+    !name.chars().any(char::is_control)
+}
 /// Largest accepted editor document in bytes (M19, blueprint §64). Checked
 /// before allocation on both read and save; oversize files are rejected
 /// with `document_too_large`, never partially loaded.
@@ -256,8 +269,13 @@ pub fn validate(command: &OmaCommand) -> Result<(), CommandError> {
         OmaCommand::Git(
             GitCommand::SyncFetch { remote, .. } | GitCommand::SyncPull { remote, .. },
         ) => {
-            if remote.as_ref().is_some_and(|remote| !is_branch_ref(remote)) {
-                return invalid("git remote must be 1 to 255 bytes with no control characters");
+            if remote
+                .as_ref()
+                .is_some_and(|remote| !is_remote_name(remote))
+            {
+                return invalid(
+                    "git remote must be 1 to 255 bytes, no leading dash, no control characters",
+                );
             }
         }
         OmaCommand::Git(GitCommand::StashPush { message, .. }) => {
@@ -522,6 +540,46 @@ mod tests {
             .is_ok()
         );
         assert!(validate(&OmaCommand::Git(GitCommand::BranchList { project })).is_ok());
+    }
+
+    #[test]
+    fn git_sync_remotes_reject_option_injection() {
+        let project = ProjectId::new();
+        // A leading dash would be parsed by git as an option
+        // (--upload-pack=...), not as a remote name.
+        for remote in ["--upload-pack=id", "-x", "--prune"] {
+            assert!(
+                validate(&OmaCommand::Git(GitCommand::SyncFetch {
+                    project,
+                    remote: Some(remote.into()),
+                }))
+                .is_err(),
+                "{remote:?} must be rejected"
+            );
+            assert!(
+                validate(&OmaCommand::Git(GitCommand::SyncPull {
+                    project,
+                    remote: Some(remote.into()),
+                }))
+                .is_err(),
+                "{remote:?} must be rejected"
+            );
+        }
+        // Ordinary names (and no remote) still pass.
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::SyncFetch {
+                project,
+                remote: Some("origin".into()),
+            }))
+            .is_ok()
+        );
+        assert!(
+            validate(&OmaCommand::Git(GitCommand::SyncPull {
+                project,
+                remote: None,
+            }))
+            .is_ok()
+        );
     }
 
     #[test]

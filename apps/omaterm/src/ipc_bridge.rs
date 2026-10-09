@@ -86,6 +86,23 @@ fn git_branch_name(raw: &str) -> Result<String, &'static str> {
     }
 }
 
+/// Bounded remote name: like branch names, plus no leading dash (mirrors
+/// core validation; the router re-validates and git itself is authoritative).
+/// A leading dash would be parsed as a git option (`--upload-pack=...`).
+fn git_remote_name(raw: &str) -> Result<String, &'static str> {
+    if raw.is_empty()
+        || raw.len() > MAX_GIT_BRANCH_BYTES
+        || raw.starts_with('-')
+        || raw.chars().any(char::is_control)
+    {
+        Err(
+            "git remote must be non-empty, at most 255 bytes, no leading dash, no control characters",
+        )
+    } else {
+        Ok(raw.to_owned())
+    }
+}
+
 /// Bounded blame path: non-empty, 4096 bytes max, no control characters
 /// (mirrors core validation; the router re-validates and git resolves).
 fn git_blame_path(raw: &str) -> Result<std::path::PathBuf, &'static str> {
@@ -408,11 +425,11 @@ pub fn map_request(
             }),
             Method::GitSyncFetch(p) => OmaCommand::Git(GitCommand::SyncFetch {
                 project: resolve_project(p.project_id)?,
-                remote: p.remote.as_deref().map(git_branch_name).transpose()?,
+                remote: p.remote.as_deref().map(git_remote_name).transpose()?,
             }),
             Method::GitSyncPull(p) => OmaCommand::Git(GitCommand::SyncPull {
                 project: resolve_project(p.project_id)?,
-                remote: p.remote.as_deref().map(git_branch_name).transpose()?,
+                remote: p.remote.as_deref().map(git_remote_name).transpose()?,
             }),
             Method::GitSyncPush(p) => OmaCommand::Git(GitCommand::SyncPush {
                 project: resolve_project(p.project_id)?,

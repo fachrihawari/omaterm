@@ -586,6 +586,24 @@ fn run_git_with(
         command.env(key, value);
     }
     hide_console_window(&mut command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // New process group with git as leader: timeout/cancel signals the
+        // whole tree (hooks and their descendants inherit our pipes, so
+        // killing only the direct child would leave them running and keep
+        // the pipe readers blocked). A forked child is never a group
+        // leader, so setsid cannot fail here.
+        //
+        // SAFETY: pre_exec runs between fork and exec; the closure only
+        // calls async-signal-safe setsid and touches no Rust memory.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
     let mut child = command
         .spawn()
         .map_err(|error| GitError::GitUnavailable(format!("cannot spawn git: {error}")))?;
@@ -601,25 +619,28 @@ fn run_git_with(
         };
         let _ = input_tx.send(result);
     });
-    // The reader thread owns only the pipes; the caller keeps the child
+    // The reader threads own only the pipes; the caller keeps the child
     // handle so every path below reaps it (no orphans, no leaked waiter
     // threads), mirroring `resolve.rs`. Output is capped before
     // allocation: status output is bounded by `stdout_cap`, stderr by
-    // `MAX_STDERR_BYTES`.
+    // `MAX_STDERR_BYTES`. Handles are retained so timeout/cancel paths can
+    // join the readers after the tree is dead instead of abandoning them
+    // while a hook descendant still holds a pipe open.
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let stdout_reader = std::thread::spawn(move || {
         let _ = stdout_tx.send(read_capped(stdout_pipe, stdout_cap));
     });
     let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let stderr_reader = std::thread::spawn(move || {
         let _ = stderr_tx.send(read_capped(stderr_pipe, MAX_STDERR_BYTES));
     });
     let status = loop {
         if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_tree(&mut child);
+            join_reader(stdout_reader);
+            join_reader(stderr_reader);
             return Err(GitError::Cancelled);
         }
         match child.try_wait() {
@@ -628,8 +649,9 @@ fn run_git_with(
                 std::thread::sleep(Duration::from_millis(5));
             }
             result => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_tree(&mut child);
+                join_reader(stdout_reader);
+                join_reader(stderr_reader);
                 return match result {
                     Err(error) => Err(GitError::Io(error)),
                     _ => Err(GitError::Timeout),
@@ -637,6 +659,10 @@ fn run_git_with(
             }
         }
     };
+    // Git has exited, but hook descendants in its group may still hold our
+    // pipes open (their output is irrelevant now). Reap the group so the
+    // readers below see EOF instead of blocking up to the deadline.
+    kill_tree(&mut child);
     let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
     let (stdout, capped) = stdout_rx
         .recv_timeout(remaining())
@@ -647,6 +673,8 @@ fn run_git_with(
     let input_result = input_rx
         .recv_timeout(remaining())
         .map_err(|_| GitError::Timeout)?;
+    join_reader(stdout_reader);
+    join_reader(stderr_reader);
     if !status.success() && !(input.allow_exit_one && status.code() == Some(1)) {
         let text = String::from_utf8_lossy(&stderr);
         let trimmed = text.trim();
@@ -668,6 +696,44 @@ fn run_git_with(
         stdout,
         stdout_capped: capped,
     })
+}
+
+/// Terminate git and everything it started. Git hooks can spawn background
+/// descendants that inherit stdout/stderr; killing only the direct child
+/// leaves them running and keeps the pipe readers blocked indefinitely.
+/// On unix the child is spawned as a process-group leader (see
+/// `run_git_with`), so one group signal reaps the whole tree. ESRCH
+/// (already gone) is fine; the subsequent `wait` reaps the direct child.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // SAFETY: signal number only. The pgid is our own spawned child,
+        // group leader via setsid in pre_exec — never our own group.
+        unsafe {
+            let _ = libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+        }
+        let _ = child.wait();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Reap a pipe-reader thread. Pipes reach EOF once the process group is
+/// dead, so this returns immediately in practice; the bound exists for
+/// unfixable cases (D-state pipe holders) where hanging would be worse.
+/// A still-running thread is detached (JoinHandle drop) and exits if its
+/// pipe ever closes.
+fn join_reader(handle: std::thread::JoinHandle<()>) {
+    for _ in 0..200 {
+        if handle.is_finished() {
+            let _ = handle.join();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Drain both pipes concurrently even after reaching the storage cap. Closing
@@ -943,6 +1009,50 @@ mod tests {
         );
         assert!(matches!(result, Err(GitError::Cancelled)));
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A hook-style descendant that inherits stdout must not survive a
+    /// timeout: the whole process group is reaped, so no leaked process
+    /// keeps the pipe open and no reader thread stays blocked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeout_reaps_descendants_holding_pipes() {
+        use std::os::unix::fs::PermissionsExt;
+        // Distinctive sleep duration so the /proc scan cannot match
+        // unrelated processes.
+        const MARKER: &str = "4317";
+        let path = std::env::temp_dir().join(format!("omaterm-git-tree-{}", std::process::id()));
+        let script = format!("#!/bin/sh\nsleep {MARKER} &\nexec sleep {MARKER}\n");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let start = std::time::Instant::now();
+        let result = run_git_with(
+            path.to_str().unwrap(),
+            std::env::temp_dir().as_path(),
+            &[],
+            &[],
+            GitInput::default(),
+            Duration::from_millis(500),
+            1024,
+        );
+        std::fs::remove_file(path).unwrap();
+        assert!(matches!(result, Err(GitError::Timeout)));
+        assert!(start.elapsed() < Duration::from_secs(10));
+        // Both the direct child and the backgrounded descendant must be
+        // gone: neither may outlive the timeout.
+        std::thread::sleep(Duration::from_millis(300));
+        let mut leaked = Vec::new();
+        if let Ok(proc) = std::fs::read_dir("/proc") {
+            for entry in proc.flatten() {
+                let cmdline = entry.path().join("cmdline");
+                if let Ok(bytes) = std::fs::read(&cmdline)
+                    && bytes.windows(MARKER.len()).any(|w| w == MARKER.as_bytes())
+                {
+                    leaked.push(entry.file_name());
+                }
+            }
+        }
+        assert!(leaked.is_empty(), "leaked hook descendants: {leaked:?}");
     }
 
     fn entry(path: &str, x: char, y: char) -> GitEntry {

@@ -39,17 +39,31 @@ pub fn find_hits(lines: &[String], query: &str) -> Vec<SearchHit> {
     let mut hits = Vec::new();
     for (line, text) in lines.iter().enumerate() {
         let haystack = text.to_lowercase();
+        // Cumulative folded byte offsets per original char index.
+        // Unicode case folding can change byte length (e.g. İ → i + combining
+        // dot), so folded byte offsets must be mapped back instead of used
+        // to slice the original string (that panics on char boundaries).
+        let mut cum: Vec<usize> = Vec::with_capacity(text.chars().count() + 1);
+        cum.push(0);
+        for ch in text.chars() {
+            let last = *cum.last().expect("cum always has the 0 seed");
+            cum.push(last + ch.to_lowercase().collect::<String>().len());
+        }
+
         let mut from = 0;
         while hits.len() < MAX_SEARCH_HITS {
             let Some(rel) = haystack[from..].find(&folded) else {
                 break;
             };
-            // Byte match -> char offset in the original line text.
-            let byte = from + rel;
-            let col = text[..byte.min(text.len())].chars().count();
-            let len = folded.chars().count();
+            let start_byte = from + rel;
+            let end_byte = start_byte + folded.len();
+            let col = hay_byte_to_char(&cum, start_byte);
+            // Map the match end as well: the folded query can span a
+            // different original char count than the query itself.
+            let end_col = hay_byte_to_char(&cum, end_byte);
+            let len = end_col.saturating_sub(col).max(1);
             hits.push(SearchHit { line, col, len });
-            from = byte + folded.len().max(1);
+            from = end_byte.max(from + 1);
             if from >= haystack.len() {
                 break;
             }
@@ -59,6 +73,17 @@ pub fn find_hits(lines: &[String], query: &str) -> Vec<SearchHit> {
         }
     }
     hits
+}
+
+/// Map a byte offset in the lowercased haystack back to the original char
+/// index. `cum` holds cumulative folded byte lengths with `cum[0] == 0`.
+/// Offsets landing inside one char's folded span resolve to that char;
+/// offsets past the end resolve to the char count (never panics).
+fn hay_byte_to_char(cum: &[usize], byte: usize) -> usize {
+    match cum.binary_search(&byte) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    }
 }
 
 /// Viewport line text under the same builder rule as `scrollback_text`.
@@ -190,5 +215,47 @@ mod tests {
         };
         assert_eq!(viewport_line_text(&row), "e\u{301}x");
         assert_eq!(char_range_to_cells(&row, 0, 1), Some((0, 0)));
+    }
+
+    #[test]
+    fn case_folding_length_change_does_not_panic() {
+        // İ (U+0130) lowercases to i + combining dot (2 bytes → 3 bytes).
+        // The old implementation sliced the original string using folded byte
+        // offsets, which panicked on char boundaries. This must not panic.
+        let lines = vec!["İİ".to_string()];
+        let hits = find_hits(&lines, "İ");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0],
+            SearchHit {
+                line: 0,
+                col: 0,
+                len: 1
+            }
+        );
+        assert_eq!(
+            hits[1],
+            SearchHit {
+                line: 0,
+                col: 1,
+                len: 1
+            }
+        );
+    }
+
+    #[test]
+    fn multibyte_ascii_folding_is_correct() {
+        // Ensure the fix doesn't break normal multibyte (non-folding) cases.
+        let lines = vec!["hello 世界 world".to_string()];
+        let hits = find_hits(&lines, "世界");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0],
+            SearchHit {
+                line: 0,
+                col: 6,
+                len: 2
+            }
+        );
     }
 }

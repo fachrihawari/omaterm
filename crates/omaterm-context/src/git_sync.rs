@@ -76,7 +76,11 @@ fn run_sync(root: &Path, args: &[&str]) -> Result<String, GitError> {
 pub fn git_fetch(root: &Path, remote: Option<&str>) -> Result<GitSyncReport, GitError> {
     let mut args = vec!["fetch", "--prune"];
     if let Some(remote) = remote {
-        if remote.is_empty() || remote.len() > 255 || remote.chars().any(|c| c.is_control()) {
+        if remote.is_empty()
+            || remote.len() > 255
+            || remote.starts_with('-')
+            || remote.chars().any(|c| c.is_control())
+        {
             return Err(GitError::GitFailed(format!("invalid remote: {remote:?}")));
         }
         args.push(remote);
@@ -125,7 +129,11 @@ pub fn git_pull(root: &Path, remote: Option<&str>) -> Result<GitSyncReport, GitE
     let before = head_short(root)?;
     let mut args = vec!["pull", "--ff-only", "--no-rebase"];
     if let Some(remote) = remote {
-        if remote.is_empty() || remote.len() > 255 || remote.chars().any(|c| c.is_control()) {
+        if remote.is_empty()
+            || remote.len() > 255
+            || remote.starts_with('-')
+            || remote.chars().any(|c| c.is_control())
+        {
             return Err(GitError::GitFailed(format!("invalid remote: {remote:?}")));
         }
         args.push(remote);
