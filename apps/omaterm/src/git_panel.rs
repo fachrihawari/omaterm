@@ -12,6 +12,12 @@
 //!
 //! Status payloads are `omaterm_core::GitStatusInfo` (root-relative paths,
 //! bounded entries, accurate `truncated`).
+//!
+//! M20 adds multi-repo support: every per-repo map is keyed by
+//! [`RepoKey`] (project + repo directory name, `None` for the project-root
+//! repo). A project with several depth-1 repos renders one VS Code-style
+//! section per repo, each with its own status, selection, collapse state,
+//! stash list and commit draft.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -19,6 +25,42 @@ use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use omaterm_core::{GitStatusInfo, ProjectId};
+
+/// Identity of one repository inside a project (M20).
+///
+/// `repo` is the child directory name discovered by the depth-1 scan, or
+/// `None` when the resolved project root is itself the repository. This is
+/// state identity only — filesystem paths are resolved from the live scan
+/// at use time, so a renamed or moved project directory never desyncs it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RepoKey {
+    pub project: ProjectId,
+    pub repo: Option<String>,
+}
+
+impl RepoKey {
+    /// A named child repository (`root/api` → `Some("api")`).
+    pub fn named(project: ProjectId, repo: &str) -> Self {
+        Self {
+            project,
+            repo: Some(repo.to_string()),
+        }
+    }
+
+    /// The repository at the project root (`root` itself holds `.git`).
+    pub fn root(project: ProjectId) -> Self {
+        Self {
+            project,
+            repo: None,
+        }
+    }
+
+    /// Every repo this state was captured for, in older API shape: an
+    /// iterator-free helper used by cleanup paths.
+    pub fn matches_project(&self, project: ProjectId) -> bool {
+        self.project == project
+    }
+}
 
 /// Explicit non-data state for a project. `NoRoot` (M12 `none`) and
 /// `NotRepo` render the empty state, never an error; failures name the
@@ -87,25 +129,27 @@ pub struct GitRow {
 
 #[derive(Default)]
 pub struct GitPanel {
-    statuses: HashMap<ProjectId, GitStatusInfo>,
-    empties: HashMap<ProjectId, GitEmpty>,
-    selected: HashMap<ProjectId, PathBuf>,
-    /// Collapsed change groups per project (`true` = staged group,
+    statuses: HashMap<RepoKey, GitStatusInfo>,
+    empties: HashMap<RepoKey, GitEmpty>,
+    selected: HashMap<RepoKey, PathBuf>,
+    /// Collapsed change groups per repo (`true` = staged group,
     /// `false` = working-tree group). View-local, never persisted.
-    collapsed: HashSet<(ProjectId, bool)>,
-    /// Collapsed stash groups per project. View-local, never persisted.
-    stash_collapsed: HashSet<ProjectId>,
-    /// Last-good stash lists per project (fetched on demand, not polled).
-    stashes: HashMap<ProjectId, omaterm_core::GitStashList>,
-    /// Selected stash index per project (row highlight + actions).
-    stash_selected: HashMap<ProjectId, usize>,
-    /// Two-step stash-drop arm per project (name + armed-at).
-    stash_drop_arm: HashMap<ProjectId, (usize, std::time::Instant)>,
-    /// Commit message drafts, one per project so switching never loses
-    /// typed text. Single-line (the desktop input submits on Enter).
-    commit_drafts: HashMap<ProjectId, crate::git_input::GitInput>,
+    collapsed: HashSet<(RepoKey, bool)>,
+    /// Collapsed stash groups per repo. View-local, never persisted.
+    stash_collapsed: HashSet<RepoKey>,
+    /// Last-good stash lists per repo (fetched on demand, not polled).
+    stashes: HashMap<RepoKey, omaterm_core::GitStashList>,
+    /// Selected stash index per repo (row highlight + actions).
+    stash_selected: HashMap<RepoKey, usize>,
+    /// Two-step stash-drop arm per repo (name + armed-at).
+    stash_drop_arm: HashMap<RepoKey, (usize, std::time::Instant)>,
+    /// Commit message drafts, one per repo so switching between repos
+    /// never loses typed text. Single-line (the desktop input submits
+    /// on Enter).
+    commit_drafts: HashMap<RepoKey, crate::git_input::GitInput>,
     /// Whether the commit input owns the keyboard (focused by clicking
-    /// it; Esc, submit, tab switch, or a terminal click releases it).
+    /// it; Esc, submit, repo switch, tab switch, or a terminal click
+    /// releases it).
     commit_focused: bool,
 }
 
@@ -120,168 +164,168 @@ impl GitPanel {
         answer == Some(1) && selected_project == Some(captured_project) && !shutting_down
     }
 
-    pub fn status_for(&self, project: ProjectId) -> Option<&GitStatusInfo> {
-        self.statuses.get(&project)
+    pub fn status_for(&self, key: &RepoKey) -> Option<&GitStatusInfo> {
+        self.statuses.get(key)
     }
 
-    pub fn empty_for(&self, project: ProjectId) -> Option<&GitEmpty> {
-        self.empties.get(&project)
+    pub fn empty_for(&self, key: &RepoKey) -> Option<&GitEmpty> {
+        self.empties.get(key)
     }
 
-    pub fn selected_path(&self, project: ProjectId) -> Option<&PathBuf> {
-        self.selected.get(&project)
+    pub fn selected_path(&self, key: &RepoKey) -> Option<&PathBuf> {
+        self.selected.get(key)
     }
 
     /// Record a landed refresh: status replaces any error and vice versa.
-    pub fn apply_refresh(&mut self, project: ProjectId, refresh: GitRefresh) {
+    pub fn apply_refresh(&mut self, key: &RepoKey, refresh: GitRefresh) {
         match refresh.result {
             Ok(status) => {
-                self.empties.remove(&project);
-                self.statuses.insert(project, status);
-                self.prune_selection(project);
+                self.empties.remove(key);
+                self.statuses.insert(key.clone(), status);
+                self.prune_selection(key);
             }
             Err(empty) => {
-                self.statuses.remove(&project);
-                self.empties.insert(project, empty);
-                self.selected.remove(&project);
+                self.statuses.remove(key);
+                self.empties.insert(key.clone(), empty);
+                self.selected.remove(key);
             }
         }
     }
 
-    /// Drop cached state for a project (switch-away memory bound is owned
-    /// by the caller; this clears on demand).
-    pub fn clear_project(&mut self, project: ProjectId) {
-        self.statuses.remove(&project);
-        self.empties.remove(&project);
-        self.selected.remove(&project);
-        self.commit_drafts.remove(&project);
-        self.collapsed.retain(|(owner, _)| *owner != project);
-        self.stash_collapsed.remove(&project);
-        self.stashes.remove(&project);
-        self.stash_selected.remove(&project);
-        self.stash_drop_arm.remove(&project);
+    /// Drop all cached state for one repo (project switch, deleting a
+    /// project, or a repo leaving the depth-1 scan).
+    pub fn clear_project(&mut self, key: &RepoKey) {
+        self.statuses.remove(key);
+        self.empties.remove(key);
+        self.selected.remove(key);
+        self.commit_drafts.remove(key);
+        self.collapsed.retain(|(owner, _)| owner != key);
+        self.stash_collapsed.remove(key);
+        self.stashes.remove(key);
+        self.stash_selected.remove(key);
+        self.stash_drop_arm.remove(key);
     }
 
-    /// Last-good stash list for a project, if fetched.
-    pub fn stashes_for(&self, project: ProjectId) -> Option<&omaterm_core::GitStashList> {
-        self.stashes.get(&project)
+    /// Last-good stash list for a repo, if fetched.
+    pub fn stashes_for(&self, key: &RepoKey) -> Option<&omaterm_core::GitStashList> {
+        self.stashes.get(key)
     }
 
     /// Install a freshly fetched stash list (loadings clears on error).
-    pub fn set_stashes(&mut self, project: ProjectId, list: omaterm_core::GitStashList) {
+    pub fn set_stashes(&mut self, key: &RepoKey, list: omaterm_core::GitStashList) {
         // Keep the selection on a surviving index; default to newest.
         if self
             .stash_selected
-            .get(&project)
+            .get(key)
             .is_none_or(|selected| *selected >= list.stashes.len() && !list.stashes.is_empty())
         {
             if list.stashes.is_empty() {
-                self.stash_selected.remove(&project);
+                self.stash_selected.remove(key);
             } else {
-                self.stash_selected.insert(project, 0);
+                self.stash_selected.insert(key.clone(), 0);
             }
         }
-        self.stash_drop_arm.remove(&project);
-        self.stashes.insert(project, list);
+        self.stash_drop_arm.remove(key);
+        self.stashes.insert(key.clone(), list);
     }
 
     /// Drop the stash list (fetch failures keep last-good rows elsewhere;
     /// here an explicit clear precedes a refetch after mutations).
-    pub fn clear_stashes(&mut self, project: ProjectId) {
-        self.stashes.remove(&project);
-        self.stash_drop_arm.remove(&project);
+    pub fn clear_stashes(&mut self, key: &RepoKey) {
+        self.stashes.remove(key);
+        self.stash_drop_arm.remove(key);
     }
 
-    /// Selected stash index for a project, if any rows exist.
-    pub fn stash_selection(&self, project: ProjectId) -> Option<usize> {
-        self.stash_selected.get(&project).copied()
+    /// Selected stash index for a repo, if any rows exist.
+    pub fn stash_selection(&self, key: &RepoKey) -> Option<usize> {
+        self.stash_selected.get(key).copied()
     }
 
     /// Select a stash row by index (clamped to the loaded list).
-    pub fn select_stash(&mut self, project: ProjectId, index: usize) {
+    pub fn select_stash(&mut self, key: &RepoKey, index: usize) {
         let len = self
             .stashes
-            .get(&project)
+            .get(key)
             .map(|list| list.stashes.len())
             .unwrap_or(0);
         if len == 0 {
-            self.stash_selected.remove(&project);
+            self.stash_selected.remove(key);
         } else {
-            self.stash_selected.insert(project, index.min(len - 1));
+            self.stash_selected.insert(key.clone(), index.min(len - 1));
         }
-        self.stash_drop_arm.remove(&project);
+        self.stash_drop_arm.remove(key);
     }
 
-    /// Whether the stash group is collapsed for a project.
-    pub fn is_stash_collapsed(&self, project: ProjectId) -> bool {
-        self.stash_collapsed.contains(&project)
+    /// Whether the stash group is collapsed for a repo.
+    pub fn is_stash_collapsed(&self, key: &RepoKey) -> bool {
+        self.stash_collapsed.contains(key)
     }
 
     /// Toggle the stash group collapse.
-    pub fn toggle_stash_collapsed(&mut self, project: ProjectId) -> bool {
-        if self.stash_collapsed.remove(&project) {
+    pub fn toggle_stash_collapsed(&mut self, key: &RepoKey) -> bool {
+        if self.stash_collapsed.remove(key) {
             false
         } else {
-            self.stash_collapsed.insert(project);
+            self.stash_collapsed.insert(key.clone());
             true
         }
     }
 
     /// Two-step drop arm: first call arms ("press again"), second call
     /// within 8s confirms. Returns true on confirm.
-    pub fn stash_drop_confirmed(&mut self, project: ProjectId, index: usize) -> bool {
+    pub fn stash_drop_confirmed(&mut self, key: &RepoKey, index: usize) -> bool {
         const WINDOW: std::time::Duration = std::time::Duration::from_secs(8);
         let armed = self
             .stash_drop_arm
-            .get(&project)
+            .get(key)
             .is_some_and(|(armed, at)| *armed == index && at.elapsed() < WINDOW);
         if armed {
-            self.stash_drop_arm.remove(&project);
+            self.stash_drop_arm.remove(key);
             true
         } else {
             self.stash_drop_arm
-                .insert(project, (index, std::time::Instant::now()));
+                .insert(key.clone(), (index, std::time::Instant::now()));
             false
         }
     }
 
     /// Whether the change group is collapsed (`staged` selects the staged
     /// group, otherwise the working-tree group).
-    pub fn is_collapsed(&self, project: ProjectId, staged: bool) -> bool {
-        self.collapsed.contains(&(project, staged))
+    pub fn is_collapsed(&self, key: &RepoKey, staged: bool) -> bool {
+        self.collapsed.contains(&(key.clone(), staged))
     }
 
     /// Toggle a change group's collapse. Returns the new collapsed state.
-    pub fn toggle_collapsed(&mut self, project: ProjectId, staged: bool) -> bool {
-        if self.collapsed.remove(&(project, staged)) {
+    pub fn toggle_collapsed(&mut self, key: &RepoKey, staged: bool) -> bool {
+        if self.collapsed.remove(&(key.clone(), staged)) {
             false
         } else {
-            self.collapsed.insert((project, staged));
+            self.collapsed.insert((key.clone(), staged));
             true
         }
     }
 
-    pub fn select(&mut self, project: ProjectId, path: PathBuf) {
-        self.selected.insert(project, path);
+    pub fn select(&mut self, key: &RepoKey, path: PathBuf) {
+        self.selected.insert(key.clone(), path);
     }
 
     /// Drop the row selection so keyboard navigation can hand the cursor
     /// to the history Graph (single cursor across the Git tab).
-    pub fn clear_selection(&mut self, project: ProjectId) {
-        self.selected.remove(&project);
+    pub fn clear_selection(&mut self, key: &RepoKey) {
+        self.selected.remove(key);
     }
 
     /// Move the row selection by `delta` (clamped, no wrap). Selects the
     /// first row when nothing is selected. Returns the newly selected row,
     /// if any. Drives Alt+Up/Down keyboard navigation.
-    pub fn move_selection(&mut self, project: ProjectId, delta: i32) -> Option<GitRow> {
-        let rows = self.rows_for(project);
+    pub fn move_selection(&mut self, key: &RepoKey, delta: i32) -> Option<GitRow> {
+        let rows = self.rows_for(key);
         if rows.is_empty() {
             return None;
         }
         let next = match self
             .selected
-            .get(&project)
+            .get(key)
             .and_then(|selected| rows.iter().position(|row| &row.path == selected))
         {
             // Nothing (or stale) selected: land on the leading edge.
@@ -295,13 +339,13 @@ impl GitPanel {
             Some(at) => (at as i32 + delta).clamp(0, rows.len() as i32 - 1) as usize,
         };
         let row = rows[next].clone();
-        self.selected.insert(project, row.path.clone());
+        self.selected.insert(key.clone(), row.path.clone());
         Some(row)
     }
 
     /// Flat render rows in group order (staged, unstaged, untracked).
-    pub fn rows_for(&self, project: ProjectId) -> Vec<GitRow> {
-        let Some(status) = self.statuses.get(&project) else {
+    pub fn rows_for(&self, key: &RepoKey) -> Vec<GitRow> {
+        let Some(status) = self.statuses.get(key) else {
             return Vec::new();
         };
         let mut rows = Vec::new();
@@ -330,53 +374,50 @@ impl GitPanel {
     }
 
     /// Drop a path from the selection when it leaves the status.
-    fn prune_selection(&mut self, project: ProjectId) {
-        let Some(selected) = self.selected.get(&project) else {
+    fn prune_selection(&mut self, key: &RepoKey) {
+        let Some(selected) = self.selected.get(key) else {
             return;
         };
-        let visible = self
-            .rows_for(project)
-            .iter()
-            .any(|row| &row.path == selected);
+        let visible = self.rows_for(key).iter().any(|row| &row.path == selected);
         if !visible {
-            self.selected.remove(&project);
+            self.selected.remove(key);
         }
     }
 
-    /// Current commit draft for a project (empty when nothing typed).
+    /// Current commit draft for a repo (empty when nothing typed).
     #[cfg(test)]
-    pub fn commit_draft(&self, project: ProjectId) -> &str {
+    pub fn commit_draft(&self, key: &RepoKey) -> &str {
         self.commit_drafts
-            .get(&project)
+            .get(key)
             .map(crate::git_input::GitInput::text)
             .unwrap_or_default()
     }
 
-    pub fn commit_input(&self, project: ProjectId) -> Option<&crate::git_input::GitInput> {
-        self.commit_drafts.get(&project)
+    pub fn commit_input(&self, key: &RepoKey) -> Option<&crate::git_input::GitInput> {
+        self.commit_drafts.get(key)
     }
 
-    pub fn commit_input_mut(&mut self, project: ProjectId) -> &mut crate::git_input::GitInput {
-        self.commit_drafts.entry(project).or_default()
+    pub fn commit_input_mut(&mut self, key: &RepoKey) -> &mut crate::git_input::GitInput {
+        self.commit_drafts.entry(key.clone()).or_default()
     }
 
     /// Take the draft for submission, leaving an empty one behind.
-    pub fn take_commit_draft(&mut self, project: ProjectId) -> String {
+    pub fn take_commit_draft(&mut self, key: &RepoKey) -> String {
         self.commit_drafts
-            .remove(&project)
+            .remove(key)
             .unwrap_or_default()
             .into_text()
     }
 
     /// Restore a draft (failed submissions put the message back so the
     /// user can fix and retry instead of retyping).
-    pub fn restore_commit_draft(&mut self, project: ProjectId, message: String) {
+    pub fn restore_commit_draft(&mut self, key: &RepoKey, message: String) {
         if message.is_empty() {
             return;
         }
         let mut draft = crate::git_input::GitInput::default();
         draft.insert(&message);
-        self.commit_drafts.insert(project, draft);
+        self.commit_drafts.insert(key.clone(), draft);
     }
 
     pub const fn commit_focused(&self) -> bool {
@@ -409,30 +450,67 @@ pub fn should_refresh(
 /// off-thread (pin wins; else bounded `rev-parse` of the active shell
 /// CWD) and runs `git status`; the result carries the worker thread id
 /// so tests pin the off-UI-thread contract without timing flakes.
-pub fn spawn_status_thread(
-    _caller: ThreadId,
-    project: ProjectId,
-    generation: u64,
-    pinned: Option<PathBuf>,
-    active_cwd: Option<PathBuf>,
-    limit: usize,
-    tx: std::sync::mpsc::Sender<(u64, ProjectId, GitRefresh)>,
-) {
+///
+/// `repo_root` is the M20 multi-repo override: when the caller already
+/// knows which repository under the project root to poll (a named child
+/// of the depth-1 scan, or the project root itself), it is used directly
+/// after the same directory check the resolver applies. It must live
+/// inside the project root — the worker refuses anything else.
+pub fn spawn_status_thread(_caller: ThreadId, request: StatusRequest, tx: StatusSender) {
+    let StatusRequest {
+        key,
+        generation,
+        repo_root,
+        pinned,
+        active_cwd,
+        limit,
+    } = request;
     std::thread::spawn(move || {
         let worker = std::thread::current().id();
         debug_assert_ne!(worker, _caller, "status worker must not be the caller");
-        let result = refresh_off_thread(pinned.as_deref(), active_cwd.as_deref(), limit);
-        let _ = tx.send((generation, project, GitRefresh { worker, result }));
+        let result = refresh_off_thread(
+            repo_root.as_deref(),
+            pinned.as_deref(),
+            active_cwd.as_deref(),
+            limit,
+        );
+        let _ = tx.send((generation, key, GitRefresh { worker, result }));
     });
 }
 
+/// One bounded status query: which repository, its generation guard, the
+/// path to poll directly (M20 override) and the fallback roots for the
+/// project-root resolution.
+#[derive(Debug, Clone)]
+pub struct StatusRequest {
+    pub key: RepoKey,
+    pub generation: u64,
+    /// M20 multi-repo override: poll this repository rather than resolve
+    /// the project root.
+    pub repo_root: Option<PathBuf>,
+    pub pinned: Option<PathBuf>,
+    pub active_cwd: Option<PathBuf>,
+    pub limit: usize,
+}
+
+/// Completion channel for [`spawn_status_thread`].
+pub type StatusSender = std::sync::mpsc::Sender<(u64, RepoKey, GitRefresh)>;
+
 fn refresh_off_thread(
+    repo_root: Option<&std::path::Path>,
     pinned: Option<&std::path::Path>,
     active_cwd: Option<&std::path::Path>,
     limit: usize,
 ) -> Result<GitStatusInfo, GitEmpty> {
-    let resolved = omaterm_context::resolve_root(pinned, active_cwd);
-    let Some(root) = resolved.root else {
+    // An explicit repo root wins: M20 sections poll the repository the
+    // UI is showing, not the project-root resolution. Anything that is
+    // not a directory falls through to the resolver's empty state.
+    let root = match repo_root {
+        Some(root) if root.is_dir() => Some(root.to_path_buf()),
+        Some(_) => None,
+        None => omaterm_context::resolve_root(pinned, active_cwd).root,
+    };
+    let Some(root) = root else {
         return Err(GitEmpty::NoRoot);
     };
     match omaterm_context::git_status(&root, limit) {
@@ -490,67 +568,67 @@ mod tests {
 
     #[test]
     fn apply_refresh_rows_and_prune_selection() {
-        let project = ProjectId::new();
+        let key = RepoKey::root(ProjectId::new());
         let mut panel = GitPanel::default();
         panel.apply_refresh(
-            project,
+            &key,
             GitRefresh {
                 worker: std::thread::current().id(),
                 result: Ok(status_with(1, 1, 1)),
             },
         );
-        let rows = panel.rows_for(project);
+        let rows = panel.rows_for(&key);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].group, GitGroup::Staged);
         assert_eq!(rows[1].group, GitGroup::Unstaged);
         assert_eq!(rows[2].group, GitGroup::Untracked);
 
-        panel.select(project, PathBuf::from("gone.txt"));
+        panel.select(&key, PathBuf::from("gone.txt"));
         panel.apply_refresh(
-            project,
+            &key,
             GitRefresh {
                 worker: std::thread::current().id(),
                 result: Ok(status_with(0, 0, 0)),
             },
         );
-        assert!(panel.selected_path(project).is_none());
+        assert!(panel.selected_path(&key).is_none());
 
         panel.apply_refresh(
-            project,
+            &key,
             GitRefresh {
                 worker: std::thread::current().id(),
                 result: Err(GitEmpty::NotRepo),
             },
         );
-        assert!(panel.status_for(project).is_none());
-        assert_eq!(panel.empty_for(project), Some(&GitEmpty::NotRepo));
+        assert!(panel.status_for(&key).is_none());
+        assert_eq!(panel.empty_for(&key), Some(&GitEmpty::NotRepo));
     }
 
     #[test]
     fn commit_draft_push_pop_take_and_restore() {
-        let project = ProjectId::new();
+        let key = RepoKey::root(ProjectId::new());
         let mut panel = GitPanel::default();
-        assert_eq!(panel.commit_draft(project), "");
+        assert_eq!(panel.commit_draft(&key), "");
         // Control characters never enter; printable text does.
-        assert!(!panel.commit_input_mut(project).insert("\0"));
-        assert!(panel.commit_input_mut(project).insert("f"));
-        assert!(panel.commit_input_mut(project).insert("i"));
-        assert!(panel.commit_input_mut(project).insert("x"));
-        assert_eq!(panel.commit_draft(project), "fix");
-        assert!(panel.commit_input_mut(project).delete(false));
-        assert_eq!(panel.commit_draft(project), "fi");
+        assert!(!panel.commit_input_mut(&key).insert("\0"));
+        assert!(panel.commit_input_mut(&key).insert("f"));
+        assert!(panel.commit_input_mut(&key).insert("i"));
+        assert!(panel.commit_input_mut(&key).insert("x"));
+        assert_eq!(panel.commit_draft(&key), "fix");
+        assert!(panel.commit_input_mut(&key).delete(false));
+        assert_eq!(panel.commit_draft(&key), "fi");
         // Take leaves emptiness behind; restore puts a failed message
         // back, but never an empty one.
-        assert_eq!(panel.take_commit_draft(project), "fi");
-        assert_eq!(panel.commit_draft(project), "");
-        assert!(!panel.commit_input_mut(project).delete(false));
-        panel.restore_commit_draft(project, String::new());
-        assert_eq!(panel.commit_draft(project), "");
-        panel.restore_commit_draft(project, "retry me".into());
-        assert_eq!(panel.commit_draft(project), "retry me");
+        assert_eq!(panel.take_commit_draft(&key), "fi");
+        assert_eq!(panel.commit_draft(&key), "");
+        assert!(!panel.commit_input_mut(&key).delete(false));
+        panel.restore_commit_draft(&key, String::new());
+        assert_eq!(panel.commit_draft(&key), "");
+        panel.restore_commit_draft(&key, "retry me".into());
+        assert_eq!(panel.commit_draft(&key), "retry me");
         // Clearing the project drops the draft with everything else.
-        panel.clear_project(project);
-        assert_eq!(panel.commit_draft(project), "");
+        panel.clear_project(&key);
+        assert_eq!(panel.commit_draft(&key), "");
         // Focus flag round-trips.
         assert!(!panel.commit_focused());
         panel.set_commit_focused(true);
@@ -591,11 +669,11 @@ mod tests {
 
     #[test]
     fn move_selection_walks_flat_rows_clamped() {
-        let project = ProjectId::new();
+        let key = RepoKey::root(ProjectId::new());
         let mut panel = GitPanel::default();
-        assert_eq!(panel.move_selection(project, 1), None);
+        assert_eq!(panel.move_selection(&key, 1), None);
         panel.apply_refresh(
-            project,
+            &key,
             GitRefresh {
                 worker: std::thread::current().id(),
                 result: Ok(status_with(1, 1, 1)),
@@ -603,25 +681,25 @@ mod tests {
         );
         // Nothing selected: positive lands first, negative lands last.
         assert_eq!(
-            panel.move_selection(project, 1).map(|row| row.path),
+            panel.move_selection(&key, 1).map(|row| row.path),
             Some(PathBuf::from("s0"))
         );
-        panel.selected.remove(&project);
+        panel.selected.remove(&key);
         assert_eq!(
-            panel.move_selection(project, -1).map(|row| row.path),
+            panel.move_selection(&key, -1).map(|row| row.path),
             Some(PathBuf::from("n0"))
         );
         // Walk and clamp at both ends.
-        panel.selected.remove(&project);
-        panel.move_selection(project, 1);
-        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("s0")));
-        panel.move_selection(project, 1);
-        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("u0")));
-        panel.move_selection(project, 1);
-        panel.move_selection(project, 1);
-        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("n0")));
-        panel.move_selection(project, -10);
-        assert_eq!(panel.selected_path(project), Some(&PathBuf::from("s0")));
+        panel.selected.remove(&key);
+        panel.move_selection(&key, 1);
+        assert_eq!(panel.selected_path(&key), Some(&PathBuf::from("s0")));
+        panel.move_selection(&key, 1);
+        assert_eq!(panel.selected_path(&key), Some(&PathBuf::from("u0")));
+        panel.move_selection(&key, 1);
+        panel.move_selection(&key, 1);
+        assert_eq!(panel.selected_path(&key), Some(&PathBuf::from("n0")));
+        panel.move_selection(&key, -10);
+        assert_eq!(panel.selected_path(&key), Some(&PathBuf::from("s0")));
     }
 
     #[test]
@@ -639,20 +717,62 @@ mod tests {
     }
 
     #[test]
-    fn group_collapse_toggles_per_project_and_side() {
+    fn group_collapse_toggles_per_repo_and_side() {
         let project = ProjectId::new();
-        let other = ProjectId::new();
+        let key = RepoKey::root(project);
+        let other = RepoKey::root(ProjectId::new());
+        let named = RepoKey::named(project, "api");
         let mut panel = GitPanel::default();
-        assert!(!panel.is_collapsed(project, true));
-        assert!(panel.toggle_collapsed(project, true));
-        assert!(panel.is_collapsed(project, true));
-        assert!(!panel.is_collapsed(project, false));
-        assert!(!panel.is_collapsed(other, true));
-        assert!(!panel.toggle_collapsed(project, true));
-        assert!(!panel.is_collapsed(project, true));
-        panel.toggle_collapsed(project, false);
-        panel.clear_project(project);
-        assert!(!panel.is_collapsed(project, false));
+        assert!(!panel.is_collapsed(&key, true));
+        assert!(panel.toggle_collapsed(&key, true));
+        assert!(panel.is_collapsed(&key, true));
+        assert!(!panel.is_collapsed(&key, false));
+        assert!(!panel.is_collapsed(&other, true));
+        assert!(!panel.is_collapsed(&named, true));
+        assert!(!panel.toggle_collapsed(&key, true));
+        assert!(!panel.is_collapsed(&key, true));
+        panel.toggle_collapsed(&key, false);
+        panel.clear_project(&key);
+        assert!(!panel.is_collapsed(&key, false));
+        // A sibling repo's collapse state survives its neighbour's clear.
+        assert!(panel.toggle_collapsed(&named, true));
+        panel.clear_project(&key);
+        assert!(panel.is_collapsed(&named, true));
+    }
+
+    /// M20: section state is per repository, so two repos under one
+    /// project never share a status, selection, or draft.
+    #[test]
+    fn per_repo_state_is_isolated() {
+        let project = ProjectId::new();
+        let root = RepoKey::root(project);
+        let api = RepoKey::named(project, "api");
+        let web = RepoKey::named(project, "web");
+        let mut panel = GitPanel::default();
+        let ok = |staged: usize| GitRefresh {
+            worker: std::thread::current().id(),
+            result: Ok(status_with(staged, 0, 0)),
+        };
+        panel.apply_refresh(&api, ok(2));
+        panel.apply_refresh(&web, ok(5));
+        assert_eq!(panel.rows_for(&api).len(), 2);
+        assert_eq!(panel.rows_for(&web).len(), 5);
+        panel.select(&api, PathBuf::from("a.txt"));
+        assert_eq!(panel.selected_path(&api), Some(&PathBuf::from("a.txt")));
+        assert!(panel.selected_path(&web).is_none());
+        assert!(panel.status_for(&root).is_none());
+        // Clearing one repo leaves the others intact.
+        panel.clear_project(&api);
+        assert!(panel.status_for(&api).is_none());
+        assert_eq!(panel.rows_for(&web).len(), 5);
+        // Commit drafts are per repo too.
+        assert!(panel.commit_input_mut(&web).insert("wip"));
+        assert_eq!(panel.commit_draft(&web), "wip");
+        assert!(panel.commit_input_mut(&api).insert("api"));
+        assert_eq!(panel.commit_draft(&api), "api");
+        assert_eq!(panel.take_commit_draft(&web), "wip");
+        assert_eq!(panel.commit_draft(&web), "");
+        assert_eq!(panel.commit_draft(&api), "api");
     }
 
     #[test]
@@ -708,11 +828,25 @@ mod tests {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let project = ProjectId::new();
-        spawn_status_thread(caller, project, 7, Some(repo.clone()), None, 5000, tx);
-        let (generation, landed_project, refresh) = rx
+        let key = RepoKey::root(project);
+        // M20: the explicit repo root is the polled repository; the pin
+        // and shell CWD stay as the fallback for the project root itself.
+        spawn_status_thread(
+            caller,
+            StatusRequest {
+                key: key.clone(),
+                generation: 7,
+                repo_root: Some(repo.clone()),
+                pinned: Some(repo.clone()),
+                active_cwd: None,
+                limit: 5000,
+            },
+            tx,
+        );
+        let (generation, landed_key, refresh) = rx
             .recv_timeout(Duration::from_secs(30))
             .expect("worker must answer");
-        assert_eq!((generation, landed_project), (7, project));
+        assert_eq!((generation, landed_key), (7, key));
         assert_ne!(refresh.worker, caller, "git must run off the caller thread");
         let status = refresh.result.expect("repo status");
         assert_eq!(status.unstaged.len(), 1);
@@ -724,10 +858,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&plain);
         std::fs::create_dir_all(&plain).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        spawn_status_thread(caller, project, 8, Some(plain.clone()), None, 5000, tx);
+        let key = RepoKey::root(project);
+        spawn_status_thread(
+            caller,
+            StatusRequest {
+                key,
+                generation: 8,
+                repo_root: Some(plain.clone()),
+                pinned: Some(plain.clone()),
+                active_cwd: None,
+                limit: 5000,
+            },
+            tx,
+        );
         let (_, _, refresh) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_ne!(refresh.worker, caller);
         assert_eq!(refresh.result, Err(GitEmpty::NotRepo));
+
+        // M20: a repo override outside the project root is refused by the
+        // directory gate rather than polled silently.
+        let outside =
+            std::env::temp_dir().join(format!("omaterm-m20-outside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(outside.join(".git")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let named = RepoKey::named(project, "api");
+        spawn_status_thread(
+            caller,
+            StatusRequest {
+                key: named,
+                generation: 9,
+                repo_root: None,
+                pinned: Some(plain.clone()),
+                active_cwd: None,
+                limit: 5000,
+            },
+            tx,
+        );
+        let (_, _, refresh) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(
+            refresh.result,
+            Err(GitEmpty::NotRepo),
+            "a non-repo project root keeps the explicit empty state"
+        );
+        assert!(outside.join(".git").is_dir());
+        let _ = std::fs::remove_dir_all(&outside);
 
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&plain);

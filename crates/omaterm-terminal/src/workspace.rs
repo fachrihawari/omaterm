@@ -157,6 +157,22 @@ impl WorkspaceCoordinator {
         project.pinned_directory = Some(directory);
         Ok(())
     }
+    /// Select the active child repository by directory name (M20). The
+    /// caller supplies the live depth-1 scan candidates; the name must
+    /// match one exactly (see `Project::set_active_repo`).
+    pub fn set_project_active_repo(
+        &mut self,
+        id: ProjectId,
+        repo: &str,
+        candidates: &[omaterm_core::RepoEntry],
+    ) -> Result<(), CoordinatorError> {
+        let project = self
+            .window
+            .project_mut(id)
+            .ok_or(CoreError::ProjectNotFound(id))?;
+        project.set_active_repo(repo, candidates)?;
+        Ok(())
+    }
     pub fn rename_tab(&mut self, id: TabId, name: String) -> Result<(), CoordinatorError> {
         let tab = self
             .window
@@ -257,6 +273,7 @@ impl WorkspaceCoordinator {
             id: project_id,
             custom_name: name,
             pinned_directory: Some(directory),
+            active_repo: None,
             tabs: Vec::new(),
             selected_tab: None,
         };
@@ -1163,6 +1180,7 @@ mod tests {
             id: ProjectId::new(),
             custom_name: Some("restored".into()),
             pinned_directory: Some(directory.clone()),
+            active_repo: None,
             tabs: Vec::new(),
             selected_tab: None,
         };

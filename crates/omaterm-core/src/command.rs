@@ -46,6 +46,20 @@ pub enum ProjectCommand {
     Root {
         project: ProjectId,
     },
+    /// Discover the repositories under the project root (M20): the root
+    /// itself when it is a repo, else its depth-1 repo children, plus the
+    /// effective active repo. Pure query, no effects.
+    ListRepos {
+        project: ProjectId,
+    },
+    /// Select the active child repository by directory name (M20). The
+    /// name must match the live depth-1 scan; traversal and unknown
+    /// names are rejected. Only the stored selection changes — no Git
+    /// operation runs here.
+    SetActiveRepo {
+        project: ProjectId,
+        repo: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

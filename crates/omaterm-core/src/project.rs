@@ -1,13 +1,20 @@
 use std::path::PathBuf;
 
-use crate::{CoreError, ProjectId, Result, Tab, TabId};
+use crate::{CoreError, ProjectId, RepoEntry, Result, Tab, TabId};
 
 /// A project groups tabs and carries an optional launch directory.
+///
+/// `active_repo` (M20) names the selected child repository when the
+/// project root contains several repos (depth-1 scan). It is a plain
+/// directory name, resolved against the live project root at use time
+/// so project directory moves don't break it. `None` means "no explicit
+/// choice" — callers fall back to the first-sorted candidate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub id: ProjectId,
     pub custom_name: Option<String>,
     pub pinned_directory: Option<PathBuf>,
+    pub active_repo: Option<String>,
     pub tabs: Vec<Tab>,
     pub selected_tab: Option<TabId>,
 }
@@ -18,6 +25,7 @@ impl Project {
             id: ProjectId::new(),
             custom_name,
             pinned_directory,
+            active_repo: None,
             tabs: Vec::new(),
             selected_tab: None,
         }
@@ -92,6 +100,36 @@ impl Project {
         Ok(())
     }
 
+    /// Select the active child repository by directory name (M20). The
+    /// name must match one of the live scan `candidates` exactly;
+    /// anything else (including `..`, separators, or empty names) is
+    /// rejected so callers can never escape the project root.
+    pub fn set_active_repo(&mut self, name: &str, candidates: &[RepoEntry]) -> Result<()> {
+        if !is_valid_repo_name(name) || !candidates.iter().any(|entry| entry.name == name) {
+            return Err(CoreError::UnknownRepo(name.to_string()));
+        }
+        self.active_repo = Some(name.to_string());
+        Ok(())
+    }
+
+    /// Clear an explicit selection, returning to first-sorted default.
+    pub fn clear_active_repo(&mut self) {
+        self.active_repo = None;
+    }
+
+    /// Resolve the effective repo: the saved selection when it is still
+    /// present in `candidates`, else the first-sorted default (M20
+    /// agreed rule: last-saved, else first-sorted).
+    pub fn resolve_active_repo<'a>(&self, candidates: &'a [RepoEntry]) -> Option<&'a RepoEntry> {
+        match self.active_repo.as_deref() {
+            Some(saved) => candidates
+                .iter()
+                .find(|entry| entry.name == saved)
+                .or_else(|| candidates.first()),
+            None => candidates.first(),
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self
             .tabs
@@ -111,6 +149,86 @@ impl Project {
             (false, Some(id)) if self.tab(id).is_some() => Ok(()),
             (false, Some(id)) => Err(CoreError::TabNotFound(id)),
             _ => Err(CoreError::NoSelectedTab),
+        }?;
+        if let Some(name) = self.active_repo.as_deref()
+            && !is_valid_repo_name(name)
+        {
+            return Err(CoreError::UnknownRepo(name.to_string()));
         }
+        Ok(())
+    }
+}
+
+/// A valid repo selection is a single child directory name: non-empty,
+/// no separators, no parent/current markers. Membership against the
+/// live scan is checked separately by `set_active_repo`.
+fn is_valid_repo_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn candidates() -> Vec<RepoEntry> {
+        ["api", "gateway", "web"]
+            .into_iter()
+            .map(|name| RepoEntry::new(name, PathBuf::from(format!("/root/{name}"))))
+            .collect()
+    }
+
+    #[test]
+    fn unset_selection_resolves_to_first_sorted_candidate() {
+        let project = Project::new(None, Some(PathBuf::from("/root")));
+        let repos = candidates();
+        assert_eq!(
+            project.resolve_active_repo(&repos).map(|entry| &entry.name),
+            Some(&"api".to_string())
+        );
+        assert!(project.resolve_active_repo(&[]).is_none());
+    }
+
+    #[test]
+    fn saved_selection_wins_and_stale_names_fall_back() {
+        let mut project = Project::new(None, Some(PathBuf::from("/root")));
+        let repos = candidates();
+        project.set_active_repo("web", &repos).unwrap();
+        assert_eq!(
+            project.resolve_active_repo(&repos).map(|entry| &entry.name),
+            Some(&"web".to_string())
+        );
+        // Saved name gone from a fresh scan → first-sorted fallback.
+        let reduced = repos[..2].to_vec();
+        assert_eq!(
+            project
+                .resolve_active_repo(&reduced)
+                .map(|entry| &entry.name),
+            Some(&"api".to_string())
+        );
+    }
+
+    #[test]
+    fn set_active_repo_rejects_unknown_and_traversal_names() {
+        let mut project = Project::new(None, Some(PathBuf::from("/root")));
+        let repos = candidates();
+        for bad in ["missing", "", ".", "..", "api/web", "api\\web", "../api"] {
+            assert_eq!(
+                project.set_active_repo(bad, &repos),
+                Err(CoreError::UnknownRepo(bad.to_string())),
+                "name {bad:?} must be rejected"
+            );
+        }
+        assert_eq!(project.active_repo, None);
+    }
+
+    #[test]
+    fn validate_rejects_malformed_saved_names() {
+        let mut project = Project::new(None, Some(PathBuf::from("/root")));
+        project.active_repo = Some("../escape".into());
+        assert_eq!(
+            project.validate(),
+            Err(CoreError::UnknownRepo("../escape".into()))
+        );
     }
 }

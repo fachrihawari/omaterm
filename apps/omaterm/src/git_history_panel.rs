@@ -23,8 +23,10 @@ use std::time::{Duration, Instant};
 
 use omaterm_core::{
     GitCommitFiles, GitCommitSummary, GitComparisonBase, GitHistoryPage, GitHistoryScope,
-    GitObjectId, ProjectId,
+    GitObjectId,
 };
+
+use crate::git_panel::RepoKey;
 
 /// Commits requested for the first Graph page (plan budget: 50 default).
 pub const HISTORY_PAGE_SIZE: usize = 50;
@@ -106,74 +108,74 @@ struct ProjectHistory {
 
 #[derive(Default)]
 pub struct HistoryPanel {
-    projects: HashMap<ProjectId, ProjectHistory>,
+    projects: HashMap<RepoKey, ProjectHistory>,
 }
 
 impl HistoryPanel {
-    fn project_mut(&mut self, project: ProjectId) -> &mut ProjectHistory {
+    fn project_mut(&mut self, project: RepoKey) -> &mut ProjectHistory {
         self.projects.entry(project).or_default()
     }
 
-    fn project(&self, project: ProjectId) -> Option<&ProjectHistory> {
+    fn project(&self, project: RepoKey) -> Option<&ProjectHistory> {
         self.projects.get(&project)
     }
 
     /// Drop cached state for a project (switch-away memory bound is owned
     /// by the caller; this clears on demand).
-    pub fn clear_project(&mut self, project: ProjectId) {
+    pub fn clear_project(&mut self, project: RepoKey) {
         self.projects.remove(&project);
     }
 
     /// Explicit empty/error state for a project, if any.
-    pub fn empty_for(&self, project: ProjectId) -> Option<&HistoryEmpty> {
+    pub fn empty_for(&self, project: RepoKey) -> Option<&HistoryEmpty> {
         self.project(project)?.empty.as_ref()
     }
 
     /// Last-good commits, newest-first. Empty while loading or when the
     /// repository has no commits yet (see [`HistoryPanel::empty_for`]).
-    pub fn commits_for(&self, project: ProjectId) -> &[GitCommitSummary] {
+    pub fn commits_for(&self, project: RepoKey) -> &[GitCommitSummary] {
         self.project(project)
             .map(|state| state.commits.as_slice())
             .unwrap_or_default()
     }
 
     /// Whether another page exists beyond the loaded commits.
-    pub fn has_more(&self, project: ProjectId) -> bool {
+    pub fn has_more(&self, project: RepoKey) -> bool {
         self.project(project).is_some_and(|state| state.has_more)
     }
 
     /// Whether the loaded page hit a byte/item cap (`truncated`).
-    pub fn truncated(&self, project: ProjectId) -> bool {
+    pub fn truncated(&self, project: RepoKey) -> bool {
         self.project(project).is_some_and(|state| state.truncated)
     }
 
     /// Currently loaded limit for a project (0 when never fetched).
-    pub fn loaded_limit(&self, project: ProjectId) -> usize {
+    pub fn loaded_limit(&self, project: RepoKey) -> usize {
         self.project(project).map(|state| state.limit).unwrap_or(0)
     }
 
     /// Whether a `Load more` request is in flight.
-    pub fn loading_more(&self, project: ProjectId) -> bool {
+    pub fn loading_more(&self, project: RepoKey) -> bool {
         self.project(project)
             .is_some_and(|state| state.loading_more)
     }
 
     /// `Load more` was consumed and the backend still reports more: the
     /// section renders the explicit loaded-history limit notice.
-    pub fn limit_reached(&self, project: ProjectId) -> bool {
+    pub fn limit_reached(&self, project: RepoKey) -> bool {
         self.project(project).is_some_and(|state| {
             state.limit >= HISTORY_MAX_LOADED && state.has_more && !state.loading_more
         })
     }
 
     /// Non-fatal refresh failure kept alongside last-good rows.
-    pub fn last_error(&self, project: ProjectId) -> Option<&str> {
+    pub fn last_error(&self, project: RepoKey) -> Option<&str> {
         self.project(project)
             .and_then(|state| state.last_error.as_deref())
     }
 
     /// Functional scope for a project (current HEAD by default).
-    pub fn scope_for(&self, project: ProjectId) -> GitHistoryScope {
+    pub fn scope_for(&self, project: RepoKey) -> GitHistoryScope {
         self.project(project)
             .map(|state| state.scope)
             .unwrap_or_default()
@@ -181,7 +183,7 @@ impl HistoryPanel {
 
     /// Switch scope and invalidate the page so the poller refetches.
     /// Returns true when the scope changed.
-    pub fn set_scope(&mut self, project: ProjectId, scope: GitHistoryScope) -> bool {
+    pub fn set_scope(&mut self, project: RepoKey, scope: GitHistoryScope) -> bool {
         let state = self.project_mut(project);
         if state.scope == scope {
             return false;
@@ -201,27 +203,27 @@ impl HistoryPanel {
     }
 
     /// Whether the GRAPH section is collapsed (project-local, view-only).
-    pub fn is_graph_collapsed(&self, project: ProjectId) -> bool {
+    pub fn is_graph_collapsed(&self, project: RepoKey) -> bool {
         self.project(project)
             .is_some_and(|state| state.graph_collapsed)
     }
 
     /// Toggle the GRAPH section collapse. Returns the new collapsed state.
-    pub fn toggle_graph_collapsed(&mut self, project: ProjectId) -> bool {
+    pub fn toggle_graph_collapsed(&mut self, project: RepoKey) -> bool {
         let state = self.project_mut(project);
         state.graph_collapsed = !state.graph_collapsed;
         state.graph_collapsed
     }
 
     /// Whether a commit's files are expanded.
-    pub fn is_expanded(&self, project: ProjectId, commit: &str) -> bool {
+    pub fn is_expanded(&self, project: RepoKey, commit: &str) -> bool {
         self.project(project)
             .is_some_and(|state| state.expanded.contains(commit))
     }
 
     /// Toggle a commit's expansion. Returns true when the caller must fetch
     /// file metadata (newly expanded without cached files).
-    pub fn toggle_expanded(&mut self, project: ProjectId, commit: GitObjectId) -> bool {
+    pub fn toggle_expanded(&mut self, project: RepoKey, commit: GitObjectId) -> bool {
         let key = commit.as_str().to_owned();
         let state = self.project_mut(project);
         if state.expanded.remove(&key) {
@@ -242,13 +244,13 @@ impl HistoryPanel {
     }
 
     /// Changed-file metadata for an expanded commit, if landed.
-    pub fn files_for(&self, project: ProjectId, commit: &str) -> Option<&CommitFilesState> {
+    pub fn files_for(&self, project: RepoKey, commit: &str) -> Option<&CommitFilesState> {
         self.project(project)?.files.get(commit)
     }
 
     /// Mark an expansion loading (spawned fetch) without dropping last-good
     /// files on retry.
-    pub fn mark_files_loading(&mut self, project: ProjectId, commit: &GitObjectId) {
+    pub fn mark_files_loading(&mut self, project: RepoKey, commit: &GitObjectId) {
         let key = commit.as_str().to_owned();
         let state = self.project_mut(project);
         if !matches!(state.files.get(&key), Some(CommitFilesState::Loaded(_))) {
@@ -257,23 +259,23 @@ impl HistoryPanel {
     }
 
     /// Currently selected Graph row, if any.
-    pub fn selected_row(&self, project: ProjectId) -> Option<&HistoryRow> {
+    pub fn selected_row(&self, project: RepoKey) -> Option<&HistoryRow> {
         self.project(project)?.selected.as_ref()
     }
 
-    pub fn select(&mut self, project: ProjectId, row: HistoryRow) {
+    pub fn select(&mut self, project: RepoKey, row: HistoryRow) {
         self.project_mut(project).selected = Some(row);
     }
 
     /// Drop the Graph row selection so keyboard navigation can hand the
     /// cursor back to the change lists (single cursor across the Git tab).
-    pub fn clear_selection(&mut self, project: ProjectId) {
+    pub fn clear_selection(&mut self, project: RepoKey) {
         self.project_mut(project).selected = None;
     }
 
     /// Flat visible rows in render order (commit, then its file rows when
     /// expanded with loaded metadata). Drives keyboard navigation.
-    pub fn rows_for(&self, project: ProjectId) -> Vec<HistoryRow> {
+    pub fn rows_for(&self, project: RepoKey) -> Vec<HistoryRow> {
         let Some(state) = self.project(project) else {
             return Vec::new();
         };
@@ -302,13 +304,13 @@ impl HistoryPanel {
 
     /// Move the row selection by `delta` (clamped, no wrap). Selects the
     /// first row when nothing is selected. Returns the newly selected row.
-    pub fn move_selection(&mut self, project: ProjectId, delta: i32) -> Option<HistoryRow> {
-        let rows = self.rows_for(project);
+    pub fn move_selection(&mut self, project: RepoKey, delta: i32) -> Option<HistoryRow> {
+        let rows = self.rows_for(project.clone());
         if rows.is_empty() {
             return None;
         }
         let next = match self
-            .project(project)
+            .project(project.clone())
             .and_then(|state| state.selected.clone())
             .and_then(|selected| rows.iter().position(|row| row == &selected))
         {
@@ -330,7 +332,7 @@ impl HistoryPanel {
     /// surviving expansions, file metadata and selection; failure keeps
     /// last-good rows with a notice (or records the empty state when
     /// nothing was ever loaded).
-    pub fn apply_history_refresh(&mut self, project: ProjectId, refresh: HistoryRefresh) {
+    pub fn apply_history_refresh(&mut self, project: RepoKey, refresh: HistoryRefresh) {
         let state = self.project_mut(project);
         match refresh.result {
             Ok(page) => {
@@ -376,7 +378,7 @@ impl HistoryPanel {
     /// Record a landed file-metadata fetch. Applies only while the commit
     /// is still expanded; a collapsed-then-landing result is dropped so a
     /// stale retry cannot reopen a row the user closed.
-    pub fn apply_files_refresh(&mut self, project: ProjectId, refresh: CommitFilesRefresh) {
+    pub fn apply_files_refresh(&mut self, project: RepoKey, refresh: CommitFilesRefresh) {
         let key = refresh.commit.as_str().to_owned();
         let state = self.project_mut(project);
         if !state.expanded.contains(&key) {
@@ -394,7 +396,7 @@ impl HistoryPanel {
 
     /// Note the limit a page fetch was issued with (drives `Load more` and
     /// the limit notice). Called when the poller spawns the worker.
-    pub fn note_fetch_limit(&mut self, project: ProjectId, limit: usize) {
+    pub fn note_fetch_limit(&mut self, project: RepoKey, limit: usize) {
         let state = self.project_mut(project);
         state.limit = limit;
         if limit > HISTORY_PAGE_SIZE {
@@ -404,7 +406,7 @@ impl HistoryPanel {
 
     /// Whether the section has any page content or explicit state to show
     /// (loading counts: the section renders a loading row, never nothing).
-    pub fn known(&self, project: ProjectId) -> bool {
+    pub fn known(&self, project: RepoKey) -> bool {
         self.project(project)
             .is_some_and(|state| !state.commits.is_empty() || state.empty.is_some())
     }
@@ -479,27 +481,48 @@ pub struct HistoryFetch {
     pub limit: usize,
 }
 
-/// Spawn the background history-page worker. The worker resolves the M12
-/// root off-thread and runs `git log`; the result carries the worker thread
-/// id so tests pin the off-UI-thread contract without timing flakes.
+/// Root candidates for one history worker (M20). `repo` is the active
+/// repository path from the router; `pinned`/`active_cwd` are the M12
+/// fallback used before the first depth-1 scan lands. Bundled so the worker
+/// spawn stays under the argument cap.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryRoots {
+    pub repo: Option<PathBuf>,
+    pub pinned: Option<PathBuf>,
+    pub active_cwd: Option<PathBuf>,
+}
+
+impl HistoryRoots {
+    /// The directory to run git against: the explicit active repo when it is
+    /// a directory, else the M12 project-root resolution.
+    fn resolve(&self) -> Option<PathBuf> {
+        match self.repo.as_deref() {
+            Some(root) if root.is_dir() => Some(root.to_path_buf()),
+            _ => {
+                omaterm_context::resolve_root(self.pinned.as_deref(), self.active_cwd.as_deref())
+                    .root
+            }
+        }
+    }
+}
+
+/// Spawn the background history-page worker. The worker runs `git log`
+/// against the **active repository** root the view passes in (M20); when no
+/// scan has landed yet it falls back to the M12 project-root resolution
+/// (mirroring `git_panel::StatusRequest`). The result carries the worker
+/// thread id so tests pin the off-UI-thread contract without timing flakes.
 pub fn spawn_history_thread(
     caller: ThreadId,
-    project: ProjectId,
+    project: RepoKey,
     generation: u64,
-    pinned: Option<PathBuf>,
-    active_cwd: Option<PathBuf>,
+    roots: HistoryRoots,
     fetch: HistoryFetch,
-    tx: std::sync::mpsc::Sender<(u64, ProjectId, HistoryRefresh)>,
+    tx: std::sync::mpsc::Sender<(u64, RepoKey, HistoryRefresh)>,
 ) {
     std::thread::spawn(move || {
         let worker = std::thread::current().id();
         debug_assert_ne!(worker, caller, "history worker must not be the caller");
-        let result = history_off_thread(
-            pinned.as_deref(),
-            active_cwd.as_deref(),
-            fetch.scope,
-            fetch.limit,
-        );
+        let result = history_off_thread(roots.resolve().as_deref(), fetch.scope, fetch.limit);
         let _ = tx.send((generation, project, HistoryRefresh { worker, result }));
     });
 }
@@ -509,17 +532,16 @@ pub fn spawn_history_thread(
 /// merge parent selection reuses this entry with an explicit base.
 pub fn spawn_commit_files_thread(
     caller: ThreadId,
-    project: ProjectId,
+    project: RepoKey,
     generation: u64,
-    pinned: Option<PathBuf>,
-    active_cwd: Option<PathBuf>,
+    roots: HistoryRoots,
     commit: GitObjectId,
-    tx: std::sync::mpsc::Sender<(u64, ProjectId, CommitFilesRefresh)>,
+    tx: std::sync::mpsc::Sender<(u64, RepoKey, CommitFilesRefresh)>,
 ) {
     std::thread::spawn(move || {
         let worker = std::thread::current().id();
         debug_assert_ne!(worker, caller, "history worker must not be the caller");
-        let result = commit_files_off_thread(pinned.as_deref(), active_cwd.as_deref(), &commit);
+        let result = commit_files_off_thread(roots.resolve().as_deref(), &commit);
         let _ = tx.send((
             generation,
             project,
@@ -533,16 +555,14 @@ pub fn spawn_commit_files_thread(
 }
 
 fn history_off_thread(
-    pinned: Option<&std::path::Path>,
-    active_cwd: Option<&std::path::Path>,
+    root: Option<&std::path::Path>,
     scope: GitHistoryScope,
     limit: usize,
 ) -> Result<GitHistoryPage, HistoryEmpty> {
-    let resolved = omaterm_context::resolve_root(pinned, active_cwd);
-    let Some(root) = resolved.root else {
+    let Some(root) = root else {
         return Err(HistoryEmpty::NoRoot);
     };
-    match omaterm_context::git_history(&root, scope, limit) {
+    match omaterm_context::git_history(root, scope, limit) {
         Ok(page) => Ok(page),
         Err(omaterm_context::GitError::NotARepo) => Err(HistoryEmpty::NotRepo),
         Err(omaterm_context::GitError::GitUnavailable(message)) => {
@@ -577,15 +597,13 @@ fn history_off_thread(
 }
 
 fn commit_files_off_thread(
-    pinned: Option<&std::path::Path>,
-    active_cwd: Option<&std::path::Path>,
+    root: Option<&std::path::Path>,
     commit: &GitObjectId,
 ) -> Result<GitCommitFiles, String> {
-    let resolved = omaterm_context::resolve_root(pinned, active_cwd);
-    let Some(root) = resolved.root else {
+    let Some(root) = root else {
         return Err("no project root".to_owned());
     };
-    let parents = omaterm_context::git_commit_parents(&root, commit).map_err(|error| {
+    let parents = omaterm_context::git_commit_parents(root, commit).map_err(|error| {
         bound_detail(match error {
             omaterm_context::GitError::GitFailed(message) => message,
             omaterm_context::GitError::NotARepo => "not a git repository".to_owned(),
@@ -597,7 +615,7 @@ fn commit_files_off_thread(
         Some(parent) => GitComparisonBase::Parent(parent.clone()),
         None => GitComparisonBase::EmptyTree,
     };
-    omaterm_context::git_commit_files(&root, commit, &base).map_err(|error| {
+    omaterm_context::git_commit_files(root, commit, &base).map_err(|error| {
         bound_detail(match error {
             omaterm_context::GitError::GitFailed(message) => message,
             omaterm_context::GitError::Timeout => "git diff timed out".to_owned(),
@@ -629,7 +647,11 @@ pub fn history_should_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omaterm_core::{GitCommitFile, GitCommitFileKind, GitRef, GitTimestamp};
+    use omaterm_core::{GitCommitFile, GitCommitFileKind, GitRef, GitTimestamp, ProjectId};
+
+    fn key() -> RepoKey {
+        RepoKey::root(ProjectId::new())
+    }
 
     fn summary(id: char, subject: &str, parents: &str) -> GitCommitSummary {
         let oid = |c: char| GitObjectId::parse(c.to_string().repeat(40)).expect("fixture oid");
@@ -679,47 +701,47 @@ mod tests {
 
     #[test]
     fn history_page_expand_files_and_selection_walk() {
-        let project = ProjectId::new();
+        let project = key();
         let mut panel = HistoryPanel::default();
-        assert!(panel.rows_for(project).is_empty());
-        assert!(panel.move_selection(project, 1).is_none());
+        assert!(panel.rows_for(project.clone()).is_empty());
+        assert!(panel.move_selection(project.clone(), 1).is_none());
 
         panel.apply_history_refresh(
-            project,
+            project.clone(),
             HistoryRefresh {
                 worker: std::thread::current().id(),
                 result: Ok(page(summary('b', "second", "a"), summary('a', "first", ""))),
             },
         );
-        assert!(panel.empty_for(project).is_none());
-        assert!(!panel.has_more(project));
+        assert!(panel.empty_for(project.clone()).is_none());
+        assert!(!panel.has_more(project.clone()));
 
         // Newest-first rows; nothing selected lands on the first commit.
-        let rows = panel.rows_for(project);
+        let rows = panel.rows_for(project.clone());
         assert_eq!(rows.len(), 2);
         assert_eq!(
-            panel.move_selection(project, 1),
+            panel.move_selection(project.clone(), 1),
             Some(HistoryRow::Commit("b".repeat(40)))
         );
 
         // Expanding without metadata needs a fetch; the landed files join
         // the walk only while the commit stays expanded.
         let commit = GitObjectId::parse("b".repeat(40)).unwrap();
-        assert!(panel.toggle_expanded(project, commit.clone()));
-        panel.mark_files_loading(project, &commit);
+        assert!(panel.toggle_expanded(project.clone(), commit.clone()));
+        panel.mark_files_loading(project.clone(), &commit);
         assert!(matches!(
-            panel.files_for(project, &"b".repeat(40)),
+            panel.files_for(project.clone(), &"b".repeat(40)),
             Some(CommitFilesState::Loading)
         ));
         panel.apply_files_refresh(
-            project,
+            project.clone(),
             CommitFilesRefresh {
                 worker: std::thread::current().id(),
                 commit: commit.clone(),
                 result: Ok(loaded_files('b')),
             },
         );
-        let rows = panel.rows_for(project);
+        let rows = panel.rows_for(project.clone());
         assert_eq!(rows.len(), 3);
         assert_eq!(
             rows[1],
@@ -731,29 +753,29 @@ mod tests {
 
         // Walk clamps at both ends: one step reaches the file row, two
         // more land on (and clamp to) the last commit.
-        panel.move_selection(project, 1);
+        panel.move_selection(project.clone(), 1);
         assert_eq!(
-            panel.selected_row(project),
+            panel.selected_row(project.clone()),
             Some(&HistoryRow::File {
                 commit: "b".repeat(40),
                 path: PathBuf::from("a.txt"),
             })
         );
-        panel.move_selection(project, 1);
-        panel.move_selection(project, 1);
+        panel.move_selection(project.clone(), 1);
+        panel.move_selection(project.clone(), 1);
         assert_eq!(
-            panel.selected_row(project),
+            panel.selected_row(project.clone()),
             Some(&HistoryRow::Commit("a".repeat(40)))
         );
-        panel.move_selection(project, -10);
+        panel.move_selection(project.clone(), -10);
         assert_eq!(
-            panel.selected_row(project),
+            panel.selected_row(project.clone()),
             Some(&HistoryRow::Commit("b".repeat(40)))
         );
-        assert!(!panel.toggle_expanded(project, commit.clone()));
-        assert_eq!(panel.rows_for(project).len(), 2);
+        assert!(!panel.toggle_expanded(project.clone(), commit.clone()));
+        assert_eq!(panel.rows_for(project.clone()).len(), 2);
         panel.apply_files_refresh(
-            project,
+            project.clone(),
             CommitFilesRefresh {
                 worker: std::thread::current().id(),
                 commit: commit.clone(),
@@ -761,14 +783,14 @@ mod tests {
             },
         );
         assert!(matches!(
-            panel.files_for(project, &"b".repeat(40)),
+            panel.files_for(project.clone(), &"b".repeat(40)),
             Some(CommitFilesState::Loaded(_))
         ));
 
         // Retry after a real failure keeps the row expandable.
-        panel.toggle_expanded(project, commit.clone());
+        panel.toggle_expanded(project.clone(), commit.clone());
         panel.apply_files_refresh(
-            project,
+            project.clone(),
             CommitFilesRefresh {
                 worker: std::thread::current().id(),
                 commit,
@@ -776,27 +798,27 @@ mod tests {
             },
         );
         assert!(matches!(
-            panel.files_for(project, &"b".repeat(40)),
+            panel.files_for(project.clone(), &"b".repeat(40)),
             Some(CommitFilesState::Failed(_))
         ));
-        assert_eq!(panel.rows_for(project).len(), 2);
+        assert_eq!(panel.rows_for(project.clone()).len(), 2);
     }
 
     #[test]
     fn refresh_preserves_survivors_and_keeps_last_good_on_error() {
-        let project = ProjectId::new();
+        let project = key();
         let mut panel = HistoryPanel::default();
         panel.apply_history_refresh(
-            project,
+            project.clone(),
             HistoryRefresh {
                 worker: std::thread::current().id(),
                 result: Ok(page(summary('b', "second", "a"), summary('a', "first", ""))),
             },
         );
         let commit = GitObjectId::parse("b".repeat(40)).unwrap();
-        panel.toggle_expanded(project, commit.clone());
+        panel.toggle_expanded(project.clone(), commit.clone());
         panel.apply_files_refresh(
-            project,
+            project.clone(),
             CommitFilesRefresh {
                 worker: std::thread::current().id(),
                 commit,
@@ -804,7 +826,7 @@ mod tests {
             },
         );
         panel.select(
-            project,
+            project.clone(),
             HistoryRow::File {
                 commit: "b".repeat(40),
                 path: PathBuf::from("a.txt"),
@@ -813,19 +835,19 @@ mod tests {
 
         // A failed refresh keeps rows, expansion and selection with a notice.
         panel.apply_history_refresh(
-            project,
+            project.clone(),
             HistoryRefresh {
                 worker: std::thread::current().id(),
                 result: Err(HistoryEmpty::Failed("git log timed out".into())),
             },
         );
-        assert_eq!(panel.rows_for(project).len(), 3);
-        assert!(panel.last_error(project).is_some());
-        assert!(panel.selected_row(project).is_some());
+        assert_eq!(panel.rows_for(project.clone()).len(), 3);
+        assert!(panel.last_error(project.clone()).is_some());
+        assert!(panel.selected_row(project.clone()).is_some());
 
         // A successful refresh drops vanished commits and their metadata.
         panel.apply_history_refresh(
-            project,
+            project.clone(),
             HistoryRefresh {
                 worker: std::thread::current().id(),
                 result: Ok(GitHistoryPage {
@@ -835,32 +857,88 @@ mod tests {
                 }),
             },
         );
-        assert!(panel.last_error(project).is_none());
-        assert!(panel.has_more(project));
-        assert_eq!(panel.rows_for(project).len(), 1);
-        assert!(panel.selected_row(project).is_none());
+        assert!(panel.last_error(project.clone()).is_none());
+        assert!(panel.has_more(project.clone()));
+        assert_eq!(panel.rows_for(project.clone()).len(), 1);
+        assert!(panel.selected_row(project.clone()).is_none());
     }
 
     #[test]
     fn scope_switch_and_graph_collapse_are_project_local() {
-        let project = ProjectId::new();
-        let other = ProjectId::new();
+        let project = key();
+        let other = key();
         let mut panel = HistoryPanel::default();
-        assert_eq!(panel.scope_for(project), GitHistoryScope::CurrentHead);
-        assert!(!panel.is_graph_collapsed(project));
+        assert_eq!(
+            panel.scope_for(project.clone()),
+            GitHistoryScope::CurrentHead
+        );
+        assert!(!panel.is_graph_collapsed(project.clone()));
 
-        assert!(panel.toggle_graph_collapsed(project));
-        assert!(panel.is_graph_collapsed(project));
-        assert!(!panel.is_graph_collapsed(other));
+        assert!(panel.toggle_graph_collapsed(project.clone()));
+        assert!(panel.is_graph_collapsed(project.clone()));
+        assert!(!panel.is_graph_collapsed(other.clone()));
 
-        assert!(panel.set_scope(project, GitHistoryScope::AllLocalBranches));
-        assert!(!panel.set_scope(project, GitHistoryScope::AllLocalBranches));
-        assert_eq!(panel.loaded_limit(project), 0);
-        assert!(!panel.is_graph_collapsed(other));
+        assert!(panel.set_scope(project.clone(), GitHistoryScope::AllLocalBranches));
+        assert!(!panel.set_scope(project.clone(), GitHistoryScope::AllLocalBranches));
+        assert_eq!(panel.loaded_limit(project.clone()), 0);
+        assert!(!panel.is_graph_collapsed(other.clone()));
 
-        panel.clear_project(project);
-        assert_eq!(panel.scope_for(project), GitHistoryScope::CurrentHead);
-        assert!(!panel.is_graph_collapsed(project));
+        panel.clear_project(project.clone());
+        assert_eq!(
+            panel.scope_for(project.clone()),
+            GitHistoryScope::CurrentHead
+        );
+        assert!(!panel.is_graph_collapsed(project.clone()));
+    }
+
+    /// M20 F1/F4: two repositories of the *same* project keep independent
+    /// Graph state — switching repo and switching back restores each.
+    #[test]
+    fn graph_state_is_isolated_per_repository_within_a_project() {
+        let project = ProjectId::new();
+        let api = RepoKey::named(project, "api");
+        let web = RepoKey::named(project, "web");
+        let mut panel = HistoryPanel::default();
+
+        panel.apply_history_refresh(
+            api.clone(),
+            HistoryRefresh {
+                worker: std::thread::current().id(),
+                result: Ok(page(
+                    summary('b', "api second", "a"),
+                    summary('a', "api first", ""),
+                )),
+            },
+        );
+        panel.apply_history_refresh(
+            web.clone(),
+            HistoryRefresh {
+                worker: std::thread::current().id(),
+                result: Ok(page(
+                    summary('d', "web second", "c"),
+                    summary('c', "web first", ""),
+                )),
+            },
+        );
+
+        assert_eq!(panel.commits_for(api.clone())[0].subject, "api second");
+        assert_eq!(panel.commits_for(web.clone())[0].subject, "web second");
+
+        // Expanding in one repo never leaks into the other.
+        let api_commit = GitObjectId::parse("b".repeat(40)).unwrap();
+        assert!(panel.toggle_expanded(api.clone(), api_commit.clone()));
+        assert!(panel.is_expanded(api.clone(), api_commit.as_str()));
+        assert!(!panel.is_expanded(web.clone(), api_commit.as_str()));
+
+        // Collapse state and scope are per repo too.
+        panel.toggle_graph_collapsed(web.clone());
+        assert!(panel.is_graph_collapsed(web.clone()));
+        assert!(!panel.is_graph_collapsed(api.clone()));
+
+        // Clearing one repo leaves the other intact.
+        panel.clear_project(api.clone());
+        assert!(panel.commits_for(api.clone()).is_empty());
+        assert_eq!(panel.commits_for(web.clone())[0].subject, "web second");
     }
 
     #[test]
@@ -926,14 +1004,16 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-qm", "second"]);
 
-        let project = ProjectId::new();
+        let project = key();
         let (tx, rx) = std::sync::mpsc::channel();
         spawn_history_thread(
             caller,
-            project,
+            project.clone(),
             3,
-            Some(repo.clone()),
-            None,
+            HistoryRoots {
+                repo: Some(repo.clone()),
+                ..HistoryRoots::default()
+            },
             HistoryFetch {
                 scope: GitHistoryScope::CurrentHead,
                 limit: HISTORY_PAGE_SIZE,
@@ -943,7 +1023,7 @@ mod tests {
         let (generation, landed_project, refresh) = rx
             .recv_timeout(Duration::from_secs(30))
             .expect("worker must answer");
-        assert_eq!((generation, landed_project), (3, project));
+        assert_eq!((generation, landed_project), (3, project.clone()));
         assert_ne!(refresh.worker, caller, "git must run off the caller thread");
         let page = refresh.result.expect("history page");
         assert_eq!(page.commits.len(), 2);
@@ -954,10 +1034,12 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         spawn_commit_files_thread(
             caller,
-            project,
+            project.clone(),
             4,
-            Some(repo.clone()),
-            None,
+            HistoryRoots {
+                repo: Some(repo.clone()),
+                ..HistoryRoots::default()
+            },
             head.clone(),
             tx,
         );
@@ -989,10 +1071,12 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         spawn_history_thread(
             caller,
-            project,
+            project.clone(),
             5,
-            Some(unborn.clone()),
-            None,
+            HistoryRoots {
+                repo: Some(unborn.clone()),
+                ..HistoryRoots::default()
+            },
             HistoryFetch {
                 scope: GitHistoryScope::CurrentHead,
                 limit: HISTORY_PAGE_SIZE,

@@ -146,11 +146,9 @@ pub fn send(socket: &Path, request: &IpcRequest) -> Result<IpcResponse, CliFailu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        crate::env_lock()
     }
 
     #[test]

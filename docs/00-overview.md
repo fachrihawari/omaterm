@@ -55,6 +55,7 @@ the canonical workflow in [AGENTS.md](../AGENTS.md).
 | 17 | [v0.2 Closure](17-milestone-17-v02-closure.md) | Live closeout, baselines, redaction audit, acceptance rows | docs, desktop, tests |
 | 18 | [Process Panel](18-milestone-18-process-panel.md) | Kero-parity Info panel: processes + ports + scoped kill | `omaterm-terminal`, desktop, IPC, CLI |
 | 19 | [Basic Built-in Editor](19-milestone-19-editor.md) | Native open/edit/highlight/save; no LSP/IDE scope | `omaterm-core`, `omaterm-context`, desktop |
+| 20 | [Multi-Repo Support](20-milestone-20-multi-repo.md) | Depth-1 repo scan, active repo, VS Code-style Git sections | `omaterm-context`, `omaterm-core`, `omaterm-state`, desktop, IPC, CLI |
 
 M10 is post-v0.1 and does not change M6's layout/CWD-only persistence contract.
 It is blocked until M5–M9 and its dependency/replay spikes are complete.

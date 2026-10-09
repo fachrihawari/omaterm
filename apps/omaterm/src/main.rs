@@ -22,7 +22,7 @@ use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
     ErrorCode, FileCommand, FileEntry, GitBlame, GitBranchList, GitCommand, GitStashList,
     OmaCommand, Pane, PaneCommand, PaneContent, PaneId, PaneNode, ProjectCommand, ProjectId,
-    SessionId, SplitAxis, SplitDirection, TabCommand, TabId, TerminalCommand,
+    RepoEntry, SessionId, SplitAxis, SplitDirection, TabCommand, TabId, TerminalCommand,
 };
 use omaterm_ipc::{IpcServer, RequestHandler};
 use omaterm_protocol::{IpcRequest, IpcResponse};
@@ -44,6 +44,7 @@ mod git_history_panel;
 mod git_input;
 mod git_input_view;
 mod git_panel;
+mod git_repos;
 mod git_sync_panel;
 mod history;
 mod ipc_bridge;
@@ -303,55 +304,87 @@ struct WorkspaceView {
     /// states and selection (GPUI-free).
     git_panel: git_panel::GitPanel,
     git_discard_prompt_open: bool,
-    /// Background status-refresh completions `(generation, project,
+    /// Background status-refresh completions `(generation, repo key,
     /// outcome)`. Root resolution and `git status` both run on the worker
     /// (never the UI thread); stale generations drop on project switch.
-    git_tx: std::sync::mpsc::Sender<(u64, ProjectId, git_panel::GitRefresh)>,
-    git_rx: std::sync::mpsc::Receiver<(u64, ProjectId, git_panel::GitRefresh)>,
+    git_tx: std::sync::mpsc::Sender<(u64, git_panel::RepoKey, git_panel::GitRefresh)>,
+    git_rx: std::sync::mpsc::Receiver<(u64, git_panel::RepoKey, git_panel::GitRefresh)>,
     git_generation: u64,
-    /// Project with a refresh in flight, if any (one status call at a
-    /// time; the rest wait for the next poller tick).
-    git_in_flight: Option<ProjectId>,
-    /// Last landed refresh per project (interval source).
-    git_refreshed_at: HashMap<ProjectId, Instant>,
+    /// Repository with a status refresh in flight, if any (one bounded git
+    /// call at a time; the remaining repos wait for later poller ticks).
+    git_in_flight: Option<git_panel::RepoKey>,
+    /// Last landed refresh per repo (interval source).
+    git_refreshed_at: HashMap<git_panel::RepoKey, Instant>,
     /// Set by manual refresh, git mutations, and post-`terminal.run`
     /// submissions: the next tick refreshes immediately.
     git_dirty_hint: bool,
-    /// One remote action owns its completion channel and originating project.
+    /// M20 multi-repo scan cache now lives in the router (single owner so
+    /// panel, CLI and agents cannot drift). The view keeps only the scan
+    /// scheduling state: a bust set, an in-flight set and the poll cursor.
+    /// Project awaiting a fresh scan (root changed, manual refresh, or the
+    /// Git tab opening on an unscanned project).
+    repo_scan_bust: HashSet<ProjectId>,
+    /// Project whose scan is in flight (prevents worker spam).
+    repo_scan_in_flight: HashSet<ProjectId>,
+    /// Round-robin poll cursor per project: refreshes one repository of the
+    /// selected project per tick (VS Code sections, bounded git load).
+    repo_poll_cursor: HashMap<ProjectId, usize>,
+    /// Completed depth-1 scans `(project, resolved info)` landed off-thread.
+    repos_tx: std::sync::mpsc::Sender<(ProjectId, omaterm_core::ProjectReposInfo)>,
+    repos_rx: std::sync::mpsc::Receiver<(ProjectId, omaterm_core::ProjectReposInfo)>,
+    /// M20: collapsed multi-repo lists per project. A collapsed list
+    /// hides the repos while the active repository's body stays visible.
+    /// View-local, never persisted; collapsing the list is the only
+    /// chevron in the chrome.
+    repo_list_collapsed: HashSet<ProjectId>,
+    /// One remote action owns its completion channel and originating repo.
     sync_pending: Option<git_sync_panel::PendingSync>,
-    /// Per-file blame, keyed by project/side/path/mode like the scroll
+    /// Per-file blame, keyed by repo/side/path/mode like the scroll
     /// handles. Last-good rows with explicit empty states; fetched
     /// on-demand when the blame toggle arms, never polled.
-    blame_rows: HashMap<(ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode), GitBlame>,
+    blame_rows: HashMap<
+        (
+            git_panel::RepoKey,
+            bool,
+            std::path::PathBuf,
+            diff_panel::DiffMode,
+        ),
+        GitBlame,
+    >,
     /// Paths with blame visible (toggled per preview file).
-    blame_visible: HashSet<(ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode)>,
-    /// Stash message drafts per project (like commit drafts).
-    stash_drafts: HashMap<ProjectId, git_input::GitInput>,
-    /// Project whose stash input owns the keyboard.
-    stash_focused: Option<ProjectId>,
-    /// Projects with `-u` (include untracked) armed for the next push.
-    stash_untracked: HashSet<ProjectId>,
-    /// Projects with a stash-list fetch in flight.
-    stash_in_flight: HashSet<ProjectId>,
-    /// Background stash-list completions `(project, outcome)`.
-    stash_tx: std::sync::mpsc::Sender<(ProjectId, Result<GitStashList, String>)>,
-    stash_rx: std::sync::mpsc::Receiver<(ProjectId, Result<GitStashList, String>)>,
+    blame_visible: HashSet<(
+        git_panel::RepoKey,
+        bool,
+        std::path::PathBuf,
+        diff_panel::DiffMode,
+    )>,
+    /// Stash message drafts per repo (like commit drafts).
+    stash_drafts: HashMap<git_panel::RepoKey, git_input::GitInput>,
+    /// Repo whose stash input owns the keyboard.
+    stash_focused: Option<git_panel::RepoKey>,
+    /// Repos with `-u` (include untracked) armed for the next push.
+    stash_untracked: HashSet<git_panel::RepoKey>,
+    /// Repos with a stash-list fetch in flight.
+    stash_in_flight: HashSet<git_panel::RepoKey>,
+    /// Background stash-list completions `(repo key, outcome)`.
+    stash_tx: std::sync::mpsc::Sender<(git_panel::RepoKey, Result<GitStashList, String>)>,
+    stash_rx: std::sync::mpsc::Receiver<(git_panel::RepoKey, Result<GitStashList, String>)>,
     /// Branch picker overlay (C9.1, `None` when closed).
     branch_picker: Option<BranchPicker>,
-    /// Last-good branch lists per project (fetched on picker open and
+    /// Last-good branch lists per repo (fetched on picker open and
     /// after mutations, never polled).
-    branch_lists: HashMap<ProjectId, GitBranchList>,
+    branch_lists: HashMap<git_panel::RepoKey, GitBranchList>,
     /// Native scroll handle for the branch picker list (bounded overlay
     /// list, keyboard selection follows via `scroll_to_item`).
     branch_scroll_handle: UniformListScrollHandle,
-    /// Background branch-list completions `(generation, project, outcome)`.
-    /// Root resolution and `git branch` both run on the worker (never the
-    /// UI thread); stale generations drop on close/switch.
-    branch_tx: std::sync::mpsc::Sender<(u64, ProjectId, Result<GitBranchList, String>)>,
-    branch_rx: std::sync::mpsc::Receiver<(u64, ProjectId, Result<GitBranchList, String>)>,
+    /// Background branch-list completions `(generation, repo key, outcome)`.
+    /// `git branch` runs on the worker against the active repo root (never
+    /// the UI thread); stale generations drop on close/switch.
+    branch_tx: std::sync::mpsc::Sender<(u64, git_panel::RepoKey, Result<GitBranchList, String>)>,
+    branch_rx: std::sync::mpsc::Receiver<(u64, git_panel::RepoKey, Result<GitBranchList, String>)>,
     branch_generation: u64,
-    /// Project with a branch fetch in flight, if any (one at a time).
-    branch_in_flight: Option<ProjectId>,
+    /// Repo with a branch fetch in flight, if any (one at a time).
+    branch_in_flight: Option<git_panel::RepoKey>,
     /// Set on picker open and after branch mutations: the next tick fetches.
     branch_dirty_hint: bool,
     /// Startup configuration captured once. The 250ms poller must never
@@ -362,30 +395,41 @@ struct WorkspaceView {
     /// Git history Graph (inside the Git tab, below Changes): last-good
     /// pages, expansions, file metadata and selection (GPUI-free).
     history_panel: git_history_panel::HistoryPanel,
-    /// Background history-page completions `(generation, project,
-    /// outcome)`. Root resolution and `git log` both run on the worker
-    /// (never the UI thread); stale generations drop on project switch.
-    history_tx: std::sync::mpsc::Sender<(u64, ProjectId, git_history_panel::HistoryRefresh)>,
-    history_rx: std::sync::mpsc::Receiver<(u64, ProjectId, git_history_panel::HistoryRefresh)>,
+    /// Background history-page completions `(generation, repo key,
+    /// outcome)`. `git log` runs on the worker against the active repo root
+    /// the view passes in (never the UI thread); stale generations drop on
+    /// project switch. Keyed by `RepoKey` so switching repositories cannot
+    /// show another repository's graph (M20).
+    history_tx:
+        std::sync::mpsc::Sender<(u64, git_panel::RepoKey, git_history_panel::HistoryRefresh)>,
+    history_rx:
+        std::sync::mpsc::Receiver<(u64, git_panel::RepoKey, git_history_panel::HistoryRefresh)>,
     /// Background changed-file completions for expanded Graph commits.
-    history_files_tx:
-        std::sync::mpsc::Sender<(u64, ProjectId, git_history_panel::CommitFilesRefresh)>,
-    history_files_rx:
-        std::sync::mpsc::Receiver<(u64, ProjectId, git_history_panel::CommitFilesRefresh)>,
+    history_files_tx: std::sync::mpsc::Sender<(
+        u64,
+        git_panel::RepoKey,
+        git_history_panel::CommitFilesRefresh,
+    )>,
+    history_files_rx: std::sync::mpsc::Receiver<(
+        u64,
+        git_panel::RepoKey,
+        git_history_panel::CommitFilesRefresh,
+    )>,
     history_generation: u64,
-    /// Project with a page fetch in flight, if any (one history call at a
+    /// Repo key with a page fetch in flight, if any (one history call at a
     /// time; the rest wait for the next poller tick).
-    history_in_flight: Option<ProjectId>,
+    history_in_flight: Option<git_panel::RepoKey>,
     /// Expanded commits with a file-metadata fetch in flight.
-    history_files_in_flight: std::collections::HashSet<(ProjectId, String)>,
-    /// Last landed page per project (interval source).
-    history_refreshed_at: HashMap<ProjectId, Instant>,
+    history_files_in_flight: std::collections::HashSet<(git_panel::RepoKey, String)>,
+    /// Last landed page per repo (interval source).
+    history_refreshed_at: HashMap<git_panel::RepoKey, Instant>,
     /// Set by manual refresh, scope switch, and committed changes: the next
     /// tick refreshes immediately. Stage/unstage/discard never set this —
     /// immutable history does not rerun for worktree mutations.
     history_dirty_hint: bool,
-    /// Last project the history poller served (switch detection).
-    history_last_project: Option<ProjectId>,
+    /// Last active repo the history poller served (switch detection: a
+    /// project *or* repository switch retires in-flight work).
+    history_last_project: Option<git_panel::RepoKey>,
     /// Latest-only historical patch worker (one active + one pending
     /// Graph preview request).
     commit_diff_worker: diff_panel::CommitDiffWorker,
@@ -394,8 +438,15 @@ struct WorkspaceView {
     commit_diff_in_flight: Option<diff_panel::CommitDiffKey>,
     /// Native per-file scroll offsets for historical previews, keyed by
     /// full commit OID so another commit's file cannot inherit the offset.
-    commit_scroll_handles:
-        HashMap<(ProjectId, String, std::path::PathBuf, diff_panel::DiffMode), DiffPreviewScroll>,
+    commit_scroll_handles: HashMap<
+        (
+            git_panel::RepoKey,
+            String,
+            std::path::PathBuf,
+            diff_panel::DiffMode,
+        ),
+        DiffPreviewScroll,
+    >,
     /// UI v5 shell: independent Projects (left) and Inspector (right)
     /// panels. View chrome, never persisted. Widths clamp to the v5 ranges
     /// on every resize; visibility toggles remember the last nonzero width.
@@ -413,23 +464,30 @@ struct WorkspaceView {
     /// M15 unified-diff panel: last-good diffs per project+side, explicit
     /// empty/error states, file/hunk selection, staged toggle (GPUI-free).
     diff_panel: diff_panel::DiffPanel,
-    /// Native virtual-list positions keyed by project/side/path/mode so a
+    /// Native virtual-list positions keyed by repo/side/path/mode so a
     /// different preview cannot inherit another file's scroll offset.
-    diff_scroll_handles:
-        HashMap<(ProjectId, bool, std::path::PathBuf, diff_panel::DiffMode), DiffPreviewScroll>,
+    diff_scroll_handles: HashMap<
+        (
+            git_panel::RepoKey,
+            bool,
+            std::path::PathBuf,
+            diff_panel::DiffMode,
+        ),
+        DiffPreviewScroll,
+    >,
     /// Single background Git worker with one replaceable pending selected diff.
     diff_worker: diff_panel::DiffWorker,
     diff_generation: u64,
-    /// Project+side with a refresh in flight, if any (one diff call at a
+    /// Repo+side with a refresh in flight, if any (one diff call at a
     /// time; the rest wait for the next poller tick).
     diff_in_flight: Option<diff_panel::DiffRequestKey>,
-    /// Last landed refresh per project+side (interval source).
-    diff_refreshed_at: HashMap<(ProjectId, bool), Instant>,
+    /// Last landed refresh per repo+side (interval source).
+    diff_refreshed_at: HashMap<(git_panel::RepoKey, bool), Instant>,
     /// Set by manual refresh, staged-toggle, git mutations, and
     /// post-`terminal.run` submissions: the next tick refreshes immediately.
     diff_dirty_hint: bool,
-    /// Last project the diff poller served (switch detection).
-    diff_last_project: Option<ProjectId>,
+    /// Last active repo the diff poller served (switch detection).
+    diff_last_project: Option<git_panel::RepoKey>,
     /// Native editor documents (M19 Phase D): view-local activation per
     /// project. Buffers live in the router-owned `DocumentStore`; these
     /// maps hold caret, scroll, and presentation state only.
@@ -642,6 +700,21 @@ fn section_header(
                 .child(format!("{title} · {count}")),
         )
         .into_any_element()
+}
+
+/// Per-repo panel identity for one scanned repository (M20): the
+/// project-root repository renders as `RepoKey::root`, every named child
+/// as `RepoKey::named`. Single source of truth shared by the repo rows,
+/// the status poller and every git worker.
+fn repo_key_of(
+    project: ProjectId,
+    scan: &git_repos::RepoScan,
+    entry: &RepoEntry,
+) -> git_panel::RepoKey {
+    match scan.key_repo_of(entry) {
+        Some(name) => git_panel::RepoKey::named(project, name),
+        None => git_panel::RepoKey::root(project),
+    }
 }
 
 /// Shared branch-picker trigger: branch label + chevron that opens the
@@ -1970,13 +2043,14 @@ impl WorkspaceView {
             && let Some(project) = self.coordinator.selected_project_id()
             && self.diff_is_active(project)
         {
+            let repo_key = self.active_repo_key(project);
             // Historical previews scroll through their own handle map
             // (keyed by full commit OID); worktree previews use the
-            // project/side/path map.
-            if let Some(sel) = self.diff_panel.selected_commit(project).cloned() {
-                let mode = self.diff_panel.diff_mode(project);
+            // repo/side/path map.
+            if let Some(sel) = self.diff_panel.selected_commit(repo_key.clone()).cloned() {
+                let mode = self.diff_panel.diff_mode(repo_key.clone());
                 if let Some(scroll) = self.commit_scroll_handles.get(&(
-                    project,
+                    repo_key.clone(),
                     sel.commit.as_str().to_owned(),
                     sel.path.clone(),
                     mode,
@@ -1989,14 +2063,14 @@ impl WorkspaceView {
             } else {
                 let path = self
                     .git_panel
-                    .selected_path(project)
-                    .or_else(|| self.diff_panel.selected_file(project));
+                    .selected_path(&repo_key)
+                    .or_else(|| self.diff_panel.selected_file(repo_key.clone()));
                 if let Some(path) = path
                     && let Some(scroll) = self.diff_scroll_handles.get(&(
-                        project,
-                        self.diff_panel.show_staged(project),
+                        repo_key.clone(),
+                        self.diff_panel.show_staged(repo_key.clone()),
                         path.clone(),
-                        self.diff_panel.diff_mode(project),
+                        self.diff_panel.diff_mode(repo_key.clone()),
                     ))
                 {
                     let handle = scroll.rows.0.borrow().base_handle.clone();
@@ -2343,6 +2417,9 @@ impl WorkspaceView {
         // Background git-status channel (M14): root resolution and the
         // status subprocess both run on the worker, never the UI thread.
         let (git_tx, git_rx) = std::sync::mpsc::channel();
+        // Background multi-repo scan channel (M20): the depth-1 scan plus
+        // its `rev-parse` root resolution run on the worker too.
+        let (repos_tx, repos_rx) = std::sync::mpsc::channel();
         // Background branch-list channel: fetched on picker open and after
         // mutations only, generation-guarded like the status worker.
         let (branch_tx, branch_rx) = std::sync::mpsc::channel();
@@ -2493,6 +2570,12 @@ impl WorkspaceView {
             branch_dirty_hint: false,
             git_refreshed_at: HashMap::new(),
             git_dirty_hint: true,
+            repo_scan_bust: HashSet::new(),
+            repo_scan_in_flight: HashSet::new(),
+            repo_poll_cursor: HashMap::new(),
+            repos_tx,
+            repos_rx,
+            repo_list_collapsed: HashSet::new(),
             git_refresh_interval: Duration::from_secs(
                 app_config.resolved_git_refresh_secs().clamp(1, 300),
             ),
@@ -3725,8 +3808,15 @@ impl WorkspaceView {
                     cx.notify();
                 }
                 router::CommandEffect::ProjectDirectoryChanged(project) => {
+                    // M20: a new base directory can change the depth-1 repo
+                    // list entirely, so the cached scan is not just stale —
+                    // it is wrong. Bust it alongside the files/diff caches.
+                    // The `Repositories` collapse preference is session-scoped
+                    // (F3): a root bust clears the scan but never forgets it.
+                    self.repo_scan_bust.insert(project);
                     self.files_panel.clear_project(project);
-                    self.diff_panel.invalidate_data(project);
+                    let repo_key = self.active_repo_key(project);
+                    self.diff_panel.invalidate_data(repo_key);
                     if self.coordinator.selected_project_id() == Some(project) {
                         self.files_generation = self.files_generation.wrapping_add(1);
                         self.files_watcher = None;
@@ -3757,9 +3847,10 @@ impl WorkspaceView {
                     {
                         self.branch_dirty_hint = true;
                     }
-                    self.diff_panel.invalidate_data(project);
-                    self.diff_refreshed_at.remove(&(project, false));
-                    self.diff_refreshed_at.remove(&(project, true));
+                    let repo_key = self.active_repo_key(project);
+                    self.diff_panel.invalidate_data(repo_key.clone());
+                    self.diff_refreshed_at.remove(&(repo_key.clone(), false));
+                    self.diff_refreshed_at.remove(&(repo_key, true));
                     if self.coordinator.selected_project_id() == Some(project) {
                         self.diff_generation = self.diff_generation.wrapping_add(1);
                         self.diff_worker.cancel();
@@ -4296,7 +4387,7 @@ impl WorkspaceView {
                     return;
                 }
                 Some(ActiveSurface::Diff) => {
-                    self.diff_panel.close_preview(project);
+                    self.diff_panel.close_preview(self.active_repo_key(project));
                     self.active_surface.insert(project, ActiveSurface::Terminal);
                     self.restore_input_owner();
                     cx.notify();
@@ -4601,7 +4692,7 @@ impl WorkspaceView {
         {
             self.branch_picker = None;
         }
-        self.branch_lists.remove(&project);
+        self.branch_lists.remove(&self.active_repo_key(project));
         match self.dispatch_command(OmaCommand::Project(ProjectCommand::Delete { project }), cx) {
             Ok(_) => {}
             Err(error) => {
@@ -5298,22 +5389,23 @@ impl WorkspaceView {
             return false;
         }
         let mut landed = false;
-        while let Ok((generation, project, refresh)) = self.git_rx.try_recv() {
+        self.drain_repo_scans();
+        while let Ok((generation, key, refresh)) = self.git_rx.try_recv() {
             if generation != self.git_generation {
                 continue;
             }
             // Landed work ran off this thread by construction; pin it.
             debug_assert_ne!(refresh.worker, std::thread::current().id());
-            if self.git_in_flight == Some(project) {
+            if self.git_in_flight.as_ref() == Some(&key) {
                 self.git_in_flight = None;
             }
-            self.git_panel.apply_refresh(project, refresh);
+            self.git_panel.apply_refresh(&key, refresh);
             // Keep the diff panel's untracked set in lockstep: `git diff`
             // never contains these paths, so the diff prune must not treat
             // them as vanished (that flickered the preview tab closed).
-            match self.git_panel.status_for(project) {
+            match self.git_panel.status_for(&key) {
                 Some(status) => self.diff_panel.set_untracked(
-                    project,
+                    key.clone(),
                     status
                         .untracked
                         .iter()
@@ -5322,9 +5414,9 @@ impl WorkspaceView {
                 ),
                 None => self
                     .diff_panel
-                    .set_untracked(project, std::collections::HashSet::new()),
+                    .set_untracked(key.clone(), std::collections::HashSet::new()),
             }
-            self.git_refreshed_at.insert(project, Instant::now());
+            self.git_refreshed_at.insert(key.clone(), Instant::now());
             landed = true;
         }
         if landed {
@@ -5347,26 +5439,120 @@ impl WorkspaceView {
                 .collect::<Vec<_>>()
             {
                 if other != project {
-                    self.git_panel.clear_project(other);
-                    self.git_refreshed_at.remove(&other);
+                    for key in self.repo_keys_for(other) {
+                        self.git_panel.clear_project(&key);
+                    }
+                    self.git_panel
+                        .clear_project(&git_panel::RepoKey::root(other));
+                    self.git_refreshed_at
+                        .retain(|key, _| !key.matches_project(other));
+                    self.repo_poll_cursor.remove(&other);
+                    self.coordinator.invalidate_repo_scan(other);
+                    // Per-repo state follows the key: other projects' stash,
+                    // blame and branch state retires with their statuses so
+                    // memory stays bounded to the selected project (E4).
+                    self.stash_drafts
+                        .retain(|key, _| !key.matches_project(other));
+                    self.stash_untracked
+                        .retain(|key| !key.matches_project(other));
+                    self.stash_in_flight
+                        .retain(|key| !key.matches_project(other));
+                    self.blame_rows
+                        .retain(|(key, _, _, _), _| !key.matches_project(other));
+                    self.blame_visible
+                        .retain(|(key, _, _, _)| !key.matches_project(other));
+                    self.branch_lists
+                        .retain(|key, _| !key.matches_project(other));
+                    self.commit_scroll_handles
+                        .retain(|(key, _, _, _), _| !key.matches_project(other));
+                    if self
+                        .stash_focused
+                        .as_ref()
+                        .is_some_and(|key| key.matches_project(other))
+                    {
+                        self.stash_focused = None;
+                    }
                 }
             }
+            // The newly selected project needs its own scan before any
+            // per-repo status work can be scheduled.
+            self.repo_scan_bust.insert(project);
+            self.request_repo_scan(project, true);
         }
         if self.git_in_flight.is_some() {
             return landed;
         }
         let interval = self.git_refresh_interval;
-        let known = self.git_panel.status_for(project).is_some()
-            || self.git_panel.empty_for(project).is_some();
+        // M20: keep the depth-1 scan fresh while the Git tab is showing,
+        // and poll one repository per tick so a monorepo never turns one
+        // tick into N unbounded git calls.
+        if self.inspector_tab == InspectorTab::Git || self.git_dirty_hint {
+            self.request_repo_scan(project, false);
+        }
+        let scan_known = self.coordinator.repo_scan(project).is_some();
+        if !scan_known {
+            return landed;
+        }
+        let repos = self.repo_keys_for(project);
+        if repos.is_empty() {
+            // Absent root or a non-repo project: fall back to the single
+            // project-root refresh, which reports the explicit empty state.
+            let known = self.report_known_state_for(project);
+            if !git_panel::should_refresh(
+                known,
+                self.git_dirty_hint,
+                self.git_refreshed_at
+                    .get(&git_panel::RepoKey::root(project))
+                    .copied(),
+                interval,
+                Instant::now(),
+            ) {
+                return landed;
+            }
+            let key = git_panel::RepoKey::root(project);
+            let pinned = self.coordinator.pinned_for(project);
+            let active_cwd = self.coordinator.shell_cwd_for(project);
+            let limit = self
+                .files_default_limit
+                .clamp(1, omaterm_core::validation::MAX_FILE_ENTRIES);
+            let tx = self.git_tx.clone();
+            git_panel::spawn_status_thread(
+                std::thread::current().id(),
+                git_panel::StatusRequest {
+                    key,
+                    generation: self.git_generation,
+                    repo_root: None,
+                    pinned,
+                    active_cwd,
+                    limit,
+                },
+                tx,
+            );
+            self.git_in_flight = Some(git_panel::RepoKey::root(project));
+            self.git_dirty_hint = false;
+            return landed;
+        }
+        let cursor = self.repo_poll_cursor.get(&project).copied().unwrap_or(0);
+        let index = git_repos::next_poll_index(repos.len(), cursor);
+        let key = repos[index].clone();
+        self.repo_poll_cursor
+            .insert(project, cursor.wrapping_add(1));
         if !git_panel::should_refresh(
-            known,
+            true,
             self.git_dirty_hint,
-            self.git_refreshed_at.get(&project).copied(),
+            self.git_refreshed_at.get(&key).copied(),
             interval,
             Instant::now(),
         ) {
+            // This repo is not due yet; the tick still advances the cursor
+            // so a later repo gets its turn instead of starving.
+            if !self.git_dirty_hint && !self.any_repo_due(project) {
+                return landed;
+            }
+            self.git_dirty_hint = false;
             return landed;
         }
+        let repo_root = self.repo_root_for(&key);
         let pinned = self.coordinator.pinned_for(project);
         let active_cwd = self.coordinator.shell_cwd_for(project);
         let limit = self
@@ -5375,16 +5561,149 @@ impl WorkspaceView {
         let tx = self.git_tx.clone();
         git_panel::spawn_status_thread(
             std::thread::current().id(),
-            project,
-            self.git_generation,
-            pinned,
-            active_cwd,
-            limit,
+            git_panel::StatusRequest {
+                key,
+                generation: self.git_generation,
+                repo_root,
+                pinned,
+                active_cwd,
+                limit,
+            },
             tx,
         );
-        self.git_in_flight = Some(project);
+        self.git_in_flight = Some(repos[index].clone());
         self.git_dirty_hint = false;
         landed
+    }
+
+    /// Whether any repo of the selected project is past its refresh
+    /// interval (or never refreshed). Keeps the poller from idling while a
+    /// round-robin repo is simply not due yet.
+    fn any_repo_due(&self, project: ProjectId) -> bool {
+        let interval = self.git_refresh_interval;
+        let now = Instant::now();
+        self.repo_keys_for(project).iter().any(|key| {
+            self.git_panel.status_for(key).is_some()
+                || self.git_panel.empty_for(key).is_some()
+                || git_panel::should_refresh(
+                    true,
+                    false,
+                    self.git_refreshed_at.get(key).copied(),
+                    interval,
+                    now,
+                )
+        })
+    }
+
+    /// Whether the project has any landed repo state (the M14 poller's
+    /// "have I seen this" check, per-repo for M20).
+    fn report_known_state_for(&self, project: ProjectId) -> bool {
+        self.repo_keys_for(project).iter().any(|key| {
+            self.git_panel.status_for(key).is_some() || self.git_panel.empty_for(key).is_some()
+        })
+    }
+
+    /// Every repo key polled for a project, in scan order, uncapped. The
+    /// chrome caps the *rendered* rows at 32; statuses for hidden repos
+    /// still refresh so switching never shows a stale body.
+    fn repo_keys_for(&self, project: ProjectId) -> Vec<git_panel::RepoKey> {
+        let Some(scan) = self.coordinator.repo_scan(project) else {
+            return Vec::new();
+        };
+        if scan.repos.is_empty() {
+            return Vec::new();
+        }
+        // The project root itself is the only repository: this is exactly
+        // the single-repo project OmaTerm always rendered.
+        if let Some(root) = scan.root.as_ref()
+            && scan.repos.len() == 1
+            && scan.repos[0].path == *root
+        {
+            return vec![git_panel::RepoKey::root(project)];
+        }
+        scan.repos
+            .iter()
+            .map(|entry| repo_key_of(project, scan, entry))
+            .collect()
+    }
+
+    /// Filesystem path a status worker may poll for `key`, or `None` when
+    /// the key is unknown to the current scan (the worker then falls back
+    /// to the M12 project-root resolution).
+    fn repo_root_for(&self, key: &git_panel::RepoKey) -> Option<std::path::PathBuf> {
+        let entry = match &key.repo {
+            Some(name) => self
+                .coordinator
+                .repo_scan(key.project)?
+                .repos
+                .iter()
+                .find(|entry| &entry.name == name)
+                .map(|entry| entry.path.clone())?,
+            None => self.coordinator.repo_scan(key.project)?.root.clone()?,
+        };
+        Some(entry)
+    }
+
+    /// The repo state key of a project's active repository (M20). Falls
+    /// back to the project-root key when no scan has landed yet, which is
+    /// the single-repo path.
+    fn active_repo_key(&self, project: ProjectId) -> git_panel::RepoKey {
+        let Some(scan) = self.coordinator.repo_scan(project) else {
+            return git_panel::RepoKey::root(project);
+        };
+        match scan.active_entry() {
+            Some(entry) => repo_key_of(project, scan, entry),
+            None => git_panel::RepoKey::root(project),
+        }
+    }
+
+    /// Request a depth-1 repo scan for `project` on the background worker
+    /// (busted scans ignore the staleness window).
+    fn request_repo_scan(&mut self, project: ProjectId, bust: bool) {
+        if self.shutting_down || self.repo_scan_in_flight.contains(&project) {
+            return;
+        }
+        let cached = self.coordinator.repo_scan(project);
+        if !git_repos::should_scan(
+            cached,
+            bust || self.repo_scan_bust.contains(&project),
+            self.git_refresh_interval * 4,
+            Instant::now(),
+        ) {
+            return;
+        }
+        let pinned = self.coordinator.pinned_for(project);
+        let active_cwd = self.coordinator.cached_shell_cwd_for(project);
+        let saved = self
+            .coordinator
+            .window()
+            .project(project)
+            .and_then(|target| target.active_repo.clone());
+        let tx = self.repos_tx.clone();
+        self.repo_scan_in_flight.insert(project);
+        self.repo_scan_bust.remove(&project);
+        std::thread::spawn(move || {
+            let info = omaterm_context::resolve_repos(
+                pinned.as_deref(),
+                active_cwd.as_deref(),
+                saved.as_deref(),
+            );
+            let _ = tx.send((project, info));
+        });
+    }
+
+    /// Drain completed repo scans into the router-owned cache. The scan's
+    /// active repo already applies the saved-else-first-sorted rule, so the
+    /// stored preference is left untouched: `None` keeps meaning "auto".
+    fn drain_repo_scans(&mut self) {
+        while let Ok((project, info)) = self.repos_rx.try_recv() {
+            self.repo_scan_in_flight.remove(&project);
+            // A scan that landed after the project vanished is dropped.
+            if self.coordinator.window().project(project).is_none() {
+                continue;
+            }
+            self.coordinator.install_repo_scan(project, info);
+        }
     }
 
     /// M15 diff refresh on the same 250ms poller: drains landed workers
@@ -5396,19 +5715,24 @@ impl WorkspaceView {
             return;
         }
         let current_project = self.coordinator.selected_project_id();
-        let current_diff_key = current_project.map(|project| diff_panel::DiffRequestKey {
-            generation: self.diff_generation,
-            root_generation: self.files_generation,
-            project,
-            path: self.diff_panel.selected_file(project).cloned(),
-            pinned_root: self.coordinator.pinned_for(project),
-            active_cwd: self.coordinator.cached_shell_cwd_for(project),
-            staged: self.diff_panel.show_staged(project),
-            context_lines: 3,
-            untracked: self
-                .diff_panel
-                .selected_file(project)
-                .is_some_and(|path| self.diff_panel.is_untracked(project, path)),
+        let current_key = current_project.map(|project| self.active_repo_key(project));
+        let current_diff_key = current_key.clone().map(|key| {
+            let project = key.project;
+            diff_panel::DiffRequestKey {
+                generation: self.diff_generation,
+                root_generation: self.files_generation,
+                repo: key.clone(),
+                path: self.diff_panel.selected_file(key.clone()).cloned(),
+                pinned_root: self.coordinator.pinned_for(project),
+                active_cwd: self.coordinator.cached_shell_cwd_for(project),
+                staged: self.diff_panel.show_staged(key.clone()),
+                context_lines: 3,
+                untracked: self
+                    .diff_panel
+                    .selected_file(key.clone())
+                    .is_some_and(|path| self.diff_panel.is_untracked(key.clone(), path)),
+                repo_root: self.repo_root_for(&key),
+            }
         });
         let mut landed = false;
         while let Some(result) = self.diff_worker.take_result() {
@@ -5423,7 +5747,7 @@ impl WorkspaceView {
             }
             self.diff_in_flight = None;
             self.diff_refreshed_at
-                .insert((key.project, key.staged), Instant::now());
+                .insert((key.repo.clone(), key.staged), Instant::now());
             landed = true;
         }
         if landed {
@@ -5438,25 +5762,25 @@ impl WorkspaceView {
             self.diff_last_project = None;
             return;
         };
-        if self.diff_last_project != Some(project) {
-            self.diff_last_project = Some(project);
+        let key = self.active_repo_key(project);
+        if self.diff_last_project.as_ref() != Some(&key) {
+            self.diff_last_project = Some(key.clone());
             self.diff_generation = self.diff_generation.wrapping_add(1);
             self.diff_in_flight = None;
             self.diff_worker.cancel();
-            self.diff_panel.retain_project(Some(project));
-            self.diff_refreshed_at
-                .retain(|(owner, _), _| *owner == project);
+            self.diff_panel.retain_project(Some(key.clone()));
+            self.diff_refreshed_at.retain(|(owner, _), _| *owner == key);
             self.diff_scroll_handles
-                .retain(|(owner, _, _, _), _| *owner == project);
+                .retain(|(owner, _, _, _), _| *owner == key);
         }
-        let staged = self.diff_panel.show_staged(project);
-        let path = self.diff_panel.selected_file(project).cloned();
+        let staged = self.diff_panel.show_staged(key.clone());
+        let path = self.diff_panel.selected_file(key.clone()).cloned();
         let pinned_root = self.coordinator.pinned_for(project);
         let active_cwd = self.coordinator.cached_shell_cwd_for(project);
-        let key = diff_panel::DiffRequestKey {
+        let request = diff_panel::DiffRequestKey {
             generation: self.diff_generation,
             root_generation: self.files_generation,
-            project,
+            repo: key.clone(),
             path: path.clone(),
             pinned_root,
             active_cwd,
@@ -5464,20 +5788,21 @@ impl WorkspaceView {
             context_lines: 3,
             untracked: path
                 .as_ref()
-                .is_some_and(|path| self.diff_panel.is_untracked(project, path)),
+                .is_some_and(|path| self.diff_panel.is_untracked(key.clone(), path)),
+            repo_root: self.repo_root_for(&key),
         };
-        if self.diff_in_flight.as_ref() == Some(&key) {
+        if self.diff_in_flight.as_ref() == Some(&request) {
             return;
         }
         let supersedes = self.diff_in_flight.is_some();
         let interval = self.git_refresh_interval;
-        let known = self.diff_panel.diff_for(project, staged).is_some()
-            || self.diff_panel.empty_for(project, staged).is_some();
+        let known = self.diff_panel.diff_for(key.clone(), staged).is_some()
+            || self.diff_panel.empty_for(key.clone(), staged).is_some();
         if !supersedes
             && !git_panel::should_refresh(
                 known,
                 self.diff_dirty_hint,
-                self.diff_refreshed_at.get(&(project, staged)).copied(),
+                self.diff_refreshed_at.get(&(key.clone(), staged)).copied(),
                 interval,
                 Instant::now(),
             )
@@ -5485,10 +5810,10 @@ impl WorkspaceView {
             return;
         }
         self.diff_worker.submit(diff_panel::DiffSpawn {
-            key: key.clone(),
+            key: request.clone(),
             cancelled: Arc::new(AtomicBool::new(false)),
         });
-        self.diff_in_flight = Some(key);
+        self.diff_in_flight = Some(request);
         self.diff_dirty_hint = false;
     }
 
@@ -5504,27 +5829,28 @@ impl WorkspaceView {
             return;
         }
         let mut landed = false;
-        while let Ok((generation, project, refresh)) = self.history_rx.try_recv() {
+        while let Ok((generation, key, refresh)) = self.history_rx.try_recv() {
             if generation != self.history_generation {
                 continue;
             }
             // Landed work ran off this thread by construction; pin it.
             debug_assert_ne!(refresh.worker, std::thread::current().id());
-            if self.history_in_flight == Some(project) {
+            if self.history_in_flight.as_ref() == Some(&key) {
                 self.history_in_flight = None;
             }
-            self.history_panel.apply_history_refresh(project, refresh);
-            self.history_refreshed_at.insert(project, Instant::now());
+            self.history_panel
+                .apply_history_refresh(key.clone(), refresh);
+            self.history_refreshed_at.insert(key, Instant::now());
             landed = true;
         }
-        while let Ok((generation, project, refresh)) = self.history_files_rx.try_recv() {
+        while let Ok((generation, key, refresh)) = self.history_files_rx.try_recv() {
             if generation != self.history_generation {
                 continue;
             }
             debug_assert_ne!(refresh.worker, std::thread::current().id());
             self.history_files_in_flight
-                .remove(&(project, refresh.commit.as_str().to_owned()));
-            self.history_panel.apply_files_refresh(project, refresh);
+                .remove(&(key.clone(), refresh.commit.as_str().to_owned()));
+            self.history_panel.apply_files_refresh(key, refresh);
             landed = true;
         }
         if landed {
@@ -5533,10 +5859,12 @@ impl WorkspaceView {
         let Some(project) = self.coordinator.selected_project_id() else {
             return;
         };
-        // A switch retires in-flight work (landings drop by generation)
-        // and bounds memory to one project (files panel precedent).
-        if self.history_last_project != Some(project) {
-            self.history_last_project = Some(project);
+        let key = self.active_repo_key(project);
+        // A switch (project *or* repository) retires in-flight work
+        // (landings drop by generation) and bounds memory to one active
+        // repo (files panel precedent).
+        if self.history_last_project.as_ref() != Some(&key) {
+            self.history_last_project = Some(key.clone());
             self.history_generation = self.history_generation.wrapping_add(1);
             self.history_in_flight = None;
             self.history_files_in_flight.clear();
@@ -5548,16 +5876,20 @@ impl WorkspaceView {
                 .collect::<Vec<_>>()
             {
                 if other != project {
-                    self.history_panel.clear_project(other);
-                    self.history_refreshed_at.remove(&other);
+                    for stale in self.repo_keys_for(other) {
+                        self.history_panel.clear_project(stale.clone());
+                        self.history_refreshed_at.remove(&stale);
+                    }
                 }
             }
+            self.history_refreshed_at
+                .retain(|stale, _| stale.project == project);
         }
-        if self.history_panel.is_graph_collapsed(project) {
+        if self.history_panel.is_graph_collapsed(key.clone()) {
             return;
         }
         // Non-repo roots never render the section; don't poll them.
-        if let Some(empty) = self.git_panel.empty_for(project)
+        if let Some(empty) = self.git_panel.empty_for(&key)
             && matches!(
                 empty,
                 git_panel::GitEmpty::NoRoot | git_panel::GitEmpty::NotRepo
@@ -5570,38 +5902,41 @@ impl WorkspaceView {
         }
         let interval = self.git_refresh_interval;
         if !git_history_panel::history_should_refresh(
-            self.history_panel.known(project),
+            self.history_panel.known(key.clone()),
             self.history_dirty_hint,
-            self.history_refreshed_at.get(&project).copied(),
+            self.history_refreshed_at.get(&key).copied(),
             interval,
             Instant::now(),
         ) {
             return;
         }
-        let loaded = self.history_panel.loaded_limit(project);
+        let loaded = self.history_panel.loaded_limit(key.clone());
         let limit = if loaded == 0 {
             git_history_panel::HISTORY_PAGE_SIZE
         } else {
             loaded
         };
-        let pinned = self.coordinator.pinned_for(project);
-        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let repo_root = self.repo_root_for(&key);
+        let roots = git_history_panel::HistoryRoots {
+            repo: repo_root,
+            pinned: self.coordinator.pinned_for(project),
+            active_cwd: self.coordinator.cached_shell_cwd_for(project),
+        };
         let fetch = git_history_panel::HistoryFetch {
-            scope: self.history_panel.scope_for(project),
+            scope: self.history_panel.scope_for(key.clone()),
             limit,
         };
         let tx = self.history_tx.clone();
         git_history_panel::spawn_history_thread(
             std::thread::current().id(),
-            project,
+            key.clone(),
             self.history_generation,
-            pinned,
-            active_cwd,
+            roots,
             fetch,
             tx,
         );
-        self.history_panel.note_fetch_limit(project, limit);
-        self.history_in_flight = Some(project);
+        self.history_panel.note_fetch_limit(key.clone(), limit);
+        self.history_in_flight = Some(key);
         self.history_dirty_hint = false;
     }
 
@@ -5623,14 +5958,15 @@ impl WorkspaceView {
             {
                 continue;
             }
-            self.diff_panel.apply_commit_refresh(key.project, result);
+            self.diff_panel
+                .apply_commit_refresh(key.repo.clone(), result);
             self.commit_diff_in_flight = None;
             landed = true;
         }
         if landed {
             cx.notify();
         }
-        let (Some(project), Some(key)) = (current_project, current_key) else {
+        let (Some(_project), Some(key)) = (current_project, current_key) else {
             // No historical selection: retire stray work (e.g. after a
             // worktree click replaced the preview).
             if self.commit_diff_in_flight.is_some() {
@@ -5645,21 +5981,21 @@ impl WorkspaceView {
         if self
             .commit_diff_in_flight
             .as_ref()
-            .is_some_and(|in_flight| in_flight.project != project)
+            .is_some_and(|in_flight| in_flight.repo != key.repo)
         {
             self.commit_diff_worker.cancel();
             self.commit_diff_in_flight = None;
         }
         self.commit_scroll_handles
-            .retain(|(owner, _, _, _), _| *owner == project);
+            .retain(|(owner, _, _, _), _| *owner == key.repo);
         if self.commit_diff_in_flight.as_ref() == Some(&key) {
             return;
         }
         // The stored patch is valid only for the exact key that fetched it
         // (commit, base, paths, roots and context all participate).
-        let fresh = self.diff_panel.commit_key_for(project) == Some(&key)
-            && (self.diff_panel.commit_diff_for(project).is_some()
-                || self.diff_panel.commit_empty_for(project).is_some());
+        let fresh = self.diff_panel.commit_key_for(key.repo.clone()) == Some(&key)
+            && (self.diff_panel.commit_diff_for(key.repo.clone()).is_some()
+                || self.diff_panel.commit_empty_for(key.repo.clone()).is_some());
         if fresh {
             self.commit_diff_in_flight = None;
             return;
@@ -5675,16 +6011,18 @@ impl WorkspaceView {
     /// context participate so a stale patch can never pose as the current
     /// selection after a root change.
     fn commit_diff_key(&self, project: ProjectId) -> Option<diff_panel::CommitDiffKey> {
-        let sel = self.diff_panel.selected_commit(project)?;
+        let repo_key = self.active_repo_key(project);
+        let sel = self.diff_panel.selected_commit(repo_key.clone())?;
         Some(diff_panel::CommitDiffKey {
             generation: self.commit_diff_generation,
-            project,
+            repo: repo_key.clone(),
             commit: sel.commit.clone(),
             base: sel.base.clone(),
             old_path: sel.old_path.clone(),
             path: sel.path.clone(),
             pinned_root: self.coordinator.pinned_for(project),
             active_cwd: self.coordinator.cached_shell_cwd_for(project),
+            repo_root: self.repo_root_for(&repo_key),
             context_lines: 3,
         })
     }
@@ -5693,19 +6031,23 @@ impl WorkspaceView {
     /// fetch for it is already in flight. Called from expansion clicks, not
     /// the poller: expansions are event-driven, pages are polled.
     fn history_fetch_files(&mut self, project: ProjectId, commit: omaterm_core::GitObjectId) {
-        let flight = (project, commit.as_str().to_owned());
+        let key = self.active_repo_key(project);
+        let flight = (key.clone(), commit.as_str().to_owned());
         if self.history_files_in_flight.contains(&flight) {
             return;
         }
-        let pinned = self.coordinator.pinned_for(project);
-        let active_cwd = self.coordinator.shell_cwd_for(project);
-        self.history_panel.mark_files_loading(project, &commit);
+        let repo_root = self.repo_root_for(&key);
+        let roots = git_history_panel::HistoryRoots {
+            repo: repo_root,
+            pinned: self.coordinator.pinned_for(project),
+            active_cwd: self.coordinator.cached_shell_cwd_for(project),
+        };
+        self.history_panel.mark_files_loading(key.clone(), &commit);
         git_history_panel::spawn_commit_files_thread(
             std::thread::current().id(),
-            project,
+            key,
             self.history_generation,
-            pinned,
-            active_cwd,
+            roots,
             commit,
             self.history_files_tx.clone(),
         );
@@ -5716,30 +6058,34 @@ impl WorkspaceView {
     /// expansions and selection survive (the panel merges by OID order);
     /// reaching the cap with `has_more` renders the limit notice.
     fn history_load_more(&mut self, project: ProjectId) {
-        if self.history_in_flight.is_some() || self.history_panel.loading_more(project) {
+        let key = self.active_repo_key(project);
+        if self.history_in_flight.is_some() || self.history_panel.loading_more(key.clone()) {
             return;
         }
-        if !self.history_panel.has_more(project) {
+        if !self.history_panel.has_more(key.clone()) {
             return;
         }
-        let pinned = self.coordinator.pinned_for(project);
-        let active_cwd = self.coordinator.shell_cwd_for(project);
+        let repo_root = self.repo_root_for(&key);
+        let roots = git_history_panel::HistoryRoots {
+            repo: repo_root,
+            pinned: self.coordinator.pinned_for(project),
+            active_cwd: self.coordinator.cached_shell_cwd_for(project),
+        };
         let fetch = git_history_panel::HistoryFetch {
-            scope: self.history_panel.scope_for(project),
+            scope: self.history_panel.scope_for(key.clone()),
             limit: git_history_panel::HISTORY_MAX_LOADED,
         };
         git_history_panel::spawn_history_thread(
             std::thread::current().id(),
-            project,
+            key.clone(),
             self.history_generation,
-            pinned,
-            active_cwd,
+            roots,
             fetch,
             self.history_tx.clone(),
         );
         self.history_panel
-            .note_fetch_limit(project, git_history_panel::HISTORY_MAX_LOADED);
-        self.history_in_flight = Some(project);
+            .note_fetch_limit(key.clone(), git_history_panel::HISTORY_MAX_LOADED);
+        self.history_in_flight = Some(key);
         self.history_dirty_hint = false;
     }
 
@@ -5754,8 +6100,9 @@ impl WorkspaceView {
         path: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
-        let key = commit.as_str().to_owned();
-        let files = match self.history_panel.files_for(project, &key) {
+        let key = self.active_repo_key(project);
+        let commit_key = commit.as_str().to_owned();
+        let files = match self.history_panel.files_for(key.clone(), &commit_key) {
             Some(git_history_panel::CommitFilesState::Loaded(listed)) => listed.clone(),
             _ => return,
         };
@@ -5764,7 +6111,7 @@ impl WorkspaceView {
         };
         let Some(summary) = self
             .history_panel
-            .commits_for(project)
+            .commits_for(key.clone())
             .iter()
             .find(|summary| summary.id == commit)
             .cloned()
@@ -5772,9 +6119,9 @@ impl WorkspaceView {
             return;
         };
         self.history_panel.select(
-            project,
+            key,
             git_history_panel::HistoryRow::File {
-                commit: key,
+                commit: commit_key,
                 path: path.clone(),
             },
         );
@@ -5810,14 +6157,15 @@ impl WorkspaceView {
         self.commit_diff_generation = self.commit_diff_generation.wrapping_add(1);
         self.commit_diff_worker.cancel();
         self.commit_diff_in_flight = None;
-        self.commit_scroll_handles
-            .retain(|(owner, _, selected, _), _| *owner != project || selected == &sel.path);
         // Single cursor across the Git tab: a Graph selection releases the
         // change-list cursor (the preview resolves its path from the
         // commit selection, never from the change selection).
-        self.git_panel.clear_selection(project);
-        self.diff_panel.select_commit(project, sel);
-        self.diff_panel.open_preview(project);
+        let repo_key = self.active_repo_key(project);
+        self.commit_scroll_handles
+            .retain(|(owner, _, selected, _), _| *owner != repo_key || selected == &sel.path);
+        self.git_panel.clear_selection(&repo_key);
+        self.diff_panel.select_commit(repo_key.clone(), sel);
+        self.diff_panel.open_preview(repo_key);
         self.editor_active.remove(&project);
         self.active_surface.insert(project, ActiveSurface::Diff);
         self.restore_input_owner();
@@ -5851,7 +6199,8 @@ impl WorkspaceView {
             Ok(_) => {
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
-                self.diff_panel.set_show_staged(project, true);
+                self.diff_panel
+                    .set_show_staged(self.active_repo_key(project), true);
                 cx.notify();
             }
             Err(error) => {
@@ -5885,27 +6234,29 @@ impl WorkspaceView {
         // Invalidate both cached comparisons, including after a stale request.
         self.diff_generation = self.diff_generation.wrapping_add(1);
         self.diff_worker.cancel();
-        self.diff_panel.invalidate_data(project);
+        let repo_key = self.active_repo_key(project);
+        self.diff_panel.invalidate_data(repo_key.clone());
         self.diff_in_flight = None;
-        self.diff_refreshed_at.remove(&(project, false));
-        self.diff_refreshed_at.remove(&(project, true));
+        self.diff_refreshed_at.remove(&(repo_key.clone(), false));
+        self.diff_refreshed_at.remove(&(repo_key, true));
         self.git_dirty_hint = true;
         self.diff_dirty_hint = true;
         cx.notify();
     }
 
     fn reveal_current_diff_hunk(&mut self, project: ProjectId) {
-        if let Some(sel) = self.diff_panel.selected_commit(project).cloned() {
-            let mode = self.diff_panel.diff_mode(project);
-            let Some(rows) = self.diff_panel.commit_preview_rows_for(project) else {
+        let repo_key = self.active_repo_key(project);
+        if let Some(sel) = self.diff_panel.selected_commit(repo_key.clone()).cloned() {
+            let mode = self.diff_panel.diff_mode(repo_key.clone());
+            let Some(rows) = self.diff_panel.commit_preview_rows_for(repo_key.clone()) else {
                 return;
             };
             if let Some(row) =
-                diff_panel::hunk_row_index(&rows, self.diff_panel.selected_hunk(project))
+                diff_panel::hunk_row_index(&rows, self.diff_panel.selected_hunk(repo_key.clone()))
             {
                 self.commit_scroll_handles
                     .entry((
-                        project,
+                        repo_key,
                         sel.commit.as_str().to_owned(),
                         sel.path.clone(),
                         mode,
@@ -5916,18 +6267,19 @@ impl WorkspaceView {
             }
             return;
         }
-        let staged = self.diff_panel.show_staged(project);
-        let Some(path) = self.diff_panel.selected_file(project).cloned() else {
+        let staged = self.diff_panel.show_staged(repo_key.clone());
+        let Some(path) = self.diff_panel.selected_file(repo_key.clone()).cloned() else {
             return;
         };
-        let mode = self.diff_panel.diff_mode(project);
-        let Some(rows) = self.diff_panel.preview_rows_for(project, staged) else {
+        let mode = self.diff_panel.diff_mode(repo_key.clone());
+        let Some(rows) = self.diff_panel.preview_rows_for(repo_key.clone(), staged) else {
             return;
         };
-        if let Some(row) = diff_panel::hunk_row_index(&rows, self.diff_panel.selected_hunk(project))
+        if let Some(row) =
+            diff_panel::hunk_row_index(&rows, self.diff_panel.selected_hunk(repo_key.clone()))
         {
             self.diff_scroll_handles
-                .entry((project, staged, path, mode))
+                .entry((repo_key, staged, path, mode))
                 .or_default()
                 .rows
                 .scroll_to_item(row, ScrollStrategy::Center);
@@ -5935,28 +6287,29 @@ impl WorkspaceView {
     }
 
     fn switch_diff_mode(&mut self, project: ProjectId, next: diff_panel::DiffMode) {
-        if let Some(sel) = self.diff_panel.selected_commit(project).cloned() {
-            let previous_mode = self.diff_panel.diff_mode(project);
-            let previous_rows = self.diff_panel.commit_preview_rows_for(project);
+        let repo_key = self.active_repo_key(project);
+        if let Some(sel) = self.diff_panel.selected_commit(repo_key.clone()).cloned() {
+            let previous_mode = self.diff_panel.diff_mode(repo_key.clone());
+            let previous_rows = self.diff_panel.commit_preview_rows_for(repo_key.clone());
             let previous_offset = self
                 .commit_scroll_handles
                 .get(&(
-                    project,
+                    repo_key.clone(),
                     sel.commit.as_str().to_owned(),
                     sel.path.clone(),
                     previous_mode,
                 ))
                 .map(|scroll| f32::from(scroll.rows.0.borrow().base_handle.offset().y))
                 .unwrap_or(0.0);
-            self.diff_panel.set_diff_mode(project, next);
+            self.diff_panel.set_diff_mode(repo_key.clone(), next);
             if let (Some(previous), Some(rows)) = (
                 previous_rows,
-                self.diff_panel.commit_preview_rows_for(project),
+                self.diff_panel.commit_preview_rows_for(repo_key.clone()),
             ) {
                 let offset = diff_panel::remap_preview_offset(&previous, &rows, previous_offset);
                 self.commit_scroll_handles
                     .entry((
-                        project,
+                        repo_key,
                         sel.commit.as_str().to_owned(),
                         sel.path.clone(),
                         next,
@@ -5970,27 +6323,31 @@ impl WorkspaceView {
             }
             return;
         }
-        let staged = self.diff_panel.show_staged(project);
-        let path = self.diff_panel.selected_file(project).cloned();
-        let previous_mode = self.diff_panel.diff_mode(project);
-        let previous_rows = self.diff_panel.preview_rows_for(project, staged);
+        let staged = self.diff_panel.show_staged(repo_key.clone());
+        let path = self.diff_panel.selected_file(repo_key.clone()).cloned();
+        let previous_mode = self.diff_panel.diff_mode(repo_key.clone());
+        let previous_rows = self.diff_panel.preview_rows_for(repo_key.clone(), staged);
         let previous_offset = path
             .as_ref()
             .and_then(|path| {
-                self.diff_scroll_handles
-                    .get(&(project, staged, path.clone(), previous_mode))
+                self.diff_scroll_handles.get(&(
+                    repo_key.clone(),
+                    staged,
+                    path.clone(),
+                    previous_mode,
+                ))
             })
             .map(|scroll| f32::from(scroll.rows.0.borrow().base_handle.offset().y))
             .unwrap_or(0.0);
-        self.diff_panel.set_diff_mode(project, next);
+        self.diff_panel.set_diff_mode(repo_key.clone(), next);
         if let (Some(path), Some(previous), Some(rows)) = (
             path,
             previous_rows,
-            self.diff_panel.preview_rows_for(project, staged),
+            self.diff_panel.preview_rows_for(repo_key.clone(), staged),
         ) {
             let offset = diff_panel::remap_preview_offset(&previous, &rows, previous_offset);
             self.diff_scroll_handles
-                .entry((project, staged, path, next))
+                .entry((repo_key, staged, path, next))
                 .or_default()
                 .rows
                 .0
@@ -6003,18 +6360,19 @@ impl WorkspaceView {
     fn stage_current_diff_hunk(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         // Historical previews are immutable: the keyboard stage chord is a
         // no-op here, like the hidden toolbar and row buttons.
-        if self.diff_panel.selected_commit(project).is_some() {
+        let repo_key = self.active_repo_key(project);
+        if self.diff_panel.selected_commit(repo_key.clone()).is_some() {
             self.input_notice = Some("Historical previews are read-only.".into());
             cx.notify();
             return;
         }
-        let staged = self.diff_panel.show_staged(project);
-        let selected = self.diff_panel.selected_file(project).cloned();
-        let hunk_index = self.diff_panel.selected_hunk(project);
+        let staged = self.diff_panel.show_staged(repo_key.clone());
+        let selected = self.diff_panel.selected_file(repo_key.clone()).cloned();
+        let hunk_index = self.diff_panel.selected_hunk(repo_key.clone());
         let target = selected.and_then(|path| {
             let file = self
                 .diff_panel
-                .diff_for(project, staged)?
+                .diff_for(repo_key.clone(), staged)?
                 .files
                 .iter()
                 .find(|file| file.path == path)?;
@@ -6032,17 +6390,21 @@ impl WorkspaceView {
     fn copy_current_diff_hunk(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         // Copy works from the visible preview: the historical patch when a
         // Graph file is selected, else the worktree side.
-        if self.diff_panel.selected_commit(project).is_some() {
-            let hunk_index = self.diff_panel.selected_hunk(project);
-            let text = self.diff_panel.commit_diff_for(project).and_then(|info| {
-                let sel = self.diff_panel.selected_commit(project)?;
-                let file = info.files.iter().find(|file| file.path == sel.path)?;
-                if file.binary || file.truncated {
-                    return None;
-                }
-                let hunk = file.hunks.get(hunk_index)?;
-                (!hunk.truncated).then(|| diff_panel::unified_hunk_text(hunk))
-            });
+        let repo_key = self.active_repo_key(project);
+        if self.diff_panel.selected_commit(repo_key.clone()).is_some() {
+            let hunk_index = self.diff_panel.selected_hunk(repo_key.clone());
+            let text = self
+                .diff_panel
+                .commit_diff_for(repo_key.clone())
+                .and_then(|info| {
+                    let sel = self.diff_panel.selected_commit(repo_key.clone())?;
+                    let file = info.files.iter().find(|file| file.path == sel.path)?;
+                    if file.binary || file.truncated {
+                        return None;
+                    }
+                    let hunk = file.hunks.get(hunk_index)?;
+                    (!hunk.truncated).then(|| diff_panel::unified_hunk_text(hunk))
+                });
             if let Some(text) = text {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 self.show_toast("Copied hunk".into(), cx);
@@ -6052,13 +6414,13 @@ impl WorkspaceView {
             }
             return;
         }
-        let staged = self.diff_panel.show_staged(project);
-        let selected = self.diff_panel.selected_file(project);
-        let hunk_index = self.diff_panel.selected_hunk(project);
+        let staged = self.diff_panel.show_staged(repo_key.clone());
+        let selected = self.diff_panel.selected_file(repo_key.clone());
+        let hunk_index = self.diff_panel.selected_hunk(repo_key.clone());
         let text = selected.and_then(|path| {
             let file = self
                 .diff_panel
-                .diff_for(project, staged)?
+                .diff_for(repo_key.clone(), staged)?
                 .files
                 .iter()
                 .find(|file| &file.path == path)?;
@@ -6113,7 +6475,7 @@ impl WorkspaceView {
             {
                 ActiveSurface::Terminal
             }
-            ActiveSurface::Diff if !self.diff_panel.preview_open(project) => {
+            ActiveSurface::Diff if !self.diff_panel.preview_open(self.active_repo_key(project)) => {
                 ActiveSurface::Terminal
             }
             surface => surface,
@@ -6946,7 +7308,7 @@ impl WorkspaceView {
             .active_project()
             .map(|owner| owner.tabs.iter().map(|tab| tab.id).collect())
             .unwrap_or_default();
-        let has_preview = self.diff_panel.preview_open(project);
+        let has_preview = self.diff_panel.preview_open(self.active_repo_key(project));
         let doc_ids: Vec<DocumentId> = self.coordinator.documents().project_documents(project);
         match route_alt_strip(&tab_ids, has_preview, &doc_ids, slot) {
             StripRoute::Terminal(tab) => {
@@ -7007,7 +7369,7 @@ impl WorkspaceView {
             .project_documents(project)
             .into_iter()
             .next();
-        let has_preview = self.diff_panel.preview_open(project);
+        let has_preview = self.diff_panel.preview_open(self.active_repo_key(project));
         match shortcuts::fallback_without_tabs(active_document, remembered, first, has_preview) {
             shortcuts::TablessFallback::Editor(document) => {
                 self.user_focus_action();
@@ -9140,7 +9502,8 @@ impl WorkspaceView {
             Ok(_) => {
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
-                self.diff_panel.set_show_staged(project, false);
+                self.diff_panel
+                    .set_show_staged(self.active_repo_key(project), false);
                 cx.notify();
             }
             Err(error) => {
@@ -9166,7 +9529,8 @@ impl WorkspaceView {
             Ok(_) => {
                 self.git_dirty_hint = true;
                 self.diff_dirty_hint = true;
-                self.diff_panel.set_show_staged(project, true);
+                self.diff_panel
+                    .set_show_staged(self.active_repo_key(project), true);
                 self.show_toast(format!("Staged {summary}"), cx);
             }
             Err(error) => {
@@ -9277,9 +9641,10 @@ impl WorkspaceView {
 
     /// Stage every unstaged/untracked path of the working-tree group.
     fn git_stage_all(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        let repo_key = self.active_repo_key(project);
         let paths: Vec<std::path::PathBuf> = self
             .git_panel
-            .status_for(project)
+            .status_for(&repo_key)
             .map(|status| {
                 status
                     .unstaged
@@ -9298,7 +9663,7 @@ impl WorkspaceView {
     fn git_unstage_all(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         let paths: Vec<std::path::PathBuf> = self
             .git_panel
-            .status_for(project)
+            .status_for(&self.active_repo_key(project))
             .map(|status| {
                 status
                     .staged
@@ -9314,9 +9679,10 @@ impl WorkspaceView {
 
     /// Confirm the captured working-tree paths in one dialog.
     fn git_discard_all(&mut self, project: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
+        let repo_key = self.active_repo_key(project);
         let paths: Vec<std::path::PathBuf> = self
             .git_panel
-            .status_for(project)
+            .status_for(&repo_key)
             .map(|status| {
                 status
                     .unstaged
@@ -9337,16 +9703,17 @@ impl WorkspaceView {
         self.diff_generation = self.diff_generation.wrapping_add(1);
         self.diff_worker.cancel();
         self.diff_in_flight = None;
+        let repo_key = self.active_repo_key(project);
         self.diff_scroll_handles
-            .retain(|(owner, _, selected, _), _| *owner != project || selected == &path);
-        self.git_panel.select(project, path.clone());
-        self.diff_panel.select_file(project, path);
+            .retain(|(owner, _, selected, _), _| *owner != repo_key || selected == &path);
+        self.git_panel.select(&repo_key, path.clone());
+        self.diff_panel.select_file(repo_key.clone(), path);
         // Single cursor across the Git tab: a change selection releases
         // the Graph cursor (selecting a worktree file also replaces any
         // historical preview inside `select_file`).
-        self.history_panel.clear_selection(project);
-        self.diff_panel.set_show_staged(project, staged);
-        self.diff_panel.open_preview(project);
+        self.history_panel.clear_selection(repo_key.clone());
+        self.diff_panel.set_show_staged(repo_key.clone(), staged);
+        self.diff_panel.open_preview(repo_key);
         self.editor_active.remove(&project);
         self.active_surface.insert(project, ActiveSurface::Diff);
         self.diff_dirty_hint = true;
@@ -9362,7 +9729,8 @@ impl WorkspaceView {
         let Some(project) = self.coordinator.selected_project_id() else {
             return;
         };
-        match git_input_view::on_key(self.git_panel.commit_input_mut(project), event, cx) {
+        let repo_key = self.active_repo_key(project);
+        match git_input_view::on_key(self.git_panel.commit_input_mut(&repo_key), event, cx) {
             git_input_view::InputAction::Release => {
                 self.git_panel.set_commit_focused(false);
                 self.restore_input_owner();
@@ -9387,9 +9755,12 @@ impl WorkspaceView {
         let Some((project, operation)) = git_sync_panel::Operation::from_command(command) else {
             return;
         };
+        let repo_key = self.active_repo_key(project);
+        let repo_root = self.repo_root_for(&repo_key);
         let pinned = self.coordinator.pinned_for(project);
         let active_cwd = self.coordinator.shell_cwd_for(project);
-        match git_sync_panel::PendingSync::start(project, operation, pinned, active_cwd) {
+        match git_sync_panel::PendingSync::start(repo_key, operation, repo_root, pinned, active_cwd)
+        {
             Ok(pending) => self.sync_pending = Some(pending),
             Err(error) => self.push_toast(
                 format!("Could not start Git action: {error}"),
@@ -9414,7 +9785,7 @@ impl WorkspaceView {
             .projects()
             .iter()
             .enumerate()
-            .find(|(_, project)| project.id == completion.project)
+            .find(|(_, project)| project.id == completion.repo.project)
             .map(|(ordinal, project)| project.display_name(ordinal + 1))
             .unwrap_or_else(|| "Closed project".into());
         let (message, kind) = match completion.result {
@@ -9436,7 +9807,7 @@ impl WorkspaceView {
         };
         self.push_toast(message, kind, cx);
         self.apply_command_effects(
-            vec![router::CommandEffect::GitChanged(completion.project)],
+            vec![router::CommandEffect::GitChanged(completion.repo.project)],
             cx,
         );
         cx.notify();
@@ -9450,11 +9821,12 @@ impl WorkspaceView {
         op: &'static str,
         cx: &mut Context<Self>,
     ) -> Div {
+        let repo_key = self.active_repo_key(project);
         let busy = self.sync_pending.is_some();
         let text = self
             .sync_pending
             .as_ref()
-            .filter(|task| task.project == project && task.operation.label() == label)
+            .filter(|task| task.repo == repo_key && task.operation.label() == label)
             .map(|task| task.operation.pending_label())
             .unwrap_or(label);
         div()
@@ -9516,11 +9888,12 @@ impl WorkspaceView {
         path: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
+        let repo_key = self.active_repo_key(project);
         let key = (
-            project,
+            repo_key.clone(),
             staged,
             path.clone(),
-            self.diff_panel.diff_mode(project),
+            self.diff_panel.diff_mode(repo_key),
         );
         if self.blame_visible.remove(&key) {
             cx.notify();
@@ -9556,11 +9929,12 @@ impl WorkspaceView {
         path: &std::path::Path,
         new_no: Option<u32>,
     ) -> Option<String> {
+        let repo_key = self.active_repo_key(project);
         let key = (
-            project,
+            repo_key.clone(),
             staged,
             path.to_path_buf(),
-            self.diff_panel.diff_mode(project),
+            self.diff_panel.diff_mode(repo_key),
         );
         if !self.blame_visible.contains(&key) {
             return None;
@@ -9589,16 +9963,18 @@ impl WorkspaceView {
         }
         let staged_empty = self
             .git_panel
-            .status_for(project)
+            .status_for(&self.active_repo_key(project))
             .is_none_or(|status| status.staged.is_empty());
         if staged_empty {
             self.input_notice = Some("Commit: nothing staged to commit.".into());
             cx.notify();
             return;
         }
-        let message = self.git_panel.take_commit_draft(project);
+        let repo_key = self.active_repo_key(project);
+        let message = self.git_panel.take_commit_draft(&repo_key);
         if message.trim().is_empty() {
-            self.git_panel.restore_commit_draft(project, message);
+            let repo_key = self.active_repo_key(project);
+            self.git_panel.restore_commit_draft(&repo_key, message);
             self.input_notice = Some("Commit: type a commit message first.".into());
             cx.notify();
             return;
@@ -9627,7 +10003,8 @@ impl WorkspaceView {
             }
             Err(error) => {
                 // Put the message back: a hook/GPG rejection is fixable.
-                self.git_panel.restore_commit_draft(project, message);
+                let repo_key = self.active_repo_key(project);
+                self.git_panel.restore_commit_draft(&repo_key, message);
                 self.input_notice = Some(format!("Commit: {error}"));
                 cx.notify();
             }
@@ -10159,8 +10536,8 @@ impl WorkspaceView {
                 );
                 let diff_path = self
                     .diff_panel
-                    .selected_file(project)
-                    .or_else(|| self.git_panel.selected_path(project))
+                    .selected_file(self.active_repo_key(project))
+                    .or_else(|| self.git_panel.selected_path(&self.active_repo_key(project)))
                     .cloned();
                 if let Some(path) = diff_path {
                     command(
@@ -10170,7 +10547,7 @@ impl WorkspaceView {
                         OmaCommand::Diff(DiffCommand::Show {
                             project,
                             path: Some(path),
-                            staged: self.diff_panel.show_staged(project),
+                            staged: self.diff_panel.show_staged(self.active_repo_key(project)),
                             context_lines: 3,
                         }),
                     );
@@ -10369,7 +10746,7 @@ impl WorkspaceView {
                 }
             }
             if let Some(project) = selected_project
-                && let Some(status) = self.git_panel.status_for(project)
+                && let Some(status) = self.git_panel.status_for(&self.active_repo_key(project))
             {
                 for (staged, entries) in [
                     (true, status.staged.as_slice()),
@@ -10754,17 +11131,20 @@ impl WorkspaceView {
                 path,
                 staged,
             } => {
-                let still_changed = self.git_panel.status_for(project).is_some_and(|status| {
-                    if staged {
-                        status.staged.iter().any(|entry| entry.path == path)
-                    } else {
-                        status
-                            .unstaged
-                            .iter()
-                            .chain(status.untracked.iter())
-                            .any(|entry| entry.path == path)
-                    }
-                });
+                let still_changed = self
+                    .git_panel
+                    .status_for(&self.active_repo_key(project))
+                    .is_some_and(|status| {
+                        if staged {
+                            status.staged.iter().any(|entry| entry.path == path)
+                        } else {
+                            status
+                                .unstaged
+                                .iter()
+                                .chain(status.untracked.iter())
+                                .any(|entry| entry.path == path)
+                        }
+                    });
                 if self.coordinator.selected_project_id() != Some(project) || !still_changed {
                     self.input_notice = Some("Palette target changed; search again.".into());
                     self.restore_palette_origin(cx);
@@ -11293,7 +11673,7 @@ impl WorkspaceView {
         if self.inspector_is_rendered()
             && self.inspector_tab == InspectorTab::Git
             && git_input_view::captures(event)
-            && let Some(project) = self.stash_focused
+            && let Some(project) = self.stash_focused.clone()
         {
             return self.on_stash_key(project, event, cx);
         }
@@ -11363,13 +11743,13 @@ impl WorkspaceView {
             && self.diff_is_active(project)
         {
             if key_name == "n" {
-                self.diff_panel.next_hunk(project);
+                self.diff_panel.next_hunk(self.active_repo_key(project));
                 self.reveal_current_diff_hunk(project);
                 cx.notify();
                 return;
             }
             if key_name == "p" {
-                self.diff_panel.prev_hunk(project);
+                self.diff_panel.prev_hunk(self.active_repo_key(project));
                 self.reveal_current_diff_hunk(project);
                 cx.notify();
                 return;
@@ -11390,32 +11770,35 @@ impl WorkspaceView {
             && !self.git_panel.commit_focused()
             && let Some(project) = self.coordinator.selected_project_id()
         {
+            let repo_key = self.active_repo_key(project);
             if key_name == "up" || key_name == "down" {
                 let delta = if key_name == "up" { -1 } else { 1 };
-                if self.history_panel.selected_row(project).is_some() {
-                    self.history_panel.move_selection(project, delta);
-                } else if !self.git_panel.rows_for(project).is_empty() {
-                    self.git_panel.move_selection(project, delta);
+                if self.history_panel.selected_row(repo_key.clone()).is_some() {
+                    self.history_panel.move_selection(repo_key.clone(), delta);
+                } else if !self.git_panel.rows_for(&repo_key).is_empty() {
+                    self.git_panel.move_selection(&repo_key, delta);
                 } else {
-                    self.history_panel.move_selection(project, delta);
+                    self.history_panel.move_selection(repo_key.clone(), delta);
                 }
                 cx.notify();
                 return;
             }
             if key_name == "left"
-                && let Some(row) = self.history_panel.selected_row(project).cloned()
+                && let Some(row) = self.history_panel.selected_row(repo_key.clone()).cloned()
             {
                 match row {
                     git_history_panel::HistoryRow::File { commit, .. } => {
-                        self.history_panel
-                            .select(project, git_history_panel::HistoryRow::Commit(commit));
+                        self.history_panel.select(
+                            repo_key.clone(),
+                            git_history_panel::HistoryRow::Commit(commit),
+                        );
                         cx.notify();
                     }
                     git_history_panel::HistoryRow::Commit(key) => {
-                        if self.history_panel.is_expanded(project, &key)
+                        if self.history_panel.is_expanded(repo_key.clone(), &key)
                             && let Ok(oid) = omaterm_core::GitObjectId::parse(&key)
                         {
-                            self.history_panel.toggle_expanded(project, oid);
+                            self.history_panel.toggle_expanded(repo_key.clone(), oid);
                             cx.notify();
                         }
                     }
@@ -11423,15 +11806,18 @@ impl WorkspaceView {
                 return;
             }
             if key_name == "right"
-                && let Some(row) = self.history_panel.selected_row(project).cloned()
+                && let Some(row) = self.history_panel.selected_row(repo_key.clone()).cloned()
             {
                 match row {
                     git_history_panel::HistoryRow::Commit(key) => {
-                        if !self.history_panel.is_expanded(project, &key)
+                        if !self.history_panel.is_expanded(repo_key.clone(), &key)
                             && let Ok(oid) = omaterm_core::GitObjectId::parse(&key)
                         {
-                            self.git_panel.clear_selection(project);
-                            if self.history_panel.toggle_expanded(project, oid.clone()) {
+                            self.git_panel.clear_selection(&repo_key);
+                            if self
+                                .history_panel
+                                .toggle_expanded(repo_key.clone(), oid.clone())
+                            {
                                 self.history_fetch_files(project, oid);
                             }
                             cx.notify();
@@ -11446,13 +11832,16 @@ impl WorkspaceView {
                 return;
             }
             if (key_name == "enter" || key_name == "return" || key_name == "kpenter")
-                && let Some(row) = self.history_panel.selected_row(project).cloned()
+                && let Some(row) = self.history_panel.selected_row(repo_key.clone()).cloned()
             {
                 match row {
                     git_history_panel::HistoryRow::Commit(key) => {
                         if let Ok(oid) = omaterm_core::GitObjectId::parse(&key) {
-                            self.git_panel.clear_selection(project);
-                            if self.history_panel.toggle_expanded(project, oid.clone()) {
+                            self.git_panel.clear_selection(&repo_key);
+                            if self
+                                .history_panel
+                                .toggle_expanded(repo_key.clone(), oid.clone())
+                            {
                                 self.history_fetch_files(project, oid);
                             }
                             cx.notify();
@@ -11467,16 +11856,17 @@ impl WorkspaceView {
                 return;
             }
             if (key_name == "enter" || key_name == "return" || key_name == "kpenter")
-                && let Some(row) = self
-                    .git_panel
-                    .selected_path(project)
-                    .cloned()
-                    .and_then(|path| {
-                        self.git_panel
-                            .rows_for(project)
-                            .into_iter()
-                            .find(|row| row.path == path)
-                    })
+                && let Some(row) = {
+                    self.git_panel
+                        .selected_path(&repo_key)
+                        .cloned()
+                        .and_then(|path| {
+                            self.git_panel
+                                .rows_for(&repo_key)
+                                .into_iter()
+                                .find(|row| row.path == path)
+                        })
+                }
             {
                 let staged = row.group == git_panel::GitGroup::Staged;
                 self.git_select_path(project, row.path, staged);
@@ -13572,7 +13962,8 @@ impl WorkspaceView {
                             // Git decorations for tree rows: untracked → U,
                             // staged/unstaged → M.
                             let mark: Option<(char, u32)> = (|| {
-                                let status = view.git_panel.status_for(project)?;
+                                let status =
+                                    view.git_panel.status_for(&view.active_repo_key(project))?;
                                 if status.untracked.iter().any(|entry| entry.path == row.path) {
                                     return Some(('U', crate::ui::theme::colors().green));
                                 }
@@ -13701,6 +14092,210 @@ impl WorkspaceView {
     /// stage/unstage/discard actions through the `GitCommand` dispatcher.
     /// Pure render from the panel cache; refreshes land via `git_tick`.
     /// Row selection only highlights + logs (diff-on-select opens M15).
+    /// M20 VS Code-style Source Control chrome: a single `Repositories`
+    /// group header (the only chevron) above one plain row per repository
+    /// (name, muted branch, dirty dot / `clean`). The active row is
+    /// highlighted and its full M14 body renders directly below this chrome;
+    /// clicking a row switches the active repository through the semantic
+    /// command so the CLI, IPC and panel share one source of truth.
+    ///
+    /// Single-repo projects and non-repo projects render nothing here —
+    /// their layout is byte-identical to pre-M20.
+    fn render_repo_chrome(&mut self, project: ProjectId, cx: &mut Context<Self>) -> Div {
+        let mut chrome = div().flex().flex_col().flex_shrink_0();
+        let Some(scan) = self.coordinator.repo_scan(project) else {
+            return chrome;
+        };
+        if scan.repos.len() < 2 {
+            return chrome;
+        }
+        let active_key = self.active_repo_key(project);
+        let repos = scan.repos.clone();
+        let repo_count = repos.len();
+
+        // Group header: the only chevron in the chrome. It collapses the
+        // repo list, never a repository — the active repository's body
+        // below it always stays visible.
+        let collapsed = self.repo_list_collapsed.contains(&project);
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .role(crate::ui::metrics::BODY_11)
+            .text_color(rgb(crate::ui::theme::colors().text))
+            .cursor_pointer()
+            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if view.shutting_down {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.focus(&view.focus_handle);
+                    view.toggle_repo_list(project);
+                }),
+            )
+            .child(crate::ui::assets::icon(
+                if collapsed {
+                    crate::ui::assets::CHEVRON_RIGHT
+                } else {
+                    crate::ui::assets::CHEVRON_DOWN
+                },
+                12.0,
+                crate::ui::theme::colors().muted,
+            ))
+            .child("Repositories")
+            .child(div().flex_1())
+            .child(
+                crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .child(format!("{repo_count} repos")),
+            );
+        chrome = chrome.child(header);
+        if collapsed {
+            return chrome;
+        }
+
+        // One plain row per repository: name, muted branch, dirty dot (or
+        // muted `clean`). The active row is highlighted; clicks switch the
+        // active repository. Rows come from the shared chrome plan, so the
+        // 32-cap, order and active mark the tests pin are what renders.
+        let plan = git_repos::repo_chrome(self.coordinator.repo_scan(project));
+        let section_keys: Vec<git_panel::RepoKey> = plan
+            .rows
+            .iter()
+            .map(|entry| repo_key_of(project, scan, entry))
+            .collect();
+        for (entry, key) in plan.rows.iter().zip(section_keys.iter()) {
+            let active = key == &active_key;
+            let status = self.git_panel.status_for(key).cloned();
+            let branch = status
+                .as_ref()
+                .and_then(|status| status.branch.clone())
+                .unwrap_or_else(|| "…".to_string());
+            let dirty = status.as_ref().is_some_and(|status| {
+                !status.staged.is_empty()
+                    || !status.unstaged.is_empty()
+                    || !status.untracked.is_empty()
+            });
+            let loaded = status.is_some();
+            let name = entry.name.clone();
+            let repo_name = name.clone();
+            let row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .role(crate::ui::metrics::BODY_11)
+                .text_color(rgb(if active {
+                    crate::ui::theme::colors().text
+                } else {
+                    crate::ui::theme::colors().muted
+                }))
+                .cursor_pointer()
+                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                .when(active, |s| {
+                    s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&view.focus_handle);
+                        view.select_repo(project, repo_name.clone(), cx);
+                    }),
+                )
+                .child(name)
+                .child(
+                    crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .child(branch),
+                )
+                .child(div().flex_1())
+                .when(dirty, |s| {
+                    s.child(
+                        div()
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .rounded_full()
+                            .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
+                    )
+                })
+                .when(!dirty && loaded, |s| {
+                    s.child(
+                        crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child("clean"),
+                    )
+                });
+            chrome = chrome.child(row);
+        }
+        // Cap overflow: name the hidden count.
+        if plan.overflow > 0 {
+            chrome = chrome.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .role(crate::ui::metrics::META_9)
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .child(format!("+{} more repositories", plan.overflow)),
+            );
+        }
+        chrome
+    }
+
+    /// Select the active repository for a project (M20). Commits the name
+    /// through the semantic command so validation, persistence and the
+    /// wire stay in one place; a bad name never reaches the panel state.
+    fn select_repo(&mut self, project: ProjectId, name: String, cx: &mut Context<Self>) {
+        if self
+            .coordinator
+            .window()
+            .project(project)
+            .and_then(|target| target.active_repo.as_deref())
+            == Some(name.as_str())
+        {
+            // Already active: refresh so the section shows current state.
+            self.git_dirty_hint = true;
+            self.repo_scan_bust.insert(project);
+            self.request_repo_scan(project, false);
+            cx.notify();
+            return;
+        }
+        if let Err(error) = self.dispatch_command(
+            OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project,
+                repo: name,
+            }),
+            cx,
+        ) {
+            self.input_notice = Some(format!("Repository: {}", error.message));
+        }
+        // The newly active repo has no landed status yet: refresh now.
+        self.git_dirty_hint = true;
+        self.repo_scan_bust.insert(project);
+        self.request_repo_scan(project, false);
+        cx.notify();
+    }
+
+    /// Collapse or expand the multi-repo list. The chevron on the
+    /// `Repositories` group header is the only chevron in the chrome; Esc
+    /// collapses the list through the key handler below.
+    fn toggle_repo_list(&mut self, project: ProjectId) {
+        if !self.repo_list_collapsed.remove(&project) {
+            self.repo_list_collapsed.insert(project);
+        }
+    }
+
     fn render_git_panel(&mut self, bar: Div, cx: &mut Context<Self>) -> Div {
         let Some(project) = self.coordinator.selected_project_id() else {
             return bar.child(
@@ -13712,10 +14307,18 @@ impl WorkspaceView {
             );
         };
         let mut bar = bar;
+        // M20: the `Repositories` group header + repo rows. Empty (and
+        // therefore invisible) for single-repo and non-repo projects.
+        let chrome = self.render_repo_chrome(project, cx);
+        bar = bar.child(chrome);
         // Explicit empty/error states (never a spinner forever).
         // Failure details are truncated: the stable code drives agents,
         // never the full stderr text.
-        if let Some(empty) = self.git_panel.empty_for(project).cloned() {
+        if let Some(empty) = self
+            .git_panel
+            .empty_for(&self.active_repo_key(project))
+            .cloned()
+        {
             let snippet = |detail: &str| {
                 let short: String = detail.chars().take(160).collect();
                 if detail.chars().count() > 160 {
@@ -13750,7 +14353,11 @@ impl WorkspaceView {
                     .child(message),
             );
         }
-        let Some(status) = self.git_panel.status_for(project).cloned() else {
+        let Some(status) = self
+            .git_panel
+            .status_for(&self.active_repo_key(project))
+            .cloned()
+        else {
             return bar.child(
                 div()
                     .px_2()
@@ -13784,7 +14391,7 @@ impl WorkspaceView {
             || !status.untracked.is_empty();
         let input_focused = self.git_panel.commit_focused();
         let input_content = git_input_view::render(git_input_view::FieldView {
-            input: self.git_panel.commit_input(project),
+            input: self.git_panel.commit_input(&self.active_repo_key(project)),
             placeholder: "Commit message",
             focused: input_focused,
             caret_visible: self.commit_caret_on,
@@ -13844,6 +14451,9 @@ impl WorkspaceView {
                                     cx.stop_propagation();
                                     window.focus(&view.focus_handle);
                                     view.git_dirty_hint = true;
+                                    if let Some(project) = view.coordinator.selected_project_id() {
+                                        view.repo_scan_bust.insert(project);
+                                    }
                                     cx.notify();
                                 }),
                             )
@@ -13893,7 +14503,7 @@ impl WorkspaceView {
                 .projects()
                 .iter()
                 .enumerate()
-                .find(|(_, project)| project.id == task.project)
+                .find(|(_, project)| project.id == task.repo.project)
                 .map(|(ordinal, project)| project.display_name(ordinal + 1))
                 .unwrap_or_else(|| "Closed project".into());
             header = header.child(
@@ -13991,9 +14601,10 @@ impl WorkspaceView {
         // straight to stash + graph (the "Working tree clean" line and the
         // commit UI above are hidden with it).
         if dirty {
+            let repo_key = self.active_repo_key(project);
             let selected = self
                 .git_panel
-                .selected_path(project)
+                .selected_path(&repo_key)
                 .map(|path| path.to_path_buf());
             // Two visible groups (mock): Staged Changes, then Changes holding
             // unstaged + untracked. Backend group identity still drives row
@@ -14071,9 +14682,10 @@ impl WorkspaceView {
         mut bar: Div,
         cx: &mut Context<Self>,
     ) -> Div {
+        let repo_key = self.active_repo_key(project);
         let loaded_count = self
             .git_panel
-            .stashes_for(project)
+            .stashes_for(&repo_key)
             .map(|list| list.stashes.len());
         match git_panel::stash_group_mode(dirty, loaded_count) {
             git_panel::StashGroupMode::Hidden => {
@@ -14083,7 +14695,7 @@ impl WorkspaceView {
                 if loaded_count.is_none() {
                     self.stash_fetch(project, cx);
                 }
-                if self.stash_focused == Some(project) {
+                if self.stash_focused.as_ref() == Some(&repo_key) {
                     self.stash_focused = None;
                     self.restore_input_owner();
                 }
@@ -14096,7 +14708,7 @@ impl WorkspaceView {
             }
             git_panel::StashGroupMode::Full => {}
         }
-        let collapsed = self.git_panel.is_stash_collapsed(project);
+        let collapsed = self.git_panel.is_stash_collapsed(&repo_key);
         let count = loaded_count.unwrap_or(0);
         let has_entries = count > 0;
         let mut header = div()
@@ -14116,7 +14728,8 @@ impl WorkspaceView {
                     }
                     cx.stop_propagation();
                     window.focus(&view.focus_handle);
-                    view.git_panel.toggle_stash_collapsed(project);
+                    let repo_key = view.active_repo_key(project);
+                    view.git_panel.toggle_stash_collapsed(&repo_key);
                     cx.notify();
                 }),
             )
@@ -14154,19 +14767,19 @@ impl WorkspaceView {
         // Push input: message draft (view-local, like the commit draft) +
         // untracked toggle + Stash button. Commits through the dispatcher.
         if !collapsed {
-            let stash_focused = self.stash_focused == Some(project);
+            let stash_focused = self.stash_focused.as_ref() == Some(&repo_key);
             let input_content = git_input_view::render(git_input_view::FieldView {
-                input: self.stash_drafts.get(&project),
+                input: self.stash_drafts.get(&repo_key),
                 placeholder: "Stash message…",
                 focused: stash_focused,
                 caret_visible: true,
             });
-            let untracked = self.stash_untracked.contains(&project);
+            let untracked = self.stash_untracked.contains(&repo_key);
             // Disabled-look until a message is typed (submit still
             // explains via notice, like before).
             let can_stash = self
                 .stash_drafts
-                .get(&project)
+                .get(&repo_key)
                 .is_some_and(|draft| !draft.text().trim().is_empty());
             bar = bar.child(header);
             bar = bar.child(
@@ -14200,7 +14813,7 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
-                                        view.stash_focused = Some(project);
+                                        view.stash_focused = Some(view.active_repo_key(project));
                                         view.git_panel.set_commit_focused(false);
                                         view.restore_input_owner();
                                         cx.notify();
@@ -14230,8 +14843,9 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
-                                        if !view.stash_untracked.remove(&project) {
-                                            view.stash_untracked.insert(project);
+                                        let repo_key = view.active_repo_key(project);
+                                        if !view.stash_untracked.remove(&repo_key) {
+                                            view.stash_untracked.insert(repo_key);
                                         }
                                         cx.notify();
                                     }),
@@ -14280,13 +14894,13 @@ impl WorkspaceView {
             );
             // Entry rows (the fetch already fired above; push-only has no
             // rows and no `No stashes.` noise by construction).
-            match self.git_panel.stashes_for(project).cloned() {
+            match self.git_panel.stashes_for(&repo_key).cloned() {
                 None => {}
                 Some(list) => {
                     if list.stashes.is_empty() {
                         return bar;
                     }
-                    let selected = self.git_panel.stash_selection(project);
+                    let selected = self.git_panel.stash_selection(&repo_key);
                     for (position, stash) in list.stashes.iter().enumerate() {
                         let stash_index = stash.index;
                         let active = Some(position) == selected;
@@ -14313,7 +14927,8 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
-                                        view.git_panel.select_stash(project, position);
+                                        let repo_key = view.active_repo_key(project);
+                                        view.git_panel.select_stash(&repo_key, position);
                                         cx.notify();
                                     }),
                                 )
@@ -14415,11 +15030,12 @@ impl WorkspaceView {
                                                 }
                                                 cx.stop_propagation();
                                                 window.focus(&view.focus_handle);
-                                                view.git_panel.select_stash(project, position);
-                                                if view
-                                                    .git_panel
-                                                    .stash_drop_confirmed(project, stash_index)
-                                                {
+                                                let repo_key = view.active_repo_key(project);
+                                                view.git_panel.select_stash(&repo_key, position);
+                                                if view.git_panel.stash_drop_confirmed(
+                                                    &view.active_repo_key(project),
+                                                    stash_index,
+                                                ) {
                                                     view.stash_drop(project, stash_index, cx);
                                                 } else {
                                                     view.input_notice =
@@ -14457,10 +15073,12 @@ impl WorkspaceView {
     /// triggered by first view and by mutations, never polled.
     fn stash_tick(&mut self, cx: &mut Context<Self>) {
         let mut landed = false;
-        while let Ok((project, result)) = self.stash_rx.try_recv() {
-            self.stash_in_flight.remove(&project);
+        while let Ok((repo_key, result)) = self.stash_rx.try_recv() {
+            self.stash_in_flight.remove(&repo_key);
             match result {
-                Ok(list) => self.git_panel.set_stashes(project, list),
+                Ok(list) => {
+                    self.git_panel.set_stashes(&repo_key, list);
+                }
                 Err(message) => {
                     self.input_notice = Some(format!("Stashes: {message}"));
                 }
@@ -14472,8 +15090,14 @@ impl WorkspaceView {
         }
     }
 
-    fn on_stash_key(&mut self, project: ProjectId, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        match git_input_view::on_key(self.stash_drafts.entry(project).or_default(), event, cx) {
+    fn on_stash_key(
+        &mut self,
+        repo_key: git_panel::RepoKey,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let project = repo_key.project;
+        match git_input_view::on_key(self.stash_drafts.entry(repo_key).or_default(), event, cx) {
             git_input_view::InputAction::Release => {
                 self.stash_focused = None;
                 self.restore_input_owner();
@@ -14488,16 +15112,21 @@ impl WorkspaceView {
     /// Synchronous dispatch is fine here (bounded, local, fast) — but the
     /// first-view path must not block render, so it spawns like status.
     fn stash_fetch(&mut self, project: ProjectId, cx: &mut Context<Self>) {
-        if self.stash_in_flight.contains(&project) {
+        let repo_key = self.active_repo_key(project);
+        if self.stash_in_flight.contains(&repo_key) {
             return;
         }
-        self.stash_in_flight.insert(project);
+        self.stash_in_flight.insert(repo_key.clone());
+        let repo_root = self.repo_root_for(&repo_key);
         let pinned = self.coordinator.pinned_for(project);
         let active_cwd = self.coordinator.shell_cwd_for(project);
         let tx = self.stash_tx.clone();
         std::thread::spawn(move || {
-            let resolved = omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref());
-            let result = match resolved.root {
+            let resolved_root = match repo_root {
+                Some(dir) if dir.is_dir() => Some(dir),
+                _ => omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref()).root,
+            };
+            let result = match resolved_root {
                 None => Err("no project root".to_string()),
                 Some(root) => omaterm_context::git_stash_list(&root)
                     .map(|list| omaterm_core::GitStashList {
@@ -14515,7 +15144,7 @@ impl WorkspaceView {
                     })
                     .map_err(|error| error.to_string()),
             };
-            let _ = tx.send((project, result));
+            let _ = tx.send((repo_key, result));
         });
         cx.notify();
     }
@@ -14526,9 +15155,10 @@ impl WorkspaceView {
         if self.shutting_down {
             return;
         }
+        let repo_key = self.active_repo_key(project);
         let message = self
             .stash_drafts
-            .get(&project)
+            .get(&repo_key)
             .map(git_input::GitInput::text)
             .unwrap_or_default()
             .to_owned();
@@ -14537,7 +15167,7 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
-        let untracked = self.stash_untracked.contains(&project);
+        let untracked = self.stash_untracked.contains(&repo_key);
         match self.dispatch_command(
             OmaCommand::Git(GitCommand::StashPush {
                 project,
@@ -14547,9 +15177,9 @@ impl WorkspaceView {
             cx,
         ) {
             Ok(_) => {
-                self.stash_drafts.remove(&project);
+                self.stash_drafts.remove(&repo_key);
                 self.stash_focused = None;
-                self.git_panel.clear_stashes(project);
+                self.git_panel.clear_stashes(&repo_key);
                 self.stash_fetch(project, cx);
                 self.git_dirty_hint = true;
                 self.show_toast("Stashed".into(), cx);
@@ -14577,7 +15207,8 @@ impl WorkspaceView {
         };
         match self.dispatch_command(command, cx) {
             Ok(_) => {
-                self.git_panel.clear_stashes(project);
+                let repo_key = self.active_repo_key(project);
+                self.git_panel.clear_stashes(&repo_key);
                 self.stash_fetch(project, cx);
                 self.git_dirty_hint = true;
                 self.show_toast(
@@ -14605,7 +15236,8 @@ impl WorkspaceView {
             cx,
         ) {
             Ok(_) => {
-                self.git_panel.clear_stashes(project);
+                let repo_key = self.active_repo_key(project);
+                self.git_panel.clear_stashes(&repo_key);
                 self.stash_fetch(project, cx);
                 self.show_toast("Stash dropped".into(), cx);
             }
@@ -14684,10 +15316,11 @@ impl WorkspaceView {
                     }
                     cx.stop_propagation();
                     window.focus(&view.focus_handle);
-                    if view.history_panel.scope_for(project) == scope {
+                    let repo_key = view.active_repo_key(project);
+                    if view.history_panel.scope_for(repo_key.clone()) == scope {
                         return;
                     }
-                    if view.history_panel.set_scope(project, scope) {
+                    if view.history_panel.set_scope(repo_key, scope) {
                         // A scope switch retires in-flight page and file
                         // work; stale landings drop by generation.
                         view.history_generation = view.history_generation.wrapping_add(1);
@@ -14708,9 +15341,10 @@ impl WorkspaceView {
     }
 
     fn render_history_graph(&mut self, project: ProjectId, cx: &mut Context<Self>) -> Div {
-        let collapsed = self.history_panel.is_graph_collapsed(project);
+        let repo_key = self.active_repo_key(project);
+        let collapsed = self.history_panel.is_graph_collapsed(repo_key.clone());
         let mut section = div().flex().flex_col().flex_shrink_0();
-        let loaded = self.history_panel.commits_for(project).len();
+        let loaded = self.history_panel.commits_for(repo_key.clone()).len();
         let header = div()
             .h(px(32.0))
             .flex()
@@ -14728,7 +15362,8 @@ impl WorkspaceView {
                     }
                     cx.stop_propagation();
                     window.focus(&view.focus_handle);
-                    view.history_panel.toggle_graph_collapsed(project);
+                    view.history_panel
+                        .toggle_graph_collapsed(view.active_repo_key(project));
                     cx.notify();
                 }),
             )
@@ -14763,7 +15398,7 @@ impl WorkspaceView {
                 // Two icon segments: current HEAD/branch vs all local branches.
                 // Active segment is filled; no text label to confuse with the
                 // branch picker.
-                let current_scope = self.history_panel.scope_for(project);
+                let current_scope = self.history_panel.scope_for(repo_key.clone());
                 let is_current = current_scope == omaterm_core::GitHistoryScope::CurrentHead;
                 div()
                     .flex()
@@ -14819,7 +15454,11 @@ impl WorkspaceView {
         }
         // Last-good rows survive failed refreshes; the notice names the
         // cause without paths or contents.
-        if let Some(error) = self.history_panel.last_error(project).map(str::to_owned) {
+        if let Some(error) = self
+            .history_panel
+            .last_error(repo_key.clone())
+            .map(str::to_owned)
+        {
             let short: String = error.chars().take(160).collect();
             section = section.child(
                 div()
@@ -14830,7 +15469,7 @@ impl WorkspaceView {
                     .child(format!("History refresh failed: {short}")),
             );
         }
-        if let Some(empty) = self.history_panel.empty_for(project).cloned() {
+        if let Some(empty) = self.history_panel.empty_for(repo_key.clone()).cloned() {
             let (message, retry) = match &empty {
                 git_history_panel::HistoryEmpty::NoCommits => ("No commits yet".to_owned(), false),
                 git_history_panel::HistoryEmpty::NoRoot => ("No project root".to_owned(), false),
@@ -14875,7 +15514,7 @@ impl WorkspaceView {
             }
             return section.child(row);
         }
-        let commits = self.history_panel.commits_for(project).to_vec();
+        let commits = self.history_panel.commits_for(repo_key.clone()).to_vec();
         if commits.is_empty() {
             return section.child(
                 div()
@@ -14886,7 +15525,7 @@ impl WorkspaceView {
                     .child("Loading history…"),
             );
         }
-        let selected = self.history_panel.selected_row(project).cloned();
+        let selected = self.history_panel.selected_row(repo_key.clone()).cloned();
         let now_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|age| age.as_secs() as i64)
@@ -14902,7 +15541,7 @@ impl WorkspaceView {
         let lane = crate::ui::theme::colors().blue;
         for (index, commit) in shown.iter().enumerate() {
             let key = commit.id.as_str().to_owned();
-            let expanded = self.history_panel.is_expanded(project, &key);
+            let expanded = self.history_panel.is_expanded(repo_key.clone(), &key);
             let is_selected =
                 selected.as_ref() == Some(&git_history_panel::HistoryRow::Commit(key.clone()));
             let is_first = index == 0;
@@ -14962,8 +15601,9 @@ impl WorkspaceView {
                         }
                         cx.stop_propagation();
                         window.focus(&view.focus_handle);
-                        view.git_panel.clear_selection(project);
-                        if view.history_panel.toggle_expanded(project, oid.clone()) {
+                        let repo_key = view.active_repo_key(project);
+                        view.git_panel.clear_selection(&repo_key);
+                        if view.history_panel.toggle_expanded(repo_key, oid.clone()) {
                             view.history_fetch_files(project, oid.clone());
                         }
                         cx.notify();
@@ -15038,7 +15678,7 @@ impl WorkspaceView {
             }
             section = self.render_history_files(section, project, commit, selected.clone(), cx);
         }
-        if self.history_panel.truncated(project) {
+        if self.history_panel.truncated(repo_key.clone()) {
             section = section.child(
                 div()
                     .px_3()
@@ -15048,7 +15688,7 @@ impl WorkspaceView {
                     .child("(truncated: bounded history output)"),
             );
         }
-        if self.history_panel.loading_more(project) {
+        if self.history_panel.loading_more(repo_key.clone()) {
             section = section.child(
                 div()
                     .px_3()
@@ -15057,7 +15697,7 @@ impl WorkspaceView {
                     .text_color(rgb(crate::ui::theme::colors().muted))
                     .child("Loading more…"),
             );
-        } else if self.history_panel.limit_reached(project) {
+        } else if self.history_panel.limit_reached(repo_key.clone()) {
             section = section.child(
                 div()
                     .px_3()
@@ -15066,7 +15706,7 @@ impl WorkspaceView {
                     .text_color(rgb(crate::ui::theme::colors().muted))
                     .child("(history limit reached: showing 100 commits)"),
             );
-        } else if self.history_panel.has_more(project) {
+        } else if self.history_panel.has_more(repo_key.clone()) {
             section = section.child(
                 div()
                     .px_3()
@@ -15107,7 +15747,8 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> Div {
         let key = commit.id.as_str().to_owned();
-        let files = self.history_panel.files_for(project, &key).cloned();
+        let repo_key = self.active_repo_key(project);
+        let files = self.history_panel.files_for(repo_key, &key).cloned();
         match files {
             None | Some(git_history_panel::CommitFilesState::Loading) => section.child(
                 div()
@@ -15456,7 +16097,9 @@ impl WorkspaceView {
         } else {
             "Changes"
         };
-        let collapsed = self.git_panel.is_collapsed(project, staged_group);
+        let collapsed = self
+            .git_panel
+            .is_collapsed(&self.active_repo_key(project), staged_group);
         let mut section = div().flex().flex_col().flex_shrink_0();
         let mut header = div()
             .h(px(32.0))
@@ -15475,7 +16118,8 @@ impl WorkspaceView {
                     }
                     cx.stop_propagation();
                     window.focus(&view.focus_handle);
-                    view.git_panel.toggle_collapsed(project, staged_group);
+                    let repo_key = view.active_repo_key(project);
+                    view.git_panel.toggle_collapsed(&repo_key, staged_group);
                     cx.notify();
                 }),
             )
@@ -15754,7 +16398,8 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let staged = self.diff_panel.show_staged(project);
+        let repo_key = self.active_repo_key(project);
+        let staged = self.diff_panel.show_staged(repo_key.clone());
         let mut bar = div()
             .flex()
             .flex_col()
@@ -15766,11 +16411,11 @@ impl WorkspaceView {
         // control and body lookup below derives from this source, never from
         // staged flags. Historical previews are read-only (the commit rows
         // that feed them already hide Stage Hunk via `staged = true`).
-        let commit_sel = self.diff_panel.selected_commit(project).cloned();
+        let commit_sel = self.diff_panel.selected_commit(repo_key.clone()).cloned();
         let Some(path) = commit_sel.as_ref().map(|sel| sel.path.clone()).or_else(|| {
             self.git_panel
-                .selected_path(project)
-                .or_else(|| self.diff_panel.selected_file(project))
+                .selected_path(&repo_key)
+                .or_else(|| self.diff_panel.selected_file(repo_key.clone()))
                 .map(|path| path.to_path_buf())
         }) else {
             return bar.child(
@@ -15815,7 +16460,7 @@ impl WorkspaceView {
         if let Some(sel) = commit_sel.as_ref() {
             let body = self
                 .history_panel
-                .commits_for(project)
+                .commits_for(repo_key.clone())
                 .iter()
                 .find(|summary| summary.id == sel.commit)
                 .map(|summary| summary.body.clone())
@@ -15914,21 +16559,21 @@ impl WorkspaceView {
                                                 path: path.clone(),
                                                 subject: view
                                                     .diff_panel
-                                                    .selected_commit(project)
+                                                    .selected_commit(view.active_repo_key(project))
                                                     .map(|sel| sel.subject.clone())
                                                     .unwrap_or_default(),
                                                 author_name: view
                                                     .diff_panel
-                                                    .selected_commit(project)
+                                                    .selected_commit(view.active_repo_key(project))
                                                     .map(|sel| sel.author_name.clone())
                                                     .unwrap_or_default(),
                                                 body: view
                                                     .diff_panel
-                                                    .selected_commit(project)
+                                                    .selected_commit(view.active_repo_key(project))
                                                     .and_then(|sel| sel.body.clone()),
                                                 parents: view
                                                     .diff_panel
-                                                    .selected_commit(project)
+                                                    .selected_commit(view.active_repo_key(project))
                                                     .map(|sel| sel.parents.clone())
                                                     .unwrap_or_default(),
                                             },
@@ -15945,7 +16590,7 @@ impl WorkspaceView {
         // Deleted committed files have no working file to open.
         let commit_deleted = commit_sel.as_ref().is_some_and(|sel| {
             self.diff_panel
-                .commit_diff_for(project)
+                .commit_diff_for(repo_key.clone())
                 .and_then(|info| info.files.iter().find(|file| file.path == sel.path))
                 .is_some_and(|file| file.status == omaterm_core::DiffFileStatus::Deleted)
         });
@@ -15954,7 +16599,7 @@ impl WorkspaceView {
         // and only surviving files open (deleted committed paths hide Open
         // File, like the per-hunk rows).
         let caps = commit_sel.as_ref().map(|sel| sel.source().capabilities());
-        let mode = self.diff_panel.diff_mode(project);
+        let mode = self.diff_panel.diff_mode(repo_key.clone());
         let stage_path = path.clone();
         let discard_path = path.clone();
         let mut actions = div()
@@ -16015,12 +16660,12 @@ impl WorkspaceView {
         if caps.is_none_or(|caps| caps.open_working_file) && !commit_deleted {
             // Blame toggle (worktree previews only): per-line commit chips
             // in the gutter, fetched on demand through the shared command.
-            let blame_key = (project, staged, path.clone());
+            let blame_key = (repo_key.clone(), staged, path.clone());
             let blame_on = self.blame_visible.contains(&(
-                blame_key.0,
+                blame_key.0.clone(),
                 blame_key.1,
                 blame_key.2.clone(),
-                self.diff_panel.diff_mode(project),
+                self.diff_panel.diff_mode(repo_key.clone()),
             ));
             actions = actions.child(
                 div()
@@ -16187,12 +16832,12 @@ impl WorkspaceView {
         // previews read the commit slot; anything else reads the worktree.
         let (empty, info) = match &commit_sel {
             Some(_) => (
-                self.diff_panel.commit_empty_for(project).cloned(),
-                self.diff_panel.commit_shared_for(project),
+                self.diff_panel.commit_empty_for(repo_key.clone()).cloned(),
+                self.diff_panel.commit_shared_for(repo_key.clone()),
             ),
             None => (
-                self.diff_panel.empty_for(project, staged).cloned(),
-                self.diff_panel.diff_shared_for(project, staged),
+                self.diff_panel.empty_for(repo_key.clone(), staged).cloned(),
+                self.diff_panel.diff_shared_for(repo_key.clone(), staged),
             ),
         };
         if let Some(empty) = empty {
@@ -16277,10 +16922,10 @@ impl WorkspaceView {
             let count = file.hunks.len();
             let cursor = self
                 .diff_panel
-                .selected_hunk(project)
+                .selected_hunk(repo_key.clone())
                 .min(count.saturating_sub(1));
             let mono = mono_family_for_chrome(&*cx, self.font_family.as_deref());
-            let mode = self.diff_panel.diff_mode(project);
+            let mode = self.diff_panel.diff_mode(repo_key.clone());
             // Split side headers identify the compared revisions once per
             // file: staged HEAD↔INDEX, working tree INDEX↔WORKTREE, and
             // historical previews parent↔commit (never INDEX/WORKING TREE).
@@ -16339,11 +16984,11 @@ impl WorkspaceView {
             }
             let rows = if commit_sel.is_some() {
                 self.diff_panel
-                    .commit_preview_rows_for(project)
+                    .commit_preview_rows_for(repo_key.clone())
                     .unwrap_or_else(|| std::sync::Arc::from([]))
             } else {
                 self.diff_panel
-                    .preview_rows_for(project, staged)
+                    .preview_rows_for(repo_key.clone(), staged)
                     .unwrap_or_else(|| std::sync::Arc::from([]))
             };
             let row_count = rows.len();
@@ -16356,7 +17001,7 @@ impl WorkspaceView {
             let scroll = if let Some(sel) = &commit_sel {
                 self.commit_scroll_handles
                     .entry((
-                        project,
+                        repo_key.clone(),
                         sel.commit.as_str().to_owned(),
                         sel.path.clone(),
                         mode,
@@ -16364,7 +17009,7 @@ impl WorkspaceView {
                     .or_default()
             } else {
                 self.diff_scroll_handles
-                    .entry((project, staged, path.clone(), mode))
+                    .entry((repo_key.clone(), staged, path.clone(), mode))
                     .or_default()
             };
             if !scroll
@@ -16673,6 +17318,14 @@ impl WorkspaceView {
         self.git_panel.set_commit_focused(false);
         self.stash_focused = None;
         self.files_vdrag = None;
+        if tab == InspectorTab::Git {
+            // M20: reveal the Git tab and rescan the depth-1 repo list so
+            // the chrome shows this project's repositories.
+            if let Some(project) = self.coordinator.selected_project_id() {
+                self.repo_scan_bust.insert(project);
+                self.request_repo_scan(project, true);
+            }
+        }
         // M18: arm the debounced process poller when Info becomes visible.
         if tab == InspectorTab::Info {
             self.ensure_launch_poller(cx);
@@ -16692,7 +17345,7 @@ impl WorkspaceView {
     /// Open the branch picker overlay for `project`, fetching the list.
     fn open_branch_picker(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         self.branch_picker = Some(BranchPicker::new(project));
-        self.branch_lists.remove(&project);
+        self.branch_lists.remove(&self.active_repo_key(project));
         self.branch_in_flight = None;
         self.branch_generation = self.branch_generation.wrapping_add(1);
         self.branch_dirty_hint = true;
@@ -16704,10 +17357,16 @@ impl WorkspaceView {
     /// Keep the picker highlight inside the bounded list after keyboard
     /// moves (the list only renders the visible window).
     fn branch_follow(&mut self) {
-        let count = self
+        let Some(key) = self
             .branch_picker
             .as_ref()
-            .and_then(|picker| self.branch_lists.get(&picker.project))
+            .map(|picker| self.active_repo_key(picker.project))
+        else {
+            return;
+        };
+        let count = self
+            .branch_lists
+            .get(&key)
             .map(|list| list.branches.len())
             .unwrap_or(0);
         if count == 0 {
@@ -16763,7 +17422,7 @@ impl WorkspaceView {
             Some(picker) => (
                 picker.project,
                 self.branch_lists
-                    .get(&picker.project)
+                    .get(&self.active_repo_key(picker.project))
                     .and_then(|list| list.branches.get(picker.selected))
                     .map(|branch| branch.name.clone()),
             ),
@@ -16789,7 +17448,7 @@ impl WorkspaceView {
             Some(picker) => (
                 picker.project,
                 self.branch_lists
-                    .get(&picker.project)
+                    .get(&self.active_repo_key(picker.project))
                     .and_then(|list| list.branches.get(picker.selected))
                     .map(|branch| branch.name.clone()),
             ),
@@ -16929,28 +17588,29 @@ impl WorkspaceView {
             return false;
         };
         let project = picker.project;
+        let repo_key = self.active_repo_key(project);
         let mut landed = false;
-        while let Ok((generation, landed_project, result)) = self.branch_rx.try_recv() {
-            if generation != self.branch_generation || landed_project != project {
+        while let Ok((generation, landed_repo, result)) = self.branch_rx.try_recv() {
+            if generation != self.branch_generation || landed_repo != repo_key {
                 continue;
             }
             self.branch_in_flight = None;
             match result {
                 Ok(list) => {
-                    self.branch_lists.insert(project, list);
+                    self.branch_lists.insert(repo_key.clone(), list);
                     if let Some(picker) = self.branch_picker.as_mut()
                         && picker.project == project
                     {
                         let count = self
                             .branch_lists
-                            .get(&project)
+                            .get(&repo_key)
                             .map(|l| l.branches.len())
                             .unwrap_or(0);
                         picker.selected = picker.selected.min(count.saturating_sub(1));
                     }
                 }
                 Err(message) => {
-                    self.branch_lists.remove(&project);
+                    self.branch_lists.remove(&repo_key);
                     self.input_notice = Some(format!("Branches: {message}"));
                 }
             }
@@ -16962,21 +17622,26 @@ impl WorkspaceView {
         if self.branch_in_flight.is_some() || !self.branch_dirty_hint {
             return landed;
         }
+        let repo_root = self.repo_root_for(&repo_key);
         let pinned = self.coordinator.pinned_for(project);
         let active_cwd = self.coordinator.shell_cwd_for(project);
         let tx = self.branch_tx.clone();
         let generation = self.branch_generation;
+        let landed_key = repo_key.clone();
         std::thread::spawn(move || {
-            let resolved = omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref());
-            let result = match resolved.root {
+            let resolved_root = match repo_root {
+                Some(dir) if dir.is_dir() => Some(dir),
+                _ => omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref()).root,
+            };
+            let result = match resolved_root {
                 None => Err("no project root".to_string()),
                 Some(root) => {
                     omaterm_context::git_branch_list(&root).map_err(|error| error.to_string())
                 }
             };
-            let _ = tx.send((generation, project, result));
+            let _ = tx.send((generation, landed_key, result));
         });
-        self.branch_in_flight = Some(project);
+        self.branch_in_flight = Some(repo_key);
         self.branch_dirty_hint = false;
         landed
     }
@@ -17470,7 +18135,21 @@ impl WorkspaceView {
     fn close_transient_menus(&mut self) -> bool {
         let had_project = self.project_context_menu.take().is_some();
         let had_terminal = self.terminal_menu.take().is_some();
-        had_project || had_terminal
+        // M20: a collapsed multi-repo list is transient chrome too: Esc
+        // collapses it when the Git tab shows several repositories.
+        let had_list = self
+            .coordinator
+            .selected_project_id()
+            .is_some_and(|project| {
+                self.coordinator
+                    .repo_scan(project)
+                    .is_some_and(|scan| scan.repos.len() > 1)
+                    && !self.repo_list_collapsed.contains(&project)
+            });
+        if had_list && let Some(project) = self.coordinator.selected_project_id() {
+            self.repo_list_collapsed.insert(project);
+        }
+        had_project || had_terminal || had_list
     }
 
     /// Branch picker overlay (C9.1): project branches with checkout on
@@ -17497,7 +18176,10 @@ impl WorkspaceView {
         };
         // Clone out: row listeners borrow nothing from self, and the frame
         // builder below needs `&mut self`.
-        let list = self.branch_lists.get(&project).cloned();
+        let list = self
+            .branch_lists
+            .get(&self.active_repo_key(project))
+            .cloned();
         let mut body = div().flex().flex_col();
         // Input row: create, or rename when armed by the Rename button.
         let (placeholder, commit_label) = match &input_mode {
@@ -18014,6 +18696,7 @@ impl WorkspaceView {
             // below) so it can never scroll or clip out of reach.
             .overflow_x_scroll();
         if let Some(project) = self.coordinator.active_project() {
+            let repo_key = self.active_repo_key(project.id);
             // One highlight across all tab kinds: the visible surface
             // decides, never the retained editor selection.
             let active_kind =
@@ -18109,10 +18792,10 @@ impl WorkspaceView {
             // terminal tabs. The chip stays open across surface switches
             // (only its own × closes it); clicking it reveals the preview
             // again while terminal tabs and editor chips keep working.
-            if self.diff_panel.preview_open(project.id)
+            if self.diff_panel.preview_open(repo_key.clone())
                 && let Some((name, commit_short)) = self
                     .diff_panel
-                    .selected_commit(project.id)
+                    .selected_commit(repo_key.clone())
                     .map(|sel| {
                         let name = sel
                             .path
@@ -18122,7 +18805,7 @@ impl WorkspaceView {
                         (name, Some(sel.commit.short().to_owned()))
                     })
                     .or_else(|| {
-                        self.diff_panel.selected_file(project.id).map(|path| {
+                        self.diff_panel.selected_file(repo_key.clone()).map(|path| {
                             let name = path
                                 .file_name()
                                 .map(|name| name.to_string_lossy().into_owned())
@@ -18193,7 +18876,8 @@ impl WorkspaceView {
                                         }
                                         cx.stop_propagation();
                                         window.focus(&view.focus_handle);
-                                        view.diff_panel.close_preview(preview_id);
+                                        view.diff_panel
+                                            .close_preview(view.active_repo_key(preview_id));
                                         if view.diff_is_active(preview_id)
                                             || view.active_surface.get(&preview_id)
                                                 == Some(&ActiveSurface::Diff)
@@ -18224,7 +18908,7 @@ impl WorkspaceView {
             // closing documents. Strip slots continue past the diff chip
             // so `Alt+<n>` matches this render order exactly.
             let editor_base =
-                project.tabs.len() + usize::from(self.diff_panel.preview_open(project.id));
+                project.tabs.len() + usize::from(self.diff_panel.preview_open(repo_key));
             for (doc_offset, document) in self
                 .coordinator
                 .documents()
@@ -18543,7 +19227,7 @@ impl WorkspaceView {
         let git_count = self
             .coordinator
             .selected_project_id()
-            .and_then(|project| self.git_panel.status_for(project))
+            .and_then(|project| self.git_panel.status_for(&self.active_repo_key(project)))
             .map(|status| status.staged.len() + status.unstaged.len() + status.untracked.len())
             .unwrap_or(0);
         let mut tabs = div()
@@ -19005,8 +19689,17 @@ impl WorkspaceView {
     fn render_status_bar(&mut self, cx: &mut Context<Self>) -> Div {
         let mut left = div().flex().flex_row().items_center().h_full();
         if let Some(project) = self.coordinator.selected_project_id()
-            && let Some(status) = self.git_panel.status_for(project)
+            && let Some(status) = self.git_panel.status_for(&self.active_repo_key(project))
         {
+            // M20: name the repository when the project root holds more
+            // than one, so the status bar never shows an ambiguous branch.
+            let multi_repo = self
+                .coordinator
+                .repo_scan(project)
+                .is_some_and(|scan| scan.repos.len() > 1);
+            let repo_name = multi_repo
+                .then(|| self.coordinator.active_repo(project))
+                .flatten();
             let dirty = !(status.staged.is_empty()
                 && status.unstaged.is_empty()
                 && status.untracked.is_empty());
@@ -19024,6 +19717,11 @@ impl WorkspaceView {
                             12.0,
                             crate::ui::theme::colors().muted,
                         ))
+                        .children(repo_name.map(|repo| {
+                            crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                                .text_color(rgb(crate::ui::theme::colors().muted))
+                                .child(repo)
+                        }))
                         .child(branch_picker_trigger(project, branch, cx)),
                 );
             }

@@ -20,6 +20,7 @@ pub mod git_history;
 pub mod git_stash;
 pub mod git_sync;
 pub mod ignore;
+pub mod repos;
 pub mod resolve;
 
 pub use boundary::{ContextError, canonicalize_under_root};
@@ -61,6 +62,7 @@ pub use git_stash::{
 };
 pub use git_sync::{GIT_SYNC_TIMEOUT, GitSyncReport, git_fetch, git_pull, git_push};
 pub use ignore::IgnoreFilter;
+pub use repos::{MAX_SCAN_ENTRIES, resolve_repos, scan_repos, scan_repos_with};
 pub use resolve::{
     GIT_TOPLEVEL_TIMEOUT, git_toplevel_of, git_toplevel_of_with, resolve_root, resolve_root_with,
 };

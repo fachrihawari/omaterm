@@ -33,6 +33,20 @@ pub enum ProjectCmd {
         #[arg(long)]
         project: Option<String>,
     },
+    /// List repositories under the project root (depth-1 scan).
+    Repos {
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Select the active repository for Git features in this project.
+    SetRepo {
+        /// Repository directory name under the project root (e.g. `api`).
+        repo: String,
+        /// Project ID; defaults to OMATERM_PROJECT_ID, then server selection.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 pub fn build(cmd: &ProjectCmd) -> Result<WireCall, String> {
@@ -86,6 +100,33 @@ pub fn build(cmd: &ProjectCmd) -> Result<WireCall, String> {
                 None => json!({}),
             },
         }),
+        ProjectCmd::Repos { project } => Ok(WireCall {
+            method: "project.repos".into(),
+            params: match optional_selector(project.clone(), "OMATERM_PROJECT_ID") {
+                Some(id) => json!({ "project_id": id }),
+                None => json!({}),
+            },
+        }),
+        ProjectCmd::SetRepo { repo, project } => {
+            // Same shape rule as the live scan: a bare directory name, no
+            // separators or traversal. Membership is validated server-side.
+            if repo.is_empty()
+                || repo.contains('/')
+                || repo.contains('\\')
+                || repo == "."
+                || repo == ".."
+            {
+                return Err("project set-repo requires a single directory name".into());
+            }
+            let selector = match optional_selector(project.clone(), "OMATERM_PROJECT_ID") {
+                Some(id) => id,
+                None => return Err("project set-repo requires a project ID".into()),
+            };
+            Ok(WireCall {
+                method: "project.set-active-repo".into(),
+                params: json!({ "project_id": selector, "repo": repo }),
+            })
+        }
     }
 }
 
@@ -138,6 +179,46 @@ mod tests {
         })
         .unwrap();
         assert_eq!(call.params["project_id"], "p1");
+    }
+
+    #[test]
+    fn repos_and_set_repo_map_to_wire_with_guards() {
+        let call = build(&ProjectCmd::Repos { project: None }).unwrap();
+        assert_eq!(call.method, "project.repos");
+        assert_eq!(call.params, json!({}));
+        let call = build(&ProjectCmd::Repos {
+            project: Some("p1".into()),
+        })
+        .unwrap();
+        assert_eq!(call.params["project_id"], "p1");
+
+        let call = build(&ProjectCmd::SetRepo {
+            repo: "api".into(),
+            project: Some("p1".into()),
+        })
+        .unwrap();
+        assert_eq!(call.method, "project.set-active-repo");
+        assert_eq!(call.params, json!({"project_id":"p1","repo":"api"}));
+
+        // No project anywhere → refusal, never a silent server default.
+        assert!(
+            build(&ProjectCmd::SetRepo {
+                repo: "api".into(),
+                project: None,
+            })
+            .is_err()
+        );
+        // Traversal and separators are rejected before the wire.
+        for bad in ["", ".", "..", "a/b", "a\\b"] {
+            assert!(
+                build(&ProjectCmd::SetRepo {
+                    repo: bad.into(),
+                    project: Some("p1".into()),
+                })
+                .is_err(),
+                "repo {bad:?} must be rejected"
+            );
+        }
     }
 
     #[test]

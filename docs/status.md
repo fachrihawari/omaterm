@@ -2,6 +2,199 @@
 
 ## Current position
 
+### Multi-repo Phase E + F: every Git surface follows the active repo — 2026-10-09 (uncommitted)
+
+Milestone [20 — Multi-Repo Support](20-milestone-20-multi-repo.md) Phases
+E and F. Status rows already followed the active repository after Phase D;
+this slice makes the **whole** Git subsystem agree on one active repository
+so the panel, CLI and agents cannot drift, and re-keys every per-project
+Git surface to the per-repository `RepoKey`.
+
+- **E1 router-owned discovery.** The depth-1 scan cache moved from the view
+  into `CommandRouter` (`repo_scans: HashMap<ProjectId, RepoScan>` in
+  `omaterm-core`). The desktop scan worker is the sole producer
+  (`install_repo_scan`); `SetDirectory`/`Delete` invalidate it. The view
+  renders and polls through `repo_scan(project)` / `active_repo(project)`
+  instead of its own map, so the panel, `git.*` wire methods, `omaterm git`
+  and a future agent share one answer (blueprint §62).
+- **E2 `git_root` chokepoint.** New `Router::git_root(context, project)`
+  returns the active repository path (scope-checked, contained under the
+  project root) and falls back to `file_root` for single-repo and pre-scan
+  states. Every `GitCommand` and `DiffCommand` arm switched `file_root` →
+  `git_root`: status, history, branch list + all branch mutations,
+  stage/unstage/discard/commit/stage-hunk, stash list + push/apply/pop/drop,
+  sync fetch/pull/push, blame, and diff show/list-files/show-commit. The
+  Files panel, finder and watcher intentionally stay on `file_root`.
+- **E3 workers take an explicit repo root.** History page + commit-files
+  (`HistoryRoots`), sync (`PendingSync` carries `RepoKey` + repo root),
+  stash-list and branch-list workers take the active repo path resolved on
+  the view thread, with the M12 `resolve_root` fallback preserved for the
+  pre-scan window. No git worker calls `resolve_root` for the primary path
+  anymore.
+- **E4 per-repo state follows the key.** `HistoryPanel.projects`,
+  `history_in_flight`/`files_in_flight`/`refreshed_at`, `branch_lists`/
+  `branch_in_flight`, `stash_drafts`/`stash_focused`/`stash_untracked`/
+  `stash_in_flight`, all `diff_panel` maps + `DiffRequestKey`/
+  `CommitDiffKey`, `commit_scroll_handles`, `blame_rows`/`blame_visible` and
+  `PendingSync` are keyed by `git_panel::RepoKey` (project + repo name,
+  `None` = project root). Landing channels carry the `RepoKey`; the
+  project-switch sweep clears per-repo state so memory stays bounded to one
+  project.
+- **F1/F2 Graph + stash.** `HistoryPanel` and stash drafts/focus/`-u`
+  are per repo; switching repo and switching back restores each Graph view
+  and each stash draft.
+- **F3 collapse memory (session-scoped, locked).** The `Repositories`
+  collapse preference stays view-local but now survives root busts, project
+  switches and tab hops within the session (`ProjectDirectoryChanged` clears
+  the scan, not the preference). No snapshot v5, no migration.
+- **E5 chrome/docs.** `render_repo_chrome` / `render_git_panel` comments
+  refreshed to the locked single-group-header chrome (no picker/dropdown/
+  per-row chevrons/counters).
+- **CLI test-harness fix (H1).** The unreproduced `48 passed; 2 failed`
+  full-suite run was reproduced at 64–128 threads: `connection::tests` and
+  `launcher::tests` each had their **own** `env_lock()` mutex while mutating
+  the same process-global `OMATERM_SOCKET`/`OMATERM_TOKEN`, so they clobbered
+  each other under parallelism (one test lost its token, the other poisoned a
+  lock). Fixed with one crate-level `env_lock()` in `main.rs` shared by both
+  modules. Pre-existing, unrelated to M20.
+- **Deferred / known gaps.** E6 explicit `repo` override on git wire methods
+  is locked OUT for v1 (default-active routing covers the UX goal). The
+  32-row cap leaves repos 33+ polled but not clickable (follow-up).
+  Simultaneous N-way expanded bodies and per-repo Files roots remain
+  rendering follow-ups.
+- **Verification.** `cargo fmt --all --check`, `cargo test --workspace`
+  (21 suites green, incl. the two-repo `git_and_diff_follow_the_active_repository`
+  router test and the per-repo Graph isolation panel test),
+  `cargo clippy --workspace --all-targets` (only the pre-existing transitive
+  `proc-macro-error2` future-incompat notice), `python3 scripts/check-docs.py`
+  and `git diff --check` PASS. **Native Wayland validation on a real 2-repo
+  dirty fixture is still manual and not claimed passing.**
+
+### Multi-repo VS Code-style Git tab (Phase D) — 2026-10-09 (uncommitted)
+
+Milestone [20 — Multi-Repo Support](20-milestone-20-multi-repo.md) Phase D.
+The Git tab now renders a repository picker plus one section header per
+depth-1 repository, and the active repository's full M14 body renders
+below that chrome. Single-repo projects are untouched by construction.
+
+- Panel state moved from `ProjectId` to `git_panel::RepoKey` (project +
+  repo name; `None` = the project root itself), so every repository keeps
+  its own status, selection, collapse state, stash list, drop arm and
+  commit draft. `knows_project`-style cross-repo lookups disappeared;
+  the poller asks `repo_keys_for` instead.
+- New GPUI-free module `git_repos` owns the scan cache and the pure
+  decisions: active-repo identity (`None` for a root repo), the 32
+  section cap with overflow count, the staleness window, and the
+  round-robin poll cursor. One shared `repo_key_of` builds identities.
+- `git_tick` now refreshes **one repository per tick** (round-robin) and
+  spawns the depth-1 scan off-thread through its own channel, so a
+  monorepo costs N ticks of one bounded git call each. `any_repo_due`
+  keeps the poller from idling while a not-yet-due repo holds the
+  cursor. `spawn_status_thread` now takes a `StatusRequest` with the M20
+  repo-root override, and the worker refuses to poll anything that is
+  not a directory.
+- Scan is busted (and rescanned) on the Git tab opening, project
+  switch, base-directory change (`ProjectDirectoryChanged`), the manual
+  refresh button and `select_repo`; Esc closes the picker through
+  `close_transient_menus`; the status bar shows the repository name
+  before the branch when the project holds more than one.
+- Selection goes through `ProjectCommand::SetActiveRepo`, so the wire,
+  CLI and panel share one validation path; `select_repo` refreshes the
+  newly active repository and keeps the picker state consistent.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace`
+  (302 desktop tests incl. 49 Git + 8 new M20 modules, zero failures;
+  one parallel-suite `osc_dynamic_color_queries` flake passed in
+  isolation, both in-parallel and `--test-threads=1`),
+  `cargo clippy --workspace --all-targets -- -D warnings` (known
+  transitive `proc-macro-error2` notice only), `cargo build --release
+  --bin omaterm-desktop --bin omaterm`, `python3 scripts/check-docs.py`
+  and `git diff --check` PASS. Native Wayland validation on a real
+  2-repo fixture (picker, section headers, status/commit/stash/history
+  following the switch) is still manual and not claimed passing.
+- Known gap carried forward: only the active repository renders its
+  full body; simultaneous N-way expansion is a rendering follow-up
+  because per-repo state already exists.
+
+### Multi-repo chrome simplified + Phase E planned — 2026-10-09 (uncommitted)
+
+User-directed rework of the Phase D chrome plus the recorded follow-up
+plan. Feedback with VS Code captures: the per-row `>`/`v` chevrons read
+as per-repo expand/collapse and made the active repository ambiguous.
+
+- The chrome is now one collapsible group header (`Repositories · N
+  repos`, the only chevron) plus plain rows (name, muted branch, dirty
+  dot or muted `clean`), the active row highlighted and its full M14
+  body below. Cut: picker row, dropdown branch, per-row chevrons, `+s
+  ~u ?t` counter text, the `CHECK` row icon. `repo_picker_open`
+  became the per-project `repo_list_collapsed` set (Esc collapses
+  through `close_transient_menus`).
+- The row matrix moved into a pure `repo_chrome(scan) -> ChromePlan`
+  helper in `git_repos` (0/1 repos hidden, capped rows, active mark,
+  overflow count) so render-time decisions are unit-tested; the render
+  and `visible_repo_keys` share it, so what is pinned by tests is what
+  renders. Poller keys stay uncapped by design: hidden repos still
+  refresh so a later switch never shows a stale body.
+- Added (not yet executed) Phase E to
+  `docs/20-milestone-20-multi-repo.md`: every Git surface follows the
+  active repository. Audit: graph/history, commit files, both diff
+  paths, branch list + all branch mutations, stage/unstage/discard/
+  commit/stage-hunk, all stash ops + drafts, sync, and blame still
+  resolve the **project** root via `Router::file_root`. Plan:
+  router-owned discovery (one cache for panel, CLI and agents),
+  `Router::git_root` as the git chokepoint, workers taking explicit repo
+  roots, all per-`ProjectId` git state re-keyed to `RepoKey`, plus an
+  optional explicit `repo` override on git wire methods. Chrome impact
+  of the locked spec: background workers only ever run for the active
+  repository.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace`
+  (all suites green incl. the new chrome-plan test), `cargo clippy
+  --workspace --all-targets -- -D warnings` (known transitive
+  `proc-macro-error2` notice only), `cargo build --release --bin
+  omaterm-desktop --bin omaterm`, `python3 scripts/check-docs.py`,
+  `git diff --check` PASS. Native Wayland validation is still manual.
+
+Milestone [20 — Multi-Repo Support](20-milestone-20-multi-repo.md). A project
+root containing several repositories now resolves to a depth-1 repo list
+(project root itself when it is a repo, else its direct children holding
+`.git` as dir or worktree gitfile) instead of a single root. Phase D (VS
+Code-style Git tab picker + per-repo collapsible sections) is still open.
+
+- Discovery lives in `omaterm-context`: new `scan_repos`/`scan_repos_with`
+  (bounded readdir+stat, no git subprocess, hidden opt-in, sorted, capped
+  at 256 entries) plus `resolve_repos`, which composes the untouched
+  `resolve_root` with the scan and the agreed selection rule
+  (last-saved when still present, else first-sorted). Existing
+  `resolve_root` callers are unaffected.
+- Domain (`omaterm-core`): `Project.active_repo` is a plain child
+  directory name (resolved against the live root, so project directory
+  moves don't break it); `set_active_repo` requires live-scan membership,
+  `resolve_active_repo` applies the saved-else-first-sorted rule, and
+  `validate`/`CoreError::UnknownRepo` reject traversal or empty names.
+  New DTOs `RepoEntry` and `ProjectReposInfo` back the wire output.
+- Persistence (`omaterm-state`): snapshot schema v3 → v4 with
+  `active_repo` captured and validated (no separators, no traversal);
+  migration keeps v3 document registries valid while requiring the field
+  to default to `None` for every old schema, and rejects smuggled values
+  in old-version files.
+- Surface: `ProjectCommand::ListRepos`/`SetActiveRepo` with
+  `project.repos` and `project.set-active-repo` wire methods plus
+  `omaterm project repos` / `omaterm project set-repo` CLI parity,
+  human output included. `SetActiveRepo` validates membership against the
+  live scan (`invalid_request` for unknown/traversal names), echoes the
+  resulting `ProjectReposInfo` so callers confirm without a follow-up
+  query, and emits the existing `ProjectDirectoryChanged` effect chain.
+  Selection stays project-scoped: a foreign scope is `cross_project_denied`.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace`
+  (21 suites green incl. 6 new scan tests, 4 core selection tests, 2
+  router route tests, v3→v4 migration and active-repo round-trip, 2 CLI
+  mapping tests, protocol decode 58→60 cases), `cargo clippy --workspace
+  --all-targets -- -D warnings` (known transitive `proc-macro-error2`
+  notice only), `cargo build --release --bin omaterm-desktop --bin
+  omaterm`, `python3 scripts/check-docs.py` (60/60 method coverage) and
+  `git diff --check` PASS. Native Wayland validation and the Phase D UI
+  are not applicable yet — no user-visible Git panel change exists in this
+  slice.
+
 ### Stash group hides when empty, push-only when dirty — 2026-10-09 (uncommitted)
 
 - `STASH 0` pill plus `No stashes.` / `Loading stashes…` noise is gone:

@@ -220,6 +220,13 @@ pub fn map_request(
             Method::ProjectRoot(p) => OmaCommand::Project(ProjectCommand::Root {
                 project: resolve_project(p.project_id)?,
             }),
+            Method::ProjectRepos(p) => OmaCommand::Project(ProjectCommand::ListRepos {
+                project: resolve_project(p.project_id)?,
+            }),
+            Method::ProjectSetActiveRepo(p) => OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project: project(&p.project_id)?,
+                repo: text(&p.repo)?.to_owned(),
+            }),
             Method::TabList(p) => OmaCommand::Tab(TabCommand::List {
                 project: resolve_project(p.project_id)?,
             }),
@@ -617,6 +624,15 @@ fn output_json(output: CommandOutput) -> Value {
         }
         CommandOutput::ProjectRoot(info) => {
             json!({"root":info.root,"source":info.source.as_str()})
+        }
+        CommandOutput::ProjectRepos(info) => {
+            json!({
+                "root":info.root,
+                "source":info.source.as_str(),
+                "repos":info.repos.into_iter().map(|entry| json!({"name":entry.name,"path":entry.path})).collect::<Vec<_>>(),
+                "active_repo":info.active_repo,
+                "truncated":false,
+            })
         }
         CommandOutput::FileList(list) => {
             let truncated = list.truncated || list.entries.len() > LIST_LIMIT;

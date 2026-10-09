@@ -69,6 +69,8 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `project select ID` | `project.select` | Project Select | Selection updated within scope |
 | `project set-directory ID PATH` | `project.set-directory` | Project SetDirectory | Base directory updated; future tabs use it |
 | `project root` | `project.root` | Project Root | Resolved root + source (`pinned`/`git`/`none`); empty state for non-repos |
+| `project repos` | `project.repos` | Project ListRepos | Depth-1 repo scan + active repo (M20); empty state for non-repos |
+| `project set-repo NAME` | `project.set-active-repo` | Project SetActiveRepo | Active repo echoed; unknown/traversal names rejected `invalid_request` |
 | `tab list` | `tab.list` | Tab List | Tabs in resolved project |
 | `tab new` | `tab.create` | Tab Create | Tab, pane, session IDs |
 | `tab close ID` | `tab.close` | Tab Close | Correct cleanup and focus fallback |

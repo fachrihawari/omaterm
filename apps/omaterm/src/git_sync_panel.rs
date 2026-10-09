@@ -1,4 +1,4 @@
-//! Project-scoped ownership and completion of background Git remote actions.
+//! Repo-scoped ownership and completion of background Git remote actions.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -6,6 +6,8 @@ use std::time::Instant;
 
 use omaterm_context::GitSyncReport;
 use omaterm_core::{GitCommand, ProjectId};
+
+use crate::git_panel::RepoKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
@@ -53,7 +55,7 @@ impl Operation {
 }
 
 pub struct PendingSync {
-    pub project: ProjectId,
+    pub repo: RepoKey,
     pub operation: Operation,
     pub started: Instant,
     receiver: Receiver<Result<GitSyncReport, String>>,
@@ -61,15 +63,19 @@ pub struct PendingSync {
 }
 
 pub struct Completion {
-    pub project: ProjectId,
+    pub repo: RepoKey,
     pub operation: Operation,
     pub result: Result<GitSyncReport, String>,
 }
 
 impl PendingSync {
+    /// Start one remote action against the **active repository** root the
+    /// caller resolved (M20). `repo_root` is used directly when it is a
+    /// directory; otherwise the legacy project-root resolution is used.
     pub fn start(
-        project: ProjectId,
+        repo: RepoKey,
         operation: Operation,
+        repo_root: Option<PathBuf>,
         pinned: Option<PathBuf>,
         active_cwd: Option<PathBuf>,
     ) -> Result<Self, std::io::Error> {
@@ -78,18 +84,23 @@ impl PendingSync {
         let worker = std::thread::Builder::new()
             .name("git-sync".into())
             .spawn(move || {
-                let resolved =
-                    omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref());
-                let result = match resolved.root {
-                    None => Err("no project root".to_owned()),
-                    Some(root) => worker_operation
-                        .run(&root)
-                        .map_err(|error| error.to_string()),
+                let resolved = match repo_root {
+                    Some(root) if root.is_dir() => root,
+                    _ => omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref())
+                        .root
+                        .unwrap_or_default(),
+                };
+                let result = if resolved.as_os_str().is_empty() {
+                    Err("no project root".to_owned())
+                } else {
+                    worker_operation
+                        .run(&resolved)
+                        .map_err(|error| error.to_string())
                 };
                 let _ = sender.send(result);
             })?;
         Ok(Self {
-            project,
+            repo,
             operation,
             started: Instant::now(),
             receiver,
@@ -126,7 +137,7 @@ impl PendingSync {
                 Err("Git worker stopped before reporting a result. Retry the operation.".into());
         }
         Some(Completion {
-            project: task.project,
+            repo: task.repo,
             operation: task.operation,
             result,
         })
@@ -140,8 +151,9 @@ mod tests {
     #[test]
     fn started_worker_remains_owned_for_shutdown() {
         let pending = PendingSync::start(
-            ProjectId::new(),
+            RepoKey::root(ProjectId::new()),
             Operation::Fetch { remote: None },
+            None,
             None,
             None,
         )
@@ -166,7 +178,7 @@ mod tests {
             exited.send(()).unwrap();
         });
         let pending = PendingSync {
-            project: ProjectId::new(),
+            repo: RepoKey::root(ProjectId::new()),
             operation: Operation::Fetch { remote: None },
             started: Instant::now(),
             receiver,
@@ -208,7 +220,7 @@ mod tests {
             released.recv().unwrap();
         });
         let mut pending = Some(PendingSync {
-            project: ProjectId::new(),
+            repo: RepoKey::root(ProjectId::new()),
             operation: Operation::Fetch { remote: None },
             started: Instant::now(),
             receiver,
@@ -244,7 +256,7 @@ mod tests {
             std::thread::yield_now();
         }
         let mut pending = Some(PendingSync {
-            project: ProjectId::new(),
+            repo: RepoKey::root(ProjectId::new()),
             operation: Operation::Fetch { remote: None },
             started: Instant::now(),
             receiver,
@@ -260,7 +272,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let project = ProjectId::new();
         let mut pending = Some(PendingSync {
-            project,
+            repo: RepoKey::root(project),
             operation: Operation::Push {
                 set_upstream: false,
             },
@@ -271,7 +283,7 @@ mod tests {
         drop(sender);
         let completion =
             PendingSync::take_completion(&mut pending).expect("worker disconnect must finish Push");
-        assert_eq!(completion.project, project);
+        assert_eq!(completion.repo, RepoKey::root(project));
         assert!(completion.result.unwrap_err().contains("worker stopped"));
         assert!(pending.is_none(), "Git buttons must be usable again");
     }
@@ -282,7 +294,7 @@ mod tests {
         let origin = ProjectId::new();
         let selected_after_switch = ProjectId::new();
         let mut pending = Some(PendingSync {
-            project: origin,
+            repo: RepoKey::root(origin),
             operation: Operation::Pull { remote: None },
             started: Instant::now(),
             receiver,
@@ -297,8 +309,8 @@ mod tests {
             }))
             .unwrap();
         let completion = PendingSync::take_completion(&mut pending).unwrap();
-        assert_eq!(completion.project, origin);
-        assert_ne!(completion.project, selected_after_switch);
+        assert_eq!(completion.repo, RepoKey::root(origin));
+        assert_ne!(completion.repo, RepoKey::root(selected_after_switch));
         assert_eq!(completion.result.unwrap().detail, "already up to date");
         assert!(pending.is_none());
         assert!(PendingSync::take_completion(&mut pending).is_none());
@@ -308,7 +320,7 @@ mod tests {
     fn worker_failure_clears_pending_and_allows_retry() {
         let (sender, receiver) = mpsc::channel();
         let mut pending = Some(PendingSync {
-            project: ProjectId::new(),
+            repo: RepoKey::root(ProjectId::new()),
             operation: Operation::Push {
                 set_upstream: false,
             },
@@ -384,10 +396,11 @@ mod worker_tests {
         let project = ProjectId::new();
         let mut pending = Some(
             PendingSync::start(
-                project,
+                RepoKey::root(project),
                 Operation::Push {
                     set_upstream: false,
                 },
+                None,
                 Some(repo.0.clone()),
                 None,
             )
@@ -401,9 +414,18 @@ mod worker_tests {
             set_upstream: true,
         })
         .unwrap();
-        pending = Some(PendingSync::start(target, operation, Some(repo.0.clone()), None).unwrap());
+        pending = Some(
+            PendingSync::start(
+                RepoKey::root(target),
+                operation,
+                None,
+                Some(repo.0.clone()),
+                None,
+            )
+            .unwrap(),
+        );
         let completion = wait(&mut pending);
-        assert_eq!(completion.project, project);
+        assert_eq!(completion.repo, RepoKey::root(project));
         assert_eq!(
             completion.result.unwrap().detail,
             "published main to origin"
@@ -430,8 +452,16 @@ mod worker_tests {
             remote: Some("missing-ui-remote".into()),
         })
         .unwrap();
-        let mut pending =
-            Some(PendingSync::start(target, operation, Some(repo.0.clone()), None).unwrap());
+        let mut pending = Some(
+            PendingSync::start(
+                RepoKey::root(target),
+                operation,
+                None,
+                Some(repo.0.clone()),
+                None,
+            )
+            .unwrap(),
+        );
         let completion = wait(&mut pending);
         assert!(completion.result.unwrap_err().contains("missing-ui-remote"));
         assert!(pending.is_none());

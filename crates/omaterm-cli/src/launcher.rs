@@ -280,11 +280,10 @@ mod tests {
     use omaterm_ipc::IpcServer;
     use omaterm_protocol::IpcResponse;
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex};
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::env_lock()
     }
 
     #[test]

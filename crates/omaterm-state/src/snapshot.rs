@@ -76,6 +76,12 @@ pub struct ProjectSnapshot {
     /// absent in schema v1 (defaults to empty on migration).
     #[serde(default)]
     pub expanded_dirs: Vec<PathBuf>,
+    /// Selected child repository for multi-repo projects (M20): a single
+    /// directory name resolved against the live project root, so project
+    /// directory moves don't break it. `None` means first-sorted default.
+    /// Absent in schema v1–v3 (defaults to `None` on migration).
+    #[serde(default)]
+    pub active_repo: Option<String>,
     /// Open editor documents. This deliberately stores metadata only: no text,
     /// cursor, history, clipboard, or runtime handles.
     #[serde(default)]
@@ -123,12 +129,14 @@ pub struct TabSnapshot {
 }
 
 impl WorkspaceSnapshot {
-    pub const SCHEMA_VERSION: u32 = 3;
+    pub const SCHEMA_VERSION: u32 = 4;
     /// Previous schema version (M13 migration source). v1 snapshots carry
     /// no `expanded_dirs` and decode with an empty expansion set.
     pub const V1_SCHEMA_VERSION: u32 = 1;
     /// Previous schema version. v2 snapshots carry no document registry.
     pub const V2_SCHEMA_VERSION: u32 = 2;
+    /// Previous schema version. v3 snapshots carry no multi-repo selection.
+    pub const V3_SCHEMA_VERSION: u32 = 3;
 
     pub fn capture(window: &WorkspaceWindow, pane_cwds: &HashMap<PaneId, PersistedCwd>) -> Self {
         Self::capture_with_expanded(window, pane_cwds, &HashMap::new())
@@ -195,6 +203,7 @@ impl WorkspaceSnapshot {
                     id: project.id.0.to_string(),
                     custom_name: project.custom_name.clone(),
                     pinned_directory: project.pinned_directory.clone(),
+                    active_repo: project.active_repo.clone(),
                     selected_tab: project.selected_tab.map(|id| id.0.to_string()),
                     expanded_dirs: expanded
                         .get(&project.id)
@@ -268,6 +277,18 @@ impl WorkspaceSnapshot {
                 })?;
             check_name(project.custom_name.as_deref(), limits)?;
             check_path(project.pinned_directory.as_deref(), limits)?;
+            if let Some(repo) = project.active_repo.as_deref()
+                && (repo.is_empty()
+                    || repo == "."
+                    || repo == ".."
+                    || repo.contains('/')
+                    || repo.contains('\\')
+                    || repo.len() > limits.max_name_bytes)
+            {
+                return Err(SnapshotError::Invalid(
+                    "active repo must be a single directory name".into(),
+                ));
+            }
             let project_id = ProjectId(parse_uuid(&project.id, &mut ids)?);
             let documents = validate_document_registry(project, limits, &mut ids)?;
             if project.expanded_dirs.len() > limits.max_expanded_dirs {
@@ -336,6 +357,7 @@ impl WorkspaceSnapshot {
                 id: project_id,
                 custom_name: project.custom_name.clone(),
                 pinned_directory: project.pinned_directory.clone(),
+                active_repo: project.active_repo.clone(),
                 tabs: tabs.iter().map(|(tab, _, _)| tab.clone()).collect(),
                 selected_tab,
             };
@@ -1209,6 +1231,41 @@ mod tests {
             extra_tab_id,
             window.project(first_project_id).unwrap().tabs[1].id
         );
+    }
+
+    #[test]
+    fn active_repo_round_trips_and_rejects_traversal_names() {
+        let (window, cwd) = sample();
+        let project_id = window.projects[0].id;
+        let mut window = window;
+        window.project_mut(project_id).unwrap().active_repo = Some("api".into());
+        let snapshot = WorkspaceSnapshot::capture(&window, &cwd);
+        assert_eq!(
+            snapshot.windows[0].projects[0].active_repo.as_deref(),
+            Some("api")
+        );
+        let restored = snapshot.validate(SnapshotLimits::default()).unwrap();
+        assert_eq!(
+            restored
+                .window
+                .project(project_id)
+                .unwrap()
+                .active_repo
+                .as_deref(),
+            Some("api")
+        );
+
+        for bad in ["", ".", "..", "api/web", "api\\web"] {
+            let mut tainted = snapshot.clone();
+            tainted.windows[0].projects[0].active_repo = Some(bad.into());
+            assert!(
+                matches!(
+                    tainted.validate(SnapshotLimits::default()),
+                    Err(SnapshotError::Invalid(_))
+                ),
+                "active repo {bad:?} must be rejected"
+            );
+        }
     }
 
     #[test]
