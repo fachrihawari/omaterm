@@ -2,6 +2,31 @@
 
 ## Current position
 
+### Stash group hides when empty, push-only when dirty — 2026-10-09 (uncommitted)
+
+- `STASH 0` pill plus `No stashes.` / `Loading stashes…` noise is gone:
+  new pure predicate `stash_group_mode(dirty, loaded_count)`
+  (`apps/omaterm/src/git_panel.rs`) drives three modes — `Hidden`
+  (empty + clean, takes no space), `PushOnly` (empty + dirty: header
+  without pill + push input, so the first stash stays reachable), `Full`
+  (entries exist: header + count + input + rows, as before).
+- Hidden mode still fires the on-demand fetch silently (entries appear
+  once loaded) and clears `stash_focused` so a hidden field never keeps
+  keyboard ownership. Empty-list early return removes the `No stashes.`
+  branch; unloaded state no longer renders a loading line.
+- `Stash` button mirrors the `Commit` disabled-look: `panel2`/muted until
+  a message is typed, `blue2`/`on_accent` after (`can_stash` from the
+  draft; submit still explains empty via notice).
+- Input/cursor behavior unchanged (grapheme-aware `GitInput`,
+  `Enter` submit, `Esc`/`Tab` release, mutual focus with commit).
+  Icon-only pop/apply/drop and the `-u` toggle are untouched (no tooltip
+  infra exists) — recorded follow-up.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS, `cargo clippy --workspace --all-targets -- -D warnings` PASS
+  (known transitive `proc-macro-error2` future-incompat notice only),
+  `git diff --check` PASS. Native Wayland check (dirty→push-only,
+  clean→hidden, loaded→full) remains manual.
+
 ### Restored-scrollback leading-blank fix (`cd gat` -> `   gat`) — 2026-10-09 (uncommitted)
 
 User report with screenshot: after restart, restored command lines show

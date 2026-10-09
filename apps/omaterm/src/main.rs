@@ -14042,10 +14042,12 @@ impl WorkspaceView {
                 );
             }
         }
-        // Stash group: on-demand list with pop/apply/drop per row and a
-        // push input. Fetches once per view (and after mutations), never
-        // on the status poller — stashes change only through us.
-        bar = self.render_stash_group(project, bar, cx);
+        // Stash group: hidden when the list is empty (no `0` pill, no
+        // `No stashes.` noise); push-only on a dirty tree so the first
+        // stash stays reachable; full once entries exist. Fetches once
+        // per view (and after mutations), never on the status poller —
+        // stashes change only through us.
+        bar = self.render_stash_group(project, dirty, bar, cx);
         // The history Graph lives inside the Git tab, below both change
         // groups (and below the clean line when there is nothing to show
         // above). It stays visible however the Changes groups collapse.
@@ -14055,24 +14057,49 @@ impl WorkspaceView {
         bar
     }
 
-    /// Stash group inside the Git tab: collapsible header with a push
-    /// input (message + optional untracked toggle + Stash button), plus
-    /// one row per entry with Pop/Apply/Drop. Read through the shared
-    /// `GitCommand::Stash*` dispatcher (same path as IPC/CLI); failures
-    /// surface as input notices with stable codes.
+    /// Stash group inside the Git tab: hidden when the list is empty,
+    /// push-only (message + untracked toggle + Stash button, no count
+    /// pill) on a dirty tree with no entries yet, and full (header with
+    /// count + push input + one row per entry with Pop/Apply/Drop) once
+    /// entries exist. Read through the shared `GitCommand::Stash*`
+    /// dispatcher (same path as IPC/CLI); failures surface as input
+    /// notices with stable codes.
     fn render_stash_group(
         &mut self,
         project: ProjectId,
+        dirty: bool,
         mut bar: Div,
         cx: &mut Context<Self>,
     ) -> Div {
-        let collapsed = self.git_panel.is_stash_collapsed(project);
-        let count = self
+        let loaded_count = self
             .git_panel
             .stashes_for(project)
-            .map(|list| list.stashes.len())
-            .unwrap_or(0);
-        let header = div()
+            .map(|list| list.stashes.len());
+        match git_panel::stash_group_mode(dirty, loaded_count) {
+            git_panel::StashGroupMode::Hidden => {
+                // Trigger the on-demand fetch silently so entries can
+                // appear once loaded; take no space meanwhile. A hidden
+                // field must never keep keyboard ownership.
+                if loaded_count.is_none() {
+                    self.stash_fetch(project, cx);
+                }
+                if self.stash_focused == Some(project) {
+                    self.stash_focused = None;
+                    self.restore_input_owner();
+                }
+                return bar;
+            }
+            git_panel::StashGroupMode::PushOnly => {
+                if loaded_count.is_none() {
+                    self.stash_fetch(project, cx);
+                }
+            }
+            git_panel::StashGroupMode::Full => {}
+        }
+        let collapsed = self.git_panel.is_stash_collapsed(project);
+        let count = loaded_count.unwrap_or(0);
+        let has_entries = count > 0;
+        let mut header = div()
             .h(px(32.0))
             .flex()
             .flex_row()
@@ -14108,7 +14135,11 @@ impl WorkspaceView {
                     )),
             )
             .child("STASH")
-            .child(
+            .child(div().flex_1());
+        // Count pill only when entries exist: a `0` pill is noise on the
+        // push-only (first-stash) layout.
+        if has_entries {
+            header = header.child(
                 div()
                     .ml(px(8.0))
                     .px(px(6.0))
@@ -14118,8 +14149,8 @@ impl WorkspaceView {
                     .bg(rgb(crate::ui::theme::colors().pill_bg))
                     .role(crate::ui::metrics::META_9)
                     .child(format!("{count}")),
-            )
-            .child(div().flex_1());
+            );
+        }
         // Push input: message draft (view-local, like the commit draft) +
         // untracked toggle + Stash button. Commits through the dispatcher.
         if !collapsed {
@@ -14131,6 +14162,12 @@ impl WorkspaceView {
                 caret_visible: true,
             });
             let untracked = self.stash_untracked.contains(&project);
+            // Disabled-look until a message is typed (submit still
+            // explains via notice, like before).
+            let can_stash = self
+                .stash_drafts
+                .get(&project)
+                .is_some_and(|draft| !draft.text().trim().is_empty());
             bar = bar.child(header);
             bar = bar.child(
                 div().px_2().py_1().flex().flex_col().gap_1().child(
@@ -14209,12 +14246,22 @@ impl WorkspaceView {
                                 .border_1()
                                 .border_color(rgb(crate::ui::theme::colors().border2))
                                 .role(crate::ui::metrics::BODY_11)
-                                .text_color(rgb(crate::ui::theme::colors().text2))
+                                .bg(rgb(if can_stash {
+                                    crate::ui::theme::colors().blue2
+                                } else {
+                                    crate::ui::theme::colors().panel2
+                                }))
+                                .text_color(rgb(if can_stash {
+                                    crate::ui::theme::colors().on_accent
+                                } else {
+                                    crate::ui::theme::colors().muted
+                                }))
                                 .hover(|s| {
-                                    s.bg(gpui::rgb(crate::ui::theme::colors().cmd_hover_bg))
-                                        .border_color(gpui::rgb(
-                                            crate::ui::theme::colors().cmd_hover_border,
-                                        ))
+                                    if can_stash {
+                                        s.bg(gpui::rgb(crate::ui::theme::colors().commit_hover_bg))
+                                    } else {
+                                        s
+                                    }
                                 })
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -14231,27 +14278,13 @@ impl WorkspaceView {
                         ),
                 ),
             );
-            // Loaded rows, or a fetch-on-first-view trigger.
+            // Entry rows (the fetch already fired above; push-only has no
+            // rows and no `No stashes.` noise by construction).
             match self.git_panel.stashes_for(project).cloned() {
-                None => {
-                    self.stash_fetch(project, cx);
-                    bar = bar.child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .child("Loading stashes…"),
-                    );
-                }
+                None => {}
                 Some(list) => {
                     if list.stashes.is_empty() {
-                        bar = bar.child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .text_color(rgb(crate::ui::theme::colors().muted))
-                                .child("No stashes."),
-                        );
+                        return bar;
                     }
                     let selected = self.git_panel.stash_selection(project);
                     for (position, stash) in list.stashes.iter().enumerate() {

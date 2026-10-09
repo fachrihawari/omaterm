@@ -51,6 +51,32 @@ pub enum GitGroup {
     Untracked,
 }
 
+/// Visibility of the stash group in the Git tab.
+///
+/// - `Hidden`: no stash entries and (when unloaded) nothing to assume —
+///   the group takes no space. A background fetch may still be in flight
+///   so entries can appear once loaded.
+/// - `PushOnly`: dirty tree with no entries yet — push input only, no
+///   count pill and no `No stashes.` noise, so the first stash stays
+///   reachable.
+/// - `Full`: entries exist — header + push input + rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StashGroupMode {
+    Hidden,
+    PushOnly,
+    Full,
+}
+
+/// Pure visibility predicate for the stash group. `loaded_count` is
+/// `None` while the on-demand list has not landed yet.
+pub const fn stash_group_mode(dirty: bool, loaded_count: Option<usize>) -> StashGroupMode {
+    match loaded_count {
+        Some(count) if count > 0 => StashGroupMode::Full,
+        _ if dirty => StashGroupMode::PushOnly,
+        _ => StashGroupMode::Hidden,
+    }
+}
+
 /// One render row: group + entry path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitRow {
@@ -596,6 +622,20 @@ mod tests {
         assert_eq!(panel.selected_path(project), Some(&PathBuf::from("n0")));
         panel.move_selection(project, -10);
         assert_eq!(panel.selected_path(project), Some(&PathBuf::from("s0")));
+    }
+
+    #[test]
+    fn stash_group_mode_hides_empty_shows_push_when_dirty() {
+        use StashGroupMode::{Full, Hidden, PushOnly};
+        // Empty list: hidden when clean, push-only when dirty.
+        assert_eq!(stash_group_mode(false, Some(0)), Hidden);
+        assert_eq!(stash_group_mode(true, Some(0)), PushOnly);
+        // Unloaded list: same as empty (fetch happens silently).
+        assert_eq!(stash_group_mode(false, None), Hidden);
+        assert_eq!(stash_group_mode(true, None), PushOnly);
+        // Any entries: full regardless of dirtiness.
+        assert_eq!(stash_group_mode(false, Some(1)), Full);
+        assert_eq!(stash_group_mode(true, Some(3)), Full);
     }
 
     #[test]
