@@ -4,6 +4,64 @@ All notable changes to OmaTerm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (`0.x` pre-1.0: minor bumps carry features).
 
+## [0.4.0] — 2026-10-09
+
+A multi-repo release: a project root holding several repositories now gets
+VS Code-style Source Control treatment, and every Git surface — status,
+history, branches, stash, sync, blame and diffs — follows the active
+repository instead of always reading the project root. Plus terminal input
+and history-restore polish.
+
+Full diff: https://github.com/fachrihawari/omaterm/compare/v0.3.0...v0.4.0
+
+### Multi-repo projects (M20)
+
+- **Depth-1 discovery.** A project root that is not itself a repo resolves
+  to its direct child repositories (root `.git` dir or worktree gitfile);
+  the root itself wins the fast path when it is a repo. Bounded
+  readdir+stat scan, no git subprocess, off the UI thread.
+- **VS Code-style Git tab.** A single collapsible `Repositories` group
+  header over one plain row per repository (name, muted branch, dirty dot
+  or `clean`); the active row is highlighted and its full Source Control
+  body renders below. Selecting another repository is a semantic command,
+  so the panel, IPC and CLI share one validation path.
+- **One active repository for all Git work.** The router owns the depth-1
+  scan cache and a `git_root` chokepoint, so `git.*` methods, `omaterm git`
+  and the desktop workers all target the active repository. The Files panel
+  keeps the project root.
+- **Per-repository state.** Status, history/Graph, branch lists, stash
+  drafts/list, blame and both diff paths are keyed by repository, so
+  switching repositories never shows another repository's stale rows and
+  switching back restores each surface. The depth-1 scan refreshes one
+  repository per poller tick.
+- **Active repo persists** across restart (snapshot v4) with stale-name
+  fallback to the first-sorted repository; the `Repositories` list keeps
+  its collapse state for the session.
+- New commands: `omaterm project repos [--json]` and
+  `omaterm project set-repo <name>`, wired as `project.repos` and
+  `project.set-active-repo`.
+
+### Terminal & UX
+
+- **Shift+Enter** — modified Enter now encodes Kitty CSI-u so terminals and
+  TUIs distinguish newline from submit; plain Enter stays a bare CR.
+- **Mouse forwarding** — left press/release forward SGR mouse reports to
+  mouse-aware TUIs when DECSET mouse + SGR are enabled; Shift+click still
+  selects.
+- **History restore fidelity** — compaction no longer collapses differential
+  readline redraws, and the equivalence check requires scrollback multiset
+  coverage so restored lines cannot come back mangled.
+- **Inspector Info** drops the duplicated project card and third branch
+  switcher (the Git tab and status bar remain).
+- **Stash group** hides when empty and shows push-only input on a dirty tree
+  with no entries.
+
+### Fixed
+
+- The CLI test harness shares one process-wide environment lock across the
+  connection and launcher tests, removing a rare parallel-run flake where
+  `OMATERM_SOCKET`/`OMATERM_TOKEN` clobbered each other.
+
 ## [0.3.0] — 2026-10-09
 
 A theme-and-platform release: a full light palette with live system
