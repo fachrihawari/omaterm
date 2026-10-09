@@ -18,6 +18,6 @@ pkgbase = omaterm-bin
 	provides = omaterm
 	conflicts = omaterm
 	source = omaterm-0.3.0-x86_64.tar.gz::https://github.com/fachrihawari/omaterm/releases/download/v0.3.0/omaterm-0.3.0-x86_64.tar.gz
-	sha256sums = SKIP
+	sha256sums = c93b4aceb2d75c651d515766c684ecfa023ec4a81e606f93103476b1c2586182
 
 pkgname = omaterm-bin

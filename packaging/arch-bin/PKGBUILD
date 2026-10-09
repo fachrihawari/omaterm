@@ -36,7 +36,7 @@ conflicts=('omaterm')
 source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
 # SKIP until the first v<pkgver> GitHub Release exists; the release workflow
 # pins this.
-sha256sums=('SKIP')
+sha256sums=('c93b4aceb2d75c651d515766c684ecfa023ec4a81e606f93103476b1c2586182')
 
 package() {
   install -Dm755 "$srcdir/omaterm" "$pkgdir/usr/bin/omaterm"
