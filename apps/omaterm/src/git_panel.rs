@@ -71,8 +71,9 @@ pub struct GitPanel {
     /// Collapsed change groups per project (`true` = staged group,
     /// `false` = working-tree group). View-local, never persisted.
     collapsed: HashSet<(ProjectId, bool)>,
-    /// Collapsed stash groups per project. View-local, never persisted.
-    stash_collapsed: HashSet<ProjectId>,
+    /// Projects whose stash group is open. Collapsed by default; view-local,
+    /// never persisted.
+    stash_expanded: HashSet<ProjectId>,
     /// Last-good stash lists per project (fetched on demand, not polled).
     stashes: HashMap<ProjectId, omaterm_core::GitStashList>,
     /// Selected stash index per project (row highlight + actions).
@@ -134,7 +135,7 @@ impl GitPanel {
         self.selected.remove(&project);
         self.commit_drafts.remove(&project);
         self.collapsed.retain(|(owner, _)| *owner != project);
-        self.stash_collapsed.remove(&project);
+        self.stash_expanded.remove(&project);
         self.stashes.remove(&project);
         self.stash_selected.remove(&project);
         self.stash_drop_arm.remove(&project);
@@ -192,16 +193,16 @@ impl GitPanel {
 
     /// Whether the stash group is collapsed for a project.
     pub fn is_stash_collapsed(&self, project: ProjectId) -> bool {
-        self.stash_collapsed.contains(&project)
+        !self.stash_expanded.contains(&project)
     }
 
-    /// Toggle the stash group collapse.
+    /// Toggle the stash group collapse. Returns the new collapsed state.
     pub fn toggle_stash_collapsed(&mut self, project: ProjectId) -> bool {
-        if self.stash_collapsed.remove(&project) {
-            false
-        } else {
-            self.stash_collapsed.insert(project);
+        if self.stash_expanded.remove(&project) {
             true
+        } else {
+            self.stash_expanded.insert(project);
+            false
         }
     }
 

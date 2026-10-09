@@ -3,7 +3,6 @@
 //! - `cmd_box`: the `.cmd` control — 1px transparent border, 7px radius,
 //!   hover `#182029` bg / `#27313d` border / white foreground over 120ms
 //!   (GPUI has no transition API; the end state applies instantly).
-//! - `pill`: bordered count/status chip on `#151a21`.
 //! - `kbd`: keyboard-hint badge with inset bottom highlight.
 //!
 //! Padding variants follow the measured cascade: controls carrying the
@@ -14,15 +13,6 @@ use gpui::{Div, div, prelude::Styled as _, px, rgb};
 
 use super::assets;
 use super::theme;
-
-/// Pill chip: `#151a21` fill, 1px `#2c3643` border. Callers add their
-/// measured radius, padding and type role.
-pub fn pill() -> Div {
-    div()
-        .border_1()
-        .border_color(rgb(theme::PILL_BORDER))
-        .bg(rgb(theme::PILL_BG))
-}
 
 /// Keyboard-hint badge: 4px radius, 6px/2px padding, inset bottom light.
 /// (The source `.kbd` bottom inner highlight has no GPUI equivalent and

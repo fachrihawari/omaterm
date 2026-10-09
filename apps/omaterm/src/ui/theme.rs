@@ -1,80 +1,131 @@
-//! Exact v5 color tokens, verbatim from `omaterm_mock_ui_v5.html`.
+//! UI color tokens — the "Oma Neon" palette.
 //!
-//! Values are sRGB hex literals. Alpha-bearing surfaces use separate
-//! opacity constants — never bake parent opacity over text/icons.
+//! Deep ink-violet surfaces with electric accents: violet for focus and
+//! selection, magenta for the cursor and search hits, sky blue for links and
+//! live state, mint/amber/coral for git and status.
+//!
+//! Edit colors here. The terminal's own colors (default foreground and
+//! background, cursor, 16 ANSI colors) live in
+//! `crates/omaterm-terminal/src/color.rs`; `BG2` and `TERMINAL_CURSOR` must
+//! stay equal to `DEFAULT_BG` and `CURSOR_COLOR` there (a test enforces it).
+//!
+//! Values are `0xRRGGBB`. Translucent surfaces use separate opacity
+//! constants and go through `with_alpha`.
 
-pub const BG: u32 = 0x0B0E12;
-pub const BG2: u32 = 0x0F1318;
-pub const PANEL: u32 = 0x11161C;
-pub const PANEL2: u32 = 0x161C24;
-pub const PANEL3: u32 = 0x1B222C;
-pub const BORDER: u32 = 0x252D38;
-pub const BORDER2: u32 = 0x303A48;
-pub const TEXT: u32 = 0xD7DDE5;
-pub const TEXT2: u32 = 0xBCC5D0;
-pub const MUTED: u32 = 0x7F8A99;
-pub const MUTED2: u32 = 0x596474;
-pub const BLUE: u32 = 0x5AA9FF;
-pub const BLUE2: u32 = 0x2F81F7;
-pub const CYAN: u32 = 0x61D8DF;
-pub const GREEN: u32 = 0x63D58D;
-pub const YELLOW: u32 = 0xE9C66D;
-pub const ORANGE: u32 = 0xF3A85F;
-pub const RED: u32 = 0xFF6F6F;
-pub const PURPLE: u32 = 0xC792EA;
-pub const LIME: u32 = 0xB9F263;
+// Surfaces, darkest to lightest.
+/// Terminal well and the session bar above it.
+pub const BG2: u32 = 0x0F0E17;
+/// Window chrome behind the panels.
+pub const BG: u32 = 0x13111D;
+/// Inspector and other content panels.
+pub const PANEL: u32 = 0x14121F;
+/// Projects sidebar when it is opaque.
+pub const SIDEBAR_BG: u32 = 0x1A1729;
+pub const SIDEBAR_HOVER_BG: u32 = 0x272140;
+/// Sidebar edge: darker than the sidebar so it reads as a fold.
+pub const SIDEBAR_EDGE: u32 = 0x0A0912;
+/// Translucent sidebar: a light tint over the blurred desktop, so the
+/// glass reads as glass. Text does not sit on this; it sits on
+/// `SIDEBAR_LABEL_SCRIM_OPACITY`, which stays dark over a light or dark
+/// wallpaper.
+pub const SIDEBAR_TINT: u32 = 0x120F1E;
+pub const SIDEBAR_TINT_OPACITY: f32 = 0.42;
+/// Plate behind sidebar labels. Combined with the tint above, this stays
+/// near-black whether the desktop behind the window is light or dark.
+pub const SIDEBAR_LABEL_SCRIM_OPACITY: f32 = 0.82;
+/// Raised controls: selected segments, active tab, fields.
+pub const PANEL2: u32 = 0x221D35;
+pub const PANEL3: u32 = 0x2F2848;
+/// Hairline separator.
+pub const BORDER: u32 = 0x262037;
+/// Control outline.
+pub const BORDER2: u32 = 0x3A3156;
 
-pub const HEADER_BG: u32 = 0x0D1014;
-pub const ACTIVE_TAB_BG: u32 = 0x141A21;
-pub const SELECTED_PROJECT_BG: u32 = 0x18202A;
-pub const CMD_HOVER_BG: u32 = 0x182029;
-pub const CMD_HOVER_BORDER: u32 = 0x27313D;
-pub const ROW_HOVER_BG: u32 = 0x171D25;
-pub const TREE_SELECTED_BG: u32 = 0x1B2430;
-pub const PILL_BG: u32 = 0x151A21;
-pub const PILL_BORDER: u32 = 0x2C3643;
-pub const SCROLLBAR_THUMB: u32 = 0x343E4B;
-pub const EDITOR_BG: u32 = 0x101318;
-pub const EDITOR_SIDE_HEADER_BG: u32 = 0x0F1216;
-pub const INFO_CARD_BG: u32 = 0x141920;
-pub const INFO_ICON_BOX_BG: u32 = 0x10151A;
-pub const GIT_BADGE_BG: u32 = 0x222B36;
-pub const COMMIT_HOVER_BG: u32 = 0x3D8BF8;
-pub const TERMINAL_CURSOR: u32 = 0x95D7FF;
-/// Plain white for pressed toggle icons and `cmd:hover` foreground.
+// Text.
+pub const TEXT: u32 = 0xF2EFFF;
+pub const TEXT2: u32 = 0xCFC8EC;
+pub const MUTED: u32 = 0x9C93C4;
+pub const MUTED2: u32 = 0x6C6394;
 pub const WHITE: u32 = 0xFFFFFF;
+
+// Accents.
+/// Primary accent: focus, selection, active state, primary actions.
+pub const ACCENT: u32 = 0x9D7CFF;
+/// Second accent: cursor, search hits, things that must be found fast.
+pub const ACCENT2: u32 = 0xFF4FD8;
+/// Links and live state (running shell, open folder).
+pub const BLUE: u32 = 0x4CC9F0;
+/// Pressed/dragging controls.
+pub const BLUE2: u32 = 0x7C5CFF;
+pub const GREEN: u32 = 0x2EE6A6;
+pub const YELLOW: u32 = 0xFFD23F;
+pub const ORANGE: u32 = 0xFF8A3D;
+pub const RED: u32 = 0xFF4D6D;
+pub const PURPLE: u32 = 0xD96BFF;
+pub const LIME: u32 = 0xB8F35A;
+
+// State fills.
+pub const HEADER_BG: u32 = BG2;
+pub const ACTIVE_TAB_BG: u32 = 0x231D3A;
+/// Opacity of the accent outline around the active tab.
+pub const ACTIVE_TAB_OUTLINE_OPACITY: f32 = 0.55;
+pub const SELECTED_PROJECT_BG: u32 = 0x2E2456;
+pub const CMD_HOVER_BG: u32 = 0x221D35;
+pub const CMD_HOVER_BORDER: u32 = 0x3A3156;
+pub const ROW_HOVER_BG: u32 = 0x1D1930;
+pub const TREE_SELECTED_BG: u32 = 0x2E2456;
+pub const PILL_BG: u32 = 0x221D35;
+pub const PILL_BORDER: u32 = 0x3A3156;
+pub const SCROLLBAR_THUMB: u32 = 0x4A4070;
+pub const GIT_BADGE_BG: u32 = 0x2F2848;
+pub const COMMIT_HOVER_BG: u32 = 0xB39DFF;
+/// Must equal `omaterm_terminal::CURSOR_COLOR`.
+pub const TERMINAL_CURSOR: u32 = 0xFF4FD8;
 /// Keyboard-hint badge fill and border (see `primitives::kbd`).
-pub const KBD_BG: u32 = 0x161B22;
-pub const KBD_BORDER: u32 = 0x313B48;
-/// Active editor line number (brighter than `LINE_NO`); hue reserved for
-/// the full syntax palette.
-pub const ACTIVE_LINE_NO: u32 = 0x768193;
-/// Comment-token approximation until the full syntax palette lands.
-pub const COMMENT_TOKEN: u32 = 0x6A9955;
-/// Finder match-highlight accent (VSCode-style); hue reserved vs `BLUE2`.
-pub const MATCH_ACCENT: u32 = 0x4C9AFF;
-/// Editor selection wash as HSLA components (GPUI `hsla` has no hex form).
-pub const SELECTION_HSLA: (f32, f32, f32, f32) = (0.591, 0.92, 0.578, 0.35);
+pub const KBD_BG: u32 = 0x221D35;
+pub const KBD_BORDER: u32 = 0x3A3156;
+/// Reserved. The inspector no longer paints a project card around this fill.
+#[allow(dead_code)]
+pub const INFO_CARD_BG: u32 = 0x1B1729;
+/// Reserved with `INFO_CARD_BG`.
+#[allow(dead_code)]
+pub const INFO_ICON_BOX_BG: u32 = 0x14121F;
 
-pub const LINE_NO: u32 = 0x515D6D;
-pub const LINE_NO_ADD: u32 = 0x5D8A67;
-pub const LINE_NO_DEL: u32 = 0x8B5E5E;
-/// rgba(46,160,67,.12) as 0xRRGGBBAA.
-pub const DIFF_ADD_BG: u32 = 0x2EA0431F;
-/// rgba(75,190,104,.8) inset mark.
-pub const DIFF_ADD_MARK: u32 = 0x4BBE68CC;
-/// rgba(248,81,73,.12) as 0xRRGGBBAA.
-pub const DIFF_DEL_BG: u32 = 0xF851491F;
-/// rgba(248,81,73,.82) inset mark.
-pub const DIFF_DEL_MARK: u32 = 0xF85149D1;
+// Editor and diff.
+pub const EDITOR_BG: u32 = BG2;
+pub const EDITOR_SIDE_HEADER_BG: u32 = 0x15131F;
+pub const LINE_NO: u32 = 0x564E78;
+pub const ACTIVE_LINE_NO: u32 = 0x9C93C4;
+pub const COMMENT_TOKEN: u32 = 0x7A70A8;
+/// Finder match highlight.
+pub const MATCH_ACCENT: u32 = ACCENT2;
+/// Editor selection wash as HSLA components (the `ACCENT` hue).
+pub const SELECTION_HSLA: (f32, f32, f32, f32) = (0.708, 1.0, 0.74, 0.30);
+pub const LINE_NO_ADD: u32 = 0x2E9E77;
+pub const LINE_NO_DEL: u32 = 0xB04A60;
+/// `GREEN` at 12% as 0xRRGGBBAA.
+pub const DIFF_ADD_BG: u32 = 0x2EE6A61F;
+/// `GREEN` at 80%.
+pub const DIFF_ADD_MARK: u32 = 0x2EE6A6CC;
+/// `RED` at 12%.
+pub const DIFF_DEL_BG: u32 = 0xFF4D6D1F;
+/// `RED` at 82%.
+pub const DIFF_DEL_MARK: u32 = 0xFF4D6DD1;
 
-/// Opacity of the terminal header background (`#0f1318` at 90%).
+// Opacities.
+/// Pane header background (`BG2` at 90%).
 pub const PANE_HEADER_BG_OPACITY: f32 = 0.90;
-/// Opacity of the floating pane toolbar background.
+/// Wash over unfocused panes in a split tab.
+pub const PANE_INACTIVE_DIM: f32 = 0.42;
+/// Floating pane toolbar background.
 pub const PANE_TOOLBAR_BG_OPACITY: f32 = 0.95;
-/// Inset focus-stroke alpha on the active pane.
+/// Terminal text selection (`ACCENT`).
+pub const TERMINAL_SELECTION_OPACITY: f32 = 0.38;
+/// Was the faint full-rectangle focus stroke.
+#[allow(dead_code)]
 pub const PANE_FOCUS_STROKE_ALPHA: f32 = 0.34;
-/// Inset top-accent alpha on the active top tab.
+/// Was the translucent top tab accent.
+#[allow(dead_code)]
 pub const TAB_ACTIVE_TOP_ACCENT_ALPHA: f32 = 0.9;
 
 /// Pack an `0xRRGGBB` literal with float alpha into `0xRRGGBBAA` for
@@ -86,14 +137,24 @@ pub fn with_alpha(rgb: u32, alpha: f32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BG2, DIFF_ADD_BG, PANE_HEADER_BG_OPACITY, with_alpha};
+    use super::{BG2, DIFF_ADD_BG, GREEN, PANE_HEADER_BG_OPACITY, TERMINAL_CURSOR, with_alpha};
+
+    fn pack((r, g, b): (u8, u8, u8)) -> u32 {
+        (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+    }
 
     #[test]
     fn with_alpha_packs_exact_rgba_bytes() {
-        assert_eq!(with_alpha(BG2, PANE_HEADER_BG_OPACITY), 0x0F1318E6);
+        assert_eq!(with_alpha(BG2, PANE_HEADER_BG_OPACITY), 0x0F0E17E6);
         assert_eq!(with_alpha(0x141A21, 0.95), 0x141A21F2);
-        assert_eq!(with_alpha(0x2EA043, 0.12), DIFF_ADD_BG);
+        assert_eq!(with_alpha(GREEN, 0.12), DIFF_ADD_BG);
         assert_eq!(with_alpha(0x123456, 2.0), 0x123456FF);
         assert_eq!(with_alpha(0x123456, -1.0), 0x12345600);
+    }
+
+    #[test]
+    fn terminal_well_and_cursor_match_engine_defaults() {
+        assert_eq!(BG2, pack(omaterm_terminal::DEFAULT_BG));
+        assert_eq!(TERMINAL_CURSOR, pack(omaterm_terminal::CURSOR_COLOR));
     }
 }

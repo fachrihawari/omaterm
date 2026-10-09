@@ -15,7 +15,6 @@ use gpui::{AssetSource, Result, SharedString};
 /// vendored in `ICONS` for future use; no slot references it right now.)
 pub const PANEL_LEFT: &str = "panel-left";
 pub const PANEL_RIGHT: &str = "panel-right";
-pub const FOLDER_PLUS: &str = "folder-plus";
 pub const CLOSE: &str = "x";
 pub const PLUS: &str = "plus";
 pub const SEARCH: &str = "search";
@@ -43,7 +42,6 @@ pub const STAGE: &str = "plus";
 pub const UNSTAGE: &str = "minus";
 pub const CHEVRON_DOWN: &str = "chevron-down";
 pub const CHEVRON_RIGHT: &str = "chevron-right";
-pub const CHEVRON_LEFT: &str = "chevron-left";
 /// File-tree document icons (one Lucide glyph per file family; hues stay
 /// in `files.rs` so the tree keeps its per-language colors).
 pub const FILE: &str = "file";
