@@ -1,6 +1,6 @@
 pkgbase = omaterm
 	pkgdesc = Terminal-first developer workspace with semantic CLI automation
-	pkgver = 0.2.0
+	pkgver = 0.3.0
 	pkgrel = 1
 	url = https://github.com/fachrihawari/omaterm
 	arch = x86_64
@@ -18,7 +18,7 @@ pkgbase = omaterm
 	depends = vulkan-icd-loader
 	optdepends = otf-nerd-fonts: file-tree and git icon glyphs
 	conflicts = omaterm-bin
-	source = omaterm-0.2.0.tar.gz::https://github.com/fachrihawari/omaterm/archive/refs/tags/v0.2.0.tar.gz
+	source = omaterm-0.3.0.tar.gz::https://github.com/fachrihawari/omaterm/archive/refs/tags/v0.3.0.tar.gz
 	sha256sums = SKIP
 
 pkgname = omaterm
