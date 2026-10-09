@@ -19,6 +19,6 @@ pkgbase = omaterm
 	optdepends = otf-nerd-fonts: file-tree and git icon glyphs
 	conflicts = omaterm-bin
 	source = omaterm-0.4.0.tar.gz::https://github.com/fachrihawari/omaterm/archive/refs/tags/v0.4.0.tar.gz
-	sha256sums = b8a68c9cde9d2860507bcc5139456ccee4cfa3ad9e7b18fe7573d4be38b60b5d
+	sha256sums = fd1dbd823583c3db2e82a035776392f273dce8461c8b6185b9a618eb64454356
 
 pkgname = omaterm
