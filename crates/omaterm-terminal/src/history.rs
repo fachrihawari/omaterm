@@ -718,6 +718,7 @@ pub fn replay_equivalent(first: &[RecordedEvent], second: &[RecordedEvent]) -> b
     let (a, b) = (viewport_of(first), viewport_of(second));
     a.rows == b.rows
         && a.cursor == b.cursor
+        && a.cursor_color == b.cursor_color
         && a.cols == b.cols
         && a.lines == b.lines
         && a.is_alt_screen == b.is_alt_screen

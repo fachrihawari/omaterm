@@ -17,7 +17,10 @@ pub mod spawn_queue;
 pub mod workspace;
 
 pub use alacritty::AlacrittyEngine;
-pub use color::{CURSOR_COLOR, DEFAULT_BG, DEFAULT_FG};
+pub use color::{
+    CURSOR_COLOR, DARK_PALETTE, DEFAULT_BG, DEFAULT_FG, LIGHT_PALETTE, TerminalPalette, ThemeMode,
+    initialize_theme, set_theme_mode, terminal_palette, theme_mode,
+};
 pub use engine::{
     CellFlags, CellWidth, CursorShape, CursorState, EngineOutput, MouseMode, MouseModeKind,
     ScrollCommand, TermColor, TerminalCell, TerminalEngine, TerminalRow, TerminalViewport,

@@ -20,8 +20,8 @@ use super::theme;
 pub fn pill() -> Div {
     div()
         .border_1()
-        .border_color(rgb(theme::PILL_BORDER))
-        .bg(rgb(theme::PILL_BG))
+        .border_color(rgb(theme::colors().pill_border))
+        .bg(rgb(theme::colors().pill_bg))
 }
 
 /// Keyboard-hint badge: 4px radius, 6px/2px padding, inset bottom light.
@@ -31,8 +31,8 @@ pub fn kbd() -> Div {
     div()
         .rounded(px(4.0))
         .border_1()
-        .border_color(rgb(theme::KBD_BORDER))
-        .bg(rgb(theme::KBD_BG))
+        .border_color(rgb(theme::colors().kbd_border))
+        .bg(rgb(theme::colors().kbd_bg))
         .px(px(6.0))
         .py(px(2.0))
 }
@@ -42,5 +42,5 @@ pub fn kbd() -> Div {
 /// the element's own text color, so the parent tint is not inherited).
 pub fn cmd_icon(asset: &'static str, size_px: f32, color: u32) -> gpui::Svg {
     use gpui::prelude::InteractiveElement as _;
-    assets::icon(asset, size_px, color).hover(|s| s.text_color(rgb(theme::WHITE)))
+    assets::icon(asset, size_px, color).hover(|s| s.text_color(rgb(theme::colors().white)))
 }

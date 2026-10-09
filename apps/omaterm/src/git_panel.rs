@@ -40,10 +40,6 @@ pub struct GitRefresh {
     pub result: Result<GitStatusInfo, GitEmpty>,
 }
 
-/// Largest commit message the panel input accepts (mirrors core
-/// validation; the router re-validates).
-pub const MAX_COMMIT_MESSAGE_LEN: usize = 4 * 1024;
-
 /// Rows rendered per group at most; the footer names the truncation.
 pub const MAX_GIT_RENDER_ROWS: usize = 150;
 
@@ -81,7 +77,7 @@ pub struct GitPanel {
     stash_drop_arm: HashMap<ProjectId, (usize, std::time::Instant)>,
     /// Commit message drafts, one per project so switching never loses
     /// typed text. Single-line (the desktop input submits on Enter).
-    commit_drafts: HashMap<ProjectId, String>,
+    commit_drafts: HashMap<ProjectId, crate::git_input::GitInput>,
     /// Whether the commit input owns the keyboard (focused by clicking
     /// it; Esc, submit, tab switch, or a terminal click releases it).
     commit_focused: bool,
@@ -322,43 +318,28 @@ impl GitPanel {
     }
 
     /// Current commit draft for a project (empty when nothing typed).
+    #[cfg(test)]
     pub fn commit_draft(&self, project: ProjectId) -> &str {
         self.commit_drafts
             .get(&project)
-            .map(String::as_str)
+            .map(crate::git_input::GitInput::text)
             .unwrap_or_default()
     }
 
-    /// Append a typed character to the draft. Control characters never
-    /// enter through the single-line input; over-cap input is dropped.
-    /// Returns true when the draft changed.
-    pub fn push_commit_char(&mut self, project: ProjectId, char: char) -> bool {
-        if char.is_control() {
-            return false;
-        }
-        let draft = self.commit_drafts.entry(project).or_default();
-        if draft.len() >= MAX_COMMIT_MESSAGE_LEN {
-            return false;
-        }
-        draft.push(char);
-        true
+    pub fn commit_input(&self, project: ProjectId) -> Option<&crate::git_input::GitInput> {
+        self.commit_drafts.get(&project)
     }
 
-    /// Delete the last draft character. Returns true when one was removed.
-    pub fn pop_commit_char(&mut self, project: ProjectId) -> bool {
-        let remove = self
-            .commit_drafts
-            .get(&project)
-            .is_some_and(|draft| !draft.is_empty());
-        if remove && let Some(draft) = self.commit_drafts.get_mut(&project) {
-            draft.pop();
-        }
-        remove
+    pub fn commit_input_mut(&mut self, project: ProjectId) -> &mut crate::git_input::GitInput {
+        self.commit_drafts.entry(project).or_default()
     }
 
     /// Take the draft for submission, leaving an empty one behind.
     pub fn take_commit_draft(&mut self, project: ProjectId) -> String {
-        self.commit_drafts.remove(&project).unwrap_or_default()
+        self.commit_drafts
+            .remove(&project)
+            .unwrap_or_default()
+            .into_text()
     }
 
     /// Restore a draft (failed submissions put the message back so the
@@ -367,7 +348,9 @@ impl GitPanel {
         if message.is_empty() {
             return;
         }
-        self.commit_drafts.insert(project, message);
+        let mut draft = crate::git_input::GitInput::default();
+        draft.insert(&message);
+        self.commit_drafts.insert(project, draft);
     }
 
     pub const fn commit_focused(&self) -> bool {
@@ -523,18 +506,18 @@ mod tests {
         let mut panel = GitPanel::default();
         assert_eq!(panel.commit_draft(project), "");
         // Control characters never enter; printable text does.
-        assert!(!panel.push_commit_char(project, '\n'));
-        assert!(panel.push_commit_char(project, 'f'));
-        assert!(panel.push_commit_char(project, 'i'));
-        assert!(panel.push_commit_char(project, 'x'));
+        assert!(!panel.commit_input_mut(project).insert("\0"));
+        assert!(panel.commit_input_mut(project).insert("f"));
+        assert!(panel.commit_input_mut(project).insert("i"));
+        assert!(panel.commit_input_mut(project).insert("x"));
         assert_eq!(panel.commit_draft(project), "fix");
-        assert!(panel.pop_commit_char(project));
+        assert!(panel.commit_input_mut(project).delete(false));
         assert_eq!(panel.commit_draft(project), "fi");
         // Take leaves emptiness behind; restore puts a failed message
         // back, but never an empty one.
         assert_eq!(panel.take_commit_draft(project), "fi");
         assert_eq!(panel.commit_draft(project), "");
-        assert!(!panel.pop_commit_char(project));
+        assert!(!panel.commit_input_mut(project).delete(false));
         panel.restore_commit_draft(project, String::new());
         assert_eq!(panel.commit_draft(project), "");
         panel.restore_commit_draft(project, "retry me".into());

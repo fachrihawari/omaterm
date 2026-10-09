@@ -1,0 +1,245 @@
+    Blocking waiting for file lock on build directory
+   Compiling omaterm-terminal v0.2.0 (/home/fachri/Projects/personal/omaterm/crates/omaterm-terminal)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.32s
+     Running unittests src/lib.rs (target/debug/deps/omaterm_terminal-68d46b9e4034964c)
+
+running 181 tests
+test alacritty::tests::engine_handles_wide_chars ... ok
+test alacritty::tests::engine_reports_device_replies ... ok
+test alacritty::tests::engine_handles_alt_screen ... ok
+test alacritty::tests::mouse_mode_tracks_decset_and_sgr ... ok
+test alacritty::tests::osc_dynamic_color_set_overrides_query_reply ... ok
+test alacritty::tests::osc_dynamic_color_queries_report_painted_defaults ... ok
+test alacritty::tests::engine_tracks_title_and_bell ... ok
+test history::tests::compact_empty_stays_empty ... ok
+test alacritty::tests::engine_tracks_bracketed_paste_mode ... ok
+test history::tests::alt_screen_chunks_are_dropped_and_main_history_preserved ... ok
+test history::tests::compact_lone_rewind_passes_through ... ok
+test history::tests::compact_motionless_recolor_passes_through ... ok
+test alacritty::tests::engine_maps_sgr_attributes ... ok
+test alacritty::tests::engine_enforces_read_bounds ... ok
+test history::tests::compact_rewind_run_requires_three_frames ... ok
+test alacritty::tests::engine_scrolls_to_top_and_bottom ... ok
+test history::tests::compact_rewind_run_stops_at_resize ... ok
+test history::tests::compact_treats_resizes_as_barriers ... ok
+test alacritty::tests::engine_starts_with_requested_dimensions ... ok
+test alacritty::tests::scrollback_dump_is_oldest_first_and_bounded ... ok
+test history::tests::disabled_recorder_keeps_nothing ... ok
+test alacritty::tests::engine_parses_simple_output ... ok
+test history::tests::oversized_writes_split_into_bounded_frames ... ok
+test history::tests::paused_recorder_keeps_nothing_until_resumed ... ok
+test history::tests::recorder_trims_oldest_first_under_caps ... ok
+test alacritty::tests::scrollback_history_is_bounded ... ok
+test history::tests::resize_while_alt_is_skipped_but_main_resizes_kept ... ok
+test history::tests::seed_loads_restored_prefix_within_caps ... ok
+test history::tests::strip_collapses_blank_only_record_to_resizes ... ok
+test history::tests::strip_drops_fragmented_padding_blank_across_events ... ok
+test history::tests::strip_drops_one_prompt_padding_blank_after_idle_prompt ... ok
+test history::tests::strip_drops_padding_blank_with_lifecycle_marker_between ... ok
+test history::tests::strip_drops_trailing_idle_prompt_but_keeps_complete_lines ... ok
+test history::tests::strip_keeps_colored_content_before_idle_prompt ... ok
+test history::tests::strip_keeps_intentional_content_blanks ... ok
+test history::tests::strip_keeps_resizes_around_a_dropped_tail ... ok
+test history::tests::strip_leaves_records_ending_at_a_newline_untouched ... ok
+test alacritty::tests::engine_restores_content_after_alt_screen ... ok
+test history::tests::strip_prompt_only_record_down_to_resizes ... ok
+test history::tests::compact_leaves_plain_output_untouched ... ok
+test history::tests::strip_seam_is_idempotent_across_restarts ... ok
+test history::tests::strip_without_padding_blank_is_untouched ... ok
+test history::tests::strip_truncates_inside_the_last_chunk_after_its_final_newline ... ok
+test history::tests::compact_preserves_newline_positions_and_handles_fragments ... ok
+test input::tests::alt_prefixes_escape ... ok
+test input::tests::arrows_respect_app_cursor ... ok
+test input::tests::ctrl_d_z_map_to_control_codes ... ok
+test input::tests::bracketed_paste_wraps ... ok
+test input::tests::ctrl_letters_map_to_control_codes ... ok
+test input::tests::prepare_paste_plain_and_bracketed ... ok
+test input::tests::prepare_paste_preserves_unicode_multiline ... ok
+test input::tests::risky_pastes_require_confirmation ... ok
+test input::tests::printable_chars_pass_through ... ok
+test input::tests::sgr_mouse_encodes_one_based_wheel_reports ... ok
+test input::tests::special_keys_encode ... ok
+test input::tests::shell_paths_escape_safely ... ok
+test input::tests::super_key_is_swallowed ... ok
+test lifecycle::tests::command_decoding_is_strict ... ok
+test lifecycle::tests::fragmented_sequences_reassemble ... ok
+test lifecycle::tests::legacy_prompt_without_status_parses ... ok
+test lifecycle::tests::multiple_sequences_and_noise_in_one_chunk ... ok
+test lifecycle::tests::prompt_and_command_sequences_parse ... ok
+test history::tests::compact_varying_width_run_keeps_original_bytes ... ok
+test lifecycle::tests::st_terminator_is_accepted ... ok
+test lifecycle::tests::truncated_candidate_does_not_consume_later_sequences ... ok
+test lifecycle::tests::unknown_kind_and_bad_payloads_are_dropped ... ok
+test lifecycle::tests::wrong_token_is_dropped_silently ... ok
+test osc7::tests::accepts_empty_host_bel_terminated ... ok
+test osc7::tests::accepts_localhost_st_terminated ... ok
+test osc7::tests::ignores_other_osc_sequences ... ok
+test osc7::tests::multiple_sequences_in_one_read ... ok
+test osc7::tests::percent_decodes_spaces ... ok
+test osc7::tests::plain_output_yields_nothing ... ok
+test history::tests::replay_reproduces_main_screen_with_resize_colors_and_unicode ... ok
+test history::tests::compact_rewind_run_keeps_first_and_last_frames ... ok
+test osc7::tests::reassembles_fragmented_sequence ... ok
+test lifecycle::tests::oversized_payloads_are_dropped_whole ... ok
+test osc7::tests::rejects_bad_percent_escape ... ok
+test history::tests::strip_seam_replay_keeps_exactly_one_blank_separator ... ok
+test osc7::tests::rejects_non_file_scheme ... ok
+test osc7::tests::rejects_relative_path ... ok
+test history::tests::stripped_replay_never_stacks_a_duplicate_prompt ... ok
+test osc7::tests::rejects_remote_host ... ok
+test osc7::tests::waits_for_terminator_across_reads ... ok
+test history::tests::compact_spinner_run_collapses_to_final_line ... ok
+test platform::tests::absent_root_cannot_adopt_rows_from_a_truncated_table ... ok
+test platform::tests::bounded_reads_distinguish_exact_cap_from_overflow ... ok
+test platform::tests::cpu_sampler_drops_stale_pids ... ok
+test history::tests::replay_equivalent_rejects_different_output ... ok
+test platform::tests::overlapping_roots_and_cycles_have_stable_nearest_root_ownership ... ok
+test platform::tests::sampler_delta_math_uses_clock_ticks_and_elapsed_time ... ok
+test platform::tests::sampler_reuse_failed_read_and_counter_regression_reset_baseline ... ok
+test platform::tests::snapshot_keeps_attribution_when_sorted_cap_drops_ancestors ... ok
+test platform::tests::stat_parses_tricky_comm ... ok
+test platform::tests::statm_resident_parses_second_field ... ok
+test platform::tests::stat_times_parse_tricky_comm ... ok
+test platform::tests::tcp_table_parses_listen_only ... ok
+test alacritty::tests::overscan_row_matches_neighbor_without_mutating_grid_or_offset ... ok
+test platform::tests::cancelled_and_expired_scans_stop_before_proc_work ... ok
+test platform::tests::terminate_spawned_sleep_succeeds_and_notfound_errors ... ok
+test registry::tests::close_unknown_session_returns_stable_error ... ok
+test platform::tests::termination_rejects_group_ids_and_bound_dead_pidfd_cannot_hit_new_child ... ok
+test platform::tests::terminate_owned_denies_foreign_child_then_signals_verified_family ... ok
+test registry::tests::create_registers_session_with_matching_id ... ok
+test history::tests::replay_flood_beyond_caps_keeps_valid_newest_history ... ok
+test registry::tests::invalid_size_fails_without_registering ... ok
+test registry::tests::detach_returns_handle_for_off_thread_shutdown ... ok
+test search::tests::cell_mapping_covers_plain_and_wide_rows ... ok
+test search::tests::combining_sequences_stay_inside_one_hit ... ok
+test search::tests::empty_and_blank_queries_match_nothing ... ok
+test search::tests::hits_are_capped_not_unbounded ... ok
+test search::tests::matching_is_case_insensitive_and_ordered ... ok
+test search::tests::overlapping_scan_advances_past_each_hit ... ok
+test search::tests::queries_are_truncated_never_rejected ... ok
+test selection::tests::combining_sequence_preserved ... ok
+test selection::tests::edge_on_continuation_includes_lead ... ok
+test selection::tests::empty_selection_yields_nothing ... ok
+test selection::tests::hidden_cells_never_leak ... ok
+test selection::tests::multi_row_joins_with_newline ... ok
+test selection::tests::out_of_bounds_clamps ... ok
+test selection::tests::reverse_drag_normalizes ... ok
+test selection::tests::single_row_slice ... ok
+test selection::tests::trailing_spaces_trimmed_per_row ... ok
+test selection::tests::wide_chars_copy_once ... ok
+test selection::tests::wrapped_rows_join_without_separator ... ok
+test platform::tests::descendants_contain_spawned_child ... ok
+test registry::tests::close_removes_only_target_and_reaps ... ok
+test registry::tests::multiple_sessions_have_distinct_ids_and_pids ... ok
+test session::tests::cwd_refresh_uses_the_inspector_seam ... ok
+test registry::tests::inserts_a_worker_spawned_session_with_its_preallocated_id ... ok
+test session::tests::cwd_starts_at_launch_directory ... ok
+test session::tests::fragmented_osc7_reassembles ... ok
+test session::tests::history_pause_holds_the_record_and_resume_continues ... ok
+test platform::tests::inspector_sees_current_process ... ok
+test platform::tests::listening_socket_is_attributed_once_even_with_duplicate_fds ... ok
+test session::tests::history_session_drops_alt_screen_periods_end_to_end ... ok
+test session::tests::invalid_osc7_keeps_launch_cwd ... ok
+test session::tests::lifecycle_legacy_prompt_sets_readiness_and_closes_pending_without_status ... ok
+test session::tests::lifecycle_out_of_range_exit_sets_readiness_but_keeps_pending ... ok
+test session::tests::lifecycle_second_start_flushes_first_unfinished ... ok
+test registry::tests::exited_session_stays_registered_until_close ... ok
+test session::tests::lifecycle_spoofed_token_changes_nothing ... ok
+test session::tests::lifecycle_start_then_prompt_yields_completed_record ... ok
+test session::tests::history_enable_records_output_and_resize_without_backfill ... ok
+test history::tests::compact_rewind_run_dedupes_scrolled_copies ... ok
+test shell::tests::argv_encoding_handles_shell_metacharacters_without_interpolation ... ok
+test shell::tests::bash_hook_internals_cannot_become_records ... ok
+test session::tests::lifecycle_starts_before_first_prompt_are_dropped_as_initialization ... ok
+test shell::tests::bash_hook_sources_user_config_and_emits_session_markers ... ok
+test shell::tests::only_bash_is_claimed_as_supported ... ok
+test spawn_queue::tests::dropping_queue_does_not_wait_for_a_blocked_spawn ... ok
+test session::tests::history_recording_is_disabled_by_default ... ok
+test session::tests::non_bash_shell_emits_no_lifecycle_records ... ok
+test session::tests::repeated_same_cwd_emits_no_duplicate_event ... ok
+test session::tests::start_history_with_seed_merges_restored_prefix_and_live_output ... ok
+test session::tests::valid_osc7_updates_cwd_with_event ... ok
+test platform::tests::cpu_sampler_first_sample_is_none_then_delta ... ok
+test workspace::tests::close_last_pane_empties_workspace ... ok
+test spawn_queue::tests::submission_is_nonblocking_and_queue_capacity_is_enforced ... ok
+test session::tests::configured_scrollback_caps_engine_history ... ok
+test spawn_queue::tests::worker_returns_preallocated_identity_and_spawn_failure ... ok
+test workspace::tests::closing_a_nonfocused_session_preserves_focus_and_siblings ... ok
+test session::tests::lifecycle_record_queue_is_bounded ... ok
+test workspace::tests::initial_split_close_lifecycle ... ok
+test workspace::tests::project_close_returns_all_sessions_when_one_cleanup_handle_is_poisoned ... ok
+test platform::tests::snapshot_membership_and_cap_truncation ... ok
+test workspace::tests::restored_layout_rebinds_existing_pane_to_a_fresh_session ... ok
+test workspace::tests::restored_missing_directory_falls_back_to_home ... ok
+test workspace::tests::resize_and_equalize_preserve_sessions ... ok
+test workspace::tests::spawn_failure_leaves_tree_and_focus_intact ... ok
+test workspace::tests::set_project_directory_updates_pinned_base_and_rejects_stale_ids ... ok
+test workspace::tests::repeated_tab_close_is_rejected_without_detaching_the_project_sibling ... ok
+test workspace::tests::projects_and_tabs_keep_independent_sessions_and_close_isolated ... ok
+test workspace::tests::four_panes_have_independent_sessions ... ok
+test workspace::tests::worker_session_commit_creates_project_and_tab_atomically ... ok
+test workspace::tests::stale_project_commit_does_not_publish_provisional_session ... ok
+test workspace::tests::worker_split_commit_revalidates_focus_before_registry_insertion ... ok
+test workspace::tests::worker_tab_commit_adds_new_session_to_requested_project ... ok
+test workspace::tests::session_id_for_pane_searches_inactive_projects_and_hidden_tabs ... ok
+test workspace::tests::restored_worker_commit_can_finish_after_selection_changes ... ok
+test registry::tests::repeated_create_close_leaves_no_entries ... ok
+
+test result: ok. 181 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s
+
+     Running tests/light_theme.rs (target/debug/deps/light_theme-1f7b2de7c933ca86)
+
+running 1 test
+test light_session_reports_its_painted_palette_and_preserves_explicit_colors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pty_integration.rs (target/debug/deps/pty_integration-37f84ddc6f123d1d)
+
+running 33 tests
+test combining_chars_compose_in_one_cell ... ok
+test child_cwd_matches_spawn_directory ... ok
+test ctrl_c_interrupts_foreground_job ... ok
+test bash_lifecycle_user_array_prompt_command_is_not_recorded ... ok
+test bash_lifecycle_user_string_prompt_command_is_not_recorded ... ok
+test ctrl_d_on_empty_line_exits_shell ... ok
+test drop_reaps_child_without_explicit_shutdown ... ok
+test eof_on_exit_reports_child_exit ... ok
+test bash_lifecycle_nested_shell_hides_inner_commands ... ok
+test bash_lifecycle_unicode_command_text_is_exact ... ok
+test bash_lifecycle_reports_command_text_and_exit_status ... ok
+test bash_lifecycle_ctrl_c_reports_130 ... ok
+test bash_lifecycle_tui_records_invocation_only ... ok
+test bash_lifecycle_chain_attributes_completion_to_last ... ok
+test four_registry_sessions_stay_independent ... ok
+test bash_run_waits_for_prompt_and_submits_argv_without_shell_interpolation ... ok
+test resize_changes_viewport_dimensions ... ok
+test procfs_refresh_tracks_a_shell_directory_change ... ok
+test run_is_explicitly_unsupported_for_non_bash_shells ... ok
+test resize_one_session_leaves_others_unchanged ... ok
+test shutdown_terminates_and_reaps_child ... ok
+test output_burst_stays_bounded_and_completes ... ok
+test drop_escalates_and_reaps_a_shell_that_ignores_hangup ... ok
+test spawn_and_echo_hello ... ok
+test final_shell_exit_closes_last_pane_and_empties_workspace ... ok
+test unfocused_session_drains_output ... ok
+test bracketed_paste_round_trip_through_cat ... ok
+test exited_shells_close_only_their_panes_for_exit_and_ctrl_d ... ok
+test ctrl_z_triggers_sigtstp_trap ... ok
+test resize_during_output_keeps_tail ... ok
+test hidden_tabs_and_projects_keep_draining_and_close_only_owned_sessions ... ok
+test repeated_create_close_shows_no_fd_growth ... ok
+mbx[progress]: 15s elapsed; 0 hits, 0 misses, 0 bypassed, 2 not looked up; ~0s compiler work saved
+test coordinator_close_kills_only_target ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.13s
+
+   Doc-tests omaterm_terminal
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+mbx[cache]: 0 hits, 0 misses, 2 not looked up, 3 incremental, 1 bypassed; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: lent the same 16.8 GiB to every checkout at once. none of them has checked.

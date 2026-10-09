@@ -51,9 +51,8 @@ pub const MAX_FILE_RESULTS: u32 = 5_000;
 pub const DEFAULT_GIT_REFRESH_SECS: u64 = 5;
 pub const MIN_GIT_REFRESH_SECS: u64 = 1;
 pub const MAX_GIT_REFRESH_SECS: u64 = 300;
-/// Accepted `appearance.theme` values. Only `system` changes nothing today;
-/// `dark`/`light` parse and validate so the key is reserved for the future
-/// theme engine (blueprint §58) without silently accepting typos.
+/// Accepted `appearance.theme` values. The desktop resolves `system` from
+/// the platform appearance at startup; `dark` and `light` force a palette.
 pub const KNOWN_THEMES: &[&str] = &["system", "dark", "light"];
 /// Windows shell ids the desktop palette can persist. Absent means PowerShell.
 pub const KNOWN_SHELLS: &[&str] = &["powershell", "cmd", "git-bash"];
@@ -333,6 +332,45 @@ pub fn save_terminal_shell(path: &Path, shell: &str) -> Result<(), ConfigError> 
     super::history::write_atomic_0600(path, doc.to_string().as_bytes())
 }
 
+/// Save the `[appearance] theme` key into the canonical `config.toml`,
+/// preserving every other section, comment, and formatting choice in the
+/// document (same discipline as the `[history]` writer). Creates the file,
+/// its parent directory, and the `[appearance]` table when absent. Unknown
+/// theme values are rejected before touching the disk.
+pub fn save_appearance_theme(path: &Path, theme: &str) -> Result<(), ConfigError> {
+    if !KNOWN_THEMES.contains(&theme) {
+        return Err(invalid(
+            "appearance",
+            "theme",
+            format!("expected one of {}", KNOWN_THEMES.join(", ")),
+        ));
+    }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(ConfigError::Io)?;
+    }
+    let mut doc: toml_edit::DocumentMut = match fs::read(path) {
+        Ok(bytes) => {
+            let text = String::from_utf8(bytes)
+                .map_err(|_| ConfigError::Parse("config.toml is not UTF-8".into()))?;
+            text.parse()
+                .map_err(|error| ConfigError::Parse(format!("config.toml parse failed: {error}")))?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(error) => return Err(ConfigError::Io(error)),
+    };
+    if !doc.contains_key("appearance") {
+        doc["appearance"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let table = doc["appearance"]
+        .as_table_mut()
+        .ok_or_else(|| invalid("appearance", "theme", "section is not a table"))?;
+    table["theme"] = toml_edit::value(theme);
+    super::history::write_atomic_0600(path, doc.to_string().as_bytes())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,6 +516,54 @@ mod tests {
         let path = write_config(&dir, "[terminal\nfont-size = ");
         let error = load_app_config_toml(&path).unwrap_err();
         assert!(matches!(error, ConfigError::Parse(_)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_theme_preserves_comments_and_other_sections() {
+        let dir = temp_dir("theme-save");
+        let path = write_config(
+            &dir,
+            "# user config\n[terminal]\nfont-size = 13\n\n[appearance]\n# picked from the palette\ntheme = \"dark\"\n\n[git]\nrefresh-secs = 10\n",
+        );
+        save_appearance_theme(&path, "light").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# user config"));
+        assert!(text.contains("# picked from the palette"));
+        assert!(text.contains("font-size = 13"));
+        assert!(text.contains("refresh-secs = 10"));
+        assert!(text.contains("theme = \"light\""));
+        assert_eq!(load_app_config_toml(&path).unwrap().theme(), "light");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_theme_creates_missing_file_section_and_key() {
+        let dir = temp_dir("theme-create");
+        // Missing file entirely.
+        let fresh = dir.join("fresh.toml");
+        save_appearance_theme(&fresh, "system").unwrap();
+        assert_eq!(load_app_config_toml(&fresh).unwrap().theme(), "system");
+        // Existing file without the section, then without the key.
+        let path = write_config(&dir, "[terminal]\nfont-size = 13\n");
+        save_appearance_theme(&path, "dark").unwrap();
+        assert_eq!(load_app_config_toml(&path).unwrap().theme(), "dark");
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("font-size = 13")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_unknown_theme_rejects_before_touching_disk() {
+        let dir = temp_dir("theme-reject");
+        let path = write_config(&dir, "[appearance]\ntheme = \"dark\"\n");
+        let before = fs::read_to_string(&path).unwrap();
+        let error = save_appearance_theme(&path, "dracula").unwrap_err();
+        assert!(matches!(error, ConfigError::Invalid(_)));
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
         let _ = fs::remove_dir_all(&dir);
     }
 }

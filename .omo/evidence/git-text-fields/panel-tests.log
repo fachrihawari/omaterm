@@ -1,0 +1,16 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (target/debug/deps/omaterm_desktop-0af62bedba965bef)
+
+running 7 tests
+test git_panel::tests::should_refresh_covers_first_sight_dirty_and_interval ... ok
+test git_panel::tests::group_collapse_toggles_per_project_and_side ... ok
+test git_panel::tests::discard_dialog_cancellation_and_stale_context_never_confirm ... ok
+test git_panel::tests::move_selection_walks_flat_rows_clamped ... ok
+test git_panel::tests::apply_refresh_rows_and_prune_selection ... ok
+test git_panel::tests::commit_draft_push_pop_take_and_restore ... ok
+test git_panel::tests::status_worker_runs_off_the_caller_thread ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 276 filtered out; finished in 0.03s
+

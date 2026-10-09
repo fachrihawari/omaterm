@@ -1,0 +1,17 @@
+   Compiling omaterm v0.2.0 (/home/fachri/Projects/personal/omaterm/apps/omaterm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.90s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (target/debug/deps/omaterm_desktop-0af62bedba965bef)
+
+running 5 tests
+test git_input::tests::empty_deletion_and_inserting_combining_marks_keep_valid_caret ... ok
+test git_input_view::tests::fields_capture_clipboard_editing_but_preserve_global_shortcuts ... ok
+test git_input::tests::selection_collapses_toward_motion_and_cut_deletes_only_selection ... ok
+test git_input::tests::middle_edit_and_shift_selection_replace_whole_graphemes ... ok
+test git_input::tests::byte_cap_preserves_graphemes_and_replacement_capacity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 278 filtered out; finished in 0.00s
+
+mbx[cache]: 0 hits, 0 misses, 1 not looked up, 1 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 6990 compilations served. the monocle stays on.

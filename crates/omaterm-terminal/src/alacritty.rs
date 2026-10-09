@@ -231,6 +231,10 @@ impl TerminalEngine for AlacrittyEngine {
             },
             cols,
             lines,
+            cursor_color: {
+                let color = resolve_index_color(&self.term, NamedColor::Cursor as usize);
+                (color.r, color.g, color.b)
+            },
             display_offset: content.display_offset,
             history_size: self.term.history_size(),
             is_alt_screen: self.is_alt_screen(),
@@ -497,10 +501,14 @@ fn resolve_index_color(
         // light/dark theme from the OSC 11 reply, so a false white makes it
         // build a light theme on the dark pane.
         let (r, g, b) = match index {
-            i if i == NamedColor::Foreground as usize => crate::color::DEFAULT_FG,
-            i if i == NamedColor::Background as usize => crate::color::DEFAULT_BG,
-            i if i == NamedColor::Cursor as usize => crate::color::CURSOR_COLOR,
-            _ => crate::color::DEFAULT_FG,
+            i if i == NamedColor::Foreground as usize => {
+                crate::color::terminal_palette().foreground
+            }
+            i if i == NamedColor::Background as usize => {
+                crate::color::terminal_palette().background
+            }
+            i if i == NamedColor::Cursor as usize => crate::color::terminal_palette().cursor,
+            _ => crate::color::terminal_palette().foreground,
         };
         Rgb { r, g, b }
     }
@@ -508,25 +516,7 @@ fn resolve_index_color(
 
 /// Standard 16 ANSI colors (indices 0–15).
 fn standard_palette(index: usize) -> (u8, u8, u8) {
-    const PALETTE: [(u8, u8, u8); 16] = [
-        (0, 0, 0),
-        (205, 0, 0),
-        (0, 205, 0),
-        (205, 205, 0),
-        (0, 0, 238),
-        (205, 0, 205),
-        (0, 205, 205),
-        (229, 229, 229),
-        (127, 127, 127),
-        (255, 0, 0),
-        (0, 255, 0),
-        (255, 255, 0),
-        (92, 92, 255),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 255),
-    ];
-    PALETTE[index.min(15)]
+    crate::color::terminal_palette().ansi[index.min(15)]
 }
 
 /// xterm 256-color palette for indices 16–255.

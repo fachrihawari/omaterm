@@ -2,6 +2,114 @@
 
 ## Current position
 
+### Theme follow-system + palette toggle — 2026-10-09 (uncommitted)
+
+System appearance was read once during view construction while GPUI/Linux
+still holds its default (portal `color-scheme` arrives later), then latched
+in a `OnceLock` forever — Omarchy theme switches never reached the app.
+Verified the chain instead of guessing: Omarchy `theme set` drives
+`org.gnome.desktop.interface color-scheme`, the portal mirrors it
+(`prefer-light`→2, `prefer-dark`→1, user setting restored after the probe),
+and GPUI forwards portal changes per window.
+
+Work: `color.rs` latch is now `RwLock` + `set_theme_mode` (startup
+`initialize_theme` stays first-wins) with a latch unit test;
+`TerminalSession::signal_theme_redraw` re-applies the current size to the
+kernel PTY (SIGWINCH, no grid/history touch); `ThemePreference`
+(System/Dark/Light) with config round-trip tests; per-frame
+`reconcile_system_theme` in `render()` converges the startup race and
+tracks portal flips; palette commands `Toggle Theme` + explicit
+Dark/Light/Follow System (ViewAction, persisted to `config.toml` via
+`save_appearance_theme` with comment-preserving `toml_edit` write-back and
+round-trip tests); README updated (no restart needed).
+
+Verification: `cargo fmt --all --check`, `cargo test --workspace` (21
+targets ok, incl. new latch/preference/persistence tests), `cargo clippy
+--workspace --all-targets -- -D warnings`, `git diff --check`,
+`cargo build --release --bin omaterm-desktop` all PASS. Native validation
+still required: light Omarchy theme auto-follow, palette toggle repaint +
+new-pane palette, `system` tracking both directions. Known caveat: a
+running TUI that cached its OSC reply at startup may need a shell restart;
+new panes are always exact.
+
+### Terminal grid reconciliation repair — 2026-10-09 (uncommitted)
+
+The light-theme refactor replaced the synchronous render-time
+`resize_panes_to_window` (window size × core pane fractions, zoom-aware)
+with a paint-time `cx.defer` from canvas `bounds_prepaint`. The deferred
+path had a split-brain guard (outer check against the stale render-time
+snapshot clone, inner check against `grid_sizes` with a bare early return),
+so growth from sibling close / Alt+Z zoom could stop reconciling: the grid
+stayed small while the canvas was large (blank bottom space, stale size
+after new commands).
+
+Repair keeps the canvas-bounds refinement (it correctly accounts for
+search-bar and banner space the fraction math cannot see) and restores the
+authoritative render-time pass using rendered (compact-aware) panel
+visibility. Both paths share a pure `grid_action` decision with three
+outcomes — `Resize`, `HealSnapshot` (engine already correct, re-publish
+without touching the PTY), `Steady` — so a stale reader message can never
+latch the grid small again.
+
+Verification: `cargo fmt --all --check`, `cargo test --workspace`
+(desktop 289 PASS incl. new `grid_action_reconciles_growth_shrink_and_stale_snapshots`),
+`cargo clippy --workspace --all-targets -- -D warnings`, `git diff --check`
+all PASS. Native Wayland validation of close/zoom re-render and bottom
+space still required (not claimed passing).
+
+### Comprehensive UI/UX audit and light theme — 2026-10-09 (in progress)
+
+The user-directed comprehensive audit is active. The [audit ledger](evidence/ui-ux-audit.md)
+records the full surface inventory, implemented source findings, native evidence
+and remaining verification. Shared theme tokens now support light/dark selection
+at startup; Git remote operations retain labels, project identity, elapsed progress
+and release busy state on worker disconnect. Input routing, hidden Git fields,
+cheatsheet truncation, stale drags, terminal canvas sizing, narrow panel allocation
+and window-level picker layout have been corrected.
+
+Five Git task tests PASS, including the reproduced disconnect failure and a
+real local-remote error/retry/publish scenario. Current `cargo fmt --all --check`,
+`cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+release desktop build, documentation checker and `git diff --check` PASS.
+Logs are in `/tmp/omaterm-ux-audit/`. An intermediate release build was rejected
+by the compiler cache because its source changed during compilation, so that run
+is not a passing build. The language-server hook repeatedly timed out; Cargo
+diagnostics remain authoritative. No unavailable native cases are reported passing.
+
+Native light shell/Info/Git/Files/editor rendering and finder keyboard opening were observed
+in an isolated Wayland instance. The finder capture proved clipped labels and
+wrapped footer text in the old narrow-column layout; the window-layer correction
+has rebuilt wide and 640×400 captures. Fresh captures place the owned window
+below desktop notifications and override its compositor opacity for capture.
+Native file open/edit/save changed the disposable file on disk; Ctrl+D left
+the dirty-close prompt open; the final shortcut is reachable at short height.
+The live shell reports `COLORFGBG=0;15`. Persistent confirmation/error colors
+now use shared light/dark palette roles with contrast tests. User configuration
+now selects `appearance.theme = "light"`; `/usr/local/bin` installed binaries
+remain unchanged. Build output is `target/release/omaterm-desktop`.
+
+The final native Git pass staged both fixture files, committed the edited
+message, displayed delayed Push progress with elapsed time, and published to a
+local bare remote before restoring the Push control. Git workers now stay owned
+until normal completion or the asynchronous bounded shutdown join. Terminal
+right-click clears both Git text focus states. The final 640×400 native
+three-pane capture has no toolbar obscuring terminal text; controls remain on
+one- and two-pane layouts and terminal shortcuts/context actions remain usable.
+Targeted Git lifecycle and narrow-toolbar tests, the full workspace test suite,
+Clippy with denied warnings, release build, formatting and `git diff --check`
+pass on the final source state. The known transitive `proc-macro-error2` future
+incompatibility notice remains informational.
+
+At the supported 640px window minimum, panel minima previously left a
+three-pane terminal layout unreadable. The rendered compact shell now hides
+Projects and Inspector below 720px without changing their saved visibility
+preference; the fresh native 640×400 capture shows all three prompts at usable
+width. The desktop crate's full 288-test suite and fresh release build pass.
+
+Next action: run the rebuilt native light and dark surface
+matrix, fix remaining rendered issues, and
+obtain independent review before claiming the full objective complete.
+
 ### History repaint compaction (scrollback dedup) — 2026-10-08
 
 - User report: mbx repaints its logo block over and over (visible animation),
@@ -5462,3 +5570,15 @@ release binary `32cd3d9f9d8498e7` (`87bc5bf` prompt render/keyboard resolution,
 Full record: [native verify-fix evidence](evidence/m19-native-verify-fix.md).
 S9 remains open: graceful-shutdown E2E (no compositor-close tooling), 20-cycle
 reruns on the final binary, IME preedit, entry-route retakes, idle baselines.
+
+## UI/UX audit compact-layout correction — 2026-10-09
+
+An independent source review found that the 720px compact shell hid both
+sidebars, making their keyboard shortcuts ineffective at the supported 640px
+minimum. Compact mode now shows the requested Projects or Inspector panel as a
+single overlay and routes Git/Files input only while that panel is rendered.
+The floating terminal toolbar now has a policy test covering focus, pane count,
+and grid width. Verification: `cargo fmt --all --check`, `cargo test -p
+omaterm --bin omaterm-desktop` (288 PASS), and `cargo build --release --bin
+omaterm-desktop` PASS. Native Wayland captures prove `Ctrl+Shift+G` reveals Git
+and `Ctrl+B` reveals Projects at 640×400.

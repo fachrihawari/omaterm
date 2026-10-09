@@ -38,6 +38,21 @@ omaterm terminal read --pane <id> --lines 50
 
 ## Features
 
+Open the command palette (`Ctrl+Shift+P`, `>` command mode) and run
+`Preferences: Toggle Theme` — or pick an explicit `Preferences: Theme`
+entry (`Dark`, `Light`, `Follow System`). The choice applies instantly to
+the workspace and terminals and is saved to `~/.config/omaterm/config.toml`
+(or `$XDG_CONFIG_HOME/omaterm/config.toml`):
+
+```toml
+[appearance]
+theme = "light"
+```
+
+`dark` selects the dark palette; `system` follows the desktop appearance
+live (Omarchy theme switches apply without a restart). The workspace and
+terminal use the same selected palette.
+
 ### 🖥️ Terminal workspace done right
 
 - **Real PTYs, real shells** — bash, zsh, fish, starship, TUIs (`vim`, `less`,

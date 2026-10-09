@@ -1,16 +1,4 @@
-//! Legacy workbench helpers still in use by notices and the Git branch row.
-//!
-//! The VS Code-style shell (activity rail, contextual sidebar, title and
-//! context rows, tab strip) is retired: UI v5 (`ui::theme`, `ui::geometry`)
-//! owns the frame. What remains here are notice-severity colors, the two
-//! Nerd Font glyphs still rendered pending Lucide SVG vendoring (P2c), and
-//! the branch-label helper. Everything else was deleted with the old frame.
-
-/// Notice strip severity colors (existing banner semantics).
-pub const WARN_BG: u32 = 0x3F321D;
-pub const WARN_TEXT: u32 = 0xFDE68A;
-pub const ERROR_BG: u32 = 0x3F1D1D;
-pub const ERROR_TEXT: u32 = 0xFCA5A5;
+//! Git branch-label formatting shared by workspace chrome.
 
 /// Branch label with a dirty marker (`main*`). `None` when the project is
 /// not a repo so the status bar omits git rather than inventing metadata.

@@ -55,16 +55,20 @@ const NAME_ICONS: &[(&str, &str, u32)] = &[
     (
         "package-lock.json",
         assets::FILE_PACKAGE,
-        crate::ui::theme::MUTED,
+        crate::ui::theme::DARK.muted,
     ),
     ("cargo.toml", assets::FILE_PACKAGE, 0x9DACB7),
-    ("cargo.lock", assets::FILE_PACKAGE, crate::ui::theme::MUTED),
+    (
+        "cargo.lock",
+        assets::FILE_PACKAGE,
+        crate::ui::theme::DARK.muted,
+    ),
     (".gitignore", assets::FILE_TEXT, 0xF05032),
     (".gitattributes", assets::FILE_TEXT, 0xF05032),
     (
         ".editorconfig",
         assets::FILE_SETTINGS,
-        crate::ui::theme::MUTED,
+        crate::ui::theme::DARK.muted,
     ),
 ];
 
@@ -97,8 +101,8 @@ const EXT_ICONS: &[(&str, &str, u32)] = &[
     ("bash", assets::FILE_TERMINAL, 0x89E051),
     ("zsh", assets::FILE_TERMINAL, 0x89E051),
     ("fish", assets::FILE_TERMINAL, 0x89E051),
-    ("c", assets::FILE_CODE_2, crate::ui::theme::MUTED),
-    ("h", assets::FILE_CODE_2, crate::ui::theme::MUTED),
+    ("c", assets::FILE_CODE_2, crate::ui::theme::DARK.muted),
+    ("h", assets::FILE_CODE_2, crate::ui::theme::DARK.muted),
     ("cpp", assets::FILE_CODE_2, 0xF34B7D),
     ("cc", assets::FILE_CODE_2, 0xF34B7D),
     ("cxx", assets::FILE_CODE_2, 0xF34B7D),
@@ -156,15 +160,15 @@ const EXT_ICONS: &[(&str, &str, u32)] = &[
 
 const FALLBACK_FILE_ICON: FileIcon = FileIcon {
     icon: assets::FILE,
-    color: Some(crate::ui::theme::MUTED),
+    color: Some(crate::ui::theme::DARK.muted),
 };
 const FOLDER_CLOSED_ICON: FileIcon = FileIcon {
     icon: assets::FOLDER,
-    color: Some(crate::ui::theme::MUTED),
+    color: Some(crate::ui::theme::DARK.muted),
 };
 const FOLDER_OPEN_ICON: FileIcon = FileIcon {
     icon: assets::FOLDER_OPEN,
-    color: Some(crate::ui::theme::MUTED),
+    color: Some(crate::ui::theme::DARK.muted),
 };
 
 /// Exact inspector tree row height (mock): 28px rows, 11px labels.
@@ -227,6 +231,14 @@ pub fn highlight_ranges(text: &str, matched: &[usize]) -> Vec<std::ops::Range<us
 /// extensions; `README*`/`LICENSE*` families match by prefix; `.git` and
 /// `node_modules` directories get their own marks.
 pub fn icon_for(path: &Path, kind: FileKind, expanded: bool) -> FileIcon {
+    let mut icon = base_icon_for(path, kind, expanded);
+    if omaterm_terminal::theme_mode() == omaterm_terminal::ThemeMode::Light {
+        icon.color = icon.color.map(crate::ui::theme::light_icon_ink);
+    }
+    icon
+}
+
+fn base_icon_for(path: &Path, kind: FileKind, expanded: bool) -> FileIcon {
     if kind == FileKind::Directory {
         let name = path
             .file_name()

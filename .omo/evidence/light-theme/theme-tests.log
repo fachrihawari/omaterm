@@ -1,0 +1,16 @@
+   Compiling omaterm v0.2.0 (/home/fachri/Projects/personal/omaterm/apps/omaterm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.88s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (target/debug/deps/omaterm_desktop-0af62bedba965bef)
+
+running 4 tests
+test ui::theme::tests::alpha_packing_preserves_palette_channels ... ok
+test ui::theme::tests::terminal_query_defaults_match_ui_surfaces_in_both_modes ... ok
+test ui::theme::tests::configured_theme_overrides_platform_appearance ... ok
+test ui::theme::tests::light_text_and_semantic_inks_have_readable_contrast ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 270 filtered out; finished in 0.00s
+
+mbx[cache]: 0 hits, 0 misses, 1 not looked up, 1 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 2h 7m not spent compiling, over 489 builds. what you did instead is between you and the terminal.

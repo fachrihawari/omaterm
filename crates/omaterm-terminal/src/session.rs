@@ -531,6 +531,16 @@ impl TerminalSession {
         self.recorder.observe_resize(cols, rows);
     }
 
+    /// Ask children to repaint after a theme switch without changing the
+    /// grid: re-applies the current size to the kernel PTY (`TIOCSWINSZ` +
+    /// `SIGWINCH`) so shells and TUIs redraw against the new palette. The
+    /// engine and the replay record are untouched — dimensions did not
+    /// change, only colors did.
+    pub fn signal_theme_redraw(&mut self) {
+        let viewport = self.viewport();
+        self.pty.resize(viewport.cols, viewport.lines);
+    }
+
     pub fn scroll(&mut self, command: ScrollCommand) {
         self.engine.scroll(command);
     }
