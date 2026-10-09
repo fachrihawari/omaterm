@@ -304,6 +304,9 @@ struct WorkspaceView {
     /// states and selection (GPUI-free).
     git_panel: git_panel::GitPanel,
     git_discard_prompt_open: bool,
+    /// Stash-drop confirmation dialog in flight (same single-dialog guard
+    /// as `git_discard_prompt_open`).
+    git_stash_drop_prompt_open: bool,
     /// Background status-refresh completions `(generation, repo key,
     /// outcome)`. Root resolution and `git status` both run on the worker
     /// (never the UI thread); stale generations drop on project switch.
@@ -2554,6 +2557,7 @@ impl WorkspaceView {
             commit_blink_active: false,
             git_panel: git_panel::GitPanel::default(),
             git_discard_prompt_open: false,
+            git_stash_drop_prompt_open: false,
             git_tx,
             git_rx,
             git_generation: 0,
@@ -14903,6 +14907,7 @@ impl WorkspaceView {
                     let selected = self.git_panel.stash_selection(&repo_key);
                     for (position, stash) in list.stashes.iter().enumerate() {
                         let stash_index = stash.index;
+                        let stash_subject = stash.subject.clone();
                         let active = Some(position) == selected;
                         bar = bar.child(
                             div()
@@ -15032,16 +15037,14 @@ impl WorkspaceView {
                                                 window.focus(&view.focus_handle);
                                                 let repo_key = view.active_repo_key(project);
                                                 view.git_panel.select_stash(&repo_key, position);
-                                                if view.git_panel.stash_drop_confirmed(
-                                                    &view.active_repo_key(project),
+                                                view.git_confirm_stash_drop(
+                                                    project,
                                                     stash_index,
-                                                ) {
-                                                    view.stash_drop(project, stash_index, cx);
-                                                } else {
-                                                    view.input_notice =
-                                                        Some("Drop: press again to confirm".into());
-                                                    cx.notify();
-                                                }
+                                                    stash_subject.clone(),
+                                                    repo_key,
+                                                    window,
+                                                    cx,
+                                                );
                                             }),
                                         )
                                         .child(crate::ui::assets::icon(
@@ -15228,8 +15231,52 @@ impl WorkspaceView {
         }
     }
 
-    /// Drop one stash entry through the dispatcher (two-step armed by the
-    /// row button), then refetch.
+    /// Capture the stash entry before asking for confirmation. The dialog
+    /// carries the stable `stash@{n}` index plus the subject so the user
+    /// sees exactly which entry will be destroyed.
+    fn git_confirm_stash_drop(
+        &mut self,
+        project: ProjectId,
+        index: usize,
+        subject: String,
+        repo_key: git_panel::RepoKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutting_down || self.git_stash_drop_prompt_open {
+            return;
+        }
+        self.git_stash_drop_prompt_open = true;
+        let message = format!("Drop stash '@{{{index}}}' — {subject}?");
+        let answer = window.prompt(
+            gpui::PromptLevel::Critical,
+            &message,
+            Some("This permanently deletes the stash entry. This action cannot be undone."),
+            &["Cancel", "Drop Stash"],
+            cx,
+        );
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let answer = answer.await.ok();
+            let _ = weak.update(cx, |view, cx| {
+                view.git_stash_drop_prompt_open = false;
+                if git_panel::GitPanel::stash_drop_confirmed(
+                    answer,
+                    project,
+                    &repo_key,
+                    view.coordinator.selected_project_id(),
+                    &view.active_repo_key(project),
+                    view.shutting_down,
+                ) {
+                    view.stash_drop(project, index, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Drop one stash entry through the dispatcher (confirmed by
+    /// [`Self::git_confirm_stash_drop`]), then refetch.
     fn stash_drop(&mut self, project: ProjectId, index: usize, cx: &mut Context<Self>) {
         match self.dispatch_command(
             OmaCommand::Git(GitCommand::StashDrop { project, index }),

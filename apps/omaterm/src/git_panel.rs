@@ -141,8 +141,6 @@ pub struct GitPanel {
     stashes: HashMap<RepoKey, omaterm_core::GitStashList>,
     /// Selected stash index per repo (row highlight + actions).
     stash_selected: HashMap<RepoKey, usize>,
-    /// Two-step stash-drop arm per repo (name + armed-at).
-    stash_drop_arm: HashMap<RepoKey, (usize, std::time::Instant)>,
     /// Commit message drafts, one per repo so switching between repos
     /// never loses typed text. Single-line (the desktop input submits
     /// on Enter).
@@ -162,6 +160,25 @@ impl GitPanel {
         shutting_down: bool,
     ) -> bool {
         answer == Some(1) && selected_project == Some(captured_project) && !shutting_down
+    }
+
+    /// Only the explicit destructive answer may drop a captured stash
+    /// entry. Extends [`GitPanel::discard_confirmed`] with a repo-identity
+    /// check: the captured multi-repo key must still be the active repo,
+    /// otherwise the dialog went stale (repo switch / rescan) and the drop
+    /// must not fire against a different repository's reflog.
+    pub fn stash_drop_confirmed(
+        answer: Option<usize>,
+        captured_project: ProjectId,
+        captured_repo: &RepoKey,
+        selected_project: Option<ProjectId>,
+        active_repo: &RepoKey,
+        shutting_down: bool,
+    ) -> bool {
+        answer == Some(1)
+            && selected_project == Some(captured_project)
+            && active_repo == captured_repo
+            && !shutting_down
     }
 
     pub fn status_for(&self, key: &RepoKey) -> Option<&GitStatusInfo> {
@@ -203,7 +220,6 @@ impl GitPanel {
         self.stash_collapsed.remove(key);
         self.stashes.remove(key);
         self.stash_selected.remove(key);
-        self.stash_drop_arm.remove(key);
     }
 
     /// Last-good stash list for a repo, if fetched.
@@ -225,7 +241,6 @@ impl GitPanel {
                 self.stash_selected.insert(key.clone(), 0);
             }
         }
-        self.stash_drop_arm.remove(key);
         self.stashes.insert(key.clone(), list);
     }
 
@@ -233,7 +248,6 @@ impl GitPanel {
     /// here an explicit clear precedes a refetch after mutations).
     pub fn clear_stashes(&mut self, key: &RepoKey) {
         self.stashes.remove(key);
-        self.stash_drop_arm.remove(key);
     }
 
     /// Selected stash index for a repo, if any rows exist.
@@ -253,7 +267,6 @@ impl GitPanel {
         } else {
             self.stash_selected.insert(key.clone(), index.min(len - 1));
         }
-        self.stash_drop_arm.remove(key);
     }
 
     /// Whether the stash group is collapsed for a repo.
@@ -268,24 +281,6 @@ impl GitPanel {
         } else {
             self.stash_collapsed.insert(key.clone());
             true
-        }
-    }
-
-    /// Two-step drop arm: first call arms ("press again"), second call
-    /// within 8s confirms. Returns true on confirm.
-    pub fn stash_drop_confirmed(&mut self, key: &RepoKey, index: usize) -> bool {
-        const WINDOW: std::time::Duration = std::time::Duration::from_secs(8);
-        let armed = self
-            .stash_drop_arm
-            .get(key)
-            .is_some_and(|(armed, at)| *armed == index && at.elapsed() < WINDOW);
-        if armed {
-            self.stash_drop_arm.remove(key);
-            true
-        } else {
-            self.stash_drop_arm
-                .insert(key.clone(), (index, std::time::Instant::now()));
-            false
         }
     }
 
@@ -663,6 +658,67 @@ mod tests {
             Some(1),
             project,
             Some(project),
+            true
+        ));
+    }
+
+    #[test]
+    fn stash_drop_dialog_cancellation_and_stale_context_never_confirm() {
+        let project = ProjectId::new();
+        let repo = RepoKey::root(project);
+        for answer in [None, Some(0), Some(2)] {
+            assert!(!GitPanel::stash_drop_confirmed(
+                answer,
+                project,
+                &repo,
+                Some(project),
+                &repo,
+                false
+            ));
+        }
+        assert!(GitPanel::stash_drop_confirmed(
+            Some(1),
+            project,
+            &repo,
+            Some(project),
+            &repo,
+            false
+        ));
+        // Wrong project: dialog went stale across a project switch.
+        assert!(!GitPanel::stash_drop_confirmed(
+            Some(1),
+            project,
+            &repo,
+            Some(ProjectId::new()),
+            &repo,
+            false
+        ));
+        assert!(!GitPanel::stash_drop_confirmed(
+            Some(1),
+            project,
+            &repo,
+            None,
+            &repo,
+            false
+        ));
+        // Stale repo: the active repo moved (multi-repo switch/rescan)
+        // while the dialog was open — never drop against another reflog.
+        let other = RepoKey::named(project, "other");
+        assert!(!GitPanel::stash_drop_confirmed(
+            Some(1),
+            project,
+            &repo,
+            Some(project),
+            &other,
+            false
+        ));
+        // Shutdown: the view is tearing down.
+        assert!(!GitPanel::stash_drop_confirmed(
+            Some(1),
+            project,
+            &repo,
+            Some(project),
+            &repo,
             true
         ));
     }
