@@ -1180,3 +1180,38 @@ fn bash_lifecycle_unicode_command_text_is_exact() {
     assert_eq!(records[0].command, "printf '雪 %s\\n' ok");
     assert_eq!(records[0].exit_status, Some(0));
 }
+
+#[test]
+fn theme_redraw_signals_foreground_group_without_resizing() {
+    let mut session =
+        TerminalSession::new(std::env::temp_dir(), Some("/bin/bash"), 80, 24).expect("spawn bash");
+    wait_for_prompt(&mut session);
+    session
+        .write_input(b"trap 'echo REDRAW-SEEN' WINCH; sleep 5\n")
+        .expect("arm trap");
+    // Let the shell process the trap and start the foreground sleep; the
+    // sleep holds the foreground process group so the themed redraw has a
+    // live target distinct from the shell itself.
+    std::thread::sleep(Duration::from_millis(500));
+    let _ = session.pump();
+    let before = session.viewport();
+    let history_before = session.history_version();
+    session.signal_theme_redraw();
+    let viewport = pump_until(&mut session, Duration::from_secs(5), |viewport| {
+        viewport_text(viewport).contains("REDRAW-SEEN")
+    });
+    assert!(
+        viewport_text(&viewport).contains("REDRAW-SEEN"),
+        "foreground child must receive SIGWINCH on theme redraw"
+    );
+    assert_eq!(
+        (viewport.cols, viewport.lines),
+        (before.cols, before.lines),
+        "theme redraw must not resize the grid"
+    );
+    assert_eq!(
+        session.history_version(),
+        history_before,
+        "theme redraw must not record history"
+    );
+}

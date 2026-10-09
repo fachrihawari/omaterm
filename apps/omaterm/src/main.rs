@@ -6203,8 +6203,8 @@ impl WorkspaceView {
             let Ok(mut session) = handle.lock() else {
                 continue;
             };
-            // Same-size kernel nudge: SIGWINCH asks children to redraw
-            // against the new palette without touching the grid or history.
+            // Foreground-group SIGWINCH: asks children to redraw against
+            // the new palette without touching the grid or history.
             session.signal_theme_redraw();
             self.snapshots.insert(session_id, session.viewport());
         }

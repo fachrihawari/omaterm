@@ -532,13 +532,28 @@ impl TerminalSession {
     }
 
     /// Ask children to repaint after a theme switch without changing the
-    /// grid: re-applies the current size to the kernel PTY (`TIOCSWINSZ` +
-    /// `SIGWINCH`) so shells and TUIs redraw against the new palette. The
-    /// engine and the replay record are untouched — dimensions did not
-    /// change, only colors did.
+    /// grid: signals the PTY foreground process group with `SIGWINCH`
+    /// exactly as the kernel does on a real resize, so shells and TUIs
+    /// redraw against the new palette. A same-size `TIOCSWINSZ` sends no
+    /// signal (verified on Linux), and signaling only the direct child
+    /// would miss foreground TUIs behind non-forwarding shells — hence the
+    /// foreground group. The engine and the replay record are untouched —
+    /// dimensions did not change, only colors did. Failures (no foreground
+    /// group, exited shell) are ignored: the desktop still republishes the
+    /// snapshot, so chrome is always correct.
     pub fn signal_theme_redraw(&mut self) {
-        let viewport = self.viewport();
-        self.pty.resize(viewport.cols, viewport.lines);
+        #[cfg(unix)]
+        {
+            // SAFETY: raw fd + signal number touch no memory. The fd belongs
+            // to our own PTY master, and the target group lives in the
+            // child's session — never our own process group.
+            unsafe {
+                let pgid = libc::tcgetpgrp(self.pty.as_raw_fd());
+                if pgid > 1 {
+                    let _ = libc::killpg(pgid, libc::SIGWINCH);
+                }
+            }
+        }
     }
 
     pub fn scroll(&mut self, command: ScrollCommand) {
