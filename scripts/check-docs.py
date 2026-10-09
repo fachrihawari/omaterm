@@ -18,8 +18,8 @@ def main():
     links = 0
     references = 0
 
-    ipc = (root / "docs/08-milestone-8-ipc.md").read_text()
-    cli = (root / "docs/09-milestone-9-cli.md").read_text()
+    ipc = (root / "docs/2026-09-26-08-milestone-8-ipc.md").read_text()
+    cli = (root / "docs/2026-09-26-09-milestone-9-cli.md").read_text()
     method = r"[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*"
     wire_methods = set(re.findall(rf"^\| `({method})` \|", ipc, re.MULTILINE))
     cli_methods = set(re.findall(rf"^\| `[^`]+` \| `({method})` \|",

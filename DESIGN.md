@@ -52,7 +52,9 @@ surface and pending verification explicitly in the audit evidence.
 
 ## Accepted limitations
 
-Theme selection occurs at startup to keep terminal application color discovery
-consistent. Runtime theme changes require restarting the workspace. This audit
-does not certify all surfaces until native interaction and visual evidence has
-been collected against the final build.
+The palette is selectable at runtime (`Preferences: Toggle Theme`, explicit
+Dark / Light / Follow System, or `appearance.theme` in `config.toml`); `system`
+follows the desktop appearance live. A running TUI that cached its OSC 10/11/12
+reply at startup may need a shell restart to pick up a new palette — new panes
+are always exact. This audit does not certify all surfaces until native
+interaction and visual evidence has been collected against the final build.

@@ -22,10 +22,10 @@
 
 Read this report with:
 
-- [M19 comprehensive completion plan](../m19-completion-plan.md) — especially §13
+- [M19 comprehensive completion plan](../2026-10-03-m19-completion-plan.md) — especially §13
   (Automated gates, Native acceptance run, Requirement-to-evidence register) and
   §14 (Definition of done).
-- [M19 implementation contract](../m19-basic-editor-implementation-plan.md).
+- [M19 implementation contract](../2026-10-03-m19-basic-editor-implementation-plan.md).
 - [status record](../status.md) — slice-by-slice commands, results, blockers.
 - [acceptance matrix](../acceptance-matrix.md) — release requirements.
 - [dependency/license inventory](../dependencies.md) — exact dependency versions

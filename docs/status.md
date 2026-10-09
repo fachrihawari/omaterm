@@ -1,10 +1,17 @@
 # Implementation Status
 
+> This is the chronological record of implemented slices and their verification.
+> Entries tagged "(uncommitted)" were written while the work sat in the working
+> tree; most have since been committed and released (the M20 entries are part of
+> `v0.4.0`). The tag records the state at writing time, not the current tree.
+> Milestone-level status is summarized in the table further down; native Wayland
+> gates marked pending there are still pending unless a later entry closes them.
+
 ## Current position
 
 ### Multi-repo Phase E + F: every Git surface follows the active repo — 2026-10-09 (uncommitted)
 
-Milestone [20 — Multi-Repo Support](20-milestone-20-multi-repo.md) Phases
+Milestone [20 — Multi-Repo Support](2026-10-09-20-milestone-20-multi-repo.md) Phases
 E and F. Status rows already followed the active repository after Phase D;
 this slice makes the **whole** Git subsystem agree on one active repository
 so the panel, CLI and agents cannot drift, and re-keys every per-project
@@ -72,7 +79,7 @@ Git surface to the per-repository `RepoKey`.
 
 ### Multi-repo VS Code-style Git tab (Phase D) — 2026-10-09 (uncommitted)
 
-Milestone [20 — Multi-Repo Support](20-milestone-20-multi-repo.md) Phase D.
+Milestone [20 — Multi-Repo Support](2026-10-09-20-milestone-20-multi-repo.md) Phase D.
 The Git tab now renders a repository picker plus one section header per
 depth-1 repository, and the active repository's full M14 body renders
 below that chrome. Single-repo projects are untouched by construction.
@@ -135,7 +142,7 @@ as per-repo expand/collapse and made the active repository ambiguous.
   renders. Poller keys stay uncapped by design: hidden repos still
   refresh so a later switch never shows a stale body.
 - Added (not yet executed) Phase E to
-  `docs/20-milestone-20-multi-repo.md`: every Git surface follows the
+  `docs/2026-10-09-20-milestone-20-multi-repo.md`: every Git surface follows the
   active repository. Audit: graph/history, commit files, both diff
   paths, branch list + all branch mutations, stage/unstage/discard/
   commit/stage-hunk, all stash ops + drafts, sync, and blame still
@@ -153,7 +160,7 @@ as per-repo expand/collapse and made the active repository ambiguous.
   omaterm-desktop --bin omaterm`, `python3 scripts/check-docs.py`,
   `git diff --check` PASS. Native Wayland validation is still manual.
 
-Milestone [20 — Multi-Repo Support](20-milestone-20-multi-repo.md). A project
+Milestone [20 — Multi-Repo Support](2026-10-09-20-milestone-20-multi-repo.md). A project
 root containing several repositories now resolves to a depth-1 repo list
 (project root itself when it is a repo, else its direct children holding
 `.git` as dir or worktree gitfile) instead of a single root. Phase D (VS
@@ -987,7 +994,7 @@ snapshot fixtures that use `/tmp` were not treated as regressions.
 
 ### Git history graph and commit-file diff planning — 2026-10-06
 
-- Added the [comprehensive Git history plan](git-history-plan.md) against
+- Added the [comprehensive Git history plan](2026-10-06-git-history-plan.md) against
   clean baseline `f4f8907`. Graph sits below Staged Changes/Changes and stays
   visible in clean repositories; commits expand into files whose clicks open
   parent-specific historical Split/Inline previews.
@@ -1526,11 +1533,14 @@ run. S9 remains open; next action is an uninterrupted target-focused native run.
 **UI v5 fidelity: incomplete.** The committed rewrite `8cade1b` has confirmed
 sidebar, icon, typography, spacing, hover, geometry and color differences from
 the supplied HTML. The earlier all-phases-finished claim is superseded by the
-[fidelity correction plan](ui-v5-fidelity-correction-plan.md). Historical Rust
+[fidelity correction plan](2026-10-02-ui-v5-fidelity-correction-plan.md). Historical Rust
 check results below do not establish pixel-perfect visual acceptance.
 
-Milestones 1–3 are complete. Milestone 4 is implemented and verified; see the
-M4 evidence below.
+Milestones 1–14 are complete. Milestones 15, 16, 18, and 19 are implemented
+with native validation gates still open; M17 is an open closeout and M20 is
+implementation-complete with its 2-repo Wayland matrix pending. The table below
+is the per-milestone summary; see the records above and the
+[acceptance matrix](acceptance-matrix.md) for evidence.
 
 | Milestone | Status | Verification evidence | Blockers | Next action |
 |---|---|---|---|---|
@@ -1548,11 +1558,12 @@ M4 evidence below.
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
-| 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk parity, cancellable latest-only worker, shared mutation invalidation, cached virtual rows, independent Split X/Inline X, source anchors; release Wayland direct Git click, long-row/character reach, exact copy, one-hunk stage, IPC refresh and terminal open | Rails/paging/drag, rendered-range instrumentation and full metadata/stale/scope/refresh-anchor matrix remain; see current M15 evidence | Finish D2/D3 in the [remaining-work plan](m15-m16-remaining-work-plan.md) before M16 completion |
+| 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk parity, cancellable latest-only worker, shared mutation invalidation, cached virtual rows, independent Split X/Inline X, source anchors; release Wayland direct Git click, long-row/character reach, exact copy, one-hunk stage, IPC refresh and terminal open | Rails/paging/drag, rendered-range instrumentation and full metadata/stale/scope/refresh-anchor matrix remain; see current M15 evidence | Finish D2/D3 in the [remaining-work plan](2026-10-03-m15-m16-remaining-work-plan.md) before M16 completion |
 | 16 — Command Palette | in_progress | Dual-mode overlay, fuzzy ranked command/workspace/file/Git candidates, one latest-only source worker, bounded root index, core ranking, root-aware File MRU and origin restoration; release Wayland command/file/project/split/focus/process refresh proof and CLI spot-checks recorded below | M15 not closed; rapid-search worker/resource measurements and full stale/focus/error/argument matrix pending (M18 query is now off-thread, see M18 row) | Finish M15, then close M16 implementation/acceptance gaps |
 | 17 — v0.2 Closure | open | No closeout run yet; depends on M12–M16 completion | M15/M16 in progress; v0.2 acceptance rows pending | Only after M12–M16 pass; M19 re-sequencing does not close this gate |
 | 18 — Process Panel | in_progress (query + kill + panel UI) | Bounded async inspection, cancellation/deadline and completion ownership guards; CPU/RSS, shell roots, ports, pidfd-scoped SIGTERM; project-bound UI states and contextual 8s arm; 250ms timer drives 2s refresh. 640 workspace tests and full gates PASS; release Wayland child/port/scope/100-query/terminal-response/screenshot/normal-close evidence in [report](evidence/m18-runtime-current.md) | Native arm/cancel/copy/collapse/refresh, busy CPU/timing and pre-bind process identity still open; kill ancestry is synchronous; preflight isolation incident recorded | Complete remaining native and identity/async-kill gates before M18 acceptance |
-| 19 — Basic Built-in Editor | in_progress | Rooted context I/O + SHA-256 revisions, `EditorIoQueue` worker (1 active + 16 queued), bounded 32-slot store, metadata-only registry snapshots/restore, `EntityInputHandler`; 606-test suite, Clippy, release pass with `RUSTUP_TOOLCHAIN=1.99.0` — see M19 records below and the [S9 report](evidence/m19-s9-report.md) | S9/E01–E10 open: native input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit/restart, IME preedit; [milestone spec](19-milestone-19-editor.md) | Complete S9 native exit criteria; do not claim M19 complete |
+| 19 — Basic Built-in Editor | in_progress | Rooted context I/O + SHA-256 revisions, `EditorIoQueue` worker (1 active + 16 queued), bounded 32-slot store, metadata-only registry snapshots/restore, `EntityInputHandler`; 606-test suite, Clippy, release pass with `RUSTUP_TOOLCHAIN=1.99.0` — see M19 records below and the [S9 report](evidence/m19-s9-report.md) | S9/E01–E10 open: native input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit/restart, IME preedit; [milestone spec](2026-10-04-19-milestone-19-editor.md) | Complete S9 native exit criteria; do not claim M19 complete |
+| 20 — Multi-Repo Support | implementation complete; native validation pending | Depth-1 scan in `omaterm-context`, `active_repo` in core with snapshot v3→v4, router-owned scan + `git_root` chokepoint, every Git surface keyed by `RepoKey`; `cargo test --workspace` (21 suites), fmt/Clippy/docs/`git diff --check` PASS — see M20 records above and the [milestone spec](2026-10-09-20-milestone-20-multi-repo.md) | Native 2-repo Wayland switch/restart matrix not run; E6 `--repo` override deferred; 32-row cap leaves repos 33+ unclickable | Run the M20 Phase G/I native Wayland matrix before marking complete |
 | Privacy: local-only defaults (§46) | partial | Redaction audit green; local state under `$XDG_*`; no telemetry/cloud code | No dedicated no-egress network test or user-facing privacy statement; acceptance row partial in [matrix](acceptance-matrix.md) | Add no-egress test or record explicit limit |
 
 ## M18 Info-panel process UI — 2026-10-04
@@ -1581,7 +1592,7 @@ M18.
 
 ## M18 async process query + scoped kill (query prerequisite) — 2026-10-04
 
-Landed Q01–Q03 from the [remaining-work plan](m15-m16-remaining-work-plan.md) §8,
+Landed Q01–Q03 from the [remaining-work plan](2026-10-03-m15-m16-remaining-work-plan.md) §8,
 satisfying the M16 process-query prerequisite. This is not full M18 acceptance:
 the collapsible Info panel UI, debounced auto-refresh, kill arm/confirm UI and
 release Wayland resource proof remain open.
@@ -1637,7 +1648,7 @@ Wayland child/port ownership and 100-query FD/thread stability proof.
 
 ## M15 + M16 remaining-work planning — 2026-10-03
 
-Created the [remaining-work plan](m15-m16-remaining-work-plan.md) against commit
+Created the [remaining-work plan](2026-10-03-m15-m16-remaining-work-plan.md) against commit
 `6d41c14` plus the existing uncommitted implementation. Inspected the working
 tree, milestone contracts, previous plans, diff row/worker/renderer code,
 palette ranking/search/cache/activation code and process-query routing.
@@ -1659,7 +1670,7 @@ application capability is marked complete by this planning change.
 Documentation verification: `python3 scripts/check-docs.py` passed (35 Markdown
 files, 126 local link targets, 282 blueprint references; all 34 CLI methods
 mapped). `git diff --check` and `git diff --no-index --check /dev/null
-docs/m15-m16-remaining-work-plan.md` passed. Consistency review separates
+docs/2026-10-03-m15-m16-remaining-work-plan.md` passed. Consistency review separates
 implemented behavior, historical evidence and required new acceptance; M18
 query work is kept distinct from full M18 completion.
 
@@ -1700,7 +1711,7 @@ acceptance was run in this increment. M15/M16 remain in progress; this update
 does not close their visual, interaction, performance or release gates.
 
 Remaining-work tracking now records D1/D2/P1/P2/P3 implementation deltas in
-`m15-m16-remaining-work-plan.md`. Next action is D1 request race coverage and
+`2026-10-03-m15-m16-remaining-work-plan.md`. Next action is D1 request race coverage and
 remaining M15 D2/D3 acceptance, followed by the M18 async query prerequisite.
 
 ### M15/M16 implementation checkpoint — 2026-10-03
@@ -1839,7 +1850,7 @@ acceptance. These results do not mark either milestone complete.
 
 ## M16 comprehensive implementation planning — 2026-10-03
 
-Created the [M16 implementation plan](m16-implementation-plan.md) after auditing
+Created the [M16 implementation plan](2026-10-03-m16-implementation-plan.md) after auditing
 the milestone and blueprint references, semantic commands/router, M13 finder
 and fuzzy backend, M18 process-query contract, and current verification gates.
 The working tree was clean before these documentation edits.
@@ -1857,7 +1868,7 @@ Documentation-only verification:
 - `python3 scripts/check-docs.py`: PASS (34 Markdown files, 111 local link
   targets, 272 numbered blueprint references; all 33 CLI methods mapped).
 - `git diff --check` and `git diff --no-index --check /dev/null
-  docs/m16-implementation-plan.md`: PASS.
+  docs/2026-10-03-m16-implementation-plan.md`: PASS.
 - Local consistency review: prerequisites remain explicit; planned checks are
   separate from evidence; navigation focus preserves semantic intent; no new
   palette wire method or dependency is proposed.
@@ -1868,7 +1879,7 @@ inventory, tracking the independently deliverable M18 query slice.
 
 ## M15 comprehensive completion planning — 2026-10-03
 
-Created the [M15 completion plan](m15-completion-plan.md) after auditing the
+Created the [M15 completion plan](2026-10-03-m15-completion-plan.md) after auditing the
 milestone, blueprint references, parser/repository tests, DTOs, CLI mapping,
 preview state/rendering and existing UX correction records. The clean working
 tree was inspected before edits.
@@ -1884,7 +1895,7 @@ now records the approved v5 Split-mode extension explicitly.
 Documentation-only verification: `python3 scripts/check-docs.py` passed (32
 Markdown files, 103 local link targets, 265 numbered blueprint references; all
 33 CLI methods mapped); `git diff --check` and `git diff --no-index --check
-/dev/null docs/m15-completion-plan.md` passed. Local consistency review
+/dev/null docs/2026-10-03-m15-completion-plan.md` passed. Local consistency review
 keeps planned tests separate from evidence and whole-file staging separate from
 true hunk staging. Cargo and native desktop checks are not applicable to this
 planning change. No application capability or M15 completion is claimed.
@@ -2064,7 +2075,7 @@ reproducible blockers, approved deviations, and the smallest next action.
 
 The [acceptance matrix](acceptance-matrix.md) tracks release requirements. Planned
 tests in milestone documents are not evidence of implemented application behavior.
-The [M5–M8 closure plan](m5-m8-closure-plan.md) orders the remaining blockers;
+The [M5–M8 closure plan](2026-09-27-m5-m8-closure-plan.md) orders the remaining blockers;
 it records intended work, not completed validation.
 
 ## Diff and Files/Git UX correction planning — 2026-10-02
@@ -2072,7 +2083,7 @@ it records intended work, not completed validation.
 User feedback and screenshot identify unreadable diff rows, unnatural/slow Files
 scrolling, label-only horizontal movement, off-center Git file marks, and a
 persistent unusable Files shortcut strip. The
-[detailed correction plan](diff-files-ux-correction-plan.md) expands R4/R5 into
+[detailed correction plan](2026-10-03-diff-files-ux-correction-plan.md) expands R4/R5 into
 U0–U5 deliveries with measured row/viewport contracts and live acceptance gates.
 
 Source audit confirms missing `.flex()` on diff decoration and Git name/path
@@ -2090,7 +2101,7 @@ actions. Existing M15 capability gaps remain distinct from presentation repair.
 Documentation checks: `python3 scripts/check-docs.py` passed (31 Markdown files,
 95 local link targets, 256 numbered blueprint references; 33 CLI mappings);
 `git diff --check` and `git diff --no-index --check /dev/null
-docs/diff-files-ux-correction-plan.md` passed. Cargo checks are unnecessary for
+docs/2026-10-03-diff-files-ux-correction-plan.md` passed. Cargo checks are unnecessary for
 this documentation-only change.
 
 ### Diff and Files/Git UX U1 — 2026-10-02
@@ -2196,7 +2207,7 @@ remains pending.
 
 User feedback: both sidebars, icons and numerous details still differ from
 the HTML. Audited the clean `8cade1b` baseline against the supplied source and
-created the [correction plan](ui-v5-fidelity-correction-plan.md).
+created the [correction plan](2026-10-02-ui-v5-fidelity-correction-plan.md).
 
 Confirmed gaps include inherited sidebar typography, an extra selected-project
 action row, remaining text/Nerd icon substitutions, missing Inspector menus,
@@ -2218,7 +2229,7 @@ Documentation checks:
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 30 Markdown files, 90 local link targets, 254 numbered blueprint references; 33 CLI methods mapped |
 | `git diff --check` | PASS |
-| `git diff --no-index --check /dev/null docs/ui-v5-fidelity-correction-plan.md` | PASS: new plan has no whitespace errors |
+| `git diff --no-index --check /dev/null docs/2026-10-02-ui-v5-fidelity-correction-plan.md` | PASS: new plan has no whitespace errors |
 | Consistency review | Source targets distinguished from measured evidence; missing capabilities and visual gates remain open; no phase marked complete by this plan |
 
 Cargo checks are not required for this documentation-only change. The next
@@ -2276,7 +2287,7 @@ explicitly tinted labels.
 The user requires exact reproduction of the supplied `omaterm_mock_ui_v5.html`,
 including Lucide icon geometry, both sidebar layouts, colors, typography,
 spacing, states, and motion. The new
-[pixel-perfect rewrite plan](ui-v5-pixel-perfect-plan.md) supersedes the visual
+[pixel-perfect rewrite plan](2026-10-02-ui-v5-pixel-perfect-plan.md) supersedes the visual
 direction of the earlier VS Code workbench plan. Baseline: `dca4e4e`; the
 working tree was clean before this documentation change.
 
@@ -2299,7 +2310,7 @@ Documentation verification:
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 29 Markdown files, 76 local link targets, 243 numbered blueprint references; 33 CLI methods mapped |
 | `git diff --check` | PASS: tracked documentation changes have no whitespace errors |
-| `git diff --no-index --check /dev/null docs/ui-v5-pixel-perfect-plan.md` | PASS: new plan has no whitespace errors |
+| `git diff --no-index --check /dev/null docs/2026-10-02-ui-v5-pixel-perfect-plan.md` | PASS: new plan has no whitespace errors |
 | Local consistency review | PASS: exact-design authority, source-derived versus measured values, current workbench baseline, milestone sequencing, and fixture/live acceptance are explicit |
 
 Cargo checks are not required for this docs-only change. External URL availability
@@ -2374,7 +2385,7 @@ view-local; every mutation still dispatches `OmaCommand`.
 
 Changed files: `apps/omaterm/src/{main.rs,ui/*,files.rs,git_panel.rs,
 diff_panel.rs,workbench.rs}`, `apps/omaterm/assets/icons/*`,
-`design/ui-v5/*`, `docs/{dependencies.md,status.md,ui-v5-pixel-perfect-plan.md}`.
+`design/ui-v5/*`, `docs/{dependencies.md,status.md,2026-10-02-ui-v5-pixel-perfect-plan.md}`.
 No core/protocol/CLI/persistence change; all temp proof gates reverted
 (zero `TEMP-PROOF` markers in tree).
 
@@ -3340,7 +3351,7 @@ Serial total is 19 + 13 + 6 + 11 + 14 + 81 + 24 = 168. (Correcting the row above
 
 ## M5–M8 closure planning — 2026-09-27
 
-Added [dependency-ordered closure plan](m5-m8-closure-plan.md) for unresolved
+Added [dependency-ordered closure plan](2026-09-27-m5-m8-closure-plan.md) for unresolved
 M5/M6 desktop gates, M7 runtime contracts, M8 wire/authorization/desktop
 integration, and carried-forward resource and test reliability evidence.
 Linked it from the milestone overview and status handoff. This documentation
@@ -3350,7 +3361,7 @@ change makes no milestone completion claim and does not alter existing code.
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 45 local link targets, 72 blueprint references; all 17 CLI methods map to IPC methods |
 | `git diff --check` | PASS: no whitespace errors in tracked changes |
-| `git diff --no-index --check /dev/null docs/m5-m8-closure-plan.md` | PASS: no whitespace errors in the new, untracked plan |
+| `git diff --no-index --check /dev/null docs/2026-09-27-m5-m8-closure-plan.md` | PASS: no whitespace errors in the new, untracked plan |
 
 Reviewed relative links and the plan's inventory against the M5–M8 milestone
 contracts, status and acceptance matrix. No Cargo/Wayland checks were run for
@@ -3359,7 +3370,7 @@ their own record above.
 
 ### M7/M8 execution-plan refresh — 2026-09-27
 
-Updated the same [closure plan](m5-m8-closure-plan.md) with the current Bash
+Updated the same [closure plan](2026-09-27-m5-m8-closure-plan.md) with the current Bash
 `terminal.run` and preallocated-session foundation, five gated steps (7A–8C),
 async pending/final response semantics, owner-serialized completion and cleanup,
 typed 17-method DTOs, bounded transport, scoped credentials and child-only env,
@@ -3372,7 +3383,7 @@ remain open.
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 50 local link targets, 72 numbered blueprint references; all 17 methods mapped |
 | `git diff --check` | PASS: tracked-file whitespace checks |
-| `git diff --no-index --check /dev/null docs/m5-m8-closure-plan.md` | PASS: untracked plan whitespace checks |
+| `git diff --no-index --check /dev/null docs/2026-09-27-m5-m8-closure-plan.md` | PASS: untracked plan whitespace checks |
 
 Reviewed the new heading anchors, milestone mapping, open blockers and links
 against the blueprint/M7/M8 specs and acceptance matrix. This planning update
@@ -3392,7 +3403,7 @@ User approved a post-v0.1 history feature with these decisions:
 - Always launch fresh shells. Do not restore PTYs, processes, active commands,
   parser state, or alternate-screen applications.
 
-Added `docs/10-milestone-10-history-recovery.md`, linked M10 from the overview
+Added `docs/2026-09-27-10-milestone-10-history-recovery.md`, linked M10 from the overview
 and acceptance matrix, clarified M6's unchanged non-goals, and updated blueprint
 §§6.6, 29, and 68 to record the approved post-v0.1 extension. No persistence,
 keyring, encryption, compression, shell integration, or terminal replay code has
@@ -4236,7 +4247,7 @@ through the M7 dispatcher (no duplicated logic; core stays GPUI-free).
 - `crates/omaterm-terminal/src/workspace.rs`
 - `crates/omaterm-protocol/src/method.rs`
 - `crates/omaterm-cli/src/commands/project.rs`
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md`, this status
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md`, this status
 
 ### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
 
@@ -4307,8 +4318,8 @@ v0.2+ features. Working tree only; no commit made.
 - `apps/omaterm/src/main.rs` — config load/apply/warning, font override,
   paste two-step, file-drop target, categorized logging targets
 - `packaging/arch/PKGBUILD`, `packaging/README.md` (new)
-- `docs/11-milestone-11-v01-closure.md` (new), `docs/00-overview.md`,
-  `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md`,
+- `docs/2026-09-28-11-milestone-11-v01-closure.md` (new), `docs/00-overview.md`,
+  `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md`,
   `docs/acceptance-matrix.md`, `docs/dependencies.md`, this status record
 
 ### Automated verification (Rust 1.98.1)
@@ -4429,7 +4440,7 @@ tree only; no commit made.
 - `crates/omaterm-cli/src/{commands/project,output,main}.rs` — `omaterm
   project root [--project ID]` (explicit > `OMATERM_PROJECT_ID` > server
   selection), human + `--json` rendering
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping rows),
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md` (mapping rows),
   `docs/dependencies.md`, this status record
 
 ### Semantic decisions (recorded, not deviations)
@@ -4557,7 +4568,7 @@ only; no commit made.
 - `crates/omaterm-cli/src/{main,output,commands/file}.rs` — `file list`
   / `search` / `open` verbs, human + `--json` rendering (28→31
   coverage rows)
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md` (mapping
   rows), `docs/dependencies.md`, this status record
 
 ### Key behaviors
@@ -4939,7 +4950,7 @@ Working tree only; no commit made.
 - `crates/omaterm-cli/src/{commands/git.rs (new),commands/mod.rs,main.rs,
   output.rs}` — `git status/stage/unstage/discard` verbs (31→35 parser
   rows), grouped human rendering + `--json`
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md` (mapping
   rows), `docs/dependencies.md`, this status record
 
 ### Key behaviors
@@ -5189,7 +5200,7 @@ and CLI. Working tree only; no commit made.
   logs only project ID, staged flag, file count, and truncation
 - `crates/omaterm-cli/src/{commands/diff.rs,commands/mod.rs,main.rs,output.rs}`
   — CLI mapping and human/JSON rendering
-- `docs/{08-milestone-8-ipc.md,09-milestone-9-cli.md,15-milestone-15-diff-viewer.md}`
+- `docs/{2026-09-26-08-milestone-8-ipc.md,2026-09-26-09-milestone-9-cli.md,2026-09-29-15-milestone-15-diff-viewer.md}`
   — method mappings and corrected Git-panel UI contract
 - This status record
 
@@ -5238,7 +5249,7 @@ acceptance criteria; rerun final gates.
 
 Replaced the prototype three-column window (180px project list + terminal
 tabs + fixed 240px right Files/Git panel, text-chip controls) with a VS
-Code-workbench frame per `docs/ui-workbench-redesign-plan.md` (Phases 0–3;
+Code-workbench frame per `docs/2026-10-02-ui-workbench-redesign-plan.md` (Phases 0–3;
 terminal-first scope preserved, no editor/debugger/extensions):
 
 - 35px command/title row: app + project identity, centered `Ctrl+P`
@@ -5272,7 +5283,7 @@ terminal-first scope preserved, no editor/debugger/extensions):
   status shell, `set_activity`, sidebar resizer drag, keybindings,
   notice/banner + palette-button token reuse; removed
   `render_sidebar_tabs` and `files::RIGHT_SIDEBAR_WIDTH_PX`
-- `docs/ui-workbench-redesign-plan.md` (new), `docs/00-overview.md`
+- `docs/2026-10-02-ui-workbench-redesign-plan.md` (new), `docs/00-overview.md`
   (link), this status record
 
 ### Automated verification (Rust 1.98.1)
@@ -5322,7 +5333,7 @@ input/focus control (Source Control render, Git-row-to-diff-preview,
 `Ctrl+B`/resizer, `Ctrl+P` overlay, `Ctrl+Shift+E/G`), then close the
 standing M15 gaps (partial-hunk staging, full live proof). Uncommitted
 work: `apps/omaterm/src/{main,workbench}.rs`,
-`docs/{ui-workbench-redesign-plan.md,00-overview.md,status.md}`.
+`docs/{2026-10-02-ui-workbench-redesign-plan.md,00-overview.md,status.md}`.
 
 ## M19 Phase B — document domain and bounded I/O — 2026-10-04
 
@@ -5673,7 +5684,7 @@ follow-ups under the existing M19 scope.
 
 Audited committed baseline `719926b` against the M19 contract, editor/router/UI
 code, schema-2 snapshot/migration, blueprint and UI v5 editor roles. Added the
-[comprehensive completion plan](m19-completion-plan.md) as the current execution
+[comprehensive completion plan](2026-10-03-m19-completion-plan.md) as the current execution
 sequence; the original implementation plan remains the product contract and
 A–F history. This is documentation-only work and makes no new implementation
 or native-pass claim.

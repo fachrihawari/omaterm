@@ -40,6 +40,29 @@ against selected dependency versions before implementing them.
 4. Run applicable checks and record commands/results in `docs/status.md`.
 5. Record manual desktop validation separately, plus blockers and next actions.
 
+### Harness protocol (how to get good results here)
+
+- **Evidence before synthesis.** Inspect the relevant files yourself before
+  stating facts. Do not let cached beliefs, prior session summaries, or
+  "already verified" wording override cheap local checks (`ls`, file reads,
+  `git status`, `git diff`, the checks below). If evidence contradicts a
+  previous claim, say so and trust the evidence.
+- **Keep diffs reviewable.** Prefer editing existing files over creating new
+  ones. Verify with `git diff` before finishing; every changed or deleted line
+  must be intentional, never a drive-by.
+- **Verify through execution.** Run code to confirm outputs, write and execute
+  tests, and reproduce bugs before fixing. State what was actually run and what
+  was not.
+- **Never report an unavailable check as passing.** Wayland/desktop behavior
+  requires a real Wayland session; if you cannot run it, mark it missing and
+  say so. The same applies to X11-only, GPU-only, and device-only evidence.
+- **Match the response to the request.** Keep replies short and factual;
+  reference files as `path:line`. When a request names several candidate areas
+  (diagnosis, logs, candidate files), examine all of them before answering.
+- **Respect corrections until lifted.** User corrections and scope constraints
+  stay active across turns. Obey them, or explain why fulfilling the request
+  would require violating them — do not silently drop them.
+
 Before M7, UI handlers call shared core operations through application coordination.
 M7 introduces the common dispatcher. Do not duplicate business logic in handlers.
 
@@ -56,6 +79,19 @@ For documentation-only changes, check links, consistency, and `git diff --check`
 Cargo checks are unnecessary. Never report unavailable checks as passing.
 Track `Cargo.lock`; record verified toolchain/dependency revisions and licenses in
 `docs/dependencies.md`. Example versions do not establish a working MSRV.
+
+Documentation checks run from the repository root:
+
+```bash
+python3 scripts/check-docs.py   # local link targets, blueprint §refs, CLI/IPC method coverage
+git diff --check                # whitespace hygiene
+```
+
+`check-docs.py` verifies every local link target, every numbered blueprint
+reference (§1–§79), bidirectional CLI/IPC method-table coverage (M8/M9 docs),
+shortcut-id parity with `apps/omaterm/src/shortcuts.rs`, and that the coverage
+map lists each blueprint section exactly once. External URLs and heading anchors
+need manual review.
 
 ---
 
@@ -96,7 +132,7 @@ Track `Cargo.lock`; record verified toolchain/dependency revisions and licenses 
                   bash/zsh/fish
 ```
 
-### Crate Structure (Target)
+### Crate Structure (Current)
 
 ```
 omaterm/
@@ -105,21 +141,25 @@ omaterm/
 │   ├── omaterm-core/           # Domain model, pane tree, commands
 │   ├── omaterm-terminal/       # PTY, engine trait, alacritty impl
 │   ├── omaterm-protocol/       # IPC wire types, request/response
-│   ├── omaterm-ipc/            # Unix socket server & client
-│   ├── omaterm-state/          # Persistence, snapshots, migration
-│   ├── omaterm-ui/             # GPUI components, rendering
+│   ├── omaterm-ipc/            # Socket server & client (Unix + Windows named pipe)
+│   ├── omaterm-state/          # Persistence, snapshots, migration, config
+│   ├── omaterm-context/        # Files, git, diff, editor over the fs/system git
+│   ├── omaterm-logging/        # Tracing subscriber + redaction
 │   └── omaterm-cli/            # CLI binary (clap)
 └── apps/
-    └── omaterm/                # Desktop binary entry point
+    └── omaterm/                # Desktop binary entry point (`omaterm-desktop`)
 ```
 
-> **Note:** Start lean. Don't create all crates upfront — split when module boundaries become clear. A simpler initial structure (core, terminal, ui, cli) is acceptable.
+> GPUI components and rendering live in `apps/omaterm/src/ui/`, not in a
+> separate `omaterm-ui` crate. Keep `omaterm-core` GPUI-free.
 
 ### Dependency Direction (MUST follow)
 
 ```
-omaterm-ui → omaterm-core → domain types (NO gpui dependency in core)
-omaterm-terminal → terminal abstraction (NO gpui)
+apps/omaterm → omaterm-core → domain types (NO gpui dependency in core)
+apps/omaterm → omaterm-terminal → terminal abstraction (NO gpui)
+apps/omaterm → omaterm-context → fs/git/diff/editor (NO gpui)
+apps/omaterm → omaterm-state, omaterm-ipc, omaterm-logging
 omaterm-cli → omaterm-protocol + omaterm-ipc
 omaterm-ipc → omaterm-protocol (wire types do not depend on transport)
 ```
@@ -242,6 +282,10 @@ These are **prohibited**. Do not implement them under any circumstances:
 
 Work in **vertical slices**. Each milestone builds on the previous one. See `docs/` for detailed milestone specifications.
 
+> Historical record: milestones 1–20 are implemented across the `0.1.0`–`0.4.0`
+> tags (open native-validation gates are tracked in the acceptance matrix).
+> New work starts from current `docs/status.md`, not by replaying this table.
+
 | # | Milestone | Key Deliverable |
 |---|-----------|-----------------|
 | 1 | GPUI Boot | Window renders on Wayland/X11 |
@@ -253,19 +297,59 @@ Work in **vertical slices**. Each milestone builds on the previous one. See `doc
 | 7 | Command Router | Semantic OmaCommand bus, UI migrated |
 | 8 | IPC | Unix socket server, JSON protocol v1 |
 | 9 | CLI | `omaterm` binary with core commands |
+| 10 | History Recovery | Opt-in encrypted scrollback + command journal |
+| 11 | v0.1 Closure | Config, launch args, logging, packaging |
+| 12 | Project Context Root | Root resolution, fs boundary, `[files]`/`[git]` |
+| 13 | File Tree | Sidebar tree + fuzzy filename search |
+| 14 | Git Status | VS Code-style status + stage/unstage/discard |
+| 15 | Diff Viewer | Hunk list + per-hunk stage |
+| 16 | Command Palette | Fuzzy palette over commands + files |
+| 17 | v0.2 Closure | Baselines, redaction audit, acceptance rows |
+| 18 | Process Panel | Info panel: processes + ports + scoped kill |
+| 19 | Basic Editor | Native open/edit/highlight/save; no LSP/IDE |
+| 20 | Multi-Repo Support | Depth-1 repo scan, active repo, Git sections |
 
-**Do not skip ahead.** Each slice must be working and tested before starting the next.
+**Do not skip ahead.** Each slice must be working and tested before starting the next. See the [milestone index](docs/00-overview.md) for descriptions and links.
+
+### Definition of done (each slice)
+
+- `cargo fmt --all --check`, `cargo test --workspace`, and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass; record exact
+  commands and results, not "tests pass".
+- Behavior is proven, not asserted: unit/integration tests for domain logic,
+  plus real-input reproduction for bug fixes (no "looks fixed by reading it").
+- UI changes are validated on a real Wayland session or explicitly recorded as
+  missing; screenshots or observed behavior go in `docs/status.md`.
+- The change is reachable through the semantic command path (UI, CLI, IPC share
+  one dispatcher) — never simulated keystrokes, never a UI-only duplicate.
+- `docs/status.md` names the commands run, what passed, what remains, and the
+  next action. If a gate is blocked (Wayland/X11/GPU/device unavailable), say
+  so explicitly and leave it open.
 
 ---
 
 ## Version Roadmap (Beyond v0.1)
 
-| Version | Focus |
-|---------|-------|
-| **0.1** | Terminal Workspace (Milestones 1–9) |
-| **0.2** | Developer Context (file tree, git, diff, command palette) |
-| **0.3** | Agent Awareness (process recognition, status, notifications) |
-| **0.4** | Agent Automation (spawn, prompt, wait, delegated panes) |
+Current release: **0.4.0**. Milestones 1–20 are implemented across the
+`0.1.0`–`0.4.0` tags; some native validation gates remain open.
+
+| Tag | Focus | Milestones |
+|-----|-------|------------|
+| **0.1.0** | Terminal Workspace | 1–11 |
+| **0.2.0** | Developer Context (file tree, git, diff, palette, editor, processes) | 12–19 |
+| **0.3.0** | Theme system, Windows build, security-audit fixes | cross-cutting |
+| **0.4.0** | Multi-Repo Support | 20 |
+| **0.x.x** | Agent Awareness (process recognition, status, notifications) | TBD (blueprint §23, §38, §39) |
+| **0.x.x** | Agent Automation (spawn, prompt, wait, delegated panes) | TBD (blueprint §21, §40, §41, §42) |
+
+The blueprint's suggested `0.3`/`0.4` agent labels predate the shipped tags
+and are not reused. All future agent work is versioned `0.x.x` until it is
+scheduled; never promise it under a concrete version number.
+
+Version tags do not by themselves close milestone acceptance. The milestone
+index in `docs/00-overview.md` is authoritative for scope and sequencing; the
+[acceptance matrix](docs/acceptance-matrix.md) records the open gates
+(M15/M16/M17/M18/M19 native validation, M20 2-repo Wayland matrix).
 
 ---
 
@@ -279,7 +363,7 @@ Work in **vertical slices**. Each milestone builds on the previous one. See `doc
 | `docs/status.md` | Progress, verification evidence, next action |
 | `docs/acceptance-matrix.md` | Release requirements and verification |
 | `docs/dependencies.md` | Toolchain, dependency versions, license inventory |
-| `docs/01-*.md` through `docs/09-*.md` | Individual milestone specs |
+| `docs/YYYY-MM-DD-NN-milestone-*.md` | Individual milestone specs (date-prefixed for chronology) |
 | `rust-toolchain.toml` | Rust stable toolchain |
 | `.editorconfig` | Editor settings |
 
@@ -287,7 +371,7 @@ Work in **vertical slices**. Each milestone builds on the previous one. See `doc
 
 ## What To Do When Starting a Milestone
 
-1. Read the corresponding `docs/XX-milestone-*.md` file
+1. Read the corresponding `docs/YYYY-MM-DD-NN-milestone-*.md` file
 2. Re-read the relevant blueprint sections referenced in that doc
 3. Create the minimal crate/module structure needed
 4. Write tests first for domain logic (pane tree, commands, protocol)
@@ -326,6 +410,16 @@ Do NOT change these without a concrete blocker + evidence + alternatives:
 - Project-scoped agent capabilities
 - No browser panes in current scope
 - No full IDE features
+
+---
+
+## Response Contract
+
+Match the request: diagnosis answers name root cause with evidence; how-to
+answers give the exact commands; status answers quote what ran and what did
+not. Keep routine confirmations to one or two sentences. Reference code as
+`path:line`. If findings contradict an earlier claim (including one in these
+docs), state the discrepancy and side with the evidence.
 
 ---
 

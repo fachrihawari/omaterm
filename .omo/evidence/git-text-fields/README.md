@@ -1,6 +1,6 @@
 # Git text field implementation evidence
 
-Scope: `apps/omaterm/src/git_panel.rs`, new `git_input.rs`, `git_input_tests.rs`, `git_input_view.rs`, and commit/stash state, keyboard routing, render, and submit-extraction regions in `main.rs`. Existing unrelated shared-tree work preserved. Commit remains single-line, Enter submits per `docs/14-milestone-14-git-status.md` and the pre-existing panel contract.
+Scope: `apps/omaterm/src/git_panel.rs`, new `git_input.rs`, `git_input_tests.rs`, `git_input_view.rs`, and commit/stash state, keyboard routing, render, and submit-extraction regions in `main.rs`. Existing unrelated shared-tree work preserved. Commit remains single-line, Enter submits per `docs/2026-09-29-14-milestone-14-git-status.md` and the pre-existing panel contract.
 
 ## Verified behavior
 

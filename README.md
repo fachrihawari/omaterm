@@ -97,7 +97,7 @@ Split and Inline views with syntax highlighting, hunk navigation
 ### ⌨️ Command palette & shortcuts
 
 Every semantic command is one fuzzy search away (`Ctrl+Shift+P`). A built-in
-cheatsheet (`Alt+Shift+K`) documents all 35 shortcuts — `Alt+1..9` jumps tabs,
+cheatsheet (`Alt+Shift+K`) documents all 39 shortcuts — `Alt+1..9` jumps tabs,
 `Alt+Shift+1..9` jumps projects, and plain `Ctrl` bytes always belong to your
 shell, never the chrome.
 
@@ -213,8 +213,8 @@ omaterm process list
 ```
 
 Add `--json` to any command for machine-readable output. See
-[`docs/09-milestone-9-cli.md`](docs/09-milestone-9-cli.md) for the full
-command table and [`docs/shortcuts.md`](docs/shortcuts.md) for all 35
+[`docs/2026-09-26-09-milestone-9-cli.md`](docs/2026-09-26-09-milestone-9-cli.md) for the full
+command table and [`docs/shortcuts.md`](docs/shortcuts.md) for all 39
 keyboard shortcuts.
 
 ## Architecture
@@ -242,9 +242,11 @@ keyboard shortcuts.
 
 **Crates:** `omaterm-core` (pure domain logic, no GUI dependency) ·
 `omaterm-terminal` (PTY + engine abstraction) · `omaterm-state` (versioned
-snapshots, encrypted history) · `omaterm-protocol` + `omaterm-ipc` (versioned
-JSON over Unix socket) · `omaterm-context` (files + git over the system
-binary) · `omaterm-cli` · `apps/omaterm` (`omaterm-desktop` GUI).
+snapshots, config, encrypted history) · `omaterm-protocol` + `omaterm-ipc`
+(versioned JSON over a Unix socket or Windows named pipe) · `omaterm-context`
+(files + git + diff + editor over the filesystem/system git) ·
+`omaterm-logging` (tracing + redaction) · `omaterm-cli` · `apps/omaterm`
+(`omaterm-desktop` GUI). GPUI components live in `apps/omaterm/src/ui/`.
 
 Key design rules: terminal process lifetime ≠ view lifetime; recursive
 `PaneNode` tree (never a flat grid); persist layout, not processes; project
@@ -252,17 +254,24 @@ scoping is a security boundary; automation uses commands, never keystrokes.
 
 ## Project status & roadmap
 
-OmaTerm is pre-1.0 and under active development (current: `v0.2.0`).
+OmaTerm is pre-1.0 and under active development (current: `0.4.0`).
 
-| Version | Focus | State |
-|---|---|---|
-| **0.1** | Terminal workspace (projects, tabs, splits, PTY, persistence, router, IPC, CLI) | ✅ Done |
-| **0.2** | Developer context (file tree, git, diff, palette, editor, processes) | ✅ Done |
-| **0.3** | Agent awareness (process recognition, status, notifications) | Planned |
-| **0.4** | Agent automation (spawn, prompt, wait, delegated panes) | Planned |
+Released tags:
 
-Track live progress in [`docs/status.md`](docs/status.md), release gates in
-[`docs/acceptance-matrix.md`](docs/acceptance-matrix.md), and the full
+| Tag | Focus |
+|---|---|
+| **0.1.0** | Terminal workspace — projects, tabs, recursive splits, PTY, persistence, command router, IPC, CLI (M1–M11) |
+| **0.2.0** | Git workspace — history graph, branches, stash, sync, blame; terminal/files/editor/UI polish |
+| **0.3.0** | Theme system (dark/light/live `system`), Windows build + shells, security-audit fixes |
+| **0.4.0** | Multi-repo project support (M20) |
+| **0.x.x** | Agent awareness (process recognition, status, notifications; blueprint §§38–39) |
+| **0.x.x** | Agent automation (spawn, prompt, wait, delegated panes; blueprint §§21, 40–42) |
+
+The blueprint's suggested `0.3`/`0.4` labels predate these shipped tags and are
+not reused; all future agent work is versioned `0.x.x` until it is scheduled.
+Some native validation gates for M15–M20 remain open and are tracked honestly
+rather than claimed done. Track live progress in [`docs/status.md`](docs/status.md),
+release gates in [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md), and the full
 79-section product/architecture spec in
 [`OMATERM_AGENT_BLUEPRINT.md`](OMATERM_AGENT_BLUEPRINT.md).
 [`AGENTS.md`](AGENTS.md) is the entry point for AI-assisted development.
