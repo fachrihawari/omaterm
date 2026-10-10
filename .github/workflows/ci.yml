@@ -1,14 +1,33 @@
 name: CI
 
 on:
-  push:
+  # Cost control: CI runs ONLY on dev -> main and hotfix/* -> main PRs.
+  # - Pushes to any branch run 0 jobs (hotfixes go via PR, not direct push).
+  # - PRs from feat/* to main are ignored (merge to dev first).
+  # - Tags are handled by release.yml, not here.
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'design/**'
+  workflow_dispatch:
+
+# Kill superseded runs on the same ref (force-pushes, rapid pushes).
+# With ~5 commits/day this avoids stacking full Rust builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   check:
+    # dev -> main, or hotfix/* -> main. feat/* PRs should target dev first.
+    # Draft PRs are skipped until marked ready. Manual dispatch always runs.
+    if: github.event_name == 'workflow_dispatch' || ((github.head_ref == 'dev' || startsWith(github.head_ref, 'hotfix/')) && github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +48,8 @@ jobs:
       - run: mbx build --workspace
 
   windows-check:
+    # Same gate as check above.
+    if: github.event_name == 'workflow_dispatch' || ((github.head_ref == 'dev' || startsWith(github.head_ref, 'hotfix/')) && github.event.pull_request.draft == false)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +65,8 @@ jobs:
         run: cargo test -p omaterm-ipc --lib
 
   packaging:
+    # Same gate: dev/hotfix -> main only (cheap job, but zero-cost beats cheap).
+    if: github.event_name == 'workflow_dispatch' || ((github.head_ref == 'dev' || startsWith(github.head_ref, 'hotfix/')) && github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
