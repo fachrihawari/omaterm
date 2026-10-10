@@ -12,7 +12,9 @@ pub const INSPECTOR_MIN: f32 = 280.0;
 pub const INSPECTOR_MAX: f32 = 470.0;
 pub const RESIZER: f32 = 4.0;
 pub const HEADER_H: f32 = 42.0;
-pub const STATUS_H: f32 = 24.0;
+/// The session bar replaced the global status strip. Zero keeps old call
+/// sites from reserving a row the shell no longer paints.
+pub const STATUS_H: f32 = 0.0;
 
 /// Clamp a Projects width; non-finite input falls back to default.
 pub fn clamp_projects_width(width: f32) -> f32 {
@@ -75,23 +77,25 @@ pub fn shell_rects(
         left -= reduction * left_extra / extra;
         right -= reduction * right_extra / extra;
     }
-    let status_y = viewport_h - STATUS_H;
+    let column_h = (viewport_h - STATUS_H).max(0.0);
     let main_x = left + left_resizer;
     let main_w = (viewport_w - main_x - right_resizer - right).max(0.0);
-    let main_h = (viewport_h - HEADER_H - STATUS_H).max(0.0);
+    let main_h = (column_h - HEADER_H).max(0.0);
+    // Side columns run the full height. The session bar covers only the
+    // terminal, so the inspector is not pushed down under it.
     ShellRects {
-        projects: (0.0, 0.0, left, status_y.max(0.0)),
-        projects_resizer: (left, 0.0, left_resizer, status_y.max(0.0)),
-        header: (main_x, 0.0, main_w + right_resizer + right, HEADER_H),
+        projects: (0.0, 0.0, left, column_h),
+        projects_resizer: (left, 0.0, left_resizer, column_h),
+        header: (main_x, 0.0, main_w, HEADER_H),
         main_view: (main_x, HEADER_H, main_w, main_h),
         inspector_resizer: (
             viewport_w - right - right_resizer,
-            HEADER_H,
+            0.0,
             right_resizer,
-            main_h,
+            column_h,
         ),
-        inspector: (viewport_w - right, HEADER_H, right, main_h),
-        status: (0.0, status_y, viewport_w, STATUS_H),
+        inspector: (viewport_w - right, 0.0, right, column_h),
+        status: (0.0, column_h, viewport_w, STATUS_H),
     }
 }
 
@@ -102,13 +106,13 @@ mod tests {
     #[test]
     fn default_rects_match_baseline_at_1440x900() {
         let r = shell_rects(1440.0, 900.0, true, 210.0, true, 330.0);
-        assert_eq!(r.projects, (0.0, 0.0, 210.0, 876.0));
-        assert_eq!(r.projects_resizer, (210.0, 0.0, 4.0, 876.0));
-        assert_eq!(r.header, (214.0, 0.0, 1226.0, 42.0));
-        assert_eq!(r.main_view, (214.0, 42.0, 892.0, 834.0));
-        assert_eq!(r.inspector_resizer, (1106.0, 42.0, 4.0, 834.0));
-        assert_eq!(r.inspector, (1110.0, 42.0, 330.0, 834.0));
-        assert_eq!(r.status, (0.0, 876.0, 1440.0, 24.0));
+        assert_eq!(r.projects, (0.0, 0.0, 210.0, 900.0));
+        assert_eq!(r.projects_resizer, (210.0, 0.0, 4.0, 900.0));
+        assert_eq!(r.header, (214.0, 0.0, 892.0, 42.0));
+        assert_eq!(r.main_view, (214.0, 42.0, 892.0, 858.0));
+        assert_eq!(r.inspector_resizer, (1106.0, 0.0, 4.0, 900.0));
+        assert_eq!(r.inspector, (1110.0, 0.0, 330.0, 900.0));
+        assert_eq!(r.status, (0.0, 900.0, 1440.0, 0.0));
     }
 
     #[test]
@@ -118,7 +122,7 @@ mod tests {
         assert_eq!(r.projects_resizer.2, 0.0);
         assert_eq!(r.inspector.2, 0.0);
         assert_eq!(r.inspector_resizer.2, 0.0);
-        assert_eq!(r.main_view, (0.0, 42.0, 1440.0, 834.0));
+        assert_eq!(r.main_view, (0.0, 42.0, 1440.0, 858.0));
         assert_eq!(r.header, (0.0, 0.0, 1440.0, 42.0));
     }
 

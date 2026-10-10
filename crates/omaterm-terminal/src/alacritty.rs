@@ -728,19 +728,19 @@ mod tests {
         // light/dark theme from the OSC 11 reply.
         let fg = engine.advance_output(b"\x1b]10;?\x07");
         assert!(
-            String::from_utf8_lossy(&fg.reply_bytes).contains("rgb:e4e4/e4e4/e7e7"),
+            String::from_utf8_lossy(&fg.reply_bytes).contains("rgb:eeee/eaea/ffff"),
             "fg reply: {:?}",
             String::from_utf8_lossy(&fg.reply_bytes)
         );
         let bg = engine.advance_output(b"\x1b]11;?\x07");
         assert!(
-            String::from_utf8_lossy(&bg.reply_bytes).contains("rgb:0f0f/1313/1818"),
+            String::from_utf8_lossy(&bg.reply_bytes).contains("rgb:0f0f/0e0e/1717"),
             "bg reply: {:?}",
             String::from_utf8_lossy(&bg.reply_bytes)
         );
         let cursor = engine.advance_output(b"\x1b]12;?\x07");
         assert!(
-            String::from_utf8_lossy(&cursor.reply_bytes).contains("rgb:9595/d7d7/ffff"),
+            String::from_utf8_lossy(&cursor.reply_bytes).contains("rgb:ffff/4f4f/d8d8"),
             "cursor reply: {:?}",
             String::from_utf8_lossy(&cursor.reply_bytes)
         );

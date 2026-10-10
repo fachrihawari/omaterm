@@ -55,14 +55,14 @@ pub fn repo_chrome(scan: Option<&RepoScan>) -> ChromePlan<'_> {
 /// Group-header title for the repository chrome (locked chrome spec: one
 /// collapsible group header above plain rows). Uppercase, like the
 /// sibling `GRAPH` / `STAGED CHANGES` / `CHANGES` section headers.
-pub const CHROME_TITLE: &str = "REPOSITORIES";
+pub const CHROME_TITLE: &str = "Repositories";
 
 /// Header label for the repository group: the title while the list is
 /// expanded, and the title plus the active repository name while it is
 /// collapsed. A collapsed chrome names the repository whose full M14 body
 /// still renders below it, so the active repository is identifiable when
 /// the rows (and their highlight) are hidden — VS Code's picker row
-/// carries the same identity. Only the title is uppercased; the
+/// carries the same identity. The title is sentence case; the
 /// repository name keeps its own case.
 pub fn chrome_header_label(collapsed: bool, active: Option<&str>) -> String {
     match (collapsed, active) {
@@ -161,10 +161,10 @@ mod tests {
     /// group instead of inventing a name. Only the title is uppercased.
     #[test]
     fn header_label_names_the_active_repository_only_while_collapsed() {
-        assert_eq!(chrome_header_label(false, Some("web")), "REPOSITORIES");
-        assert_eq!(chrome_header_label(false, None), "REPOSITORIES");
-        assert_eq!(chrome_header_label(true, Some("web")), "REPOSITORIES · web");
-        assert_eq!(chrome_header_label(true, None), "REPOSITORIES");
+        assert_eq!(chrome_header_label(false, Some("web")), "Repositories");
+        assert_eq!(chrome_header_label(false, None), "Repositories");
+        assert_eq!(chrome_header_label(true, Some("web")), "Repositories · web");
+        assert_eq!(chrome_header_label(true, None), "Repositories");
     }
 
     /// The cap never rewrites the count: the pill reports every discovered

@@ -1,5 +1,5 @@
 //! Shared semantic palettes for chrome, editor, and terminal surfaces.
-//! Dark values preserve the frozen v5 reference; light values preserve its hierarchy.
+//! Dark values are the Oma Neon palette; light values preserve the paper hierarchy.
 
 use omaterm_terminal::ThemeMode;
 
@@ -60,65 +60,74 @@ pub struct Palette {
     pub diff_del_bg: u32,
     pub diff_del_mark: u32,
     pub selection_hsla: (f32, f32, f32, f32),
+    pub sidebar_bg: u32,
+    pub sidebar_hover_bg: u32,
+    pub sidebar_edge: u32,
+    pub sidebar_tint: u32,
 }
 
 pub const DARK: Palette = Palette {
-    bg: 0x0B0E12,
-    bg2: 0x0F1318,
-    panel: 0x11161C,
-    panel2: 0x161C24,
-    panel3: 0x1B222C,
-    border: 0x252D38,
-    border2: 0x303A48,
-    text: 0xD7DDE5,
-    text2: 0xBCC5D0,
-    muted: 0x7F8A99,
-    muted2: 0x596474,
-    blue: 0x5AA9FF,
-    blue2: 0x2F81F7,
-    cyan: 0x61D8DF,
-    green: 0x63D58D,
-    yellow: 0xE9C66D,
-    orange: 0xF3A85F,
-    red: 0xFF6F6F,
-    purple: 0xC792EA,
-    lime: 0xB9F263,
-    header_bg: 0x0D1014,
-    active_tab_bg: 0x141A21,
-    selected_project_bg: 0x18202A,
-    cmd_hover_bg: 0x182029,
-    cmd_hover_border: 0x27313D,
-    row_hover_bg: 0x171D25,
-    tree_selected_bg: 0x1B2430,
-    pill_bg: 0x151A21,
-    pill_border: 0x2C3643,
-    scrollbar_thumb: 0x343E4B,
-    editor_bg: 0x101318,
-    editor_side_header_bg: 0x0F1216,
-    info_card_bg: 0x141920,
-    info_icon_box_bg: 0x10151A,
-    git_badge_bg: 0x222B36,
-    commit_hover_bg: 0x3D8BF8,
-    terminal_cursor: 0x95D7FF,
+    // Oma Neon. Light mode keeps the paper palette below.
+    bg: 0x13111D,
+    bg2: 0x0F0E17,
+    panel: 0x14121F,
+    panel2: 0x221D35,
+    panel3: 0x2F2848,
+    border: 0x262037,
+    border2: 0x3A3156,
+    text: 0xF2EFFF,
+    text2: 0xCFC8EC,
+    muted: 0x9C93C4,
+    muted2: 0x6C6394,
+    blue: 0x4CC9F0,
+    blue2: 0x7C5CFF,
+    cyan: 0x9D7CFF,
+    green: 0x2EE6A6,
+    yellow: 0xFFD23F,
+    orange: 0xFF8A3D,
+    red: 0xFF4D6D,
+    purple: 0xD96BFF,
+    lime: 0xB8F35A,
+    header_bg: 0x0F0E17,
+    active_tab_bg: 0x231D3A,
+    selected_project_bg: 0x2E2456,
+    cmd_hover_bg: 0x221D35,
+    cmd_hover_border: 0x3A3156,
+    row_hover_bg: 0x1D1930,
+    tree_selected_bg: 0x2E2456,
+    pill_bg: 0x221D35,
+    pill_border: 0x3A3156,
+    scrollbar_thumb: 0x4A4070,
+    editor_bg: 0x0F0E17,
+    editor_side_header_bg: 0x15131F,
+    info_card_bg: 0x1B1729,
+    info_icon_box_bg: 0x14121F,
+    git_badge_bg: 0x2F2848,
+    commit_hover_bg: 0xB39DFF,
+    terminal_cursor: 0xFF4FD8,
     white: 0xFFFFFF,
     on_accent: 0xFFFFFF,
-    warning_bg: 0x3F321D,
-    warning_text: 0xFDE68A,
-    error_bg: 0x3F1D1D,
-    error_text: 0xFCA5A5,
-    kbd_bg: 0x161B22,
-    kbd_border: 0x313B48,
-    active_line_no: 0x768193,
-    comment_token: 0x6A9955,
-    match_accent: 0x4C9AFF,
-    line_no: 0x515D6D,
-    line_no_add: 0x5D8A67,
-    line_no_del: 0x8B5E5E,
-    diff_add_bg: 0x2EA0431F,
-    diff_add_mark: 0x4BBE68CC,
-    diff_del_bg: 0xF851491F,
-    diff_del_mark: 0xF85149D1,
-    selection_hsla: (0.591, 0.92, 0.578, 0.35),
+    warning_bg: 0x3A2E0E,
+    warning_text: 0xFFD23F,
+    error_bg: 0x3D1222,
+    error_text: 0xFF7A93,
+    kbd_bg: 0x221D35,
+    kbd_border: 0x3A3156,
+    active_line_no: 0x9C93C4,
+    comment_token: 0x7A70A8,
+    match_accent: 0xFF4FD8,
+    line_no: 0x564E78,
+    line_no_add: 0x2E9E77,
+    line_no_del: 0xB04A60,
+    diff_add_bg: 0x2EE6A61F,
+    diff_add_mark: 0x2EE6A6CC,
+    diff_del_bg: 0xFF4D6D1F,
+    diff_del_mark: 0xFF4D6DD1,
+    selection_hsla: (0.708, 1.0, 0.74, 0.30),
+    sidebar_bg: 0x1A1729,
+    sidebar_hover_bg: 0x272140,
+    sidebar_edge: 0x0A0912,
+    sidebar_tint: 0x120F1E,
 };
 
 pub const LIGHT: Palette = Palette {
@@ -178,6 +187,10 @@ pub const LIGHT: Palette = Palette {
     diff_del_bg: 0xF851491F,
     diff_del_mark: 0xB42332D1,
     selection_hsla: (0.591, 0.92, 0.578, 0.22),
+    sidebar_bg: 0xE6EDF5,
+    sidebar_hover_bg: 0xD7E1EE,
+    sidebar_edge: 0xC3CEDC,
+    sidebar_tint: 0xF7F9FC,
 };
 
 pub fn colors() -> &'static Palette {
@@ -249,13 +262,24 @@ pub fn light_icon_ink(color: u32) -> u32 {
     (channel(16) << 16) | (channel(8) << 8) | channel(0)
 }
 
-/// Opacity of the terminal header background (`#0f1318` at 90%).
+/// Pane header background (`BG2` at 90%).
 pub const PANE_HEADER_BG_OPACITY: f32 = 0.90;
-/// Opacity of the floating pane toolbar background.
+/// Wash over unfocused panes in a split tab.
+pub const PANE_INACTIVE_DIM: f32 = 0.42;
+/// Floating pane toolbar background.
 pub const PANE_TOOLBAR_BG_OPACITY: f32 = 0.95;
-/// Inset focus-stroke alpha on the active pane.
+/// Terminal text selection.
+pub const TERMINAL_SELECTION_OPACITY: f32 = 0.38;
+/// Accent outline around the active session tab.
+pub const ACTIVE_TAB_OUTLINE_OPACITY: f32 = 0.55;
+/// Translucent sidebar glass, and the plate behind its labels.
+pub const SIDEBAR_TINT_OPACITY: f32 = 0.42;
+pub const SIDEBAR_LABEL_SCRIM_OPACITY: f32 = 0.82;
+/// Was the faint full-rectangle focus stroke.
+#[allow(dead_code)]
 pub const PANE_FOCUS_STROKE_ALPHA: f32 = 0.34;
-/// Inset top-accent alpha on the active top tab.
+/// Was the translucent top tab accent.
+#[allow(dead_code)]
 pub const TAB_ACTIVE_TOP_ACCENT_ALPHA: f32 = 0.9;
 
 /// Pack an `0xRRGGBB` literal with float alpha into `0xRRGGBBAA` for

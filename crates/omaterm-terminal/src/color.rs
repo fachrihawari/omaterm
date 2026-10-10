@@ -61,31 +61,36 @@ pub struct TerminalPalette {
     pub ansi: [(u8, u8, u8); 16],
 }
 
-pub const DEFAULT_FG: (u8, u8, u8) = (0xE4, 0xE4, 0xE7);
-pub const DEFAULT_BG: (u8, u8, u8) = (0x0F, 0x13, 0x18);
-pub const CURSOR_COLOR: (u8, u8, u8) = (0x95, 0xD7, 0xFF);
+/// Default foreground: cool near-white. Matches dark `theme::text` closely enough
+/// for OSC replies; the renderer paints `colors().text` for chrome and this
+/// triple for default terminal cells.
+pub const DEFAULT_FG: (u8, u8, u8) = (0xEE, 0xEA, 0xFF);
+/// Default background: the terminal well (`theme::BG2` in dark mode).
+pub const DEFAULT_BG: (u8, u8, u8) = (0x0F, 0x0E, 0x17);
+/// Cursor color (`theme::terminal_cursor` in dark mode).
+pub const CURSOR_COLOR: (u8, u8, u8) = (0xFF, 0x4F, 0xD8);
 
 pub const DARK_PALETTE: TerminalPalette = TerminalPalette {
     foreground: DEFAULT_FG,
     background: DEFAULT_BG,
     cursor: CURSOR_COLOR,
     ansi: [
-        (0, 0, 0),
-        (205, 0, 0),
-        (0, 205, 0),
-        (205, 205, 0),
-        (0, 0, 238),
-        (205, 0, 205),
-        (0, 205, 205),
-        (229, 229, 229),
-        (127, 127, 127),
-        (255, 0, 0),
-        (0, 255, 0),
-        (255, 255, 0),
-        (92, 92, 255),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 255),
+        (0x24, 0x20, 0x36),
+        (0xFF, 0x4D, 0x6D),
+        (0x2E, 0xE6, 0xA6),
+        (0xFF, 0xD2, 0x3F),
+        (0x5B, 0x8C, 0xFF),
+        (0xD9, 0x6B, 0xFF),
+        (0x3D, 0xE0, 0xF5),
+        (0xD6, 0xD1, 0xEE),
+        (0x6B, 0x62, 0x90),
+        (0xFF, 0x7A, 0x93),
+        (0x6B, 0xFF, 0xC4),
+        (0xFF, 0xE6, 0x7A),
+        (0x8F, 0xB2, 0xFF),
+        (0xE9, 0x9C, 0xFF),
+        (0x7D, 0xEE, 0xFF),
+        (0xFF, 0xFF, 0xFF),
     ],
 };
 
@@ -123,6 +128,25 @@ pub fn terminal_palette() -> &'static TerminalPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_match_renderer_and_theme_tokens() {
+        assert_eq!(DEFAULT_FG, (0xEE, 0xEA, 0xFF));
+        assert_eq!(DEFAULT_BG, (0x0F, 0x0E, 0x17));
+        assert_eq!(CURSOR_COLOR, (0xFF, 0x4F, 0xD8));
+    }
+
+    /// Every dark ANSI text color must stay distinguishable from the well.
+    #[test]
+    fn ansi_text_colors_contrast_with_background() {
+        fn luma((r, g, b): (u8, u8, u8)) -> f32 {
+            0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)
+        }
+        let bg = luma(DEFAULT_BG);
+        for (index, color) in DARK_PALETTE.ansi.iter().enumerate().skip(1) {
+            assert!(luma(*color) - bg > 60.0, "ANSI {index} is too dark");
+        }
+    }
 
     #[test]
     fn startup_selection_is_first_wins_and_runtime_switch_is_live() {
