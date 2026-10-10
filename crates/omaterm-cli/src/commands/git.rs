@@ -71,6 +71,9 @@ pub enum GitCmd {
         /// Commit message (1–4096 bytes; newline/tab allowed for the body).
         #[arg(short, long)]
         message: String,
+        /// Rewrite HEAD instead of creating a new commit (`--amend`).
+        #[arg(long)]
+        amend: bool,
     },
     /// Fetch from the default remote (prunes stale remote-tracking refs).
     #[command(name = "fetch")]
@@ -384,7 +387,11 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 }),
             })
         }
-        GitCmd::Commit { project, message } => {
+        GitCmd::Commit {
+            project,
+            message,
+            amend,
+        } => {
             if message.is_empty()
                 || message.len() > 4096
                 || message
@@ -401,6 +408,7 @@ pub fn build(cmd: &GitCmd) -> Result<WireCall, String> {
                 params: json!({
                     "project_id": optional_selector(project.clone(), "OMATERM_PROJECT_ID"),
                     "message": message,
+                    "amend": amend,
                 }),
             })
         }
@@ -696,6 +704,7 @@ mod tests {
                 GitCmd::Commit {
                     project: None,
                     message: "hello".into(),
+                    amend: false,
                 },
                 "git.commit",
                 "hello",
@@ -727,6 +736,7 @@ mod tests {
             build(&GitCmd::Commit {
                 project: None,
                 message: String::new(),
+                amend: false,
             })
             .is_err()
         );
@@ -734,6 +744,7 @@ mod tests {
             build(&GitCmd::Commit {
                 project: None,
                 message: "bad\0message".into(),
+                amend: false,
             })
             .is_err()
         );

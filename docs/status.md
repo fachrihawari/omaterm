@@ -9,6 +9,55 @@
 
 ## Current position
 
+### Git tab improvements batch (`feat/git-tab-improvements`) — 2026-10-11 (uncommitted)
+
+Branch cut from `dev` per user request; implements the full Git-tab analysis
+batch as one vertical slice through the shared `OmaCommand::Git` dispatcher
+(UI, IPC, CLI share one path, never simulated keystrokes).
+
+- Graph row density: commit rows show `author · short7 · age`; short oid
+  click copies full SHA to clipboard with `Commit SHA copied` toast
+  (`apps/omaterm/src/main.rs` history graph). Merge commits use the purple
+  lane/dot vs blue linear lane so joins read apart at a glance.
+- Scope control labels: `Current` / `All` text beside branch/fork icons
+  (`history_scope_segment`) — icon-only segments were undiscoverable, no
+  tooltip infra exists to explain them.
+- Publish affordance: header shows `Publish` (dispatches
+  `SyncPush{set_upstream:true}`) when `upstream==None`, else `Push`.
+  Busy matching uses operation label so `Publishing…` state works.
+  `sync_tick` now also sets `history_dirty_hint` + `branch_dirty_hint` so
+  fetch/pull/push refresh graph + branch list, not just status/diff.
+- Change list: conflicted (unmerged `U/AA/DD`) rows get red `!` badge,
+  renames show `old → new` with purple `R` (backend `renamed_from` was
+  ignored in the list), untracked stays green `U`.
+- Stash: rows show `subject + @{n} · short oid`; `-u` toggle relabeled
+  `Untracked` / `Untracked ✓`; empty message auto-generates
+  `WIP on <branch>` instead of `type a message first` error; button stays
+  actionable. Full per-file stash preview via `git_stash_show` remains
+  follow-up (needs new worker channel + expanded state).
+- Commit amend: vertical slice `GitCommand::Commit{amend:bool}` +
+  `git_commit(root, message, amend)` (`--amend`) + validation unchanged +
+  `git.commit{amend}` protocol (serde default, backward compatible) +
+  `omaterm git commit --amend` CLI + per-repo `commit_amend` toggle in
+  composer (`Amend` / `Amend ✓`, submit button reads `Amend` when armed,
+  `Amended <oid>` toast). Multi-line composer remains follow-up
+  (`GitInput` is single-line).
+- Multi-repo chrome: header pill aggregates
+  `N repos · M dirty` (dirty from last-good statuses); per-row sync pill
+  `↑a ↓b` when upstream + ahead/behind (was header-only). Filter input +
+  scrollable overflow beyond 32-cap remain follow-up.
+- Deferred to follow-up: true branch-lane graph layout (DAG lanes),
+  tooltip infra for icon-only actions, stash file expansion, multi-line
+  commit body, repo filter.
+- Verification: `cargo fmt --all` (applied), `cargo test --workspace`
+  (all suites green incl. desktop 302), `cargo clippy --workspace
+  --all-targets -- -D warnings` (known transitive `proc-macro-error2`
+  notice only), `python3 scripts/check-docs.py` PASS (53 files, 60/60
+  methods, 39/39 shortcuts), `git diff --check` PASS.
+  Native Wayland validation (2-repo fixture: amend toggle, Publish,
+  conflict/rename rows, stash meta, graph author/oid copy) remains manual
+  and not claimed passing.
+
 ### Git tab: `Repositories` chrome parity — 2026-10-10 (uncommitted)
 
 UI pass over the M20 `Repositories` chrome in the Git tab. The chrome had

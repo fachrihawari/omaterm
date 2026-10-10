@@ -247,11 +247,12 @@ pub enum GitCommand {
         paths: Vec<PathBuf>,
     },
     /// Commit staged changes with an explicit message. Authorship comes
-    /// from the repository's git config (no author UI); amend/push stay
-    /// out of scope.
+    /// from the repository's git config (no author UI). `amend` rewrites
+    /// HEAD (`git commit --amend`) instead of creating a new commit.
     Commit {
         project: ProjectId,
         message: String,
+        amend: bool,
     },
     /// Bounded local branch listing with HEAD identity (C9.1). A pinned
     /// non-repo directory returns the empty envelope, like status.

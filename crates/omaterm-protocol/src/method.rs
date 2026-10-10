@@ -238,6 +238,8 @@ pub struct GitPaths {
 pub struct GitCommit {
     pub project_id: Option<String>,
     pub message: String,
+    #[serde(default)]
+    pub amend: bool,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -492,6 +492,7 @@ pub fn map_request(
             Method::GitCommit(p) => OmaCommand::Git(GitCommand::Commit {
                 project: resolve_project(p.project_id)?,
                 message: git_message(&p.message)?.to_owned(),
+                amend: p.amend,
             }),
             Method::DiffShow(p) => {
                 let context = p.context_lines.unwrap_or(3);

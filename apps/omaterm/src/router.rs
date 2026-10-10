@@ -3468,7 +3468,11 @@ impl CommandRouter {
             OmaCommand::Git(GitCommand::Discard { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Discard)
             }
-            OmaCommand::Git(GitCommand::Commit { project, message }) => {
+            OmaCommand::Git(GitCommand::Commit {
+                project,
+                message,
+                amend,
+            }) => {
                 let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
@@ -3479,7 +3483,7 @@ impl CommandRouter {
                     }
                     Err(error) => return CommandResult::Err(error),
                 };
-                match omaterm_context::git_commit(&root, &message) {
+                match omaterm_context::git_commit(&root, &message, amend) {
                     Ok(oid) => {
                         tracing::debug!(
                             target: "omaterm::git",
@@ -8233,6 +8237,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: String::new(),
+                amend: false,
             }),
         );
         assert!(matches!(
@@ -8248,6 +8253,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "nothing staged".into(),
+                amend: false,
             }),
         );
         assert!(matches!(
@@ -8272,6 +8278,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "add b".into(),
+                amend: false,
             }),
         );
         let CommandResult::Ok(CommandOutput::GitCommitted { oid }) = committed.result else {
@@ -8298,6 +8305,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project: omaterm_core::ProjectId::new(),
                 message: "x".into(),
+                amend: false,
             }),
         );
         assert!(matches!(

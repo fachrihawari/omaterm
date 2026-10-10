@@ -804,9 +804,15 @@ pub fn git_stage(root: &Path, paths: &[PathBuf]) -> Result<(), GitError> {
 /// Returns the short HEAD oid of the new commit. An empty message is
 /// rejected by validation before this runs; a nothing-staged race or a
 /// hook/GPG failure surfaces as `GitFailed` with bounded stderr.
-pub fn git_commit(root: &Path, message: &str) -> Result<String, GitError> {
+/// `amend` rewrites HEAD (`--amend`) instead of creating a new commit.
+pub fn git_commit(root: &Path, message: &str, amend: bool) -> Result<String, GitError> {
     debug_assert!(!message.is_empty());
-    let args = ["commit".to_owned(), "-m".to_owned(), message.to_owned()];
+    let mut args = vec!["commit".to_owned()];
+    if amend {
+        args.push("--amend".to_owned());
+    }
+    args.push("-m".to_owned());
+    args.push(message.to_owned());
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     run_git(root, &[], &arg_refs, GIT_MUTATION_TIMEOUT, 64 * 1024)?;
     let output = run_git(
