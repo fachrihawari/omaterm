@@ -53,18 +53,30 @@ pub fn shell_rects(
     inspector_visible: bool,
     inspector_width: f32,
 ) -> ShellRects {
-    let left = if projects_visible {
+    let mut left = if projects_visible {
         clamp_projects_width(projects_width)
     } else {
         0.0
     };
-    let right = if inspector_visible {
+    let mut right = if inspector_visible {
         clamp_inspector_width(inspector_width)
     } else {
         0.0
     };
     let left_resizer = if projects_visible { RESIZER } else { 0.0 };
     let right_resizer = if inspector_visible { RESIZER } else { 0.0 };
+    // Preserve requested widths on wide windows, but give the terminal a
+    // usable share before allocating the panels' optional extra width.
+    let reserve = 240.0_f32.min((viewport_w - 452.0).max(180.0));
+    let overflow = (left + right + left_resizer + right_resizer + reserve - viewport_w).max(0.0);
+    let left_extra = (left - PROJECTS_MIN).max(0.0);
+    let right_extra = (right - INSPECTOR_MIN).max(0.0);
+    let extra = left_extra + right_extra;
+    if extra > 0.0 {
+        let reduction = overflow.min(extra);
+        left -= reduction * left_extra / extra;
+        right -= reduction * right_extra / extra;
+    }
     let column_h = (viewport_h - STATUS_H).max(0.0);
     let main_x = left + left_resizer;
     let main_w = (viewport_w - main_x - right_resizer - right).max(0.0);
@@ -125,5 +137,19 @@ mod tests {
         let r = shell_rects(1440.0, 900.0, true, 0.0, true, 9999.0);
         assert_eq!(r.projects.2, PROJECTS_MIN);
         assert_eq!(r.inspector.2, INSPECTOR_MAX);
+    }
+
+    #[test]
+    fn narrow_window_preserves_terminal_and_panel_minima() {
+        let r = shell_rects(640.0, 480.0, true, 340.0, true, 470.0);
+        assert!(r.main_view.2 >= 180.0);
+        assert!(r.projects.2 >= PROJECTS_MIN);
+        assert!(r.inspector.2 >= INSPECTOR_MIN);
+        assert!(
+            (r.main_view.2 + r.projects.2 + r.inspector.2 + 2.0 * RESIZER - 640.0).abs() < 0.01
+        );
+        let wide = shell_rects(1440.0, 900.0, true, 340.0, true, 470.0);
+        assert_eq!(wide.projects.2, 340.0);
+        assert_eq!(wide.inspector.2, 470.0);
     }
 }

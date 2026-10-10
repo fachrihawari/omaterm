@@ -12,6 +12,16 @@ mod connection;
 mod launcher;
 mod output;
 
+/// Process-global environment guard shared by every test module that mutates
+/// `OMATERM_SOCKET` / `OMATERM_TOKEN`. A per-module lock is insufficient:
+/// `connection` and `launcher` tests touch the same variables, so they must
+/// serialize through one mutex or they clobber each other under parallel runs.
+#[cfg(test)]
+pub(crate) fn env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};

@@ -1,0 +1,25 @@
+   Compiling omaterm v0.2.0 (/home/fachri/Projects/personal/omaterm/apps/omaterm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.92s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (target/debug/deps/omaterm_desktop-0af62bedba965bef)
+
+running 9 tests
+test git_sync_panel::tests::pending_then_success_keeps_original_project_and_report ... ok
+test git_sync_panel::tests::disconnected_worker_clears_busy_and_reports_failure ... ok
+test git_sync_panel::tests::completion_waits_for_worker_exit_without_blocking_ui ... ok
+test git_sync_panel::tests::worker_failure_clears_pending_and_allows_retry ... ok
+
+thread '<unnamed>' (287327) panicked at apps/omaterm/src/git_sync_panel.rs:241:13:
+fixture worker panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test git_sync_panel::tests::started_worker_remains_owned_for_shutdown ... ok
+test git_sync_panel::tests::panicked_owned_worker_reports_failure_and_clears_pending ... ok
+test git_sync_panel::worker_tests::fetch_preserves_explicit_remote_and_surfaces_error ... ok
+test git_sync_panel::tests::shutdown_joins_worker_before_reporting_completion ... ok
+test git_sync_panel::worker_tests::real_push_error_recovers_then_publish_succeeds_on_local_remote ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 278 filtered out; finished in 0.07s
+
+mbx[cache]: 0 hits, 0 misses, 1 not looked up, 1 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 2h 7m of compiling skipped across 522 builds. rustc suspects nothing.

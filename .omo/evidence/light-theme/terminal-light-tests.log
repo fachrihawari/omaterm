@@ -1,0 +1,11 @@
+   Compiling omaterm-terminal v0.2.0 (/home/fachri/Projects/personal/omaterm/crates/omaterm-terminal)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.67s
+     Running tests/light_theme.rs (target/debug/deps/light_theme-1f7b2de7c933ca86)
+
+running 1 test
+test light_session_reports_its_painted_palette_and_preserves_explicit_colors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+mbx[cache]: 0 hits, 0 misses, 1 not looked up, 1 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: linked 16.8 GiB into place. copying is for people with disk to spare.

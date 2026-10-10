@@ -8,7 +8,7 @@ mod store;
 pub use config::{
     AppConfig, AppearanceSettings, AutomationSettings, DEFAULT_FONT_SIZE, KNOWN_SHELLS,
     KNOWN_THEMES, MAX_SCROLLBACK_LINES, TerminalSettings, load_app_config_toml,
-    save_terminal_shell,
+    save_appearance_theme, save_terminal_shell,
 };
 
 pub use history::{

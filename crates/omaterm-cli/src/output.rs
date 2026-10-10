@@ -30,6 +30,10 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         ),
         "project.select" => "Selected project.".into(),
         "project.root" => render_root(&result),
+        "project.repos" => render_repos(&result),
+        "project.set-active-repo" => {
+            format!("Active repository: {}", string(&result, "active_repo"))
+        }
         "tab.list" => render_tabs(&result),
         "tab.create" | "terminal.create" => format!(
             "Created tab {} (pane {}, session {})",
@@ -118,6 +122,27 @@ fn string(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("-")
         .to_owned()
+}
+
+fn render_repos(result: &Value) -> String {
+    let Some(items) = result.get("repos").and_then(Value::as_array) else {
+        return "No repositories.".into();
+    };
+    if items.is_empty() {
+        return "No repositories.".into();
+    }
+    let active = result.get("active_repo").and_then(Value::as_str);
+    let mut out = String::from("REPO\tPATH\tACTIVE\n");
+    for item in items {
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("-");
+        out.push_str(&format!(
+            "{}\t{}\t{}\n",
+            name,
+            item.get("path").and_then(Value::as_str).unwrap_or("-"),
+            if active == Some(name) { "yes" } else { "" },
+        ));
+    }
+    out
 }
 
 fn render_root(result: &Value) -> String {

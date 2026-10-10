@@ -672,8 +672,9 @@ fn collapse_segment_lines(segment: &[u8], pending: &mut Vec<u8>) {
 /// and pass through untouched. Otherwise the span is one logical line
 /// rewritten in place: it collapses to its final segment only when no
 /// earlier segment is longer (a longer predecessor would leave trailing
-/// junk live that collapsing drops). A trailing empty segment only homes
-/// the cursor and is preserved as one `\r`.
+/// junk live that collapsing drops) *and* the final segment is
+/// self-contained (see [`final_segment_is_self_contained`]). A trailing
+/// empty segment only homes the cursor and is preserved as one `\r`.
 fn collapse_line_span(span: &[u8], pending: &mut Vec<u8>) {
     if !span.contains(&b'\r') {
         pending.extend_from_slice(span);
@@ -694,20 +695,76 @@ fn collapse_line_span(span: &[u8], pending: &mut Vec<u8>) {
         pending.extend_from_slice(span);
         return;
     }
+    if !final_segment_is_self_contained(content) {
+        // Differential shell redisplay (bash readline home/skip/erase
+        // rewrites): the survivor addresses or mutates cells relative to
+        // the dropped prefix, so replay on a fresh grid renders blanks or
+        // misplaced text (`cd gat` restoring as `   gat`). Keep the span;
+        // verification would reject the loss.
+        pending.extend_from_slice(span);
+        return;
+    }
     pending.extend_from_slice(content);
     if ended_with_cr {
         pending.push(b'\r');
     }
 }
 
+/// True when a collapsed `\r`-span survivor needs no dropped context: every
+/// escape is SGR (per-cell attributes that travel with their text) or OSC
+/// (zero-width metadata such as titles, hyperlinks and lifecycle markers).
+/// Cursor motions, erases, line edits, mode switches and character-set
+/// changes address or mutate cells relative to the full original line and
+/// only replay faithfully over it — on a fresh grid they paint blanks or
+/// displaced text. A truncated escape is never self-contained.
+fn final_segment_is_self_contained(segment: &[u8]) -> bool {
+    let mut i = 0;
+    while i < segment.len() {
+        if segment[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        match segment.get(i + 1) {
+            // CSI: only SGR (`... m`) survives. Motions (`ABCD…`, `G`, `H`),
+            // erases (`J`, `K`, `X`), edits (`P`, `@`), inserts (`L`),
+            // scrolls and mode switches (`h`, `l`) need the dropped prefix.
+            Some(b'[') => {
+                let mut j = i + 2;
+                while matches!(segment.get(j), Some(0x30..=0x3f)) {
+                    j += 1;
+                }
+                while matches!(segment.get(j), Some(0x20..=0x2f)) {
+                    j += 1;
+                }
+                if segment.get(j) != Some(&b'm') {
+                    return false;
+                }
+                i = j + 1;
+            }
+            // OSC: zero-width metadata; safe to keep with the surviving text.
+            Some(b']') => match skip_escape_sequence(segment, i) {
+                Some(next) => i = next,
+                None => return false,
+            },
+            // Any other escape (RI, save/restore cursor, charset shifts,
+            // single-byte controls) mutates global state: keep the span.
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Whether two event streams rebuild the same visible terminal state.
 ///
 /// Replays both into fresh engines and compares the visible grid (cells
 /// carry text, colors and flags), cursor, dimensions and alt-screen state.
-/// Scrollback intentionally differs after compaction (superseded frames no
-/// longer scroll), so `history_size` is excluded. The persistence worker
-/// saves the compacted stream only on success; any doubt keeps the
-/// original bytes, so the worst case is today's behavior.
+/// Scrollback may shrink after compaction (superseded animation frames no
+/// longer scroll), so `history_size` is excluded — but every scrollback
+/// line rebuilt by the second stream must also appear in the first's
+/// (see [`scrollback_covered_by`]): compaction may drop duplicate
+/// animation copies, never fabricate or rewrite a history line. The
+/// persistence worker saves the compacted stream only on success; any
+/// doubt keeps the original bytes, so the worst case is today's behavior.
 #[must_use]
 pub fn replay_equivalent(first: &[RecordedEvent], second: &[RecordedEvent]) -> bool {
     fn viewport_of(events: &[RecordedEvent]) -> crate::TerminalViewport {
@@ -718,9 +775,45 @@ pub fn replay_equivalent(first: &[RecordedEvent], second: &[RecordedEvent]) -> b
     let (a, b) = (viewport_of(first), viewport_of(second));
     a.rows == b.rows
         && a.cursor == b.cursor
+        && a.cursor_color == b.cursor_color
         && a.cols == b.cols
         && a.lines == b.lines
         && a.is_alt_screen == b.is_alt_screen
+        && scrollback_covered_by(first, second)
+}
+
+/// Bound for the scrollback dumps compared by [`scrollback_covered_by`].
+/// The engine caps history at its configured depth first, so this only
+/// bounds the walk itself, never the terminal.
+const SCROLLBACK_VERIFY_MAX_LINES: usize = 100_000;
+
+/// True when the `second` stream rebuilds no scrollback line the `first`
+/// stream lacks, compared as multisets: dropping duplicate animation
+/// copies (the compaction's documented purpose) keeps coverage, while a
+/// fabricated or rewritten line (`cd gat` restoring as `   gat`) breaks
+/// it. Both dumps come from the same right-trimmed builder, so padding
+/// alone can never false-reject. Runs on the background persistence
+/// writer, never the PTY hot path.
+fn scrollback_covered_by(first: &[RecordedEvent], second: &[RecordedEvent]) -> bool {
+    use std::collections::HashMap;
+    fn dump(events: &[RecordedEvent]) -> Vec<String> {
+        let mut engine = crate::AlacrittyEngine::new(80, 24);
+        replay_into(&mut engine, events);
+        engine.scrollback_text(SCROLLBACK_VERIFY_MAX_LINES)
+    }
+    let mut available: HashMap<&str, usize> = HashMap::new();
+    let original: Vec<String> = dump(first);
+    for line in &original {
+        *available.entry(line.as_str()).or_default() += 1;
+    }
+    // `available` borrows `original`, which outlives the loop below.
+    for line in dump(second) {
+        match available.get_mut(line.as_str()) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Replay ordered events into a fresh engine. The caller creates the engine
@@ -1486,6 +1579,111 @@ mod tests {
         assert!(
             !replay_equivalent(&events, &lossy),
             "verify must reject the lossy collapse"
+        );
+    }
+
+    #[test]
+    fn compact_positioned_cr_rewrite_passes_through_verbatim() {
+        // Real bash differential redisplay (captured from `bash --norc -i`,
+        // TERM=xterm-256color, after killing `eway` from `cd gateway`):
+        // home the cursor, step forward, erase the tail. The final
+        // `\r`-segment is a positioned/erase rewrite, not a full redraw —
+        // collapsing it replays cursor motions over a fresh grid and the
+        // command text never reaches scrollback.
+        let captured = vec![output(
+            b"cd gateway\r\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C\x1b[K\r\n",
+        )];
+        assert_eq!(
+            compact_repaint_runs(&captured),
+            captured,
+            "cursor-motion/erase rewrite must survive compaction"
+        );
+        // Same shape with a printable suffix (the `cd gat` -> `   gat`
+        // report): skipping the unchanged prefix then rewriting the tail.
+        // The suffix only makes sense over the dropped prefix.
+        let suffix = vec![output(b"$ cd gateway\r\x1b[3Cgat\x1b[K\r\n")];
+        assert_eq!(
+            compact_repaint_runs(&suffix),
+            suffix,
+            "positioned suffix rewrite must survive compaction"
+        );
+    }
+
+    #[test]
+    fn differential_redraw_replays_identical_scrollback() {
+        // End to end: prompt, typed command, kill-word redisplay, submit,
+        // output. Original and compacted streams must rebuild the same
+        // scrollback — today the collapse blanks the command line.
+        let stream =
+            b"$ cd gateway\r\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C\x1b[K\r\nno match found\r\n$ ".to_vec();
+        let events = vec![output(&stream)];
+        let compacted = compact_repaint_runs(&events);
+        for (label, evs) in [("original", &events), ("compacted", &compacted)] {
+            let mut engine = AlacrittyEngine::new(80, 24);
+            replay_into(&mut engine, evs);
+            let dump = engine.scrollback_text(100);
+            assert!(
+                dump.iter().any(|row| row == "$ cd"),
+                "{label} replay keeps the killed command line: {dump:?}"
+            );
+        }
+        let mut full = AlacrittyEngine::new(80, 24);
+        replay_into(&mut full, &events);
+        let mut slim = AlacrittyEngine::new(80, 24);
+        replay_into(&mut slim, &compacted);
+        assert_eq!(
+            full.scrollback_text(100),
+            slim.scrollback_text(100),
+            "identical scrollback with and without compaction"
+        );
+    }
+
+    #[test]
+    fn replay_equivalent_rejects_fabricated_scrollback_line() {
+        // Same 80x24 viewport, different scrollback: the compacted stream
+        // rewrote a history line (`cd gat` -> `   gat`) that has scrolled
+        // above the viewport. The verifier must reject even though every
+        // visible cell matches.
+        let mut head = b"first\r\n$ cd gat\r\n".to_vec();
+        let mut head_cut = b"first\r\n$    gat\r\n".to_vec();
+        for i in 0..30 {
+            let filler = format!("filler line {i:02}\r\n").into_bytes();
+            head.extend_from_slice(&filler);
+            head_cut.extend_from_slice(&filler);
+        }
+        let first = vec![output(&head)];
+        let second = vec![output(&head_cut)];
+        let mut a = AlacrittyEngine::new(80, 24);
+        replay_into(&mut a, &first);
+        let mut b = AlacrittyEngine::new(80, 24);
+        replay_into(&mut b, &second);
+        assert_eq!(
+            a.read_visible_text(24, 80),
+            b.read_visible_text(24, 80),
+            "fixture really shares the viewport"
+        );
+        assert!(
+            !replay_equivalent(&first, &second),
+            "verify must reject fabricated scrollback lines"
+        );
+    }
+
+    #[test]
+    fn replay_equivalent_accepts_deduped_animation_scrollback() {
+        // The mbx dedup intentionally drops scrolled animation copies: the
+        // compacted scrollback is a subset of the original. The verifier
+        // must keep accepting that shape or compaction becomes a no-op.
+        let mut stream = b"cargo build foo\r\n".to_vec();
+        for frame in 0..5 {
+            stream.extend_from_slice(format!("\x1b[2A\x1b[Jbox line {frame}\r\n").as_bytes());
+        }
+        stream.extend_from_slice(b"finished ok\r\n");
+        let events = vec![output(&stream)];
+        let compacted = compact_repaint_runs(&events);
+        assert_ne!(compacted, events, "fixture really dedupes");
+        assert!(
+            replay_equivalent(&events, &compacted),
+            "subset scrollback stays equivalent"
         );
     }
 

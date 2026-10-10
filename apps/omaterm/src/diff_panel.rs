@@ -20,9 +20,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 
-use omaterm_core::{DiffInfo, GitComparisonBase, GitObjectId, ProjectId};
+use omaterm_core::{DiffInfo, GitComparisonBase, GitObjectId};
 
 use crate::editor::{TokenSpan, tokenize};
+use crate::git_panel::RepoKey;
 
 /// One historical file selection from an expanded Graph commit. The base is
 /// always explicit (first parent, or the resolved empty tree for roots);
@@ -467,89 +468,89 @@ struct CachedPreviewRows {
 
 #[derive(Default)]
 pub struct DiffPanel {
-    diffs: HashMap<(ProjectId, bool), Arc<DiffInfo>>,
-    empties: HashMap<(ProjectId, bool), DiffEmpty>,
-    selected_file: HashMap<ProjectId, PathBuf>,
-    selected_hunk: HashMap<ProjectId, usize>,
+    diffs: HashMap<(RepoKey, bool), Arc<DiffInfo>>,
+    empties: HashMap<(RepoKey, bool), DiffEmpty>,
+    selected_file: HashMap<RepoKey, PathBuf>,
+    selected_hunk: HashMap<RepoKey, usize>,
     /// Untracked paths per project, synced from the latest `git status`.
     /// `git diff` never contains these, so prune must keep them selected
     /// instead of treating them as vanished (which flickered the preview
     /// tab open then closed).
-    untracked: HashMap<ProjectId, HashSet<PathBuf>>,
-    show_staged: HashMap<ProjectId, bool>,
+    untracked: HashMap<RepoKey, HashSet<PathBuf>>,
+    show_staged: HashMap<RepoKey, bool>,
     /// View-local preview tab in the main area (M15): which projects have
     /// the diff preview open. Never persisted, never on the wire — the
     /// core tab model stays terminal-only (M13/M17 scope).
-    preview_open: HashMap<ProjectId, bool>,
+    preview_open: HashMap<RepoKey, bool>,
     /// Split/Inline detail mode per project. Split by default (mock);
     /// view-local, never persisted.
-    diff_mode: HashMap<ProjectId, DiffMode>,
+    diff_mode: HashMap<RepoKey, DiffMode>,
     /// Flattened presentation rows are immutable and reused across GPUI
     /// frames. Invalidated only when the source side, selection, or mode changes.
-    preview_rows: HashMap<(ProjectId, bool, PathBuf, DiffMode), CachedPreviewRows>,
+    preview_rows: HashMap<(RepoKey, bool, PathBuf, DiffMode), CachedPreviewRows>,
     /// Historical commit selection per project. Present means the preview
     /// shows that immutable comparison instead of the worktree side.
-    selected_commit: HashMap<ProjectId, CommitPreviewSel>,
+    selected_commit: HashMap<RepoKey, CommitPreviewSel>,
     /// Landed historical patches per project (one preview per project).
-    commit_diffs: HashMap<ProjectId, Arc<DiffInfo>>,
-    commit_empties: HashMap<ProjectId, DiffEmpty>,
+    commit_diffs: HashMap<RepoKey, Arc<DiffInfo>>,
+    commit_empties: HashMap<RepoKey, DiffEmpty>,
     /// The exact request key that produced the stored historical patch or
     /// error. The tick compares this before reusing anything: commit, base,
     /// paths, roots and context all gate validity.
-    commit_keys: HashMap<ProjectId, CommitDiffKey>,
+    commit_keys: HashMap<RepoKey, CommitDiffKey>,
     /// Flattened rows for commit previews, keyed by full commit OID (never
     /// an abbreviation) plus path and mode.
-    commit_rows: HashMap<(ProjectId, String, PathBuf, DiffMode), CachedPreviewRows>,
+    commit_rows: HashMap<(RepoKey, String, PathBuf, DiffMode), CachedPreviewRows>,
 }
 
 impl DiffPanel {
-    pub fn diff_for(&self, project: ProjectId, staged: bool) -> Option<&DiffInfo> {
+    pub fn diff_for(&self, project: RepoKey, staged: bool) -> Option<&DiffInfo> {
         self.diffs.get(&(project, staged)).map(Arc::as_ref)
     }
 
-    pub fn diff_shared_for(&self, project: ProjectId, staged: bool) -> Option<Arc<DiffInfo>> {
+    pub fn diff_shared_for(&self, project: RepoKey, staged: bool) -> Option<Arc<DiffInfo>> {
         self.diffs.get(&(project, staged)).cloned()
     }
 
-    pub fn empty_for(&self, project: ProjectId, staged: bool) -> Option<&DiffEmpty> {
+    pub fn empty_for(&self, project: RepoKey, staged: bool) -> Option<&DiffEmpty> {
         self.empties.get(&(project, staged))
     }
 
     /// Whether the panel shows the staged (`--cached`) side for a project.
     /// Unstaged by default, every launch (view chrome, never persisted).
-    pub fn show_staged(&self, project: ProjectId) -> bool {
+    pub fn show_staged(&self, project: RepoKey) -> bool {
         self.show_staged.get(&project).copied().unwrap_or(false)
     }
 
     /// Detail-view mode for a project. Split by default, every launch
     /// (view chrome, never persisted).
-    pub fn diff_mode(&self, project: ProjectId) -> DiffMode {
+    pub fn diff_mode(&self, project: RepoKey) -> DiffMode {
         self.diff_mode.get(&project).copied().unwrap_or_default()
     }
 
-    pub fn set_diff_mode(&mut self, project: ProjectId, mode: DiffMode) {
-        self.diff_mode.insert(project, mode);
+    pub fn set_diff_mode(&mut self, project: RepoKey, mode: DiffMode) {
+        self.diff_mode.insert(project.clone(), mode);
         self.preview_rows
             .retain(|(owner, _, _, _), _| *owner != project);
     }
 
-    pub fn set_show_staged(&mut self, project: ProjectId, staged: bool) {
+    pub fn set_show_staged(&mut self, project: RepoKey, staged: bool) {
         self.show_staged.insert(project, staged);
     }
 
     /// Open the main-area preview tab for a project. View-local only:
     /// never persisted, never sent over IPC (core tabs stay terminal).
-    pub fn open_preview(&mut self, project: ProjectId) {
+    pub fn open_preview(&mut self, project: RepoKey) {
         self.preview_open.insert(project, true);
     }
 
     /// Close the main-area preview tab for a project.
-    pub fn close_preview(&mut self, project: ProjectId) {
+    pub fn close_preview(&mut self, project: RepoKey) {
         self.preview_open.remove(&project);
     }
 
     /// Whether the main area shows the diff preview for a project.
-    pub fn preview_open(&self, project: ProjectId) -> bool {
+    pub fn preview_open(&self, project: RepoKey) -> bool {
         self.preview_open.get(&project).copied().unwrap_or(false)
     }
 
@@ -563,12 +564,12 @@ impl DiffPanel {
         if pending != Some(&result.key) || current != Some(&result.key) {
             return false;
         }
-        self.apply_refresh(result.key.project, result.key.staged, result.refresh);
+        self.apply_refresh(result.key.repo, result.key.staged, result.refresh);
         true
     }
 
     /// Retire both comparisons without losing the user's file/hunk intent.
-    pub fn invalidate_data(&mut self, project: ProjectId) {
+    pub fn invalidate_data(&mut self, project: RepoKey) {
         self.diffs.retain(|(owner, _), _| *owner != project);
         self.empties.retain(|(owner, _), _| *owner != project);
         self.preview_rows
@@ -581,45 +582,44 @@ impl DiffPanel {
     }
 
     /// Includes closed projects, which no longer appear in the workspace.
-    pub fn retain_project(&mut self, project: Option<ProjectId>) {
-        self.diffs.retain(|(owner, _), _| Some(*owner) == project);
-        self.empties.retain(|(owner, _), _| Some(*owner) == project);
-        self.selected_file
-            .retain(|owner, _| Some(*owner) == project);
-        self.untracked.retain(|owner, _| Some(*owner) == project);
-        self.selected_hunk
-            .retain(|owner, _| Some(*owner) == project);
-        self.show_staged.retain(|owner, _| Some(*owner) == project);
-        self.preview_open.retain(|owner, _| Some(*owner) == project);
-        self.diff_mode.retain(|owner, _| Some(*owner) == project);
-        self.preview_rows
-            .retain(|(owner, _, _, _), _| Some(*owner) == project);
-        self.selected_commit
-            .retain(|owner, _| Some(*owner) == project);
-        self.commit_diffs.retain(|owner, _| Some(*owner) == project);
-        self.commit_empties
-            .retain(|owner, _| Some(*owner) == project);
-        self.commit_keys.retain(|owner, _| Some(*owner) == project);
-        self.commit_rows
-            .retain(|(owner, _, _, _), _| Some(*owner) == project);
+    pub fn retain_project(&mut self, project: Option<RepoKey>) {
+        let keep = |owner: &RepoKey| {
+            project
+                .as_ref()
+                .is_some_and(|key| owner.matches_project(key.project))
+        };
+        self.diffs.retain(|(owner, _), _| keep(owner));
+        self.empties.retain(|(owner, _), _| keep(owner));
+        self.selected_file.retain(|owner, _| keep(owner));
+        self.untracked.retain(|owner, _| keep(owner));
+        self.selected_hunk.retain(|owner, _| keep(owner));
+        self.show_staged.retain(|owner, _| keep(owner));
+        self.preview_open.retain(|owner, _| keep(owner));
+        self.diff_mode.retain(|owner, _| keep(owner));
+        self.preview_rows.retain(|(owner, _, _, _), _| keep(owner));
+        self.selected_commit.retain(|owner, _| keep(owner));
+        self.commit_diffs.retain(|owner, _| keep(owner));
+        self.commit_empties.retain(|owner, _| keep(owner));
+        self.commit_keys.retain(|owner, _| keep(owner));
+        self.commit_rows.retain(|(owner, _, _, _), _| keep(owner));
     }
 
-    pub fn apply_refresh(&mut self, project: ProjectId, staged: bool, refresh: DiffRefresh) {
+    pub fn apply_refresh(&mut self, project: RepoKey, staged: bool, refresh: DiffRefresh) {
         self.preview_rows
             .retain(|(owner, side, _, _), _| *owner != project || *side != staged);
         match refresh.result {
             Ok(info) => {
-                self.empties.remove(&(project, staged));
-                self.diffs.insert((project, staged), Arc::new(info));
+                self.empties.remove(&(project.clone(), staged));
+                self.diffs.insert((project.clone(), staged), Arc::new(info));
                 self.prune_selection(project, staged);
             }
             Err(empty) => {
-                self.diffs.remove(&(project, staged));
-                self.empties.insert((project, staged), empty);
+                self.diffs.remove(&(project.clone(), staged));
+                self.empties.insert((project.clone(), staged), empty);
                 // The errored side is the visible one: its selection
                 // no longer names anything real. A historical preview owns
                 // the hunk cursor instead, so worktree errors leave it alone.
-                if self.show_staged(project) == staged
+                if self.show_staged(project.clone()) == staged
                     && !self.selected_commit.contains_key(&project)
                 {
                     self.selected_file.remove(&project);
@@ -632,31 +632,31 @@ impl DiffPanel {
     /// Select a file and reset its hunk cursor. Called by file-row clicks
     /// and by diff-on-select from the Source Control panel. A worktree
     /// selection replaces any historical preview (one preview per project).
-    pub fn select_file(&mut self, project: ProjectId, path: PathBuf) {
+    pub fn select_file(&mut self, project: RepoKey, path: PathBuf) {
         self.preview_rows
             .retain(|(owner, _, cached, _), _| *owner != project || cached == &path);
-        self.selected_file.insert(project, path);
-        self.selected_hunk.insert(project, 0);
+        self.selected_file.insert(project.clone(), path);
+        self.selected_hunk.insert(project.clone(), 0);
         self.clear_commit_preview(project);
     }
     /// Select a historical comparison from the Graph. Replaces any worktree
     /// file selection; the tick fetches the patch for exactly this base.
     /// Stored patches belong to the previous selection and are dropped so
     /// the preview shows the new request's loading state immediately.
-    pub fn select_commit(&mut self, project: ProjectId, sel: CommitPreviewSel) {
+    pub fn select_commit(&mut self, project: RepoKey, sel: CommitPreviewSel) {
         self.commit_rows.retain(|(owner, commit, cached, _), _| {
             *owner != project || commit != sel.commit.as_str() || cached == &sel.path
         });
         self.selected_file.remove(&project);
-        self.selected_commit.insert(project, sel);
-        self.selected_hunk.insert(project, 0);
+        self.selected_commit.insert(project.clone(), sel);
+        self.selected_hunk.insert(project.clone(), 0);
         self.commit_diffs.remove(&project);
         self.commit_empties.remove(&project);
         self.commit_keys.remove(&project);
     }
     /// Drop the historical selection and its cached rows/diffs. Called by
     /// worktree selection and preview close paths.
-    pub fn clear_commit_preview(&mut self, project: ProjectId) {
+    pub fn clear_commit_preview(&mut self, project: RepoKey) {
         self.selected_commit.remove(&project);
         self.commit_diffs.remove(&project);
         self.commit_empties.remove(&project);
@@ -665,24 +665,24 @@ impl DiffPanel {
             .retain(|(owner, _, _, _), _| *owner != project);
     }
 
-    pub fn selected_commit(&self, project: ProjectId) -> Option<&CommitPreviewSel> {
+    pub fn selected_commit(&self, project: RepoKey) -> Option<&CommitPreviewSel> {
         self.selected_commit.get(&project)
     }
 
-    pub fn commit_diff_for(&self, project: ProjectId) -> Option<&DiffInfo> {
+    pub fn commit_diff_for(&self, project: RepoKey) -> Option<&DiffInfo> {
         self.commit_diffs.get(&project).map(Arc::as_ref)
     }
 
-    pub fn commit_shared_for(&self, project: ProjectId) -> Option<Arc<DiffInfo>> {
+    pub fn commit_shared_for(&self, project: RepoKey) -> Option<Arc<DiffInfo>> {
         self.commit_diffs.get(&project).cloned()
     }
 
-    pub fn commit_empty_for(&self, project: ProjectId) -> Option<&DiffEmpty> {
+    pub fn commit_empty_for(&self, project: RepoKey) -> Option<&DiffEmpty> {
         self.commit_empties.get(&project)
     }
 
     /// The request key behind the stored historical patch or error, if any.
-    pub fn commit_key_for(&self, project: ProjectId) -> Option<&CommitDiffKey> {
+    pub fn commit_key_for(&self, project: RepoKey) -> Option<&CommitDiffKey> {
         self.commit_keys.get(&project)
     }
 
@@ -690,16 +690,16 @@ impl DiffPanel {
     /// vice versa; unlike worktree sides there is no cross-side pruning.
     /// The caller matches the result key against the pending/current
     /// request first (stale landings drop before reaching this method).
-    pub fn apply_commit_refresh(&mut self, project: ProjectId, landed: CommitDiffResult) {
+    pub fn apply_commit_refresh(&mut self, project: RepoKey, landed: CommitDiffResult) {
         self.commit_rows
             .retain(|(owner, _, _, _), _| *owner != project);
-        self.commit_keys.insert(project, landed.key);
+        self.commit_keys.insert(project.clone(), landed.key);
         match landed.result {
             Ok(info) => {
                 self.commit_empties.remove(&project);
-                self.commit_diffs.insert(project, Arc::new(info));
-                let count = self.commit_hunk_count_for(project);
-                if self.selected_hunk(project) >= count.max(1) {
+                self.commit_diffs.insert(project.clone(), Arc::new(info));
+                let count = self.commit_hunk_count_for(project.clone());
+                if self.selected_hunk(project.clone()) >= count.max(1) {
                     self.selected_hunk.insert(project, 0);
                 }
             }
@@ -711,7 +711,7 @@ impl DiffPanel {
     }
 
     /// Parsed hunk count for the selected historical file.
-    pub fn commit_hunk_count_for(&self, project: ProjectId) -> usize {
+    pub fn commit_hunk_count_for(&self, project: RepoKey) -> usize {
         let selected = self.selected_commit.get(&project);
         self.commit_diffs
             .get(&project)
@@ -730,11 +730,11 @@ impl DiffPanel {
     /// `staged = true` so `Stage Hunk` can never appear: `can_stage_hunk`
     /// requires the worktree side, and every other row is side-agnostic.
     /// Split side headers are labeled by the renderer from the selection.
-    pub fn commit_preview_rows_for(&mut self, project: ProjectId) -> Option<Arc<[PreviewRow]>> {
+    pub fn commit_preview_rows_for(&mut self, project: RepoKey) -> Option<Arc<[PreviewRow]>> {
         let sel = self.selected_commit.get(&project)?.clone();
-        let mode = self.diff_mode(project);
+        let mode = self.diff_mode(project.clone());
         let key = (
-            project,
+            project.clone(),
             sel.commit.as_str().to_owned(),
             sel.path.clone(),
             mode,
@@ -758,13 +758,13 @@ impl DiffPanel {
         Some(rows)
     }
 
-    pub fn selected_file(&self, project: ProjectId) -> Option<&PathBuf> {
+    pub fn selected_file(&self, project: RepoKey) -> Option<&PathBuf> {
         self.selected_file.get(&project)
     }
 
     /// Sync the untracked set from the latest status. A stale entry can only
     /// linger until the next status lands; it never dispatches anything.
-    pub fn set_untracked(&mut self, project: ProjectId, paths: HashSet<PathBuf>) {
+    pub fn set_untracked(&mut self, project: RepoKey, paths: HashSet<PathBuf>) {
         if paths.is_empty() {
             self.untracked.remove(&project);
         } else {
@@ -773,13 +773,13 @@ impl DiffPanel {
     }
 
     /// Whether `path` is currently untracked for `project`.
-    pub fn is_untracked(&self, project: ProjectId, path: &PathBuf) -> bool {
+    pub fn is_untracked(&self, project: RepoKey, path: &PathBuf) -> bool {
         self.untracked
             .get(&project)
             .is_some_and(|paths| paths.contains(path))
     }
 
-    pub fn selected_hunk(&self, project: ProjectId) -> usize {
+    pub fn selected_hunk(&self, project: RepoKey) -> usize {
         self.selected_hunk.get(&project).copied().unwrap_or(0)
     }
 
@@ -787,11 +787,11 @@ impl DiffPanel {
     /// a commit is selected, else the worktree side. Hunk navigation
     /// (Alt+N/P) therefore follows the visible preview without branching
     /// at every call site.
-    pub fn hunk_count_for(&self, project: ProjectId) -> usize {
+    pub fn hunk_count_for(&self, project: RepoKey) -> usize {
         if self.selected_commit.contains_key(&project) {
             return self.commit_hunk_count_for(project);
         }
-        let staged = self.show_staged(project);
+        let staged = self.show_staged(project.clone());
         let selected = self.selected_file.get(&project);
         self.diffs
             .get(&(project, staged))
@@ -808,12 +808,12 @@ impl DiffPanel {
 
     pub fn preview_rows_for(
         &mut self,
-        project: ProjectId,
+        project: RepoKey,
         staged: bool,
     ) -> Option<Arc<[PreviewRow]>> {
         let path = self.selected_file.get(&project)?.clone();
-        let mode = self.diff_mode(project);
-        let key = (project, staged, path.clone(), mode);
+        let mode = self.diff_mode(project.clone());
+        let key = (project.clone(), staged, path.clone(), mode);
         if let Some(rows) = self.preview_rows.get(&key) {
             return Some(Arc::clone(&rows.rows));
         }
@@ -837,12 +837,12 @@ impl DiffPanel {
     /// keyboard navigation never walks off the end. Empty selection is a
     /// no-op. The preview viewport follows the cursor. Returns the new
     /// cursor.
-    pub fn next_hunk(&mut self, project: ProjectId) -> usize {
-        let count = self.hunk_count_for(project);
+    pub fn next_hunk(&mut self, project: RepoKey) -> usize {
+        let count = self.hunk_count_for(project.clone());
         let next = if count == 0 {
             0
         } else {
-            (self.selected_hunk(project) + 1) % count
+            (self.selected_hunk(project.clone()) + 1) % count
         };
         self.selected_hunk.insert(project, next);
         next
@@ -850,9 +850,9 @@ impl DiffPanel {
 
     /// Move the hunk cursor back, wrapping to the last parsed hunk.
     /// The preview viewport follows the cursor. Returns the new cursor.
-    pub fn prev_hunk(&mut self, project: ProjectId) -> usize {
-        let count = self.hunk_count_for(project);
-        let cursor = self.selected_hunk(project);
+    pub fn prev_hunk(&mut self, project: RepoKey) -> usize {
+        let count = self.hunk_count_for(project.clone());
+        let cursor = self.selected_hunk(project.clone());
         let next = if count == 0 {
             0
         } else {
@@ -868,23 +868,23 @@ impl DiffPanel {
     /// shows an explicit untracked state instead of closing the preview.
     /// A selected historical preview is immutable: worktree refreshes never
     /// prune its selection or cursor.
-    fn prune_selection(&mut self, project: ProjectId, staged: bool) {
+    fn prune_selection(&mut self, project: RepoKey, staged: bool) {
         if self.selected_commit.contains_key(&project) {
             return;
         }
-        if self.show_staged(project) != staged {
+        if self.show_staged(project.clone()) != staged {
             return;
         }
         if self
             .selected_file
             .get(&project)
-            .is_some_and(|selected| self.is_untracked(project, selected))
+            .is_some_and(|selected| self.is_untracked(project.clone(), selected))
         {
             return;
         }
         let visible = self
             .diffs
-            .get(&(project, staged))
+            .get(&(project.clone(), staged))
             .and_then(|info| {
                 self.selected_file
                     .get(&project)
@@ -896,8 +896,8 @@ impl DiffPanel {
             self.selected_hunk.remove(&project);
             return;
         }
-        let count = self.hunk_count_for(project);
-        if self.selected_hunk(project) >= count.max(1) {
+        let count = self.hunk_count_for(project.clone());
+        if self.selected_hunk(project.clone()) >= count.max(1) {
             self.selected_hunk.insert(project, 0);
         }
     }
@@ -907,10 +907,11 @@ impl DiffPanel {
 pub struct DiffRequestKey {
     pub generation: u64,
     pub root_generation: u64,
-    pub project: ProjectId,
+    pub repo: RepoKey,
     pub path: Option<PathBuf>,
     pub pinned_root: Option<PathBuf>,
     pub active_cwd: Option<PathBuf>,
+    pub repo_root: Option<PathBuf>,
     pub staged: bool,
     pub context_lines: u8,
     /// Whether the selected path is untracked: the worker renders
@@ -1069,13 +1070,14 @@ impl Drop for DiffWorker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitDiffKey {
     pub generation: u64,
-    pub project: ProjectId,
+    pub repo: RepoKey,
     pub commit: GitObjectId,
     pub base: GitComparisonBase,
     pub old_path: Option<PathBuf>,
     pub path: PathBuf,
     pub pinned_root: Option<PathBuf>,
     pub active_cwd: Option<PathBuf>,
+    pub repo_root: Option<PathBuf>,
     pub context_lines: u8,
 }
 
@@ -1242,8 +1244,13 @@ fn commit_diff_off_thread(
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
         return Err(DiffEmpty::Cancelled);
     }
-    let resolved =
-        omaterm_context::resolve_root(key.pinned_root.as_deref(), key.active_cwd.as_deref());
+    let explicit = key.repo_root.as_deref().filter(|dir| dir.is_dir());
+    let resolved = match explicit {
+        Some(dir) => omaterm_context::resolve_root(Some(dir), None),
+        None => {
+            omaterm_context::resolve_root(key.pinned_root.as_deref(), key.active_cwd.as_deref())
+        }
+    };
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
         return Err(DiffEmpty::Cancelled);
     }
@@ -1303,15 +1310,7 @@ pub fn spawn_diff_thread(
 
 fn run_diff_spawn(spawn: DiffSpawn) -> DiffWorkerResult {
     let worker = std::thread::current().id();
-    let result = refresh_off_thread(
-        spawn.key.pinned_root.as_deref(),
-        spawn.key.active_cwd.as_deref(),
-        spawn.key.staged,
-        spawn.key.context_lines,
-        spawn.key.path.clone(),
-        spawn.key.untracked,
-        &spawn.cancelled,
-    );
+    let result = refresh_off_thread(&spawn.key, &spawn.cancelled);
     DiffWorkerResult {
         key: spawn.key,
         refresh: DiffRefresh { worker, result },
@@ -1319,15 +1318,16 @@ fn run_diff_spawn(spawn: DiffSpawn) -> DiffWorkerResult {
 }
 
 fn refresh_off_thread(
-    pinned: Option<&std::path::Path>,
-    active_cwd: Option<&std::path::Path>,
-    staged: bool,
-    context_lines: u8,
-    path: Option<PathBuf>,
-    untracked: bool,
+    key: &DiffRequestKey,
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<DiffInfo, DiffEmpty> {
-    let resolved = omaterm_context::resolve_root(pinned, active_cwd);
+    let explicit = key.repo_root.as_deref().filter(|dir| dir.is_dir());
+    let resolved = match explicit {
+        Some(dir) => omaterm_context::resolve_root(Some(dir), None),
+        None => {
+            omaterm_context::resolve_root(key.pinned_root.as_deref(), key.active_cwd.as_deref())
+        }
+    };
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
         return Err(DiffEmpty::Cancelled);
     }
@@ -1335,11 +1335,11 @@ fn refresh_off_thread(
         return Err(DiffEmpty::NoRoot);
     };
     let request = omaterm_context::DiffRequest {
-        staged,
-        path,
-        context_lines,
+        staged: key.staged,
+        path: key.path.clone(),
+        context_lines: key.context_lines,
         files_only: false,
-        untracked,
+        untracked: key.untracked,
     };
     match omaterm_context::git_diff_cancellable(&root, &request, cancelled) {
         Ok(info) => Ok(info),
@@ -1373,7 +1373,13 @@ fn refresh_off_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omaterm_core::{DiffFileInfo, DiffFileStatus, DiffHunkInfo, DiffLineInfo, DiffLineKind};
+    use omaterm_core::{
+        DiffFileInfo, DiffFileStatus, DiffHunkInfo, DiffLineInfo, DiffLineKind, ProjectId,
+    };
+
+    fn rk(project: ProjectId) -> RepoKey {
+        RepoKey::root(project)
+    }
 
     fn hunk(lines: usize) -> DiffHunkInfo {
         DiffHunkInfo {
@@ -1406,10 +1412,10 @@ mod tests {
         }
     }
 
-    fn panel_with(project: ProjectId, files: Vec<DiffFileInfo>) -> DiffPanel {
+    fn panel_with(project: RepoKey, files: Vec<DiffFileInfo>) -> DiffPanel {
         let mut panel = DiffPanel::default();
         panel.apply_refresh(
-            project,
+            project.clone(),
             false,
             DiffRefresh {
                 worker: std::thread::current().id(),
@@ -1423,14 +1429,15 @@ mod tests {
         panel
     }
 
-    fn request_key(project: ProjectId, generation: u64) -> DiffRequestKey {
+    fn request_key(project: RepoKey, generation: u64) -> DiffRequestKey {
         DiffRequestKey {
             generation,
             root_generation: 1,
-            project,
+            repo: project.clone(),
             path: Some(PathBuf::from("a.txt")),
             pinned_root: Some(PathBuf::from("/repo")),
             active_cwd: None,
+            repo_root: None,
             staged: false,
             context_lines: 3,
             untracked: false,
@@ -1447,26 +1454,27 @@ mod tests {
         }
     }
 
-    fn commit_key(project: ProjectId, commit: &omaterm_core::GitObjectId) -> CommitDiffKey {
+    fn commit_key(project: RepoKey, commit: &omaterm_core::GitObjectId) -> CommitDiffKey {
         CommitDiffKey {
             generation: 1,
-            project,
+            repo: project.clone(),
             commit: commit.clone(),
             base: omaterm_core::GitComparisonBase::EmptyTree,
             old_path: None,
             path: PathBuf::from("a.txt"),
             pinned_root: Some(PathBuf::from("/repo")),
             active_cwd: None,
+            repo_root: None,
             context_lines: 3,
         }
     }
 
     #[test]
     fn stale_completions_cannot_replace_the_visible_diff() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 1)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
-        let key = request_key(project, 1);
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 1)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        let key = request_key(project.clone(), 1);
         let changed = [
             DiffRequestKey {
                 generation: 2,
@@ -1477,7 +1485,7 @@ mod tests {
                 ..key.clone()
             },
             DiffRequestKey {
-                project: ProjectId::new(),
+                repo: rk(ProjectId::new()),
                 ..key.clone()
             },
             DiffRequestKey {
@@ -1511,45 +1519,51 @@ mod tests {
                 Some(&key),
                 Some(current)
             ));
-            assert!(panel.diff_for(project, false).is_some());
+            assert!(panel.diff_for(project.clone(), false).is_some());
         }
         assert!(!panel.apply_current_refresh(empty_result(key.clone()), Some(&key), None));
         assert!(!panel.apply_current_refresh(empty_result(key.clone()), None, Some(&key)));
         assert!(panel.apply_current_refresh(empty_result(key.clone()), Some(&key), Some(&key)));
-        assert!(panel.diff_for(project, false).is_none());
-        assert_eq!(panel.empty_for(project, false), Some(&DiffEmpty::NoRoot));
+        assert!(panel.diff_for(project.clone(), false).is_none());
+        assert_eq!(
+            panel.empty_for(project.clone(), false),
+            Some(&DiffEmpty::NoRoot)
+        );
     }
 
     #[test]
     fn invalidation_releases_data_but_retains_selection_until_project_retirement() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 3)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
-        panel.open_preview(project);
-        panel.next_hunk(project);
-        assert!(panel.preview_rows_for(project, false).is_some());
-        panel.invalidate_data(project);
-        assert!(panel.preview_rows_for(project, false).is_none());
-        assert_eq!(panel.selected_file(project), Some(&PathBuf::from("a.txt")));
-        assert_eq!(panel.selected_hunk(project), 1);
-        assert!(panel.preview_open(project));
-        panel.retain_project(Some(ProjectId::new()));
-        assert!(panel.selected_file(project).is_none());
-        assert!(!panel.preview_open(project));
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 3)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        panel.open_preview(project.clone());
+        panel.next_hunk(project.clone());
+        assert!(panel.preview_rows_for(project.clone(), false).is_some());
+        panel.invalidate_data(project.clone());
+        assert!(panel.preview_rows_for(project.clone(), false).is_none());
+        assert_eq!(
+            panel.selected_file(project.clone()),
+            Some(&PathBuf::from("a.txt"))
+        );
+        assert_eq!(panel.selected_hunk(project.clone()), 1);
+        assert!(panel.preview_open(project.clone()));
+        panel.retain_project(Some(rk(ProjectId::new())));
+        assert!(panel.selected_file(project.clone()).is_none());
+        assert!(!panel.preview_open(project.clone()));
     }
 
     #[test]
     fn commit_selection_replaces_worktree_and_hides_stage_actions() {
         use omaterm_core::{GitComparisonBase, GitObjectId};
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 1)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
-        assert!(panel.selected_commit(project).is_none());
-        assert!(panel.commit_preview_rows_for(project).is_none());
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 1)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        assert!(panel.selected_commit(project.clone()).is_none());
+        assert!(panel.commit_preview_rows_for(project.clone()).is_none());
 
         // The worktree side offers hunk staging; the historical rows never do.
         let worktree_rows = panel
-            .preview_rows_for(project, false)
+            .preview_rows_for(project.clone(), false)
             .expect("worktree rows");
         assert!(worktree_rows.iter().any(|row| matches!(
             row,
@@ -1561,7 +1575,7 @@ mod tests {
 
         let commit = GitObjectId::parse("b".repeat(40)).expect("fixture oid");
         panel.select_commit(
-            project,
+            project.clone(),
             CommitPreviewSel {
                 commit: commit.clone(),
                 base: GitComparisonBase::EmptyTree,
@@ -1573,15 +1587,17 @@ mod tests {
                 parents: Vec::new(),
             },
         );
-        assert!(panel.selected_commit(project).is_some());
-        assert!(panel.selected_file(project).is_none());
-        let sel = panel.selected_commit(project).expect("commit selection");
+        assert!(panel.selected_commit(project.clone()).is_some());
+        assert!(panel.selected_file(project.clone()).is_none());
+        let sel = panel
+            .selected_commit(project.clone())
+            .expect("commit selection");
         assert!(!sel.source().capabilities().stage_hunk);
 
         panel.apply_commit_refresh(
-            project,
+            project.clone(),
             CommitDiffResult {
-                key: commit_key(project, &commit),
+                key: commit_key(project.clone(), &commit),
                 worker: std::thread::current().id(),
                 result: Ok(omaterm_core::DiffInfo {
                     files: vec![file("a.txt", 2)],
@@ -1590,8 +1606,10 @@ mod tests {
                 }),
             },
         );
-        assert_eq!(panel.commit_hunk_count_for(project), 2);
-        let rows = panel.commit_preview_rows_for(project).expect("commit rows");
+        assert_eq!(panel.commit_hunk_count_for(project.clone()), 2);
+        let rows = panel
+            .commit_preview_rows_for(project.clone())
+            .expect("commit rows");
         assert!(
             rows.iter()
                 .any(|row| matches!(row, PreviewRow::HunkActions { .. }))
@@ -1605,13 +1623,13 @@ mod tests {
         )));
 
         // Selecting a worktree file replaces the historical preview.
-        panel.select_file(project, PathBuf::from("a.txt"));
-        assert!(panel.selected_commit(project).is_none());
-        assert!(panel.commit_preview_rows_for(project).is_none());
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        assert!(panel.selected_commit(project.clone()).is_none());
+        assert!(panel.commit_preview_rows_for(project.clone()).is_none());
 
         // Project retirement drops the commit slot with everything else.
         panel.select_commit(
-            project,
+            project.clone(),
             CommitPreviewSel {
                 commit,
                 base: GitComparisonBase::EmptyTree,
@@ -1623,8 +1641,8 @@ mod tests {
                 parents: Vec::new(),
             },
         );
-        panel.retain_project(Some(ProjectId::new()));
-        assert!(panel.selected_commit(project).is_none());
+        panel.retain_project(Some(rk(ProjectId::new())));
+        assert!(panel.selected_commit(project.clone()).is_none());
     }
 
     /// The historical fetch runs off the caller thread and reads committed
@@ -1673,18 +1691,19 @@ mod tests {
                 .pop()
                 .expect("head commit");
         let base = GitComparisonBase::Parent(head.parents[0].clone());
-        let project = ProjectId::new();
+        let project = rk(ProjectId::new());
         let worker = CommitDiffWorker::new();
         worker.submit(CommitDiffSpawn {
             key: CommitDiffKey {
                 generation: 1,
-                project,
+                repo: project.clone(),
                 commit: head.id.clone(),
                 base,
                 old_path: None,
                 path: PathBuf::from("a.txt"),
                 pinned_root: Some(repo.clone()),
                 active_cwd: None,
+                repo_root: None,
                 context_lines: 3,
             },
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1712,13 +1731,14 @@ mod tests {
         worker.submit(CommitDiffSpawn {
             key: CommitDiffKey {
                 generation: 2,
-                project,
+                repo: project.clone(),
                 commit: GitObjectId::parse("f".repeat(40)).expect("fixture oid"),
                 base: GitComparisonBase::EmptyTree,
                 old_path: None,
                 path: PathBuf::from("a.txt"),
                 pinned_root: Some(repo.clone()),
                 active_cwd: None,
+                repo_root: None,
                 context_lines: 3,
             },
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1743,10 +1763,10 @@ mod tests {
             release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             empty_result(spawn.key)
         });
-        let project = ProjectId::new();
+        let project = rk(ProjectId::new());
         let submit = |generation| {
             worker.submit(DiffSpawn {
-                key: request_key(project, generation),
+                key: request_key(project.clone(), generation),
                 cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             })
         };
@@ -2194,59 +2214,59 @@ mod tests {
 
     #[test]
     fn diff_mode_defaults_split_and_clears_with_project() {
-        let project = ProjectId::new();
+        let project = rk(ProjectId::new());
         let mut panel = DiffPanel::default();
-        assert_eq!(panel.diff_mode(project), DiffMode::Split);
-        panel.set_diff_mode(project, DiffMode::Inline);
-        assert_eq!(panel.diff_mode(project), DiffMode::Inline);
+        assert_eq!(panel.diff_mode(project.clone()), DiffMode::Split);
+        panel.set_diff_mode(project.clone(), DiffMode::Inline);
+        assert_eq!(panel.diff_mode(project.clone()), DiffMode::Inline);
         panel.retain_project(None);
-        assert_eq!(panel.diff_mode(project), DiffMode::Split);
+        assert_eq!(panel.diff_mode(project.clone()), DiffMode::Split);
     }
 
     #[test]
     fn hunk_cursor_wraps_within_the_rendered_window() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 3)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
-        assert_eq!(panel.selected_hunk(project), 0);
-        assert_eq!(panel.next_hunk(project), 1);
-        assert_eq!(panel.next_hunk(project), 2);
-        assert_eq!(panel.next_hunk(project), 0);
-        assert_eq!(panel.prev_hunk(project), 2);
-        assert_eq!(panel.prev_hunk(project), 1);
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 3)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        assert_eq!(panel.selected_hunk(project.clone()), 0);
+        assert_eq!(panel.next_hunk(project.clone()), 1);
+        assert_eq!(panel.next_hunk(project.clone()), 2);
+        assert_eq!(panel.next_hunk(project.clone()), 0);
+        assert_eq!(panel.prev_hunk(project.clone()), 2);
+        assert_eq!(panel.prev_hunk(project.clone()), 1);
     }
 
     #[test]
     fn hunk_cursor_is_a_no_op_without_selection() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 2)]);
-        assert_eq!(panel.next_hunk(project), 0);
-        assert_eq!(panel.prev_hunk(project), 0);
-        assert_eq!(panel.hunk_count_for(project), 0);
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 2)]);
+        assert_eq!(panel.next_hunk(project.clone()), 0);
+        assert_eq!(panel.prev_hunk(project.clone()), 0);
+        assert_eq!(panel.hunk_count_for(project.clone()), 0);
     }
 
     #[test]
     fn select_file_resets_the_hunk_cursor() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 3), file("b.txt", 1)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
-        panel.next_hunk(project);
-        panel.next_hunk(project);
-        assert_eq!(panel.selected_hunk(project), 2);
-        panel.select_file(project, PathBuf::from("b.txt"));
-        assert_eq!(panel.selected_hunk(project), 0);
-        assert_eq!(panel.hunk_count_for(project), 1);
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 3), file("b.txt", 1)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        panel.next_hunk(project.clone());
+        panel.next_hunk(project.clone());
+        assert_eq!(panel.selected_hunk(project.clone()), 2);
+        panel.select_file(project.clone(), PathBuf::from("b.txt"));
+        assert_eq!(panel.selected_hunk(project.clone()), 0);
+        assert_eq!(panel.hunk_count_for(project.clone()), 1);
     }
 
     #[test]
     fn refresh_prunes_gone_files_and_clamps_the_cursor() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 3)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
-        panel.next_hunk(project);
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 3)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        panel.next_hunk(project.clone());
         // Same file with fewer hunks: cursor clamps back to zero.
         panel.apply_refresh(
-            project,
+            project.clone(),
             false,
             DiffRefresh {
                 worker: std::thread::current().id(),
@@ -2257,10 +2277,10 @@ mod tests {
                 }),
             },
         );
-        assert_eq!(panel.selected_hunk(project), 0);
+        assert_eq!(panel.selected_hunk(project.clone()), 0);
         // File gone entirely: selection clears.
         panel.apply_refresh(
-            project,
+            project.clone(),
             false,
             DiffRefresh {
                 worker: std::thread::current().id(),
@@ -2271,20 +2291,23 @@ mod tests {
                 }),
             },
         );
-        assert!(panel.selected_file(project).is_none());
+        assert!(panel.selected_file(project.clone()).is_none());
     }
 
     #[test]
     fn refresh_keeps_untracked_selection_and_prunes_once_tracked() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![]);
-        panel.select_file(project, PathBuf::from("new.txt"));
-        panel.set_untracked(project, [PathBuf::from("new.txt")].into_iter().collect());
-        assert!(panel.is_untracked(project, &PathBuf::from("new.txt")));
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![]);
+        panel.select_file(project.clone(), PathBuf::from("new.txt"));
+        panel.set_untracked(
+            project.clone(),
+            [PathBuf::from("new.txt")].into_iter().collect(),
+        );
+        assert!(panel.is_untracked(project.clone(), &PathBuf::from("new.txt")));
         // An empty `git diff` (which never lists untracked files) must not
         // drop the selection: that flickered the preview tab open then shut.
         panel.apply_refresh(
-            project,
+            project.clone(),
             false,
             DiffRefresh {
                 worker: std::thread::current().id(),
@@ -2296,14 +2319,14 @@ mod tests {
             },
         );
         assert_eq!(
-            panel.selected_file(project),
+            panel.selected_file(project.clone()),
             Some(&PathBuf::from("new.txt"))
         );
         // Once the path leaves the untracked set, normal pruning resumes.
-        panel.set_untracked(project, HashSet::new());
-        assert!(!panel.is_untracked(project, &PathBuf::from("new.txt")));
+        panel.set_untracked(project.clone(), HashSet::new());
+        assert!(!panel.is_untracked(project.clone(), &PathBuf::from("new.txt")));
         panel.apply_refresh(
-            project,
+            project.clone(),
             false,
             DiffRefresh {
                 worker: std::thread::current().id(),
@@ -2314,21 +2337,21 @@ mod tests {
                 }),
             },
         );
-        assert!(panel.selected_file(project).is_none());
+        assert!(panel.selected_file(project.clone()).is_none());
     }
 
     #[test]
     fn staged_toggle_defaults_unstaged_and_refreshes_swap_sides() {
-        let project = ProjectId::new();
+        let project = rk(ProjectId::new());
         let mut panel = DiffPanel::default();
-        assert!(!panel.show_staged(project));
-        panel.set_show_staged(project, true);
-        assert!(panel.show_staged(project));
+        assert!(!panel.show_staged(project.clone()));
+        panel.set_show_staged(project.clone(), true);
+        assert!(panel.show_staged(project.clone()));
         // A landing refresh for the hidden side never disturbs the
         // visible selection.
-        panel.select_file(project, PathBuf::from("a.txt"));
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
         panel.apply_refresh(
-            project,
+            project.clone(),
             false,
             DiffRefresh {
                 worker: std::thread::current().id(),
@@ -2339,77 +2362,81 @@ mod tests {
                 }),
             },
         );
-        assert_eq!(panel.selected_file(project), Some(&PathBuf::from("a.txt")));
+        assert_eq!(
+            panel.selected_file(project.clone()),
+            Some(&PathBuf::from("a.txt"))
+        );
     }
 
     #[test]
     fn error_refresh_clears_the_visible_side_only() {
-        let project = ProjectId::new();
-        let mut panel = panel_with(project, vec![file("a.txt", 1)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
+        let project = rk(ProjectId::new());
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 1)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
         panel.apply_refresh(
-            project,
+            project.clone(),
             false,
             DiffRefresh {
                 worker: std::thread::current().id(),
                 result: Err(DiffEmpty::Failed("boom".into())),
             },
         );
-        assert!(panel.diff_for(project, false).is_none());
+        assert!(panel.diff_for(project.clone(), false).is_none());
         assert_eq!(
-            panel.empty_for(project, false),
+            panel.empty_for(project.clone(), false),
             Some(&DiffEmpty::Failed("boom".into()))
         );
-        assert!(panel.selected_file(project).is_none());
+        assert!(panel.selected_file(project.clone()).is_none());
     }
 
     #[test]
     fn preview_open_close_is_view_local_per_project() {
-        let project = ProjectId::new();
-        let other = ProjectId::new();
+        let project = rk(ProjectId::new());
+        let other = rk(ProjectId::new());
         let mut panel = DiffPanel::default();
-        assert!(!panel.preview_open(project));
-        panel.open_preview(project);
-        assert!(panel.preview_open(project));
+        assert!(!panel.preview_open(project.clone()));
+        panel.open_preview(project.clone());
+        assert!(panel.preview_open(project.clone()));
         assert!(!panel.preview_open(other));
-        panel.close_preview(project);
-        assert!(!panel.preview_open(project));
+        panel.close_preview(project.clone());
+        assert!(!panel.preview_open(project.clone()));
         // Clearing the project closes its preview and viewport.
-        panel.open_preview(project);
-        panel.select_file(project, PathBuf::from("a.txt"));
+        panel.open_preview(project.clone());
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
         panel.retain_project(None);
-        assert!(!panel.preview_open(project));
+        assert!(!panel.preview_open(project.clone()));
     }
 
     #[test]
     fn navigation_tracks_all_hunks_and_scroll_range() {
-        let project = ProjectId::new();
+        let project = rk(ProjectId::new());
         // Cursor and scroll range cover every source hunk.
-        let mut panel = panel_with(project, vec![file("a.txt", 10)]);
-        panel.select_file(project, PathBuf::from("a.txt"));
-        panel.open_preview(project);
+        let mut panel = panel_with(project.clone(), vec![file("a.txt", 10)]);
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
+        panel.open_preview(project.clone());
         for _ in 0..8 {
-            panel.next_hunk(project);
+            panel.next_hunk(project.clone());
         }
-        assert_eq!(panel.selected_hunk(project), 8);
-        panel.prev_hunk(project);
-        panel.prev_hunk(project);
+        assert_eq!(panel.selected_hunk(project.clone()), 8);
+        panel.prev_hunk(project.clone());
+        panel.prev_hunk(project.clone());
         // Cursor wrap keeps the viewport valid.
-        panel.select_file(project, PathBuf::from("a.txt"));
+        panel.select_file(project.clone(), PathBuf::from("a.txt"));
     }
 
     #[test]
     fn diff_worker_runs_off_the_calling_thread() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let project = ProjectId::new();
+        let project = rk(ProjectId::new());
         let caller = std::thread::current().id();
         let key = DiffRequestKey {
             generation: 7,
             root_generation: 3,
-            project,
+            repo: project.clone(),
             path: None,
             pinned_root: Some(std::env::temp_dir()),
             active_cwd: None,
+            repo_root: None,
             staged: false,
             context_lines: 3,
             untracked: false,
@@ -2435,16 +2462,17 @@ mod tests {
     fn latest_diff_worker_keeps_only_one_pending_request() {
         let caller = std::thread::current().id();
         let worker = DiffWorker::new();
-        let project = ProjectId::new();
+        let project = rk(ProjectId::new());
         let root = std::env::temp_dir();
         for generation in 0..64 {
             let key = DiffRequestKey {
                 generation,
                 root_generation: generation + 1,
-                project,
+                repo: project.clone(),
                 path: Some(PathBuf::from(format!("file-{generation}.rs"))),
                 pinned_root: Some(root.clone()),
                 active_cwd: Some(root.clone()),
+                repo_root: None,
                 staged: generation % 2 == 1,
                 context_lines: generation as u8,
                 untracked: false,
@@ -2457,10 +2485,11 @@ mod tests {
         let expected_latest_key = DiffRequestKey {
             generation: 63,
             root_generation: 64,
-            project,
+            repo: project.clone(),
             path: Some(PathBuf::from("file-63.rs")),
             pinned_root: Some(root.clone()),
             active_cwd: Some(root),
+            repo_root: None,
             staged: true,
             context_lines: 63,
             untracked: false,

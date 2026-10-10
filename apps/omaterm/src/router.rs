@@ -15,8 +15,9 @@ use omaterm_core::{
     ErrorCode, FileCommand, FileListInfo, GitBlame, GitBranchList, GitCommand, GitStashList,
     GitStatusInfo, HistoryCommand, HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES,
     OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo,
-    ProcessListInfo, ProjectCommand, ProjectId, ProjectInfo, ProjectRootInfo, SessionId,
-    SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand, TerminalInfo,
+    ProcessListInfo, ProjectCommand, ProjectId, ProjectInfo, ProjectReposInfo, ProjectRootInfo,
+    RepoEntry, RepoScan, SessionId, SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand,
+    TerminalInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
@@ -526,6 +527,12 @@ pub struct CommandRouter {
     /// by the desktop at restore time, consumed when the restored session
     /// commits — before any reader pumps fresh shell output.
     pending_history: HashMap<PaneId, Vec<RecordedEvent>>,
+    /// M20 depth-1 repo scan cache, one per project. The router owns this
+    /// so the panel, `git.*` wire methods, `omaterm git *` and a future
+    /// agent all answer for the same active repository (blueprint §62).
+    /// The desktop scan worker is the only producer (`install_repo_scan`);
+    /// `SetDirectory` / `Delete` invalidate it.
+    repo_scans: HashMap<ProjectId, RepoScan>,
 }
 
 impl std::ops::Deref for CommandRouter {
@@ -566,6 +573,7 @@ impl CommandRouter {
             history: Some(history),
             documents: DocumentStore::default(),
             pending_history: HashMap::new(),
+            repo_scans: HashMap::new(),
         }
     }
 
@@ -708,6 +716,102 @@ impl CommandRouter {
         let pinned = target.pinned_directory.clone();
         let active_cwd = self.active_shell_cwd(project);
         Ok(omaterm_context::resolve_root(pinned.as_deref(), active_cwd.as_deref()).root)
+    }
+
+    /// Filesystem root for every git/diff operation: the **active
+    /// repository** rather than the project root (M20). Falls back to the
+    /// project root for single-repo and pre-scan states, so single-repo
+    /// projects keep byte-identical behavior.
+    ///
+    /// Scope and existence checks match [`Self::file_root`]; on top, the
+    /// active repository path is re-checked against the project root
+    /// containment boundary so a symlinked child can never escape
+    /// (blueprint §20/§31).
+    fn git_root(
+        &mut self,
+        context: CommandContext,
+        project: ProjectId,
+    ) -> Result<Option<PathBuf>, CommandError> {
+        let project_root = self.file_root(context, project)?;
+        let Some(project_root) = project_root else {
+            return Ok(None);
+        };
+        // Prefer the router-owned scan; a miss falls back to a bounded
+        // synchronous depth-1 scan (readdir + stat only, no git spawn) so
+        // pre-scan states answer for the correct repository.
+        let active = match self
+            .repo_scans
+            .get(&project)
+            .and_then(|scan| scan.active_entry().map(|entry| entry.path.clone()))
+        {
+            Some(path) => path,
+            None => {
+                let pinned = self
+                    .coordinator
+                    .window()
+                    .project(project)
+                    .and_then(|target| target.pinned_directory.clone());
+                let active_cwd = self.active_shell_cwd(project);
+                let saved = self
+                    .coordinator
+                    .window()
+                    .project(project)
+                    .and_then(|target| target.active_repo.clone());
+                let info = omaterm_context::resolve_repos(
+                    pinned.as_deref(),
+                    active_cwd.as_deref(),
+                    saved.as_deref(),
+                );
+                match info.active_entry() {
+                    Some(entry) => entry.path.clone(),
+                    None => project_root.clone(),
+                }
+            }
+        };
+        // A named child repo must stay inside the project root; a root repo
+        // is the root itself. Either way the active path is contained.
+        if active == project_root || active.starts_with(&project_root) {
+            Ok(Some(active))
+        } else {
+            Err(CommandError::new(
+                ErrorCode::PathOutsideRoot,
+                "repository escapes the project root",
+            ))
+        }
+    }
+
+    /// Install a completed depth-1 scan (the desktop worker is the only
+    /// producer). Overwrites any prior scan for the project.
+    pub fn install_repo_scan(&mut self, project: ProjectId, info: ProjectReposInfo) {
+        omaterm_core::repos::install(&mut self.repo_scans, project, info);
+    }
+
+    /// Invalidate one project's cached scan so the next query rescans.
+    pub fn invalidate_repo_scan(&mut self, project: ProjectId) {
+        omaterm_core::repos::clear(&mut self.repo_scans, project);
+    }
+
+    /// The cached depth-1 scan for a project, if one has landed.
+    pub fn repo_scan(&self, project: ProjectId) -> Option<&RepoScan> {
+        self.repo_scans.get(&project)
+    }
+
+    /// Every repository discovered for a project, in scan order (empty for
+    /// an absent root or non-repo project).
+    #[allow(dead_code)]
+    pub fn git_roots(&self, project: ProjectId) -> Vec<RepoEntry> {
+        self.repo_scans
+            .get(&project)
+            .map(|scan| scan.repos.clone())
+            .unwrap_or_default()
+    }
+
+    /// The active repository name for a project, following the
+    /// saved-else-first-sorted rule (`None` for root repos and non-repos).
+    pub fn active_repo(&self, project: ProjectId) -> Option<String> {
+        let scan = self.repo_scans.get(&project)?;
+        let entry = scan.active_entry()?;
+        scan.key_repo_of(entry).map(str::to_string)
     }
 
     /// Synchronous editor lifecycle operations. Filesystem work is prepared
@@ -1136,7 +1240,7 @@ impl CommandRouter {
         paths: &[PathBuf],
         mutation: GitMutation,
     ) -> CommandResult {
-        let root = match self.file_root(context, project) {
+        let root = match self.git_root(context, project) {
             Ok(Some(root)) => root,
             Ok(None) => {
                 return err(
@@ -1176,7 +1280,7 @@ impl CommandRouter {
         project: ProjectId,
         mutation: impl FnOnce(&std::path::Path) -> Result<(), omaterm_context::GitError>,
     ) -> CommandResult {
-        let root = match self.file_root(context, project) {
+        let root = match self.git_root(context, project) {
             Ok(Some(root)) => root,
             Ok(None) => {
                 return err(
@@ -1396,7 +1500,7 @@ impl CommandRouter {
         context_lines: u8,
         files_only: bool,
     ) -> CommandResult {
-        let root = match self.file_root(context, project) {
+        let root = match self.git_root(context, project) {
             Ok(Some(root)) => root,
             Ok(None) => {
                 return ok(CommandOutput::Diff(omaterm_core::DiffInfo::empty(staged)));
@@ -1624,7 +1728,9 @@ impl CommandRouter {
                 ProjectCommand::Delete { project }
                 | ProjectCommand::Rename { project, .. }
                 | ProjectCommand::SetDirectory { project, .. }
-                | ProjectCommand::Root { project },
+                | ProjectCommand::Root { project }
+                | ProjectCommand::ListRepos { project }
+                | ProjectCommand::SetActiveRepo { project, .. },
             )
             | OmaCommand::Tab(TabCommand::Create { project, .. } | TabCommand::List { project })
             | OmaCommand::Terminal(TerminalCommand::Create { project, .. }) => Some(*project),
@@ -2762,6 +2868,7 @@ impl CommandRouter {
                         // Owned editor buffers retire with the project;
                         // dirty text is discarded, never written.
                         self.documents.close_project(project);
+                        self.invalidate_repo_scan(project);
                         effects.push(CommandEffect::WorkspaceChanged);
                         ok(Out::Unit)
                     }
@@ -2788,6 +2895,10 @@ impl CommandRouter {
                         *generation = generation
                             .checked_add(1)
                             .expect("editor project generation exhausted");
+                        // A new base directory can change the depth-1 repo
+                        // list entirely: drop the cached scan so the next
+                        // git/diff operation rescans.
+                        self.invalidate_repo_scan(project);
                         effects.push(CommandEffect::ProjectDirectoryChanged(project));
                         changed(effects, Out::Unit)
                     }
@@ -2817,6 +2928,115 @@ impl CommandRouter {
                     root: resolved.root,
                     source: resolved.source,
                 }))
+            }
+            OmaCommand::Project(ProjectCommand::ListRepos { project }) => {
+                let Some(target) = self.coordinator.window().project(project) else {
+                    return err(ErrorCode::ProjectNotFound, "project does not exist");
+                };
+                if matches!(context, CommandContext::Project(scope) if scope != project) {
+                    return err(ErrorCode::CrossProjectDenied, "outside project scope");
+                }
+                let pinned = target.pinned_directory.clone();
+                let saved = target.active_repo.clone();
+                let active_cwd = self.active_shell_cwd(project);
+                // The router owns discovery: serve the cached scan when the
+                // desktop worker has installed one, else scan once and cache
+                // it so panel, CLI and agents share one answer (§62).
+                let info = match self.repo_scans.get(&project).cloned() {
+                    Some(scan) => ProjectReposInfo {
+                        root: scan.root,
+                        source: scan.source,
+                        repos: scan.repos,
+                        active_repo: scan.active,
+                    },
+                    None => {
+                        let info = omaterm_context::resolve_repos(
+                            pinned.as_deref(),
+                            active_cwd.as_deref(),
+                            saved.as_deref(),
+                        );
+                        self.install_repo_scan(project, info.clone());
+                        info
+                    }
+                };
+                // Redaction contract: IDs, source, and counts only — the repo
+                // names/paths belong to the project's own filesystem root and
+                // are part of its resolved context (blueprint §45).
+                tracing::debug!(
+                    target: "omaterm::git",
+                    project_id = %project.0,
+                    source = info.source.as_str(),
+                    repos = info.repos.len(),
+                    active = ?info.active_repo,
+                    "project repositories scanned",
+                );
+                ok(Out::ProjectRepos(info))
+            }
+            OmaCommand::Project(ProjectCommand::SetActiveRepo { project, repo }) => {
+                let Some(target) = self.coordinator.window().project(project) else {
+                    return err(ErrorCode::ProjectNotFound, "project does not exist");
+                };
+                if matches!(context, CommandContext::Project(scope) if scope != project) {
+                    return err(ErrorCode::CrossProjectDenied, "outside project scope");
+                }
+                let pinned = target.pinned_directory.clone();
+                let active_cwd = self.active_shell_cwd(project);
+                // Membership is validated against the live scan, not the
+                // wire string: traversal and unknown names never reach the
+                // stored selection (blueprint §20/§31).
+                let resolved =
+                    omaterm_context::resolve_repos(pinned.as_deref(), active_cwd.as_deref(), None);
+                let candidates = resolved.repos;
+                // There is nothing to select in a single-repo or non-repo
+                // project: the active repository is always the root itself.
+                if candidates.len() < 2 {
+                    return err(
+                        ErrorCode::InvalidRequest,
+                        "project has no selectable child repositories",
+                    );
+                }
+                match self
+                    .coordinator
+                    .set_project_active_repo(project, &repo, &candidates)
+                {
+                    Ok(()) => {
+                        tracing::debug!(
+                            target: "omaterm::git",
+                            project_id = %project.0,
+                            "project active repository selected",
+                        );
+                        // Refresh the router-owned cache so panel, CLI and
+                        // agents immediately agree on the new selection.
+                        self.install_repo_scan(
+                            project,
+                            ProjectReposInfo {
+                                root: resolved.root.clone(),
+                                source: resolved.source,
+                                active_repo: Some(repo.clone()),
+                                repos: candidates.clone(),
+                            },
+                        );
+                        effects.push(CommandEffect::ProjectDirectoryChanged(project));
+                        // Echo the resulting state: callers (CLI, agents)
+                        // confirm the selection without a follow-up query.
+                        changed(
+                            effects,
+                            Out::ProjectRepos(omaterm_core::ProjectReposInfo {
+                                root: resolved.root,
+                                source: resolved.source,
+                                active_repo: Some(repo),
+                                repos: candidates,
+                            }),
+                        )
+                    }
+                    Err(omaterm_terminal::CoordinatorError::Core(
+                        omaterm_core::CoreError::UnknownRepo(_),
+                    )) => err(
+                        ErrorCode::InvalidRequest,
+                        "repository is not in this project",
+                    ),
+                    Err(error) => coordinator_error(error),
+                }
             }
             OmaCommand::Editor(command) => self.editor_dispatch(context, command, effects),
             OmaCommand::File(FileCommand::List {
@@ -2972,7 +3192,7 @@ impl CommandRouter {
                 }
             }
             OmaCommand::Git(GitCommand::Status { project }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return ok(Out::GitStatus(GitStatusInfo::empty()));
@@ -3010,7 +3230,7 @@ impl CommandRouter {
                 scope,
                 limit,
             }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return ok(Out::GitHistory(omaterm_core::GitHistoryPage {
@@ -3044,7 +3264,7 @@ impl CommandRouter {
                 }
             }
             OmaCommand::Git(GitCommand::BranchList { project }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return ok(Out::GitBranchList(GitBranchList::empty()));
@@ -3107,7 +3327,7 @@ impl CommandRouter {
                 omaterm_context::git_push(root, set_upstream).map(|_| ())
             }),
             OmaCommand::Git(GitCommand::StashList { project }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return ok(Out::GitStashList(GitStashList::empty()));
@@ -3135,7 +3355,7 @@ impl CommandRouter {
                 }
             }
             OmaCommand::Git(GitCommand::Blame { project, path }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return ok(Out::GitBlame(GitBlame::empty()));
@@ -3195,7 +3415,7 @@ impl CommandRouter {
                 path,
                 hunk_id,
             }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return err(
@@ -3218,7 +3438,7 @@ impl CommandRouter {
                 commit,
                 base,
             }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return err(
@@ -3249,7 +3469,7 @@ impl CommandRouter {
                 self.git_mutation(context, project, &paths, GitMutation::Discard)
             }
             OmaCommand::Git(GitCommand::Commit { project, message }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return err(
@@ -3295,7 +3515,7 @@ impl CommandRouter {
                 path,
                 context_lines,
             }) => {
-                let root = match self.file_root(context, project) {
+                let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         return err(
@@ -4851,6 +5071,474 @@ mod tests {
             CommandContext::LocalUser,
             OmaCommand::Project(ProjectCommand::Delete { project }),
         );
+    }
+
+    #[test]
+    fn project_repos_scan_select_and_reject_without_effects() {
+        use omaterm_core::{ProjectReposInfo, RepoEntry, RootSource};
+
+        let root =
+            std::env::temp_dir().join(format!("omaterm-m20-router-mono-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for repo in ["api", "web"] {
+            std::fs::create_dir_all(root.join(repo).join(".git")).unwrap();
+        }
+        std::fs::create_dir_all(root.join("plain")).unwrap();
+        // Depth-2 nesting is out of scope for the depth-1 scan.
+        std::fs::create_dir_all(root.join("plain/deep/.git")).unwrap();
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // Depth-1 discovery with the first-sorted default, effects-free query.
+        let listed = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::ListRepos { project }),
+        );
+        assert_eq!(
+            listed.result,
+            CommandResult::Ok(CommandOutput::ProjectRepos(ProjectReposInfo {
+                root: Some(root.clone()),
+                source: RootSource::Pinned,
+                repos: vec![
+                    RepoEntry::new("api", root.join("api")),
+                    RepoEntry::new("web", root.join("web")),
+                ],
+                active_repo: Some("api".into()),
+            }))
+        );
+        assert!(listed.effects.is_empty());
+
+        // A scoped credential may query its own project through the same arm.
+        let scoped = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Project(ProjectCommand::ListRepos { project }),
+        );
+        assert!(matches!(
+            scoped.result,
+            CommandResult::Ok(CommandOutput::ProjectRepos(_))
+        ));
+
+        // Selection persists in workspace state and echoes the new state.
+        let selected = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project,
+                repo: "web".into(),
+            }),
+        );
+        assert_eq!(
+            selected.result,
+            CommandResult::Ok(CommandOutput::ProjectRepos(ProjectReposInfo {
+                root: Some(root.clone()),
+                source: RootSource::Pinned,
+                repos: vec![
+                    RepoEntry::new("api", root.join("api")),
+                    RepoEntry::new("web", root.join("web")),
+                ],
+                active_repo: Some("web".into()),
+            }))
+        );
+        assert!(matches!(
+            selected.effects.as_slice(),
+            [
+                CommandEffect::ProjectDirectoryChanged(owner),
+                CommandEffect::WorkspaceChanged,
+                CommandEffect::PersistenceDirty,
+            ] if *owner == project
+        ));
+        assert_eq!(
+            router
+                .window()
+                .project(project)
+                .unwrap()
+                .active_repo
+                .as_deref(),
+            Some("web")
+        );
+        let requeried = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::ListRepos { project }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectRepos(info)) = requeried.result else {
+            panic!("requerying repositories");
+        };
+        assert_eq!(info.active_repo.as_deref(), Some("web"));
+
+        // Unknown, traversal, and foreign-scope selections fail with stable
+        // codes and no effects; stored state is untouched.
+        for bad in ["plain", "deep", "../etc", "api/web", ""] {
+            let rejected = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                    project,
+                    repo: bad.into(),
+                }),
+            );
+            assert!(
+                matches!(
+                    rejected.result,
+                    CommandResult::Err(CommandError {
+                        code: ErrorCode::InvalidRequest,
+                        ..
+                    })
+                ),
+                "repo {bad:?} must be rejected"
+            );
+            assert!(rejected.effects.is_empty());
+        }
+        assert_eq!(
+            router
+                .window()
+                .project(project)
+                .unwrap()
+                .active_repo
+                .as_deref(),
+            Some("web")
+        );
+        let foreign = router.dispatch(
+            CommandContext::Project(project),
+            OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project: omaterm_core::ProjectId::new(),
+                repo: "api".into(),
+            }),
+        );
+        assert!(matches!(
+            foreign.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::CrossProjectDenied
+        ));
+        let stale = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::ListRepos {
+                project: omaterm_core::ProjectId::new(),
+            }),
+        );
+        assert!(matches!(
+            stale.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::ProjectNotFound,
+                ..
+            })
+        ));
+
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Delete { project }),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_repos_root_repo_and_non_repo_states() {
+        use omaterm_core::{ProjectReposInfo, RootSource};
+
+        // A root that is itself a repo takes the fast path: one entry, no
+        // scan of children (a child repo must not shadow the root).
+        let single =
+            std::env::temp_dir().join(format!("omaterm-m20-router-single-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&single);
+        std::fs::create_dir_all(single.join(".git")).unwrap();
+        std::fs::create_dir_all(single.join("inner/.git")).unwrap();
+        // A non-repo pin resolves to an explicit empty state.
+        let empty =
+            std::env::temp_dir().join(format!("omaterm-m20-router-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&empty);
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let mut router = router();
+        let project_ids = [single.clone(), empty.clone()].map(|directory| {
+            let created = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Project(ProjectCommand::Create {
+                    name: None,
+                    directory: Some(directory),
+                }),
+            );
+            let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+            else {
+                panic!("project creation");
+            };
+            project
+        });
+        let [single_project, empty_project] = project_ids;
+
+        let single_repos = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::ListRepos {
+                project: single_project,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectRepos(info)) = single_repos.result else {
+            panic!("single repo scan");
+        };
+        assert_eq!(info.repos.len(), 1);
+        assert_eq!(info.repos[0].path, single);
+        assert_eq!(
+            info.active_repo.as_deref(),
+            Some(single.file_name().unwrap().to_str().unwrap())
+        );
+
+        let empty_repos = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::ListRepos {
+                project: empty_project,
+            }),
+        );
+        assert_eq!(
+            empty_repos.result,
+            CommandResult::Ok(CommandOutput::ProjectRepos(ProjectReposInfo {
+                root: Some(empty.clone()),
+                source: RootSource::Pinned,
+                repos: Vec::new(),
+                active_repo: None,
+            }))
+        );
+
+        for project in project_ids {
+            let _ = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Project(ProjectCommand::Delete { project }),
+            );
+        }
+        let _ = std::fs::remove_dir_all(&single);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// E2/E7: every git/diff surface targets the **active** repository of a
+    /// monorepo, never the container project root, and selecting another
+    /// repo moves them all at once. A second repo's state is untouched.
+    #[test]
+    fn git_and_diff_follow_the_active_repository() {
+        use omaterm_core::{GitCommand, ProjectCommand};
+
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("git must spawn");
+            assert!(status.success(), "git {args:?}");
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("omaterm-m20-router-multi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let api = root.join("api");
+        let web = root.join("web");
+        for repo in [&api, &web] {
+            std::fs::create_dir_all(repo).unwrap();
+            git(repo, &["init", "-b", "main"]);
+            git(repo, &["config", "user.email", "m20@test"]);
+            git(repo, &["config", "user.name", "m20"]);
+            git(repo, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(repo.join("a.txt"), b"v1\n").unwrap();
+            git(repo, &["add", "-A"]);
+            git(repo, &["commit", "-qm", "init"]);
+        }
+
+        let mut router = router();
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(root.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated { project, .. }) = created.result
+        else {
+            panic!("project creation");
+        };
+
+        // Dirty only `web`; `api` stays clean. Default active is `api`.
+        std::fs::write(web.join("a.txt"), b"v2\n").unwrap();
+
+        // ListRepos installs the router-owned cache (single owner).
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::ListRepos { project }),
+        );
+        assert_eq!(router.active_repo(project).as_deref(), Some("api"));
+
+        // git.status answers for `api` (clean), not the container root.
+        let api_status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStatus(info)) = api_status.result else {
+            panic!("api status");
+        };
+        assert!(info.staged.is_empty() && info.unstaged.is_empty());
+
+        // Switch the active repository through the semantic command.
+        let selected = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project,
+                repo: "web".into(),
+            }),
+        );
+        assert!(matches!(selected.result, CommandResult::Ok(_)));
+        assert_eq!(router.active_repo(project).as_deref(), Some("web"));
+
+        // The same command now answers for `web` (dirty) — proof the whole
+        // dispatcher path moved with the selection, not just the panel.
+        let web_status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStatus(info)) = web_status.result else {
+            panic!("web status");
+        };
+        assert_eq!(info.unstaged.len(), 1);
+        assert_eq!(info.unstaged[0].path, std::path::PathBuf::from("a.txt"));
+
+        // Stage follows the active repo: `web` stages, `api` untouched.
+        let staged = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Stage {
+                project,
+                paths: vec![std::path::PathBuf::from("a.txt")],
+            }),
+        );
+        assert_eq!(staged.result, CommandResult::Ok(CommandOutput::Unit));
+        let api_status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStatus(info)) = api_status.result else {
+            panic!("web staged status");
+        };
+        assert_eq!(info.staged.len(), 1);
+
+        // History, branch-list, stash-list and diff all follow the active
+        // repository through the same `git_root` chokepoint: each answers
+        // for `web` without the caller naming a repo.
+        let history = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::History {
+                project,
+                scope: omaterm_core::GitHistoryScope::CurrentHead,
+                limit: 10,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::GitHistory(page)) = history.result else {
+            panic!("web history");
+        };
+        assert_eq!(page.commits.len(), 1);
+        let branches = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::BranchList { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitBranchList(branches)) = branches.result else {
+            panic!("web branches");
+        };
+        assert!(
+            branches.branches.iter().any(|branch| branch.name == "main"),
+            "branch list answers for the active repository"
+        );
+        let stash = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::StashList { project }),
+        );
+        assert!(matches!(
+            stash.result,
+            CommandResult::Ok(CommandOutput::GitStashList(_))
+        ));
+        let diff = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Diff(DiffCommand::Show {
+                project,
+                path: Some(std::path::PathBuf::from("a.txt")),
+                staged: true,
+                context_lines: 3,
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::Diff(info)) = diff.result else {
+            panic!("web diff");
+        };
+        assert!(
+            info.files.iter().any(|file| file.path.ends_with("a.txt")),
+            "diff answers for the active repository"
+        );
+
+        // Switch back to `api`: it is still clean, proving the second repo
+        // was untouched by the `web` stage.
+        let _ = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project,
+                repo: "api".into(),
+            }),
+        );
+        let api_status = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Git(GitCommand::Status { project }),
+        );
+        let CommandResult::Ok(CommandOutput::GitStatus(info)) = api_status.result else {
+            panic!("api status again");
+        };
+        assert!(info.staged.is_empty() && info.unstaged.is_empty());
+
+        // A single-repo project keeps byte-identical behavior: the root
+        // itself is the active repository and `git_root` is the root.
+        let solo =
+            std::env::temp_dir().join(format!("omaterm-m20-router-solo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&solo);
+        std::fs::create_dir_all(&solo).unwrap();
+        git(&solo, &["init", "-b", "main"]);
+        let created = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::Create {
+                name: None,
+                directory: Some(solo.clone()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ProjectCreated {
+            project: solo_project,
+            ..
+        }) = created.result
+        else {
+            panic!("solo project creation");
+        };
+        // A single-repo project has nothing to select.
+        let rejected = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project: solo_project,
+                repo: "anything".into(),
+            }),
+        );
+        assert!(matches!(
+            rejected.result,
+            CommandResult::Err(CommandError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
+
+        for project in [project, solo_project] {
+            let _ = router.dispatch(
+                CommandContext::LocalUser,
+                OmaCommand::Project(ProjectCommand::Delete { project }),
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&solo);
     }
 
     #[test]

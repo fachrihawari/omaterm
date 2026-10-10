@@ -14,6 +14,15 @@ use gpui::{Div, div, prelude::Styled as _, px, rgb};
 use super::assets;
 use super::theme;
 
+/// Pill chip: `#151a21` fill, 1px `#2c3643` border. Callers add their
+/// measured radius, padding and type role.
+pub fn pill() -> Div {
+    div()
+        .border_1()
+        .border_color(rgb(theme::colors().pill_border))
+        .bg(rgb(theme::colors().pill_bg))
+}
+
 /// Keyboard-hint badge: 4px radius, 6px/2px padding, inset bottom light.
 /// (The source `.kbd` bottom inner highlight has no GPUI equivalent and
 /// is recorded; geometry and colors match.)
@@ -21,8 +30,8 @@ pub fn kbd() -> Div {
     div()
         .rounded(px(4.0))
         .border_1()
-        .border_color(rgb(theme::KBD_BORDER))
-        .bg(rgb(theme::KBD_BG))
+        .border_color(rgb(theme::colors().kbd_border))
+        .bg(rgb(theme::colors().kbd_bg))
         .px(px(6.0))
         .py(px(2.0))
 }
@@ -32,5 +41,5 @@ pub fn kbd() -> Div {
 /// the element's own text color, so the parent tint is not inherited).
 pub fn cmd_icon(asset: &'static str, size_px: f32, color: u32) -> gpui::Svg {
     use gpui::prelude::InteractiveElement as _;
-    assets::icon(asset, size_px, color).hover(|s| s.text_color(rgb(theme::WHITE)))
+    assets::icon(asset, size_px, color).hover(|s| s.text_color(rgb(theme::colors().white)))
 }

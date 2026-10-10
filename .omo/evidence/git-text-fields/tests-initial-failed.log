@@ -1,0 +1,191 @@
+   Compiling omaterm-terminal v0.2.0 (/home/fachri/Projects/personal/omaterm/crates/omaterm-terminal)
+   Compiling omaterm v0.2.0 (/home/fachri/Projects/personal/omaterm/apps/omaterm)
+error[E0425]: cannot find function `terminal_foreground` in this scope
+     --> apps/omaterm/src/main.rs:21441:20
+      |
+21441 |         assert_eq!(terminal_foreground(&cell), Hsla::from(rgb(0xDCE6F0)));
+      |                    ^^^^^^^^^^^^^^^^^^^ not found in this scope
+      |
+help: consider importing this function
+      |
+20651 +     use crate::terminal_foreground;
+      |
+
+error[E0425]: cannot find function `terminal_foreground` in this scope
+     --> apps/omaterm/src/main.rs:21443:19
+      |
+21443 |         let dim = terminal_foreground(&cell);
+      |                   ^^^^^^^^^^^^^^^^^^^ not found in this scope
+      |
+help: consider importing this function
+      |
+20651 +     use crate::terminal_foreground;
+      |
+
+error[E0425]: cannot find function `terminal_foreground` in this scope
+     --> apps/omaterm/src/main.rs:21445:21
+      |
+21445 |         let plain = terminal_foreground(&cell);
+      |                     ^^^^^^^^^^^^^^^^^^^ not found in this scope
+      |
+help: consider importing this function
+      |
+20651 +     use crate::terminal_foreground;
+      |
+
+error[E0425]: cannot find function `terminal_glyph` in this scope
+     --> apps/omaterm/src/main.rs:21459:20
+      |
+19964 | fn terminal_key(normalized: &str, key_char: Option<&str>) -> Option<Key> {
+      | ------------------------------------------------------------------------ similarly named function `terminal_key` defined here
+...
+21459 |         assert_eq!(terminal_glyph(&cell), " ");
+      |                    ^^^^^^^^^^^^^^
+      |
+help: a function with a similar name exists
+      |
+21459 -         assert_eq!(terminal_glyph(&cell), " ");
+21459 +         assert_eq!(terminal_key(&cell), " ");
+      |
+help: consider importing this function
+      |
+20651 +     use crate::terminal_glyph;
+      |
+
+error[E0425]: cannot find function `terminal_glyph` in this scope
+     --> apps/omaterm/src/main.rs:21461:20
+      |
+19964 | fn terminal_key(normalized: &str, key_char: Option<&str>) -> Option<Key> {
+      | ------------------------------------------------------------------------ similarly named function `terminal_key` defined here
+...
+21461 |         assert_eq!(terminal_glyph(&cell), "  ");
+      |                    ^^^^^^^^^^^^^^
+      |
+help: a function with a similar name exists
+      |
+21461 -         assert_eq!(terminal_glyph(&cell), "  ");
+21461 +         assert_eq!(terminal_key(&cell), "  ");
+      |
+help: consider importing this function
+      |
+20651 +     use crate::terminal_glyph;
+      |
+
+error[E0425]: cannot find function `terminal_glyph` in this scope
+     --> apps/omaterm/src/main.rs:21463:20
+      |
+19964 | fn terminal_key(normalized: &str, key_char: Option<&str>) -> Option<Key> {
+      | ------------------------------------------------------------------------ similarly named function `terminal_key` defined here
+...
+21463 |         assert_eq!(terminal_glyph(&cell), "");
+      |                    ^^^^^^^^^^^^^^
+      |
+help: a function with a similar name exists
+      |
+21463 -         assert_eq!(terminal_glyph(&cell), "");
+21463 +         assert_eq!(terminal_key(&cell), "");
+      |
+help: consider importing this function
+      |
+20651 +     use crate::terminal_glyph;
+      |
+
+error[E0425]: cannot find function `terminal_glyph` in this scope
+     --> apps/omaterm/src/main.rs:21466:20
+      |
+19964 | fn terminal_key(normalized: &str, key_char: Option<&str>) -> Option<Key> {
+      | ------------------------------------------------------------------------ similarly named function `terminal_key` defined here
+...
+21466 |         assert_eq!(terminal_glyph(&cell), "secret");
+      |                    ^^^^^^^^^^^^^^
+      |
+help: a function with a similar name exists
+      |
+21466 -         assert_eq!(terminal_glyph(&cell), "secret");
+21466 +         assert_eq!(terminal_key(&cell), "secret");
+      |
+help: consider importing this function
+      |
+20651 +     use crate::terminal_glyph;
+      |
+
+error[E0433]: cannot find type `CellWidth` in this scope
+     --> apps/omaterm/src/main.rs:21436:20
+      |
+21436 |             width: CellWidth::Single,
+      |                    ^^^^^^^^^ use of undeclared type `CellWidth`
+
+error[E0433]: cannot find type `TermColor` in this scope
+     --> apps/omaterm/src/main.rs:21437:17
+      |
+21437 |             fg: TermColor::Rgb(20, 40, 60),
+      |                 ^^^^^^^^^ use of undeclared type `TermColor`
+
+error[E0433]: cannot find type `TermColor` in this scope
+     --> apps/omaterm/src/main.rs:21438:17
+      |
+21438 |             bg: TermColor::Rgb(220, 230, 240),
+      |                 ^^^^^^^^^ use of undeclared type `TermColor`
+
+error[E0433]: cannot find type `Hsla` in this scope
+     --> apps/omaterm/src/main.rs:21441:48
+      |
+21441 |         assert_eq!(terminal_foreground(&cell), Hsla::from(rgb(0xDCE6F0)));
+      |                                                ^^^^ use of undeclared type `Hsla`
+
+error[E0425]: cannot find function `rgb` in this scope
+     --> apps/omaterm/src/main.rs:21441:59
+      |
+21441 |         assert_eq!(terminal_foreground(&cell), Hsla::from(rgb(0xDCE6F0)));
+      |                                                           ^^^ not found in this scope
+
+error[E0433]: cannot find type `CellWidth` in this scope
+     --> apps/omaterm/src/main.rs:21454:20
+      |
+21454 |             width: CellWidth::Single,
+      |                    ^^^^^^^^^ use of undeclared type `CellWidth`
+
+error[E0433]: cannot find type `TermColor` in this scope
+     --> apps/omaterm/src/main.rs:21455:17
+      |
+21455 |             fg: TermColor::DefaultFg,
+      |                 ^^^^^^^^^ use of undeclared type `TermColor`
+
+error[E0433]: cannot find type `TermColor` in this scope
+     --> apps/omaterm/src/main.rs:21456:17
+      |
+21456 |             bg: TermColor::DefaultBg,
+      |                 ^^^^^^^^^ use of undeclared type `TermColor`
+
+error[E0433]: cannot find type `CellWidth` in this scope
+     --> apps/omaterm/src/main.rs:21460:22
+      |
+21460 |         cell.width = CellWidth::Wide;
+      |                      ^^^^^^^^^ use of undeclared type `CellWidth`
+
+error[E0433]: cannot find type `CellWidth` in this scope
+     --> apps/omaterm/src/main.rs:21462:22
+      |
+21462 |         cell.width = CellWidth::WideContinuation;
+      |                      ^^^^^^^^^ use of undeclared type `CellWidth`
+
+error[E0433]: cannot find type `CellWidth` in this scope
+     --> apps/omaterm/src/main.rs:21464:22
+      |
+21464 |         cell.width = CellWidth::Single;
+      |                      ^^^^^^^^^ use of undeclared type `CellWidth`
+
+warning: unused variable: `untracked`
+     --> apps/omaterm/src/main.rs:13459:17
+      |
+13459 |             let untracked = self.stash_untracked.contains(&project);
+      |                 ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_untracked`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+warning: `omaterm` (bin "omaterm-desktop" test) generated 1 warning
+error: could not compile `omaterm` (bin "omaterm-desktop" test) due to 18 previous errors; 1 warning emitted
+mbx[cache]: 0 hits, 0 misses, 1 not looked up, 2 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: every checkout believes it owns 16.8 GiB of outputs. the disk keeps one copy and says nothing.

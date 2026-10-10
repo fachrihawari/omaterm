@@ -669,10 +669,30 @@ impl crate::frame::FrameIo for PipeStream {
         self.read_timeout(buf, timeout)
     }
 
-    fn write_all_with_timeout(&mut self, buf: &[u8], _timeout: Duration) -> std::io::Result<()> {
-        // A byte-mode pipe write blocks in the kernel. The request deadline is
-        // enforced on the following read, matching the previous pipe client.
-        self.file.write_all(buf)
+    fn write_all_with_timeout(&mut self, buf: &[u8], timeout: Duration) -> std::io::Result<()> {
+        // A byte-mode pipe write blocks in the kernel until the peer drains
+        // it, so an unbounded write lets a wedged client wedge this worker
+        // (and, transitively, server shutdown, which joins workers). Bound
+        // it with a helper thread: response frames are already capped at
+        // MAX_RESPONSE_FRAME, so the copy is bounded.
+        let mut writer = self.file.try_clone()?;
+        let pending: Vec<u8> = buf.to_vec();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = writer.write_all(&pending);
+            let _ = done_tx.send(result);
+        });
+        match done_rx.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "named pipe write timed out",
+            )),
+        }
+        // On timeout the writer thread is detached; dropping this stream
+        // (DisconnectNamedPipe) wakes its blocked write with a pipe error.
+        // serve_requests treats the timeout as a dead connection and closes
+        // it, freeing the worker slot.
     }
 }
 

@@ -1,0 +1,10 @@
+    Checking omaterm-core v0.2.0 (/home/fachri/Projects/personal/omaterm/crates/omaterm-core)
+    Checking omaterm-terminal v0.2.0 (/home/fachri/Projects/personal/omaterm/crates/omaterm-terminal)
+    Checking omaterm-context v0.2.0 (/home/fachri/Projects/personal/omaterm/crates/omaterm-context)
+    Checking omaterm-state v0.2.0 (/home/fachri/Projects/personal/omaterm/crates/omaterm-state)
+    Checking omaterm v0.2.0 (/home/fachri/Projects/personal/omaterm/apps/omaterm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.07s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+mbx[cache]: 1 hits, 1 misses, 4 not looked up, 7 incremental; 0 B downloaded, 0 B uploaded, 304.0 KiB stored locally
+mbx[savings]: 2h 7m of compilation avoided across 492 builds. imagine the fan noise. now stop.

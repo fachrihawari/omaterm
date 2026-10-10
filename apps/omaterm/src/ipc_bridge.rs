@@ -86,6 +86,23 @@ fn git_branch_name(raw: &str) -> Result<String, &'static str> {
     }
 }
 
+/// Bounded remote name: like branch names, plus no leading dash (mirrors
+/// core validation; the router re-validates and git itself is authoritative).
+/// A leading dash would be parsed as a git option (`--upload-pack=...`).
+fn git_remote_name(raw: &str) -> Result<String, &'static str> {
+    if raw.is_empty()
+        || raw.len() > MAX_GIT_BRANCH_BYTES
+        || raw.starts_with('-')
+        || raw.chars().any(char::is_control)
+    {
+        Err(
+            "git remote must be non-empty, at most 255 bytes, no leading dash, no control characters",
+        )
+    } else {
+        Ok(raw.to_owned())
+    }
+}
+
 /// Bounded blame path: non-empty, 4096 bytes max, no control characters
 /// (mirrors core validation; the router re-validates and git resolves).
 fn git_blame_path(raw: &str) -> Result<std::path::PathBuf, &'static str> {
@@ -202,6 +219,13 @@ pub fn map_request(
             }),
             Method::ProjectRoot(p) => OmaCommand::Project(ProjectCommand::Root {
                 project: resolve_project(p.project_id)?,
+            }),
+            Method::ProjectRepos(p) => OmaCommand::Project(ProjectCommand::ListRepos {
+                project: resolve_project(p.project_id)?,
+            }),
+            Method::ProjectSetActiveRepo(p) => OmaCommand::Project(ProjectCommand::SetActiveRepo {
+                project: project(&p.project_id)?,
+                repo: text(&p.repo)?.to_owned(),
             }),
             Method::TabList(p) => OmaCommand::Tab(TabCommand::List {
                 project: resolve_project(p.project_id)?,
@@ -408,11 +432,11 @@ pub fn map_request(
             }),
             Method::GitSyncFetch(p) => OmaCommand::Git(GitCommand::SyncFetch {
                 project: resolve_project(p.project_id)?,
-                remote: p.remote.as_deref().map(git_branch_name).transpose()?,
+                remote: p.remote.as_deref().map(git_remote_name).transpose()?,
             }),
             Method::GitSyncPull(p) => OmaCommand::Git(GitCommand::SyncPull {
                 project: resolve_project(p.project_id)?,
-                remote: p.remote.as_deref().map(git_branch_name).transpose()?,
+                remote: p.remote.as_deref().map(git_remote_name).transpose()?,
             }),
             Method::GitSyncPush(p) => OmaCommand::Git(GitCommand::SyncPush {
                 project: resolve_project(p.project_id)?,
@@ -600,6 +624,15 @@ fn output_json(output: CommandOutput) -> Value {
         }
         CommandOutput::ProjectRoot(info) => {
             json!({"root":info.root,"source":info.source.as_str()})
+        }
+        CommandOutput::ProjectRepos(info) => {
+            json!({
+                "root":info.root,
+                "source":info.source.as_str(),
+                "repos":info.repos.into_iter().map(|entry| json!({"name":entry.name,"path":entry.path})).collect::<Vec<_>>(),
+                "active_repo":info.active_repo,
+                "truncated":false,
+            })
         }
         CommandOutput::FileList(list) => {
             let truncated = list.truncated || list.entries.len() > LIST_LIMIT;

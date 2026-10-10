@@ -1,0 +1,26 @@
+   Compiling omaterm v0.2.0 (/home/fachri/Projects/personal/omaterm/apps/omaterm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.08s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/main.rs (target/debug/deps/omaterm_desktop-0af62bedba965bef)
+
+running 1 test
+test git_sync_panel::tests::started_worker_remains_owned_for_shutdown ... FAILED
+
+failures:
+
+---- git_sync_panel::tests::started_worker_remains_owned_for_shutdown stdout ----
+
+thread 'git_sync_panel::tests::started_worker_remains_owned_for_shutdown' (286312) panicked at apps/omaterm/src/git_sync_panel.rs:138:14:
+started Git worker must remain owned until joined
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    git_sync_panel::tests::started_worker_remains_owned_for_shutdown
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p omaterm --bin omaterm-desktop`
+mbx[cache]: 0 hits, 0 misses, 1 not looked up, 1 incremental; 0 B downloaded, 0 B uploaded, 0 B stored locally
+mbx[savings]: 16.8 GiB of outputs materialized without a copy. the copy machine stays off.

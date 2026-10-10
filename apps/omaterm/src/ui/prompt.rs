@@ -47,9 +47,9 @@ impl ThemedPrompt {
     /// instead of always rendering undo/orange.
     fn severity_icon(&self) -> (&'static str, u32) {
         match self.level {
-            gpui::PromptLevel::Info => (assets::INFO, theme::BLUE),
-            gpui::PromptLevel::Warning => (assets::UNDO, theme::ORANGE),
-            gpui::PromptLevel::Critical => (assets::UNDO, theme::RED),
+            gpui::PromptLevel::Info => (assets::INFO, theme::colors().blue),
+            gpui::PromptLevel::Warning => (assets::UNDO, theme::colors().orange),
+            gpui::PromptLevel::Critical => (assets::UNDO, theme::colors().red),
         }
     }
 }
@@ -76,25 +76,29 @@ impl Render for ThemedPrompt {
                     .rounded(px(7.0))
                     .border_1()
                     .border_color(rgb(if self.selected == index {
-                        theme::BLUE
+                        theme::colors().blue
                     } else if destructive {
-                        theme::RED
+                        theme::colors().red
                     } else {
-                        theme::BORDER2
+                        theme::colors().border2
                     }))
                     .bg(if destructive {
-                        rgba(theme::with_alpha(theme::RED, 0.12))
+                        rgba(theme::with_alpha(theme::colors().red, 0.12))
                     } else {
-                        rgb(theme::PANEL3)
+                        rgb(theme::colors().panel3)
                     })
-                    .text_color(rgb(if destructive { theme::RED } else { theme::TEXT }))
+                    .text_color(rgb(if destructive {
+                        theme::colors().red
+                    } else {
+                        theme::colors().text
+                    }))
                     .hover(|style| {
                         if destructive {
-                            style.bg(rgba(theme::with_alpha(theme::RED, 0.2)))
+                            style.bg(rgba(theme::with_alpha(theme::colors().red, 0.2)))
                         } else {
                             style
-                                .bg(rgb(theme::CMD_HOVER_BG))
-                                .border_color(rgb(theme::CMD_HOVER_BORDER))
+                                .bg(rgb(theme::colors().cmd_hover_bg))
+                                .border_color(rgb(theme::colors().cmd_hover_border))
                         }
                     })
                     .on_click(cx.listener(move |_, _, _, cx| {
@@ -137,8 +141,8 @@ impl Render for ThemedPrompt {
                     .max_w_full()
                     .rounded(px(8.0))
                     .border_1()
-                    .border_color(rgb(theme::BORDER2))
-                    .bg(rgb(theme::PANEL))
+                    .border_color(rgb(theme::colors().border2))
+                    .bg(rgb(theme::colors().panel))
                     .shadow_lg()
                     .overflow_hidden()
                     .child(
@@ -162,12 +166,12 @@ impl Render for ThemedPrompt {
                                     .gap(px(8.0))
                                     .child(
                                         metrics::text_role(div(), metrics::NAME_12_MEDIUM)
-                                            .text_color(rgb(theme::TEXT))
+                                            .text_color(rgb(theme::colors().text))
                                             .child(self.message.clone()),
                                     )
                                     .children(self.detail.clone().map(|detail| {
                                         metrics::text_role(div(), metrics::BODY_11)
-                                            .text_color(rgb(theme::TEXT2))
+                                            .text_color(rgb(theme::colors().text2))
                                             .child(detail)
                                     })),
                             ),
@@ -175,8 +179,8 @@ impl Render for ThemedPrompt {
                     .child(
                         div()
                             .border_t_1()
-                            .border_color(rgb(theme::BORDER))
-                            .bg(rgb(theme::BG2))
+                            .border_color(rgb(theme::colors().border))
+                            .bg(rgb(theme::colors().bg2))
                             .px(px(20.0))
                             .py(px(14.0))
                             .child(buttons),

@@ -77,12 +77,12 @@ is available, leave this unset; GitHub tarball releases work independently.
 
 ## Step 5 — Dry-run: build the tarball without touching AUR
 
-1. **Actions → Release → Run workflow**, version e.g. `0.1.0`, Run.
+1. **Actions → Release → Run workflow**, version e.g. `0.4.0`, Run.
 2. Wait for the `dist` job to go green (first GPUI build: ~10–20 min).
 3. Download the `omaterm-dist` artifact and inspect it:
 
    ```bash
-   tar -tzf omaterm-0.1.0-x86_64.tar.gz
+   tar -tzf omaterm-0.4.0-x86_64.tar.gz
    # expected: omaterm  omaterm-desktop  omaterm.desktop
    #           omaterm.svg  LICENSE-MIT  LICENSE-APACHE
    ```
@@ -93,11 +93,11 @@ is available, leave this unset; GitHub tarball releases work independently.
 ## Step 6 — First real release
 
 ```bash
-bash scripts/bump-aur.sh 0.1.0
+bash scripts/bump-aur.sh 0.4.0
 git add packaging/
-git commit -m "chore(packaging): bump to 0.1.0"
-git tag v0.1.0
-git push origin main v0.1.0
+git commit -m "chore(packaging): bump to 0.4.0"
+git tag v0.4.0
+git push origin main v0.4.0
 ```
 
 The workflow then runs automatically: **build tarball → create GitHub
@@ -108,8 +108,8 @@ mandatory, not a suggestion.
 
 ## Step 7 — Verify
 
-1. GitHub Release `v0.1.0` contains `omaterm-0.1.0-x86_64.tar.gz` + `.sha256`.
-2. Both AUR pages show version `0.1.0-1` with real hashes (no `SKIP`).
+1. GitHub Release `v0.4.0` contains `omaterm-0.4.0-x86_64.tar.gz` + `.sha256`.
+2. Both AUR pages show version `0.4.0-1` with real hashes (no `SKIP`).
 3. On an Omarchy machine (or VM):
    ```bash
    yay -S omaterm-bin

@@ -18,10 +18,10 @@
     "notes": "Versions probed in current native record; repository pin remains 1.98.1."
   },
   "authority": {
-    "completion_plan": "docs/m19-completion-plan.md",
+    "completion_plan": "docs/2026-10-03-m19-completion-plan.md",
     "status_record": "docs/status.md",
     "acceptance_matrix": "docs/acceptance-matrix.md",
-    "implementation_contract": "docs/m19-basic-editor-implementation-plan.md",
+    "implementation_contract": "docs/2026-10-03-m19-basic-editor-implementation-plan.md",
     "dependencies": "docs/dependencies.md"
   },
   "harnesses": [

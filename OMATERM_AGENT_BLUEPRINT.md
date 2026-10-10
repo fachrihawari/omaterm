@@ -1466,6 +1466,12 @@ That architecture will make later features much easier.
 
 # 23. Suggested Version Progression
 
+> **Version-note (current).** The `0.3`/`0.4` labels below predate the shipped
+> tags: developer-context work shipped as `0.1.0`–`0.4.0` instead. All agent
+> work is versioned **`0.x.x`** until it is scheduled; treat the two sections
+> below as ordered future axes (awareness first, automation after), not as
+> promised numbers.
+
 ## 0.1 — Terminal Workspace
 
 ```text
@@ -1492,7 +1498,7 @@ Project search
 
 Potential lightweight editor can enter here or 0.3.
 
-## 0.3 — Agent Awareness
+## 0.x.x — Agent Awareness (was suggested as 0.3)
 
 ```text
 agent process recognition
@@ -1503,7 +1509,7 @@ attention indicators
 notifications
 ```
 
-## 0.4 — Agent Automation
+## 0.x.x — Agent Automation (was suggested as 0.4)
 
 ```text
 agent spawn
@@ -1613,6 +1619,13 @@ This is a recommendation, not a requirement.
 
 Avoid excessive crate fragmentation if it slows early iteration.
 
+> **Implementation note (current).** The shipped workspace does not create an
+> `omaterm-ui` crate. GPUI components and rendering live in
+> `apps/omaterm/src/ui/`; the domain crates are `omaterm-core`,
+> `omaterm-terminal`, `omaterm-protocol`, `omaterm-ipc`, `omaterm-state`,
+> `omaterm-context`, `omaterm-logging`, and `omaterm-cli`. The recommended
+> layout below is preserved as the original guidance.
+
 A simpler initial workspace is acceptable:
 
 ```text
@@ -1633,12 +1646,16 @@ Preserve a clean dependency graph.
 Preferred:
 
 ```text
-omaterm-ui
+apps/omaterm (GPUI UI)
     ↓
 omaterm-core
     ↓
 domain types
 ```
+
+> The original guidance named an `omaterm-ui` crate; the shipped workspace keeps
+> the UI in `apps/omaterm/src/ui/` (see the §24 implementation note). The
+> direction — UI depends on core, never the reverse — is unchanged.
 
 ```text
 omaterm-terminal
@@ -3092,7 +3109,7 @@ At this point the fundamental OmaTerm architecture is proven.
 Only after Slices 1–9 are complete, add explicit opt-in encrypted static
 scrollback restoration and a separate OmaTerm command journal. Always launch
 fresh shells; never restore processes, PTYs, parser modes, active commands, or
-alternate-screen state. Follow `docs/10-milestone-10-history-recovery.md`.
+alternate-screen state. Follow `docs/2026-09-27-10-milestone-10-history-recovery.md`.
 
 ---
 

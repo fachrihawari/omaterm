@@ -112,6 +112,7 @@ pub enum MouseModeKind {
 pub struct TerminalViewport {
     pub rows: Vec<TerminalRow>,
     pub cursor: CursorState,
+    pub cursor_color: (u8, u8, u8),
     pub cols: u16,
     pub lines: u16,
     pub display_offset: usize,

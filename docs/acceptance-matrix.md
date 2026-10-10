@@ -1,9 +1,13 @@
-# v0.1 Acceptance Matrix
+# Acceptance Matrix
 
 The [blueprint](../OMATERM_AGENT_BLUEPRINT.md), especially §§22, 48, 52–55, and 78,
 defines release intent. This matrix assigns verification to the existing slices.
 Every row is **pending** until linked evidence is recorded in [status.md](status.md).
 Unit tests do not substitute for real desktop observations.
+
+The first table is the v0.1 closure set (M1–M11). The second covers the v0.2
+developer-context surface (M12–M20); its rows stay pending until M17 closeout,
+and shipping a `0.2.0`–`0.4.0` tag does not by itself flip a row.
 
 | Requirement | Owner | Automated verification | Manual verification | Evidence |
 |---|---|---|---|---|
@@ -43,7 +47,7 @@ Unit tests do not substitute for real desktop observations.
 | Packaging and license inventory | M11 | PKGBUILD + tarball contents, cargo metadata inventory | Install/launch from package where practical | Complete with limits 2026-09-28: PKGBUILD syntax-checked + tarball procedure; 583 third-party packages inventoried with zero missing licenses (`option-ext` MPL-2.0, `self_cell` Apache/GPL noted); project license is MIT OR Apache-2.0; no install-from-package run claimed |
 | Privacy: local-only defaults (blueprint §46) | M11 | Redaction audit (tokens/passwords/clipboard/file contents absent from default logs); no core network egress | Confirm no account/cloud/analytics required for core use | Partial 2026-09-28: std-only logging + redaction audit green; local state under `$XDG_*`; no telemetry code present. No dedicated no-egress network test and no explicit user-facing privacy statement recorded |
 
-## v0.2 acceptance rows (M12–M17; pending until M17 closeout)
+## v0.2 developer-context rows (M12–M20; pending until M17 closeout)
 
 | Requirement | Owner | Automated verification | Manual verification | Evidence |
 |---|---|---|---|---|
@@ -52,9 +56,10 @@ Unit tests do not substitute for real desktop observations.
 | Git status and explicit scoped mutations | M14 | Porcelain parser, runner timeout/cancellation, stage/unstage/discard/commit parity tests | Wayland status/refresh/mutation/confirmation flow against a real repository | Complete at milestone scope: 385 serial workspace tests and release Wayland status/stage/unstage/discard evidence recorded in [status](status.md); M17 retains panel interaction and release workload evidence |
 | Diff preview parity, all-row virtualization, hunk actions and two-axis navigation | M15 | Parser/repository/row-model tests; full workspace gates | Release Wayland select/scroll/copy/open/stage/navigation, including long diff | In progress: direct Git-row click, independent Split X, Inline X, 303-line hunk end, exact keyboard/pointer copy, one-of-two-hunk staging, CLI-triggered refresh and terminal open proven 2026-10-03 in [status](status.md); rails/range instrumentation and full interaction matrix remain |
 | Unified semantic command/file/Git/process palette with safe focus and stale-target handling | M16 | Ranking/cap tests, source cancellation, command mapping and no-effects tests | Wayland keyboard flow: split/focus/project/file/Git/process actions; sentinel never reaches unintended PTY | Partial Wayland flow and same-instance CLI spot-check recorded in [status](status.md); M15/M18 gates, source-cache and stale/focus/error matrix remain pending |
-| Native open/edit/highlight/save without IDE scope | M19 | Domain/validation, bounded I/O, store lifecycle, tokenizer/caret/highlight unit tests; full workspace gates | Release Wayland open/edit/save with on-disk byte proof, selection/clipboard, focus return, no PTY keystroke leaks | In progress: the 1.99.0 format, parallel 606 tests, serial 606 tests, Clippy and release-build record belongs to the historical `f287991+worktree` delivered source; it is not a HEAD verification claim. S6 `EntityInputHandler` is implemented; native IME/focus validation pending. [Current native attempt](evidence/m19-native-current.md): startup/terminal IPC/20 process samples only; input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit or resource/latency pass. Historical 494-test/ten-cycle evidence is baseline only. S9 and E01–E10 remain open in the [report](evidence/m19-s9-report.md), [completion plan](m19-completion-plan.md) and [status](status.md) |
+| Native open/edit/highlight/save without IDE scope | M19 | Domain/validation, bounded I/O, store lifecycle, tokenizer/caret/highlight unit tests; full workspace gates | Release Wayland open/edit/save with on-disk byte proof, selection/clipboard, focus return, no PTY keystroke leaks | In progress: the 1.99.0 format, parallel 606 tests, serial 606 tests, Clippy and release-build record belongs to the historical `f287991+worktree` delivered source; it is not a HEAD verification claim. S6 `EntityInputHandler` is implemented; native IME/focus validation pending. [Current native attempt](evidence/m19-native-current.md): startup/terminal IPC/20 process samples only; input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit or resource/latency pass. Historical 494-test/ten-cycle evidence is baseline only. S9 and E01–E10 remain open in the [report](evidence/m19-s9-report.md), [completion plan](2026-10-03-m19-completion-plan.md) and [status](status.md) |
 | Process query is scoped, bounded, shared by dispatcher/IPC/CLI and off the UI thread | M18 query prerequisite for M16 | Project scope, cap/truncation, wire/CLI mapping, worker lifecycle and no-effects tests | Same-instance `process.list`; refresh while other terminal remains responsive | Partial acceptance 2026-10-04: bounded scans/admission, cooperative cancellation/deadline, captured-identity CPU/RSS, completion scope/session revalidation and pidfd kill fixes; 640 workspace tests, format/Clippy/release PASS. [Real release Wayland evidence](evidence/m18-runtime-current.md) proves child/port attribution, scope denial, 100 successful queries with FD/thread neutrality and executed terminal probes; native arm/cancel/copy/collapse/refresh, busy CPU and owner-thread timing remain open. Preflight isolation incident is recorded; M18 is not complete. |
-| v0.2 closeout: workload baselines, redaction, platform matrix, and same-instance proof flow | M17 | Full parallel/serial workspace gates, watcher/diff/search/switch/IPC stress, redaction audit | Isolated release Wayland `file.search` → `git.status` → `diff.show` → palette → `process.list`; document unavailable platforms | Pending: [M17](17-milestone-17-v02-closure.md) owns release-level closure for M12–M16 without upgrading milestone-local evidence to a v0.2 release claim |
+| Multi-repo project support: depth-1 discovery, active repo, all Git surfaces follow it | M20 | Scan fixtures, selection helpers, snapshot v3→v4, two-repo `git_root` router test (status/stage/history/branch-list/stash-list/diff), per-repo Graph isolation, full workspace gates | Release Wayland 2-repo dirty fixture: `Repositories` chrome, switch → status/graph/stash/branch/sync/commit/diff follow, switch-back restores, restart restores `active_repo` (stale → first-sorted), single-repo byte-identical | Implementation complete 2026-10-09 (Phases A–F): router-owned discovery, `git_root` chokepoint, workers on explicit repo roots, per-repo state keyed by `RepoKey`; `cargo test --workspace` (21 suites), fmt/Clippy/docs/`git diff --check` PASS. Native Wayland 2-repo switch matrix and restart persistence remain manual and are not claimed passing. E6 `--repo` override deferred; 32-row cap leaves repos 33+ unclickable. |
+| v0.2 closeout: workload baselines, redaction, platform matrix, and same-instance proof flow | M17 | Full parallel/serial workspace gates, watcher/diff/search/switch/IPC stress, redaction audit | Isolated release Wayland `file.search` → `git.status` → `diff.show` → palette → `process.list`; document unavailable platforms | Pending: [M17](2026-09-29-17-milestone-17-v02-closure.md) owns release-level closure for M12–M16 without upgrading milestone-local evidence to a v0.2 release claim |
 
 ## Platform evidence
 
@@ -71,7 +76,7 @@ lifecycle cycles rather than judging a single RSS value.
 
 ## Final proof
 
-Use the sequence in [M9](09-milestone-9-cli.md). Check that split returns a new pane
+Use the sequence in [M9](2026-09-26-09-milestone-9-cli.md). Check that split returns a new pane
 ID, run acknowledges submission to a ready supported shell, and read returns
 bounded viewport text. Validate effects in the same desktop instance. Output read
 success is not evidence that the submitted command completed successfully.

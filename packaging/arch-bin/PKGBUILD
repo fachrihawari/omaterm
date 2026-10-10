@@ -23,7 +23,7 @@
 
 pkgname=omaterm-bin
 _pkgname=omaterm
-pkgver=0.2.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc='Terminal-first developer workspace with semantic CLI automation (prebuilt binary)'
 arch=('x86_64')
@@ -36,7 +36,7 @@ conflicts=('omaterm')
 source=("$_pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
 # SKIP until the first v<pkgver> GitHub Release exists; the release workflow
 # pins this.
-sha256sums=('SKIP')
+sha256sums=('2c2466655d79757b5740b9f2104c769b12ac9185220e972208d83e4f341a1cf3')
 
 package() {
   install -Dm755 "$srcdir/omaterm" "$pkgdir/usr/bin/omaterm"

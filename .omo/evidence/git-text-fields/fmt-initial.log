@@ -1,0 +1,347 @@
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input.rs:15:
+         &self.text
+     }
+ 
+[31m-    pub fn cursor(&self) -> usize { self.caret.cursor }
+(B[m[32m+    pub fn cursor(&self) -> usize {
+(B[m[32m+        self.caret.cursor
+(B[m[32m+    }
+(B[m 
+[31m-    pub fn selection(&self) -> Option<(usize, usize)> { self.caret.selection_range() }
+(B[m[32m+    pub fn selection(&self) -> Option<(usize, usize)> {
+(B[m[32m+        self.caret.selection_range()
+(B[m[32m+    }
+(B[m 
+     pub fn into_text(self) -> String {
+         self.text
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input.rs:24:
+     }
+ 
+     pub fn selected_text(&self) -> Option<&str> {
+[31m-        self.caret.selection_range().map(|(start, end)| &self.text[start..end])
+(B[m[32m+        self.caret
+(B[m[32m+            .selection_range()
+(B[m[32m+            .map(|(start, end)| &self.text[start..end])
+(B[m     }
+ 
+     pub fn insert(&mut self, text: &str) -> bool {
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input.rs:31:
+[31m-        let clean: String = text.chars().filter_map(|ch| match ch {
+(B[m[31m-            '\n' | '\r' | '\t' => Some(' '),
+(B[m[31m-            ch if ch.is_control() => None,
+(B[m[31m-            ch => Some(ch),
+(B[m[31m-        }).collect();
+(B[m[31m-        if clean.is_empty() { return false; }
+(B[m[31m-        let (start, end) = self.caret.selection_range().unwrap_or((self.caret.cursor, self.caret.cursor));
+(B[m[32m+        let clean: String = text
+(B[m[32m+            .chars()
+(B[m[32m+            .filter_map(|ch| match ch {
+(B[m[32m+                '\n' | '\r' | '\t' => Some(' '),
+(B[m[32m+                ch if ch.is_control() => None,
+(B[m[32m+                ch => Some(ch),
+(B[m[32m+            })
+(B[m[32m+            .collect();
+(B[m[32m+        if clean.is_empty() {
+(B[m[32m+            return false;
+(B[m[32m+        }
+(B[m[32m+        let (start, end) = self
+(B[m[32m+            .caret
+(B[m[32m+            .selection_range()
+(B[m[32m+            .unwrap_or((self.caret.cursor, self.caret.cursor));
+(B[m         let available = MAX_MESSAGE_BYTES.saturating_sub(self.text.len() - (end - start));
+[31m-        let accepted = clean.grapheme_indices(true)
+(B[m[32m+        let accepted = clean
+(B[m[32m+            .grapheme_indices(true)
+(B[m             .take_while(|(offset, cluster)| offset + cluster.len() <= available)
+[31m-            .last().map_or(0, |(offset, cluster)| offset + cluster.len());
+(B[m[31m-        if accepted == 0 { return false; }
+(B[m[32m+            .last()
+(B[m[32m+            .map_or(0, |(offset, cluster)| offset + cluster.len());
+(B[m[32m+        if accepted == 0 {
+(B[m[32m+            return false;
+(B[m[32m+        }
+(B[m         self.text.replace_range(start..end, &clean[..accepted]);
+         self.caret.collapse_to(start + accepted);
+         self.caret.clamp(&self.text);
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input.rs:75:
+     pub fn delete(&mut self, forward: bool) -> bool {
+         let (start, end) = self.caret.selection_range().unwrap_or_else(|| {
+             if forward {
+[31m-                (self.caret.cursor, next_grapheme(&self.text, self.caret.cursor))
+(B[m[32m+                (
+(B[m[32m+                    self.caret.cursor,
+(B[m[32m+                    next_grapheme(&self.text, self.caret.cursor),
+(B[m[32m+                )
+(B[m             } else {
+[31m-                (previous_grapheme(&self.text, self.caret.cursor), self.caret.cursor)
+(B[m[32m+                (
+(B[m[32m+                    previous_grapheme(&self.text, self.caret.cursor),
+(B[m[32m+                    self.caret.cursor,
+(B[m[32m+                )
+(B[m             }
+         });
+[31m-        if start == end { return false; }
+(B[m[32m+        if start == end {
+(B[m[32m+            return false;
+(B[m[32m+        }
+(B[m         self.text.replace_range(start..end, "");
+         self.caret.collapse_to(start);
+         self.caret.clamp(&self.text);
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input_view.rs:1:
+ //! Keyboard and presentation adapter for the two single-line Git fields.
+[31m-use gpui::{App, ClipboardItem, Div, HighlightStyle, KeyDownEvent, StyledText, div, prelude::*, px, rgb};
+(B[m use crate::git_input::GitInput;
+[32m+use gpui::{
+(B[m[32m+    App, ClipboardItem, Div, HighlightStyle, KeyDownEvent, StyledText, div, prelude::*, px, rgb,
+(B[m[32m+};
+(B[m 
+[31m-pub enum InputAction { Edit, Submit, Release }
+(B[m[32m+pub enum InputAction {
+(B[m[32m+    Edit,
+(B[m[32m+    Submit,
+(B[m[32m+    Release,
+(B[m[32m+}
+(B[m 
+ pub fn captures(event: &KeyDownEvent) -> bool {
+     let modifiers = event.keystroke.modifiers;
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input_view.rs:9:
+[31m-    !modifiers.alt && !modifiers.platform && (!modifiers.control || matches!(
+(B[m[31m-        event.keystroke.key.to_lowercase().as_str(), "a" | "c" | "x" | "v" | "home" | "end"
+(B[m[31m-    ))
+(B[m[32m+    !modifiers.alt
+(B[m[32m+        && !modifiers.platform
+(B[m[32m+        && (!modifiers.control
+(B[m[32m+            || matches!(
+(B[m[32m+                event.keystroke.key.to_lowercase().as_str(),
+(B[m[32m+                "a" | "c" | "x" | "v" | "home" | "end"
+(B[m[32m+            ))
+(B[m }
+ 
+ pub fn on_key(input: &mut GitInput, event: &KeyDownEvent, cx: &mut App) -> InputAction {
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input_view.rs:20:
+             "c" | "x" => {
+                 if let Some(text) = input.selected_text() {
+                     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+[31m-                    if key == "x" { input.delete(false); }
+(B[m[32m+                    if key == "x" {
+(B[m[32m+                        input.delete(false);
+(B[m[32m+                    }
+(B[m                 }
+             }
+             "v" => {
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input_view.rs:40:
+             "end" => input.move_to(input.text().len(), modifiers.shift),
+             "left" => input.move_horizontal(false, modifiers.shift),
+             "right" => input.move_horizontal(true, modifiers.shift),
+[31m-            "backspace" => { input.delete(false); }
+(B[m[31m-            "delete" => { input.delete(true); }
+(B[m[32m+            "backspace" => {
+(B[m[32m+                input.delete(false);
+(B[m[32m+            }
+(B[m[32m+            "delete" => {
+(B[m[32m+                input.delete(true);
+(B[m[32m+            }
+(B[m             _ => {
+[31m-                if let Some(text) = &event.keystroke.key_char { input.insert(text); }
+(B[m[32m+                if let Some(text) = &event.keystroke.key_char {
+(B[m[32m+                    input.insert(text);
+(B[m[32m+                }
+(B[m             }
+         }
+     }
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input_view.rs:62:
+     let empty = GitInput::default();
+     let input = field.input.unwrap_or(&empty);
+     let text = input.text();
+[31m-    let row = div().flex().items_center().min_w(px(0.0)).overflow_hidden().whitespace_nowrap();
+(B[m[32m+    let row = div()
+(B[m[32m+        .flex()
+(B[m[32m+        .items_center()
+(B[m[32m+        .min_w(px(0.0))
+(B[m[32m+        .overflow_hidden()
+(B[m[32m+        .whitespace_nowrap();
+(B[m     if text.is_empty() && !field.focused {
+         return row.text_color(rgb(colors.muted)).child(field.placeholder);
+     }
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_input_view.rs:69:
+[31m-    let cursor = if field.focused { input.cursor() } else { text.len() };
+(B[m[32m+    let cursor = if field.focused {
+(B[m[32m+        input.cursor()
+(B[m[32m+    } else {
+(B[m[32m+        text.len()
+(B[m[32m+    };
+(B[m     let styled = |start: usize, end: usize| {
+[31m-        let highlights = input.selection().filter(|_| field.focused).and_then(|(a, b)| {
+(B[m[31m-            let a = a.max(start);
+(B[m[31m-            let b = b.min(end);
+(B[m[31m-            (a < b).then_some((a - start..b - start, HighlightStyle {
+(B[m[31m-                background_color: Some({ let (h, s, l, a) = colors.selection_hsla; gpui::hsla(h, s, l, a) }),
+(B[m[31m-                ..Default::default()
+(B[m[31m-            }))
+(B[m[31m-        });
+(B[m[32m+        let highlights = input
+(B[m[32m+            .selection()
+(B[m[32m+            .filter(|_| field.focused)
+(B[m[32m+            .and_then(|(a, b)| {
+(B[m[32m+                let a = a.max(start);
+(B[m[32m+                let b = b.min(end);
+(B[m[32m+                (a < b).then_some((
+(B[m[32m+                    a - start..b - start,
+(B[m[32m+                    HighlightStyle {
+(B[m[32m+                        background_color: Some({
+(B[m[32m+                            let (h, s, l, a) = colors.selection_hsla;
+(B[m[32m+                            gpui::hsla(h, s, l, a)
+(B[m[32m+                        }),
+(B[m[32m+                        ..Default::default()
+(B[m[32m+                    },
+(B[m[32m+                ))
+(B[m[32m+            });
+(B[m         StyledText::new(text[start..end].to_owned()).with_highlights(highlights)
+     };
+[31m-    row.child(div().min_w(px(0.0)).flex().justify_end().overflow_hidden()
+(B[m[31m-        .child(div().flex_shrink_0().child(styled(0, cursor))))
+(B[m[31m-        .child(div().w(px(if field.focused { 2.0 } else { 0.0 })).h(px(15.0)).flex_shrink_0()
+(B[m[31m-            .when(field.focused && field.caret_visible, |caret| caret.bg(rgb(colors.text))))
+(B[m[31m-        .child(div().min_w(px(0.0)).overflow_hidden().child(styled(cursor, text.len())))
+(B[m[32m+    row.child(
+(B[m[32m+        div()
+(B[m[32m+            .min_w(px(0.0))
+(B[m[32m+            .flex()
+(B[m[32m+            .justify_end()
+(B[m[32m+            .overflow_hidden()
+(B[m[32m+            .child(div().flex_shrink_0().child(styled(0, cursor))),
+(B[m[32m+    )
+(B[m[32m+    .child(
+(B[m[32m+        div()
+(B[m[32m+            .w(px(if field.focused { 2.0 } else { 0.0 }))
+(B[m[32m+            .h(px(15.0))
+(B[m[32m+            .flex_shrink_0()
+(B[m[32m+            .when(field.focused && field.caret_visible, |caret| {
+(B[m[32m+                caret.bg(rgb(colors.text))
+(B[m[32m+            }),
+(B[m[32m+    )
+(B[m[32m+    .child(
+(B[m[32m+        div()
+(B[m[32m+            .min_w(px(0.0))
+(B[m[32m+            .overflow_hidden()
+(B[m[32m+            .child(styled(cursor, text.len())),
+(B[m[32m+    )
+(B[m }
+ 
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_panel.rs:40:
+     pub result: Result<GitStatusInfo, GitEmpty>,
+ }
+ 
+[31m-
+(B[m /// Rows rendered per group at most; the footer names the truncation.
+ pub const MAX_GIT_RENDER_ROWS: usize = 150;
+ 
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/git_panel.rs:336:
+ 
+     /// Take the draft for submission, leaving an empty one behind.
+     pub fn take_commit_draft(&mut self, project: ProjectId) -> String {
+[31m-        self.commit_drafts.remove(&project).unwrap_or_default().into_text()
+(B[m[32m+        self.commit_drafts
+(B[m[32m+            .remove(&project)
+(B[m[32m+            .unwrap_or_default()
+(B[m[32m+            .into_text()
+(B[m     }
+ 
+     /// Restore a draft (failed submissions put the message back so the
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/main.rs:9129:
+     }
+ 
+     fn on_commit_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+[31m-        let Some(project) = self.coordinator.selected_project_id() else { return; };
+(B[m[32m+        let Some(project) = self.coordinator.selected_project_id() else {
+(B[m[32m+            return;
+(B[m[32m+        };
+(B[m         match git_input_view::on_key(self.git_panel.commit_input_mut(project), event, cx) {
+             git_input_view::InputAction::Release => {
+                 self.git_panel.set_commit_focused(false);
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/main.rs:13458:
+             bar = bar.child(header);
+             bar = bar.child(
+                 div().px_2().py_1().flex().flex_col().gap_1().child(
+[31m-                    div()
+(B[m[31m-                        .flex()
+(B[m[31m-                        .flex_row()
+(B[m[31m-                        .items_center()
+(B[m[31m-                        .gap_2()
+(B[m[31m-                        .child(
+(B[m[31m-                            div()
+(B[m[31m-                                .flex_1()
+(B[m[31m-                                .min_w(px(0.0))
+(B[m[31m-                                .px_2()
+(B[m[31m-                                .py_1()
+(B[m[31m-                                .rounded(px(7.0))
+(B[m[31m-                                .border_1()
+(B[m[31m-                                .border_color(rgb(if stash_focused { crate::ui::theme::colors().blue2 } else { crate::ui::theme::colors().border }))
+(B[m[31m-                                .bg(rgb(crate::ui::theme::colors().pill_bg))
+(B[m[31m-                                .role(crate::ui::metrics::BODY_11)
+(B[m[31m-                                .text_color(rgb(crate::ui::theme::colors().text))
+(B[m[31m-                                .on_mouse_down(
+(B[m[31m-                                    MouseButton::Left,
+(B[m[31m-                                    cx.listener(move |view, _, window, cx| {
+(B[m[31m-                                        if view.shutting_down {
+(B[m[31m-                                            return;
+(B[m[31m-                                        }
+(B[m[31m-                                        cx.stop_propagation();
+(B[m[31m-                                        window.focus(&view.focus_handle);
+(B[m[31m-                                        view.stash_focused = Some(project);
+(B[m[31m-                                        view.git_panel.set_commit_focused(false);
+(B[m[31m-                                        view.restore_input_owner();
+(B[m[31m-                                        cx.notify();
+(B[m[31m-                                    }),
+(B[m[31m-                                )
+(B[m[31m-                                .child(input_content),
+(B[m[31m-                        ),
+(B[m[32m+                    div().flex().flex_row().items_center().gap_2().child(
+(B[m[32m+                        div()
+(B[m[32m+                            .flex_1()
+(B[m[32m+                            .min_w(px(0.0))
+(B[m[32m+                            .px_2()
+(B[m[32m+                            .py_1()
+(B[m[32m+                            .rounded(px(7.0))
+(B[m[32m+                            .border_1()
+(B[m[32m+                            .border_color(rgb(if stash_focused {
+(B[m[32m+                                crate::ui::theme::colors().blue2
+(B[m[32m+                            } else {
+(B[m[32m+                                crate::ui::theme::colors().border
+(B[m[32m+                            }))
+(B[m[32m+                            .bg(rgb(crate::ui::theme::colors().pill_bg))
+(B[m[32m+                            .role(crate::ui::metrics::BODY_11)
+(B[m[32m+                            .text_color(rgb(crate::ui::theme::colors().text))
+(B[m[32m+                            .on_mouse_down(
+(B[m[32m+                                MouseButton::Left,
+(B[m[32m+                                cx.listener(move |view, _, window, cx| {
+(B[m[32m+                                    if view.shutting_down {
+(B[m[32m+                                        return;
+(B[m[32m+                                    }
+(B[m[32m+                                    cx.stop_propagation();
+(B[m[32m+                                    window.focus(&view.focus_handle);
+(B[m[32m+                                    view.stash_focused = Some(project);
+(B[m[32m+                                    view.git_panel.set_commit_focused(false);
+(B[m[32m+                                    view.restore_input_owner();
+(B[m[32m+                                    cx.notify();
+(B[m[32m+                                }),
+(B[m[32m+                            )
+(B[m[32m+                            .child(input_content),
+(B[m[32m+                    ),
+(B[m                 ),
+             );
+             // Loaded rows, or a fetch-on-first-view trigger.
+Diff in /home/fachri/Projects/personal/omaterm/apps/omaterm/src/main.rs:13755:
+         if self.shutting_down {
+             return;
+         }
+[31m-        let message = self.stash_drafts.get(&project).map(git_input::GitInput::text).unwrap_or_default().to_owned();
+(B[m[32m+        let message = self
+(B[m[32m+            .stash_drafts
+(B[m[32m+            .get(&project)
+(B[m[32m+            .map(git_input::GitInput::text)
+(B[m[32m+            .unwrap_or_default()
+(B[m[32m+            .to_owned();
+(B[m         if message.trim().is_empty() {
+             self.input_notice = Some("Stash: type a message first.".into());
+             cx.notify();

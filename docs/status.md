@@ -1,6 +1,495 @@
 # Implementation Status
 
+> This is the chronological record of implemented slices and their verification.
+> Entries tagged "(uncommitted)" were written while the work sat in the working
+> tree; most have since been committed and released (the M20 entries are part of
+> `v0.4.0`). The tag records the state at writing time, not the current tree.
+> Milestone-level status is summarized in the table further down; native Wayland
+> gates marked pending there are still pending unless a later entry closes them.
+
 ## Current position
+
+### Git tab: `Repositories` chrome parity — 2026-10-10 (uncommitted)
+
+UI pass over the M20 `Repositories` chrome in the Git tab. The chrome had
+its own grammar (22px header, 12px chevron, `BODY_11` bright title,
+free-floating `N repos` text, ~22px rows flush at 8px) and no boundary to
+the M14 body, so it read as another row instead of the section header it
+is, and a collapsed chrome named no repository at all.
+
+- Header now matches STAGED CHANGES / CHANGES / GRAPH: `.h(px(32.0))`,
+  chevron in the `w(px(14.0)).flex_shrink_0()` slot at 14px, uppercase
+  `META_10` muted title, count in the sibling pill.
+- Rows are 32px, indented 20px under the header, with a hairline under
+  every row (the last hairline is the chrome/body boundary). The name
+  column now ellipsizes and the branch/dot/`clean` trailing cells are
+  `flex_shrink_0`, so a long name can no longer push the dirty dot out
+  of the panel. Inactive names moved `muted` → `text2` to match the
+  change-group rows; the active row uses `tree_selected_bg` instead of
+  the hover color, so active and hover are distinguishable.
+- Collapsed header appends the active repository name
+  (`REPOSITORIES · web`, title uppercase, name in its own case): the
+  highlight is hidden when collapsed, and the body below must stay
+  identifiable. `plan.active` still covers the 32-cap overflow case
+  where the active repo has no visible row.
+- Label rules moved into `git_repos::chrome_header_label` /
+  `chrome_count_label` (+ `CHROME_TITLE`) with unit tests; render code
+  no longer formats them. The dead `scan.repos.clone()` (its only use was
+  the count) is gone.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace` (all
+  suites green; desktop binary 299 → 301, the two new cases in
+  `git_repos::tests`), `cargo clippy --workspace --all-targets --
+  -D warnings` (known transitive `proc-macro-error2` notice only),
+  `python3 scripts/check-docs.py`, `git diff --check` PASS.
+  Native Wayland validation on a real 2-repo fixture is still manual and
+  not claimed passing.
+
+### Fix: `Repositories` collapse toggle was a no-op on expand — 2026-10-10 (uncommitted)
+
+Reported after the chrome-parity pass: the collapse toggle "not toggling
+correctly". Root cause predates that pass (M20 Phase E).
+
+- `close_transient_menus` collapsed the multi-repo list **and** served the
+  shell's root `on_any_mouse_down` click-outside dismissal. GPUI dispatches
+  both in the bubble phase (`gpui` div.rs:163), so the ancestor handler ran
+  *after* the group header's own `toggle_repo_list`. Any left click on an
+  expanded list — including the header click that had just expanded it —
+  was immediately re-collapsed. The list therefore got stuck collapsed with
+  the chevron pointing right and no way to reopen it, and any unrelated
+  click anywhere in the app collapsed it too.
+- Split by owner: `close_transient_menus` is menus-only (click-outside +
+  Esc); new `dismiss_transient_chrome` is the Esc arm that also collapses
+  the repo list. Esc still closes menus and the list in one press, so the
+  E4 behavior is unchanged for the keyboard path.
+- The collapse decision is the pure `git_repos::esc_collapses_repo_list(
+  scan, already_collapsed)`: only a project with more than one repository
+  has a list, and an already collapsed list reports no change (so Esc never
+  notifies on a no-op). Covered by a unit test; the caller wiring is a view
+  method and has no automated coverage.
+- **Follow-up (2026-10-10): the header toggle was also missing `cx.notify()`.**
+  Every sibling toggle (GRAPH, change groups, stash) notifies after mutating
+  state; the `Repositories` header only called `toggle_repo_list(project)`
+  without notifying. The view then repainted only whenever something else
+  (e.g. the 250ms git poller) happened to dirty it — which is why clicks
+  looked ignored and "sometimes randomly worked". One-line fix at the header
+  listener in `render_repo_chrome` (`apps/omaterm/src/main.rs`); the two
+  earlier fixes (Esc-only collapse split, `esc_collapses_repo_list`) stand.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace` (all
+  suites green; desktop 301 → 302 with the new predicate test),
+  `cargo clippy --workspace --all-targets -- -D warnings` (known
+  transitive `proc-macro-error2` notice only), `python3 scripts/check-docs.py`,
+  `git diff --check` PASS. **Manual Wayland confirmation is still owed**:
+  click the `REPOSITORIES` chevron twice (collapse, expand), and click an
+  unrelated row (file row, commit box, terminal pane) — none of those may
+  collapse the list; only Esc may.
+
+### Multi-repo Phase E + F: every Git surface follows the active repo — 2026-10-09 (uncommitted)
+
+Milestone [20 — Multi-Repo Support](2026-10-09-20-milestone-20-multi-repo.md) Phases
+E and F. Status rows already followed the active repository after Phase D;
+this slice makes the **whole** Git subsystem agree on one active repository
+so the panel, CLI and agents cannot drift, and re-keys every per-project
+Git surface to the per-repository `RepoKey`.
+
+- **E1 router-owned discovery.** The depth-1 scan cache moved from the view
+  into `CommandRouter` (`repo_scans: HashMap<ProjectId, RepoScan>` in
+  `omaterm-core`). The desktop scan worker is the sole producer
+  (`install_repo_scan`); `SetDirectory`/`Delete` invalidate it. The view
+  renders and polls through `repo_scan(project)` / `active_repo(project)`
+  instead of its own map, so the panel, `git.*` wire methods, `omaterm git`
+  and a future agent share one answer (blueprint §62).
+- **E2 `git_root` chokepoint.** New `Router::git_root(context, project)`
+  returns the active repository path (scope-checked, contained under the
+  project root) and falls back to `file_root` for single-repo and pre-scan
+  states. Every `GitCommand` and `DiffCommand` arm switched `file_root` →
+  `git_root`: status, history, branch list + all branch mutations,
+  stage/unstage/discard/commit/stage-hunk, stash list + push/apply/pop/drop,
+  sync fetch/pull/push, blame, and diff show/list-files/show-commit. The
+  Files panel, finder and watcher intentionally stay on `file_root`.
+- **E3 workers take an explicit repo root.** History page + commit-files
+  (`HistoryRoots`), sync (`PendingSync` carries `RepoKey` + repo root),
+  stash-list and branch-list workers take the active repo path resolved on
+  the view thread, with the M12 `resolve_root` fallback preserved for the
+  pre-scan window. No git worker calls `resolve_root` for the primary path
+  anymore.
+- **E4 per-repo state follows the key.** `HistoryPanel.projects`,
+  `history_in_flight`/`files_in_flight`/`refreshed_at`, `branch_lists`/
+  `branch_in_flight`, `stash_drafts`/`stash_focused`/`stash_untracked`/
+  `stash_in_flight`, all `diff_panel` maps + `DiffRequestKey`/
+  `CommitDiffKey`, `commit_scroll_handles`, `blame_rows`/`blame_visible` and
+  `PendingSync` are keyed by `git_panel::RepoKey` (project + repo name,
+  `None` = project root). Landing channels carry the `RepoKey`; the
+  project-switch sweep clears per-repo state so memory stays bounded to one
+  project.
+- **F1/F2 Graph + stash.** `HistoryPanel` and stash drafts/focus/`-u`
+  are per repo; switching repo and switching back restores each Graph view
+  and each stash draft.
+- **F3 collapse memory (session-scoped, locked).** The `Repositories`
+  collapse preference stays view-local but now survives root busts, project
+  switches and tab hops within the session (`ProjectDirectoryChanged` clears
+  the scan, not the preference). No snapshot v5, no migration.
+- **E5 chrome/docs.** `render_repo_chrome` / `render_git_panel` comments
+  refreshed to the locked single-group-header chrome (no picker/dropdown/
+  per-row chevrons/counters).
+- **CLI test-harness fix (H1).** The unreproduced `48 passed; 2 failed`
+  full-suite run was reproduced at 64–128 threads: `connection::tests` and
+  `launcher::tests` each had their **own** `env_lock()` mutex while mutating
+  the same process-global `OMATERM_SOCKET`/`OMATERM_TOKEN`, so they clobbered
+  each other under parallelism (one test lost its token, the other poisoned a
+  lock). Fixed with one crate-level `env_lock()` in `main.rs` shared by both
+  modules. Pre-existing, unrelated to M20.
+- **Deferred / known gaps.** E6 explicit `repo` override on git wire methods
+  is locked OUT for v1 (default-active routing covers the UX goal). The
+  32-row cap leaves repos 33+ polled but not clickable (follow-up).
+  Simultaneous N-way expanded bodies and per-repo Files roots remain
+  rendering follow-ups.
+- **Verification.** `cargo fmt --all --check`, `cargo test --workspace`
+  (21 suites green, incl. the two-repo `git_and_diff_follow_the_active_repository`
+  router test and the per-repo Graph isolation panel test),
+  `cargo clippy --workspace --all-targets` (only the pre-existing transitive
+  `proc-macro-error2` future-incompat notice), `python3 scripts/check-docs.py`
+  and `git diff --check` PASS. **Native Wayland validation on a real 2-repo
+  dirty fixture is still manual and not claimed passing.**
+
+### Multi-repo VS Code-style Git tab (Phase D) — 2026-10-09 (uncommitted)
+
+Milestone [20 — Multi-Repo Support](2026-10-09-20-milestone-20-multi-repo.md) Phase D.
+The Git tab now renders a repository picker plus one section header per
+depth-1 repository, and the active repository's full M14 body renders
+below that chrome. Single-repo projects are untouched by construction.
+
+- Panel state moved from `ProjectId` to `git_panel::RepoKey` (project +
+  repo name; `None` = the project root itself), so every repository keeps
+  its own status, selection, collapse state, stash list, drop arm and
+  commit draft. `knows_project`-style cross-repo lookups disappeared;
+  the poller asks `repo_keys_for` instead.
+- New GPUI-free module `git_repos` owns the scan cache and the pure
+  decisions: active-repo identity (`None` for a root repo), the 32
+  section cap with overflow count, the staleness window, and the
+  round-robin poll cursor. One shared `repo_key_of` builds identities.
+- `git_tick` now refreshes **one repository per tick** (round-robin) and
+  spawns the depth-1 scan off-thread through its own channel, so a
+  monorepo costs N ticks of one bounded git call each. `any_repo_due`
+  keeps the poller from idling while a not-yet-due repo holds the
+  cursor. `spawn_status_thread` now takes a `StatusRequest` with the M20
+  repo-root override, and the worker refuses to poll anything that is
+  not a directory.
+- Scan is busted (and rescanned) on the Git tab opening, project
+  switch, base-directory change (`ProjectDirectoryChanged`), the manual
+  refresh button and `select_repo`; Esc closes the picker through
+  `close_transient_menus`; the status bar shows the repository name
+  before the branch when the project holds more than one.
+- Selection goes through `ProjectCommand::SetActiveRepo`, so the wire,
+  CLI and panel share one validation path; `select_repo` refreshes the
+  newly active repository and keeps the picker state consistent.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace`
+  (302 desktop tests incl. 49 Git + 8 new M20 modules, zero failures;
+  one parallel-suite `osc_dynamic_color_queries` flake passed in
+  isolation, both in-parallel and `--test-threads=1`),
+  `cargo clippy --workspace --all-targets -- -D warnings` (known
+  transitive `proc-macro-error2` notice only), `cargo build --release
+  --bin omaterm-desktop --bin omaterm`, `python3 scripts/check-docs.py`
+  and `git diff --check` PASS. Native Wayland validation on a real
+  2-repo fixture (picker, section headers, status/commit/stash/history
+  following the switch) is still manual and not claimed passing.
+- Known gap carried forward: only the active repository renders its
+  full body; simultaneous N-way expansion is a rendering follow-up
+  because per-repo state already exists.
+
+### Multi-repo chrome simplified + Phase E planned — 2026-10-09 (uncommitted)
+
+User-directed rework of the Phase D chrome plus the recorded follow-up
+plan. Feedback with VS Code captures: the per-row `>`/`v` chevrons read
+as per-repo expand/collapse and made the active repository ambiguous.
+
+- The chrome is now one collapsible group header (`Repositories · N
+  repos`, the only chevron) plus plain rows (name, muted branch, dirty
+  dot or muted `clean`), the active row highlighted and its full M14
+  body below. Cut: picker row, dropdown branch, per-row chevrons, `+s
+  ~u ?t` counter text, the `CHECK` row icon. `repo_picker_open`
+  became the per-project `repo_list_collapsed` set (Esc collapses
+  through `close_transient_menus`).
+- The row matrix moved into a pure `repo_chrome(scan) -> ChromePlan`
+  helper in `git_repos` (0/1 repos hidden, capped rows, active mark,
+  overflow count) so render-time decisions are unit-tested; the render
+  and `visible_repo_keys` share it, so what is pinned by tests is what
+  renders. Poller keys stay uncapped by design: hidden repos still
+  refresh so a later switch never shows a stale body.
+- Added (not yet executed) Phase E to
+  `docs/2026-10-09-20-milestone-20-multi-repo.md`: every Git surface follows the
+  active repository. Audit: graph/history, commit files, both diff
+  paths, branch list + all branch mutations, stage/unstage/discard/
+  commit/stage-hunk, all stash ops + drafts, sync, and blame still
+  resolve the **project** root via `Router::file_root`. Plan:
+  router-owned discovery (one cache for panel, CLI and agents),
+  `Router::git_root` as the git chokepoint, workers taking explicit repo
+  roots, all per-`ProjectId` git state re-keyed to `RepoKey`, plus an
+  optional explicit `repo` override on git wire methods. Chrome impact
+  of the locked spec: background workers only ever run for the active
+  repository.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace`
+  (all suites green incl. the new chrome-plan test), `cargo clippy
+  --workspace --all-targets -- -D warnings` (known transitive
+  `proc-macro-error2` notice only), `cargo build --release --bin
+  omaterm-desktop --bin omaterm`, `python3 scripts/check-docs.py`,
+  `git diff --check` PASS. Native Wayland validation is still manual.
+
+Milestone [20 — Multi-Repo Support](2026-10-09-20-milestone-20-multi-repo.md). A project
+root containing several repositories now resolves to a depth-1 repo list
+(project root itself when it is a repo, else its direct children holding
+`.git` as dir or worktree gitfile) instead of a single root. Phase D (VS
+Code-style Git tab picker + per-repo collapsible sections) is still open.
+
+- Discovery lives in `omaterm-context`: new `scan_repos`/`scan_repos_with`
+  (bounded readdir+stat, no git subprocess, hidden opt-in, sorted, capped
+  at 256 entries) plus `resolve_repos`, which composes the untouched
+  `resolve_root` with the scan and the agreed selection rule
+  (last-saved when still present, else first-sorted). Existing
+  `resolve_root` callers are unaffected.
+- Domain (`omaterm-core`): `Project.active_repo` is a plain child
+  directory name (resolved against the live root, so project directory
+  moves don't break it); `set_active_repo` requires live-scan membership,
+  `resolve_active_repo` applies the saved-else-first-sorted rule, and
+  `validate`/`CoreError::UnknownRepo` reject traversal or empty names.
+  New DTOs `RepoEntry` and `ProjectReposInfo` back the wire output.
+- Persistence (`omaterm-state`): snapshot schema v3 → v4 with
+  `active_repo` captured and validated (no separators, no traversal);
+  migration keeps v3 document registries valid while requiring the field
+  to default to `None` for every old schema, and rejects smuggled values
+  in old-version files.
+- Surface: `ProjectCommand::ListRepos`/`SetActiveRepo` with
+  `project.repos` and `project.set-active-repo` wire methods plus
+  `omaterm project repos` / `omaterm project set-repo` CLI parity,
+  human output included. `SetActiveRepo` validates membership against the
+  live scan (`invalid_request` for unknown/traversal names), echoes the
+  resulting `ProjectReposInfo` so callers confirm without a follow-up
+  query, and emits the existing `ProjectDirectoryChanged` effect chain.
+  Selection stays project-scoped: a foreign scope is `cross_project_denied`.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace`
+  (21 suites green incl. 6 new scan tests, 4 core selection tests, 2
+  router route tests, v3→v4 migration and active-repo round-trip, 2 CLI
+  mapping tests, protocol decode 58→60 cases), `cargo clippy --workspace
+  --all-targets -- -D warnings` (known transitive `proc-macro-error2`
+  notice only), `cargo build --release --bin omaterm-desktop --bin
+  omaterm`, `python3 scripts/check-docs.py` (60/60 method coverage) and
+  `git diff --check` PASS. Native Wayland validation and the Phase D UI
+  are not applicable yet — no user-visible Git panel change exists in this
+  slice.
+
+### Stash group hides when empty, push-only when dirty — 2026-10-09 (uncommitted)
+
+- `STASH 0` pill plus `No stashes.` / `Loading stashes…` noise is gone:
+  new pure predicate `stash_group_mode(dirty, loaded_count)`
+  (`apps/omaterm/src/git_panel.rs`) drives three modes — `Hidden`
+  (empty + clean, takes no space), `PushOnly` (empty + dirty: header
+  without pill + push input, so the first stash stays reachable), `Full`
+  (entries exist: header + count + input + rows, as before).
+- Hidden mode still fires the on-demand fetch silently (entries appear
+  once loaded) and clears `stash_focused` so a hidden field never keeps
+  keyboard ownership. Empty-list early return removes the `No stashes.`
+  branch; unloaded state no longer renders a loading line.
+- `Stash` button mirrors the `Commit` disabled-look: `panel2`/muted until
+  a message is typed, `blue2`/`on_accent` after (`can_stash` from the
+  draft; submit still explains empty via notice).
+- Input/cursor behavior unchanged (grapheme-aware `GitInput`,
+  `Enter` submit, `Esc`/`Tab` release, mutual focus with commit).
+  Icon-only pop/apply/drop and the `-u` toggle are untouched (no tooltip
+  infra exists) — recorded follow-up.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS, `cargo clippy --workspace --all-targets -- -D warnings` PASS
+  (known transitive `proc-macro-error2` future-incompat notice only),
+  `git diff --check` PASS. Native Wayland check (dirty→push-only,
+  clean→hidden, loaded→full) remains manual.
+
+### Restored-scrollback leading-blank fix (`cd gat` -> `   gat`) — 2026-10-09 (uncommitted)
+
+User report with screenshot: after restart, restored command lines show
+leading blanks (`cd gat` as `   gat`, `ls -la` as `   -la`); fresh output
+is intact. Default bash; affected lines are edited commands with output.
+
+- Root cause (proven, not guessed): bash readline emits differential
+  redisplay spans (`\r` + cursor motions + partial rewrite + erase), ground
+  truth captured from real `bash --norc -i` (`cd gateway` + Ctrl-W ->
+  `\r` + five `\x1b[C` + `\x1b[K`). `collapse_line_span`
+  (`crates/omaterm-terminal/src/history.rs`) kept only the final
+  `\r`-segment whenever no earlier segment was byte-longer — and a span
+  starting with `\r` has an empty first segment, so the gate always
+  passed. The positioned/erase-bearing survivor replays cursor motions
+  over a fresh blank grid: leading cells stay spaces. Byte-level proof in
+  test output (compacted `cd gateway\r…` down to bare motions + erase).
+- Accomplice: `replay_equivalent` compared viewport only ("scrollback
+  excluded by design"), so scrollback-only damage persisted silently.
+- Fix F2': `collapse_line_span` refuses collapse when the final segment
+  contains anything beyond SGR/OSC (`final_segment_is_self_contained`:
+  motions, erases, edits, modes and other escapes force passthrough;
+  SGR attributes and OSC metadata travel with their text). Spinner/full
+  redraw collapsing is unchanged.
+- Fix F1: `replay_equivalent` additionally requires scrollback multiset
+  coverage (`scrollback_covered_by`): compaction may drop duplicate
+  animation copies (the mbx-dedup purpose, pinned by test) but never
+  fabricate or rewrite a line — any doubt saves original bytes.
+- Tests: 4 new terminal tests (positioned-span passthrough incl. the
+  real bash capture, differential end-to-end replay parity, fabricated
+  line rejection, dedup acceptance). The first three failed pre-fix;
+  all 13 pre-existing compaction tests still pass.
+- Contract delta to the Oct-08 compaction entry: restore still rebuilds
+  the final visible state without animation intermediates, plus no
+  fabricated scrollback lines (subset-covered).
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace
+  --no-fail-fast` PASS except the 7 known pre-existing `omaterm-cli`
+  wire-mapping failures (proven on the stashed clean tree earlier today),
+  desktop 291 PASS, terminal 196 PASS, `cargo clippy --workspace
+  --all-targets -- -D warnings` PASS (known transitive
+  `proc-macro-error2` notice only), `cargo build --release --bin
+  omaterm-desktop` PASS, `python3 scripts/check-docs.py` PASS,
+  `git diff --check` PASS. Native Wayland double-restart parity on
+  edited command lines remains manual.
+
+### Info dedup + Shift+Enter + mouse-click forwarding — 2026-10-09 (uncommitted)
+
+User-directed batch of four complaints, fixed in two files
+(`apps/omaterm/src/main.rs`, `crates/omaterm-terminal/src/input.rs`):
+
+- Branch switcher was in 3 places (status bar, Git tab header, Info PROJECT
+  card). Per user vote (Git + status, no Info), the Info pill trigger is
+  gone: the whole PROJECT card is removed from `render_inspector_info`, and
+  the now-single-use `branch_for` helper is deleted. Git header and status
+  bar keep sharing `branch_picker_trigger`.
+- Info panel had no purpose (screenshot: PROJECT card duplicating the sidebar
+  + third branch pill, then shell/PID/path/Copy path with equal weight). It
+  is now focused-shell only: `SHELL` heading, `{shell} · PID {pid}` title,
+  cwd + inline muted `Copy` on one row (was a standalone blue `Copy path`
+  row), then unchanged PROCESSES/PORTS. Spacing tightened `gap_4` → `gap_3`.
+- Shift+Enter sent bare `\r`, so opencode submitted instead of newline.
+  `encode_key` now emits Kitty `CSI u` for modified Enter (`Shift` →
+  `ESC[13;2u`, `Alt` → `;3u`, `Ctrl` → `;5u`, combos OR bits) before the Alt
+  ESC-prefix so the alt bit lands in the single sequence; plain Enter stays
+  `\r`; Super still swallowed. New unit test pins all five forms.
+- Left-click never reached mouse-aware TUIs: `on_mouse_down` always started
+  a desktop selection (click/drag was an explicit M3 non-goal). Presses now
+  forward SGR `CSI < 0 ; Cx ; Cy M` and releases `... m` when the session
+  reports mouse mode on + SGR (DECSET 1000/1002/1003 + 1006), mirroring the
+  wheel path; Shift+click bypasses to force selection; mode-off behavior
+  (selection + clipboard) is byte-identical.
+
+Verification: `cargo fmt --all --check` PASS, `cargo test --workspace
+--no-fail-fast` PASS except 7 `omaterm-cli` wire-mapping failures that also
+fail on the stashed clean tree (pre-existing, env-dependent, untouched
+crate), desktop 291 PASS, terminal 192 PASS (incl. new Enter test),
+`cargo clippy --workspace --all-targets -- -D warnings` PASS (known
+transitive `proc-macro-error2` notice only), `cargo build --release --bin
+omaterm-desktop` PASS, `git diff --check` PASS. Native Wayland validation
+remains manual: Info shows no card/branch, Git/status pickers match,
+opencode Shift+Enter newline vs Enter submit, opencode click popup vs
+Shift+click select, plain-shell selection unchanged.
+
+### Theme follow-system + palette toggle — 2026-10-09 (uncommitted)
+
+System appearance was read once during view construction while GPUI/Linux
+still holds its default (portal `color-scheme` arrives later), then latched
+in a `OnceLock` forever — Omarchy theme switches never reached the app.
+Verified the chain instead of guessing: Omarchy `theme set` drives
+`org.gnome.desktop.interface color-scheme`, the portal mirrors it
+(`prefer-light`→2, `prefer-dark`→1, user setting restored after the probe),
+and GPUI forwards portal changes per window.
+
+Work: `color.rs` latch is now `RwLock` + `set_theme_mode` (startup
+`initialize_theme` stays first-wins) with a latch unit test;
+`TerminalSession::signal_theme_redraw` re-applies the current size to the
+kernel PTY (SIGWINCH, no grid/history touch); `ThemePreference`
+(System/Dark/Light) with config round-trip tests; per-frame
+`reconcile_system_theme` in `render()` converges the startup race and
+tracks portal flips; palette commands `Toggle Theme` + explicit
+Dark/Light/Follow System (ViewAction, persisted to `config.toml` via
+`save_appearance_theme` with comment-preserving `toml_edit` write-back and
+round-trip tests); README updated (no restart needed).
+
+Verification: `cargo fmt --all --check`, `cargo test --workspace` (21
+targets ok, incl. new latch/preference/persistence tests), `cargo clippy
+--workspace --all-targets -- -D warnings`, `git diff --check`,
+`cargo build --release --bin omaterm-desktop` all PASS. Native validation
+still required: light Omarchy theme auto-follow, palette toggle repaint +
+new-pane palette, `system` tracking both directions. Known caveat: a
+running TUI that cached its OSC reply at startup may need a shell restart;
+new panes are always exact.
+
+### Terminal grid reconciliation repair — 2026-10-09 (uncommitted)
+
+The light-theme refactor replaced the synchronous render-time
+`resize_panes_to_window` (window size × core pane fractions, zoom-aware)
+with a paint-time `cx.defer` from canvas `bounds_prepaint`. The deferred
+path had a split-brain guard (outer check against the stale render-time
+snapshot clone, inner check against `grid_sizes` with a bare early return),
+so growth from sibling close / Alt+Z zoom could stop reconciling: the grid
+stayed small while the canvas was large (blank bottom space, stale size
+after new commands).
+
+Repair keeps the canvas-bounds refinement (it correctly accounts for
+search-bar and banner space the fraction math cannot see) and restores the
+authoritative render-time pass using rendered (compact-aware) panel
+visibility. Both paths share a pure `grid_action` decision with three
+outcomes — `Resize`, `HealSnapshot` (engine already correct, re-publish
+without touching the PTY), `Steady` — so a stale reader message can never
+latch the grid small again.
+
+Verification: `cargo fmt --all --check`, `cargo test --workspace`
+(desktop 289 PASS incl. new `grid_action_reconciles_growth_shrink_and_stale_snapshots`),
+`cargo clippy --workspace --all-targets -- -D warnings`, `git diff --check`
+all PASS. Native Wayland validation of close/zoom re-render and bottom
+space still required (not claimed passing).
+
+### Comprehensive UI/UX audit and light theme — 2026-10-09 (in progress)
+
+The user-directed comprehensive audit is active. The [audit ledger](evidence/ui-ux-audit.md)
+records the full surface inventory, implemented source findings, native evidence
+and remaining verification. Shared theme tokens now support light/dark selection
+at startup; Git remote operations retain labels, project identity, elapsed progress
+and release busy state on worker disconnect. Input routing, hidden Git fields,
+cheatsheet truncation, stale drags, terminal canvas sizing, narrow panel allocation
+and window-level picker layout have been corrected.
+
+Five Git task tests PASS, including the reproduced disconnect failure and a
+real local-remote error/retry/publish scenario. Current `cargo fmt --all --check`,
+`cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+release desktop build, documentation checker and `git diff --check` PASS.
+Logs are in `/tmp/omaterm-ux-audit/`. An intermediate release build was rejected
+by the compiler cache because its source changed during compilation, so that run
+is not a passing build. The language-server hook repeatedly timed out; Cargo
+diagnostics remain authoritative. No unavailable native cases are reported passing.
+
+Native light shell/Info/Git/Files/editor rendering and finder keyboard opening were observed
+in an isolated Wayland instance. The finder capture proved clipped labels and
+wrapped footer text in the old narrow-column layout; the window-layer correction
+has rebuilt wide and 640×400 captures. Fresh captures place the owned window
+below desktop notifications and override its compositor opacity for capture.
+Native file open/edit/save changed the disposable file on disk; Ctrl+D left
+the dirty-close prompt open; the final shortcut is reachable at short height.
+The live shell reports `COLORFGBG=0;15`. Persistent confirmation/error colors
+now use shared light/dark palette roles with contrast tests. User configuration
+now selects `appearance.theme = "light"`; `/usr/local/bin` installed binaries
+remain unchanged. Build output is `target/release/omaterm-desktop`.
+
+The final native Git pass staged both fixture files, committed the edited
+message, displayed delayed Push progress with elapsed time, and published to a
+local bare remote before restoring the Push control. Git workers now stay owned
+until normal completion or the asynchronous bounded shutdown join. Terminal
+right-click clears both Git text focus states. The final 640×400 native
+three-pane capture has no toolbar obscuring terminal text; controls remain on
+one- and two-pane layouts and terminal shortcuts/context actions remain usable.
+Targeted Git lifecycle and narrow-toolbar tests, the full workspace test suite,
+Clippy with denied warnings, release build, formatting and `git diff --check`
+pass on the final source state. The known transitive `proc-macro-error2` future
+incompatibility notice remains informational.
+
+At the supported 640px window minimum, panel minima previously left a
+three-pane terminal layout unreadable. The rendered compact shell now hides
+Projects and Inspector below 720px without changing their saved visibility
+preference; the fresh native 640×400 capture shows all three prompts at usable
+width. The desktop crate's full 288-test suite and fresh release build pass.
+
+Next action: run the rebuilt native light and dark surface
+matrix, fix remaining rendered issues, and
+obtain independent review before claiming the full objective complete.
 
 ### History repaint compaction (scrollback dedup) — 2026-10-08
 
@@ -579,7 +1068,7 @@ snapshot fixtures that use `/tmp` were not treated as regressions.
 
 ### Git history graph and commit-file diff planning — 2026-10-06
 
-- Added the [comprehensive Git history plan](git-history-plan.md) against
+- Added the [comprehensive Git history plan](2026-10-06-git-history-plan.md) against
   clean baseline `f4f8907`. Graph sits below Staged Changes/Changes and stays
   visible in clean repositories; commits expand into files whose clicks open
   parent-specific historical Split/Inline previews.
@@ -1118,11 +1607,14 @@ run. S9 remains open; next action is an uninterrupted target-focused native run.
 **UI v5 fidelity: incomplete.** The committed rewrite `8cade1b` has confirmed
 sidebar, icon, typography, spacing, hover, geometry and color differences from
 the supplied HTML. The earlier all-phases-finished claim is superseded by the
-[fidelity correction plan](ui-v5-fidelity-correction-plan.md). Historical Rust
+[fidelity correction plan](2026-10-02-ui-v5-fidelity-correction-plan.md). Historical Rust
 check results below do not establish pixel-perfect visual acceptance.
 
-Milestones 1–3 are complete. Milestone 4 is implemented and verified; see the
-M4 evidence below.
+Milestones 1–14 are complete. Milestones 15, 16, 18, and 19 are implemented
+with native validation gates still open; M17 is an open closeout and M20 is
+implementation-complete with its 2-repo Wayland matrix pending. The table below
+is the per-milestone summary; see the records above and the
+[acceptance matrix](acceptance-matrix.md) for evidence.
 
 | Milestone | Status | Verification evidence | Blockers | Next action |
 |---|---|---|---|---|
@@ -1140,11 +1632,12 @@ M4 evidence below.
 | 12 — Project Context Root | complete | `omaterm-context` (resolve/boundary/ignore, 13 tests), `[files]`/`[git]` config, 3 logging categories, `project.root` parity (router/bridge/CLI + scope tests), 328-test serial suite green, release Wayland pinned/git/deleted-pin/stale proofs — see M12 record below | Documented limits only: unpinned-no-shell live path unit-covered, second compositor/X11/scaling, per-process GPU (standing v0.1 limits) | Begin M13 file tree + filename search |
 | 13 — File Tree + Finder | complete | Right-sidebar `FILES` tree + `Ctrl+P` overlay, lazy loading, icons, wheel scroll, home-freeze fix; `file.*` parity (router/bridge/CLI + scope tests), 356-test serial suite green, release Wayland list/search/open/watcher/migration proofs — see M13 records below | Documented limits only: `Ctrl+P` key delivery + row click-toggle need hands, graceful-close live path, standing v0.1 limits | Begin M14 git status |
 | 14 — Git Status | complete | `omaterm-context::git` (porcelain v2 `-z` parser + stage/unstage/discard runners), `GitCommand` parity (router/bridge/CLI + scope tests), Source Control sidebar section with background poller + two-step discard arm, 385-test serial suite green, release Wayland status/stage/unstage/discard + auto-refresh + post-run-hint proofs — see M14 record below | Documented limits only: panel clicks + arm banner need hands (wiring unit-tested, render screenshot-verified), graceful-close live path, standing v0.1 limits | M15 diff viewer in progress |
-| 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk parity, cancellable latest-only worker, shared mutation invalidation, cached virtual rows, independent Split X/Inline X, source anchors; release Wayland direct Git click, long-row/character reach, exact copy, one-hunk stage, IPC refresh and terminal open | Rails/paging/drag, rendered-range instrumentation and full metadata/stale/scope/refresh-anchor matrix remain; see current M15 evidence | Finish D2/D3 in the [remaining-work plan](m15-m16-remaining-work-plan.md) before M16 completion |
+| 15 — Diff Viewer | in_progress | Bounded parser, partial-hunk parity, cancellable latest-only worker, shared mutation invalidation, cached virtual rows, independent Split X/Inline X, source anchors; release Wayland direct Git click, long-row/character reach, exact copy, one-hunk stage, IPC refresh and terminal open | Rails/paging/drag, rendered-range instrumentation and full metadata/stale/scope/refresh-anchor matrix remain; see current M15 evidence | Finish D2/D3 in the [remaining-work plan](2026-10-03-m15-m16-remaining-work-plan.md) before M16 completion |
 | 16 — Command Palette | in_progress | Dual-mode overlay, fuzzy ranked command/workspace/file/Git candidates, one latest-only source worker, bounded root index, core ranking, root-aware File MRU and origin restoration; release Wayland command/file/project/split/focus/process refresh proof and CLI spot-checks recorded below | M15 not closed; rapid-search worker/resource measurements and full stale/focus/error/argument matrix pending (M18 query is now off-thread, see M18 row) | Finish M15, then close M16 implementation/acceptance gaps |
 | 17 — v0.2 Closure | open | No closeout run yet; depends on M12–M16 completion | M15/M16 in progress; v0.2 acceptance rows pending | Only after M12–M16 pass; M19 re-sequencing does not close this gate |
 | 18 — Process Panel | in_progress (query + kill + panel UI) | Bounded async inspection, cancellation/deadline and completion ownership guards; CPU/RSS, shell roots, ports, pidfd-scoped SIGTERM; project-bound UI states and contextual 8s arm; 250ms timer drives 2s refresh. 640 workspace tests and full gates PASS; release Wayland child/port/scope/100-query/terminal-response/screenshot/normal-close evidence in [report](evidence/m18-runtime-current.md) | Native arm/cancel/copy/collapse/refresh, busy CPU/timing and pre-bind process identity still open; kill ancestry is synchronous; preflight isolation incident recorded | Complete remaining native and identity/async-kill gates before M18 acceptance |
-| 19 — Basic Built-in Editor | in_progress | Rooted context I/O + SHA-256 revisions, `EditorIoQueue` worker (1 active + 16 queued), bounded 32-slot store, metadata-only registry snapshots/restore, `EntityInputHandler`; 606-test suite, Clippy, release pass with `RUSTUP_TOOLCHAIN=1.99.0` — see M19 records below and the [S9 report](evidence/m19-s9-report.md) | S9/E01–E10 open: native input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit/restart, IME preedit; [milestone spec](19-milestone-19-editor.md) | Complete S9 native exit criteria; do not claim M19 complete |
+| 19 — Basic Built-in Editor | in_progress | Rooted context I/O + SHA-256 revisions, `EditorIoQueue` worker (1 active + 16 queued), bounded 32-slot store, metadata-only registry snapshots/restore, `EntityInputHandler`; 606-test suite, Clippy, release pass with `RUSTUP_TOOLCHAIN=1.99.0` — see M19 records below and the [S9 report](evidence/m19-s9-report.md) | S9/E01–E10 open: native input aborted on user-focus change, 0/20 small and cap cycles, no graceful exit/restart, IME preedit; [milestone spec](2026-10-04-19-milestone-19-editor.md) | Complete S9 native exit criteria; do not claim M19 complete |
+| 20 — Multi-Repo Support | implementation complete; native validation pending | Depth-1 scan in `omaterm-context`, `active_repo` in core with snapshot v3→v4, router-owned scan + `git_root` chokepoint, every Git surface keyed by `RepoKey`; `cargo test --workspace` (21 suites), fmt/Clippy/docs/`git diff --check` PASS — see M20 records above and the [milestone spec](2026-10-09-20-milestone-20-multi-repo.md) | Native 2-repo Wayland switch/restart matrix not run; E6 `--repo` override deferred; 32-row cap leaves repos 33+ unclickable | Run the M20 Phase G/I native Wayland matrix before marking complete |
 | Privacy: local-only defaults (§46) | partial | Redaction audit green; local state under `$XDG_*`; no telemetry/cloud code | No dedicated no-egress network test or user-facing privacy statement; acceptance row partial in [matrix](acceptance-matrix.md) | Add no-egress test or record explicit limit |
 
 ## M18 Info-panel process UI — 2026-10-04
@@ -1173,7 +1666,7 @@ M18.
 
 ## M18 async process query + scoped kill (query prerequisite) — 2026-10-04
 
-Landed Q01–Q03 from the [remaining-work plan](m15-m16-remaining-work-plan.md) §8,
+Landed Q01–Q03 from the [remaining-work plan](2026-10-03-m15-m16-remaining-work-plan.md) §8,
 satisfying the M16 process-query prerequisite. This is not full M18 acceptance:
 the collapsible Info panel UI, debounced auto-refresh, kill arm/confirm UI and
 release Wayland resource proof remain open.
@@ -1229,7 +1722,7 @@ Wayland child/port ownership and 100-query FD/thread stability proof.
 
 ## M15 + M16 remaining-work planning — 2026-10-03
 
-Created the [remaining-work plan](m15-m16-remaining-work-plan.md) against commit
+Created the [remaining-work plan](2026-10-03-m15-m16-remaining-work-plan.md) against commit
 `6d41c14` plus the existing uncommitted implementation. Inspected the working
 tree, milestone contracts, previous plans, diff row/worker/renderer code,
 palette ranking/search/cache/activation code and process-query routing.
@@ -1251,7 +1744,7 @@ application capability is marked complete by this planning change.
 Documentation verification: `python3 scripts/check-docs.py` passed (35 Markdown
 files, 126 local link targets, 282 blueprint references; all 34 CLI methods
 mapped). `git diff --check` and `git diff --no-index --check /dev/null
-docs/m15-m16-remaining-work-plan.md` passed. Consistency review separates
+docs/2026-10-03-m15-m16-remaining-work-plan.md` passed. Consistency review separates
 implemented behavior, historical evidence and required new acceptance; M18
 query work is kept distinct from full M18 completion.
 
@@ -1292,7 +1785,7 @@ acceptance was run in this increment. M15/M16 remain in progress; this update
 does not close their visual, interaction, performance or release gates.
 
 Remaining-work tracking now records D1/D2/P1/P2/P3 implementation deltas in
-`m15-m16-remaining-work-plan.md`. Next action is D1 request race coverage and
+`2026-10-03-m15-m16-remaining-work-plan.md`. Next action is D1 request race coverage and
 remaining M15 D2/D3 acceptance, followed by the M18 async query prerequisite.
 
 ### M15/M16 implementation checkpoint — 2026-10-03
@@ -1431,7 +1924,7 @@ acceptance. These results do not mark either milestone complete.
 
 ## M16 comprehensive implementation planning — 2026-10-03
 
-Created the [M16 implementation plan](m16-implementation-plan.md) after auditing
+Created the [M16 implementation plan](2026-10-03-m16-implementation-plan.md) after auditing
 the milestone and blueprint references, semantic commands/router, M13 finder
 and fuzzy backend, M18 process-query contract, and current verification gates.
 The working tree was clean before these documentation edits.
@@ -1449,7 +1942,7 @@ Documentation-only verification:
 - `python3 scripts/check-docs.py`: PASS (34 Markdown files, 111 local link
   targets, 272 numbered blueprint references; all 33 CLI methods mapped).
 - `git diff --check` and `git diff --no-index --check /dev/null
-  docs/m16-implementation-plan.md`: PASS.
+  docs/2026-10-03-m16-implementation-plan.md`: PASS.
 - Local consistency review: prerequisites remain explicit; planned checks are
   separate from evidence; navigation focus preserves semantic intent; no new
   palette wire method or dependency is proposed.
@@ -1460,7 +1953,7 @@ inventory, tracking the independently deliverable M18 query slice.
 
 ## M15 comprehensive completion planning — 2026-10-03
 
-Created the [M15 completion plan](m15-completion-plan.md) after auditing the
+Created the [M15 completion plan](2026-10-03-m15-completion-plan.md) after auditing the
 milestone, blueprint references, parser/repository tests, DTOs, CLI mapping,
 preview state/rendering and existing UX correction records. The clean working
 tree was inspected before edits.
@@ -1476,7 +1969,7 @@ now records the approved v5 Split-mode extension explicitly.
 Documentation-only verification: `python3 scripts/check-docs.py` passed (32
 Markdown files, 103 local link targets, 265 numbered blueprint references; all
 33 CLI methods mapped); `git diff --check` and `git diff --no-index --check
-/dev/null docs/m15-completion-plan.md` passed. Local consistency review
+/dev/null docs/2026-10-03-m15-completion-plan.md` passed. Local consistency review
 keeps planned tests separate from evidence and whole-file staging separate from
 true hunk staging. Cargo and native desktop checks are not applicable to this
 planning change. No application capability or M15 completion is claimed.
@@ -1656,7 +2149,7 @@ reproducible blockers, approved deviations, and the smallest next action.
 
 The [acceptance matrix](acceptance-matrix.md) tracks release requirements. Planned
 tests in milestone documents are not evidence of implemented application behavior.
-The [M5–M8 closure plan](m5-m8-closure-plan.md) orders the remaining blockers;
+The [M5–M8 closure plan](2026-09-27-m5-m8-closure-plan.md) orders the remaining blockers;
 it records intended work, not completed validation.
 
 ## Diff and Files/Git UX correction planning — 2026-10-02
@@ -1664,7 +2157,7 @@ it records intended work, not completed validation.
 User feedback and screenshot identify unreadable diff rows, unnatural/slow Files
 scrolling, label-only horizontal movement, off-center Git file marks, and a
 persistent unusable Files shortcut strip. The
-[detailed correction plan](diff-files-ux-correction-plan.md) expands R4/R5 into
+[detailed correction plan](2026-10-03-diff-files-ux-correction-plan.md) expands R4/R5 into
 U0–U5 deliveries with measured row/viewport contracts and live acceptance gates.
 
 Source audit confirms missing `.flex()` on diff decoration and Git name/path
@@ -1682,7 +2175,7 @@ actions. Existing M15 capability gaps remain distinct from presentation repair.
 Documentation checks: `python3 scripts/check-docs.py` passed (31 Markdown files,
 95 local link targets, 256 numbered blueprint references; 33 CLI mappings);
 `git diff --check` and `git diff --no-index --check /dev/null
-docs/diff-files-ux-correction-plan.md` passed. Cargo checks are unnecessary for
+docs/2026-10-03-diff-files-ux-correction-plan.md` passed. Cargo checks are unnecessary for
 this documentation-only change.
 
 ### Diff and Files/Git UX U1 — 2026-10-02
@@ -1788,7 +2281,7 @@ remains pending.
 
 User feedback: both sidebars, icons and numerous details still differ from
 the HTML. Audited the clean `8cade1b` baseline against the supplied source and
-created the [correction plan](ui-v5-fidelity-correction-plan.md).
+created the [correction plan](2026-10-02-ui-v5-fidelity-correction-plan.md).
 
 Confirmed gaps include inherited sidebar typography, an extra selected-project
 action row, remaining text/Nerd icon substitutions, missing Inspector menus,
@@ -1810,7 +2303,7 @@ Documentation checks:
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 30 Markdown files, 90 local link targets, 254 numbered blueprint references; 33 CLI methods mapped |
 | `git diff --check` | PASS |
-| `git diff --no-index --check /dev/null docs/ui-v5-fidelity-correction-plan.md` | PASS: new plan has no whitespace errors |
+| `git diff --no-index --check /dev/null docs/2026-10-02-ui-v5-fidelity-correction-plan.md` | PASS: new plan has no whitespace errors |
 | Consistency review | Source targets distinguished from measured evidence; missing capabilities and visual gates remain open; no phase marked complete by this plan |
 
 Cargo checks are not required for this documentation-only change. The next
@@ -1868,7 +2361,7 @@ explicitly tinted labels.
 The user requires exact reproduction of the supplied `omaterm_mock_ui_v5.html`,
 including Lucide icon geometry, both sidebar layouts, colors, typography,
 spacing, states, and motion. The new
-[pixel-perfect rewrite plan](ui-v5-pixel-perfect-plan.md) supersedes the visual
+[pixel-perfect rewrite plan](2026-10-02-ui-v5-pixel-perfect-plan.md) supersedes the visual
 direction of the earlier VS Code workbench plan. Baseline: `dca4e4e`; the
 working tree was clean before this documentation change.
 
@@ -1891,7 +2384,7 @@ Documentation verification:
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 29 Markdown files, 76 local link targets, 243 numbered blueprint references; 33 CLI methods mapped |
 | `git diff --check` | PASS: tracked documentation changes have no whitespace errors |
-| `git diff --no-index --check /dev/null docs/ui-v5-pixel-perfect-plan.md` | PASS: new plan has no whitespace errors |
+| `git diff --no-index --check /dev/null docs/2026-10-02-ui-v5-pixel-perfect-plan.md` | PASS: new plan has no whitespace errors |
 | Local consistency review | PASS: exact-design authority, source-derived versus measured values, current workbench baseline, milestone sequencing, and fixture/live acceptance are explicit |
 
 Cargo checks are not required for this docs-only change. External URL availability
@@ -1966,7 +2459,7 @@ view-local; every mutation still dispatches `OmaCommand`.
 
 Changed files: `apps/omaterm/src/{main.rs,ui/*,files.rs,git_panel.rs,
 diff_panel.rs,workbench.rs}`, `apps/omaterm/assets/icons/*`,
-`design/ui-v5/*`, `docs/{dependencies.md,status.md,ui-v5-pixel-perfect-plan.md}`.
+`design/ui-v5/*`, `docs/{dependencies.md,status.md,2026-10-02-ui-v5-pixel-perfect-plan.md}`.
 No core/protocol/CLI/persistence change; all temp proof gates reverted
 (zero `TEMP-PROOF` markers in tree).
 
@@ -2932,7 +3425,7 @@ Serial total is 19 + 13 + 6 + 11 + 14 + 81 + 24 = 168. (Correcting the row above
 
 ## M5–M8 closure planning — 2026-09-27
 
-Added [dependency-ordered closure plan](m5-m8-closure-plan.md) for unresolved
+Added [dependency-ordered closure plan](2026-09-27-m5-m8-closure-plan.md) for unresolved
 M5/M6 desktop gates, M7 runtime contracts, M8 wire/authorization/desktop
 integration, and carried-forward resource and test reliability evidence.
 Linked it from the milestone overview and status handoff. This documentation
@@ -2942,7 +3435,7 @@ change makes no milestone completion claim and does not alter existing code.
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 45 local link targets, 72 blueprint references; all 17 CLI methods map to IPC methods |
 | `git diff --check` | PASS: no whitespace errors in tracked changes |
-| `git diff --no-index --check /dev/null docs/m5-m8-closure-plan.md` | PASS: no whitespace errors in the new, untracked plan |
+| `git diff --no-index --check /dev/null docs/2026-09-27-m5-m8-closure-plan.md` | PASS: no whitespace errors in the new, untracked plan |
 
 Reviewed relative links and the plan's inventory against the M5–M8 milestone
 contracts, status and acceptance matrix. No Cargo/Wayland checks were run for
@@ -2951,7 +3444,7 @@ their own record above.
 
 ### M7/M8 execution-plan refresh — 2026-09-27
 
-Updated the same [closure plan](m5-m8-closure-plan.md) with the current Bash
+Updated the same [closure plan](2026-09-27-m5-m8-closure-plan.md) with the current Bash
 `terminal.run` and preallocated-session foundation, five gated steps (7A–8C),
 async pending/final response semantics, owner-serialized completion and cleanup,
 typed 17-method DTOs, bounded transport, scoped credentials and child-only env,
@@ -2964,7 +3457,7 @@ remain open.
 |---|---|
 | `python3 scripts/check-docs.py` | PASS: 19 Markdown files, 50 local link targets, 72 numbered blueprint references; all 17 methods mapped |
 | `git diff --check` | PASS: tracked-file whitespace checks |
-| `git diff --no-index --check /dev/null docs/m5-m8-closure-plan.md` | PASS: untracked plan whitespace checks |
+| `git diff --no-index --check /dev/null docs/2026-09-27-m5-m8-closure-plan.md` | PASS: untracked plan whitespace checks |
 
 Reviewed the new heading anchors, milestone mapping, open blockers and links
 against the blueprint/M7/M8 specs and acceptance matrix. This planning update
@@ -2984,7 +3477,7 @@ User approved a post-v0.1 history feature with these decisions:
 - Always launch fresh shells. Do not restore PTYs, processes, active commands,
   parser state, or alternate-screen applications.
 
-Added `docs/10-milestone-10-history-recovery.md`, linked M10 from the overview
+Added `docs/2026-09-27-10-milestone-10-history-recovery.md`, linked M10 from the overview
 and acceptance matrix, clarified M6's unchanged non-goals, and updated blueprint
 §§6.6, 29, and 68 to record the approved post-v0.1 extension. No persistence,
 keyring, encryption, compression, shell integration, or terminal replay code has
@@ -3828,7 +4321,7 @@ through the M7 dispatcher (no duplicated logic; core stays GPUI-free).
 - `crates/omaterm-terminal/src/workspace.rs`
 - `crates/omaterm-protocol/src/method.rs`
 - `crates/omaterm-cli/src/commands/project.rs`
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md`, this status
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md`, this status
 
 ### Automated verification (Rust 1.98.1, Omarchy/Hyprland)
 
@@ -3899,8 +4392,8 @@ v0.2+ features. Working tree only; no commit made.
 - `apps/omaterm/src/main.rs` — config load/apply/warning, font override,
   paste two-step, file-drop target, categorized logging targets
 - `packaging/arch/PKGBUILD`, `packaging/README.md` (new)
-- `docs/11-milestone-11-v01-closure.md` (new), `docs/00-overview.md`,
-  `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md`,
+- `docs/2026-09-28-11-milestone-11-v01-closure.md` (new), `docs/00-overview.md`,
+  `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md`,
   `docs/acceptance-matrix.md`, `docs/dependencies.md`, this status record
 
 ### Automated verification (Rust 1.98.1)
@@ -4021,7 +4514,7 @@ tree only; no commit made.
 - `crates/omaterm-cli/src/{commands/project,output,main}.rs` — `omaterm
   project root [--project ID]` (explicit > `OMATERM_PROJECT_ID` > server
   selection), human + `--json` rendering
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping rows),
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md` (mapping rows),
   `docs/dependencies.md`, this status record
 
 ### Semantic decisions (recorded, not deviations)
@@ -4149,7 +4642,7 @@ only; no commit made.
 - `crates/omaterm-cli/src/{main,output,commands/file}.rs` — `file list`
   / `search` / `open` verbs, human + `--json` rendering (28→31
   coverage rows)
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md` (mapping
   rows), `docs/dependencies.md`, this status record
 
 ### Key behaviors
@@ -4531,7 +5024,7 @@ Working tree only; no commit made.
 - `crates/omaterm-cli/src/{commands/git.rs (new),commands/mod.rs,main.rs,
   output.rs}` — `git status/stage/unstage/discard` verbs (31→35 parser
   rows), grouped human rendering + `--json`
-- `docs/08-milestone-8-ipc.md`, `docs/09-milestone-9-cli.md` (mapping
+- `docs/2026-09-26-08-milestone-8-ipc.md`, `docs/2026-09-26-09-milestone-9-cli.md` (mapping
   rows), `docs/dependencies.md`, this status record
 
 ### Key behaviors
@@ -4781,7 +5274,7 @@ and CLI. Working tree only; no commit made.
   logs only project ID, staged flag, file count, and truncation
 - `crates/omaterm-cli/src/{commands/diff.rs,commands/mod.rs,main.rs,output.rs}`
   — CLI mapping and human/JSON rendering
-- `docs/{08-milestone-8-ipc.md,09-milestone-9-cli.md,15-milestone-15-diff-viewer.md}`
+- `docs/{2026-09-26-08-milestone-8-ipc.md,2026-09-26-09-milestone-9-cli.md,2026-09-29-15-milestone-15-diff-viewer.md}`
   — method mappings and corrected Git-panel UI contract
 - This status record
 
@@ -4830,7 +5323,7 @@ acceptance criteria; rerun final gates.
 
 Replaced the prototype three-column window (180px project list + terminal
 tabs + fixed 240px right Files/Git panel, text-chip controls) with a VS
-Code-workbench frame per `docs/ui-workbench-redesign-plan.md` (Phases 0–3;
+Code-workbench frame per `docs/2026-10-02-ui-workbench-redesign-plan.md` (Phases 0–3;
 terminal-first scope preserved, no editor/debugger/extensions):
 
 - 35px command/title row: app + project identity, centered `Ctrl+P`
@@ -4864,7 +5357,7 @@ terminal-first scope preserved, no editor/debugger/extensions):
   status shell, `set_activity`, sidebar resizer drag, keybindings,
   notice/banner + palette-button token reuse; removed
   `render_sidebar_tabs` and `files::RIGHT_SIDEBAR_WIDTH_PX`
-- `docs/ui-workbench-redesign-plan.md` (new), `docs/00-overview.md`
+- `docs/2026-10-02-ui-workbench-redesign-plan.md` (new), `docs/00-overview.md`
   (link), this status record
 
 ### Automated verification (Rust 1.98.1)
@@ -4914,7 +5407,7 @@ input/focus control (Source Control render, Git-row-to-diff-preview,
 `Ctrl+B`/resizer, `Ctrl+P` overlay, `Ctrl+Shift+E/G`), then close the
 standing M15 gaps (partial-hunk staging, full live proof). Uncommitted
 work: `apps/omaterm/src/{main,workbench}.rs`,
-`docs/{ui-workbench-redesign-plan.md,00-overview.md,status.md}`.
+`docs/{2026-10-02-ui-workbench-redesign-plan.md,00-overview.md,status.md}`.
 
 ## M19 Phase B — document domain and bounded I/O — 2026-10-04
 
@@ -5265,7 +5758,7 @@ follow-ups under the existing M19 scope.
 
 Audited committed baseline `719926b` against the M19 contract, editor/router/UI
 code, schema-2 snapshot/migration, blueprint and UI v5 editor roles. Added the
-[comprehensive completion plan](m19-completion-plan.md) as the current execution
+[comprehensive completion plan](2026-10-03-m19-completion-plan.md) as the current execution
 sequence; the original implementation plan remains the product contract and
 A–F history. This is documentation-only work and makes no new implementation
 or native-pass claim.
@@ -5462,3 +5955,15 @@ release binary `32cd3d9f9d8498e7` (`87bc5bf` prompt render/keyboard resolution,
 Full record: [native verify-fix evidence](evidence/m19-native-verify-fix.md).
 S9 remains open: graceful-shutdown E2E (no compositor-close tooling), 20-cycle
 reruns on the final binary, IME preedit, entry-route retakes, idle baselines.
+
+## UI/UX audit compact-layout correction — 2026-10-09
+
+An independent source review found that the 720px compact shell hid both
+sidebars, making their keyboard shortcuts ineffective at the supported 640px
+minimum. Compact mode now shows the requested Projects or Inspector panel as a
+single overlay and routes Git/Files input only while that panel is rendered.
+The floating terminal toolbar now has a policy test covering focus, pane count,
+and grid width. Verification: `cargo fmt --all --check`, `cargo test -p
+omaterm --bin omaterm-desktop` (288 PASS), and `cargo build --release --bin
+omaterm-desktop` PASS. Native Wayland captures prove `Ctrl+Shift+G` reveals Git
+and `Ctrl+B` reveals Projects at 640×400.

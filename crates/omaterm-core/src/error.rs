@@ -30,6 +30,8 @@ pub enum CoreError {
     NoSelectedProject,
     #[error("project has no selected tab")]
     NoSelectedTab,
+    #[error("unknown repository {0:?} for this project")]
+    UnknownRepo(String),
     #[error("tab focus does not reference a pane in the tab")]
     InvalidFocusedPane,
 }

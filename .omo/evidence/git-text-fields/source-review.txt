@@ -1,0 +1,7 @@
+apps/omaterm/src/git_input.rs: 105 nonblank/non-comment lines
+apps/omaterm/src/git_input_tests.rs: 55 nonblank/non-comment lines
+apps/omaterm/src/git_input_view.rs: 168 nonblank/non-comment lines
+apps/omaterm/src/git_panel.rs: 559 nonblank/non-comment lines
+apps/omaterm/src/main.rs: 19615 nonblank/non-comment lines
+New editing state and GPUI adapter are isolated modules. Existing main.rs and git_panel.rs remain oversized; touched logic is extracted and their net scoped size decreases. No unrelated refactor.
+State owns bounded single-line drafts; adapter owns keyboard/field presentation. Reuses EditorCaret and existing grapheme movement. No unsafe, numeric casts, unchecked Result discards, or new logs. Tests pin whole-grapheme deletion, middle insertion, selection replacement, byte bounds, and shortcut routing. Native QA pending root final binary.

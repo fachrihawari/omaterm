@@ -76,9 +76,9 @@ M1 record): `wayland`, `libxkbcommon`, `libx11`, `libxcb`, `fontconfig`,
 
 1. Bump versions in-repo (also regenerates both `.SRCINFO` files):
    ```bash
-   ./scripts/bump-aur.sh 0.1.0
-   git add packaging/ && git commit -m "chore(packaging): bump to 0.1.0"
-   git tag v0.1.0 && git push origin main v0.1.0
+   ./scripts/bump-aur.sh 0.4.0
+   git add packaging/ && git commit -m "chore(packaging): bump to 0.4.0"
+   git tag v0.4.0 && git push origin main v0.4.0
    ```
 2. The `release` workflow builds both binaries with `mbx` on `ubuntu-22.04`
    (`backend: local`, no shared cache for published artifacts), attaches

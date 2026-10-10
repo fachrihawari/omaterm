@@ -1,126 +1,280 @@
-//! UI color tokens — the "Oma Neon" palette.
-//!
-//! Deep ink-violet surfaces with electric accents: violet for focus and
-//! selection, magenta for the cursor and search hits, sky blue for links and
-//! live state, mint/amber/coral for git and status.
-//!
-//! Edit colors here. The terminal's own colors (default foreground and
-//! background, cursor, 16 ANSI colors) live in
-//! `crates/omaterm-terminal/src/color.rs`; `BG2` and `TERMINAL_CURSOR` must
-//! stay equal to `DEFAULT_BG` and `CURSOR_COLOR` there (a test enforces it).
-//!
-//! Values are `0xRRGGBB`. Translucent surfaces use separate opacity
-//! constants and go through `with_alpha`.
+//! Shared semantic palettes for chrome, editor, and terminal surfaces.
+//! Dark values are the Oma Neon palette; light values preserve the paper hierarchy.
 
-// Surfaces, darkest to lightest.
-/// Terminal well and the session bar above it.
-pub const BG2: u32 = 0x0F0E17;
-/// Window chrome behind the panels.
-pub const BG: u32 = 0x13111D;
-/// Inspector and other content panels.
-pub const PANEL: u32 = 0x14121F;
-/// Projects sidebar when it is opaque.
-pub const SIDEBAR_BG: u32 = 0x1A1729;
-pub const SIDEBAR_HOVER_BG: u32 = 0x272140;
-/// Sidebar edge: darker than the sidebar so it reads as a fold.
-pub const SIDEBAR_EDGE: u32 = 0x0A0912;
-/// Translucent sidebar: a light tint over the blurred desktop, so the
-/// glass reads as glass. Text does not sit on this; it sits on
-/// `SIDEBAR_LABEL_SCRIM_OPACITY`, which stays dark over a light or dark
-/// wallpaper.
-pub const SIDEBAR_TINT: u32 = 0x120F1E;
-pub const SIDEBAR_TINT_OPACITY: f32 = 0.42;
-/// Plate behind sidebar labels. Combined with the tint above, this stays
-/// near-black whether the desktop behind the window is light or dark.
-pub const SIDEBAR_LABEL_SCRIM_OPACITY: f32 = 0.82;
-/// Raised controls: selected segments, active tab, fields.
-pub const PANEL2: u32 = 0x221D35;
-pub const PANEL3: u32 = 0x2F2848;
-/// Hairline separator.
-pub const BORDER: u32 = 0x262037;
-/// Control outline.
-pub const BORDER2: u32 = 0x3A3156;
+use omaterm_terminal::ThemeMode;
 
-// Text.
-pub const TEXT: u32 = 0xF2EFFF;
-pub const TEXT2: u32 = 0xCFC8EC;
-pub const MUTED: u32 = 0x9C93C4;
-pub const MUTED2: u32 = 0x6C6394;
-pub const WHITE: u32 = 0xFFFFFF;
+pub struct Palette {
+    pub bg: u32,
+    pub bg2: u32,
+    pub panel: u32,
+    pub panel2: u32,
+    pub panel3: u32,
+    pub border: u32,
+    pub border2: u32,
+    pub text: u32,
+    pub text2: u32,
+    pub muted: u32,
+    pub muted2: u32,
+    pub blue: u32,
+    pub blue2: u32,
+    pub cyan: u32,
+    pub green: u32,
+    pub yellow: u32,
+    pub orange: u32,
+    pub red: u32,
+    pub purple: u32,
+    pub lime: u32,
+    pub header_bg: u32,
+    pub active_tab_bg: u32,
+    pub selected_project_bg: u32,
+    pub cmd_hover_bg: u32,
+    pub cmd_hover_border: u32,
+    pub row_hover_bg: u32,
+    pub tree_selected_bg: u32,
+    pub pill_bg: u32,
+    pub pill_border: u32,
+    pub scrollbar_thumb: u32,
+    pub editor_bg: u32,
+    pub editor_side_header_bg: u32,
+    pub info_card_bg: u32,
+    pub info_icon_box_bg: u32,
+    pub git_badge_bg: u32,
+    pub commit_hover_bg: u32,
+    pub terminal_cursor: u32,
+    pub white: u32,
+    pub on_accent: u32,
+    pub warning_bg: u32,
+    pub warning_text: u32,
+    pub error_bg: u32,
+    pub error_text: u32,
+    pub kbd_bg: u32,
+    pub kbd_border: u32,
+    pub active_line_no: u32,
+    pub comment_token: u32,
+    pub match_accent: u32,
+    pub line_no: u32,
+    pub line_no_add: u32,
+    pub line_no_del: u32,
+    pub diff_add_bg: u32,
+    pub diff_add_mark: u32,
+    pub diff_del_bg: u32,
+    pub diff_del_mark: u32,
+    pub selection_hsla: (f32, f32, f32, f32),
+    pub sidebar_bg: u32,
+    pub sidebar_hover_bg: u32,
+    pub sidebar_edge: u32,
+    pub sidebar_tint: u32,
+}
 
-// Accents.
-/// Primary accent: focus, selection, active state, primary actions.
-pub const ACCENT: u32 = 0x9D7CFF;
-/// Second accent: cursor, search hits, things that must be found fast.
-pub const ACCENT2: u32 = 0xFF4FD8;
-/// Links and live state (running shell, open folder).
-pub const BLUE: u32 = 0x4CC9F0;
-/// Pressed/dragging controls.
-pub const BLUE2: u32 = 0x7C5CFF;
-pub const GREEN: u32 = 0x2EE6A6;
-pub const YELLOW: u32 = 0xFFD23F;
-pub const ORANGE: u32 = 0xFF8A3D;
-pub const RED: u32 = 0xFF4D6D;
-pub const PURPLE: u32 = 0xD96BFF;
-pub const LIME: u32 = 0xB8F35A;
+pub const DARK: Palette = Palette {
+    // Oma Neon. Light mode keeps the paper palette below.
+    bg: 0x13111D,
+    bg2: 0x0F0E17,
+    panel: 0x14121F,
+    panel2: 0x221D35,
+    panel3: 0x2F2848,
+    border: 0x262037,
+    border2: 0x3A3156,
+    text: 0xF2EFFF,
+    text2: 0xCFC8EC,
+    muted: 0x9C93C4,
+    muted2: 0x6C6394,
+    blue: 0x4CC9F0,
+    blue2: 0x7C5CFF,
+    cyan: 0x9D7CFF,
+    green: 0x2EE6A6,
+    yellow: 0xFFD23F,
+    orange: 0xFF8A3D,
+    red: 0xFF4D6D,
+    purple: 0xD96BFF,
+    lime: 0xB8F35A,
+    header_bg: 0x0F0E17,
+    active_tab_bg: 0x231D3A,
+    selected_project_bg: 0x2E2456,
+    cmd_hover_bg: 0x221D35,
+    cmd_hover_border: 0x3A3156,
+    row_hover_bg: 0x1D1930,
+    tree_selected_bg: 0x2E2456,
+    pill_bg: 0x221D35,
+    pill_border: 0x3A3156,
+    scrollbar_thumb: 0x4A4070,
+    editor_bg: 0x0F0E17,
+    editor_side_header_bg: 0x15131F,
+    info_card_bg: 0x1B1729,
+    info_icon_box_bg: 0x14121F,
+    git_badge_bg: 0x2F2848,
+    commit_hover_bg: 0xB39DFF,
+    terminal_cursor: 0xFF4FD8,
+    white: 0xFFFFFF,
+    on_accent: 0xFFFFFF,
+    warning_bg: 0x3A2E0E,
+    warning_text: 0xFFD23F,
+    error_bg: 0x3D1222,
+    error_text: 0xFF7A93,
+    kbd_bg: 0x221D35,
+    kbd_border: 0x3A3156,
+    active_line_no: 0x9C93C4,
+    comment_token: 0x7A70A8,
+    match_accent: 0xFF4FD8,
+    line_no: 0x564E78,
+    line_no_add: 0x2E9E77,
+    line_no_del: 0xB04A60,
+    diff_add_bg: 0x2EE6A61F,
+    diff_add_mark: 0x2EE6A6CC,
+    diff_del_bg: 0xFF4D6D1F,
+    diff_del_mark: 0xFF4D6DD1,
+    selection_hsla: (0.708, 1.0, 0.74, 0.30),
+    sidebar_bg: 0x1A1729,
+    sidebar_hover_bg: 0x272140,
+    sidebar_edge: 0x0A0912,
+    sidebar_tint: 0x120F1E,
+};
 
-// State fills.
-pub const HEADER_BG: u32 = BG2;
-pub const ACTIVE_TAB_BG: u32 = 0x231D3A;
-/// Opacity of the accent outline around the active tab.
-pub const ACTIVE_TAB_OUTLINE_OPACITY: f32 = 0.55;
-pub const SELECTED_PROJECT_BG: u32 = 0x2E2456;
-pub const CMD_HOVER_BG: u32 = 0x221D35;
-pub const CMD_HOVER_BORDER: u32 = 0x3A3156;
-pub const ROW_HOVER_BG: u32 = 0x1D1930;
-pub const TREE_SELECTED_BG: u32 = 0x2E2456;
-pub const PILL_BG: u32 = 0x221D35;
-pub const PILL_BORDER: u32 = 0x3A3156;
-pub const SCROLLBAR_THUMB: u32 = 0x4A4070;
-pub const GIT_BADGE_BG: u32 = 0x2F2848;
-pub const COMMIT_HOVER_BG: u32 = 0xB39DFF;
-/// Must equal `omaterm_terminal::CURSOR_COLOR`.
-pub const TERMINAL_CURSOR: u32 = 0xFF4FD8;
-/// Keyboard-hint badge fill and border (see `primitives::kbd`).
-pub const KBD_BG: u32 = 0x221D35;
-pub const KBD_BORDER: u32 = 0x3A3156;
-/// Reserved. The inspector no longer paints a project card around this fill.
-#[allow(dead_code)]
-pub const INFO_CARD_BG: u32 = 0x1B1729;
-/// Reserved with `INFO_CARD_BG`.
-#[allow(dead_code)]
-pub const INFO_ICON_BOX_BG: u32 = 0x14121F;
+pub const LIGHT: Palette = Palette {
+    bg: 0xEEF1F5,
+    bg2: 0xFAFBFD,
+    panel: 0xFFFFFF,
+    panel2: 0xF3F5F8,
+    panel3: 0xE8EDF3,
+    border: 0xD7DEE7,
+    border2: 0xB8C4D2,
+    text: 0x202936,
+    text2: 0x3C495A,
+    muted: 0x596779,
+    muted2: 0x68778B,
+    blue: 0x175FBD,
+    blue2: 0x175FBD,
+    cyan: 0x096C79,
+    green: 0x216E42,
+    yellow: 0x805B00,
+    orange: 0x995000,
+    red: 0xB42332,
+    purple: 0x7942A0,
+    lime: 0x4C690F,
+    header_bg: 0xF3F5F8,
+    active_tab_bg: 0xFFFFFF,
+    selected_project_bg: 0xE5EDF8,
+    cmd_hover_bg: 0xE4EAF2,
+    cmd_hover_border: 0xAFBED0,
+    row_hover_bg: 0xEDF1F6,
+    tree_selected_bg: 0xE1EAF7,
+    pill_bg: 0xEDF1F6,
+    pill_border: 0xC7D1DD,
+    scrollbar_thumb: 0x8E9FB4,
+    editor_bg: 0xFAFBFD,
+    editor_side_header_bg: 0xF3F5F8,
+    info_card_bg: 0xF3F5F8,
+    info_icon_box_bg: 0xE7ECF3,
+    git_badge_bg: 0xE4EAF2,
+    commit_hover_bg: 0x124F9F,
+    terminal_cursor: 0x175FBD,
+    white: 0x202936,
+    on_accent: 0xFFFFFF,
+    warning_bg: 0xFFF4CF,
+    warning_text: 0x704B00,
+    error_bg: 0xFFF0F0,
+    error_text: 0xAD2332,
+    kbd_bg: 0xECF0F5,
+    kbd_border: 0xBAC6D5,
+    active_line_no: 0x3C495A,
+    comment_token: 0x476D39,
+    match_accent: 0x175FBD,
+    line_no: 0x637187,
+    line_no_add: 0x28653B,
+    line_no_del: 0x984047,
+    diff_add_bg: 0x2EA0431F,
+    diff_add_mark: 0x216E42CC,
+    diff_del_bg: 0xF851491F,
+    diff_del_mark: 0xB42332D1,
+    selection_hsla: (0.591, 0.92, 0.578, 0.22),
+    sidebar_bg: 0xE6EDF5,
+    sidebar_hover_bg: 0xD7E1EE,
+    sidebar_edge: 0xC3CEDC,
+    sidebar_tint: 0xF7F9FC,
+};
 
-// Editor and diff.
-pub const EDITOR_BG: u32 = BG2;
-pub const EDITOR_SIDE_HEADER_BG: u32 = 0x15131F;
-pub const LINE_NO: u32 = 0x564E78;
-pub const ACTIVE_LINE_NO: u32 = 0x9C93C4;
-pub const COMMENT_TOKEN: u32 = 0x7A70A8;
-/// Finder match highlight.
-pub const MATCH_ACCENT: u32 = ACCENT2;
-/// Editor selection wash as HSLA components (the `ACCENT` hue).
-pub const SELECTION_HSLA: (f32, f32, f32, f32) = (0.708, 1.0, 0.74, 0.30);
-pub const LINE_NO_ADD: u32 = 0x2E9E77;
-pub const LINE_NO_DEL: u32 = 0xB04A60;
-/// `GREEN` at 12% as 0xRRGGBBAA.
-pub const DIFF_ADD_BG: u32 = 0x2EE6A61F;
-/// `GREEN` at 80%.
-pub const DIFF_ADD_MARK: u32 = 0x2EE6A6CC;
-/// `RED` at 12%.
-pub const DIFF_DEL_BG: u32 = 0xFF4D6D1F;
-/// `RED` at 82%.
-pub const DIFF_DEL_MARK: u32 = 0xFF4D6DD1;
+pub fn colors() -> &'static Palette {
+    match omaterm_terminal::theme_mode() {
+        ThemeMode::Dark => &DARK,
+        ThemeMode::Light => &LIGHT,
+    }
+}
 
-// Opacities.
+pub fn resolve_mode(setting: Option<&str>, system: ThemeMode) -> ThemeMode {
+    match setting {
+        Some("light") => ThemeMode::Light,
+        Some("dark") => ThemeMode::Dark,
+        _ => system,
+    }
+}
+
+/// View-level theme preference: an explicit palette or live system follow.
+/// `System` tracks the desktop appearance (Omarchy theme → portal
+/// `color-scheme` → GPUI `window.appearance()`); explicit modes ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemePreference {
+    System,
+    Dark,
+    Light,
+}
+
+impl ThemePreference {
+    /// Parse the `appearance.theme` config value. Unknown values follow the
+    /// system (the loader already rejects typos with a startup warning).
+    pub fn from_setting(setting: Option<&str>) -> ThemePreference {
+        match setting {
+            Some("dark") => ThemePreference::Dark,
+            Some("light") => ThemePreference::Light,
+            _ => ThemePreference::System,
+        }
+    }
+
+    /// Canonical config string for persistence.
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            ThemePreference::System => "system",
+            ThemePreference::Dark => "dark",
+            ThemePreference::Light => "light",
+        }
+    }
+
+    /// Resolve against the live system mode.
+    pub fn resolve(self, system: ThemeMode) -> ThemeMode {
+        match self {
+            ThemePreference::Dark => ThemeMode::Dark,
+            ThemePreference::Light => ThemeMode::Light,
+            ThemePreference::System => system,
+        }
+    }
+}
+
+/// Map a GPUI window appearance to a palette mode.
+pub fn appearance_mode(appearance: gpui::WindowAppearance) -> ThemeMode {
+    match appearance {
+        gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => ThemeMode::Light,
+        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => ThemeMode::Dark,
+    }
+}
+
+/// Preserve file-type hue while bringing bright dark-theme icon inks onto paper.
+pub fn light_icon_ink(color: u32) -> u32 {
+    let channel = |shift: u32| ((color >> shift) & 255u32) * 3u32 / 5u32;
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
 /// Pane header background (`BG2` at 90%).
 pub const PANE_HEADER_BG_OPACITY: f32 = 0.90;
 /// Wash over unfocused panes in a split tab.
 pub const PANE_INACTIVE_DIM: f32 = 0.42;
 /// Floating pane toolbar background.
 pub const PANE_TOOLBAR_BG_OPACITY: f32 = 0.95;
-/// Terminal text selection (`ACCENT`).
+/// Terminal text selection.
 pub const TERMINAL_SELECTION_OPACITY: f32 = 0.38;
+/// Accent outline around the active session tab.
+pub const ACTIVE_TAB_OUTLINE_OPACITY: f32 = 0.55;
+/// Translucent sidebar glass, and the plate behind its labels.
+pub const SIDEBAR_TINT_OPACITY: f32 = 0.42;
+pub const SIDEBAR_LABEL_SCRIM_OPACITY: f32 = 0.82;
 /// Was the faint full-rectangle focus stroke.
 #[allow(dead_code)]
 pub const PANE_FOCUS_STROKE_ALPHA: f32 = 0.34;
@@ -136,25 +290,5 @@ pub fn with_alpha(rgb: u32, alpha: f32) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{BG2, DIFF_ADD_BG, GREEN, PANE_HEADER_BG_OPACITY, TERMINAL_CURSOR, with_alpha};
-
-    fn pack((r, g, b): (u8, u8, u8)) -> u32 {
-        (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
-    }
-
-    #[test]
-    fn with_alpha_packs_exact_rgba_bytes() {
-        assert_eq!(with_alpha(BG2, PANE_HEADER_BG_OPACITY), 0x0F0E17E6);
-        assert_eq!(with_alpha(0x141A21, 0.95), 0x141A21F2);
-        assert_eq!(with_alpha(GREEN, 0.12), DIFF_ADD_BG);
-        assert_eq!(with_alpha(0x123456, 2.0), 0x123456FF);
-        assert_eq!(with_alpha(0x123456, -1.0), 0x12345600);
-    }
-
-    #[test]
-    fn terminal_well_and_cursor_match_engine_defaults() {
-        assert_eq!(BG2, pack(omaterm_terminal::DEFAULT_BG));
-        assert_eq!(TERMINAL_CURSOR, pack(omaterm_terminal::CURSOR_COLOR));
-    }
-}
+#[path = "theme_tests.rs"]
+mod tests;

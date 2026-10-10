@@ -29,6 +29,12 @@ pub struct ProjectSetDirectory {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ProjectSetActiveRepo {
+    pub project_id: String,
+    pub repo: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OptionalProject {
     pub project_id: Option<String>,
 }
@@ -273,6 +279,8 @@ pub enum Method {
     ProjectSelect(ProjectSelector),
     ProjectSetDirectory(ProjectSetDirectory),
     ProjectRoot(OptionalProject),
+    ProjectRepos(OptionalProject),
+    ProjectSetActiveRepo(ProjectSetActiveRepo),
     TabList(OptionalProject),
     TabCreate(TabCreate),
     TabClose(TabSelector),
@@ -348,6 +356,8 @@ impl Method {
             "project.select" => decode!(ProjectSelector, ProjectSelect),
             "project.set-directory" => decode!(ProjectSetDirectory, ProjectSetDirectory),
             "project.root" => decode!(OptionalProject, ProjectRoot),
+            "project.repos" => decode!(OptionalProject, ProjectRepos),
+            "project.set-active-repo" => decode!(ProjectSetActiveRepo, ProjectSetActiveRepo),
             "tab.list" => decode!(OptionalProject, TabList),
             "tab.create" => decode!(TabCreate, TabCreate),
             "tab.close" => decode!(TabSelector, TabClose),
@@ -425,6 +435,11 @@ mod tests {
                 serde_json::json!({"project_id":"id","directory":"/tmp"}),
             ),
             ("project.root", serde_json::json!({})),
+            ("project.repos", serde_json::json!({})),
+            (
+                "project.set-active-repo",
+                serde_json::json!({"project_id":"id","repo":"api"}),
+            ),
             ("tab.list", serde_json::json!({})),
             ("tab.create", serde_json::json!({"name":"test"})),
             ("tab.close", serde_json::json!({"tab_id":"id"})),
@@ -520,7 +535,7 @@ mod tests {
             ("git.stash-drop", serde_json::json!({"index": 0})),
             ("git.blame", serde_json::json!({"path": "src/main.rs"})),
         ];
-        assert_eq!(cases.len(), 58);
+        assert_eq!(cases.len(), 60);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

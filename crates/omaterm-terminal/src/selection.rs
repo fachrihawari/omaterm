@@ -160,6 +160,7 @@ mod tests {
                 visible: true,
             },
             cols: 0,
+            cursor_color: crate::color::terminal_palette().cursor,
             lines: 0,
             display_offset: 0,
             history_size: 0,

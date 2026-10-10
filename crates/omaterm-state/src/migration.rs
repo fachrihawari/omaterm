@@ -15,6 +15,7 @@ pub(crate) fn decode(
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| SnapshotError::Corrupt("missing or invalid schema_version".into()))?;
     if version != WorkspaceSnapshot::SCHEMA_VERSION
+        && version != WorkspaceSnapshot::V3_SCHEMA_VERSION
         && version != WorkspaceSnapshot::V2_SCHEMA_VERSION
         && version != WorkspaceSnapshot::V1_SCHEMA_VERSION
     {
@@ -23,13 +24,23 @@ pub(crate) fn decode(
     let mut snapshot: WorkspaceSnapshot =
         serde_json::from_value(value).map_err(|error| SnapshotError::Corrupt(error.to_string()))?;
     if version < WorkspaceSnapshot::SCHEMA_VERSION {
-        // Schema 1/2 never persisted editor state. Do not accept opportunistic
-        // registry fields in an old-version file as though they were validated
-        // schema-3 metadata.
+        // Schema 1/2 never persisted editor state. Do not accept
+        // opportunistic registry fields in an old-version file as though
+        // they were validated newer-schema metadata. Schema 3 registries
+        // stay valid.
+        if version < WorkspaceSnapshot::V3_SCHEMA_VERSION {
+            for window in &mut snapshot.windows {
+                for project in &mut window.projects {
+                    project.documents.clear();
+                    project.active_document = None;
+                }
+            }
+        }
+        // Schema 1–3 never persisted a multi-repo selection: no old-version
+        // file may smuggle an opportunistic `active_repo` through.
         for window in &mut snapshot.windows {
             for project in &mut window.projects {
-                project.documents.clear();
-                project.active_document = None;
+                project.active_repo = None;
             }
         }
         snapshot.schema_version = WorkspaceSnapshot::SCHEMA_VERSION;
@@ -56,7 +67,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v1_and_v2_to_schema_three_with_empty_document_registries() {
+    fn migrates_v1_and_v2_to_current_schema_with_empty_document_registries() {
         let pane = Pane::empty();
         let pane_id = pane.id;
         let tab = Tab::new(PaneTree::new(pane), pane_id).unwrap();
@@ -109,6 +120,7 @@ mod tests {
             assert_eq!(project.custom_name.as_deref(), Some("preserved"));
             assert!(project.documents.is_empty());
             assert_eq!(project.active_document, None);
+            assert_eq!(project.active_repo, None);
             let restored = decoded.validate(crate::SnapshotLimits::default()).unwrap();
             assert_eq!(restored.window, window);
             assert_eq!(
@@ -128,6 +140,38 @@ mod tests {
             );
             assert!(restored.document_registries[0].1.documents.is_empty());
         }
+    }
+
+    #[test]
+    fn migrates_v3_to_current_schema_preserving_documents_but_not_active_repo() {
+        let pane = Pane::empty();
+        let pane_id = pane.id;
+        let tab = Tab::new(PaneTree::new(pane), pane_id).unwrap();
+        let mut project = Project::new(Some("preserved".into()), Some(PathBuf::from("/tmp")));
+        project.add_tab(tab).unwrap();
+        let mut window = WorkspaceWindow::new();
+        window.add_project(project).unwrap();
+        let cwd = HashMap::from([(
+            pane_id,
+            PersistedCwd {
+                path: PathBuf::from("/tmp"),
+                provenance: CwdProvenance::Osc7,
+            },
+        )]);
+        let snapshot = WorkspaceSnapshot::capture_with_expanded(&window, &cwd, &HashMap::new());
+        let mut value = serde_json::to_value(&snapshot).unwrap();
+        value["schema_version"] = serde_json::json!(WorkspaceSnapshot::V3_SCHEMA_VERSION);
+        // Schema 3 never wrote `active_repo`: an opportunistic value must be
+        // discarded, while the (valid, empty) document registry survives.
+        value["windows"][0]["projects"][0]["active_repo"] = serde_json::json!("api");
+        let decoded = decode(
+            &serde_json::to_vec(&value).unwrap(),
+            crate::SnapshotLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(decoded.schema_version, WorkspaceSnapshot::SCHEMA_VERSION);
+        assert_eq!(decoded.windows[0].projects[0].active_repo, None);
+        decoded.validate(crate::SnapshotLimits::default()).unwrap();
     }
 
     #[test]

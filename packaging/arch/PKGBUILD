@@ -10,7 +10,7 @@
 # tag tarball checksum (never ship SKIP) — see packaging/README.md.
 
 pkgname=omaterm
-pkgver=0.2.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc='Terminal-first developer workspace with semantic CLI automation'
 arch=('x86_64')
@@ -22,7 +22,7 @@ optdepends=('otf-nerd-fonts: file-tree and git icon glyphs')
 conflicts=('omaterm-bin')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # SKIP until the first v<pkgver> tag exists; the release workflow pins this.
-sha256sums=('SKIP')
+sha256sums=('fd1dbd823583c3db2e82a035776392f273dce8461c8b6185b9a618eb64454356')
 
 build() {
   cd "$pkgname-$pkgver"

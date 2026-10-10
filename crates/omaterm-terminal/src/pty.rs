@@ -84,8 +84,12 @@ impl PtyProcess {
         // The child inherits OmaTerm's own launch environment, so a
         // `COLORFGBG` set by the host terminal (e.g. a light-themed
         // launcher) would leak in and mislead apps that read it before
-        // querying OSC 10/11. OmaTerm's pane is dark; advertise that.
-        env.insert("COLORFGBG".to_string(), "15;0".to_string());
+        // querying OSC 10/11. Advertise the selected pane palette.
+        let colorfgbg = match crate::color::theme_mode() {
+            crate::color::ThemeMode::Dark => "15;0",
+            crate::color::ThemeMode::Light => "0;15",
+        };
+        env.insert("COLORFGBG".to_string(), colorfgbg.to_string());
         env.extend(child_env);
 
         let supports_run = crate::shell::is_bash(&program);

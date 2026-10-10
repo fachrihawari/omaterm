@@ -206,6 +206,7 @@ pub enum CommandOutput {
         removed_files: usize,
     },
     ProjectRoot(ProjectRootInfo),
+    ProjectRepos(ProjectReposInfo),
     FileList(FileListInfo),
     EditorOpened(EditorDocumentInfo),
     EditorSaved(EditorDocumentInfo),
@@ -239,10 +240,11 @@ pub struct ProjectInfo {
 
 /// Where a resolved project root came from (M12, blueprint §31). The wire
 /// form is the lowercase string (`pinned` | `git` | `none`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RootSource {
     Pinned,
     Git,
+    #[default]
     Absent,
 }
 
@@ -264,6 +266,51 @@ impl RootSource {
 pub struct ProjectRootInfo {
     pub root: Option<PathBuf>,
     pub source: RootSource,
+}
+
+/// One repository discovered under a project root (M20). `name` is the
+/// child directory name (or the root's own name when the root itself is
+/// a repo); `path` is the absolute repo path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoEntry {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl RepoEntry {
+    pub fn new(name: impl Into<String>, path: PathBuf) -> Self {
+        Self {
+            name: name.into(),
+            path,
+        }
+    }
+}
+
+/// Multi-repo resolution result (M20): the single project root plus the
+/// depth-1 scan beneath it and the effective active repo name
+/// (last-saved if still present, else first-sorted, else `None`).
+/// `repos` is empty exactly when no repository was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectReposInfo {
+    pub root: Option<PathBuf>,
+    pub source: RootSource,
+    pub repos: Vec<RepoEntry>,
+    pub active_repo: Option<String>,
+}
+
+impl ProjectReposInfo {
+    /// The effective repo entry: active name when present, else the
+    /// first-sorted candidate, else `None` when no repos were found.
+    pub fn active_entry(&self) -> Option<&RepoEntry> {
+        match self.active_repo.as_deref() {
+            Some(saved) => self
+                .repos
+                .iter()
+                .find(|entry| entry.name == saved)
+                .or(self.repos.first()),
+            None => self.repos.first(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
