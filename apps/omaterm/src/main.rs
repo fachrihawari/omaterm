@@ -11582,10 +11582,11 @@ impl WorkspaceView {
         if self.branch_picker.is_some() {
             return self.on_branch_key(event, cx);
         }
-        // Context menus are transient chrome: Esc dismisses them without
-        // touching selection. Palette/cheatsheet own Esc while open
-        // (handled above), so this arm runs only when neither owns input.
-        if key_name == "escape" && self.close_transient_menus() {
+        // Transient chrome is Esc-dismissable without touching selection:
+        // the context menus plus the M20 multi-repo list. Palette/cheatsheet
+        // own Esc while open (handled above), so this arm runs only when
+        // neither owns input.
+        if key_name == "escape" && self.dismiss_transient_chrome() {
             cx.notify();
             return;
         }
@@ -14103,6 +14104,13 @@ impl WorkspaceView {
     /// clicking a row switches the active repository through the semantic
     /// command so the CLI, IPC and panel share one source of truth.
     ///
+    /// The chrome now speaks the same section grammar as its siblings
+    /// (STAGED CHANGES / CHANGES / GRAPH): a 32px header with a 14px
+    /// chevron in a fixed slot, META_10 muted title, count pill, and 32px
+    /// rows indented under the header with a hairline between them. A
+    /// collapsed header names the active repository, so the highlight is
+    /// never the only place it appears.
+    ///
     /// Single-repo projects and non-repo projects render nothing here —
     /// their layout is byte-identical to pre-M20.
     fn render_repo_chrome(&mut self, project: ProjectId, cx: &mut Context<Self>) -> Div {
@@ -14113,23 +14121,23 @@ impl WorkspaceView {
         if scan.repos.len() < 2 {
             return chrome;
         }
+        let plan = git_repos::repo_chrome(Some(scan));
+        let repo_count = scan.repos.len();
         let active_key = self.active_repo_key(project);
-        let repos = scan.repos.clone();
-        let repo_count = repos.len();
 
         // Group header: the only chevron in the chrome. It collapses the
         // repo list, never a repository — the active repository's body
         // below it always stays visible.
         let collapsed = self.repo_list_collapsed.contains(&project);
         let header = div()
+            .h(px(32.0))
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
             .px_2()
-            .py_1()
-            .role(crate::ui::metrics::BODY_11)
-            .text_color(rgb(crate::ui::theme::colors().text))
+            .gap_1()
+            .role(crate::ui::metrics::META_10)
+            .text_color(rgb(crate::ui::theme::colors().muted))
             .cursor_pointer()
             .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
             .on_mouse_down(
@@ -14141,24 +14149,37 @@ impl WorkspaceView {
                     cx.stop_propagation();
                     window.focus(&view.focus_handle);
                     view.toggle_repo_list(project);
+                    cx.notify();
                 }),
             )
-            .child(crate::ui::assets::icon(
-                if collapsed {
-                    crate::ui::assets::CHEVRON_RIGHT
-                } else {
-                    crate::ui::assets::CHEVRON_DOWN
-                },
-                12.0,
-                crate::ui::theme::colors().muted,
-            ))
-            .child("Repositories")
-            .child(div().flex_1())
             .child(
-                crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(format!("{repo_count} repos")),
-            );
+                div()
+                    .w(px(14.0))
+                    .flex_shrink_0()
+                    .child(crate::ui::assets::icon(
+                        if collapsed {
+                            crate::ui::assets::CHEVRON_RIGHT
+                        } else {
+                            crate::ui::assets::CHEVRON_DOWN
+                        },
+                        14.0,
+                        crate::ui::theme::colors().muted,
+                    )),
+            )
+            .child(git_repos::chrome_header_label(collapsed, plan.active))
+            .child(
+                div()
+                    .ml(px(8.0))
+                    .px(px(6.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::colors().pill_border))
+                    .bg(rgb(crate::ui::theme::colors().pill_bg))
+                    .role(crate::ui::metrics::META_9)
+                    .flex_shrink_0()
+                    .child(git_repos::chrome_count_label(repo_count)),
+            )
+            .child(div().flex_1());
         chrome = chrome.child(header);
         if collapsed {
             return chrome;
@@ -14168,7 +14189,8 @@ impl WorkspaceView {
         // muted `clean`). The active row is highlighted; clicks switch the
         // active repository. Rows come from the shared chrome plan, so the
         // 32-cap, order and active mark the tests pin are what renders.
-        let plan = git_repos::repo_chrome(self.coordinator.repo_scan(project));
+        // The hairline under every row separates the list and doubles as
+        // the chrome/body boundary the M14 header below never drew.
         let section_keys: Vec<git_panel::RepoKey> = plan
             .rows
             .iter()
@@ -14190,22 +14212,31 @@ impl WorkspaceView {
             let name = entry.name.clone();
             let repo_name = name.clone();
             let row = div()
+                .h(px(32.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_1()
-                .px_2()
-                .py_1()
+                .gap_2()
+                .pl(px(20.0))
+                .pr(px(8.0))
+                .border_b_1()
+                .border_color(rgb(crate::ui::theme::colors().border))
                 .role(crate::ui::metrics::BODY_11)
                 .text_color(rgb(if active {
                     crate::ui::theme::colors().text
                 } else {
-                    crate::ui::theme::colors().muted
+                    crate::ui::theme::colors().text2
                 }))
                 .cursor_pointer()
-                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                .hover(|s| {
+                    if active {
+                        s
+                    } else {
+                        s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                    }
+                })
                 .when(active, |s| {
-                    s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                    s.bg(rgb(crate::ui::theme::colors().tree_selected_bg))
                 })
                 .on_mouse_down(
                     MouseButton::Left,
@@ -14218,18 +14249,27 @@ impl WorkspaceView {
                         view.select_repo(project, repo_name.clone(), cx);
                     }),
                 )
-                .child(name)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(name),
+                )
                 .child(
                     crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                        .flex_shrink_0()
                         .text_color(rgb(crate::ui::theme::colors().muted))
                         .child(branch),
                 )
-                .child(div().flex_1())
                 .when(dirty, |s| {
                     s.child(
                         div()
                             .w(px(6.0))
                             .h(px(6.0))
+                            .flex_shrink_0()
                             .rounded_full()
                             .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
                     )
@@ -14237,6 +14277,7 @@ impl WorkspaceView {
                 .when(!dirty && loaded, |s| {
                     s.child(
                         crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                            .flex_shrink_0()
                             .text_color(rgb(crate::ui::theme::colors().muted))
                             .child("clean"),
                     )
@@ -14247,8 +14288,12 @@ impl WorkspaceView {
         if plan.overflow > 0 {
             chrome = chrome.child(
                 div()
-                    .px_2()
-                    .py_1()
+                    .h(px(28.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .pl(px(20.0))
+                    .pr(px(8.0))
                     .role(crate::ui::metrics::META_9)
                     .text_color(rgb(crate::ui::theme::colors().muted))
                     .child(format!("+{} more repositories", plan.overflow)),
@@ -18182,21 +18227,30 @@ impl WorkspaceView {
     fn close_transient_menus(&mut self) -> bool {
         let had_project = self.project_context_menu.take().is_some();
         let had_terminal = self.terminal_menu.take().is_some();
-        // M20: a collapsed multi-repo list is transient chrome too: Esc
-        // collapses it when the Git tab shows several repositories.
-        let had_list = self
-            .coordinator
-            .selected_project_id()
-            .is_some_and(|project| {
-                self.coordinator
-                    .repo_scan(project)
-                    .is_some_and(|scan| scan.repos.len() > 1)
-                    && !self.repo_list_collapsed.contains(&project)
-            });
-        if had_list && let Some(project) = self.coordinator.selected_project_id() {
+        had_project || had_terminal
+    }
+
+    /// Esc-only dismissal for transient chrome: the context menus **and**
+    /// the M20 multi-repo repository list. The repo list deliberately does
+    /// not belong to `close_transient_menus` — that one also serves the
+    /// shell's root mouse handler, which runs in the bubble phase *after*
+    /// the `Repositories` group header's own toggle. Collapsing the list
+    /// there re-collapsed it on the very click that expanded it (and on
+    /// every unrelated left click), which left the chevron stuck pointing
+    /// right with no way to open the list again.
+    fn dismiss_transient_chrome(&mut self) -> bool {
+        let had_menus = self.close_transient_menus();
+        let Some(project) = self.coordinator.selected_project_id() else {
+            return had_menus;
+        };
+        if git_repos::esc_collapses_repo_list(
+            self.coordinator.repo_scan(project),
+            self.repo_list_collapsed.contains(&project),
+        ) {
             self.repo_list_collapsed.insert(project);
+            return true;
         }
-        had_project || had_terminal || had_list
+        had_menus
     }
 
     /// Branch picker overlay (C9.1): project branches with checkout on
@@ -20976,7 +21030,10 @@ impl Render for WorkspaceView {
                 // Click-outside dismiss for context menus. Menu rows
                 // stop propagation, but closing here too is the same
                 // outcome; Right is ignored so an opener right-click
-                // never immediately closes.
+                // never immediately closes. The multi-repo list is *not*
+                // dismissed here: this handler bubbles after the
+                // `Repositories` header's own toggle, so collapsing the
+                // list here would undo the click that expanded it.
                 if event.button == MouseButton::Left && view.close_transient_menus() {
                     cx.notify();
                 }

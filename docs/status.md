@@ -9,6 +9,80 @@
 
 ## Current position
 
+### Git tab: `Repositories` chrome parity — 2026-10-10 (uncommitted)
+
+UI pass over the M20 `Repositories` chrome in the Git tab. The chrome had
+its own grammar (22px header, 12px chevron, `BODY_11` bright title,
+free-floating `N repos` text, ~22px rows flush at 8px) and no boundary to
+the M14 body, so it read as another row instead of the section header it
+is, and a collapsed chrome named no repository at all.
+
+- Header now matches STAGED CHANGES / CHANGES / GRAPH: `.h(px(32.0))`,
+  chevron in the `w(px(14.0)).flex_shrink_0()` slot at 14px, uppercase
+  `META_10` muted title, count in the sibling pill.
+- Rows are 32px, indented 20px under the header, with a hairline under
+  every row (the last hairline is the chrome/body boundary). The name
+  column now ellipsizes and the branch/dot/`clean` trailing cells are
+  `flex_shrink_0`, so a long name can no longer push the dirty dot out
+  of the panel. Inactive names moved `muted` → `text2` to match the
+  change-group rows; the active row uses `tree_selected_bg` instead of
+  the hover color, so active and hover are distinguishable.
+- Collapsed header appends the active repository name
+  (`REPOSITORIES · web`, title uppercase, name in its own case): the
+  highlight is hidden when collapsed, and the body below must stay
+  identifiable. `plan.active` still covers the 32-cap overflow case
+  where the active repo has no visible row.
+- Label rules moved into `git_repos::chrome_header_label` /
+  `chrome_count_label` (+ `CHROME_TITLE`) with unit tests; render code
+  no longer formats them. The dead `scan.repos.clone()` (its only use was
+  the count) is gone.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace` (all
+  suites green; desktop binary 299 → 301, the two new cases in
+  `git_repos::tests`), `cargo clippy --workspace --all-targets --
+  -D warnings` (known transitive `proc-macro-error2` notice only),
+  `python3 scripts/check-docs.py`, `git diff --check` PASS.
+  Native Wayland validation on a real 2-repo fixture is still manual and
+  not claimed passing.
+
+### Fix: `Repositories` collapse toggle was a no-op on expand — 2026-10-10 (uncommitted)
+
+Reported after the chrome-parity pass: the collapse toggle "not toggling
+correctly". Root cause predates that pass (M20 Phase E).
+
+- `close_transient_menus` collapsed the multi-repo list **and** served the
+  shell's root `on_any_mouse_down` click-outside dismissal. GPUI dispatches
+  both in the bubble phase (`gpui` div.rs:163), so the ancestor handler ran
+  *after* the group header's own `toggle_repo_list`. Any left click on an
+  expanded list — including the header click that had just expanded it —
+  was immediately re-collapsed. The list therefore got stuck collapsed with
+  the chevron pointing right and no way to reopen it, and any unrelated
+  click anywhere in the app collapsed it too.
+- Split by owner: `close_transient_menus` is menus-only (click-outside +
+  Esc); new `dismiss_transient_chrome` is the Esc arm that also collapses
+  the repo list. Esc still closes menus and the list in one press, so the
+  E4 behavior is unchanged for the keyboard path.
+- The collapse decision is the pure `git_repos::esc_collapses_repo_list(
+  scan, already_collapsed)`: only a project with more than one repository
+  has a list, and an already collapsed list reports no change (so Esc never
+  notifies on a no-op). Covered by a unit test; the caller wiring is a view
+  method and has no automated coverage.
+- **Follow-up (2026-10-10): the header toggle was also missing `cx.notify()`.**
+  Every sibling toggle (GRAPH, change groups, stash) notifies after mutating
+  state; the `Repositories` header only called `toggle_repo_list(project)`
+  without notifying. The view then repainted only whenever something else
+  (e.g. the 250ms git poller) happened to dirty it — which is why clicks
+  looked ignored and "sometimes randomly worked". One-line fix at the header
+  listener in `render_repo_chrome` (`apps/omaterm/src/main.rs`); the two
+  earlier fixes (Esc-only collapse split, `esc_collapses_repo_list`) stand.
+- Verification: `cargo fmt --all --check`, `cargo test --workspace` (all
+  suites green; desktop 301 → 302 with the new predicate test),
+  `cargo clippy --workspace --all-targets -- -D warnings` (known
+  transitive `proc-macro-error2` notice only), `python3 scripts/check-docs.py`,
+  `git diff --check` PASS. **Manual Wayland confirmation is still owed**:
+  click the `REPOSITORIES` chevron twice (collapse, expand), and click an
+  unrelated row (file row, commit box, terminal pane) — none of those may
+  collapse the list; only Esc may.
+
 ### Multi-repo Phase E + F: every Git surface follows the active repo — 2026-10-09 (uncommitted)
 
 Milestone [20 — Multi-Repo Support](2026-10-09-20-milestone-20-multi-repo.md) Phases

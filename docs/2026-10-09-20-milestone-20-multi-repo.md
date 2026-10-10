@@ -215,11 +215,24 @@ confused:
 Locked chrome spec (multi-repo only):
 
 ```text
-[chevron]  Repositories ............................ N repos
-           fortis-backend   feat/cms-roles            clean
-  [active] fortis-client    feat/cms-user-role-…         ●
-  ── active repository's full M14 body below ──
+[chevron]  REPOSITORIES ........................... N repos
+            fortis-backend   feat/cms-roles            clean
+   [active] fortis-client    feat/cms-user-role-…         ●
+   ── active repository's full M14 body below ──
 ```
+
+Rendering parity with the sibling sections (added 2026-10-10): the chrome
+speaks the same section grammar as STAGED CHANGES / CHANGES / GRAPH —
+a 32px header with the chevron in a fixed 14px slot, uppercase
+`META_10` muted title, the count in the sibling count pill, and 32px
+rows indented under the header with a hairline between them (the last
+hairline is also the chrome/body boundary). A **collapsed** header
+appends the active repository name (`REPOSITORIES · fortis-client`,
+title uppercase, name in its own case), because the highlight is hidden
+and the body below it must stay identifiable — VS Code's picker row
+carries the same identity. Both label rules live in
+`git_repos::chrome_header_label` / `chrome_count_label` with unit tests;
+render code stays free of formatting decisions.
 
 Phase E consequences of the locked spec (the rest of Phase E stands):
 
@@ -230,6 +243,14 @@ Phase E consequences of the locked spec (the rest of Phase E stands):
 - **E4 addition:** a view-local `repo_list_collapsed: bool` per project
   (default expanded on the first multi-repo scan); Esc collapses the
   list; `repo_picker_open` and the dropdown branch are deleted.
+- **E4 correction (2026-10-10):** Esc-only means Esc-only. Collapsing the
+  list from `close_transient_menus` also collapsed it from the shell's
+  root `on_any_mouse_down`, which bubbles *after* the group header's own
+  toggle — so the click that expanded the list was immediately undone (and
+  any unrelated left click collapsed it), leaving the chevron stuck with no
+  way to reopen the list. The list now collapses only through
+  `dismiss_transient_chrome` (Esc), gated by the pure
+  `git_repos::esc_collapses_repo_list` predicate.
 - **E7 addition:** a pure `repo_chrome(project, scan) -> ChromePlan`
   helper in `git_repos.rs` (visibility for 0/1/N repos, row order, active
   mark, 32-cap) with unit tests — render code itself is not unit-testable.
