@@ -690,10 +690,20 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::create_dir_all(root.join("node_modules").join("dep")).unwrap();
         std::fs::create_dir_all(root.join("owned")).unwrap();
+        // The watcher canonicalizes the root and reports canonical event
+        // paths; under a symlinked TMPDIR (macOS `/var` → `/private/var`)
+        // only the canonical prefix matches. `extra_skips` is documented as
+        // canonical absolute prefixes, so resolve it here too.
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let _watcher = FileWatcher::watch(&root, &[root.join("owned")], false, move |paths| {
-            let _ = tx.send(paths);
-        })
+        let _watcher = FileWatcher::watch(
+            &root,
+            &[canonical_root.join("owned")],
+            false,
+            move |paths| {
+                let _ = tx.send(paths);
+            },
+        )
         .expect("watcher arms");
         // A write under a watched directory reports within seconds.
         std::fs::write(root.join("sub").join("live.txt"), b"x").unwrap();
@@ -701,7 +711,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             if drain(&rx).iter().any(|path| {
-                path.strip_prefix(&root)
+                path.strip_prefix(&canonical_root)
                     .is_ok_and(|relative| relative.starts_with("sub"))
             }) {
                 seen = true;
@@ -718,7 +728,7 @@ mod tests {
         let silent = drain(&rx);
         assert!(
             silent.iter().all(|path| {
-                path.strip_prefix(&root).is_ok_and(|relative| {
+                path.strip_prefix(&canonical_root).is_ok_and(|relative| {
                     !relative.starts_with("node_modules") && !relative.starts_with("owned")
                 })
             }),

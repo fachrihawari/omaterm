@@ -494,7 +494,8 @@ impl TerminalSession {
     }
 
     /// Session token for tests that feed crafted lifecycle sequences.
-    #[cfg(test)]
+    /// Linux only: its only callers are the PTY-spawning lifecycle tests.
+    #[cfg(all(test, target_os = "linux"))]
     fn lifecycle_token_for_test(&self) -> Option<String> {
         // The parser owns the token; re-derive it the same way the PTY
         // layer does so tests stay coupled to the real association.
@@ -717,7 +718,9 @@ impl TerminalSession {
     }
 }
 
-#[cfg(test)]
+/// Every test here spawns a live PTY shell: Linux only (macOS teardown
+/// wedge — see tests/pty_integration.rs header and docs/status.md).
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::events::TerminalEvent;

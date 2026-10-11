@@ -1,4 +1,10 @@
-#![cfg(unix)]
+// Every test here spawns a live PTY shell: Linux only. On macOS a PTY
+// session leader can wedge unkillably in the kernel exit path while the
+// master is open (observed `?Es`, SIGKILL-immune, `waitpid(WNOHANG)` (0,0);
+// reproduced with stdlib-only PTY code), and alacritty 0.26 `Pty::drop`
+// waits unboundedly, hanging the suite. Linux validates this lifecycle;
+// macOS keeps the pure engine/parser unit tests. See docs/status.md.
+#![cfg(target_os = "linux")]
 
 use std::time::{Duration, Instant};
 
