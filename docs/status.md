@@ -9,6 +9,81 @@
 
 ## Current position
 
+### macOS port: IPC credential check, Linux-only syscalls, macOS-only test gates — 2026-10-11 (uncommitted)
+
+Option A per plan (stay on crates.io `gpui` 0.2.2 = latest published; verified
+via `crates.io/api/v1/crates/gpui`: `max_version`/`newest_version` 0.2.2,
+2025-10-22 — there is nothing to bump to; Zed `main` is unpublishable,
+`zed#55271`). No dependency version, feature, or `Cargo.lock` change.
+
+- `crates/omaterm-ipc/src/unix.rs`: `peer_uid()` split — `#[cfg(target_os =
+  "linux")]` keeps `SO_PEERCRED` + `ucred` byte-identical; non-Linux Unix uses
+  `libc::getpeereid()` (exists in `libc` BSD family). Windows untouched
+  (`lib.rs` selects `windows.rs`). Fixes the 4x `E0422`/`E0425` on macOS.
+- Same file: `set_read_timeout`/`set_write_timeout` failures of kind
+  `InvalidInput` (macOS `EINVAL` when the peer closes mid frame-loop) no
+  longer abort the op; the previously installed deadline-derived timeout
+  stands and the follow-up read/write surfaces the real state. Other
+  `setsockopt` errors still propagate, so Linux behavior is unchanged (the
+  fallback never fires there for valid timevals). Found via the
+  `request_deadline_exceeded` test failing only on macOS.
+- `crates/omaterm-terminal/src/platform.rs`: pidfd helpers (`open_pidfd`,
+  `signal_pidfd`, `syscall_error`, `ancestry`) and the fd-traits import gated
+  to `#[cfg(all(unix, target_os = "linux"))]`; `linux_terminate` and
+  `terminate_owned` fail closed with `Unsupported` on non-Linux Unix,
+  mirroring the Windows adapter (never fall back to numeric kill). 9
+  live-`/proc`/pidfd tests gated to Linux; pure parser/sampler/math tests
+  stay on all Unix.
+- macOS `/var` → `/private/var` TMPDIR symlink: `FileWatcher` reports
+  canonical paths and `git rev-parse` too, so the watcher test now compares
+  against `canonicalize(&root)` (and passes canonical `extra_skips`, per the
+  documented contract) and `tests/git_roots.rs` canonicalizes expectations.
+  Identity on Linux; no product change.
+- macOS PTY teardown wedge (open gate, see below): shell-spawning tests
+  gated to Linux — whole-mod for `session`, `spawn_queue`, `workspace`
+  (every test spawns, verified), whole-file for `tests/pty_integration.rs`,
+  per-test in `registry` (pure `invalid_size`, `close_unknown` stay live).
+  `lifecycle_token_for_test` gated to match its callers (Clippy `-D`
+  warnings). Gating is test-only: zero effect on any release build.
+- Verification on this Mac (darwin, rustc 1.98.1 repo pin):
+  `cargo fmt --all --check` PASS; `cargo test` for all 8 non-desktop crates
+  PASS — 434 passed, 20 suites (ipc 11, terminal 142, context 113, state 70,
+  +protocol/core/logging/cli); `cargo clippy` for the same 8 crates with
+  `--all-targets -- -D warnings` clean; `git diff --check` PASS;
+  `cargo build --release --bin omaterm` PASS and `./target/release/omaterm
+  --version` prints `omaterm 0.4.0`.
+- Still blocked, both environment-only: `cargo build --release --bin
+  omaterm-desktop` compiles past `omaterm-ipc` and fails only at
+  `gpui@0.2.2: metal shader compilation failed: xcrun: unable to find
+  utility "metal"` — this machine has CommandLineTools only
+  (`xcode-select -p` → `/Library/Developer/CommandLineTools`). Fix on the
+  machine: install full Xcode, `sudo xcode-select -s
+  /Applications/Xcode.app/Contents/Developer`, verify `xcrun --find metal`.
+  Same blocker covers `cargo test/clippy --workspace` including the desktop
+  crate. Linux/Windows re-validation must happen on those hosts: the Linux
+  bodies are byte-identical behind `cfg(target_os = "linux")` and Windows
+  files untouched, but that is reasoning, not a run. Wayland validation N/A
+  on macOS.
+
+#### Open gate: macOS PTY child teardown wedge (environmental, not shipped)
+
+Evidence (all on macOS 15.7.8/arm64, no omaterm code in the loop): a
+stdlib-only `pty.fork()` + `/bin/sh` + SIGHUP + SIGKILL leaves the child in
+`ps` state `?Es (bash)`, `kill -9` has no effect, and
+`waitpid(WNOHANG)` returns `(0, 0)` — wedged in the kernel exit path while
+the PTY master is open. Closing the master first lets the same sequence
+reap cleanly; non-PTY `sh` dies on SIGHUP normally. In-suite this surfaces
+as `alacritty_terminal 0.26.0` `Pty::drop` → `Child::wait` → `wait4`
+blocking forever (sampled stacks), hanging any test that drops a session
+with a live/wedged child. Already-latest `alacritty_terminal` 0.26.0
+(verified via crates.io API) offers no close-master/wait-bounded API, and
+restructuring around the dependency's `Drop` (or `mem::forget`, which leaks
+fds/zombies) is rejected: production lifecycle keeps the Linux-validated
+SIGHUP → 250ms → SIGKILL path unchanged. Next: retry the gated lifecycle
+tests on Linux CI (must stay green there), revisit only if a bounded-wait
+`alacritty_terminal` release appears; manual macOS desktop smoke covers the
+PTY path until then.
+
 ### Git tab: `Repositories` chrome parity — 2026-10-10 (uncommitted)
 
 UI pass over the M20 `Repositories` chrome in the Git tab. The chrome had

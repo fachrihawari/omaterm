@@ -45,6 +45,11 @@ fn real_repos_resolve_to_the_nearest_toplevel() {
     std::fs::create_dir_all(&plain).unwrap();
     init_repo(&outer);
     init_repo(&inner);
+    // `git rev-parse --show-toplevel` reports the canonical path; under a
+    // symlinked TMPDIR (macOS `/var` → `/private/var`) that differs from the
+    // un-resolved temp path (identity on Linux).
+    let outer = std::fs::canonicalize(&outer).unwrap();
+    let inner = std::fs::canonicalize(&inner).unwrap();
 
     assert_eq!(git_toplevel_of(&sub), Some(outer.clone()));
     assert_eq!(git_toplevel_of(&inner), Some(inner.clone()));

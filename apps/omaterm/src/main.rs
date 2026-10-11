@@ -8670,8 +8670,8 @@ impl WorkspaceView {
         {
             // Both clipboards, like terminal drag selection: PRIMARY for
             // middle-click, CLIPBOARD for Ctrl+V and other applications.
-            // Windows has no PRIMARY selection.
-            #[cfg(not(windows))]
+            // PRIMARY exists only on Linux (gpui has no macOS/Windows API).
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             cx.write_to_primary(ClipboardItem::new_string(payload.to_owned()));
             cx.write_to_clipboard(ClipboardItem::new_string(payload.to_owned()));
         }
@@ -12570,8 +12570,8 @@ impl WorkspaceView {
                         // Both clipboards: PRIMARY keeps middle-click paste,
                         // CLIPBOARD makes the selection pastable via
                         // Ctrl+Shift+V and into other applications.
-                        // Windows has no PRIMARY selection.
-                        #[cfg(not(windows))]
+                        // PRIMARY exists only on Linux.
+                        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                         cx.write_to_primary(ClipboardItem::new_string(text.clone()));
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
@@ -12602,11 +12602,11 @@ impl WorkspaceView {
             cx.notify();
             return false;
         };
-        // PRIMARY is the Linux middle-click selection. Windows only has
-        // the regular clipboard.
-        #[cfg(windows)]
+        // PRIMARY is the Linux middle-click selection; macOS and Windows
+        // only have the regular clipboard.
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
             cx.write_to_primary(ClipboardItem::new_string(text));
