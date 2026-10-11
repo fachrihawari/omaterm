@@ -124,6 +124,18 @@ batch as one vertical slice through the shared `OmaCommand::Git` dispatcher
 - Deferred to follow-up: true branch-lane graph layout (DAG lanes),
   tooltip infra for icon-only actions, stash file expansion, multi-line
   commit body, repo filter.
+- Follow-up slim-down (same branch, uncommitted at writing): user report
+  "everything worse, too much information in minimum space". All added
+  visible density reverted — graph trailing back to age-only (no
+  author/short/copy), scope segments icon-only, Amend toggle removed from
+  the composer, stash rows subject-only with `-u` label restored, repo
+  header back to count-only with no per-row sync pill. Kept (no space
+  cost): `Publish` label swap, conflict `!` / rename `R` badges,
+  auto-`WIP on <branch>` stash message, `sync_tick` history+branch
+  refresh, amend backend/CLI/protocol (no UI). Re-verified: `cargo fmt`,
+  `cargo check`, `cargo test --workspace` (desktop 302 green), `cargo
+  clippy -- -D warnings`, `check-docs.py`, `git diff --check` PASS.
+  Wayland validation still manual.
 - Verification: `cargo fmt --all` (applied), `cargo test --workspace`
   (all suites green incl. desktop 302), `cargo clippy --workspace
   --all-targets -- -D warnings` (known transitive `proc-macro-error2`

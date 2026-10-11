@@ -14321,26 +14321,7 @@ impl WorkspaceView {
                     )),
             )
             .child(git_repos::chrome_header_label(collapsed, plan.active))
-            .child({
-                // Aggregate dirty count across all known repos so the header
-                // answers "anything to commit?" without expanding each row.
-                let dirty_repos = scan
-                    .repos
-                    .iter()
-                    .filter(|entry| {
-                        let key = repo_key_of(project, scan, entry);
-                        self.git_panel.status_for(&key).is_some_and(|status| {
-                            !status.staged.is_empty()
-                                || !status.unstaged.is_empty()
-                                || !status.untracked.is_empty()
-                        })
-                    })
-                    .count();
-                let label = if dirty_repos > 0 {
-                    format!("{repo_count} repos · {dirty_repos} dirty")
-                } else {
-                    git_repos::chrome_count_label(repo_count)
-                };
+            .child(
                 div()
                     .ml(px(8.0))
                     .px(px(6.0))
@@ -14350,8 +14331,8 @@ impl WorkspaceView {
                     .bg(rgb(crate::ui::theme::colors().pill_bg))
                     .role(crate::ui::metrics::META_9)
                     .flex_shrink_0()
-                    .child(label)
-            })
+                    .child(git_repos::chrome_count_label(repo_count)),
+            )
             .child(div().flex_1());
         chrome = chrome.child(header);
         if collapsed {
@@ -14447,22 +14428,6 @@ impl WorkspaceView {
                             .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
                     )
                 })
-                .when(
-                    status.as_ref().is_some_and(|status| {
-                        status.upstream.is_some() && (status.ahead > 0 || status.behind > 0)
-                    }),
-                    |s| {
-                        let pill = status
-                            .as_ref()
-                            .map(|status| format!("↑{} ↓{}", status.ahead, status.behind));
-                        s.children(pill.map(|pill| {
-                            crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                                .flex_shrink_0()
-                                .text_color(rgb(crate::ui::theme::colors().cyan))
-                                .child(pill)
-                        }))
-                    },
-                )
                 .when(!dirty && loaded, |s| {
                     s.child(
                         crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
@@ -14737,8 +14702,7 @@ impl WorkspaceView {
             );
         }
         if dirty {
-            // Commit composer: input + amend toggle + action inside the field.
-            let amend = self.commit_amend.contains(&self.active_repo_key(project));
+            // Commit composer: one line, the action sits inside the field.
             header = header.child(
                 div()
                     .mx_3()
@@ -14787,44 +14751,6 @@ impl WorkspaceView {
                         crate::ui::metrics::text_role(
                             div()
                                 .h_full()
-                                .px_2()
-                                .flex()
-                                .items_center()
-                                .flex_shrink_0()
-                                .border_l_1()
-                                .border_color(rgb(crate::ui::theme::colors().border))
-                                .cursor_pointer()
-                                .hover(|s| {
-                                    s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
-                                }),
-                            crate::ui::metrics::META_10,
-                        )
-                        .text_color(rgb(if amend {
-                            crate::ui::theme::colors().text
-                        } else {
-                            crate::ui::theme::colors().muted
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                let repo_key = view.active_repo_key(project);
-                                if !view.commit_amend.remove(&repo_key) {
-                                    view.commit_amend.insert(repo_key);
-                                }
-                                cx.notify();
-                            }),
-                        )
-                        .child(if amend { "Amend ✓" } else { "Amend" }),
-                    )
-                    .child(
-                        crate::ui::metrics::text_role(
-                            div()
-                                .h_full()
                                 .px_3()
                                 .flex()
                                 .items_center()
@@ -14858,7 +14784,7 @@ impl WorkspaceView {
                                 }
                             }),
                         )
-                        .child(if amend { "Amend" } else { "Commit" }),
+                        .child("Commit"),
                     ),
             );
         }
@@ -15025,14 +14951,17 @@ impl WorkspaceView {
             let stash_focused = self.stash_focused.as_ref() == Some(&repo_key);
             let input_content = git_input_view::render(git_input_view::FieldView {
                 input: self.stash_drafts.get(&repo_key),
-                placeholder: "Stash message (optional)…",
+                placeholder: "Stash message…",
                 focused: stash_focused,
                 caret_visible: true,
             });
             let untracked = self.stash_untracked.contains(&repo_key);
-            // Empty message auto-generates `WIP on <branch>`, so the
-            // button stays actionable; typed text still overrides.
-            let can_stash = true;
+            // Disabled-look until a message is typed (submit still
+            // explains via notice, like before).
+            let can_stash = self
+                .stash_drafts
+                .get(&repo_key)
+                .is_some_and(|draft| !draft.text().trim().is_empty());
             bar = bar.child(header);
             bar = bar.child(
                 div().px_2().py_1().flex().flex_col().gap_1().child(
@@ -15102,11 +15031,7 @@ impl WorkspaceView {
                                         cx.notify();
                                     }),
                                 )
-                                .child(if untracked {
-                                    "Untracked ✓"
-                                } else {
-                                    "Untracked"
-                                }),
+                                .child(if untracked { "-u on" } else { "-u" }),
                         )
                         .child(
                             div()
@@ -15160,11 +15085,6 @@ impl WorkspaceView {
                     for (position, stash) in list.stashes.iter().enumerate() {
                         let stash_index = stash.index;
                         let stash_subject = stash.subject.clone();
-                        let stash_meta = format!(
-                            "@{{{}}} · {}",
-                            stash.index,
-                            stash.oid.chars().take(7).collect::<String>()
-                        );
                         let active = Some(position) == selected;
                         bar = bar.child(
                             div()
@@ -15213,27 +15133,8 @@ impl WorkspaceView {
                                     div()
                                         .flex_1()
                                         .min_w(px(0.0))
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap_2()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .child(
-                                            div()
-                                                .flex_shrink()
-                                                .min_w(px(0.0))
-                                                .truncate()
-                                                .child(stash.subject.clone()),
-                                        )
-                                        .child(
-                                            crate::ui::metrics::text_role(
-                                                div().flex_shrink_0(),
-                                                crate::ui::metrics::META_9,
-                                            )
-                                            .text_color(rgb(crate::ui::theme::colors().muted))
-                                            .child(stash_meta),
-                                        ),
+                                        .truncate()
+                                        .child(stash.subject.clone()),
                                 )
                                 .child(
                                     div()
@@ -15619,7 +15520,6 @@ impl WorkspaceView {
         project: ProjectId,
         scope: omaterm_core::GitHistoryScope,
         glyph: &'static str,
-        label: &'static str,
         active: bool,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -15629,14 +15529,9 @@ impl WorkspaceView {
             crate::ui::theme::colors().muted
         };
         let mut segment = div()
-            .px(px(6.0))
-            .py(px(4.0))
+            .p(px(4.0))
             .rounded(px(5.0))
             .cursor_pointer()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.0))
             .text_color(rgb(color))
             .hover(|s| {
                 if active {
@@ -15646,7 +15541,6 @@ impl WorkspaceView {
                 }
             })
             .child(crate::ui::assets::icon(glyph, 14.0, color))
-            .child(crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10).child(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -15718,7 +15612,6 @@ impl WorkspaceView {
                         project,
                         omaterm_core::GitHistoryScope::CurrentHead,
                         crate::ui::assets::GIT_BRANCH,
-                        "Current",
                         is_current,
                         cx,
                     ))
@@ -15726,7 +15619,6 @@ impl WorkspaceView {
                         project,
                         omaterm_core::GitHistoryScope::AllLocalBranches,
                         crate::ui::assets::GIT_FORK,
-                        "All",
                         !is_current,
                         cx,
                     ))
@@ -15843,16 +15735,9 @@ impl WorkspaceView {
         // One continuous lane spine: every commit row draws its dot plus
         // the line segments above/below it (end rows draw one side only),
         // and expanded file rows draw the plain line so the lane visibly
-        // continues through the expansion. Merges use the purple lane so
-        // branch joins read apart from linear history at a glance.
-        let default_lane = crate::ui::theme::colors().blue;
-        let merge_lane = crate::ui::theme::colors().purple;
+        // continues through the expansion.
+        let lane = crate::ui::theme::colors().blue;
         for (index, commit) in shown.iter().enumerate() {
-            let lane = if commit.parents.len() > 1 {
-                merge_lane
-            } else {
-                default_lane
-            };
             let key = commit.id.as_str().to_owned();
             let expanded = self.history_panel.is_expanded(repo_key.clone(), &key);
             let is_selected =
@@ -15868,9 +15753,6 @@ impl WorkspaceView {
                 count => format!(" · {count} parents"),
             };
             let subject = format!("{}{}", commit.subject, marker);
-            let author = commit.author_name.clone();
-            let full_oid = commit.id.as_str().to_owned();
-            let short_oid = full_oid.chars().take(7).collect::<String>();
             let line = || {
                 div()
                     .w(px(2.0))
@@ -15983,44 +15865,9 @@ impl WorkspaceView {
                 .child(
                     div()
                         .flex_shrink_0()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
                         .pr(px(8.0))
                         .role(crate::ui::metrics::META_10)
                         .text_color(rgb(crate::ui::theme::colors().muted))
-                        .child(
-                            div()
-                                .max_w(px(96.0))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(author),
-                        )
-                        .child(
-                            div()
-                                .px(px(4.0))
-                                .rounded(px(4.0))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |view, _, window, cx| {
-                                        if view.shutting_down {
-                                            return;
-                                        }
-                                        cx.stop_propagation();
-                                        window.focus(&view.focus_handle);
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            full_oid.clone(),
-                                        ));
-                                        view.show_toast("Commit SHA copied".into(), cx);
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(short_oid),
-                        )
                         .child(age),
                 );
             section = section.child(commit_row);
