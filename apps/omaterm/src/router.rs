@@ -808,6 +808,9 @@ impl CommandRouter {
 
     /// The active repository name for a project, following the
     /// saved-else-first-sorted rule (`None` for root repos and non-repos).
+    /// Currently no view caller (the Git header dropped its duplicate repo
+    /// name); kept for CLI/agent consumers alongside `git_roots` above.
+    #[allow(dead_code)]
     pub fn active_repo(&self, project: ProjectId) -> Option<String> {
         let scan = self.repo_scans.get(&project)?;
         let entry = scan.active_entry()?;

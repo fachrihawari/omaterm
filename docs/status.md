@@ -9,6 +9,49 @@
 
 ## Current position
 
+### Git tab readability: two-line repo rows + two-row branch header — 2026-10-11 (uncommitted)
+
+User screenshot: in a narrow inspector, repo rows crammed name + full
+branch + `clean` on one 32px line (long branches starved the repo name
+out entirely), and the branch header crammed icon + branch + repo name +
+sync pill + Fetch/Pull/Push + refresh into one 40px row (branch
+truncated to `fe`, pill read `↑0 ↓19`). View-only slice on
+`feat/git-tab-improvements`; no router/protocol/CLI change.
+
+- `render_repo_chrome` (`apps/omaterm/src/main.rs`): rows are 46px
+  two-line — name + dirty dot on line 1 (`BODY_11`, ellipsis), muted
+  branch on line 2 (`META_9`, the truncating party). `clean` text
+  dropped (clean is the default; the M14 body already says so).
+  Highlight/hover/hairline/32-cap/click-to-switch unchanged.
+- `render_git_panel` header: two rows — row 1 branch icon + picker
+  (`flex_1`, full width) + sync pill + refresh; row 2 remote action
+  bar (Fetch/Pull/Push-or-Publish, same buttons/dispatcher). The
+  duplicated repo name is gone (chrome row + collapsed
+  `REPOSITORIES · name` already identify it; `active_repo` is `None`
+  for single-repo roots so nothing was shown there anyway).
+- New pure `git_panel::sync_pill_label(has_upstream, ahead, behind)`
+  + unit test: hidden without upstream or when in sync, one-sided
+  otherwise (`↓19`, never `↑0 ↓19`).
+- `CommandRouter::active_repo` (`router.rs`) lost its only caller to
+  the header rework: kept with `#[allow(dead_code)]` like the sibling
+  `git_roots`, for CLI/agent consumers.
+- Verification: `cargo fmt --all --check` PASS, `git diff --check`
+  PASS, `python3 scripts/check-docs.py` PASS,
+  `cargo clippy -p omaterm --all-targets` zero code warnings (only the
+  known transitive `proc-macro-error2` future-incompat notice),
+  desktop-bin `git_panel::`/`git_repos::`/`workbench::` suites 16
+  passed, single `router::tests::git_commit_…` 0.20s ok.
+- NOT passing here, environmental (not claimed): the full desktop
+  suite stalls on this Mac — `history::tests::*flush*`,
+  `clear_scopes…`, and `file_open…_bash` spawn real `/bin/bash` PTY
+  children and wedge in `Child::wait` (the documented macOS PTY
+  teardown wedge, `history.rs:835` `test_session` spawns bash); the
+  wedged tests then starve the thread pool so `git_*` router tests
+  (0.20s each in isolation) never get a thread. None of the hung
+  paths touch this diff (render + string helper + allow-attribute).
+  Full suite must re-run on Linux CI. Native Wayland validation of
+  the new rows/header on a narrow 2-repo fixture remains manual.
+
 ### macOS port: IPC credential check, Linux-only syscalls, macOS-only test gates — 2026-10-11 (uncommitted)
 
 Option A per plan (stay on crates.io `gpui` 0.2.2 = latest published; verified

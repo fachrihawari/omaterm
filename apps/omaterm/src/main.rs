@@ -14339,9 +14339,13 @@ impl WorkspaceView {
             return chrome;
         }
 
-        // One plain row per repository: name, muted branch, dirty dot (or
-        // muted `clean`). The active row is highlighted; clicks switch the
-        // active repository. Rows come from the shared chrome plan, so the
+        // One two-line row per repository: the name (+ dirty dot) on
+        // line 1, the muted branch on line 2. The branch is the party
+        // that truncates — a single-line row let long branch names starve
+        // the repo name out of the panel entirely. `clean` text is gone:
+        // clean is the default and the M14 body below already says so.
+        // The active row is highlighted; clicks switch the active
+        // repository. Rows come from the shared chrome plan, so the
         // 32-cap, order and active mark the tests pin are what renders.
         // The hairline under every row separates the list and doubles as
         // the chrome/body boundary the M14 header below never drew.
@@ -14362,15 +14366,13 @@ impl WorkspaceView {
                     || !status.unstaged.is_empty()
                     || !status.untracked.is_empty()
             });
-            let loaded = status.is_some();
             let name = entry.name.clone();
             let repo_name = name.clone();
             let row = div()
-                .h(px(32.0))
+                .h(px(46.0))
                 .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
+                .flex_col()
+                .justify_center()
                 .pl(px(20.0))
                 .pr(px(8.0))
                 .border_b_1()
@@ -14405,37 +14407,40 @@ impl WorkspaceView {
                 )
                 .child(
                     div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(name),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(name),
+                        )
+                        .when(dirty, |s| {
+                            s.child(
+                                div()
+                                    .w(px(6.0))
+                                    .h(px(6.0))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
+                            )
+                        }),
                 )
                 .child(
                     crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                        .flex_shrink_0()
+                        .w_full()
+                        .max_w_full()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
                         .text_color(rgb(crate::ui::theme::colors().muted))
                         .child(branch),
-                )
-                .when(dirty, |s| {
-                    s.child(
-                        div()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
-                    )
-                })
-                .when(!dirty && loaded, |s| {
-                    s.child(
-                        crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                            .flex_shrink_0()
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .child("clean"),
-                    )
-                });
+                );
             chrome = chrome.child(row);
         }
         // Cap overflow: name the hidden count.
@@ -14569,21 +14574,21 @@ impl WorkspaceView {
                     .child("Loading git status…"),
             );
         };
-        // Branch row: name with a dirty marker, the nested repo when this
-        // project has more than one, ahead/behind, then quiet remote actions.
-        // The commit field is a single line under the row when the tree is dirty.
+        // Branch header (two rows, see below): branch identity first,
+        // remote actions second. The commit field is a single line under
+        // the header when the tree is dirty.
         let dirty = !status.staged.is_empty()
             || !status.unstaged.is_empty()
             || !status.untracked.is_empty();
         let branch_name = workbench::branch_label(status.branch.as_deref(), dirty)
             .unwrap_or_else(|| "detached".to_string());
-        let repo_name = self.coordinator.active_repo(project);
-        // Only show the sync pill when there is an upstream and something to
-        // sync; `↑0 ↓0` is noise on every repo without a remote. The raw
-        // upstream path (`origin/main`) is intentionally not shown: it
-        // repeats the branch name with a remote prefix.
-        let sync_pill = (status.upstream.is_some() && (status.ahead > 0 || status.behind > 0))
-            .then(|| format!("↑{} ↓{}", status.ahead, status.behind));
+        // The sync pill label is a pure helper (unit-tested in
+        // `git_panel`): hidden without an upstream or when in sync, and
+        // one-sided otherwise (`↓19`, never `↑0 ↓19`). The raw upstream
+        // path (`origin/main`) is intentionally not shown: it repeats the
+        // branch name with a remote prefix.
+        let sync_pill =
+            git_panel::sync_pill_label(status.upstream.is_some(), status.ahead, status.behind);
         let can_commit = !status.staged.is_empty();
         // Commit UI only exists when there is something to commit: on a
         // clean tree the draft box and the Commit action are dead space.
@@ -14599,6 +14604,15 @@ impl WorkspaceView {
             focused: input_focused,
             caret_visible: self.commit_caret_on,
         });
+        // Two-row header. Row 1 is branch identity: icon, picker (takes
+        // the full width now that the actions moved out), sync pill and
+        // refresh. Row 2 is the remote action bar (Fetch/Pull/Push). One
+        // 40px row holding all of that truncated the branch to a stub in
+        // a narrow inspector. The repo name is intentionally absent: it
+        // duplicates the chrome's highlighted row above (and the collapsed
+        // chrome names it via `chrome_header_label`); single-repo projects
+        // never showed one here anyway (`active_repo` is `None` for them).
+        let has_upstream = status.upstream.is_some();
         let mut header = div()
             .flex()
             .flex_col()
@@ -14622,20 +14636,18 @@ impl WorkspaceView {
                         crate::ui::theme::colors().purple,
                     ))
                     .child(
-                        div().min_w(px(0.0)).flex_shrink().truncate().child(
-                            branch_picker_trigger(project, branch_name, cx)
-                                .px_1()
-                                .rounded(px(4.0)),
-                        ),
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(
+                                branch_picker_trigger(project, branch_name, cx)
+                                    .px_1()
+                                    .rounded(px(4.0)),
+                            ),
                     )
-                    .children(repo_name.map(|name| {
-                        crate::ui::metrics::text_role(
-                            div().flex_shrink_0(),
-                            crate::ui::metrics::META_10,
-                        )
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .child(name)
-                    }))
                     .children(sync_pill.map(|sync_pill| {
                         crate::ui::metrics::text_role(
                             crate::ui::primitives::pill()
@@ -14648,25 +14660,11 @@ impl WorkspaceView {
                         .text_color(rgb(crate::ui::theme::colors().cyan))
                         .child(sync_pill)
                     }))
-                    .child(div().flex_1())
-                    .child(self.git_sync_button(project, "Fetch", "fetch", cx))
-                    .child(self.git_sync_button(project, "Pull", "pull", cx))
-                    .child({
-                        // No upstream: offer explicit publish (`push -u origin
-                        // HEAD`) instead of a push that can only fail with
-                        // `NoUpstream`.
-                        let has_upstream = status.upstream.is_some();
-                        self.git_sync_button(
-                            project,
-                            if has_upstream { "Push" } else { "Publish" },
-                            if has_upstream { "push" } else { "publish" },
-                            cx,
-                        )
-                    })
                     .child(
                         div()
                             .p(px(5.0))
                             .rounded(px(4.0))
+                            .flex_shrink_0()
                             .text_color(rgb(crate::ui::theme::colors().muted))
                             .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
                             .on_mouse_down(
@@ -14690,6 +14688,29 @@ impl WorkspaceView {
                                 crate::ui::theme::colors().muted,
                             )),
                     ),
+            )
+            .child(
+                div()
+                    .h(px(30.0))
+                    .pl_3()
+                    .pr_1()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .child(self.git_sync_button(project, "Fetch", "fetch", cx))
+                    .child(self.git_sync_button(project, "Pull", "pull", cx))
+                    .child({
+                        // No upstream: offer explicit publish (`push -u origin
+                        // HEAD`) instead of a push that can only fail with
+                        // `NoUpstream`.
+                        self.git_sync_button(
+                            project,
+                            if has_upstream { "Push" } else { "Publish" },
+                            if has_upstream { "push" } else { "publish" },
+                            cx,
+                        )
+                    }),
             );
         if !dirty {
             header = header.child(
