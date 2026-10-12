@@ -17,9 +17,27 @@ override explicitly name it and do not change the pin or establish an MSRV.
 | `alacritty_terminal` | 0.26.0, behind `omaterm-terminal` abstraction | Apache-2.0; selected manifest/package license | M3 API, parser, PTY and Wayland validation recorded below |
 | PTY provider | `alacritty_terminal::tty` Unix backend | Alacritty dependency inventory; `libc` MIT OR Apache-2.0 | M3 lifecycle behavior and M4 cleanup coverage recorded below |
 | `serde`, `serde_json`, `libc` for protocol/IPC | `serde` 1.0.228, `serde_json` 1.0.149, `libc` 0.2.189 | Permissive dual licenses in selected manifests; full transitive inventory completed in M11 | M8 protocol/transport integration and release Wayland evidence recorded below |
-| M10 key storage/encryption/compression | `chacha20poly1305` 0.11.0, `hkdf` 0.12.4, `sha2` 0.10.9, `getrandom` 0.4.3, `flate2` 1.1.10, `keyring` 4.2.0, `zeroize` 1.9.0 | Selected manifests and package license files; full transitive inventory completed in M11 | M10 keyring spike, archive tests and release Wayland evidence recorded below |
+| M10 key storage/encryption/compression | `chacha20poly1305` 0.11.0, `hkdf` 0.12.4, `sha2` 0.10.9, `getrandom` 0.4.3, `flate2` 1.1.10, `zeroize` 1.9.0 (file-backed `master.key`, `0600`; `keyring` 4.2.0 removed 2026-10-12 — see amendment record below) | Selected manifests and package license files; full transitive inventory completed in M11 | M10 keyring spike, archive tests and release Wayland evidence recorded below |
 
 ## Selection record
+
+### History master-key amendment — 2026-10-12 (file-backed key, `keyring` removed)
+
+`keyring` =4.2.0 is removed as a direct `omaterm-state` dependency; the
+production master-key provider is now `FileKeyProvider` (`master.key`,
+`0600`, inside the history directory — Unix mode bits, inherited per-user
+ACL on Windows). Crypto stays byte-identical in kind (ChaCha20-Poly1305 +
+HKDF-SHA256 + `getrandom` + `zeroize`); only the archive version bumps
+(1→2, HKDF info labels `…-v2/…`) to retire the keyring-era files in place.
+Verified with the 1.99.0 local override (`rustc 1.99.0 (b940084d7
+2026-09-28)`; repository 1.98.1 pin unchanged, no MSRV claim):
+`cargo tree -p omaterm-state` shows no `keyring` edge, and `Cargo.lock`
+contains none of `keyring`, `apple-native-keyring-store`,
+`windows-native-keyring-store`, `zbus-secret-service-keyring-store`, or
+`keyring-core` (remaining `zbus` entries belong to GPUI's `oo7` subtree).
+No new package or license enters the inventory through this change; the
+historical M10 keyring-spike record below is retained as the record of what
+was validated then.
 
 ### M19 historical delivered-worktree verification — 2026-10-04
 

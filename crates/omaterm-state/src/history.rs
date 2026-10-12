@@ -2,8 +2,11 @@
 //!
 //! Scrollback archives and the OmaTerm command journal are stored separately
 //! from `workspace-v1.json`, encrypted at rest with a per-archive key derived
-//! from an OS-keyring-held master key. History is disabled by default; nothing
-//! is recorded, encrypted, or written until the user explicitly opts in.
+//! from a random 32-byte master key. The master key lives in a `0600`
+//! file (`master.key`) inside the history directory — no OS keychain or
+//! Secret Service is touched on any platform. History is disabled by
+//! default; nothing is recorded, encrypted, or written until the user
+//! explicitly opts in.
 //!
 //!
 //! Foundation scope: configuration, key-provider abstraction, versioned
@@ -263,16 +266,14 @@ pub fn load_history_config_migrated(
 
 // --- key provider ---------------------------------------------------------
 
-/// Failures from OS-backed key storage. No variant permits a plaintext
+/// Failures from file-backed key storage. No variant permits a plaintext
 /// fallback: callers must preserve in-memory terminal use, keep prior
 /// archives untouched, and surface a recoverable warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyProviderError {
-    /// No usable Secret Service / keyring on this machine or session.
+    /// No usable state directory on this machine or session.
     Unavailable(String),
-    /// The keyring exists but is locked.
-    Locked(String),
-    /// Access was denied by policy or the user.
+    /// Access was denied by filesystem permissions or policy.
     Denied(String),
     /// Stored key is corrupt or has an unexpected shape.
     Corrupt(String),
@@ -284,7 +285,6 @@ impl std::fmt::Display for KeyProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unavailable(detail) => write!(f, "key storage unavailable: {detail}"),
-            Self::Locked(detail) => write!(f, "keyring is locked: {detail}"),
             Self::Denied(detail) => write!(f, "key storage denied access: {detail}"),
             Self::Corrupt(detail) => write!(f, "stored key is corrupt: {detail}"),
             Self::Storage(detail) => write!(f, "key storage failure: {detail}"),
@@ -294,8 +294,8 @@ impl std::fmt::Display for KeyProviderError {
 
 impl std::error::Error for KeyProviderError {}
 
-/// Abstraction over master-key storage. Production Linux stores only a
-/// randomly generated 32-byte master key in Secret Service; tests inject
+/// Abstraction over master-key storage. The production provider keeps a
+/// randomly generated 32-byte master key in a `0600` file; tests inject
 /// [`InMemoryKeyProvider`]. The master key itself never touches logs, errors,
 /// crash messages, or workspace JSON.
 pub trait KeyProvider: Send {
@@ -314,7 +314,7 @@ pub trait KeyProvider: Send {
 
 /// In-memory provider for tests and for headless environments where the
 /// caller has already decided to keep history memory-only. Supports injected
-/// failures so key-loss paths are covered without touching the real keyring.
+/// failures so key-loss paths are covered without touching the real key file.
 #[derive(Debug, Default)]
 pub struct InMemoryKeyProvider {
     key: Option<[u8; 32]>,
@@ -421,62 +421,178 @@ impl Drop for InMemoryKeyProvider {
     }
 }
 
-/// Production Linux provider backed by Secret Service via the `keyring` crate
-/// (sync v1 API; Secret Service is the store on `*nix`). Only the random
-/// master key is stored, hex-encoded; no terminal output ever reaches it.
-pub struct OsKeyProvider {
-    service: String,
-    user: String,
+/// File name of the master key inside the history directory. Deliberately
+/// outside the `<pane>.<revision>.{omhist,omjournal}` namespace so archive
+/// scans, quota accounting, and explicit clears never treat it as an archive.
+pub const MASTER_KEY_FILENAME: &str = "master.key";
+
+fn map_key_io_error(error: std::io::Error) -> KeyProviderError {
+    use std::io::ErrorKind as K;
+    match error.kind() {
+        K::PermissionDenied => KeyProviderError::Denied(error.to_string()),
+        other => KeyProviderError::Storage(format!("{other:?}: {error}")),
+    }
+}
+
+/// Production provider backed by a `0600` file in the history directory.
+/// Only the random master key is stored, hex-encoded; no terminal output
+/// ever reaches it. On Unix the file is created with mode `0600` and its
+/// parent with `0700`; on Windows it inherits the per-user profile ACL like
+/// the archive files beside it (no explicit ACL hardening there).
+pub struct FileKeyProvider {
+    key_file: PathBuf,
     cached: Option<[u8; 32]>,
 }
 
-impl OsKeyProvider {
+impl FileKeyProvider {
     #[must_use]
-    pub fn omaterm_default() -> Self {
+    pub fn with_path(key_file: PathBuf) -> Self {
         Self {
-            service: "omaterm-history".to_string(),
-            user: "history-master-key".to_string(),
+            key_file,
             cached: None,
         }
     }
 
+    /// The production path: `master.key` inside [`default_history_dir`].
+    /// Returns `None` when no usable state directory exists; the caller then
+    /// falls back to a memory-only provider.
     #[must_use]
-    pub fn with_names(service: &str, user: &str) -> Self {
-        Self {
-            service: service.to_string(),
-            user: user.to_string(),
-            cached: None,
+    pub fn omaterm_default() -> Option<Self> {
+        default_history_dir().map(|dir| Self::with_path(dir.join(MASTER_KEY_FILENAME)))
+    }
+
+    fn ensure_parent_dir(&self) -> Result<(), KeyProviderError> {
+        let Some(parent) = self.key_file.parent() else {
+            return Err(KeyProviderError::Unavailable(
+                "key path has no parent".into(),
+            ));
+        };
+        fs::create_dir_all(parent).map_err(map_key_io_error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Best effort: the history dir must not be group/other-accessible.
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
         }
+        // Refuse to follow a symlinked key path: it would redirect reads
+        // (and the create link below) outside the history directory. The
+        // check is best-effort against a TOCTOU swap, not a proof.
+        if let Ok(meta) = fs::symlink_metadata(&self.key_file)
+            && meta.file_type().is_symlink()
+        {
+            return Err(KeyProviderError::Denied(format!(
+                "refusing symlinked key file: {}",
+                self.key_file.display()
+            )));
+        }
+        Ok(())
     }
 
-    fn entry(&self) -> Result<keyring::Entry, KeyProviderError> {
-        keyring::Entry::new(&self.service, &self.user).map_err(|error| map_keyring_error(&error))
-    }
-}
-
-fn map_keyring_error(error: &keyring::Error) -> KeyProviderError {
-    use keyring::Error as E;
-    match error {
-        E::NoEntry => KeyProviderError::Unavailable("no master key stored yet".into()),
-        E::NoStorageAccess(inner) => {
-            let detail = inner.to_string().to_lowercase();
-            if detail.contains("locked") {
-                KeyProviderError::Locked(inner.to_string())
-            } else if detail.contains("denied")
-                || detail.contains("permission")
-                || detail.contains("access")
+    /// Read and validate the existing key file. `Ok(None)` means absent.
+    fn read_existing(&self) -> Result<Option<[u8; 32]>, KeyProviderError> {
+        let bytes = match fs::read(&self.key_file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(map_key_io_error(error)),
+        };
+        let text = String::from_utf8(bytes)
+            .map_err(|_| KeyProviderError::Corrupt("key file is not UTF-8".into()))?;
+        let key = decode_key_hex(&text)?;
+        // Best-effort repair: a readable-but-wide key file is tightened back
+        // to owner-only. The read already succeeded, so a repair failure is
+        // not fatal — the key itself is valid.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&self.key_file)
+                && meta.permissions().mode() & 0o077 != 0
             {
-                KeyProviderError::Denied(inner.to_string())
-            } else {
-                KeyProviderError::Unavailable(inner.to_string())
+                let _ = fs::set_permissions(&self.key_file, fs::Permissions::from_mode(0o600));
             }
         }
-        E::PlatformFailure(inner) => {
-            KeyProviderError::Storage(format!("platform key storage failure: {inner}"))
+        Ok(Some(key))
+    }
+
+    /// Create the key file exactly once across racing processes: write the
+    /// fresh key to a unique `0600` temp file, then hard-link it onto the
+    /// final name. The link fails with `AlreadyExists` when another process
+    /// won the race, in which case the winner's key is read back instead of
+    /// clobbering it. A last-writer-wins rename is deliberately avoided here:
+    /// it would orphan the loser's archives under an unreadable key.
+    fn create_if_absent(&mut self) -> Result<[u8; 32], KeyProviderError> {
+        self.ensure_parent_dir()?;
+        let key = random_master_key()?;
+        let temp = unique_temp_path(&self.key_file);
+        {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp).map_err(map_key_io_error)?;
+            file.write_all(encode_key_hex(&key).as_bytes())
+                .map_err(map_key_io_error)?;
+            file.sync_all().map_err(map_key_io_error)?;
         }
-        E::NoDefaultStore => KeyProviderError::Unavailable("no default credential store".into()),
-        E::NotSupportedByStore(detail) => KeyProviderError::Unavailable(detail.clone()),
-        other => KeyProviderError::Storage(other.to_string()),
+        match fs::hard_link(&temp, &self.key_file) {
+            Ok(()) => {
+                let _ = fs::remove_file(&temp);
+                self.cached = Some(key);
+                Ok(key)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&temp);
+                match self.read_existing()? {
+                    Some(winner) => {
+                        self.cached = Some(winner);
+                        Ok(winner)
+                    }
+                    // Lost the race and the winner's file vanished: surface a
+                    // transient failure; the caller's retry loop re-attempts.
+                    None => Err(KeyProviderError::Storage(
+                        "key file vanished during concurrent creation".into(),
+                    )),
+                }
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp);
+                // Filesystems without hardlink support (or other link
+                // failures) must never silently clobber: if the final name
+                // appeared meanwhile, adopt it; otherwise fail transiently
+                // and let the retry loop try again.
+                if let Some(winner) = self.read_existing()? {
+                    self.cached = Some(winner);
+                    Ok(winner)
+                } else {
+                    Err(map_key_io_error(error))
+                }
+            }
+        }
+    }
+
+    /// Replace the key file atomically (temp + rename). Unlike creation,
+    /// replacement is single-writer by design: rotation only runs from the
+    /// explicit clear-all path.
+    fn write_replacement(&self, key: &[u8; 32]) -> Result<(), KeyProviderError> {
+        self.ensure_parent_dir()?;
+        let temp = unique_temp_path(&self.key_file);
+        {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp).map_err(map_key_io_error)?;
+            file.write_all(encode_key_hex(key).as_bytes())
+                .map_err(map_key_io_error)?;
+            file.sync_all().map_err(map_key_io_error)?;
+        }
+        fs::rename(&temp, &self.key_file).map_err(map_key_io_error)?;
+        Ok(())
     }
 }
 
@@ -509,27 +625,17 @@ fn decode_key_hex(text: &str) -> Result<[u8; 32], KeyProviderError> {
     Ok(key)
 }
 
-impl KeyProvider for OsKeyProvider {
+impl KeyProvider for FileKeyProvider {
     fn get_or_create_master_key(&mut self) -> Result<[u8; 32], KeyProviderError> {
         if let Some(key) = self.cached {
             return Ok(key);
         }
-        let entry = self.entry()?;
-        match entry.get_password() {
-            Ok(text) => {
-                let key = decode_key_hex(&text)?;
+        match self.read_existing()? {
+            Some(key) => {
                 self.cached = Some(key);
                 Ok(key)
             }
-            Err(keyring::Error::NoEntry) => {
-                let key = random_master_key()?;
-                entry
-                    .set_password(&encode_key_hex(&key))
-                    .map_err(|error| map_keyring_error(&error))?;
-                self.cached = Some(key);
-                Ok(key)
-            }
-            Err(error) => Err(map_keyring_error(&error)),
+            None => self.create_if_absent(),
         }
     }
 
@@ -538,12 +644,9 @@ impl KeyProvider for OsKeyProvider {
     }
 
     fn rotate_master_key(&mut self) -> Result<[u8; 32], KeyProviderError> {
-        let entry = self.entry()?;
         let mut old = self.cached.take();
         let key = random_master_key()?;
-        entry
-            .set_password(&encode_key_hex(&key))
-            .map_err(|error| map_keyring_error(&error))?;
+        self.write_replacement(&key)?;
         self.cached = Some(key);
         if let Some(slot) = old.as_mut() {
             slot.zeroize();
@@ -552,21 +655,20 @@ impl KeyProvider for OsKeyProvider {
     }
 
     fn remove_master_key(&mut self) -> Result<(), KeyProviderError> {
-        let entry = self.entry()?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {
-                if let Some(slot) = self.cached.as_mut() {
-                    slot.zeroize();
-                }
-                self.cached = None;
-                Ok(())
-            }
-            Err(error) => Err(map_keyring_error(&error)),
+        if let Err(error) = fs::remove_file(&self.key_file)
+            && self.key_file.exists()
+        {
+            return Err(map_key_io_error(error));
         }
+        if let Some(slot) = self.cached.as_mut() {
+            slot.zeroize();
+        }
+        self.cached = None;
+        Ok(())
     }
 }
 
-impl Drop for OsKeyProvider {
+impl Drop for FileKeyProvider {
     fn drop(&mut self) {
         if let Some(slot) = self.cached.as_mut() {
             slot.zeroize();
@@ -708,11 +810,16 @@ fn decode_events_plaintext(
 // --- encrypted archive ------------------------------------------------------
 
 const ARCHIVE_MAGIC: &[u8; 8] = b"OMHIST01";
-const ARCHIVE_VERSION: u32 = 1;
+/// Current archive version. Version 1 was the OS-keyring era; version 2 is
+/// the file-backed master-key era. Version-1 files are never decrypted,
+/// quarantined, or deleted by the loader — they are retired in place (see
+/// [`HistoryStore::has_retired_archives`]) and ignored by revision scans so
+/// fresh version-2 archives are always reachable.
+const ARCHIVE_VERSION: u32 = 2;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
-const HKDF_INFO_SCROLLBACK: &[u8] = b"omaterm-history-v1/scrollback";
-const HKDF_INFO_JOURNAL: &[u8] = b"omaterm-history-v1/journal";
+const HKDF_INFO_SCROLLBACK: &[u8] = b"omaterm-history-v2/scrollback";
+const HKDF_INFO_JOURNAL: &[u8] = b"omaterm-history-v2/journal";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HistoryError {
@@ -831,6 +938,29 @@ fn encrypt_framed_payload(
         return Err(HistoryError::ArchiveTooLarge(out.len()));
     }
     Ok(out)
+}
+
+/// Read the archive version from a file header without parsing the rest.
+/// Returns `None` when the file is unreadable or has bad magic — such files
+/// keep the existing corrupt path (quarantine on load), never silent skip.
+fn read_archive_version(path: &Path) -> Option<u32> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut header = [0u8; 12];
+    std::io::Read::read_exact(&mut file, &mut header).ok()?;
+    if header[..8] != *ARCHIVE_MAGIC {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        header[8], header[9], header[10], header[11],
+    ]))
+}
+
+/// True when the file carries the current archive version, or when its
+/// version cannot be determined (unreadable / bad magic): the latter keeps
+/// the existing corrupt/quarantine behavior on load. Retired versions return
+/// false so scans skip them without touching the files.
+fn is_live_archive(path: &Path) -> bool {
+    read_archive_version(path).is_none_or(|version| version == ARCHIVE_VERSION)
 }
 
 struct ParsedArchive<'a> {
@@ -1252,11 +1382,12 @@ impl HistoryStore {
         Ok(Some(bytes))
     }
 
-    /// Bytes of this pane's live (non-quarantined) archives of one suffix
-    /// with a lower revision: they are deleted right after the new revision
-    /// lands, so a replacement save must not count them against the
-    /// workspace quota. Quarantined files are retained for diagnosis and
-    /// keep counting.
+    /// Bytes of this pane's live (current-version, non-quarantined)
+    /// archives of one suffix with a lower revision: they are deleted right
+    /// after the new revision lands, so a replacement save must not count
+    /// them against the workspace quota. Quarantined files are retained for
+    /// diagnosis and keep counting; retired-version files are left untouched
+    /// and keep counting too.
     fn replaced_bytes(&self, pane: &str, revision: u64, suffix: &str) -> u64 {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
@@ -1275,6 +1406,7 @@ impl HistoryStore {
                 && prior < revision
                 && let Ok(meta) = entry.metadata()
                 && meta.is_file()
+                && is_live_archive(&entry.path())
             {
                 replaced = replaced.saturating_add(meta.len());
             }
@@ -1318,7 +1450,8 @@ impl HistoryStore {
         Ok(())
     }
 
-    /// Total bytes of history files (bounded scan; used for quota).
+    /// Total bytes of history files (bounded scan; used for quota). The
+    /// master-key file is excluded: it is key material, not history data.
     pub fn total_bytes(&self) -> Result<u64, StoreError> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
@@ -1329,7 +1462,9 @@ impl HistoryStore {
         let mut count = 0usize;
         for entry in entries {
             let entry = entry?;
-            if entry.file_type()?.is_file() {
+            if entry.file_type()?.is_file()
+                && entry.file_name().to_string_lossy().as_ref() != MASTER_KEY_FILENAME
+            {
                 total = total.saturating_add(entry.metadata()?.len());
             }
             count += 1;
@@ -1372,6 +1507,10 @@ impl HistoryStore {
         };
         match decrypt_archive(master, &bytes, self.limits) {
             Ok((events, _uuid, revision)) => Ok(HistoryLoad::Scrollback(events, revision)),
+            // Retired versions are left untouched on disk (never renamed to
+            // quarantine) and reported as missing; the caller checks
+            // `has_retired_archives` for the one-time notice.
+            Err(HistoryError::UnsupportedVersion(_)) => Ok(HistoryLoad::Missing),
             Err(error) => {
                 let quarantined = path.with_extension("omhist.quarantined");
                 // Retain the corrupt file for diagnosis; never overwrite it.
@@ -1412,6 +1551,9 @@ impl HistoryStore {
         };
         match decrypt_journal(master, &bytes, self.limits) {
             Ok((entries, _uuid, revision)) => Ok(HistoryLoad::Journal(entries, revision)),
+            // Retired versions are left untouched on disk (never renamed to
+            // quarantine) and reported as missing; see `load_scrollback`.
+            Err(HistoryError::UnsupportedVersion(_)) => Ok(HistoryLoad::Missing),
             Err(error) => {
                 let quarantined = path.with_extension("omjournal.quarantined");
                 let _ = fs::rename(&path, &quarantined);
@@ -1446,12 +1588,44 @@ impl HistoryStore {
             let middle = &name[prefix.len()..name.len() - ext.len()];
             if let Ok(revision) = middle.parse::<u64>() {
                 let path = entry.path();
+                // Retired-version files are invisible to revision tracking:
+                // without this, a v1 file at a higher revision would shadow
+                // fresh current-version archives forever.
+                if !is_live_archive(&path) {
+                    continue;
+                }
                 if best.as_ref().is_none_or(|(_, current)| revision > *current) {
                     best = Some((path, revision));
                 }
             }
         }
         Ok(best)
+    }
+
+    /// True when the pane has retired-version archives on disk. Used for the
+    /// one-time "previous format retired; starting fresh" notice. The files
+    /// themselves are never touched by this check.
+    pub fn has_retired_archives(&self, pane: &str) -> bool {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(_) => return false,
+        };
+        let prefix = format!("{pane}.");
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(&prefix)
+                || (!name.ends_with(".omhist") && !name.ends_with(".omjournal"))
+            {
+                continue;
+            }
+            let path = entry.path();
+            if let Some(version) = read_archive_version(&path)
+                && version != ARCHIVE_VERSION
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn remove_older_revisions(
@@ -1476,6 +1650,7 @@ impl HistoryStore {
             let middle = &name[prefix.len()..name.len() - ext.len()];
             if let Ok(revision) = middle.parse::<u64>()
                 && revision < keep
+                && is_live_archive(&entry.path())
             {
                 let _ = fs::remove_file(entry.path());
             }
@@ -1542,7 +1717,9 @@ impl HistoryStore {
         Ok(removed)
     }
 
-    /// Archive inventory for `history status`: (file name, bytes).
+    /// Archive inventory for `history status`: (file name, bytes). The
+    /// master-key file is excluded: status reports history data, never key
+    /// material (its presence must not even leak through a file count).
     pub fn inventory(&self) -> Result<Vec<(String, u64)>, StoreError> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
@@ -1552,11 +1729,12 @@ impl HistoryStore {
         let mut out = Vec::new();
         for entry in entries {
             let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == MASTER_KEY_FILENAME {
+                continue;
+            }
             if entry.file_type()?.is_file() {
-                out.push((
-                    entry.file_name().to_string_lossy().into_owned(),
-                    entry.metadata()?.len(),
-                ));
+                out.push((name, entry.metadata()?.len()));
             }
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1757,10 +1935,10 @@ mod tests {
     #[test]
     fn in_memory_key_failure_never_yields_plaintext_path() {
         let mut provider = InMemoryKeyProvider::new();
-        provider.fail_next(KeyProviderError::Locked("locked".into()));
+        provider.fail_next(KeyProviderError::Denied("locked".into()));
         assert!(matches!(
             provider.get_or_create_master_key(),
-            Err(KeyProviderError::Locked(_))
+            Err(KeyProviderError::Denied(_))
         ));
     }
 
@@ -2256,6 +2434,198 @@ mod tests {
             load_history_config_toml(&path),
             Err(ConfigError::Parse(_))
         ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn file_provider_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("omaterm-keyfile-{tag}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn file_key_provider_round_trip_rotate_remove() {
+        let dir = file_provider_dir("roundtrip");
+        let key_file = dir.join(MASTER_KEY_FILENAME);
+        let mut provider = FileKeyProvider::with_path(key_file.clone());
+        assert_eq!(provider.master_key(), None);
+        let first = provider.get_or_create_master_key().unwrap();
+        assert_eq!(provider.master_key(), Some(first));
+        assert_eq!(provider.get_or_create_master_key().unwrap(), first);
+        // On-disk shape: 64 lowercase hex chars, owner-only on unix.
+        let stored = fs::read_to_string(&key_file).unwrap();
+        assert_eq!(stored.len(), 64);
+        assert!(stored.bytes().all(|b| b.is_ascii_hexdigit()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // A second provider against the same path adopts the stored key.
+        let mut second = FileKeyProvider::with_path(key_file.clone());
+        assert_eq!(second.get_or_create_master_key().unwrap(), first);
+        let rotated = provider.rotate_master_key().unwrap();
+        assert_ne!(rotated, first);
+        assert_eq!(provider.get_or_create_master_key().unwrap(), rotated);
+        provider.remove_master_key().unwrap();
+        assert_eq!(provider.master_key(), None);
+        assert!(!key_file.exists());
+        // Removing an absent key is idempotent, and a fresh key is created.
+        provider.remove_master_key().unwrap();
+        let recreated = provider.get_or_create_master_key().unwrap();
+        assert_ne!(recreated, rotated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_key_provider_corrupt_key_is_corrupt() {
+        let dir = file_provider_dir("corrupt");
+        let key_file = dir.join(MASTER_KEY_FILENAME);
+        fs::write(&key_file, "not-hex-at-all").unwrap();
+        let mut provider = FileKeyProvider::with_path(key_file);
+        assert!(matches!(
+            provider.get_or_create_master_key(),
+            Err(KeyProviderError::Corrupt(_))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_key_provider_permission_denied_maps_to_denied() {
+        // Root bypasses file permissions, so this can only fail as non-root.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = file_provider_dir("denied");
+        let key_file = dir.join(MASTER_KEY_FILENAME);
+        fs::write(&key_file, "a".repeat(64)).unwrap();
+        fs::set_permissions(&key_file, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut provider = FileKeyProvider::with_path(key_file.clone());
+        assert!(matches!(
+            provider.get_or_create_master_key(),
+            Err(KeyProviderError::Denied(_))
+        ));
+        fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_key_provider_concurrent_create_converges_on_one_key() {
+        let dir = file_provider_dir("race");
+        let key_file = dir.join(MASTER_KEY_FILENAME);
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = key_file.clone();
+                std::thread::spawn(move || {
+                    FileKeyProvider::with_path(path).get_or_create_master_key()
+                })
+            })
+            .collect();
+        let mut keys = Vec::new();
+        for handle in handles {
+            keys.push(handle.join().expect("worker panicked").expect("key"));
+        }
+        assert!(keys.windows(2).all(|pair| pair[0] == pair[1]));
+        // The stored file decodes to the agreed key.
+        let stored = fs::read_to_string(&key_file).unwrap();
+        assert_eq!(decode_key_hex(&stored).unwrap(), keys[0]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Patch a current-version archive into a version-1 (retired) one.
+    fn retire_version(bytes: &[u8]) -> Vec<u8> {
+        let mut retired = bytes.to_vec();
+        retired[8..12].copy_from_slice(&1u32.to_le_bytes());
+        retired
+    }
+
+    #[test]
+    fn retired_v1_archive_is_missing_and_untouched() {
+        let dir = std::env::temp_dir().join(format!("omaterm-histret-{}", uuid::Uuid::new_v4()));
+        let store = HistoryStore::new(dir.clone(), test_limits());
+        let pane = opaque_pane_name(&test_uuid());
+        let master = test_master();
+        // A retired-version file fails the version gate before decryption.
+        let live =
+            encrypt_archive(&master, &test_uuid(), 1, &sample_events(), test_limits()).unwrap();
+        assert!(matches!(
+            decrypt_archive(&master, &retire_version(&live), test_limits()),
+            Err(HistoryError::UnsupportedVersion(1))
+        ));
+        let path = dir.join(format!("{pane}.1.omhist"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, retire_version(&live)).unwrap();
+        // The loader reports missing, never quarantines, never deletes.
+        assert!(matches!(
+            store.load_scrollback(&master, &pane).unwrap(),
+            HistoryLoad::Missing
+        ));
+        assert!(path.exists(), "retired file must be left untouched");
+        assert!(
+            !dir.join(format!("{pane}.1.omhist.quarantined")).exists(),
+            "retired file must not be quarantined"
+        );
+        assert!(store.has_retired_archives(&pane));
+        assert!(!store.has_retired_archives(&"f".repeat(32)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn revision_scan_prefers_live_over_higher_retired_revision() {
+        let dir = std::env::temp_dir().join(format!("omaterm-histscan-{}", uuid::Uuid::new_v4()));
+        let store = HistoryStore::new(dir.clone(), test_limits());
+        let pane = opaque_pane_name(&test_uuid());
+        let master = test_master();
+        let events = sample_events();
+        // Live archive at revision 2, retired file shadowing it at revision 9.
+        store
+            .save_scrollback(&master, &pane, &test_uuid(), 2, &events)
+            .unwrap();
+        let live = encrypt_archive(&master, &test_uuid(), 9, &events, test_limits()).unwrap();
+        fs::write(dir.join(format!("{pane}.9.omhist")), retire_version(&live)).unwrap();
+        match store.load_scrollback(&master, &pane).unwrap() {
+            HistoryLoad::Scrollback(loaded, revision) => {
+                assert_eq!(loaded, events);
+                assert_eq!(revision, 2, "live archive wins over retired shadow");
+            }
+            other => panic!("expected live scrollback, got {other:?}"),
+        }
+        // Saving revision 3 removes the superseded live revision 2 but keeps
+        // the retired file in place.
+        store
+            .save_scrollback(&master, &pane, &test_uuid(), 3, &events)
+            .unwrap();
+        assert!(dir.join(format!("{pane}.9.omhist")).exists());
+        assert!(!dir.join(format!("{pane}.2.omhist")).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inventory_and_quota_ignore_the_master_key_file() {
+        let dir = std::env::temp_dir().join(format!("omaterm-histkeyinv-{}", uuid::Uuid::new_v4()));
+        let store = HistoryStore::new(dir.clone(), test_limits());
+        let mut provider = FileKeyProvider::with_path(dir.join(MASTER_KEY_FILENAME));
+        provider.get_or_create_master_key().unwrap();
+        assert!(store.inventory().unwrap().is_empty());
+        assert_eq!(store.total_bytes().unwrap(), 0);
+        // Archives are still counted once they exist.
+        store
+            .save_scrollback(
+                &test_master(),
+                &opaque_pane_name(&test_uuid()),
+                &test_uuid(),
+                1,
+                &sample_events(),
+            )
+            .unwrap();
+        assert_eq!(store.inventory().unwrap().len(), 1);
+        assert!(store.total_bytes().unwrap() > 64);
         let _ = fs::remove_dir_all(&dir);
     }
 }

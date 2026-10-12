@@ -3455,7 +3455,7 @@ impl WorkspaceView {
             }
             // Encrypted history checkpoints before the final snapshot so a
             // restart restores both layout and scrollback. Bounded: slow or
-            // locked key storage never blocks shutdown indefinitely.
+            // unavailable key storage never blocks shutdown indefinitely.
             if let Some(manager) = history.as_mut()
                 && !manager.shutdown_flush_targets(history_targets, Duration::from_secs(10))
             {

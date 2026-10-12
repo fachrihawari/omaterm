@@ -125,8 +125,9 @@ UI thread.
 - Versioned JSON protocol over an owner-validated Unix socket
   (`$XDG_RUNTIME_DIR/omaterm.sock`), project-scoped capabilities, no keyboard
   simulation, no guessing state from terminal text.
-- Opt-in **encrypted history recovery**: ChaCha20Poly1305 archives in the OS
-  keyring, plus an OmaTerm command journal — secrets never touch plaintext.
+- Opt-in **encrypted history recovery**: ChaCha20Poly1305 archives sealed by
+  a file-backed master key (`0600`), plus an OmaTerm command journal —
+  secrets never touch plaintext.
 
 ## Install
 
