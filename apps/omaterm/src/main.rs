@@ -9933,11 +9933,19 @@ impl WorkspaceView {
         true
     }
 
+    /// One remote-action icon button (fetch/pull/push). Glyphs are arrow
+    /// directions — `ARROW_UP_DOWN` for fetch (remote exchange), `ARROW_DOWN`
+    /// for pull, `ARROW_UP` for push — so the three stay distinguishable
+    /// without text at narrow widths. Dispatch flows through the shared
+    /// `GitCommand` path; while one runs all three dim (busy) and completion
+    /// lands as a toast. `Publish` (no upstream, `push -u origin HEAD`)
+    /// shares the push glyph and op.
     fn git_sync_button(
         &mut self,
         project: ProjectId,
         label: &'static str,
         op: &'static str,
+        glyph: &'static str,
         cx: &mut Context<Self>,
     ) -> Div {
         let repo_key = self.active_repo_key(project);
@@ -9945,21 +9953,14 @@ impl WorkspaceView {
         // `Publish` shares the Push operation (set_upstream:true): match the
         // busy state against the operation label, not the button text.
         let want_label = if op == "publish" { "Push" } else { label };
-        let text = self
+        let running = self
             .sync_pending
             .as_ref()
-            .filter(|task| task.repo == repo_key && task.operation.label() == want_label)
-            .map(|task| task.operation.pending_label())
-            .unwrap_or(label);
+            .is_some_and(|task| task.repo == repo_key && task.operation.label() == want_label);
         div()
-            .h(px(24.0))
-            .px(px(6.0))
-            .min_w(px(58.0))
-            .justify_center()
-            .flex()
-            .items_center()
+            .p(px(5.0))
             .rounded(px(4.0))
-            .role(crate::ui::metrics::META_10)
+            .flex_shrink_0()
             .text_color(rgb(if busy {
                 crate::ui::theme::colors().muted2
             } else {
@@ -9972,6 +9973,9 @@ impl WorkspaceView {
                     s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
                         .text_color(gpui::rgb(crate::ui::theme::colors().text))
                 }
+            })
+            .when(running, |s| {
+                s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -10002,7 +10006,15 @@ impl WorkspaceView {
                     view.git_sync_action(command, cx);
                 }),
             )
-            .child(text)
+            .child(crate::ui::primitives::cmd_icon(
+                glyph,
+                13.0,
+                if busy {
+                    crate::ui::theme::colors().muted2
+                } else {
+                    crate::ui::theme::colors().muted
+                },
+            ))
     }
 
     /// Toggle per-file blame for a worktree preview. Fetch rides the
@@ -14889,21 +14901,13 @@ impl WorkspaceView {
             focused: input_focused,
             caret_visible: self.commit_caret_on,
         });
-        // Two-row header. Row 1 is branch identity: icon, picker (takes
-        // the full width now that the actions moved out), sync pill and
-        // refresh. Row 2 is the remote action bar (Fetch/Pull/Push). One
-        // 40px row holding all of that truncated the branch to a stub in
-        // a narrow inspector. Multi-repo projects also name the active
-        // repository (muted, after the picker): the chrome highlight alone
-        // was not enough to answer "which repo am I staging in?" after a
-        // keyboard/CLI switch. Single-repo projects show nothing extra.
+        // Single-row header: branch icon, picker (flex-1, truncates with an
+        // ellipsis), sync pill, then fetch/pull/push icons and refresh pinned
+        // right with `flex_shrink_0` so a long branch name can never push the
+        // actions out of the panel. The repo name stays out: the chrome's
+        // highlighted row above (and its collapsed label) already identifies
+        // the active repository, and the name cell starved the branch.
         let has_upstream = status.upstream.is_some();
-        let active_repo_name = self
-            .coordinator
-            .repo_scan(project)
-            .is_some_and(|scan| scan.repos.len() > 1)
-            .then(|| self.coordinator.active_repo(project))
-            .flatten();
         let mut header = div()
             .flex()
             .flex_col()
@@ -14939,19 +14943,6 @@ impl WorkspaceView {
                                     .rounded(px(4.0)),
                             ),
                     )
-                    .children(active_repo_name.map(|name| {
-                        crate::ui::metrics::text_role(
-                            div()
-                                .flex_shrink_0()
-                                .max_w(px(96.0))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis(),
-                            crate::ui::metrics::META_10,
-                        )
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .child(format!("· {name}"))
-                    }))
                     .children(sync_pill.map(|sync_pill| {
                         crate::ui::metrics::text_role(
                             crate::ui::primitives::pill()
@@ -14964,6 +14955,32 @@ impl WorkspaceView {
                         .text_color(rgb(crate::ui::theme::colors().cyan))
                         .child(sync_pill)
                     }))
+                    .child(self.git_sync_button(
+                        project,
+                        "Fetch",
+                        "fetch",
+                        crate::ui::assets::ARROW_UP_DOWN,
+                        cx,
+                    ))
+                    .child(self.git_sync_button(
+                        project,
+                        "Pull",
+                        "pull",
+                        crate::ui::assets::ARROW_DOWN,
+                        cx,
+                    ))
+                    .child({
+                        // No upstream: offer explicit publish (`push -u origin
+                        // HEAD`) instead of a push that can only fail with
+                        // `NoUpstream`. Same push glyph either way.
+                        self.git_sync_button(
+                            project,
+                            if has_upstream { "Push" } else { "Publish" },
+                            if has_upstream { "push" } else { "publish" },
+                            crate::ui::assets::ARROW_UP,
+                            cx,
+                        )
+                    })
                     .child(
                         div()
                             .p(px(5.0))
@@ -14992,29 +15009,6 @@ impl WorkspaceView {
                                 crate::ui::theme::colors().muted,
                             )),
                     ),
-            )
-            .child(
-                div()
-                    .h(px(30.0))
-                    .pl_3()
-                    .pr_1()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .child(self.git_sync_button(project, "Fetch", "fetch", cx))
-                    .child(self.git_sync_button(project, "Pull", "pull", cx))
-                    .child({
-                        // No upstream: offer explicit publish (`push -u origin
-                        // HEAD`) instead of a push that can only fail with
-                        // `NoUpstream`.
-                        self.git_sync_button(
-                            project,
-                            if has_upstream { "Push" } else { "Publish" },
-                            if has_upstream { "push" } else { "publish" },
-                            cx,
-                        )
-                    }),
             );
         if !dirty {
             // Disabled composer strip: same 32px geometry as the dirty

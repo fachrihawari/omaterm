@@ -9,6 +9,24 @@
 
 ## Current position
 
+### Git header: icon sync actions, single row (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+User screenshot: the 30px Fetch/Pull/Push text row plus the `· repo`
+name cell squeezed the branch in a narrow inspector. The header is one
+40px row again: branch icon + picker (flex-1, truncates) + sync pill +
+fetch/pull/push icon buttons + refresh, all actions `flex_shrink_0` so a
+long branch can never push them out. Glyphs are arrow directions (fetch
+`arrow-up-down`, pull `arrow-down`, push `arrow-up`); publish keeps the
+push glyph and op. Busy dims the running icon (row highlight) with the
+completion toast unchanged; the `pending_label` helper left with the text
+buttons. The `· repo` name cell is gone — the chrome highlight + collapsed
+label carry repo identity.
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green), `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS, `python3 scripts/check-docs.py` PASS, `git diff
+  --check` PASS. Wayland check (long branch + icons pinned at 280px)
+  remains manual.
+
 ### Git tab UI/UX deep-dive slices 1–5 (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
 
 Follows the `/plan` deep-dive (repo selection + hidden-commit-input flags).

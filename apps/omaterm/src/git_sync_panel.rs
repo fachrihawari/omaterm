@@ -36,14 +36,6 @@ impl Operation {
         }
     }
 
-    pub fn pending_label(&self) -> &'static str {
-        match self {
-            Self::Fetch { .. } => "Fetching…",
-            Self::Pull { .. } => "Pulling…",
-            Self::Push { .. } => "Pushing…",
-        }
-    }
-
     fn run(&self, root: &std::path::Path) -> Result<GitSyncReport, omaterm_context::GitError> {
         match self {
             Self::Fetch { remote } => omaterm_context::git_fetch(root, remote.as_deref()),
