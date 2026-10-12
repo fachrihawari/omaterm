@@ -552,8 +552,14 @@ impl CommandRouter {
         let history_store = omaterm_state::default_history_dir().map(|dir| {
             omaterm_state::HistoryStore::new(dir, omaterm_state::HistoryLimits::default())
         });
+        // File-backed master key; memory-only when no state directory is
+        // usable (the store is `None` in that case too, so history stays
+        // memory-only with a warning instead of failing).
         let provider: Box<dyn omaterm_state::KeyProvider> =
-            Box::new(omaterm_state::OsKeyProvider::omaterm_default());
+            match omaterm_state::FileKeyProvider::omaterm_default() {
+                Some(provider) => Box::new(provider),
+                None => Box::new(omaterm_state::InMemoryKeyProvider::new()),
+            };
         let mut history = HistoryManager::new(history_store, provider);
         history.load_config();
         Self {
@@ -808,6 +814,9 @@ impl CommandRouter {
 
     /// The active repository name for a project, following the
     /// saved-else-first-sorted rule (`None` for root repos and non-repos).
+    /// Currently no view caller (the Git header dropped its duplicate repo
+    /// name); kept for CLI/agent consumers alongside `git_roots` above.
+    #[allow(dead_code)]
     pub fn active_repo(&self, project: ProjectId) -> Option<String> {
         let scan = self.repo_scans.get(&project)?;
         let entry = scan.active_entry()?;
@@ -3468,7 +3477,11 @@ impl CommandRouter {
             OmaCommand::Git(GitCommand::Discard { project, paths }) => {
                 self.git_mutation(context, project, &paths, GitMutation::Discard)
             }
-            OmaCommand::Git(GitCommand::Commit { project, message }) => {
+            OmaCommand::Git(GitCommand::Commit {
+                project,
+                message,
+                amend,
+            }) => {
                 let root = match self.git_root(context, project) {
                     Ok(Some(root)) => root,
                     Ok(None) => {
@@ -3479,7 +3492,7 @@ impl CommandRouter {
                     }
                     Err(error) => return CommandResult::Err(error),
                 };
-                match omaterm_context::git_commit(&root, &message) {
+                match omaterm_context::git_commit(&root, &message, amend) {
                     Ok(oid) => {
                         tracing::debug!(
                             target: "omaterm::git",
@@ -8233,6 +8246,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: String::new(),
+                amend: false,
             }),
         );
         assert!(matches!(
@@ -8248,6 +8262,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "nothing staged".into(),
+                amend: false,
             }),
         );
         assert!(matches!(
@@ -8272,6 +8287,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "add b".into(),
+                amend: false,
             }),
         );
         let CommandResult::Ok(CommandOutput::GitCommitted { oid }) = committed.result else {
@@ -8298,6 +8314,7 @@ mod tests {
             OmaCommand::Git(GitCommand::Commit {
                 project: omaterm_core::ProjectId::new(),
                 message: "x".into(),
+                amend: false,
             }),
         );
         assert!(matches!(

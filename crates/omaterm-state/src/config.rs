@@ -10,6 +10,7 @@
 //!
 //! [appearance]
 //! theme = "system"
+//! translucent-sidebar = true
 //!
 //! [automation]
 //! enabled = true
@@ -71,6 +72,8 @@ pub struct TerminalSettings {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppearanceSettings {
     pub theme: Option<String>,
+    /// See-through, blurred Projects sidebar. Absent means on.
+    pub translucent_sidebar: Option<bool>,
 }
 
 /// `[automation]` section. All keys optional.
@@ -126,6 +129,12 @@ impl AppConfig {
     /// Effective theme name: configured value or `"system"`.
     pub fn theme(&self) -> &str {
         self.appearance.theme.as_deref().unwrap_or("system")
+    }
+
+    /// Whether the Projects sidebar shows the blurred desktop behind it.
+    /// Defaults to true. Blur itself is up to the platform compositor.
+    pub fn translucent_sidebar(&self) -> bool {
+        self.appearance.translucent_sidebar.unwrap_or(true)
     }
 
     /// Whether local automation stays enabled. Defaults to true; when false
@@ -231,19 +240,30 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
     if let Some(table) = doc
         .get("appearance")
         .and_then(toml_edit::Item::as_table_like)
-        && let Some(item) = table.get("theme")
     {
-        let theme = item
-            .as_str()
-            .ok_or_else(|| invalid("appearance", "theme", "expected a string"))?;
-        if !KNOWN_THEMES.contains(&theme) {
-            return Err(invalid(
-                "appearance",
-                "theme",
-                format!("expected one of {}", KNOWN_THEMES.join(", ")),
-            ));
+        if let Some(item) = table.get("theme") {
+            let theme = item
+                .as_str()
+                .ok_or_else(|| invalid("appearance", "theme", "expected a string"))?;
+            if !KNOWN_THEMES.contains(&theme) {
+                return Err(invalid(
+                    "appearance",
+                    "theme",
+                    format!("expected one of {}", KNOWN_THEMES.join(", ")),
+                ));
+            }
+            config.appearance.theme = Some(theme.to_owned());
         }
-        config.appearance.theme = Some(theme.to_owned());
+        if let Some(item) = table.get("translucent-sidebar") {
+            let translucent = item.as_bool().ok_or_else(|| {
+                invalid(
+                    "appearance",
+                    "translucent-sidebar",
+                    "expected true or false",
+                )
+            })?;
+            config.appearance.translucent_sidebar = Some(translucent);
+        }
     }
 
     if let Some(table) = doc
@@ -407,6 +427,20 @@ mod tests {
         // The file tree shows everything by default, including dotfiles.
         assert!(config.show_hidden());
         assert_eq!(config.resolved_git_refresh_secs(), DEFAULT_GIT_REFRESH_SECS);
+        assert!(config.translucent_sidebar());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn translucent_sidebar_parses_and_rejects_non_bool() {
+        let dir = temp_dir("translucent");
+        let path = write_config(&dir, "[appearance]\ntranslucent-sidebar = false\n");
+        assert!(!load_app_config_toml(&path).unwrap().translucent_sidebar());
+        let path = write_config(&dir, "[appearance]\ntranslucent-sidebar = \"yes\"\n");
+        assert!(matches!(
+            load_app_config_toml(&path),
+            Err(ConfigError::Invalid(_))
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 

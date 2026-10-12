@@ -145,6 +145,10 @@ impl TerminalRegistry {
 mod tests {
     use super::*;
 
+    // Spawns live PTY shells: Linux only (macOS teardown wedge — see
+    // tests/pty_integration.rs header and docs/status.md). The two pure
+    // tests below (`invalid_size…`, `close_unknown…`) stay ungated.
+    #[cfg(target_os = "linux")]
     fn config() -> TerminalConfig {
         TerminalConfig {
             working_directory: std::env::temp_dir(),
@@ -155,6 +159,8 @@ mod tests {
         }
     }
 
+    /// Live PTY shell: Linux only (macOS teardown wedge).
+    #[cfg(target_os = "linux")]
     #[test]
     fn create_registers_session_with_matching_id() {
         let mut registry = TerminalRegistry::new();
@@ -165,6 +171,8 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 
+    /// Live PTY shells: Linux only (macOS teardown wedge).
+    #[cfg(target_os = "linux")]
     #[test]
     fn multiple_sessions_have_distinct_ids_and_pids() {
         let mut registry = TerminalRegistry::new();
@@ -195,6 +203,8 @@ mod tests {
         assert!(registry.is_empty());
     }
 
+    /// Live PTY shells: Linux only (macOS teardown wedge).
+    #[cfg(target_os = "linux")]
     #[test]
     fn inserts_a_worker_spawned_session_with_its_preallocated_id() {
         let mut registry = TerminalRegistry::new();
@@ -219,6 +229,8 @@ mod tests {
         assert!(registry.close(expected).expect("close sh"));
     }
 
+    /// Live PTY shells with shutdown/reap: Linux only (macOS teardown wedge).
+    #[cfg(target_os = "linux")]
     #[test]
     fn close_removes_only_target_and_reaps() {
         let mut registry = TerminalRegistry::new();
@@ -242,6 +254,8 @@ mod tests {
         ));
     }
 
+    /// Live PTY shell with shutdown: Linux only (macOS teardown wedge).
+    #[cfg(target_os = "linux")]
     #[test]
     fn detach_returns_handle_for_off_thread_shutdown() {
         let mut registry = TerminalRegistry::new();
@@ -254,6 +268,8 @@ mod tests {
         assert!(reaped);
     }
 
+    /// Live PTY shell with exit/reap: Linux only (macOS teardown wedge).
+    #[cfg(target_os = "linux")]
     #[test]
     fn exited_session_stays_registered_until_close() {
         let mut registry = TerminalRegistry::new();
@@ -281,6 +297,8 @@ mod tests {
         assert!(registry.is_empty());
     }
 
+    /// Repeated live PTY lifecycles: Linux only (macOS teardown wedge).
+    #[cfg(target_os = "linux")]
     #[test]
     fn repeated_create_close_leaves_no_entries() {
         let mut registry = TerminalRegistry::new();

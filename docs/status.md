@@ -9,6 +9,345 @@
 
 ## Current position
 
+### History master key: keyring removed, file-backed `master.key` (`feat/history-file-key`) — 2026-10-12
+
+Production history encryption no longer touches any OS keychain / Secret
+Service on any platform: the random 32-byte master key now lives in
+`master.key` (`0600`, inside the history directory) via the new
+`FileKeyProvider` (`crates/omaterm-state/src/history.rs`). Crypto is
+unchanged in kind (ChaCha20-Poly1305, HKDF-SHA256, `getrandom`,
+`zeroize`); only the storage backend moved. `KeyProvider` trait shape is
+unchanged, so the manager/worker/flush paths are untouched; the router
+falls back to a memory-only provider when no state dir is usable
+(`apps/omaterm/src/router.rs`). `keyring =4.2.0` is gone from
+`Cargo.toml`/`Cargo.lock` (no `keyring*` package left; remaining `zbus`
+entries are GPUI's `oo7` subtree).
+
+- **Recorded deviation from blueprint §29** ("OS-backed key storage"):
+  replaced with file permissions (`0600` Unix / inherited per-user ACL on
+  Windows) because the keychain prompt fired on every launch and every
+  30-second key retry, which blocks the default-on goal. Stated plainly,
+  this is a boundary downgrade, not a neutral move: any same-UID reader
+  of the history dir now gets key + archives together (previously the
+  keychain lock/policy stood in between); offline/other-UID protection
+  via encryption is unchanged. **Proposed §29 amendment for maintainer
+  approval** (blueprint text itself not edited): *"The history master
+  key is stored in a `0600` file inside the history directory; no OS
+  keychain is used. At-rest encryption still applies; the residual
+  threat is same-user disk read and forensic recovery."*
+- **Cutover:** hard, no migration. Archive version 1→2 (HKDF labels
+  `…-v2/…`); v1 files are never decrypted, quarantined, or deleted —
+  loads report `Missing` and the first restore/installs the one-time
+  notice *"previous history format retired; starting fresh — old files
+  left untouched"*. Revision scans, quota exemptions, and
+  supersede-deletion skip retired versions, so a high-revision v1 file
+  can never shadow fresh v2 archives; `inventory`/`total_bytes` exclude
+  `master.key` so status never leaks key presence through file counts.
+- **Concurrency:** creation is create-if-absent via temp-then-hardlink
+  (loser adopts the winner's key); a last-writer-wins rename is
+  deliberately avoided so no process orphans the other's archives.
+- Historical docs (M10 milestone spec, acceptance matrix, old status
+  entries) intentionally keep their keyring wording as the record of
+  what was validated then.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (desktop 305 incl. new retired-notice test, state 77 incl. 7 new
+  provider/legacy/scan tests, terminal 198, zero failures),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS (only the
+  known transitive `proc-macro-error2` future-incompat notice),
+  `python3 scripts/check-docs.py` PASS (53 files, 60/60 methods, 39/39
+  shortcuts), `git diff --check` PASS. Toolchain: local 1.99.0 override
+  (`b940084d7`); repo 1.98.1 pin unchanged. No Wayland validation
+  (no render change; the notice string is text-only and unreviewed on
+  screen).
+- Next action: maintainer decision on the §29 amendment; release note
+  one-liner (old archives left in place, fresh start on opt-in).
+
+### History scope: proper icons, not longer words (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+User veto on the `This branch` / `All branches` wording (more text in a
+minimum-space panel) and on the old fork glyph: vendored upstream
+`network.svg` from lucide-static v1.49.0 (same pin as every other icon;
+tint-safety test green) and paired it with `git-branch` — one branch vs
+the commit-graph nodes. Scope control is icon-only again with two shapes
+that actually map to the concepts; the `GIT_FORK` slot stays retired.
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green, incl. vendored-icon test), `cargo clippy
+  --workspace --all-targets -- -D warnings` PASS (0 errors), `python3
+  scripts/check-docs.py` PASS, `git diff --check` PASS. Wayland check
+  remains manual.
+
+### Sidebar footer + history scope labels (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+Two user notes: (1) the `Open Folder…` footer button at the bottom of
+the projects sidebar sized to its content — hover covered the text only;
+(2) the history scope icons (branch vs fork) never mapped to
+current-vs-all (a fork reads as a remote). The footer button is now
+`flex_1` + centered: full-width hit area with matching hover. The scope
+control is two text segments (`Current` / `All`, pressed state kept) and
+the redundant trailing scope word is gone; the `GIT_FORK` slot const is
+removed (SVG stays vendored for future use, like `panel-left-close`).
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green), `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS (0 errors), `python3 scripts/check-docs.py` PASS,
+  `git diff --check` PASS. Wayland check remains manual.
+
+### Git header follow-up: globe fetch + icon bulk actions (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+User notes on the icon header: (1) fetch `⇅` vs refresh `↻` — different
+jobs (network download vs local status re-read) but confusable shapes;
+(2) bulk group actions were icons before, text crowded the 30px header.
+Fetch now uses the vendored `globe-2` glyph (new `GLOBE` slot const):
+globe = network, ↓ = pull, ↑ = push, ↻ stays reserved for the local
+re-read — four distinct shapes. Bulk `Stage/Unstage/Discard all` revert
+to the row-matching icon buttons (`plus`/`minus`/`undo-2`).
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green), `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS (0 errors), `python3 scripts/check-docs.py` PASS,
+  `git diff --check` PASS. Wayland check remains manual.
+
+### Git header: icon sync actions, single row (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+User screenshot: the 30px Fetch/Pull/Push text row plus the `· repo`
+name cell squeezed the branch in a narrow inspector. The header is one
+40px row again: branch icon + picker (flex-1, truncates) + sync pill +
+fetch/pull/push icon buttons + refresh, all actions `flex_shrink_0` so a
+long branch can never push them out. Glyphs are arrow directions (fetch
+`arrow-up-down`, pull `arrow-down`, push `arrow-up`); publish keeps the
+push glyph and op. Busy dims the running icon (row highlight) with the
+completion toast unchanged; the `pending_label` helper left with the text
+buttons. The `· repo` name cell is gone — the chrome highlight + collapsed
+label carry repo identity.
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green), `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS, `python3 scripts/check-docs.py` PASS, `git diff
+  --check` PASS. Wayland check (long branch + icons pinned at 280px)
+  remains manual.
+
+### Git tab UI/UX deep-dive slices 1–5 (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+Follows the `/plan` deep-dive (repo selection + hidden-commit-input flags).
+All slices render-only through the shared `OmaCommand::Git` dispatcher; no
+protocol/CLI shape changes. Narrow-inspector-first: every added cell is
+`flex_shrink_0`-guarded or truncating, no new info on 28/32px rows.
+
+- Slice 1 (repo identity): branch header row 1 names the active repo
+  (`· name`, muted, max 96px, multi-repo projects only; single-repo
+  byte-identical). Active chrome row goes single-line 32px (name + dot —
+  its branch already shows in the header); inactive rows keep two-line
+  46px. Loading branch reads `Loading…`, distinct from stalled states.
+- Slice 2 (always-on composer): the 32px composer renders on clean trees
+  as a disabled strip (`Working tree clean.`, or `Draft saved — stage to
+  commit: …` when a per-repo draft survives) — same geometry as the dirty
+  composer, so clean/dirty switches no longer shift stash + graph. The
+  strip never takes focus; Commit stays dimmed.
+- Slice 3 (overflow): `+N more` becomes a toggle rendering the capped-out
+  tail inline (compact 32px rows, clickable via `select_repo`) plus a
+  substring filter box (tail only — the visible 32 never move, active mark
+  can't hide). `git_repos::filter_repos` pure + unit-tested; per-project
+  drafts, `InputOwner::RepoFilter` + key routing (type/Enter=first
+  match/Esc release), focus cleared on collapse/close/switch (mirrors the
+  stash Hidden-mode rule).
+- Slice 4 (labels): bulk group actions are text (`Stage all`, `Unstage
+  all`, `Discard all`); stash rows are text pills (`Pop`/`Apply`/`Drop`,
+  Drop keeps two-step); Push/Publish button reserves min width so the
+  swap never shifts row 2; the in-flow `Fetching… · Ns` line is gone
+  (button label + completion toast carry it) — header no longer pushes
+  content down. `PendingSync.started` removed (single reader was that
+  line); clippy `-D warnings` clean.
+- Slice 5 (history + help): `Current`/`All` word in the History header
+  names the icon-segment state; expanded commits gain a `commit <short>`
+  + `Copy SHA` row (full hash one click away, rows stay OID-free);
+  status failures gain `Retry` (mirrors history); `git.nav` cheatsheet +
+  `docs/shortcuts.md` cover Left/Right expand/collapse.
+- Out of scope (unchanged): DAG lane graph, multi-line composer, stash
+  file preview, tooltip infra, amend UI (backend stays).
+- Verification: `cargo fmt --all`, `cargo test --workspace` (desktop 304
+  green, incl. new `filter_repos` test), `cargo clippy --workspace
+  --all-targets -- -D warnings` PASS, `python3 scripts/check-docs.py`
+  PASS (53 files, 60/60 methods, 39/39 shortcuts), `git diff --check`
+  PASS. Native Wayland validation (2-repo switch, composer strip states,
+  40-repo overflow+filter, text pills at 280px) remains manual and not
+  claimed passing.
+
+### Git tab readability: two-line repo rows + two-row branch header — 2026-10-11 (uncommitted)
+
+User screenshot: in a narrow inspector, repo rows crammed name + full
+branch + `clean` on one 32px line (long branches starved the repo name
+out entirely), and the branch header crammed icon + branch + repo name +
+sync pill + Fetch/Pull/Push + refresh into one 40px row (branch
+truncated to `fe`, pill read `↑0 ↓19`). View-only slice on
+`feat/git-tab-improvements`; no router/protocol/CLI change.
+
+- `render_repo_chrome` (`apps/omaterm/src/main.rs`): rows are 46px
+  two-line — name + dirty dot on line 1 (`BODY_11`, ellipsis), muted
+  branch on line 2 (`META_9`, the truncating party). `clean` text
+  dropped (clean is the default; the M14 body already says so).
+  Highlight/hover/hairline/32-cap/click-to-switch unchanged.
+- `render_git_panel` header: two rows — row 1 branch icon + picker
+  (`flex_1`, full width) + sync pill + refresh; row 2 remote action
+  bar (Fetch/Pull/Push-or-Publish, same buttons/dispatcher). The
+  duplicated repo name is gone (chrome row + collapsed
+  `REPOSITORIES · name` already identify it; `active_repo` is `None`
+  for single-repo roots so nothing was shown there anyway).
+- New pure `git_panel::sync_pill_label(has_upstream, ahead, behind)`
+  + unit test: hidden without upstream or when in sync, one-sided
+  otherwise (`↓19`, never `↑0 ↓19`).
+- `CommandRouter::active_repo` (`router.rs`) lost its only caller to
+  the header rework: kept with `#[allow(dead_code)]` like the sibling
+  `git_roots`, for CLI/agent consumers.
+- Verification: `cargo fmt --all --check` PASS, `git diff --check`
+  PASS, `python3 scripts/check-docs.py` PASS,
+  `cargo clippy -p omaterm --all-targets` zero code warnings (only the
+  known transitive `proc-macro-error2` future-incompat notice),
+  desktop-bin `git_panel::`/`git_repos::`/`workbench::` suites 16
+  passed, single `router::tests::git_commit_…` 0.20s ok.
+- NOT passing here, environmental (not claimed): the full desktop
+  suite stalls on this Mac — `history::tests::*flush*`,
+  `clear_scopes…`, and `file_open…_bash` spawn real `/bin/bash` PTY
+  children and wedge in `Child::wait` (the documented macOS PTY
+  teardown wedge, `history.rs:835` `test_session` spawns bash); the
+  wedged tests then starve the thread pool so `git_*` router tests
+  (0.20s each in isolation) never get a thread. None of the hung
+  paths touch this diff (render + string helper + allow-attribute).
+  Full suite must re-run on Linux CI. Native Wayland validation of
+  the new rows/header on a narrow 2-repo fixture remains manual.
+
+### macOS port: IPC credential check, Linux-only syscalls, macOS-only test gates — 2026-10-11 (uncommitted)
+
+Option A per plan (stay on crates.io `gpui` 0.2.2 = latest published; verified
+via `crates.io/api/v1/crates/gpui`: `max_version`/`newest_version` 0.2.2,
+2025-10-22 — there is nothing to bump to; Zed `main` is unpublishable,
+`zed#55271`). No dependency version, feature, or `Cargo.lock` change.
+
+- `crates/omaterm-ipc/src/unix.rs`: `peer_uid()` split — `#[cfg(target_os =
+  "linux")]` keeps `SO_PEERCRED` + `ucred` byte-identical; non-Linux Unix uses
+  `libc::getpeereid()` (exists in `libc` BSD family). Windows untouched
+  (`lib.rs` selects `windows.rs`). Fixes the 4x `E0422`/`E0425` on macOS.
+- Same file: `set_read_timeout`/`set_write_timeout` failures of kind
+  `InvalidInput` (macOS `EINVAL` when the peer closes mid frame-loop) no
+  longer abort the op; the previously installed deadline-derived timeout
+  stands and the follow-up read/write surfaces the real state. Other
+  `setsockopt` errors still propagate, so Linux behavior is unchanged (the
+  fallback never fires there for valid timevals). Found via the
+  `request_deadline_exceeded` test failing only on macOS.
+- `crates/omaterm-terminal/src/platform.rs`: pidfd helpers (`open_pidfd`,
+  `signal_pidfd`, `syscall_error`, `ancestry`) and the fd-traits import gated
+  to `#[cfg(all(unix, target_os = "linux"))]`; `linux_terminate` and
+  `terminate_owned` fail closed with `Unsupported` on non-Linux Unix,
+  mirroring the Windows adapter (never fall back to numeric kill). 9
+  live-`/proc`/pidfd tests gated to Linux; pure parser/sampler/math tests
+  stay on all Unix.
+- macOS `/var` → `/private/var` TMPDIR symlink: `FileWatcher` reports
+  canonical paths and `git rev-parse` too, so the watcher test now compares
+  against `canonicalize(&root)` (and passes canonical `extra_skips`, per the
+  documented contract) and `tests/git_roots.rs` canonicalizes expectations.
+  Identity on Linux; no product change.
+- macOS PTY teardown wedge (open gate, see below): shell-spawning tests
+  gated to Linux — whole-mod for `session`, `spawn_queue`, `workspace`
+  (every test spawns, verified), whole-file for `tests/pty_integration.rs`,
+  per-test in `registry` (pure `invalid_size`, `close_unknown` stay live).
+  `lifecycle_token_for_test` gated to match its callers (Clippy `-D`
+  warnings). Gating is test-only: zero effect on any release build.
+- Verification on this Mac (darwin, rustc 1.98.1 repo pin):
+  `cargo fmt --all --check` PASS; `cargo test` for all 8 non-desktop crates
+  PASS — 434 passed, 20 suites (ipc 11, terminal 142, context 113, state 70,
+  +protocol/core/logging/cli); `cargo clippy` for the same 8 crates with
+  `--all-targets -- -D warnings` clean; `git diff --check` PASS;
+  `cargo build --release --bin omaterm` PASS and `./target/release/omaterm
+  --version` prints `omaterm 0.4.0`.
+- Still blocked, both environment-only: `cargo build --release --bin
+  omaterm-desktop` compiles past `omaterm-ipc` and fails only at
+  `gpui@0.2.2: metal shader compilation failed: xcrun: unable to find
+  utility "metal"` — this machine has CommandLineTools only
+  (`xcode-select -p` → `/Library/Developer/CommandLineTools`). Fix on the
+  machine: install full Xcode, `sudo xcode-select -s
+  /Applications/Xcode.app/Contents/Developer`, verify `xcrun --find metal`.
+  Same blocker covers `cargo test/clippy --workspace` including the desktop
+  crate. Linux/Windows re-validation must happen on those hosts: the Linux
+  bodies are byte-identical behind `cfg(target_os = "linux")` and Windows
+  files untouched, but that is reasoning, not a run. Wayland validation N/A
+  on macOS.
+
+#### Open gate: macOS PTY child teardown wedge (environmental, not shipped)
+
+Evidence (all on macOS 15.7.8/arm64, no omaterm code in the loop): a
+stdlib-only `pty.fork()` + `/bin/sh` + SIGHUP + SIGKILL leaves the child in
+`ps` state `?Es (bash)`, `kill -9` has no effect, and
+`waitpid(WNOHANG)` returns `(0, 0)` — wedged in the kernel exit path while
+the PTY master is open. Closing the master first lets the same sequence
+reap cleanly; non-PTY `sh` dies on SIGHUP normally. In-suite this surfaces
+as `alacritty_terminal 0.26.0` `Pty::drop` → `Child::wait` → `wait4`
+blocking forever (sampled stacks), hanging any test that drops a session
+with a live/wedged child. Already-latest `alacritty_terminal` 0.26.0
+(verified via crates.io API) offers no close-master/wait-bounded API, and
+restructuring around the dependency's `Drop` (or `mem::forget`, which leaks
+fds/zombies) is rejected: production lifecycle keeps the Linux-validated
+SIGHUP → 250ms → SIGKILL path unchanged. Next: retry the gated lifecycle
+tests on Linux CI (must stay green there), revisit only if a bounded-wait
+`alacritty_terminal` release appears; manual macOS desktop smoke covers the
+PTY path until then.
+
+### Git tab improvements batch (`feat/git-tab-improvements`) — 2026-10-11 (uncommitted)
+
+Branch cut from `dev` per user request; implements the full Git-tab analysis
+batch as one vertical slice through the shared `OmaCommand::Git` dispatcher
+(UI, IPC, CLI share one path, never simulated keystrokes).
+
+- Graph row density: commit rows show `author · short7 · age`; short oid
+  click copies full SHA to clipboard with `Commit SHA copied` toast
+  (`apps/omaterm/src/main.rs` history graph). Merge commits use the purple
+  lane/dot vs blue linear lane so joins read apart at a glance.
+- Scope control labels: `Current` / `All` text beside branch/fork icons
+  (`history_scope_segment`) — icon-only segments were undiscoverable, no
+  tooltip infra exists to explain them.
+- Publish affordance: header shows `Publish` (dispatches
+  `SyncPush{set_upstream:true}`) when `upstream==None`, else `Push`.
+  Busy matching uses operation label so `Publishing…` state works.
+  `sync_tick` now also sets `history_dirty_hint` + `branch_dirty_hint` so
+  fetch/pull/push refresh graph + branch list, not just status/diff.
+- Change list: conflicted (unmerged `U/AA/DD`) rows get red `!` badge,
+  renames show `old → new` with purple `R` (backend `renamed_from` was
+  ignored in the list), untracked stays green `U`.
+- Stash: rows show `subject + @{n} · short oid`; `-u` toggle relabeled
+  `Untracked` / `Untracked ✓`; empty message auto-generates
+  `WIP on <branch>` instead of `type a message first` error; button stays
+  actionable. Full per-file stash preview via `git_stash_show` remains
+  follow-up (needs new worker channel + expanded state).
+- Commit amend: vertical slice `GitCommand::Commit{amend:bool}` +
+  `git_commit(root, message, amend)` (`--amend`) + validation unchanged +
+  `git.commit{amend}` protocol (serde default, backward compatible) +
+  `omaterm git commit --amend` CLI + per-repo `commit_amend` toggle in
+  composer (`Amend` / `Amend ✓`, submit button reads `Amend` when armed,
+  `Amended <oid>` toast). Multi-line composer remains follow-up
+  (`GitInput` is single-line).
+- Multi-repo chrome: header pill aggregates
+  `N repos · M dirty` (dirty from last-good statuses); per-row sync pill
+  `↑a ↓b` when upstream + ahead/behind (was header-only). Filter input +
+  scrollable overflow beyond 32-cap remain follow-up.
+- Deferred to follow-up: true branch-lane graph layout (DAG lanes),
+  tooltip infra for icon-only actions, stash file expansion, multi-line
+  commit body, repo filter.
+- Follow-up slim-down (same branch, uncommitted at writing): user report
+  "everything worse, too much information in minimum space". All added
+  visible density reverted — graph trailing back to age-only (no
+  author/short/copy), scope segments icon-only, Amend toggle removed from
+  the composer, stash rows subject-only with `-u` label restored, repo
+  header back to count-only with no per-row sync pill. Kept (no space
+  cost): `Publish` label swap, conflict `!` / rename `R` badges,
+  auto-`WIP on <branch>` stash message, `sync_tick` history+branch
+  refresh, amend backend/CLI/protocol (no UI). Re-verified: `cargo fmt`,
+  `cargo check`, `cargo test --workspace` (desktop 302 green), `cargo
+  clippy -- -D warnings`, `check-docs.py`, `git diff --check` PASS.
+  Wayland validation still manual.
+- Verification: `cargo fmt --all` (applied), `cargo test --workspace`
+  (all suites green incl. desktop 302), `cargo clippy --workspace
+  --all-targets -- -D warnings` (known transitive `proc-macro-error2`
+  notice only), `python3 scripts/check-docs.py` PASS (53 files, 60/60
+  methods, 39/39 shortcuts), `git diff --check` PASS.
+  Native Wayland validation (2-repo fixture: amend toggle, Publish,
+  conflict/rename rows, stash meta, graph author/oid copy) remains manual
+  and not claimed passing.
+
 ### Git tab: `Repositories` chrome parity — 2026-10-10 (uncommitted)
 
 UI pass over the M20 `Repositories` chrome in the Git tab. The chrome had

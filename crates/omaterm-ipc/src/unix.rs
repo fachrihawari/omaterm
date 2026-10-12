@@ -290,13 +290,41 @@ fn handle_connection(
 
 impl crate::frame::FrameIo for UnixStream {
     fn read_with_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> std::io::Result<usize> {
-        self.set_read_timeout(Some(timeout))?;
+        set_timeout(
+            |stream, timeout| stream.set_read_timeout(timeout),
+            self,
+            timeout,
+        )?;
         self.read(buf)
     }
 
     fn write_all_with_timeout(&mut self, buf: &[u8], timeout: Duration) -> std::io::Result<()> {
-        self.set_write_timeout(Some(timeout))?;
+        set_timeout(
+            |stream, timeout| stream.set_write_timeout(timeout),
+            self,
+            timeout,
+        )?;
         self.write_all(buf)
+    }
+}
+
+/// Best-effort `SO_RCVTIMEO`/`SO_SNDTIMEO` install. macOS returns `EINVAL`
+/// when the peer closes the socket between iterations of a byte-wise frame
+/// loop; Linux tolerates the same `setsockopt`. Proceeding with the
+/// previously installed (near-identical, deadline-derived) timeout keeps the
+/// bound while letting the follow-up read/write surface the real terminal
+/// state (response bytes, EOF, reset). Other `setsockopt` failures still
+/// propagate, so Linux behavior is unchanged — this fallback never fires
+/// there for valid `Duration`-derived timevals on a live socket.
+fn set_timeout(
+    set: impl Fn(&UnixStream, Option<Duration>) -> std::io::Result<()>,
+    stream: &UnixStream,
+    timeout: Duration,
+) -> std::io::Result<()> {
+    match set(stream, Some(timeout)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -307,6 +335,10 @@ fn peer_authorized(actual: u32, expected: u32) -> bool {
     actual == expected
 }
 
+/// Peer UID for the same-UID socket policy. Linux uses `SO_PEERCRED`;
+/// macOS/BSD Unix uses `getpeereid()`. Windows never reaches this file
+/// (`lib.rs` selects `windows.rs` on `cfg(windows)`).
+#[cfg(target_os = "linux")]
 fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
     let mut cred = libc::ucred {
         pid: 0,
@@ -326,6 +358,19 @@ fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
     };
     if result == 0 {
         Ok(cred.uid)
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: the socket fd is live and uid/gid are valid out-pointers.
+    let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    if result == 0 {
+        Ok(uid)
     } else {
         Err(std::io::Error::last_os_error())
     }

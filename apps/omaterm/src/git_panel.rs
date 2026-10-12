@@ -119,6 +119,22 @@ pub const fn stash_group_mode(dirty: bool, loaded_count: Option<usize>) -> Stash
     }
 }
 
+/// Pure label for the ahead/behind sync pill in the Git tab header.
+/// `has_upstream` gates visibility (a repo without a remote has nothing
+/// to sync); zero sides are hidden so `↓19` reads alone instead of
+/// `↑0 ↓19`. Returns `None` when the pill should not render at all.
+pub fn sync_pill_label(has_upstream: bool, ahead: usize, behind: usize) -> Option<String> {
+    if !has_upstream {
+        return None;
+    }
+    match (ahead, behind) {
+        (0, 0) => None,
+        (ahead, 0) => Some(format!("↑{ahead}")),
+        (0, behind) => Some(format!("↓{behind}")),
+        (ahead, behind) => Some(format!("↑{ahead} ↓{behind}")),
+    }
+}
+
 /// One render row: group + entry path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitRow {
@@ -770,6 +786,20 @@ mod tests {
         // Any entries: full regardless of dirtiness.
         assert_eq!(stash_group_mode(false, Some(1)), Full);
         assert_eq!(stash_group_mode(true, Some(3)), Full);
+    }
+
+    #[test]
+    fn sync_pill_label_hides_without_upstream_and_zero_sides() {
+        // No upstream: no pill, however far the counts drift.
+        assert_eq!(sync_pill_label(false, 0, 0), None);
+        assert_eq!(sync_pill_label(false, 3, 19), None);
+        // Upstream but in sync: no pill (`↑0 ↓0` is noise).
+        assert_eq!(sync_pill_label(true, 0, 0), None);
+        // One-sided counts stand alone (no useless zero side).
+        assert_eq!(sync_pill_label(true, 3, 0), Some("↑3".to_owned()));
+        assert_eq!(sync_pill_label(true, 0, 19), Some("↓19".to_owned()));
+        // Both sides show together.
+        assert_eq!(sync_pill_label(true, 2, 5), Some("↑2 ↓5".to_owned()));
     }
 
     #[test]

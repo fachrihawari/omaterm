@@ -341,7 +341,7 @@ pub struct PaneInfo {
 }
 
 /// Safe history metadata for `history status`: counts and state only, never
-/// keys, plaintext, or keyring details.
+/// keys, plaintext, or key details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryStatusInfo {
     pub enabled: bool,

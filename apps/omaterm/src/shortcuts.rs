@@ -243,8 +243,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         id: "git.nav",
-        chord: "Alt+Up/Down/Enter",
-        action: "Move Git selection / open diff",
+        chord: "Alt+Up/Down/Left/Right/Enter",
+        action: "Move Git selection, expand/collapse commits, open diff",
         context: "Git tab",
     },
     Shortcut {

@@ -15,7 +15,6 @@ use gpui::{AssetSource, Result, SharedString};
 /// vendored in `ICONS` for future use; no slot references it right now.)
 pub const PANEL_LEFT: &str = "panel-left";
 pub const PANEL_RIGHT: &str = "panel-right";
-pub const FOLDER_PLUS: &str = "folder-plus";
 pub const CLOSE: &str = "x";
 pub const PLUS: &str = "plus";
 pub const SEARCH: &str = "search";
@@ -25,7 +24,10 @@ pub const FOLDER_OPEN: &str = "folder-open";
 pub const FOLDER_GIT: &str = "folder-git-2";
 pub const FILE_TEXT: &str = "file-text";
 pub const GIT_BRANCH: &str = "git-branch";
-pub const GIT_FORK: &str = "git-fork";
+pub const NETWORK: &str = "network";
+pub const COPY: &str = "copy";
+/// (`git-fork.svg` stays vendored in `ICONS` for future use; no slot
+/// references it right now.)
 pub const STASH: &str = "archive";
 pub const GIT_COMPARE: &str = "git-compare-arrows";
 pub const EXTERNAL: &str = "external-link";
@@ -43,7 +45,6 @@ pub const STAGE: &str = "plus";
 pub const UNSTAGE: &str = "minus";
 pub const CHEVRON_DOWN: &str = "chevron-down";
 pub const CHEVRON_RIGHT: &str = "chevron-right";
-pub const CHEVRON_LEFT: &str = "chevron-left";
 /// File-tree document icons (one Lucide glyph per file family; hues stay
 /// in `files.rs` so the tree keeps its per-language colors).
 pub const FILE: &str = "file";
@@ -89,6 +90,8 @@ const ICONS: &[(&str, &[u8])] = &[
     icon_bytes!("file-text"),
     icon_bytes!("file-code-2"),
     icon_bytes!("git-branch"),
+    icon_bytes!("network"),
+    icon_bytes!("copy"),
     icon_bytes!("git-fork"),
     icon_bytes!("archive"),
     icon_bytes!("git-compare-arrows"),

@@ -137,7 +137,7 @@ fn terminal_query_defaults_match_ui_surfaces_in_both_modes() {
 
 #[test]
 fn alpha_packing_preserves_palette_channels() {
-    assert_eq!(with_alpha(DARK.bg2, PANE_HEADER_BG_OPACITY), 0x0F1318E6);
+    assert_eq!(with_alpha(DARK.bg2, PANE_HEADER_BG_OPACITY), 0x0F0E17E6);
     assert_eq!(with_alpha(LIGHT.bg2, PANE_HEADER_BG_OPACITY), 0xFAFBFDE6);
     assert_eq!(with_alpha(0x123456, 2.0), 0x123456FF);
     assert_eq!(with_alpha(0x123456, -1.0), 0x12345600);

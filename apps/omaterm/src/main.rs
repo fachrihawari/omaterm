@@ -15,8 +15,8 @@ use gpui::{
     KeyDownEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathPromptOptions, Pixels, ScrollDelta, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
     SharedString, StyledText, TextRun, Timer, UTF16Selection, UniformListScrollHandle, WeakEntity,
-    Window, WindowBounds, WindowOptions, canvas, div, font, hsla, prelude::*, px, relative, rgb,
-    rgba, size, uniform_list,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowOptions, canvas, div, font, hsla,
+    prelude::*, px, relative, rgb, rgba, size, uniform_list,
 };
 use omaterm_core::{
     CommandContext, CommandOutput, CommandResult, DiffCommand, DocumentId, EditorCommand,
@@ -188,6 +188,13 @@ struct WorkspaceView {
     paste_arm: Option<(SessionId, Vec<u8>, Instant)>,
     /// Transient input notice (paste confirmation prompt, drop errors).
     input_notice: Option<String>,
+    /// Identity of the notice currently on the toast clock. A repaint must
+    /// not mint a new deadline, or the notice never expires.
+    notice_fingerprint: Option<String>,
+    notice_until: Option<Instant>,
+    /// History-manager warning the user already dismissed. A new message
+    /// shows again.
+    dismissed_history_warning: Option<String>,
     /// Last committed save whose directory sync was not confirmed. Rendered as
     /// a visible warning, never as an ordinary "Saved"; cleared on the next
     /// fully durable save.
@@ -340,6 +347,16 @@ struct WorkspaceView {
     /// View-local, never persisted; collapsing the list is the only
     /// chevron in the chrome.
     repo_list_collapsed: HashSet<ProjectId>,
+    /// M20 overflow expansion per project: when the depth-1 scan finds
+    /// more than the 32-row cap, the `+N more` row toggles the remainder
+    /// inline so every polled repo stays clickable.
+    repo_overflow_open: HashSet<ProjectId>,
+    /// Overflow filter drafts per project (substring over the repo name).
+    /// Applies to the overflow tail only — the visible 32 rows never move
+    /// under an active filter, so the active mark can't hide.
+    repo_filter_drafts: HashMap<ProjectId, git_input::GitInput>,
+    /// Project whose overflow filter owns the keyboard, if any.
+    repo_filter_focused: Option<ProjectId>,
     /// One remote action owns its completion channel and originating repo.
     sync_pending: Option<git_sync_panel::PendingSync>,
     /// Per-file blame, keyed by repo/side/path/mode like the scroll
@@ -367,6 +384,8 @@ struct WorkspaceView {
     stash_focused: Option<git_panel::RepoKey>,
     /// Repos with `-u` (include untracked) armed for the next push.
     stash_untracked: HashSet<git_panel::RepoKey>,
+    /// Repos with `--amend` armed for the next commit (rewrites HEAD).
+    commit_amend: HashSet<git_panel::RepoKey>,
     /// Repos with a stash-list fetch in flight.
     stash_in_flight: HashSet<git_panel::RepoKey>,
     /// Background stash-list completions `(repo key, outcome)`.
@@ -393,6 +412,9 @@ struct WorkspaceView {
     /// Startup configuration captured once. The 250ms poller must never
     /// synchronously reopen and parse config.toml on the UI thread.
     git_refresh_interval: Duration,
+    /// The window was opened see-through (`appearance.translucent-sidebar`):
+    /// the root stays unpainted and only the sidebar lets the desktop show.
+    translucent_sidebar: bool,
     /// Last project the git poller served (switch detection).
     git_last_project: Option<ProjectId>,
     /// Git history Graph (inside the Git tab, below Changes): last-good
@@ -757,21 +779,81 @@ fn branch_picker_trigger(
         ))
 }
 
-/// Bordered empty/loading/error notice used by the Info process sections.
+/// Collapsible inspector section heading: chevron, sentence-case title,
+/// plain count. A hairline above separates it from the previous section.
+fn section_heading(title: &'static str, count: Option<usize>, collapsed: bool) -> Div {
+    div()
+        .h(px(30.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_shrink_0()
+        .pl_2()
+        .pr_1()
+        .mt_1()
+        .gap_1()
+        .cursor_pointer()
+        .hover(|style| style.text_color(rgb(crate::ui::theme::colors().text2)))
+        .role(crate::ui::metrics::META_10)
+        .text_color(rgb(crate::ui::theme::colors().muted))
+        .child(
+            div()
+                .w(px(14.0))
+                .flex_shrink_0()
+                .child(crate::ui::assets::icon(
+                    if collapsed {
+                        crate::ui::assets::CHEVRON_RIGHT
+                    } else {
+                        crate::ui::assets::CHEVRON_DOWN
+                    },
+                    12.0,
+                    crate::ui::theme::colors().muted2,
+                )),
+        )
+        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+        .child(div().flex_1())
+        .children(count.map(|count| {
+            div()
+                .mr_1()
+                .text_color(rgb(crate::ui::theme::colors().muted2))
+                .child(format!("{count}"))
+        }))
+}
+
+/// One-line warning above the terminal. The message truncates; × dismisses
+/// it so a stale banner does not keep stealing rows from the shell.
+fn dismissible_banner(
+    message: String,
+    cx: &mut Context<WorkspaceView>,
+    dismiss: impl Fn(&mut WorkspaceView, &mut Context<WorkspaceView>) + 'static,
+) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_1()
+        .bg(rgb(crate::ui::theme::colors().warning_bg))
+        .text_color(rgb(crate::ui::theme::colors().warning_text))
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(message))
+        .child(div().cursor_pointer().px_1().child("×").on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, _, cx| {
+                cx.stop_propagation();
+                dismiss(view, cx);
+                cx.notify();
+            }),
+        ))
+}
+
+/// Plain empty/loading/error line for the Info process sections.
 fn process_state_box(message: String, color: u32) -> gpui::AnyElement {
     use gpui::IntoElement;
-    crate::ui::metrics::text_role(
-        div()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(rgb(crate::ui::theme::colors().border))
-            .px_3()
-            .py_2(),
-        crate::ui::metrics::BODY_11,
-    )
-    .text_color(rgb(color))
-    .child(message)
-    .into_any_element()
+    crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
+        .text_color(rgb(color))
+        .child(message)
+        .into_any_element()
 }
 
 /// Explicit owner of keyboard input (S6). Only the owning surface receives
@@ -785,6 +867,7 @@ enum InputOwner {
     Keybindings,
     GitCommit,
     GitStash,
+    RepoFilter,
     BranchPicker,
     Confirmation,
 }
@@ -2494,9 +2577,13 @@ impl WorkspaceView {
             stash_drafts: HashMap::new(),
             stash_focused: None,
             stash_untracked: HashSet::new(),
+            commit_amend: HashSet::new(),
             stash_in_flight: HashSet::new(),
             paste_arm: None,
             input_notice: None,
+            notice_fingerprint: None,
+            notice_until: None,
+            dismissed_history_warning: None,
             editor_save_warning: None,
             toasts: Vec::new(),
             files_panel: files::FilePanel::default(),
@@ -2550,7 +2637,7 @@ impl WorkspaceView {
             process_arm: None,
             process_refreshed_at: HashMap::new(),
             process_section_collapsed: false,
-            ports_section_collapsed: false,
+            ports_section_collapsed: true,
             ctrlp_caret_on: true,
             ctrlp_blink_active: false,
             commit_caret_on: true,
@@ -2580,9 +2667,13 @@ impl WorkspaceView {
             repos_tx,
             repos_rx,
             repo_list_collapsed: HashSet::new(),
+            repo_overflow_open: HashSet::new(),
+            repo_filter_drafts: HashMap::new(),
+            repo_filter_focused: None,
             git_refresh_interval: Duration::from_secs(
                 app_config.resolved_git_refresh_secs().clamp(1, 300),
             ),
+            translucent_sidebar: app_config.translucent_sidebar(),
             git_last_project: None,
             history_panel: git_history_panel::HistoryPanel::default(),
             history_tx,
@@ -3364,7 +3455,7 @@ impl WorkspaceView {
             }
             // Encrypted history checkpoints before the final snapshot so a
             // restart restores both layout and scrollback. Bounded: slow or
-            // locked key storage never blocks shutdown indefinitely.
+            // unavailable key storage never blocks shutdown indefinitely.
             if let Some(manager) = history.as_mut()
                 && !manager.shutdown_flush_targets(history_targets, Duration::from_secs(10))
             {
@@ -4553,18 +4644,22 @@ impl WorkspaceView {
                             cx,
                         ) {
                             tracing::warn!(target: "omaterm::workspace", "project directory not opened: {error}");
-                            view.persistence_warning =
-                                Some(format!("Project directory not opened: {error}"));
-                            cx.notify();
+                            view.push_toast(
+                                format!("Could not open that directory: {error}"),
+                                ToastKind::Error,
+                                cx,
+                            );
                         }
                     }
                     // Dialog cancellation is intentionally a no-op.
                     Ok(Ok(_)) => {}
                     Ok(Err(error)) => {
                         tracing::warn!(target: "omaterm::workspace", "folder picker unavailable: {error:#}");
-                        view.persistence_warning =
-                            Some(format!("Folder picker unavailable: {error:#}"));
-                        cx.notify();
+                        view.push_toast(
+                            format!("Folder picker unavailable: {error:#}"),
+                            ToastKind::Error,
+                            cx,
+                        );
                     }
                     Err(_) => {}
                 }
@@ -4898,7 +4993,8 @@ impl WorkspaceView {
             cx,
         ) {
             Ok(CommandOutput::ProcessKilled { .. }) => {
-                self.input_notice = Some(format!("Terminated process {pid}"));
+                self.input_notice = None;
+                self.push_toast(format!("Terminated process {pid}"), ToastKind::Success, cx);
                 self.refresh_process_list(project, cx);
             }
             Ok(_) => {
@@ -5459,6 +5555,7 @@ impl WorkspaceView {
                         .retain(|key, _| !key.matches_project(other));
                     self.stash_untracked
                         .retain(|key| !key.matches_project(other));
+                    self.commit_amend.retain(|key| !key.matches_project(other));
                     self.stash_in_flight
                         .retain(|key| !key.matches_project(other));
                     self.blame_rows
@@ -5475,6 +5572,13 @@ impl WorkspaceView {
                         .is_some_and(|key| key.matches_project(other))
                     {
                         self.stash_focused = None;
+                    }
+                    // Overflow expansion + filter drafts are per project;
+                    // a hidden filter must never keep keyboard ownership.
+                    self.repo_overflow_open.remove(&other);
+                    self.repo_filter_drafts.remove(&other);
+                    if self.repo_filter_focused == Some(other) {
+                        self.repo_filter_focused = None;
                     }
                 }
             }
@@ -6644,6 +6748,12 @@ impl WorkspaceView {
         }
         if self.branch_picker.is_some() {
             return Some(InputOwner::BranchPicker);
+        }
+        if self.repo_filter_focused.is_some()
+            && self.inspector_is_rendered()
+            && self.inspector_tab == InspectorTab::Git
+        {
+            return Some(InputOwner::RepoFilter);
         }
         if self.stash_focused.is_some()
             && self.inspector_is_rendered()
@@ -8591,8 +8701,8 @@ impl WorkspaceView {
         {
             // Both clipboards, like terminal drag selection: PRIMARY for
             // middle-click, CLIPBOARD for Ctrl+V and other applications.
-            // Windows has no PRIMARY selection.
-            #[cfg(not(windows))]
+            // PRIMARY exists only on Linux (gpui has no macOS/Windows API).
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             cx.write_to_primary(ClipboardItem::new_string(payload.to_owned()));
             cx.write_to_clipboard(ClipboardItem::new_string(payload.to_owned()));
         }
@@ -9407,9 +9517,10 @@ impl WorkspaceView {
             );
         bar = bar.child(body);
 
-        // Footer: cursor (1-based visual column), indentation, encoding,
-        // line-ending convention, language. Uses the same grapheme-aware
-        // mapping as motion and hit-testing so they never disagree.
+        // Footer: cursor (1-based visual column), line-ending convention,
+        // language. Uses the same grapheme-aware mapping as motion and
+        // hit-testing so they never disagree. Indentation and encoding are
+        // omitted until they are measured from the buffer.
         let caret_display_col = {
             let line_text =
                 editor::strip_trailing_cr_for_display(snapshot.line(caret_line).unwrap_or(""));
@@ -9437,8 +9548,6 @@ impl WorkspaceView {
                 caret_line + 1,
                 caret_display_col + 1
             ))
-            .child("Spaces: 4")
-            .child("UTF-8")
             .child(newline_label)
             .child(div().flex_1())
             .child(language.as_str());
@@ -9814,45 +9923,60 @@ impl WorkspaceView {
             vec![router::CommandEffect::GitChanged(completion.repo.project)],
             cx,
         );
+        // Sync moves remote-tracking refs: history graph + branch list go
+        // stale with status. Refresh them alongside the status poller.
+        if self.coordinator.selected_project_id() == Some(completion.repo.project) {
+            self.history_dirty_hint = true;
+            self.branch_dirty_hint = true;
+        }
         cx.notify();
         true
     }
 
+    /// One remote-action icon button (fetch/pull/push). Fetch takes the
+    /// circular `REFRESH` glyph (remote refresh); `ARROW_DOWN` pulls into
+    /// the worktree, `ARROW_UP` pushes out. The manual local status button
+    /// is gone — the poller owns local freshness — so the circular shape
+    /// has exactly one meaning now. Dispatch flows through the shared
+    /// `GitCommand` path; while one runs all three dim (busy) and completion
+    /// lands as a toast. `Publish` (no upstream, `push -u origin HEAD`)
+    /// shares the push glyph and op.
     fn git_sync_button(
         &mut self,
         project: ProjectId,
         label: &'static str,
         op: &'static str,
+        glyph: &'static str,
         cx: &mut Context<Self>,
     ) -> Div {
         let repo_key = self.active_repo_key(project);
         let busy = self.sync_pending.is_some();
-        let text = self
+        // `Publish` shares the Push operation (set_upstream:true): match the
+        // busy state against the operation label, not the button text.
+        let want_label = if op == "publish" { "Push" } else { label };
+        let running = self
             .sync_pending
             .as_ref()
-            .filter(|task| task.repo == repo_key && task.operation.label() == label)
-            .map(|task| task.operation.pending_label())
-            .unwrap_or(label);
+            .is_some_and(|task| task.repo == repo_key && task.operation.label() == want_label);
         div()
-            .px(px(10.0))
-            .py(px(4.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(rgb(crate::ui::theme::colors().border2))
-            .role(crate::ui::metrics::BODY_11)
-            .whitespace_nowrap()
+            .p(px(5.0))
+            .rounded(px(4.0))
+            .flex_shrink_0()
             .text_color(rgb(if busy {
-                crate::ui::theme::colors().muted
+                crate::ui::theme::colors().muted2
             } else {
-                crate::ui::theme::colors().text2
+                crate::ui::theme::colors().muted
             }))
             .hover(|s| {
                 if busy {
                     s
                 } else {
-                    s.bg(gpui::rgb(crate::ui::theme::colors().cmd_hover_bg))
-                        .border_color(gpui::rgb(crate::ui::theme::colors().cmd_hover_border))
+                    s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                        .text_color(gpui::rgb(crate::ui::theme::colors().text))
                 }
+            })
+            .when(running, |s| {
+                s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -9871,6 +9995,10 @@ impl WorkspaceView {
                             project,
                             remote: None,
                         }),
+                        "publish" => OmaCommand::Git(GitCommand::SyncPush {
+                            project,
+                            set_upstream: true,
+                        }),
                         _ => OmaCommand::Git(GitCommand::SyncPush {
                             project,
                             set_upstream: false,
@@ -9879,7 +10007,15 @@ impl WorkspaceView {
                     view.git_sync_action(command, cx);
                 }),
             )
-            .child(text)
+            .child(crate::ui::primitives::cmd_icon(
+                glyph,
+                13.0,
+                if busy {
+                    crate::ui::theme::colors().muted2
+                } else {
+                    crate::ui::theme::colors().muted
+                },
+            ))
     }
 
     /// Toggle per-file blame for a worktree preview. Fetch rides the
@@ -9983,10 +10119,12 @@ impl WorkspaceView {
             cx.notify();
             return;
         }
+        let amend = self.commit_amend.contains(&self.active_repo_key(project));
         match self.dispatch_command(
             OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: message.clone(),
+                amend,
             }),
             cx,
         ) {
@@ -9998,7 +10136,14 @@ impl WorkspaceView {
                 // A new commit extends the immutable history: surviving
                 // expansions and selections are preserved by OID.
                 self.history_dirty_hint = true;
-                self.show_toast(format!("Committed {oid}"), cx);
+                self.show_toast(
+                    if amend {
+                        format!("Amended {oid}")
+                    } else {
+                        format!("Committed {oid}")
+                    },
+                    cx,
+                );
             }
             Ok(_) => {
                 self.git_dirty_hint = true;
@@ -11668,6 +11813,13 @@ impl WorkspaceView {
             return;
         }
         // Focused Git fields own editing chords; other global shortcuts remain available.
+        if self.inspector_is_rendered()
+            && self.inspector_tab == InspectorTab::Git
+            && git_input_view::captures(event)
+            && let Some(project) = self.repo_filter_focused
+        {
+            return self.on_repo_filter_key(project, event, cx);
+        }
         if self.git_panel.commit_focused()
             && self.inspector_is_rendered()
             && self.inspector_tab == InspectorTab::Git
@@ -12493,8 +12645,8 @@ impl WorkspaceView {
                         // Both clipboards: PRIMARY keeps middle-click paste,
                         // CLIPBOARD makes the selection pastable via
                         // Ctrl+Shift+V and into other applications.
-                        // Windows has no PRIMARY selection.
-                        #[cfg(not(windows))]
+                        // PRIMARY exists only on Linux.
+                        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                         cx.write_to_primary(ClipboardItem::new_string(text.clone()));
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
@@ -12525,11 +12677,11 @@ impl WorkspaceView {
             cx.notify();
             return false;
         };
-        // PRIMARY is the Linux middle-click selection. Windows only has
-        // the regular clipboard.
-        #[cfg(windows)]
+        // PRIMARY is the Linux middle-click selection; macOS and Windows
+        // only have the regular clipboard.
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
             cx.write_to_primary(ClipboardItem::new_string(text));
@@ -12877,6 +13029,42 @@ impl WorkspaceView {
     /// newest nearest the corner). A new message never replaces the others:
     /// the stack is bounded at [`MAX_TOASTS`] and each entry removes itself
     /// when its deadline passes; stale timer tasks exit quietly.
+    /// Start the notice clock when the text changes. Repaints keep the same
+    /// deadline; when it passes, the notice is cleared so it cannot sit on
+    /// screen for the rest of the session.
+    fn sync_input_notice(&mut self, cx: &mut Context<Self>) {
+        if self.input_notice.as_deref() != self.notice_fingerprint.as_deref() {
+            self.notice_fingerprint = self.input_notice.clone();
+            if self.input_notice.is_some() {
+                self.notice_until = Some(Instant::now() + Duration::from_millis(TOAST_MS));
+                cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+                    Timer::after(Duration::from_millis(TOAST_MS + 50)).await;
+                    let _ = weak.update(cx, |view, cx| {
+                        if view
+                            .notice_until
+                            .is_some_and(|deadline| Instant::now() >= deadline)
+                        {
+                            view.input_notice = None;
+                            view.notice_fingerprint = None;
+                            view.notice_until = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            } else {
+                self.notice_until = None;
+            }
+        } else if self
+            .notice_until
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.input_notice = None;
+            self.notice_fingerprint = None;
+            self.notice_until = None;
+        }
+    }
+
     fn show_toast(&mut self, message: String, cx: &mut Context<Self>) {
         self.push_toast(message, ToastKind::Success, cx);
     }
@@ -13098,6 +13286,8 @@ impl WorkspaceView {
                         .min_h(px(0.0))
                         .overflow_hidden()
                         .flex()
+                        .border_l_1()
+                        .border_color(rgb(crate::ui::theme::colors().border))
                         .child(second),
                     SplitAxis::Vertical => div()
                         .h(relative(1.0 - fraction))
@@ -13106,6 +13296,8 @@ impl WorkspaceView {
                         .min_h(px(0.0))
                         .overflow_hidden()
                         .flex()
+                        .border_t_1()
+                        .border_color(rgb(crate::ui::theme::colors().border))
                         .child(second),
                 };
                 let container = div()
@@ -13152,15 +13344,26 @@ impl WorkspaceView {
                         .justify_center()
                         .gap_2()
                         .bg(rgb(crate::ui::theme::colors().bg2))
-                        .text_color(rgb(crate::ui::theme::colors().red))
-                        .child("Restored shell could not start")
-                        .child(message)
+                        .text_color(rgb(crate::ui::theme::colors().text2))
                         .child(
                             div()
-                                .px_3()
-                                .py_2()
-                                .border_1()
-                                .border_color(rgb(crate::ui::theme::colors().border2))
+                                .text_color(rgb(crate::ui::theme::colors().red))
+                                .child("Restored shell could not start"),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(480.0))
+                                .truncate()
+                                .text_color(rgb(crate::ui::theme::colors().muted))
+                                .child(message),
+                        )
+                        .child(
+                            div()
+                                .cursor_pointer()
+                                .text_color(rgb(crate::ui::theme::colors().cyan))
+                                .hover(|style| {
+                                    style.text_color(rgb(crate::ui::theme::colors().white))
+                                })
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, window, cx| {
@@ -13212,6 +13415,11 @@ impl WorkspaceView {
         };
 
         let focused = self.coordinator.focused() == Some(pane_id);
+        let split = self
+            .coordinator
+            .active_project()
+            .and_then(|project| project.selected_tab())
+            .is_some_and(|tab| tab.tree.panes().len() > 1);
         let pixel_offset = self
             .terminal_pixel_offsets
             .get(&session_id)
@@ -13258,19 +13466,8 @@ impl WorkspaceView {
             .min_h(px(0.0))
             .overflow_hidden()
             .relative()
-            .bg(rgb(crate::ui::theme::colors().bg2))
-            .border_1()
-            // Focused stroke uses the measured inset alpha
-            // (`PANE_FOCUS_STROKE_ALPHA`); GPUI has no inset shadow, so the
-            // 1px border carries the color and only the color changes.
-            .border_color(if focused {
-                rgba(crate::ui::theme::with_alpha(
-                    crate::ui::theme::colors().blue,
-                    crate::ui::theme::PANE_FOCUS_STROKE_ALPHA,
-                ))
-            } else {
-                rgb(crate::ui::theme::colors().border)
-            });
+            .group("pane-leaf")
+            .bg(rgb(crate::ui::theme::colors().bg2));
         leaf = leaf
             .on_mouse_down(
                 MouseButton::Left,
@@ -13336,20 +13533,19 @@ impl WorkspaceView {
             leaf = leaf.child(
                 div()
                     .absolute()
-                    .top(px(8.0))
-                    .right(px(8.0))
+                    .top(px(6.0))
+                    .right(px(6.0))
+                    .invisible()
+                    .group_hover("pane-leaf", |style| style.visible())
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(2.0))
                     .px_1()
                     .py(px(2.0))
-                    .rounded(px(6.0))
-                    .shadow_lg()
-                    .border_1()
-                    .border_color(rgb(crate::ui::theme::colors().border2))
+                    .rounded(px(4.0))
                     .bg(rgba(crate::ui::theme::with_alpha(
-                        crate::ui::theme::colors().active_tab_bg,
+                        crate::ui::theme::colors().panel2,
                         crate::ui::theme::PANE_TOOLBAR_BG_OPACITY,
                     )))
                     .text_color(rgb(crate::ui::theme::colors().muted))
@@ -13537,6 +13733,19 @@ impl WorkspaceView {
                     },
                 )),
         );
+        // Split tabs: the panes you are not typing into sink back, like a
+        // tmux inactive-pane style. A single pane needs no focus mark.
+        if split && !focused {
+            leaf = leaf.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(crate::ui::theme::with_alpha(
+                        crate::ui::theme::colors().bg2,
+                        crate::ui::theme::PANE_INACTIVE_DIM,
+                    ))),
+            );
+        }
         if let Some(bar) = self.render_search_bar(session_id, cx) {
             leaf = leaf.child(bar);
         }
@@ -13616,10 +13825,9 @@ impl WorkspaceView {
             return;
         }
         let viewport = window.viewport_size();
-        // The same helper drives the render composition so sizing and
-        // painting can never disagree; compact overlays use the rendered
-        // (not the remembered) visibility so a hidden panel never steals
-        // grid width from the computation.
+        // Chrome: the session bar sits only over the terminal. Projects and
+        // Inspector run the full window height. One shared helper drives
+        // both this and the render composition so sizing and painting agree.
         let viewport_w: f32 = viewport.width.into();
         let viewport_h: f32 = viewport.height.into();
         let shell = crate::ui::geometry::shell_rects(
@@ -13727,7 +13935,7 @@ impl WorkspaceView {
                     .w(px(6.0))
                     .h(px(track_h))
                     .rounded_full()
-                    .bg(rgb(crate::ui::theme::colors().panel3))
+                    .bg(rgb(crate::ui::theme::colors().panel2))
                     .flex()
                     .flex_col()
                     .items_center()
@@ -13828,11 +14036,8 @@ impl WorkspaceView {
         let row_height = files::TREE_ROW_H;
         // `viewport_height` is the full window height; the list itself
         // self-measures via flex, so this estimate only sizes the scrollbar
-        // thumb. Subtract the chrome above the rows (status bar, inspector
-        // tabs) instead of dividing the whole window.
-        let list_height =
-            (viewport_height - crate::ui::geometry::STATUS_H - crate::ui::geometry::HEADER_H)
-                .max(row_height);
+        // thumb. Subtract the inspector tab row instead of the whole window.
+        let list_height = (viewport_height - crate::ui::geometry::HEADER_H).max(row_height);
         let visible = ((list_height / row_height) as usize).clamp(1, files::MAX_RENDER_ROWS);
         let all_rows: Arc<Vec<files::FileRow>> = Arc::new(
             self.files_panel
@@ -14104,10 +14309,8 @@ impl WorkspaceView {
     /// clicking a row switches the active repository through the semantic
     /// command so the CLI, IPC and panel share one source of truth.
     ///
-    /// The chrome now speaks the same section grammar as its siblings
-    /// (STAGED CHANGES / CHANGES / GRAPH): a 32px header with a 14px
-    /// chevron in a fixed slot, META_10 muted title, count pill, and 32px
-    /// rows indented under the header with a hairline between them. A
+    /// The header matches the other Git sections: a 32px row, chevron in a
+    /// fixed slot, sentence-case title, count, and 32px rows under it. A
     /// collapsed header names the active repository, so the highlight is
     /// never the only place it appears.
     ///
@@ -14182,12 +14385,21 @@ impl WorkspaceView {
             .child(div().flex_1());
         chrome = chrome.child(header);
         if collapsed {
+            // A hidden filter must never keep keyboard ownership.
+            if self.repo_filter_focused == Some(project) {
+                self.repo_filter_focused = None;
+                self.restore_input_owner();
+            }
             return chrome;
         }
 
-        // One plain row per repository: name, muted branch, dirty dot (or
-        // muted `clean`). The active row is highlighted; clicks switch the
-        // active repository. Rows come from the shared chrome plan, so the
+        // One two-line row per repository: the name (+ dirty dot) on
+        // line 1, the muted branch on line 2. The branch is the party
+        // that truncates — a single-line row let long branch names starve
+        // the repo name out of the panel entirely. `clean` text is gone:
+        // clean is the default and the M14 body below already says so.
+        // The active row is highlighted; clicks switch the active
+        // repository. Rows come from the shared chrome plan, so the
         // 32-cap, order and active mark the tests pin are what renders.
         // The hairline under every row separates the list and doubles as
         // the chrome/body boundary the M14 header below never drew.
@@ -14196,108 +14408,316 @@ impl WorkspaceView {
             .iter()
             .map(|entry| repo_key_of(project, scan, entry))
             .collect();
+        // Rows: the active repository renders single-line (name + dirty
+        // dot, 32px) because the branch header below already names its
+        // branch; inactive rows keep two lines (name + muted branch, 46px)
+        // so switching targets stay identifiable. `clean` text is gone:
+        // clean is the default and the M14 body below already says so.
         for (entry, key) in plan.rows.iter().zip(section_keys.iter()) {
             let active = key == &active_key;
             let status = self.git_panel.status_for(key).cloned();
             let branch = status
                 .as_ref()
                 .and_then(|status| status.branch.clone())
-                .unwrap_or_else(|| "…".to_string());
+                .unwrap_or_else(|| "Loading…".to_string());
             let dirty = status.as_ref().is_some_and(|status| {
                 !status.staged.is_empty()
                     || !status.unstaged.is_empty()
                     || !status.untracked.is_empty()
             });
-            let loaded = status.is_some();
             let name = entry.name.clone();
             let repo_name = name.clone();
-            let row = div()
-                .h(px(32.0))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .pl(px(20.0))
-                .pr(px(8.0))
+            let click = cx.listener(move |view, _, window, cx| {
+                if view.shutting_down {
+                    return;
+                }
+                cx.stop_propagation();
+                window.focus(&view.focus_handle);
+                view.select_repo(project, repo_name.clone(), cx);
+            });
+            let colors = crate::ui::theme::colors();
+            let base = div()
                 .border_b_1()
-                .border_color(rgb(crate::ui::theme::colors().border))
+                .border_color(rgb(colors.border))
                 .role(crate::ui::metrics::BODY_11)
-                .text_color(rgb(if active {
-                    crate::ui::theme::colors().text
-                } else {
-                    crate::ui::theme::colors().text2
-                }))
+                .text_color(rgb(if active { colors.text } else { colors.text2 }))
                 .cursor_pointer()
                 .hover(|s| {
                     if active {
                         s
                     } else {
-                        s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                        s.bg(gpui::rgb(colors.row_hover_bg))
                     }
                 })
-                .when(active, |s| {
-                    s.bg(rgb(crate::ui::theme::colors().tree_selected_bg))
-                })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
-                        }
-                        cx.stop_propagation();
-                        window.focus(&view.focus_handle);
-                        view.select_repo(project, repo_name.clone(), cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(name),
-                )
-                .child(
-                    crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                        .flex_shrink_0()
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .child(branch),
-                )
-                .when(dirty, |s| {
-                    s.child(
+                .when(active, |s| s.bg(rgb(colors.tree_selected_bg)))
+                .on_mouse_down(MouseButton::Left, click);
+            let dot = dirty.then(|| {
+                div()
+                    .w(px(6.0))
+                    .h(px(6.0))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(gpui::rgb(crate::ui::theme::colors().warning_text))
+            });
+            let row = if active {
+                base.h(px(32.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .pl(px(20.0))
+                    .pr(px(8.0))
+                    .child(
                         div()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(name),
                     )
-                })
-                .when(!dirty && loaded, |s| {
-                    s.child(
+                    .children(dot)
+            } else {
+                base.h(px(46.0))
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .pl(px(20.0))
+                    .pr(px(8.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            )
+                            .children(dot),
+                    )
+                    .child(
                         crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                            .flex_shrink_0()
+                            .w_full()
+                            .max_w_full()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_color(rgb(crate::ui::theme::colors().muted))
-                            .child("clean"),
+                            .child(branch),
                     )
-                });
+            };
             chrome = chrome.child(row);
         }
-        // Cap overflow: name the hidden count.
+        // Cap overflow: the `+N more` row toggles the remainder inline so
+        // every polled repository stays clickable; an open tail shows a
+        // substring filter (tail only — the visible 32 rows never move, so
+        // the active mark can't hide under a filter).
         if plan.overflow > 0 {
+            let open = self.repo_overflow_open.contains(&project);
+            let toggle_label = if open {
+                "Show fewer repositories".to_owned()
+            } else {
+                format!("+{} more repositories", plan.overflow)
+            };
             chrome = chrome.child(
                 div()
                     .h(px(28.0))
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap_1()
                     .pl(px(20.0))
                     .pr(px(8.0))
                     .role(crate::ui::metrics::META_9)
                     .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(format!("+{} more repositories", plan.overflow)),
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            if !view.repo_overflow_open.remove(&project) {
+                                view.repo_overflow_open.insert(project);
+                            } else if view.repo_filter_focused == Some(project) {
+                                // A hidden filter must never keep keyboard
+                                // ownership (mirrors the stash Hidden mode).
+                                view.repo_filter_focused = None;
+                                view.restore_input_owner();
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(crate::ui::assets::icon(
+                        if open {
+                            crate::ui::assets::CHEVRON_DOWN
+                        } else {
+                            crate::ui::assets::CHEVRON_RIGHT
+                        },
+                        12.0,
+                        crate::ui::theme::colors().muted,
+                    ))
+                    .child(toggle_label),
             );
+            if open {
+                let filter_focused = self.repo_filter_focused == Some(project);
+                let filter_content = git_input_view::render(git_input_view::FieldView {
+                    input: self.repo_filter_drafts.get(&project),
+                    placeholder: "Filter repositories…",
+                    focused: filter_focused,
+                    caret_visible: true,
+                });
+                chrome = chrome.child(
+                    div()
+                        .mx_3()
+                        .mb_1()
+                        .h(px(28.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(if filter_focused {
+                            crate::ui::theme::colors().blue2
+                        } else {
+                            crate::ui::theme::colors().border
+                        }))
+                        .bg(rgb(crate::ui::theme::colors().pill_bg))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .h_full()
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .overflow_hidden()
+                                .role(crate::ui::metrics::BODY_11)
+                                .text_color(rgb(crate::ui::theme::colors().text))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.repo_filter_focused = Some(project);
+                                        view.git_panel.set_commit_focused(false);
+                                        if let Some(focused) = view.stash_focused.clone()
+                                            && focused.project == project
+                                        {
+                                            view.stash_focused = None;
+                                        }
+                                        view.restore_input_owner();
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(filter_content),
+                        ),
+                );
+                let needle = self
+                    .repo_filter_drafts
+                    .get(&project)
+                    .map(|draft| draft.text().to_owned())
+                    .unwrap_or_default();
+                let tail = scan.repos.get(plan.rows.len()..).unwrap_or_default();
+                let matches = git_repos::filter_repos(tail, &needle);
+                if matches.is_empty() {
+                    chrome = chrome.child(
+                        div()
+                            .h(px(28.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .pl(px(20.0))
+                            .pr(px(8.0))
+                            .role(crate::ui::metrics::META_9)
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child("No repositories match."),
+                    );
+                }
+                for entry in matches {
+                    let key = repo_key_of(project, scan, entry);
+                    let status = self.git_panel.status_for(&key).cloned();
+                    let branch = status
+                        .as_ref()
+                        .and_then(|status| status.branch.clone())
+                        .unwrap_or_else(|| "Loading…".to_string());
+                    let dirty = status.as_ref().is_some_and(|status| {
+                        !status.staged.is_empty()
+                            || !status.unstaged.is_empty()
+                            || !status.untracked.is_empty()
+                    });
+                    let name = entry.name.clone();
+                    let select_name = name.clone();
+                    chrome = chrome.child(
+                        div()
+                            .h(px(32.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .pl(px(20.0))
+                            .pr(px(8.0))
+                            .border_b_1()
+                            .border_color(rgb(crate::ui::theme::colors().border))
+                            .role(crate::ui::metrics::BODY_11)
+                            .text_color(rgb(crate::ui::theme::colors().text2))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.select_repo(project, select_name.clone(), cx);
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            )
+                            .child(
+                                crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                                    .flex_shrink_0()
+                                    .max_w(px(112.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .child(branch),
+                            )
+                            .when(dirty, |s| {
+                                s.child(
+                                    div()
+                                        .w(px(6.0))
+                                        .h(px(6.0))
+                                        .flex_shrink_0()
+                                        .rounded_full()
+                                        .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
+                                )
+                            }),
+                    );
+                }
+            }
         }
         chrome
     }
@@ -14342,6 +14762,10 @@ impl WorkspaceView {
     fn toggle_repo_list(&mut self, project: ProjectId) {
         if !self.repo_list_collapsed.remove(&project) {
             self.repo_list_collapsed.insert(project);
+        }
+        if self.repo_filter_focused == Some(project) {
+            self.repo_filter_focused = None;
+            self.restore_input_owner();
         }
     }
 
@@ -14390,17 +14814,50 @@ impl WorkspaceView {
                 empty,
                 git_panel::GitEmpty::NoRoot | git_panel::GitEmpty::NotRepo
             );
-            return bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(if amber {
-                        crate::ui::theme::colors().warning_text
-                    } else {
-                        crate::ui::theme::colors().muted
-                    }))
-                    .child(message),
-            );
+            // Failures (never plain non-repo states) offer Retry, mirroring
+            // the history section: the poller would retry on its own cadence,
+            // but an explicit action beats staring at an error line.
+            let mut row = div()
+                .px_2()
+                .py_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .text_color(rgb(if amber {
+                    crate::ui::theme::colors().warning_text
+                } else {
+                    crate::ui::theme::colors().muted
+                }))
+                .child(message);
+            if amber {
+                row = row.child(
+                    div()
+                        .ml(px(8.0))
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                        .text_color(rgb(crate::ui::theme::colors().text))
+                        .child("Retry")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_dirty_hint = true;
+                                if let Some(project) = view.coordinator.selected_project_id() {
+                                    view.repo_scan_bust.insert(project);
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                );
+            }
+            return bar.child(row);
         }
         let Some(status) = self
             .git_panel
@@ -14415,174 +14872,247 @@ impl WorkspaceView {
                     .child("Loading git status…"),
             );
         };
-        // Branch + commit header: 11px branch row (icon, name, sync pill,
-        // refresh), draft box (min 56px), full-width Commit button. The
-        // draft stays single-line editing (multiline caret/selection is a
-        // recorded P4 follow-up); the commit-options dropdown is omitted
-        // until its menu has backend actions.
-        let branch_name = status
-            .branch
-            .clone()
-            .unwrap_or_else(|| "detached".to_string());
-        // Only show the sync pill when there is an upstream and something to
-        // sync; `↑0 ↓0` is noise on every repo without a remote. The raw
-        // upstream path (`origin/main`) is intentionally not shown: it
-        // repeats the branch name with a remote prefix.
-        let sync_pill = (status.upstream.is_some() && (status.ahead > 0 || status.behind > 0))
-            .then(|| format!("↑{} ↓{}", status.ahead, status.behind));
-        let can_commit = !status.staged.is_empty();
-        // Commit UI only exists when there is something to commit: on a
-        // clean tree the draft box, the (always disabled) Commit button and
-        // the "Working tree clean" line are all dead space. Branch, sync
-        // actions, stash and graph stay visible either way.
+        // Branch header (two rows, see below): branch identity first,
+        // remote actions second. The commit field is a single line under
+        // the header when the tree is dirty.
         let dirty = !status.staged.is_empty()
             || !status.unstaged.is_empty()
             || !status.untracked.is_empty();
+        let branch_name = workbench::branch_label(status.branch.as_deref(), dirty)
+            .unwrap_or_else(|| "detached".to_string());
+        // The sync pill label is a pure helper (unit-tested in
+        // `git_panel`): hidden without an upstream or when in sync, and
+        // one-sided otherwise (`↓19`, never `↑0 ↓19`). The raw upstream
+        // path (`origin/main`) is intentionally not shown: it repeats the
+        // branch name with a remote prefix.
+        let sync_pill =
+            git_panel::sync_pill_label(status.upstream.is_some(), status.ahead, status.behind);
+        let can_commit = !status.staged.is_empty();
+        // Commit UI only exists when there is something to commit: on a
+        // clean tree the draft box and the Commit action are dead space.
+        // Branch, sync actions, stash and graph stay visible either way.
         let input_focused = self.git_panel.commit_focused();
         let input_content = git_input_view::render(git_input_view::FieldView {
             input: self.git_panel.commit_input(&self.active_repo_key(project)),
-            placeholder: "Commit message",
+            placeholder: if can_commit {
+                "Commit message"
+            } else {
+                "Stage changes to commit"
+            },
             focused: input_focused,
             caret_visible: self.commit_caret_on,
         });
+        // Single-row header: branch icon, picker (flex-1, truncates with an
+        // ellipsis), sync pill, then fetch/pull/push icons and refresh pinned
+        // right with `flex_shrink_0` so a long branch name can never push the
+        // actions out of the panel. The repo name stays out: the chrome's
+        // highlighted row above (and its collapsed label) already identifies
+        // the active repository, and the name cell starved the branch.
+        let has_upstream = status.upstream.is_some();
         let mut header = div()
-            .p_3()
             .flex()
             .flex_col()
-            .gap_3()
+            .flex_shrink_0()
             .border_b_1()
             .border_color(rgb(crate::ui::theme::colors().border))
             .child(
-                // Branch row: identity + sync status on the left, a
-                // single refresh control on the right. Remote actions
-                // live on their own row so they never crowd the branch.
                 div()
+                    .h(px(40.0))
+                    .pl_3()
+                    .pr_1()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .role(crate::ui::metrics::BODY_11)
                     .text_color(rgb(crate::ui::theme::colors().text))
                     .child(crate::ui::assets::icon(
                         crate::ui::assets::GIT_BRANCH,
-                        16.0,
+                        14.0,
                         crate::ui::theme::colors().purple,
                     ))
                     .child(
-                        branch_picker_trigger(project, branch_name, cx)
-                            .px_1()
-                            .rounded(px(4.0)),
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(
+                                branch_picker_trigger(project, branch_name, cx)
+                                    .px_1()
+                                    .rounded(px(4.0)),
+                            ),
                     )
                     .children(sync_pill.map(|sync_pill| {
                         crate::ui::metrics::text_role(
                             crate::ui::primitives::pill()
+                                .flex_shrink_0()
                                 .px(px(6.0))
-                                .py(px(2.0))
+                                .py(px(1.0))
                                 .rounded_full(),
-                            crate::ui::metrics::META_9,
+                            crate::ui::metrics::META_10,
                         )
-                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .text_color(rgb(crate::ui::theme::colors().cyan))
                         .child(sync_pill)
                     }))
-                    .child(div().flex_1())
+                    .child(self.git_sync_button(
+                        project,
+                        "Fetch",
+                        "fetch",
+                        crate::ui::assets::REFRESH,
+                        cx,
+                    ))
+                    .child(self.git_sync_button(
+                        project,
+                        "Pull",
+                        "pull",
+                        crate::ui::assets::ARROW_DOWN,
+                        cx,
+                    ))
+                    .child({
+                        // No upstream: offer explicit publish (`push -u origin
+                        // HEAD`) instead of a push that can only fail with
+                        // `NoUpstream`. Same push glyph either way.
+                        self.git_sync_button(
+                            project,
+                            if has_upstream { "Push" } else { "Publish" },
+                            if has_upstream { "push" } else { "publish" },
+                            crate::ui::assets::ARROW_UP,
+                            cx,
+                        )
+                    }),
+            );
+        if !dirty {
+            // Disabled composer strip: same 32px geometry as the dirty
+            // composer so clean/dirty switches never shift stash + graph.
+            // Never takes keyboard focus; the Commit cell stays dimmed.
+            // A surviving per-repo draft is named so it doesn't look lost.
+            let repo_key = self.active_repo_key(project);
+            let draft = self
+                .git_panel
+                .commit_input(&repo_key)
+                .map(|input| input.text().trim().to_owned())
+                .unwrap_or_default();
+            let strip = if draft.is_empty() {
+                "Working tree clean.".to_owned()
+            } else {
+                format!("Draft saved — stage to commit: {draft}")
+            };
+            header = header.child(
+                div()
+                    .mx_3()
+                    .mb_3()
+                    .h(px(32.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::colors().border))
+                    .bg(rgb(crate::ui::theme::colors().bg2))
                     .child(
                         div()
-                            .p(px(6.0))
-                            .rounded(px(7.0))
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .role(crate::ui::metrics::BODY_11)
                             .text_color(rgb(crate::ui::theme::colors().muted))
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                            .child(strip),
+                    )
+                    .child(
+                        crate::ui::metrics::text_role(
+                            div()
+                                .h_full()
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .flex_shrink_0()
+                                .border_l_1()
+                                .border_color(rgb(crate::ui::theme::colors().border)),
+                            crate::ui::metrics::BODY_11_MEDIUM,
+                        )
+                        .text_color(rgb(crate::ui::theme::colors().muted2))
+                        .child("Commit"),
+                    ),
+            );
+        }
+        if dirty {
+            // Commit composer: one line, the action sits inside the field.
+            header = header.child(
+                div()
+                    .mx_3()
+                    .mb_3()
+                    .h(px(32.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(if input_focused {
+                        crate::ui::theme::colors().cyan
+                    } else {
+                        crate::ui::theme::colors().border
+                    }))
+                    .bg(rgb(crate::ui::theme::colors().bg2))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .overflow_hidden()
+                            .role(crate::ui::metrics::BODY_11)
+                            .text_color(rgb(crate::ui::theme::colors().text))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
+                                cx.listener(move |view, _, window, cx| {
                                     if view.shutting_down {
                                         return;
                                     }
                                     cx.stop_propagation();
                                     window.focus(&view.focus_handle);
-                                    view.git_dirty_hint = true;
-                                    if let Some(project) = view.coordinator.selected_project_id() {
-                                        view.repo_scan_bust.insert(project);
-                                    }
+                                    view.git_panel.set_commit_focused(true);
+                                    view.commit_caret_on = true;
+                                    view.ensure_commit_blink(cx);
+                                    view.set_input_owner(InputOwner::GitCommit);
                                     cx.notify();
                                 }),
                             )
-                            .child(crate::ui::primitives::cmd_icon(
-                                crate::ui::assets::REFRESH,
-                                14.0,
-                                crate::ui::theme::colors().muted,
-                            )),
-                    ),
-            )
-            .child(
-                // Remote actions: equal-width segmented row, so all three
-                // stay visible and aligned at any inspector width.
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div().flex_1().min_w(px(0.0)).child(
-                            self.git_sync_button(project, "Fetch", "fetch", cx)
-                                .w_full()
-                                .flex()
-                                .justify_center(),
-                        ),
+                            .child(input_content),
                     )
                     .child(
-                        div().flex_1().min_w(px(0.0)).child(
-                            self.git_sync_button(project, "Pull", "pull", cx)
-                                .w_full()
+                        crate::ui::metrics::text_role(
+                            div()
+                                .h_full()
+                                .px_3()
                                 .flex()
-                                .justify_center(),
-                        ),
-                    )
-                    .child(
-                        div().flex_1().min_w(px(0.0)).child(
-                            self.git_sync_button(project, "Push", "push", cx)
-                                .w_full()
-                                .flex()
-                                .justify_center(),
-                        ),
-                    ),
-            );
-        if let Some(task) = &self.sync_pending {
-            let project_name = self
-                .coordinator
-                .projects()
-                .iter()
-                .enumerate()
-                .find(|(_, project)| project.id == task.repo.project)
-                .map(|(ordinal, project)| project.display_name(ordinal + 1))
-                .unwrap_or_else(|| "Closed project".into());
-            header = header.child(
-                div()
-                    .role(crate::ui::metrics::BODY_11)
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(format!(
-                        "{} · {} · {}s",
-                        project_name,
-                        task.operation.pending_label(),
-                        task.started.elapsed().as_secs()
-                    )),
-            );
-        }
-        if dirty {
-            header = header
-                .child(
-                    div()
-                        .min_h(px(56.0))
-                        .p_2()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(rgb(if input_focused {
-                            crate::ui::theme::colors().blue2
+                                .items_center()
+                                .flex_shrink_0()
+                                .border_l_1()
+                                .border_color(rgb(crate::ui::theme::colors().border))
+                                .hover(|s| {
+                                    if can_commit {
+                                        s.bg(rgb(crate::ui::theme::colors().row_hover_bg))
+                                    } else {
+                                        s
+                                    }
+                                }),
+                            crate::ui::metrics::BODY_11_MEDIUM,
+                        )
+                        .text_color(rgb(if can_commit {
+                            crate::ui::theme::colors().cyan
                         } else {
-                            crate::ui::theme::colors().border
+                            crate::ui::theme::colors().muted2
                         }))
-                        .bg(rgb(crate::ui::theme::colors().pill_bg))
-                        .role(crate::ui::metrics::BODY_11)
-                        .text_color(rgb(crate::ui::theme::colors().text))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -14591,60 +15121,19 @@ impl WorkspaceView {
                                 }
                                 cx.stop_propagation();
                                 window.focus(&view.focus_handle);
-                                view.stash_focused = None;
-                                view.git_panel.set_commit_focused(true);
-                                view.commit_caret_on = true;
-                                view.ensure_commit_blink(cx);
-                                view.set_input_owner(InputOwner::GitCommit);
-                                cx.notify();
-                            }),
-                        )
-                        .child(input_content),
-                )
-                .child(
-                    crate::ui::metrics::text_role(
-                        div()
-                            .h(px(32.0))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(7.0))
-                            .bg(rgb(if can_commit {
-                                crate::ui::theme::colors().blue2
-                            } else {
-                                crate::ui::theme::colors().panel2
-                            }))
-                            .hover(|s| {
                                 if can_commit {
-                                    s.bg(rgb(crate::ui::theme::colors().commit_hover_bg))
-                                } else {
-                                    s
+                                    view.git_commit_submit(project, cx);
                                 }
                             }),
-                        crate::ui::metrics::BODY_11_MEDIUM,
-                    )
-                    .text_color(rgb(if can_commit {
-                        crate::ui::theme::colors().on_accent
-                    } else {
-                        crate::ui::theme::colors().muted
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            if can_commit {
-                                view.git_commit_submit(project, cx);
-                            }
-                        }),
-                    )
-                    .child("Commit"),
-                );
+                        )
+                        .child("Commit"),
+                    ),
+            );
         }
+        // No in-flow pending line: the running button already swaps its
+        // label for the pending state (`Fetching…`) and all three disable
+        // while one runs, and completion lands as a toast. An in-flow line
+        // here pushed stash + graph down for the whole operation.
         bar = bar.child(header);
         // Change groups only exist on a dirty tree; a clean tree goes
         // straight to stash + graph (the "Working tree clean" line and the
@@ -14676,22 +15165,28 @@ impl WorkspaceView {
                 .collect();
             let capped =
                 staged_count + changes_count > staged_entries.len() + changes_entries.len();
-            bar = bar.child(self.render_change_group(
-                project,
-                true,
-                staged_count,
-                staged_entries,
-                selected.clone(),
-                cx,
-            ));
-            bar = bar.child(self.render_change_group(
-                project,
-                false,
-                changes_count,
-                changes_entries,
-                selected,
-                cx,
-            ));
+            // Same order as keyboard row navigation. An empty group is not
+            // rendered at all.
+            if staged_count > 0 {
+                bar = bar.child(self.render_change_group(
+                    project,
+                    true,
+                    staged_count,
+                    staged_entries,
+                    selected.clone(),
+                    cx,
+                ));
+            }
+            if changes_count > 0 {
+                bar = bar.child(self.render_change_group(
+                    project,
+                    false,
+                    changes_count,
+                    changes_entries,
+                    selected,
+                    cx,
+                ));
+            }
             if capped || status.truncated {
                 bar = bar.child(
                     div()
@@ -14759,16 +15254,7 @@ impl WorkspaceView {
         }
         let collapsed = self.git_panel.is_stash_collapsed(&repo_key);
         let count = loaded_count.unwrap_or(0);
-        let has_entries = count > 0;
-        let mut header = div()
-            .h(px(32.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .px_2()
-            .gap_1()
-            .role(crate::ui::metrics::META_10)
-            .text_color(rgb(crate::ui::theme::colors().muted))
+        let header = section_heading("Stash", (count > 0).then_some(count), collapsed)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -14781,38 +15267,7 @@ impl WorkspaceView {
                     view.git_panel.toggle_stash_collapsed(&repo_key);
                     cx.notify();
                 }),
-            )
-            .child(
-                div()
-                    .w(px(14.0))
-                    .flex_shrink_0()
-                    .child(crate::ui::assets::icon(
-                        if collapsed {
-                            crate::ui::assets::CHEVRON_RIGHT
-                        } else {
-                            crate::ui::assets::CHEVRON_DOWN
-                        },
-                        14.0,
-                        crate::ui::theme::colors().muted,
-                    )),
-            )
-            .child("STASH")
-            .child(div().flex_1());
-        // Count pill only when entries exist: a `0` pill is noise on the
-        // push-only (first-stash) layout.
-        if has_entries {
-            header = header.child(
-                div()
-                    .ml(px(8.0))
-                    .px(px(6.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(rgb(crate::ui::theme::colors().pill_border))
-                    .bg(rgb(crate::ui::theme::colors().pill_bg))
-                    .role(crate::ui::metrics::META_9)
-                    .child(format!("{count}")),
             );
-        }
         // Push input: message draft (view-local, like the commit draft) +
         // untracked toggle + Stash button. Commits through the dispatcher.
         if !collapsed {
@@ -15004,99 +15459,108 @@ impl WorkspaceView {
                                         .truncate()
                                         .child(stash.subject.clone()),
                                 )
+                                // Text pills, not icon-only: Pop sits next to
+                                // Apply with destructive-adjacent meaning and
+                                // there is no tooltip infrastructure to explain
+                                // glyphs. Order: Pop, Apply, Drop (Drop keeps
+                                // the two-step confirmation).
                                 .child(
-                                    div()
-                                        .p(px(6.0))
-                                        .rounded(px(7.0))
-                                        .text_color(rgb(crate::ui::theme::colors().muted))
-                                        .hover(|s| {
-                                            s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
-                                        })
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, window, cx| {
-                                                if view.shutting_down {
-                                                    return;
-                                                }
-                                                cx.stop_propagation();
-                                                window.focus(&view.focus_handle);
-                                                view.stash_index_action(
-                                                    project,
-                                                    stash_index,
-                                                    false,
-                                                    cx,
-                                                );
+                                    crate::ui::metrics::text_role(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(
+                                                    crate::ui::theme::colors().row_hover_bg,
+                                                ))
                                             }),
-                                        )
-                                        .child(crate::ui::assets::icon(
-                                            crate::ui::assets::UNDO,
-                                            14.0,
-                                            crate::ui::theme::colors().muted,
-                                        )),
+                                        crate::ui::metrics::META_10,
+                                    )
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            view.stash_index_action(
+                                                project,
+                                                stash_index,
+                                                false,
+                                                cx,
+                                            );
+                                        }),
+                                    )
+                                    .child("Pop"),
                                 )
                                 .child(
-                                    div()
-                                        .p(px(6.0))
-                                        .rounded(px(7.0))
-                                        .text_color(rgb(crate::ui::theme::colors().muted))
-                                        .hover(|s| {
-                                            s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
-                                        })
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, window, cx| {
-                                                if view.shutting_down {
-                                                    return;
-                                                }
-                                                cx.stop_propagation();
-                                                window.focus(&view.focus_handle);
-                                                view.stash_index_action(
-                                                    project,
-                                                    stash_index,
-                                                    true,
-                                                    cx,
-                                                );
+                                    crate::ui::metrics::text_role(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(
+                                                    crate::ui::theme::colors().row_hover_bg,
+                                                ))
                                             }),
-                                        )
-                                        .child(crate::ui::assets::icon(
-                                            crate::ui::assets::CHECK,
-                                            14.0,
-                                            crate::ui::theme::colors().muted,
-                                        )),
+                                        crate::ui::metrics::META_10,
+                                    )
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            view.stash_index_action(project, stash_index, true, cx);
+                                        }),
+                                    )
+                                    .child("Apply"),
                                 )
                                 .child(
-                                    div()
-                                        .p(px(6.0))
-                                        .rounded(px(7.0))
-                                        .text_color(rgb(crate::ui::theme::colors().red))
-                                        .hover(|s| {
-                                            s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
-                                        })
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, window, cx| {
-                                                if view.shutting_down {
-                                                    return;
-                                                }
-                                                cx.stop_propagation();
-                                                window.focus(&view.focus_handle);
-                                                let repo_key = view.active_repo_key(project);
-                                                view.git_panel.select_stash(&repo_key, position);
-                                                view.git_confirm_stash_drop(
-                                                    project,
-                                                    stash_index,
-                                                    stash_subject.clone(),
-                                                    repo_key,
-                                                    window,
-                                                    cx,
-                                                );
+                                    crate::ui::metrics::text_role(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(
+                                                    crate::ui::theme::colors().row_hover_bg,
+                                                ))
                                             }),
-                                        )
-                                        .child(crate::ui::assets::icon(
-                                            crate::ui::assets::TRASH,
-                                            14.0,
-                                            crate::ui::theme::colors().red,
-                                        )),
+                                        crate::ui::metrics::META_10,
+                                    )
+                                    .text_color(rgb(crate::ui::theme::colors().red))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            let repo_key = view.active_repo_key(project);
+                                            view.git_panel.select_stash(&repo_key, position);
+                                            view.git_confirm_stash_drop(
+                                                project,
+                                                stash_index,
+                                                stash_subject.clone(),
+                                                repo_key,
+                                                window,
+                                                cx,
+                                            );
+                                        }),
+                                    )
+                                    .child("Drop"),
                                 ),
                         );
                     }
@@ -15156,6 +15620,53 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Overflow filter keys for the multi-repo chrome. Typing narrows the
+    /// overflow tail live (render reads the same draft); Enter selects the
+    /// first match; Esc/Tab releases focus without touching the filter text.
+    fn on_repo_filter_key(
+        &mut self,
+        project: ProjectId,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match git_input_view::on_key(
+            self.repo_filter_drafts.entry(project).or_default(),
+            event,
+            cx,
+        ) {
+            git_input_view::InputAction::Release => {
+                self.repo_filter_focused = None;
+                self.restore_input_owner();
+            }
+            git_input_view::InputAction::Submit => {
+                if let Some(name) = self.first_overflow_match(project) {
+                    self.select_repo(project, name, cx);
+                }
+            }
+            git_input_view::InputAction::Edit => {}
+        }
+        cx.notify();
+    }
+
+    /// First overflow-tail repo matching the project's filter draft, if any.
+    /// Mirrors the render path so Enter selects exactly what is shown first.
+    fn first_overflow_match(&self, project: ProjectId) -> Option<String> {
+        let scan = self.coordinator.repo_scan(project)?;
+        let plan = git_repos::repo_chrome(Some(scan));
+        if plan.overflow == 0 {
+            return None;
+        }
+        let needle = self
+            .repo_filter_drafts
+            .get(&project)
+            .map(|draft| draft.text())
+            .unwrap_or_default();
+        let tail = scan.repos.get(plan.rows.len()..).unwrap_or_default();
+        git_repos::filter_repos(tail, needle)
+            .first()
+            .map(|entry| entry.name.clone())
+    }
+
     /// Fetch one stash list off-thread after mutations or first view.
     /// Synchronous dispatch is fine here (bounded, local, fast) — but the
     /// first-view path must not block render, so it spawns like status.
@@ -15199,22 +15710,31 @@ impl WorkspaceView {
 
     /// Push the stash draft through the shared dispatcher. Success clears
     /// the draft and refetches; failure keeps the draft for retry.
+    /// An empty message auto-generates `WIP on <branch>` so quick stashes
+    /// don't block on typing (VS Code parity); the branch name comes from
+    /// the last-good status.
     fn stash_push_submit(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         if self.shutting_down {
             return;
         }
         let repo_key = self.active_repo_key(project);
-        let message = self
+        let typed = self
             .stash_drafts
             .get(&repo_key)
             .map(git_input::GitInput::text)
             .unwrap_or_default()
+            .trim()
             .to_owned();
-        if message.trim().is_empty() {
-            self.input_notice = Some("Stash: type a message first.".into());
-            cx.notify();
-            return;
-        }
+        let message = if typed.is_empty() {
+            let branch = self
+                .git_panel
+                .status_for(&repo_key)
+                .and_then(|status| status.branch.clone())
+                .unwrap_or_else(|| "worktree".to_owned());
+            format!("WIP on {branch}")
+        } else {
+            typed
+        };
         let untracked = self.stash_untracked.contains(&repo_key);
         match self.dispatch_command(
             OmaCommand::Git(GitCommand::StashPush {
@@ -15371,9 +15891,11 @@ impl WorkspaceView {
     }
 
     /// One segment of the Graph scope control: an icon button that selects
-    /// `scope` and shows a pressed state while it is active. Two of these
-    /// (`git-branch` = current, `git-fork` = all local) replace the old
-    /// `Scope: …` text toggle that read like a branch picker.
+    /// `scope` and shows a pressed state while it is active. `git-branch`
+    /// is this branch; `network` (connected nodes, like a commit graph) is
+    /// every local branch. The old `git-fork` glyph read as a remote, and
+    /// bare `Current` / `All` words never said current/all *what* — both
+    /// are gone.
     fn history_scope_segment(
         &mut self,
         project: ProjectId,
@@ -15437,15 +15959,7 @@ impl WorkspaceView {
         let collapsed = self.history_panel.is_graph_collapsed(repo_key.clone());
         let mut section = div().flex().flex_col().flex_shrink_0();
         let loaded = self.history_panel.commits_for(repo_key.clone()).len();
-        let header = div()
-            .h(px(32.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .px_2()
-            .gap_1()
-            .role(crate::ui::metrics::META_10)
-            .text_color(rgb(crate::ui::theme::colors().muted))
+        let header = section_heading("History", (loaded > 0).then_some(loaded), collapsed)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -15459,37 +15973,10 @@ impl WorkspaceView {
                     cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .w(px(14.0))
-                    .flex_shrink_0()
-                    .child(crate::ui::assets::icon(
-                        if collapsed {
-                            crate::ui::assets::CHEVRON_RIGHT
-                        } else {
-                            crate::ui::assets::CHEVRON_DOWN
-                        },
-                        14.0,
-                        crate::ui::theme::colors().muted,
-                    )),
-            )
-            .child("GRAPH")
-            .child(
-                div()
-                    .ml(px(8.0))
-                    .px(px(6.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(rgb(crate::ui::theme::colors().pill_border))
-                    .bg(rgb(crate::ui::theme::colors().pill_bg))
-                    .role(crate::ui::metrics::META_9)
-                    .child(format!("{loaded}")),
-            )
-            .child(div().flex_1())
             .child({
-                // Two icon segments: current HEAD/branch vs all local branches.
-                // Active segment is filled; no text label to confuse with the
-                // branch picker.
+                // Two icon segments: this branch vs every local branch.
+                // Glyphs carry the meaning (branch vs commit-graph nodes);
+                // words and the remote-reading fork are gone.
                 let current_scope = self.history_panel.scope_for(repo_key.clone());
                 let is_current = current_scope == omaterm_core::GitHistoryScope::CurrentHead;
                 div()
@@ -15512,7 +15999,7 @@ impl WorkspaceView {
                     .child(self.history_scope_segment(
                         project,
                         omaterm_core::GitHistoryScope::AllLocalBranches,
-                        crate::ui::assets::GIT_FORK,
+                        crate::ui::assets::NETWORK,
                         !is_current,
                         cx,
                     ))
@@ -15557,7 +16044,7 @@ impl WorkspaceView {
                     .px_3()
                     .py_1()
                     .role(crate::ui::metrics::META_10)
-                    .text_color(rgb(crate::ui::theme::colors().yellow))
+                    .text_color(rgb(crate::ui::theme::colors().warning_text))
                     .child(format!("History refresh failed: {short}")),
             );
         }
@@ -15841,6 +16328,58 @@ impl WorkspaceView {
         let key = commit.id.as_str().to_owned();
         let repo_key = self.active_repo_key(project);
         let files = self.history_panel.files_for(repo_key, &key).cloned();
+        // Provenance row for the expanded commit: short OID plus an
+        // explicit copy button. Rows stay free of OID text (narrow panels
+        // can't afford it); the full hash is one click away here instead.
+        let full_oid = commit.id.as_str().to_owned();
+        let short_oid = full_oid.chars().take(7).collect::<String>();
+        section = section.child(
+            div()
+                .h(px(28.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .pr(px(8.0))
+                .child(Self::history_lane_line())
+                .child(
+                    crate::ui::metrics::text_role(
+                        div().flex_1().min_w(px(0.0)).overflow_hidden(),
+                        crate::ui::metrics::META_10,
+                    )
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .child(format!("commit {short_oid}")),
+                )
+                .child(
+                    div()
+                        .p(px(6.0))
+                        .rounded(px(7.0))
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                cx.write_to_clipboard(ClipboardItem::new_string(full_oid.clone()));
+                                view.show_toast("Commit SHA copied".into(), cx);
+                                cx.notify();
+                            }),
+                        )
+                        .child(crate::ui::primitives::cmd_icon(
+                            crate::ui::assets::COPY,
+                            13.0,
+                            crate::ui::theme::colors().muted,
+                        )),
+                ),
+        );
         match files {
             None | Some(git_history_panel::CommitFilesState::Loading) => section.child(
                 div()
@@ -15869,7 +16408,7 @@ impl WorkspaceView {
                         .whitespace_nowrap()
                         .child(Self::history_lane_line())
                         .role(crate::ui::metrics::META_10)
-                        .text_color(rgb(crate::ui::theme::colors().yellow))
+                        .text_color(rgb(crate::ui::theme::colors().warning_text))
                         .child(format!("Files unavailable: {short}"))
                         .child(
                             div()
@@ -16184,72 +16723,35 @@ impl WorkspaceView {
         selected: Option<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) -> Div {
-        let title = if staged_group {
-            "Staged Changes"
-        } else {
-            "Changes"
-        };
+        let title = if staged_group { "Staged" } else { "Changes" };
         let collapsed = self
             .git_panel
             .is_collapsed(&self.active_repo_key(project), staged_group);
         let mut section = div().flex().flex_col().flex_shrink_0();
-        let mut header = div()
-            .h(px(32.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .px_2()
-            .gap_1()
-            .role(crate::ui::metrics::META_10)
-            .text_color(rgb(crate::ui::theme::colors().muted))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
-                    if view.shutting_down {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    window.focus(&view.focus_handle);
-                    let repo_key = view.active_repo_key(project);
-                    view.git_panel.toggle_collapsed(&repo_key, staged_group);
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .w(px(14.0))
-                    .flex_shrink_0()
-                    .child(crate::ui::assets::icon(
-                        if collapsed {
-                            crate::ui::assets::CHEVRON_RIGHT
-                        } else {
-                            crate::ui::assets::CHEVRON_DOWN
-                        },
-                        14.0,
-                        crate::ui::theme::colors().muted,
-                    )),
-            )
-            .child(title.to_uppercase())
-            .child(
-                div()
-                    .ml(px(8.0))
-                    .px(px(6.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(rgb(crate::ui::theme::colors().pill_border))
-                    .bg(rgb(crate::ui::theme::colors().pill_bg))
-                    .role(crate::ui::metrics::META_9)
-                    .child(format!("{count}")),
-            )
-            .child(div().flex_1());
-        // Bulk actions: unstage-all on staged, stage-all + discard-all on
-        // working tree. Discard-all opens the same confirmation dialog.
+        let mut header = section_heading(title, Some(count), collapsed).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                if view.shutting_down {
+                    return;
+                }
+                cx.stop_propagation();
+                window.focus(&view.focus_handle);
+                let repo_key = view.active_repo_key(project);
+                view.git_panel.toggle_collapsed(&repo_key, staged_group);
+                cx.notify();
+            }),
+        );
+        // Bulk actions stay icon-only like the row actions: the header is a
+        // 30px strip and text buttons crowded it at narrow widths. Glyphs
+        // match the row set (minus=unstage, plus=stage, undo=discard).
+        // Discard-all opens the same confirmation dialog as row discards.
         if staged_group {
             header = header.child(
                 div()
                     .p(px(6.0))
                     .rounded(px(7.0))
                     .text_color(rgb(crate::ui::theme::colors().muted))
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
@@ -16274,6 +16776,7 @@ impl WorkspaceView {
                         .p(px(6.0))
                         .rounded(px(7.0))
                         .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -16296,6 +16799,7 @@ impl WorkspaceView {
                         .p(px(6.0))
                         .rounded(px(7.0))
                         .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, window, cx| {
@@ -16320,19 +16824,26 @@ impl WorkspaceView {
         }
         for (untracked, entry) in entries {
             let is_selected = selected.as_ref() == Some(&entry.path);
-            let name = entry
-                .path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| entry.path.to_string_lossy().into_owned());
-            let dir = entry
-                .path
-                .parent()
-                .map(|parent| parent.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            // Status letter from porcelain codes (mock M/A/U/D column).
-            let (mark, mark_color) = if untracked {
+            // Conflicted (unmerged) paths get a distinct red `!` badge so
+            // they don't read as plain `M`/`U`. Rename entries show
+            // `old → new` (backend carries `renamed_from`).
+            let is_conflict = !untracked
+                && matches!(
+                    (entry.x, entry.y),
+                    ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')
+                );
+            let is_rename = !untracked
+                && (entry.x == 'R' || entry.y == 'R')
+                && entry
+                    .renamed_from
+                    .as_ref()
+                    .is_some_and(|old| old != &entry.path);
+            let (mark, mark_color) = if is_conflict {
+                ("!", crate::ui::theme::colors().red)
+            } else if untracked {
                 ("U", crate::ui::theme::colors().green)
+            } else if is_rename {
+                ("R", crate::ui::theme::colors().purple)
             } else if entry.x == 'A' {
                 ("A", crate::ui::theme::colors().green)
             } else if entry.x == 'D' || entry.y == 'D' {
@@ -16341,13 +16852,26 @@ impl WorkspaceView {
                 ("M", crate::ui::theme::colors().yellow)
             };
             let path = entry.path.clone();
+            let shown = if is_rename {
+                format!(
+                    "{} → {}",
+                    entry
+                        .renamed_from
+                        .as_ref()
+                        .map(|p| p.to_string_lossy())
+                        .unwrap_or_default(),
+                    path.to_string_lossy()
+                )
+            } else {
+                path.to_string_lossy().into_owned()
+            };
             let row = div()
-                .h(px(40.0))
+                .h(px(28.0))
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .px_3()
+                .px_2()
                 .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
                 .role(crate::ui::metrics::BODY_11)
                 .text_color(rgb(if is_selected {
@@ -16374,73 +16898,12 @@ impl WorkspaceView {
                 )
                 .child(
                     div()
-                        .flex()
-                        .flex_1()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .min_w(px(0.0))
-                        .child(match files::file_badge(&entry.path) {
-                            Some((text, color)) => div()
-                                .w(px(20.0))
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .flex_shrink_0()
-                                .role(crate::ui::metrics::META_10)
-                                .font_weight(crate::ui::metrics::BADGE_600)
-                                .text_color(rgb(color))
-                                .child(text),
-                            None => div()
-                                .w(px(20.0))
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .flex_shrink_0()
-                                .child({
-                                    let icon = files::icon_for(
-                                        &entry.path,
-                                        omaterm_core::FileKind::File,
-                                        false,
-                                    );
-                                    crate::ui::assets::icon(
-                                        icon.icon,
-                                        14.0,
-                                        icon.color.unwrap_or(crate::ui::theme::colors().muted),
-                                    )
-                                }),
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .flex_col()
-                                .justify_center()
-                                .min_w(px(0.0))
-                                .child(
-                                    crate::ui::metrics::text_role(
-                                        div().truncate(),
-                                        crate::ui::metrics::BODY_11,
-                                    )
-                                    .child(name),
-                                )
-                                // Root-level files have no parent label. An
-                                // empty text element still reserves line height
-                                // and lifts the filename above the icon center.
-                                .when(!dir.is_empty(), |column| {
-                                    column.child(
-                                        crate::ui::metrics::text_role(
-                                            div().truncate(),
-                                            crate::ui::metrics::META_9,
-                                        )
-                                        .text_color(rgb(crate::ui::theme::colors().muted))
-                                        .child(dir),
-                                    )
-                                }),
-                        ),
+                        .w(px(12.0))
+                        .flex_shrink_0()
+                        .text_color(rgb(mark_color))
+                        .child(mark),
                 )
+                .child(div().flex_1().min_w(px(0.0)).truncate().child(shown))
                 .child(
                     div()
                         .flex()
@@ -16463,14 +16926,6 @@ impl WorkspaceView {
                                 untracked,
                             )
                         }),
-                )
-                .child(
-                    div()
-                        .w(px(14.0))
-                        .flex_shrink_0()
-                        .role(crate::ui::metrics::META_10)
-                        .text_color(rgb(mark_color))
-                        .child(mark),
                 );
             section = section.child(row);
         }
@@ -17754,13 +18209,16 @@ impl WorkspaceView {
     fn project_path_label(&self, project: &omaterm_core::Project) -> String {
         if let Some(dir) = project.pinned_directory.as_deref() {
             let text = dir.to_string_lossy().into_owned();
-            if let Ok(home) = std::env::var("HOME")
+            let home = std::env::var("HOME")
+                .ok()
+                .or_else(|| std::env::var("USERPROFILE").ok());
+            if let Some(home) = home
                 && let Ok(rest) = Path::new(&text).strip_prefix(Path::new(&home))
             {
                 return if rest.as_os_str().is_empty() {
                     "~".to_string()
                 } else {
-                    format!("~/{}", rest.display())
+                    format!("~/{}", rest.to_string_lossy().replace('\\', "/"))
                 };
             }
             text
@@ -17769,9 +18227,11 @@ impl WorkspaceView {
         }
     }
 
-    /// UI v5 Projects sidebar: 42px header (hide control, label, open
-    /// action), project cards, bottom Open Project button. All actions go
-    /// through the dispatcher; collapse only hides the panel.
+    /// Projects source list, full height. Rows are inset, rounded, and
+    /// selected by a lighter fill (no accent rail); each shows a folder
+    /// glyph, the name, and its path. Cycle stays on Alt+PageUp/PageDown.
+    /// Collapse only hides the panel. `width` is the geometry rect, already
+    /// shrunk on a narrow window.
     fn render_projects_sidebar(&mut self, width: f32, cx: &mut Context<Self>) -> Div {
         let mut cards: Vec<Div> = Vec::new();
         let selected = self.coordinator.selected_project_id();
@@ -17795,43 +18255,40 @@ impl WorkspaceView {
             );
             let path = self.project_path_label(project);
             let active = selected == Some(id);
-            let label = if self.show_project_hints && index < 9 {
-                format!("Alt+Shift+{} · {name}", index + 1)
-            } else {
-                name
-            };
-            let dot_color = if live {
-                crate::ui::theme::colors().green
-            } else {
-                crate::ui::theme::colors().muted2
-            };
-            // Measured card: 8px radius, 1px border (transparent when
-            // inactive), 10px padding; name 12px (500 active / 400 idle),
-            // branch 10px, path 9px; inactive hover #171d25. The card owns
-            // no menu chrome: the context menu is a window-level overlay
-            // anchored at the right-click point (card geometry is fixed).
+            let hint = (self.show_project_hints && index < 9).then(|| format!("{}", index + 1));
+            let glass = self.translucent_sidebar;
             let card = div()
-                .w_full()
-                .relative()
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(if active {
-                    rgb(crate::ui::theme::colors().border2)
+                .mx(px(8.0))
+                .px(px(8.0))
+                .py(px(6.0))
+                .rounded(px(6.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .bg(if active {
+                    rgb(crate::ui::theme::colors().selected_project_bg)
+                } else if glass {
+                    // Dark plate under the label only. The rest of the
+                    // sidebar stays the lighter glass, so a light wallpaper
+                    // cannot wash the name out.
+                    rgba(crate::ui::theme::with_alpha(
+                        crate::ui::theme::colors().sidebar_tint,
+                        crate::ui::theme::SIDEBAR_LABEL_SCRIM_OPACITY,
+                    ))
                 } else {
                     gpui::rgba(0x00000000)
                 })
-                .bg(rgb(if active {
-                    crate::ui::theme::colors().selected_project_bg
-                } else {
-                    crate::ui::theme::colors().panel
-                }))
-                .px(px(10.0))
-                .py(px(10.0))
                 .hover(|s| {
                     if active {
                         s
+                    } else if glass {
+                        s.bg(rgba(crate::ui::theme::with_alpha(
+                            crate::ui::theme::colors().sidebar_tint,
+                            0.94,
+                        )))
                     } else {
-                        s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                        s.bg(gpui::rgb(crate::ui::theme::colors().sidebar_hover_bg))
                     }
                 })
                 .on_mouse_down(
@@ -17860,42 +18317,66 @@ impl WorkspaceView {
                         cx.notify();
                     }),
                 )
+                // Folder tint carries liveness: accent while a shell runs.
+                .child(crate::ui::assets::icon(
+                    if live {
+                        crate::ui::assets::FOLDER_OPEN
+                    } else {
+                        crate::ui::assets::FOLDER
+                    },
+                    16.0,
+                    if live {
+                        crate::ui::theme::colors().blue
+                    } else {
+                        crate::ui::theme::colors().muted
+                    },
+                ))
                 .child(
                     div()
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.0))
                         .child(
-                            div()
-                                .w(px(8.0))
-                                .h(px(8.0))
-                                .rounded_full()
-                                .bg(rgb(dot_color)),
+                            crate::ui::metrics::text_role(
+                                div().truncate(),
+                                crate::ui::metrics::NAME_12_MEDIUM,
+                            )
+                            .text_color(rgb(crate::ui::theme::colors().text))
+                            .child(name),
                         )
                         .child(
                             crate::ui::metrics::text_role(
-                                div().flex_1().truncate(),
-                                if active {
-                                    crate::ui::metrics::NAME_12_MEDIUM
-                                } else {
-                                    crate::ui::metrics::NAME_12
-                                },
+                                div().truncate(),
+                                crate::ui::metrics::META_9,
                             )
-                            .text_color(rgb(crate::ui::theme::colors().text))
-                            .child(label),
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child(path),
                         ),
                 )
-                .child(
+                .children(hint.map(|hint| {
                     crate::ui::metrics::text_role(
-                        div().pl(px(16.0)).pt(px(4.0)),
-                        crate::ui::metrics::META_9,
+                        div().flex_shrink_0(),
+                        crate::ui::metrics::META_10,
                     )
                     .text_color(rgb(crate::ui::theme::colors().muted))
-                    .truncate()
-                    .child(path),
-                );
+                    .child(format!("Alt+Shift+{hint}"))
+                }));
             cards.push(card);
+        }
+        if cards.is_empty() {
+            let mut empty = crate::ui::metrics::text_role(
+                div().mx(px(8.0)).px(px(8.0)).py_2().rounded(px(6.0)),
+                crate::ui::metrics::BODY_11,
+            )
+            .text_color(rgb(crate::ui::theme::colors().muted));
+            if self.translucent_sidebar {
+                empty = empty.bg(rgba(crate::ui::theme::with_alpha(
+                    crate::ui::theme::colors().sidebar_tint,
+                    crate::ui::theme::SIDEBAR_LABEL_SCRIM_OPACITY,
+                )));
+            }
+            cards.push(empty.child("No projects yet."));
         }
         div()
             .w(px(width))
@@ -17905,19 +18386,25 @@ impl WorkspaceView {
             .flex_shrink_0()
             .min_h(px(0.0))
             .overflow_hidden()
-            .bg(rgb(crate::ui::theme::colors().panel))
+            .bg(if self.translucent_sidebar {
+                rgba(crate::ui::theme::with_alpha(
+                    crate::ui::theme::colors().sidebar_tint,
+                    crate::ui::theme::SIDEBAR_TINT_OPACITY,
+                ))
+            } else {
+                rgb(crate::ui::theme::colors().sidebar_bg)
+            })
             .border_r_1()
-            .border_color(rgb(crate::ui::theme::colors().border))
+            .border_color(rgb(crate::ui::theme::colors().sidebar_edge))
             .child(
                 div()
                     .h(px(crate::ui::geometry::HEADER_H))
+                    .flex_shrink_0()
                     .flex()
                     .flex_row()
                     .items_center()
+                    .justify_end()
                     .px_2()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(rgb(crate::ui::theme::colors().border))
                     .child(
                         sidebar_toggle(true)
                             .on_mouse_down(
@@ -17938,61 +18425,6 @@ impl WorkspaceView {
                                 16.0,
                                 sidebar_toggle_icon(true),
                             )),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .child("OMATERM"),
-                    )
-                    .child(div().flex_1())
-                    // Project cycle pager: same target as `Alt+PageUp/PageDown`
-                    // (`cycle_project`), visible always so the chord is
-                    // discoverable without the cheatsheet.
-                    .child(
-                        div()
-                            .p(px(6.0))
-                            .rounded(px(7.0))
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.cycle_project(-1, cx);
-                                }),
-                            )
-                            .child(crate::ui::primitives::cmd_icon(
-                                crate::ui::assets::CHEVRON_LEFT,
-                                16.0,
-                                crate::ui::theme::colors().muted,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .p(px(6.0))
-                            .rounded(px(7.0))
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.cycle_project(1, cx);
-                                }),
-                            )
-                            .child(crate::ui::primitives::cmd_icon(
-                                crate::ui::assets::CHEVRON_RIGHT,
-                                16.0,
-                                crate::ui::theme::colors().muted,
-                            )),
                     ),
             )
             .child(
@@ -18001,29 +18433,52 @@ impl WorkspaceView {
                     .flex()
                     .flex_1()
                     .flex_col()
+                    .gap(px(2.0))
                     .min_h(px(0.0))
                     .overflow_y_scroll()
-                    .p_2()
-                    .gap_1()
+                    .pb_2()
                     .children(cards),
             )
             .child(
                 div()
-                    .p_2()
+                    .h(px(40.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px_2()
                     .border_t_1()
-                    .border_color(rgb(crate::ui::theme::colors().border))
+                    .border_color(rgb(crate::ui::theme::colors().sidebar_edge))
                     .child(
                         div()
-                            .h(px(32.0))
+                            .h(px(26.0))
+                            .flex_1()
                             .flex()
                             .flex_row()
                             .items_center()
+                            .justify_center()
                             .gap_2()
-                            .px(px(8.0))
+                            .px(px(6.0))
                             .rounded(px(6.0))
-                            .border_1()
-                            .border_color(rgb(crate::ui::theme::colors().border2))
-                            .text_color(rgb(crate::ui::theme::colors().text2))
+                            .when(self.translucent_sidebar, |row| {
+                                row.bg(rgba(crate::ui::theme::with_alpha(
+                                    crate::ui::theme::colors().sidebar_tint,
+                                    crate::ui::theme::SIDEBAR_LABEL_SCRIM_OPACITY,
+                                )))
+                            })
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .hover(|style| {
+                                style
+                                    .bg(if self.translucent_sidebar {
+                                        rgba(crate::ui::theme::with_alpha(
+                                            crate::ui::theme::colors().sidebar_tint,
+                                            0.94,
+                                        ))
+                                    } else {
+                                        gpui::rgb(crate::ui::theme::colors().sidebar_hover_bg)
+                                    })
+                                    .text_color(gpui::rgb(crate::ui::theme::colors().text))
+                            })
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|view, _, window, cx| {
@@ -18036,24 +18491,13 @@ impl WorkspaceView {
                                 }),
                             )
                             .child(crate::ui::primitives::cmd_icon(
-                                crate::ui::assets::FOLDER_PLUS,
+                                crate::ui::assets::PLUS,
                                 14.0,
-                                crate::ui::theme::colors().text2,
+                                crate::ui::theme::colors().muted,
                             ))
                             .child(
-                                crate::ui::metrics::text_role(
-                                    div().flex_1().min_w(px(0.0)).truncate(),
-                                    crate::ui::metrics::BODY_11,
-                                )
-                                .child("Open Project"),
-                            )
-                            .child(
-                                crate::ui::metrics::text_role(
-                                    crate::ui::primitives::kbd().flex_shrink_0(),
-                                    crate::ui::metrics::META_9,
-                                )
-                                .text_color(rgb(crate::ui::theme::colors().muted))
-                                .child("Ctrl+O"),
+                                crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
+                                    .child("Open Folder…"),
                             ),
                     ),
             )
@@ -18627,7 +19071,7 @@ impl WorkspaceView {
             .bg(rgb(if dragging {
                 crate::ui::theme::colors().blue2
             } else {
-                crate::ui::theme::colors().bg
+                crate::ui::theme::colors().bg2
             }))
             .on_mouse_down(
                 MouseButton::Left,
@@ -18677,7 +19121,7 @@ impl WorkspaceView {
             .bg(rgb(if dragging {
                 crate::ui::theme::colors().blue2
             } else {
-                crate::ui::theme::colors().bg
+                crate::ui::theme::colors().bg2
             }))
             .on_mouse_down(
                 MouseButton::Left,
@@ -18721,19 +19165,17 @@ impl WorkspaceView {
     /// while strip hints are visible (plain `Alt` held). Slots past 9 have
     /// no chord and stay unlabeled so the hint never promises more than the
     /// `Alt+1..9` router honors.
-    /// Active-tab top accent as an overlay bar instead of a layout border,
-    /// so activating a tab never shifts strip contents. Uses the measured
-    /// inset accent alpha (`TAB_ACTIVE_TOP_ACCENT_ALPHA`).
+    /// Active tab outline: an accent hairline around the raised pill, as an
+    /// overlay so activating a tab never shifts the strip.
     fn tab_accent_bar() -> Div {
         div()
             .absolute()
-            .top(px(0.0))
-            .left(px(0.0))
-            .right(px(0.0))
-            .h(px(2.0))
-            .bg(rgba(crate::ui::theme::with_alpha(
-                crate::ui::theme::colors().blue,
-                crate::ui::theme::TAB_ACTIVE_TOP_ACCENT_ALPHA,
+            .inset_0()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgba(crate::ui::theme::with_alpha(
+                crate::ui::theme::colors().cyan,
+                crate::ui::theme::ACTIVE_TAB_OUTLINE_OPACITY,
             )))
     }
 
@@ -18745,9 +19187,9 @@ impl WorkspaceView {
         }
     }
 
-    /// UI v5 header row (42px): reveal-projects control when hidden, the
-    /// terminal tab strip, new-tab control, then search and inspector
-    /// toggle pinned right. Exactly one visible surface is active.
+    /// Session bar over the terminal only (42px): pill tabs, then `+`,
+    /// search, and the inspector toggle pinned right. Exactly one visible
+    /// surface is active.
     fn render_header(&mut self, cx: &mut Context<Self>) -> Div {
         let mut row = div()
             .h(px(crate::ui::geometry::HEADER_H))
@@ -18785,9 +19227,11 @@ impl WorkspaceView {
         let mut tabs = div()
             .id("tab-strip")
             .flex()
-            .flex_1()
+            .flex_shrink()
             .flex_row()
-            .items_end()
+            .items_center()
+            .gap_1()
+            .pl_2()
             .min_w(px(0.0))
             .h_full()
             // Horizontal scroll instead of clipping: narrow windows keep
@@ -18807,11 +19251,6 @@ impl WorkspaceView {
                 let tab_id = tab.id;
                 let active = active_kind == Some(ActiveTabKind::Terminal(tab_id));
                 let attention = self.tab_health(tab).1;
-                let dot = if attention {
-                    crate::ui::theme::colors().yellow
-                } else {
-                    crate::ui::theme::colors().green
-                };
                 let mut chip = crate::ui::metrics::text_role(
                     div()
                         .relative()
@@ -18820,8 +19259,11 @@ impl WorkspaceView {
                         .flex_shrink_0()
                         .items_center()
                         .gap_2()
-                        .px_3()
-                        .h_full(),
+                        .pl_3()
+                        .pr_1()
+                        .h(px(28.0))
+                        .max_w(px(240.0))
+                        .rounded(px(6.0)),
                     crate::ui::metrics::TAB_12,
                 )
                 .bg(if active {
@@ -18834,12 +19276,13 @@ impl WorkspaceView {
                         s
                     } else {
                         s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                            .text_color(gpui::rgb(crate::ui::theme::colors().text))
                     }
                 })
                 .text_color(rgb(if active {
-                    crate::ui::theme::colors().white
+                    crate::ui::theme::colors().text
                 } else {
-                    crate::ui::theme::colors().text2
+                    crate::ui::theme::colors().muted
                 }))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -18856,16 +19299,37 @@ impl WorkspaceView {
                         );
                     }),
                 )
-                .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(rgb(dot)))
-                .child(self.strip_chip_label(index + 1, tab.display_name(index + 1)));
+                .when(attention, |chip| {
+                    chip.child(
+                        div()
+                            .w(px(6.0))
+                            .h(px(6.0))
+                            .rounded_full()
+                            .bg(rgb(crate::ui::theme::colors().yellow)),
+                    )
+                })
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .child(self.strip_chip_label(index + 1, tab.display_name(index + 1))),
+                );
                 if active {
                     chip = chip.child(Self::tab_accent_bar());
                 }
                 let close_project = project_id;
                 let close_tab = tab_id;
-                chip = chip.child(
+                chip = chip.group("tab-chip").child(
                     div()
-                        .px_1()
+                        .p(px(3.0))
+                        .rounded(px(4.0))
+                        .flex_shrink_0()
+                        .when(!active, |close| {
+                            close
+                                .invisible()
+                                .group_hover("tab-chip", |style| style.visible())
+                        })
+                        .hover(|style| style.bg(rgb(crate::ui::theme::colors().panel3)))
                         .text_color(rgb(crate::ui::theme::colors().muted))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -18930,8 +19394,10 @@ impl WorkspaceView {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .px_3()
-                    .h_full()
+                    .pl_3()
+                    .pr_1()
+                    .h(px(28.0))
+                    .rounded(px(6.0))
                     .bg(if diff_active {
                         rgb(crate::ui::theme::colors().active_tab_bg)
                     } else {
@@ -19040,8 +19506,10 @@ impl WorkspaceView {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .px_3()
-                    .h_full()
+                    .pl_3()
+                    .pr_1()
+                    .h(px(28.0))
+                    .rounded(px(6.0))
                     .bg(if active {
                         rgb(crate::ui::theme::colors().active_tab_bg)
                     } else {
@@ -19143,9 +19611,11 @@ impl WorkspaceView {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .px_3()
-                    .h_full()
-                    .border_t_2()
+                    .pl_3()
+                    .pr_1()
+                    .h(px(28.0))
+                    .rounded(px(6.0))
+                    .border_1()
                     .border_color(rgb(if unavailable {
                         crate::ui::theme::colors().error_text
                     } else {
@@ -19255,10 +19725,9 @@ impl WorkspaceView {
             );
         }
         row = row.child(tabs);
-        // One trailing cluster (new tab, finder, inspector toggle) so the
-        // three controls share the same 4px gap and padding — previously the
-        // new-tab button sat outside the gap-1 cluster and read as a larger
-        // gap before the search icon.
+        row = row.child(div().flex_1());
+        // `+` and search stay pinned with the inspector toggle, outside the
+        // scrolling tab strip, so a narrow window cannot scroll them away.
         let mut trailing = div()
             .flex()
             .flex_row()
@@ -19274,6 +19743,7 @@ impl WorkspaceView {
                 div()
                     .p(px(6.0))
                     .rounded(px(7.0))
+                    .flex_shrink_0()
                     .text_color(rgb(crate::ui::theme::colors().muted))
                     .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
                     .on_mouse_down(
@@ -19317,7 +19787,8 @@ impl WorkspaceView {
         row.child(trailing)
     }
 
-    /// Right inspector: 40px Info/Files/Git tab row plus the selected body.
+    /// Right inspector: a segmented control (Info, Files, Git) plus the
+    /// selected body.
     /// Switching tabs never disturbs the center surface or panel geometry.
     fn render_inspector(&mut self, viewport_h: f32, width: f32, cx: &mut Context<Self>) -> Div {
         let git_scroll = self
@@ -19331,42 +19802,48 @@ impl WorkspaceView {
             .and_then(|project| self.git_panel.status_for(&self.active_repo_key(project)))
             .map(|status| status.staged.len() + status.unstaged.len() + status.untracked.len())
             .unwrap_or(0);
-        let mut tabs = div()
-            .h(px(40.0))
+        let mut segments = div()
+            .flex_1()
+            .h(px(28.0))
             .flex()
             .flex_row()
-            .items_end()
-            .px_1()
-            .border_b_1()
-            .border_color(rgb(crate::ui::theme::colors().border))
-            .flex_shrink_0();
+            .items_center()
+            .gap(px(2.0))
+            .p(px(2.0))
+            .rounded(px(7.0))
+            .bg(rgb(crate::ui::theme::colors().bg2));
         for (tab, label, glyph) in [
             (InspectorTab::Info, "Info", crate::ui::assets::INFO),
             (InspectorTab::Files, "Files", crate::ui::assets::FOLDER),
             (InspectorTab::Git, "Git", crate::ui::assets::GIT_BRANCH),
         ] {
             let active = self.inspector_tab == tab;
-            let glyph_color = if active {
-                crate::ui::theme::colors().white
+            let tint = if active {
+                crate::ui::theme::colors().text
             } else {
                 crate::ui::theme::colors().muted
             };
             let mut button = crate::ui::metrics::text_role(
                 div()
+                    .flex_1()
                     .h_full()
                     .flex()
                     .flex_row()
                     .items_center()
+                    .justify_center()
                     .gap(px(6.0))
-                    .px_3()
-                    .relative(),
+                    .rounded(px(5.0))
+                    .when(active, |segment| {
+                        segment.bg(rgb(crate::ui::theme::colors().panel3))
+                    })
+                    .when(!active, |segment| {
+                        segment
+                            .hover(|style| style.text_color(rgb(crate::ui::theme::colors().text)))
+                    }),
                 crate::ui::metrics::BODY_11,
             )
-            .text_color(rgb(if active {
-                crate::ui::theme::colors().white
-            } else {
-                crate::ui::theme::colors().muted
-            }))
+            .text_color(rgb(tint))
+            .child(crate::ui::assets::icon(glyph, 13.0, tint))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -19378,35 +19855,24 @@ impl WorkspaceView {
                     view.select_inspector_tab(tab, cx);
                 }),
             )
-            .child(crate::ui::assets::icon(glyph, 14.0, glyph_color))
             .child(label);
-            if active {
-                button = button.child(
-                    div()
-                        .absolute()
-                        .left(px(9.0))
-                        .right(px(9.0))
-                        .bottom(px(0.0))
-                        .h(px(2.0))
-                        .rounded_full()
-                        .bg(rgb(crate::ui::theme::colors().blue)),
-                );
-            }
             if tab == InspectorTab::Git && git_count > 0 {
                 button = button.child(
-                    crate::ui::metrics::text_role(
-                        div()
-                            .ml(px(4.0))
-                            .px(px(6.0))
-                            .rounded_full()
-                            .bg(rgb(crate::ui::theme::colors().git_badge_bg)),
-                        crate::ui::metrics::META_9,
-                    )
-                    .child(format!("{git_count}")),
+                    crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .child(format!("{git_count}")),
                 );
             }
-            tabs = tabs.child(button);
+            segments = segments.child(button);
         }
+        let tabs = div()
+            .h(px(crate::ui::geometry::HEADER_H))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px(px(10.0))
+            .flex_shrink_0()
+            .child(segments);
         let mut panel = div()
             .w(px(width))
             .h_full()
@@ -19518,35 +19984,22 @@ impl WorkspaceView {
                             .child(format!("{shell_label} · PID {pid}")),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                crate::ui::metrics::text_role(
-                                    div().flex_1().min_w(px(0.0)).truncate(),
-                                    crate::ui::metrics::META_10,
-                                )
-                                .text_color(rgb(crate::ui::theme::colors().muted))
-                                .child(path_label.clone()),
-                            )
-                            .child(
-                                crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10)
-                                    .cursor_pointer()
-                                    .flex_shrink_0()
-                                    .text_color(rgb(crate::ui::theme::colors().muted))
-                                    .hover(|s| s.text_color(rgb(crate::ui::theme::colors().blue)))
-                                    .child("Copy")
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |_, _, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                path_label.clone(),
-                                            ));
-                                        }),
-                                    ),
-                            ),
+                        crate::ui::metrics::text_role(
+                            div().truncate().cursor_pointer(),
+                            crate::ui::metrics::META_10,
+                        )
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|style| style.text_color(rgb(crate::ui::theme::colors().text)))
+                        .child(path_label.clone())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    path_label.clone(),
+                                ));
+                                view.push_toast("Copied path".into(), ToastKind::Success, cx);
+                            }),
+                        ),
                     ),
             );
         }
@@ -19680,7 +20133,8 @@ impl WorkspaceView {
                     div()
                         .cursor_pointer()
                         .role(crate::ui::metrics::META_10)
-                        .text_color(rgb(crate::ui::theme::colors().blue))
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|style| style.text_color(rgb(crate::ui::theme::colors().text)))
                         .child("Refresh")
                         .on_mouse_down(
                             MouseButton::Left,
@@ -19698,10 +20152,9 @@ impl WorkspaceView {
                     format!("Process query failed: {message}"),
                     crate::ui::theme::colors().red,
                 ),
-                ProcessQueryView::Idle => process_state_box(
-                    "Processes have not been queried yet.".to_string(),
-                    crate::ui::theme::colors().muted,
-                ),
+                ProcessQueryView::Idle => {
+                    process_state_box("Not queried.".to_string(), crate::ui::theme::colors().muted)
+                }
                 ProcessQueryView::Loading if loaded.is_none() => process_state_box(
                     "Querying processes…".to_string(),
                     crate::ui::theme::colors().muted,
@@ -19720,19 +20173,11 @@ impl WorkspaceView {
             });
             if let Some(pid) = armed_pid {
                 process_section = process_section.child(
-                    crate::ui::metrics::text_role(
-                        div()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(rgb(crate::ui::theme::colors().red))
-                            .px_3()
-                            .py_2(),
-                        crate::ui::metrics::BODY_11,
-                    )
-                    .text_color(rgb(crate::ui::theme::colors().red))
-                    .child(format!(
-                        "Press × again to send SIGTERM to process {pid}, or any other action to cancel."
-                    )),
+                    crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
+                        .text_color(rgb(crate::ui::theme::colors().red))
+                        .child(format!(
+                            "Press × again to send SIGTERM to process {pid}, or any other action to cancel."
+                        )),
                 );
             }
         }
@@ -19753,7 +20198,7 @@ impl WorkspaceView {
                 } else {
                     process_state_box(
                         match &self.process_query {
-                            ProcessQueryView::Idle => "Ports have not been queried yet.".into(),
+                            ProcessQueryView::Idle => "Not queried.".into(),
                             ProcessQueryView::Loading if loaded.is_none() => {
                                 "Querying ports…".into()
                             }
@@ -19776,150 +20221,41 @@ impl WorkspaceView {
                 crate::ui::theme::colors().muted,
             ));
         }
+        // Terminal history state, formerly on the status strip. Click runs
+        // the same opt-in key as the shortcut (its two-step confirm intact).
+        if let Some(status) = self.history_status_text() {
+            body = body.child(
+                crate::ui::metrics::text_role(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .cursor_pointer(),
+                    crate::ui::metrics::BODY_11,
+                )
+                .text_color(rgb(crate::ui::theme::colors().muted))
+                .hover(|style| style.text_color(rgb(crate::ui::theme::colors().text)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&view.focus_handle);
+                        view.history_opt_in_key(cx);
+                    }),
+                )
+                .child(status.replacen("history: ", "Terminal history: ", 1)),
+            );
+        }
         div()
             .flex()
             .flex_1()
             .min_h(px(0.0))
             .child(body.id("info-process-scroll").overflow_y_scroll())
-    }
-
-    /// UI v5 global status bar (24px): branch button, live process count,
-    /// then history state, font size, and encoding at right. Port counts,
-    /// CPU/MEM telemetry, and the notices bell arrive with M18/P6 — omitted
-    /// until real, never fabricated.
-    fn render_status_bar(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut left = div().flex().flex_row().items_center().h_full();
-        if let Some(project) = self.coordinator.selected_project_id()
-            && let Some(status) = self.git_panel.status_for(&self.active_repo_key(project))
-        {
-            // M20: name the repository when the project root holds more
-            // than one, so the status bar never shows an ambiguous branch.
-            let multi_repo = self
-                .coordinator
-                .repo_scan(project)
-                .is_some_and(|scan| scan.repos.len() > 1);
-            let repo_name = multi_repo
-                .then(|| self.coordinator.active_repo(project))
-                .flatten();
-            let dirty = !(status.staged.is_empty()
-                && status.unstaged.is_empty()
-                && status.untracked.is_empty());
-            if let Some(branch) = workbench::branch_label(status.branch.as_deref(), dirty) {
-                left = left.child(
-                    div()
-                        .px(px(10.0))
-                        .h_full()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(crate::ui::assets::icon(
-                            crate::ui::assets::GIT_BRANCH,
-                            12.0,
-                            crate::ui::theme::colors().muted,
-                        ))
-                        .children(repo_name.map(|repo| {
-                            crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                                .text_color(rgb(crate::ui::theme::colors().muted))
-                                .child(repo)
-                        }))
-                        .child(branch_picker_trigger(project, branch, cx)),
-                );
-            }
-        }
-        let live = self.coordinator.registry().len();
-        left = left.child(
-            div()
-                .px(px(10.0))
-                .h_full()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .w(px(8.0))
-                        .h(px(8.0))
-                        .rounded_full()
-                        .bg(rgb(crate::ui::theme::colors().green)),
-                )
-                .child(format!(
-                    "{live} process{}",
-                    if live == 1 { "" } else { "es" }
-                )),
-        );
-        let mut right = div().flex().flex_row().items_center().h_full();
-        if let Some(status) = self.history_status_text() {
-            right = right.child(
-                div()
-                    .px(px(10.0))
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            view.toggle_keybindings(cx);
-                        }),
-                    )
-                    .child("Alt+Shift+K keys"),
-            );
-            right = right.child(
-                div()
-                    .px(px(10.0))
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            view.history_opt_in_key(cx);
-                        }),
-                    )
-                    .child(status),
-            );
-        }
-        right = right.child(
-            div()
-                .px(px(10.0))
-                .h_full()
-                .flex()
-                .items_center()
-                .child(format!("{:.0}px", self.font_size * self.font_zoom)),
-        );
-        right = right.child(
-            div()
-                .px(px(10.0))
-                .h_full()
-                .flex()
-                .items_center()
-                .child("UTF-8"),
-        );
-        crate::ui::metrics::text_role(
-            div()
-                .h(px(crate::ui::geometry::STATUS_H))
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .bg(rgb(crate::ui::theme::colors().header_bg))
-                .border_t_1()
-                .border_color(rgb(crate::ui::theme::colors().border)),
-            crate::ui::metrics::META_10,
-        )
-        .text_color(rgb(crate::ui::theme::colors().muted))
-        .child(left)
-        .child(right)
     }
 
     /// `Ctrl+P` overlay in VSCode Quick Open style: centered floating box
@@ -20577,10 +20913,11 @@ impl Render for WorkspaceView {
                         )
                         .child(
                             div()
-                                .px_3()
-                                .py_2()
-                                .border_1()
-                                .border_color(rgb(crate::ui::theme::colors().border2))
+                                .cursor_pointer()
+                                .text_color(rgb(crate::ui::theme::colors().text2))
+                                .hover(|style| {
+                                    style.text_color(rgb(crate::ui::theme::colors().text))
+                                })
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, window, cx| {
@@ -20593,12 +20930,39 @@ impl Render for WorkspaceView {
                         .into_any_element();
                 }
                 let has_project = self.coordinator.selected_project_id().is_some();
-                let (prompt, action) = if has_project {
-                    ("This project has no tabs.", "New tab (Ctrl+Shift+T)")
-                } else {
-                    ("No projects yet.", "New project (Ctrl+Alt+N)")
-                };
-                div()
+                fn empty_action(
+                    cx: &mut Context<WorkspaceView>,
+                    label: &'static str,
+                    chord: &'static str,
+                    on_down: impl Fn(&mut WorkspaceView, &mut Context<WorkspaceView>) + 'static,
+                ) -> Div {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .text_color(rgb(crate::ui::theme::colors().text))
+                        .hover(|style| style.text_color(rgb(crate::ui::theme::colors().white)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _: &MouseDownEvent, window, cx| {
+                                window.focus(&view.focus_handle);
+                                view.user_focus_action();
+                                on_down(view, cx);
+                            }),
+                        )
+                        .child(label)
+                        .child(
+                            crate::ui::metrics::text_role(
+                                crate::ui::primitives::kbd(),
+                                crate::ui::metrics::META_9,
+                            )
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child(chord),
+                        )
+                }
+                let mut canvas = div()
                     .size_full()
                     .flex()
                     .flex_col()
@@ -20606,30 +20970,27 @@ impl Render for WorkspaceView {
                     .justify_center()
                     .gap_2()
                     .bg(rgb(crate::ui::theme::colors().bg2))
-                    .text_color(rgb(crate::ui::theme::colors().text2))
-                    .child(prompt)
-                    .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .border_1()
-                            .border_color(rgb(crate::ui::theme::colors().border2))
-                            .text_color(rgb(crate::ui::theme::colors().text))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |view, _event: &MouseDownEvent, window, cx| {
-                                    window.focus(&view.focus_handle);
-                                    view.user_focus_action();
-                                    if has_project {
-                                        view.create_tab(cx);
-                                    } else {
-                                        view.open_project_directory(cx);
-                                    }
-                                }),
-                            )
-                            .child(action),
-                    )
-                    .into_any_element()
+                    .text_color(rgb(crate::ui::theme::colors().text2));
+                if has_project {
+                    canvas = canvas.child("No tabs in this project.").child(empty_action(
+                        cx,
+                        "New tab",
+                        "Ctrl+Shift+T",
+                        |view, cx| {
+                            view.create_tab(cx);
+                        },
+                    ));
+                } else {
+                    canvas = canvas
+                        .child("No project open.")
+                        .child(empty_action(cx, "Open directory", "Ctrl+O", |view, cx| {
+                            view.open_project_directory(cx)
+                        }))
+                        .child(empty_action(cx, "New project", "Ctrl+Alt+N", |view, cx| {
+                            view.create_project(cx);
+                        }));
+                }
+                canvas.into_any_element()
             });
         // UI v5: the project list lives in the persistent left sidebar
         // (`render_projects_sidebar`) and the tab strip in the 42px header
@@ -20805,50 +21166,35 @@ impl Render for WorkspaceView {
             );
         }
         if let Some(message) = self.persistence_warning.clone() {
-            pane_area = pane_area.child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .bg(rgb(crate::ui::theme::colors().warning_bg))
-                    .text_color(rgb(crate::ui::theme::colors().warning_text))
-                    .child(message),
-            );
+            pane_area = pane_area.child(dismissible_banner(message, cx, |view, _| {
+                view.persistence_warning = None;
+            }));
         }
         if let Some(message) = self.config_warning.clone() {
-            pane_area = pane_area.child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .bg(rgb(crate::ui::theme::colors().warning_bg))
-                    .text_color(rgb(crate::ui::theme::colors().warning_text))
-                    .child(message),
-            );
+            pane_area = pane_area.child(dismissible_banner(message, cx, |view, _| {
+                view.config_warning = None;
+            }));
         }
         // `input_notice` (transient errors/notices) no longer renders in-flow:
         // it floats in the bottom-right stack with the toasts so failures
         // never shift the pane/editor/diff layout. Persistent system warnings
         // (persistence, config, files, history arm) stay as banners above.
         if let Some(message) = self.editor_save_warning.clone() {
-            pane_area = pane_area.child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .bg(rgb(crate::ui::theme::colors().warning_bg))
-                    .text_color(rgb(crate::ui::theme::colors().warning_text))
-                    .child(message),
-            );
+            pane_area = pane_area.child(dismissible_banner(message, cx, |view, _| {
+                view.editor_save_warning = None;
+            }));
         }
         if let Some(manager) = self.coordinator.history_manager()
-            && let Some(message) = manager.warning()
+            && let Some(message) = manager.warning().map(str::to_string)
+            && self.dismissed_history_warning.as_deref() != Some(message.as_str())
         {
-            pane_area = pane_area.child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .bg(rgb(crate::ui::theme::colors().warning_bg))
-                    .text_color(rgb(crate::ui::theme::colors().warning_text))
-                    .child(format!("History: {message}")),
-            );
+            pane_area = pane_area.child(dismissible_banner(
+                format!("History: {message}"),
+                cx,
+                move |view, _| {
+                    view.dismissed_history_warning = Some(message.clone());
+                },
+            ));
         }
         if !self.coordinator.tree().is_empty()
             && let Some((message, _)) = self.spawn_failure.clone()
@@ -20863,7 +21209,7 @@ impl Render for WorkspaceView {
                     .py_1()
                     .bg(rgb(crate::ui::theme::colors().error_bg))
                     .text_color(rgb(crate::ui::theme::colors().error_text))
-                    .child(message)
+                    .child(div().flex_1().min_w(px(0.0)).truncate().child(message))
                     .child(
                         div()
                             .px_2()
@@ -20919,16 +21265,23 @@ impl Render for WorkspaceView {
             .paste_arm
             .as_ref()
             .is_some_and(|(_, _, at)| at.elapsed() < PASTE_ARM_WINDOW);
+        self.sync_input_notice(cx);
         let toasts: Vec<Toast> = self
             .toasts
             .iter()
             .filter(|toast| Instant::now() < toast.deadline)
             .cloned()
-            .chain(self.input_notice.clone().map(|message| Toast {
-                message,
-                kind: ToastKind::Error,
-                deadline: Instant::now() + Duration::from_millis(TOAST_MS),
-            }))
+            .chain(
+                self.input_notice
+                    .clone()
+                    .zip(self.notice_until)
+                    .filter(|(_, until)| Instant::now() < *until)
+                    .map(|(message, deadline)| Toast {
+                        message,
+                        kind: ToastKind::Error,
+                        deadline,
+                    }),
+            )
             .chain(paste_armed.then(|| Toast {
                 message: "Paste: press Ctrl+Shift+V again within 8s to send".into(),
                 kind: ToastKind::Error,
@@ -20955,8 +21308,9 @@ impl Render for WorkspaceView {
                 cx,
             ));
         }
-        // UI v5 frame: Projects | resizer | (header over main+inspector,
-        // then main | resizer | inspector), then the global status bar.
+        // Frame: Projects | resizer | (session bar over the terminal) |
+        // resizer | inspector. Side columns are full height. There is no
+        // global status strip.
         let viewport_h: f32 = window.viewport_size().height.into();
         let header = self.render_header(cx);
         let mut center_row = div()
@@ -20965,45 +21319,31 @@ impl Render for WorkspaceView {
             .flex_row()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .overflow_hidden();
+            .overflow_hidden()
+            .bg(rgb(crate::ui::theme::colors().bg2));
         center_row = center_row.child(
             div()
                 .flex()
                 .flex_1()
                 .flex_col()
-                .size_full()
                 .min_w(px(0.0))
+                .min_h(px(0.0))
+                .overflow_hidden()
                 .child(header)
                 .child(
                     div()
                         .flex()
                         .flex_1()
-                        .flex_row()
-                        .size_full()
+                        .flex_col()
                         .min_w(px(0.0))
                         .min_h(px(0.0))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .flex_col()
-                                .size_full()
-                                .min_w(px(0.0))
-                                .child(pane_area),
-                        )
-                        .child(if inspector_visible {
-                            self.render_inspector_resizer(cx).into_any_element()
-                        } else {
-                            div().into_any_element()
-                        })
-                        .child(if inspector_visible {
-                            self.render_inspector(viewport_h, shell.inspector.2, cx)
-                                .into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }),
+                        .child(pane_area),
                 ),
         );
+        if self.inspector_visible {
+            center_row = center_row.child(self.render_inspector_resizer(cx));
+            center_row = center_row.child(self.render_inspector(viewport_h, shell.inspector.2, cx));
+        }
         let mut content_row = div()
             .flex()
             .flex_1()
@@ -21015,7 +21355,6 @@ impl Render for WorkspaceView {
             content_row = content_row.child(self.render_projects_resizer(cx));
         }
         content_row = content_row.child(center_row);
-        let status_bar = self.render_status_bar(cx);
         // Reveal jump digits only while the chord that honors them is
         // held: `Alt+Shift` for sidebar project jumps, plain `Alt` for
         // tab-strip jumps. Bare `Ctrl` never shows digits (its bytes belong
@@ -21075,10 +21414,15 @@ impl Render for WorkspaceView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(crate::ui::theme::colors().bg))
+            // A see-through window shows the desktop wherever the root is
+            // unpainted; everything but the sidebar paints its own opaque
+            // surface, so only the sidebar lets it through.
+            .when(
+                !(self.translucent_sidebar && self.projects_visible),
+                |root| root.bg(rgb(crate::ui::theme::colors().bg)),
+            )
             .text_color(rgb(crate::ui::theme::colors().text))
             .child(content_row)
-            .child(status_bar)
             .children(floating_overlays)
             .child(
                 canvas(
@@ -21103,8 +21447,8 @@ impl Render for WorkspaceView {
             // later sibling project cards) and never clip in scroll lists.
             .child(self.render_project_menu_overlay(viewport, cx))
             .child(self.render_terminal_menu_overlay(viewport, cx))
-            // Toast stack: bottom-right, newest nearest the corner, above the
-            // status bar, pointer-transparent (no handlers). Window-level so
+            // Toast stack: bottom-right, newest nearest the corner,
+            // pointer-transparent (no handlers). Window-level so
             // confirmations never resize the pane grid.
             .child({
                 if toasts.is_empty() {
@@ -21112,7 +21456,7 @@ impl Render for WorkspaceView {
                 } else {
                     let mut stack = div()
                         .absolute()
-                        .bottom(px(38.0))
+                        .bottom(px(12.0))
                         .right(px(12.0))
                         .flex()
                         .flex_col()
@@ -21817,8 +22161,8 @@ fn paint_terminal(
                         },
                     },
                     rgba(crate::ui::theme::with_alpha(
-                        crate::ui::theme::colors().blue,
-                        0.30,
+                        crate::ui::theme::colors().cyan,
+                        crate::ui::theme::TERMINAL_SELECTION_OPACITY,
                     )),
                 ));
             }
@@ -22108,9 +22452,20 @@ fn main() {
             .detach();
 
             let bounds = Bounds::centered(None, size(px(960.0), px(640.0)), cx);
+            // Read once here for the window itself; the view loads the full
+            // config (and reports problems) on its own. A broken file falls
+            // back to defaults in both places, so the two always agree.
+            let translucent = omaterm_state::AppConfig::load()
+                .unwrap_or_default()
+                .translucent_sidebar();
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_background: if translucent {
+                        WindowBackgroundAppearance::Blurred
+                    } else {
+                        WindowBackgroundAppearance::Opaque
+                    },
                     window_min_size: Some(size(px(640.0), px(400.0))),
                     ..Default::default()
                 },
@@ -22907,6 +23262,7 @@ mod tests {
             InputOwner::Keybindings,
             InputOwner::GitCommit,
             InputOwner::GitStash,
+            InputOwner::RepoFilter,
             InputOwner::BranchPicker,
             InputOwner::Confirmation,
         ] {

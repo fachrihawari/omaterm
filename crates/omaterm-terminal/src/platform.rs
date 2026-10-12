@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-#[cfg(unix)]
+#[cfg(all(unix, target_os = "linux"))]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::{
@@ -345,6 +345,8 @@ impl LinuxProcessInspector {
 
     /// Bind the target with a pidfd before authorization; never fall back to
     /// numeric kill. Re-read the ancestry immediately before pidfd signalling.
+    /// Non-Linux Unix has no pidfd, so it fails closed like Windows.
+    #[cfg(target_os = "linux")]
     pub fn terminate_owned(&mut self, pid: u32, roots: &[u32]) -> Result<(), TerminateError> {
         let fd = open_pidfd(pid)?;
         let chain = ancestry(pid, roots)?;
@@ -358,6 +360,12 @@ impl LinuxProcessInspector {
             }
         }
         signal_pidfd(&fd)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn terminate_owned(&mut self, pid: u32, roots: &[u32]) -> Result<(), TerminateError> {
+        let _ = (pid, roots);
+        Err(TerminateError::Other(std::io::ErrorKind::Unsupported))
     }
 
     fn all_processes() -> Vec<ProcessInfo> {
@@ -649,12 +657,20 @@ fn read_stat_times(pid: u32) -> Option<(u64, u64, u64)> {
 ///
 /// Mapping is by `errno`: `ESRCH` → [`TerminateError::NotFound`], `EPERM` →
 /// [`TerminateError::PermissionDenied`], anything else → [`TerminateError::Other`].
-#[cfg(unix)]
+/// Non-Linux Unix (no pidfd) fails closed with `Unsupported`, mirroring the
+/// Windows adapter.
+#[cfg(all(unix, target_os = "linux"))]
 fn linux_terminate(pid: u32) -> Result<(), TerminateError> {
     signal_pidfd(&open_pidfd(pid)?)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
+fn linux_terminate(pid: u32) -> Result<(), TerminateError> {
+    let _ = pid;
+    Err(TerminateError::Other(std::io::ErrorKind::Unsupported))
+}
+
+#[cfg(all(unix, target_os = "linux"))]
 fn syscall_error() -> TerminateError {
     match std::io::Error::last_os_error().raw_os_error() {
         Some(code) if code == libc::ESRCH => TerminateError::NotFound,
@@ -663,7 +679,7 @@ fn syscall_error() -> TerminateError {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, target_os = "linux"))]
 fn open_pidfd(pid: u32) -> Result<OwnedFd, TerminateError> {
     if pid == 0 || pid > i32::MAX as u32 {
         return Err(TerminateError::NotFound);
@@ -677,7 +693,7 @@ fn open_pidfd(pid: u32) -> Result<OwnedFd, TerminateError> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, target_os = "linux"))]
 fn signal_pidfd(fd: &OwnedFd) -> Result<(), TerminateError> {
     // SAFETY: fd stays live, SIGTERM is valid, null siginfo and flags=0.
     let rc = unsafe {
@@ -696,7 +712,7 @@ fn signal_pidfd(fd: &OwnedFd) -> Result<(), TerminateError> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, target_os = "linux"))]
 fn ancestry(pid: u32, roots: &[u32]) -> Result<Vec<(u32, u32, u64)>, TerminateError> {
     let mut chain = Vec::new();
     let mut current = pid;
@@ -925,6 +941,8 @@ mod tests {
         );
     }
 
+    /// Live `/proc` attribution: Linux only (no `/proc` on macOS).
+    #[cfg(target_os = "linux")]
     #[test]
     fn listening_socket_is_attributed_once_even_with_duplicate_fds() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -942,6 +960,8 @@ mod tests {
         );
     }
 
+    /// pidfd semantics: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn termination_rejects_group_ids_and_bound_dead_pidfd_cannot_hit_new_child() {
         for pid in [0, i32::MAX as u32 + 1, u32::MAX] {
@@ -964,6 +984,8 @@ mod tests {
         replacement.wait().unwrap();
     }
 
+    /// Live `/proc` ancestry + pidfd signalling: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn terminate_owned_denies_foreign_child_then_signals_verified_family() {
         let mut child = std::process::Command::new("/bin/sleep")
@@ -1037,6 +1059,8 @@ mod tests {
         assert_eq!(parse_listen_line("short line"), None);
     }
 
+    /// Live `/proc` self-inspection: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn inspector_sees_current_process() {
         let inspector = LinuxProcessInspector;
@@ -1052,6 +1076,8 @@ mod tests {
         let _ = inspector.listening_ports(me);
     }
 
+    /// Live `/proc` table: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn descendants_contain_spawned_child() {
         let inspector = LinuxProcessInspector;
@@ -1068,6 +1094,8 @@ mod tests {
         assert!(found, "spawned child must appear as a descendant");
     }
 
+    /// Live `/proc` sampling: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn cpu_sampler_first_sample_is_none_then_delta() {
         let me = std::process::id();
@@ -1089,6 +1117,8 @@ mod tests {
         assert!(cpu >= 0.0, "cpu percent must be non-negative: {cpu}");
     }
 
+    /// Live `/proc` sampling: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn cpu_sampler_drops_stale_pids() {
         let me = std::process::id();
@@ -1100,6 +1130,8 @@ mod tests {
         assert!(!sampler.previous.contains_key(&me), "stale pid dropped");
     }
 
+    /// Live `/proc` snapshot: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn snapshot_membership_and_cap_truncation() {
         let me = std::process::id();
@@ -1141,6 +1173,8 @@ mod tests {
         let _ = child_b.wait();
     }
 
+    /// pidfd termination: Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn terminate_spawned_sleep_succeeds_and_notfound_errors() {
         let mut child = std::process::Command::new("/bin/sleep")

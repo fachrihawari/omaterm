@@ -31,21 +31,24 @@ macro_rules! role {
     };
 }
 
-/// 10px muted section/group headings (PROJECTS, PROJECT, group labels).
-pub const HEADING_10: TypeRole = role!(10.0, FontWeight::NORMAL, 15.0);
-/// 12px project/inspector names (active project name is MEDIUM).
-pub const NAME_12: TypeRole = role!(12.0, FontWeight::NORMAL, 18.0);
-pub const NAME_12_MEDIUM: TypeRole = role!(12.0, FontWeight::MEDIUM, 18.0);
-/// 9px paths, badges, counts, kbd hints.
-pub const META_9: TypeRole = role!(9.0, FontWeight::NORMAL, 13.5);
-/// 11px body labels (tabs, rows, inputs, buttons).
-pub const BODY_11: TypeRole = role!(11.0, FontWeight::NORMAL, 16.5);
-/// 11px medium (Commit button).
-pub const BODY_11_MEDIUM: TypeRole = role!(11.0, FontWeight::MEDIUM, 16.5);
-/// 10px metadata (branch, pane headers, status, diff controls).
-pub const META_10: TypeRole = role!(10.0, FontWeight::NORMAL, 15.0);
-/// 12px terminal tabs and diff code.
-pub const TAB_12: TypeRole = role!(12.0, FontWeight::NORMAL, 18.0);
+// The names keep their v5 origin; the sizes are one step larger than the
+// mock. At 9–11px the chrome read as fine print next to a 14px terminal.
+
+/// Section/group headings.
+pub const HEADING_10: TypeRole = role!(11.0, FontWeight::NORMAL, 16.0);
+/// Project/inspector names (active project name is MEDIUM).
+pub const NAME_12: TypeRole = role!(13.0, FontWeight::NORMAL, 19.0);
+pub const NAME_12_MEDIUM: TypeRole = role!(13.0, FontWeight::MEDIUM, 19.0);
+/// Paths, badges, counts, kbd hints.
+pub const META_9: TypeRole = role!(10.0, FontWeight::NORMAL, 14.0);
+/// Body labels (rows, inputs, buttons).
+pub const BODY_11: TypeRole = role!(12.0, FontWeight::NORMAL, 18.0);
+/// Medium body (Commit).
+pub const BODY_11_MEDIUM: TypeRole = role!(12.0, FontWeight::MEDIUM, 18.0);
+/// Metadata (branch, status, diff controls).
+pub const META_10: TypeRole = role!(11.0, FontWeight::NORMAL, 16.0);
+/// Terminal tabs and diff code.
+pub const TAB_12: TypeRole = role!(13.0, FontWeight::NORMAL, 19.0);
 /// 600-weight file-type marks (TS, `{ }`).
 pub const BADGE_600: FontWeight = FontWeight::SEMIBOLD;
 

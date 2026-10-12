@@ -199,7 +199,9 @@ fn spawn_loop(
     }
 }
 
-#[cfg(test)]
+/// Every test here spawns live PTY shells: Linux only (macOS teardown
+/// wedge — see tests/pty_integration.rs header and docs/status.md).
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};

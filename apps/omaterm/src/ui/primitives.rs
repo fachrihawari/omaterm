@@ -3,7 +3,6 @@
 //! - `cmd_box`: the `.cmd` control — 1px transparent border, 7px radius,
 //!   hover `#182029` bg / `#27313d` border / white foreground over 120ms
 //!   (GPUI has no transition API; the end state applies instantly).
-//! - `pill`: bordered count/status chip on `#151a21`.
 //! - `kbd`: keyboard-hint badge with inset bottom highlight.
 //!
 //! Padding variants follow the measured cascade: controls carrying the

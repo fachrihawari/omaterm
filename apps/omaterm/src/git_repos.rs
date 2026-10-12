@@ -55,14 +55,14 @@ pub fn repo_chrome(scan: Option<&RepoScan>) -> ChromePlan<'_> {
 /// Group-header title for the repository chrome (locked chrome spec: one
 /// collapsible group header above plain rows). Uppercase, like the
 /// sibling `GRAPH` / `STAGED CHANGES` / `CHANGES` section headers.
-pub const CHROME_TITLE: &str = "REPOSITORIES";
+pub const CHROME_TITLE: &str = "Repositories";
 
 /// Header label for the repository group: the title while the list is
 /// expanded, and the title plus the active repository name while it is
 /// collapsed. A collapsed chrome names the repository whose full M14 body
 /// still renders below it, so the active repository is identifiable when
 /// the rows (and their highlight) are hidden — VS Code's picker row
-/// carries the same identity. Only the title is uppercased; the
+/// carries the same identity. The title is sentence case; the
 /// repository name keeps its own case.
 pub fn chrome_header_label(collapsed: bool, active: Option<&str>) -> String {
     match (collapsed, active) {
@@ -75,6 +75,22 @@ pub fn chrome_header_label(collapsed: bool, active: Option<&str>) -> String {
 /// rows included (the overflow row names the hidden count separately).
 pub fn chrome_count_label(count: usize) -> String {
     format!("{count} repos")
+}
+
+/// Case-insensitive substring filter for the overflow section of the
+/// multi-repo chrome. An empty needle matches everything; matching is over
+/// the directory name only (the only text the rows render). Pure so the
+/// renderer stays thin; the caller slices the capped-out tail before
+/// filtering so the visible 32 rows never move under an active filter.
+pub fn filter_repos<'a>(repos: &'a [RepoEntry], needle: &str) -> Vec<&'a RepoEntry> {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return repos.iter().collect();
+    }
+    repos
+        .iter()
+        .filter(|entry| entry.name.to_lowercase().contains(&needle))
+        .collect()
 }
 
 /// Whether Esc should collapse the multi-repo list for a project. Only a
@@ -161,10 +177,10 @@ mod tests {
     /// group instead of inventing a name. Only the title is uppercased.
     #[test]
     fn header_label_names_the_active_repository_only_while_collapsed() {
-        assert_eq!(chrome_header_label(false, Some("web")), "REPOSITORIES");
-        assert_eq!(chrome_header_label(false, None), "REPOSITORIES");
-        assert_eq!(chrome_header_label(true, Some("web")), "REPOSITORIES · web");
-        assert_eq!(chrome_header_label(true, None), "REPOSITORIES");
+        assert_eq!(chrome_header_label(false, Some("web")), "Repositories");
+        assert_eq!(chrome_header_label(false, None), "Repositories");
+        assert_eq!(chrome_header_label(true, Some("web")), "Repositories · web");
+        assert_eq!(chrome_header_label(true, None), "Repositories");
     }
 
     /// The cap never rewrites the count: the pill reports every discovered
@@ -173,6 +189,27 @@ mod tests {
     fn count_label_reports_every_discovered_repository() {
         assert_eq!(chrome_count_label(2), "2 repos");
         assert_eq!(chrome_count_label(MAX_SECTIONS + 8), "40 repos");
+    }
+
+    /// Overflow filter rules: empty matches all, matching is
+    /// case-insensitive substring over the name, non-matches vanish.
+    #[test]
+    fn filter_matches_names_case_insensitively_or_nothing() {
+        let scan = scan(&["api", "Web", "worker"], "/mono");
+        let all = filter_repos(&scan.repos, "");
+        assert_eq!(all.len(), 3);
+        let trimmed = filter_repos(&scan.repos, "  ");
+        assert_eq!(trimmed.len(), 3);
+        let names = |needle: &str| {
+            filter_repos(&scan.repos, needle)
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("w"), ["Web", "worker"]);
+        assert_eq!(names("WEB"), ["Web"]);
+        assert_eq!(names("api"), ["api"]);
+        assert!(names("zzz").is_empty());
     }
 
     /// Esc-collapse rule: single-repo and non-repo projects have no list,
