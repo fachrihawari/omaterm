@@ -4,6 +4,56 @@ All notable changes to OmaTerm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/) (`0.x` pre-1.0: minor bumps carry features).
 
+## [0.4.1] — 2026-10-12
+
+A patch release: Git-tab readability and history-encryption changes on top
+of the 0.4.0 multi-repo base, plus a workspace-chrome redesign.
+
+Full diff: https://github.com/fachrihawari/omaterm/compare/v0.4.0...v0.4.1 (21 commits).
+
+### Workspace chrome
+
+- Workspace chrome redesigned around the terminal, resolved against main's
+  theme and multi-repo Git state.
+- CI now runs only on `dev`/`hotfix/*` → `main` PRs (feature branches merge
+  to `dev` first).
+
+### Git tab
+
+- Repository rows are two-line (name + dirty dot, muted branch below) and
+  the branch header is two rows, so long names/branches truncate instead of
+  starving each other; the sync pill is one-sided (`↓19`, never `↑0 ↓19`).
+- Sync actions (fetch/pull/push) are icon buttons in a single 40px header
+  row with distinct glyphs — globe for fetch (network), arrows for
+  pull/push — keeping refresh (`↻`) reserved for the local re-read.
+- Scope control is icon + text (`Current` / `All`, branch vs commit-graph
+  glyphs); bulk group actions are icon buttons; the sidebar footer button
+  is full-width with a matching hover area.
+- History expansions gain a `commit <short>` + `Copy SHA` row; commit rows
+  keep conflict (`!`) and rename (`R`) badges.
+- Over-32-cap repositories render an inline toggleable tail with a
+  substring filter; the composer renders a disabled strip on clean trees so
+  clean/dirty switches no longer shift the layout.
+- Kept from the denser draft with no space cost: `Publish` label when no
+  upstream is set, auto-`WIP on <branch>` stash messages, graph + branch
+  refresh on every sync, and the amend backend/CLI/protocol
+  (`omaterm git commit --amend`, `git.commit{amend}`).
+
+### History encryption
+
+- The history master key no longer uses any OS keychain: a random 32-byte
+  key lives in `master.key` (`0600`) inside the history directory
+  (`FileKeyProvider`); the `keyring` dependency is removed. Crypto is
+  unchanged (ChaCha20-Poly1305, HKDF-SHA256).
+- Hard cutover, no migration: archive version 1→2, old files are never
+  decrypted, quarantined, or deleted — the first restore shows a one-time
+  "previous history format retired; starting fresh" notice.
+
+### Fixed
+
+- Linux clipboard handling and IPC timeout management (peer-closed
+  mid-frame no longer aborts the op on a stale deadline).
+
 ## [0.4.0] — 2026-10-09
 
 A multi-repo release: a project root holding several repositories now gets
