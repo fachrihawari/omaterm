@@ -9,6 +9,17 @@
 
 ## Current position
 
+### Windows typing echo no longer waits on a fixed sleep — 2026-10-12
+
+The desktop PTY reader on Windows slept 200ms before every ConPTY read, so
+keystroke echo felt late. It now waits on the same poller Alacritty uses to
+signal that the console pipe has bytes, and the UI paints only the newest
+grid when several echoes arrive in one turn. Checked with
+`cargo test -p omaterm-terminal --lib keystroke_echo` and
+`cargo clippy -p omaterm-terminal --all-targets -- -D warnings` plus
+`cargo clippy -p omaterm --bins -- -D warnings`. The desktop window was not
+launched.
+
 ### History master key: keyring removed, file-backed `master.key` (`feat/history-file-key`) — 2026-10-12
 
 Production history encryption no longer touches any OS keychain / Secret

@@ -109,10 +109,13 @@ before release. Unknown licenses remain unresolved, not implicitly approved.
   enables `windows-manifest` instead, so the executable embeds GPUI's
   Common Controls 6 manifest. Without it, `TaskDialogIndirect` is missing
   from the `comctl32` Windows loads and the desktop process exits before
-  `main`. GPUI selects its Win32 backend from `target_os`. `windows-sys` 0.59.0
+  `main`. GPUI selects its Win32 backend from `target_os`.   `windows-sys` 0.59.0
   (MIT OR Apache-2.0), already used by `alacritty_terminal`, is a direct
   dependency of the IPC, terminal, context, and desktop crates on Windows
-  only. IPC uses it for the named pipe and the directory ACL. Context and
+  only. `polling` 3.11.0 (Apache-2.0 OR MIT, already transitive through
+  `alacritty_terminal` 0.26.0) is a direct Windows dependency of
+  `omaterm-terminal` so the PTY reader can wait on ConPTY output instead
+  of sleeping. IPC uses it for the named pipe and the directory ACL. Context and
   the desktop crate use it for `GetFileInformationByHandle`.
 - `Cargo.lock`: committed application resolution. A full transitive license
   review remains required before release; project license MIT OR Apache-2.0
