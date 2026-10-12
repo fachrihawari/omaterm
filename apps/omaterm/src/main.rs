@@ -16329,7 +16329,7 @@ impl WorkspaceView {
         let repo_key = self.active_repo_key(project);
         let files = self.history_panel.files_for(repo_key, &key).cloned();
         // Provenance row for the expanded commit: short OID plus an
-        // explicit copy action. Rows stay free of OID text (narrow panels
+        // explicit copy button. Rows stay free of OID text (narrow panels
         // can't afford it); the full hash is one click away here instead.
         let full_oid = commit.id.as_str().to_owned();
         let short_oid = full_oid.chars().take(7).collect::<String>();
@@ -16355,15 +16355,18 @@ impl WorkspaceView {
                 .child(
                     crate::ui::metrics::text_role(
                         div()
-                            .px(px(8.0))
+                            .px(px(10.0))
                             .py(px(2.0))
-                            .rounded(px(4.0))
+                            .rounded(px(7.0))
                             .flex_shrink_0()
                             .cursor_pointer()
+                            .border_1()
+                            .border_color(rgb(crate::ui::theme::colors().border2))
+                            .bg(rgb(crate::ui::theme::colors().panel2))
                             .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
-                        crate::ui::metrics::META_10,
+                        crate::ui::metrics::BODY_11,
                     )
-                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .text_color(rgb(crate::ui::theme::colors().text))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
