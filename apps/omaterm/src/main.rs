@@ -9933,13 +9933,13 @@ impl WorkspaceView {
         true
     }
 
-    /// One remote-action icon button (fetch/pull/push). Glyphs are arrow
-    /// directions — `ARROW_UP_DOWN` for fetch (remote exchange), `ARROW_DOWN`
-    /// for pull, `ARROW_UP` for push — so the three stay distinguishable
-    /// without text at narrow widths. Dispatch flows through the shared
-    /// `GitCommand` path; while one runs all three dim (busy) and completion
-    /// lands as a toast. `Publish` (no upstream, `push -u origin HEAD`)
-    /// shares the push glyph and op.
+    /// One remote-action icon button (fetch/pull/push). Glyphs each do one
+    /// job: the globe means network (fetch remote refs), `ARROW_DOWN` pulls
+    /// into the worktree, `ARROW_UP` pushes out. The circular `REFRESH` glyph
+    /// stays reserved for the local status re-read, so the two never share a
+    /// shape. Dispatch flows through the shared `GitCommand` path; while one
+    /// runs all three dim (busy) and completion lands as a toast. `Publish`
+    /// (no upstream, `push -u origin HEAD`) shares the push glyph and op.
     fn git_sync_button(
         &mut self,
         project: ProjectId,
@@ -14959,7 +14959,7 @@ impl WorkspaceView {
                         project,
                         "Fetch",
                         "fetch",
-                        crate::ui::assets::ARROW_UP_DOWN,
+                        crate::ui::assets::GLOBE,
                         cx,
                     ))
                     .child(self.git_sync_button(
@@ -16780,83 +16780,81 @@ impl WorkspaceView {
                 cx.notify();
             }),
         );
-        // Bulk actions are text buttons (not icon-only): there is no
-        // tooltip infrastructure, so glyphs alone are undiscoverable.
+        // Bulk actions stay icon-only like the row actions: the header is a
+        // 30px strip and text buttons crowded it at narrow widths. Glyphs
+        // match the row set (minus=unstage, plus=stage, undo=discard).
         // Discard-all opens the same confirmation dialog as row discards.
         if staged_group {
             header = header.child(
-                crate::ui::metrics::text_role(
-                    div()
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
-                    crate::ui::metrics::META_10,
-                )
-                .text_color(rgb(crate::ui::theme::colors().muted))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
-                        }
-                        cx.stop_propagation();
-                        window.focus(&view.focus_handle);
-                        view.git_unstage_all(project, cx);
-                    }),
-                )
-                .child("Unstage all"),
+                div()
+                    .p(px(6.0))
+                    .rounded(px(7.0))
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.git_unstage_all(project, cx);
+                        }),
+                    )
+                    .child(crate::ui::primitives::cmd_icon(
+                        crate::ui::assets::UNSTAGE,
+                        14.0,
+                        crate::ui::theme::colors().muted,
+                    )),
             );
         } else {
             header = header
                 .child(
-                    crate::ui::metrics::text_role(
-                        div()
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
-                        crate::ui::metrics::META_10,
-                    )
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            view.git_stage_all(project, cx);
-                        }),
-                    )
-                    .child("Stage all"),
+                    div()
+                        .p(px(6.0))
+                        .rounded(px(7.0))
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_stage_all(project, cx);
+                            }),
+                        )
+                        .child(crate::ui::primitives::cmd_icon(
+                            crate::ui::assets::STAGE,
+                            14.0,
+                            crate::ui::theme::colors().muted,
+                        )),
                 )
                 .child(
-                    crate::ui::metrics::text_role(
-                        div()
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
-                        crate::ui::metrics::META_10,
-                    )
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            view.git_discard_all(project, window, cx);
-                        }),
-                    )
-                    .child("Discard all"),
+                    div()
+                        .p(px(6.0))
+                        .rounded(px(7.0))
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_discard_all(project, window, cx);
+                            }),
+                        )
+                        .child(crate::ui::primitives::cmd_icon(
+                            crate::ui::assets::UNDO,
+                            14.0,
+                            crate::ui::theme::colors().muted,
+                        )),
                 );
         }
         section = section.child(header);

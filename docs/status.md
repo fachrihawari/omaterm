@@ -9,6 +9,20 @@
 
 ## Current position
 
+### Git header follow-up: globe fetch + icon bulk actions (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+User notes on the icon header: (1) fetch `⇅` vs refresh `↻` — different
+jobs (network download vs local status re-read) but confusable shapes;
+(2) bulk group actions were icons before, text crowded the 30px header.
+Fetch now uses the vendored `globe-2` glyph (new `GLOBE` slot const):
+globe = network, ↓ = pull, ↑ = push, ↻ stays reserved for the local
+re-read — four distinct shapes. Bulk `Stage/Unstage/Discard all` revert
+to the row-matching icon buttons (`plus`/`minus`/`undo-2`).
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green), `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS (0 errors), `python3 scripts/check-docs.py` PASS,
+  `git diff --check` PASS. Wayland check remains manual.
+
 ### Git header: icon sync actions, single row (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
 
 User screenshot: the 30px Fetch/Pull/Push text row plus the `· repo`

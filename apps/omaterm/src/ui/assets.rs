@@ -36,6 +36,7 @@ pub const CHECK: &str = "check";
 pub const ARROW_UP: &str = "arrow-up";
 pub const ARROW_DOWN: &str = "arrow-down";
 pub const ARROW_UP_DOWN: &str = "arrow-up-down";
+pub const GLOBE: &str = "globe-2";
 pub const REFRESH: &str = "refresh-cw";
 pub const UNDO: &str = "undo-2";
 pub const STAGE: &str = "plus";
