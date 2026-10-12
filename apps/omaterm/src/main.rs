@@ -16353,34 +16353,31 @@ impl WorkspaceView {
                     .child(format!("commit {short_oid}")),
                 )
                 .child(
-                    crate::ui::metrics::text_role(
-                        div()
-                            .px(px(10.0))
-                            .py(px(2.0))
-                            .rounded(px(7.0))
-                            .flex_shrink_0()
-                            .cursor_pointer()
-                            .border_1()
-                            .border_color(rgb(crate::ui::theme::colors().border2))
-                            .bg(rgb(crate::ui::theme::colors().panel2))
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
-                        crate::ui::metrics::BODY_11,
-                    )
-                    .text_color(rgb(crate::ui::theme::colors().text))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            cx.write_to_clipboard(ClipboardItem::new_string(full_oid.clone()));
-                            view.show_toast("Commit SHA copied".into(), cx);
-                            cx.notify();
-                        }),
-                    )
-                    .child("Copy SHA"),
+                    div()
+                        .p(px(6.0))
+                        .rounded(px(7.0))
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                cx.write_to_clipboard(ClipboardItem::new_string(full_oid.clone()));
+                                view.show_toast("Commit SHA copied".into(), cx);
+                                cx.notify();
+                            }),
+                        )
+                        .child(crate::ui::primitives::cmd_icon(
+                            crate::ui::assets::COPY,
+                            13.0,
+                            crate::ui::theme::colors().muted,
+                        )),
                 ),
         );
         match files {
