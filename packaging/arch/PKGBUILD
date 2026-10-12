@@ -22,7 +22,7 @@ optdepends=('otf-nerd-fonts: file-tree and git icon glyphs')
 conflicts=('omaterm-bin')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 # SKIP until the first v<pkgver> tag exists; the release workflow pins this.
-sha256sums=('fd1dbd823583c3db2e82a035776392f273dce8461c8b6185b9a618eb64454356')
+sha256sums=('a3bc685b01b834365e283957fa458122fbbb618691f820603f5e3448870f9b19')
 
 build() {
   cd "$pkgname-$pkgver"
