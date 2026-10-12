@@ -35,6 +35,10 @@ pub struct PtyProcess {
     supports_run: bool,
     bash_rc_file: Option<PathBuf>,
     program: String,
+    /// Registered once so every reader shares the ConPTY wake, instead of
+    /// each `output_wait` installing a new poller and stealing the last one.
+    #[cfg(windows)]
+    output_poller: Option<std::sync::Arc<polling::Poller>>,
 }
 
 impl PtyProcess {
@@ -151,6 +155,8 @@ impl PtyProcess {
             supports_run,
             bash_rc_file,
             program,
+            #[cfg(windows)]
+            output_poller: None,
         })
     }
 
@@ -287,7 +293,8 @@ impl PtyProcess {
 
     /// Copy of the wait token. On Linux this is the PTY master fd, which stays
     /// open for the session lifetime so the reader can sleep without the lock.
-    pub fn output_wait(&self) -> OutputWait {
+    /// On Windows the token is the ConPTY poller, registered once per process.
+    pub fn output_wait(&mut self) -> OutputWait {
         #[cfg(unix)]
         {
             OutputWait {
@@ -296,7 +303,30 @@ impl PtyProcess {
         }
         #[cfg(windows)]
         {
-            OutputWait
+            if self.output_poller.is_none()
+                && let Ok(poller) = polling::Poller::new()
+            {
+                let poller = std::sync::Arc::new(poller);
+                let interest = polling::Event::readable(0);
+                // SAFETY: `register` is Alacritty's EventedReadWrite contract.
+                // The poller is kept alive by this process and by every
+                // `OutputWait` clone for the session lifetime.
+                let registered = unsafe {
+                    EventedReadWrite::register(
+                        &mut self.pty,
+                        &poller,
+                        interest,
+                        polling::PollMode::Level,
+                    )
+                };
+                if registered.is_ok() {
+                    self.output_poller = Some(poller);
+                }
+            }
+            match &self.output_poller {
+                Some(poller) => OutputWait::Ready(std::sync::Arc::clone(poller)),
+                None => OutputWait::Timer,
+            }
         }
     }
 
@@ -310,7 +340,7 @@ impl PtyProcess {
     /// available. Returns `true` when a `read()` is worthwhile. This keeps an
     /// idle terminal near zero CPU: the reader thread sleeps in the kernel
     /// instead of spin-polling.
-    pub fn poll_readable(&self, timeout_ms: i32) -> std::io::Result<bool> {
+    pub fn poll_readable(&mut self, timeout_ms: i32) -> std::io::Result<bool> {
         self.output_wait().poll(timeout_ms)
     }
 }
@@ -325,26 +355,46 @@ pub struct OutputWait {
 
 #[cfg(unix)]
 impl OutputWait {
-    pub fn poll(self, timeout_ms: i32) -> std::io::Result<bool> {
+    pub fn poll(&self, timeout_ms: i32) -> std::io::Result<bool> {
         poll_fd_readable(self.fd, timeout_ms)
     }
 }
 
-/// ConPTY delivery is internal to Alacritty's reader thread, so there is no
-/// kernel fd to sleep on. The desktop reader wakes on this interval and pumps
-/// a non-blocking read. That wake is a sleep, so an idle terminal still
-/// burns a timer tick instead of blocking in the kernel.
+/// ConPTY bytes land in Alacritty's in-memory pipe. `Ready` waits on the
+/// poller that pipe wakes, so a keystroke echo unblocks the reader as soon
+/// as it arrives. `Timer` is only the fallback when that poller cannot be
+/// created; it stays short so typing does not sit behind a long sleep.
 #[cfg(windows)]
-#[derive(Clone, Copy)]
-pub struct OutputWait;
+#[derive(Clone)]
+pub enum OutputWait {
+    Ready(std::sync::Arc<polling::Poller>),
+    Timer,
+}
 
 #[cfg(windows)]
 impl OutputWait {
-    pub fn poll(self, timeout_ms: i32) -> std::io::Result<bool> {
-        if timeout_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
+    pub fn poll(&self, timeout_ms: i32) -> std::io::Result<bool> {
+        match self {
+            Self::Ready(poller) => {
+                let mut events = polling::Events::with_capacity(
+                    std::num::NonZeroUsize::new(8).expect("nonzero"),
+                );
+                let timeout = if timeout_ms < 0 {
+                    None
+                } else {
+                    Some(std::time::Duration::from_millis(timeout_ms as u64))
+                };
+                let ready = poller.wait(&mut events, timeout)?;
+                Ok(ready > 0)
+            }
+            Self::Timer => {
+                let wait_ms = (timeout_ms.max(0) as u64).min(8);
+                if wait_ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                }
+                Ok(true)
+            }
         }
-        Ok(true)
     }
 }
 

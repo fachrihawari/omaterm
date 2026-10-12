@@ -3707,12 +3707,29 @@ impl WorkspaceView {
     ) {
         std::thread::spawn(move || {
             let wait = match session.lock() {
-                Ok(session) => session.output_wait(),
+                Ok(mut session) => session.output_wait(),
                 Err(_) => return,
             };
             let mut last: Option<TerminalViewport> = None;
+            // Newest frame that did not fit in the UI queue. Dropping it
+            // would hide the latest keystroke until the shell printed again.
+            let mut pending: Option<TerminalViewport> = None;
             loop {
-                let readable = wait.poll(200).unwrap_or(true);
+                if let Some(viewport) = pending.clone() {
+                    match tx.try_send(viewport.clone()) {
+                        Ok(()) => {
+                            last = Some(viewport);
+                            pending = None;
+                        }
+                        Err(async_channel::TrySendError::Full(_)) => {}
+                        Err(async_channel::TrySendError::Closed(_)) => break,
+                    }
+                }
+                // A queued frame retries quickly. Otherwise block until
+                // ConPTY output (Windows) or the PTY fd (Linux), with a
+                // 200ms cap so a quiet exit is still noticed.
+                let timeout = if pending.is_some() { 2 } else { 200 };
+                let readable = wait.poll(timeout).unwrap_or(true);
                 let (snapshot, exited) = {
                     let mut session = match session.lock() {
                         Ok(guard) => guard,
@@ -3757,8 +3774,13 @@ impl WorkspaceView {
                     let changed = last.as_ref() != Some(&viewport);
                     if changed {
                         match tx.try_send(viewport.clone()) {
-                            Ok(()) => last = Some(viewport),
-                            Err(async_channel::TrySendError::Full(_)) => {}
+                            Ok(()) => {
+                                last = Some(viewport);
+                                pending = None;
+                            }
+                            Err(async_channel::TrySendError::Full(_)) => {
+                                pending = Some(viewport);
+                            }
                             Err(async_channel::TrySendError::Closed(_)) => break,
                         }
                     }
@@ -3781,7 +3803,7 @@ impl WorkspaceView {
         cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 let viewport = rx.recv().await;
-                let Ok(viewport) = viewport else {
+                let Ok(mut viewport) = viewport else {
                     let _ = weak.update(cx, |view, cx| {
                         let exited = view
                             .coordinator
@@ -3796,6 +3818,13 @@ impl WorkspaceView {
                     });
                     break;
                 };
+                // One repaint per turn. Intermediate echoes that arrived
+                // while this frame was queued are folded into the latest
+                // grid so fast typing does not layout the window once per
+                // byte.
+                while let Ok(newer) = rx.try_recv() {
+                    viewport = newer;
+                }
                 let done = weak
                     .update(cx, |view, cx| {
                         if !view.coordinator.registry().contains(session_id) {
