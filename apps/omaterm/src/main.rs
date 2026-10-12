@@ -9933,13 +9933,14 @@ impl WorkspaceView {
         true
     }
 
-    /// One remote-action icon button (fetch/pull/push). Glyphs each do one
-    /// job: the globe means network (fetch remote refs), `ARROW_DOWN` pulls
-    /// into the worktree, `ARROW_UP` pushes out. The circular `REFRESH` glyph
-    /// stays reserved for the local status re-read, so the two never share a
-    /// shape. Dispatch flows through the shared `GitCommand` path; while one
-    /// runs all three dim (busy) and completion lands as a toast. `Publish`
-    /// (no upstream, `push -u origin HEAD`) shares the push glyph and op.
+    /// One remote-action icon button (fetch/pull/push). Fetch takes the
+    /// circular `REFRESH` glyph (remote refresh); `ARROW_DOWN` pulls into
+    /// the worktree, `ARROW_UP` pushes out. The manual local status button
+    /// is gone — the poller owns local freshness — so the circular shape
+    /// has exactly one meaning now. Dispatch flows through the shared
+    /// `GitCommand` path; while one runs all three dim (busy) and completion
+    /// lands as a toast. `Publish` (no upstream, `push -u origin HEAD`)
+    /// shares the push glyph and op.
     fn git_sync_button(
         &mut self,
         project: ProjectId,
@@ -14959,7 +14960,7 @@ impl WorkspaceView {
                         project,
                         "Fetch",
                         "fetch",
-                        crate::ui::assets::GLOBE,
+                        crate::ui::assets::REFRESH,
                         cx,
                     ))
                     .child(self.git_sync_button(
@@ -14980,35 +14981,7 @@ impl WorkspaceView {
                             crate::ui::assets::ARROW_UP,
                             cx,
                         )
-                    })
-                    .child(
-                        div()
-                            .p(px(5.0))
-                            .rounded(px(4.0))
-                            .flex_shrink_0()
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
-                                    if view.shutting_down {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    window.focus(&view.focus_handle);
-                                    view.git_dirty_hint = true;
-                                    if let Some(project) = view.coordinator.selected_project_id() {
-                                        view.repo_scan_bust.insert(project);
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .child(crate::ui::primitives::cmd_icon(
-                                crate::ui::assets::REFRESH,
-                                13.0,
-                                crate::ui::theme::colors().muted,
-                            )),
-                    ),
+                    }),
             );
         if !dirty {
             // Disabled composer strip: same 32px geometry as the dirty
@@ -15917,15 +15890,16 @@ impl WorkspaceView {
             )
     }
 
-    /// One segment of the Graph scope control: an icon button that selects
-    /// `scope` and shows a pressed state while it is active. Two of these
-    /// (`git-branch` = current, `git-fork` = all local) replace the old
-    /// `Scope: …` text toggle that read like a branch picker.
+    /// One segment of the Graph scope control: a text button that selects
+    /// `scope` and shows a pressed state while it is active. Labels name
+    /// the scopes outright (`Current` vs `All`) — the old `git-branch` /
+    /// `git-fork` glyphs never mapped to the concepts (a fork reads as a
+    /// remote, not "all local branches").
     fn history_scope_segment(
         &mut self,
         project: ProjectId,
         scope: omaterm_core::GitHistoryScope,
-        glyph: &'static str,
+        label: &'static str,
         active: bool,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -15935,7 +15909,8 @@ impl WorkspaceView {
             crate::ui::theme::colors().muted
         };
         let mut segment = div()
-            .p(px(4.0))
+            .px(px(8.0))
+            .py(px(4.0))
             .rounded(px(5.0))
             .cursor_pointer()
             .text_color(rgb(color))
@@ -15946,7 +15921,7 @@ impl WorkspaceView {
                     s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
                 }
             })
-            .child(crate::ui::assets::icon(glyph, 14.0, color))
+            .child(crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10).child(label))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -15999,10 +15974,8 @@ impl WorkspaceView {
                 }),
             )
             .child({
-                // Two icon segments: current HEAD/branch vs all local branches.
-                // The muted scope word after the control names the active one:
-                // icon-only segments were undiscoverable, and the word costs
-                // one short cell in a header row that has room for it.
+                // Two text segments: current HEAD vs all local branches.
+                // Labels name the scopes outright; glyphs never mapped.
                 let current_scope = self.history_panel.scope_for(repo_key.clone());
                 let is_current = current_scope == omaterm_core::GitHistoryScope::CurrentHead;
                 div()
@@ -16018,31 +15991,18 @@ impl WorkspaceView {
                     .child(self.history_scope_segment(
                         project,
                         omaterm_core::GitHistoryScope::CurrentHead,
-                        crate::ui::assets::GIT_BRANCH,
+                        "Current",
                         is_current,
                         cx,
                     ))
                     .child(self.history_scope_segment(
                         project,
                         omaterm_core::GitHistoryScope::AllLocalBranches,
-                        crate::ui::assets::GIT_FORK,
+                        "All",
                         !is_current,
                         cx,
                     ))
             })
-            .child(
-                crate::ui::metrics::text_role(div().flex_shrink_0(), crate::ui::metrics::META_10)
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(
-                        if self.history_panel.scope_for(repo_key.clone())
-                            == omaterm_core::GitHistoryScope::CurrentHead
-                        {
-                            "Current"
-                        } else {
-                            "All"
-                        },
-                    ),
-            )
             .child(
                 div()
                     .p(px(6.0))
@@ -18491,9 +18451,11 @@ impl WorkspaceView {
                     .child(
                         div()
                             .h(px(26.0))
+                            .flex_1()
                             .flex()
                             .flex_row()
                             .items_center()
+                            .justify_center()
                             .gap_2()
                             .px(px(6.0))
                             .rounded(px(6.0))

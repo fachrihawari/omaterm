@@ -24,7 +24,8 @@ pub const FOLDER_OPEN: &str = "folder-open";
 pub const FOLDER_GIT: &str = "folder-git-2";
 pub const FILE_TEXT: &str = "file-text";
 pub const GIT_BRANCH: &str = "git-branch";
-pub const GIT_FORK: &str = "git-fork";
+/// (`git-fork.svg` stays vendored in `ICONS` for future use; no slot
+/// references it right now.)
 pub const STASH: &str = "archive";
 pub const GIT_COMPARE: &str = "git-compare-arrows";
 pub const EXTERNAL: &str = "external-link";
@@ -36,7 +37,6 @@ pub const CHECK: &str = "check";
 pub const ARROW_UP: &str = "arrow-up";
 pub const ARROW_DOWN: &str = "arrow-down";
 pub const ARROW_UP_DOWN: &str = "arrow-up-down";
-pub const GLOBE: &str = "globe-2";
 pub const REFRESH: &str = "refresh-cw";
 pub const UNDO: &str = "undo-2";
 pub const STAGE: &str = "plus";

@@ -9,6 +9,21 @@
 
 ## Current position
 
+### Sidebar footer + history scope labels (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+Two user notes: (1) the `Open Folder…` footer button at the bottom of
+the projects sidebar sized to its content — hover covered the text only;
+(2) the history scope icons (branch vs fork) never mapped to
+current-vs-all (a fork reads as a remote). The footer button is now
+`flex_1` + centered: full-width hit area with matching hover. The scope
+control is two text segments (`Current` / `All`, pressed state kept) and
+the redundant trailing scope word is gone; the `GIT_FORK` slot const is
+removed (SVG stays vendored for future use, like `panel-left-close`).
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green), `cargo clippy --workspace --all-targets
+  -- -D warnings` PASS (0 errors), `python3 scripts/check-docs.py` PASS,
+  `git diff --check` PASS. Wayland check remains manual.
+
 ### Git header follow-up: globe fetch + icon bulk actions (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
 
 User notes on the icon header: (1) fetch `⇅` vs refresh `↻` — different
