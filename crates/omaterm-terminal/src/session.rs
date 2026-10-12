@@ -591,7 +591,8 @@ impl TerminalSession {
     }
 
     /// Wait token for the reader thread. On Linux this copies the PTY master fd.
-    pub fn output_wait(&self) -> crate::pty::OutputWait {
+    /// On Windows it registers the ConPTY poller on first use.
+    pub fn output_wait(&mut self) -> crate::pty::OutputWait {
         self.pty.output_wait()
     }
 
@@ -602,7 +603,7 @@ impl TerminalSession {
     }
 
     /// Block up to `timeout_ms` for PTY output. See `PtyProcess::poll_readable`.
-    pub fn poll_readable(&self, timeout_ms: i32) -> std::io::Result<bool> {
+    pub fn poll_readable(&mut self, timeout_ms: i32) -> std::io::Result<bool> {
         self.pty.poll_readable(timeout_ms)
     }
 
@@ -1152,5 +1153,54 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].command, "cmd699");
         assert_eq!(records[0].exit_status, Some(0));
+    }
+}
+
+/// Windows echo latency. The desktop reader used to sleep a fixed 200ms
+/// before every ConPTY read, so typed characters appeared late. This
+/// fails if that sleep is still in front of the first echo.
+#[cfg(all(test, windows))]
+mod windows_echo {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn keystroke_echo_is_not_stuck_behind_the_idle_poll() {
+        let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+        let mut session =
+            TerminalSession::new(std::env::temp_dir(), Some(&shell), 80, 24).expect("spawn cmd");
+        let wait = session.output_wait();
+        let startup = Instant::now();
+        while startup.elapsed() < Duration::from_secs(2) {
+            let woke = wait.poll(100).expect("poll startup");
+            let (_, read) = session.pump().expect("pump startup");
+            if read > 0 || !woke {
+                break;
+            }
+        }
+        let started = Instant::now();
+        session
+            .write_input(b"echo OMA_ECHO_MARK\r\n")
+            .expect("write");
+        let mut saw = false;
+        while started.elapsed() < Duration::from_millis(800) {
+            let _ = wait.poll(200).expect("poll echo");
+            let (_, read) = session.pump().expect("pump echo");
+            if read == 0 {
+                continue;
+            }
+            let text = session.read_visible_text(40, 200);
+            if text.contains("OMA_ECHO_MARK") {
+                saw = true;
+                break;
+            }
+        }
+        let elapsed = started.elapsed();
+        drop(session);
+        assert!(saw, "cmd did not echo within {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "echo took {elapsed:?}; the reader slept through the keystroke"
+        );
     }
 }

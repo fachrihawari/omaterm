@@ -3965,6 +3965,7 @@ dependencies = [
  "base64",
  "libc",
  "omaterm-core",
+ "polling",
  "thiserror 2.0.21",
  "tracing",
  "windows-sys 0.59.0",
