@@ -421,6 +421,7 @@ mod tests {
             validate(&OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: String::new(),
+                amend: false,
             }))
             .is_err()
         );
@@ -428,6 +429,7 @@ mod tests {
             validate(&OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "x".repeat(MAX_GIT_MESSAGE_BYTES + 1),
+                amend: false,
             }))
             .is_err()
         );
@@ -435,6 +437,7 @@ mod tests {
             validate(&OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "bad\0message".into(),
+                amend: true,
             }))
             .is_err()
         );
@@ -443,6 +446,7 @@ mod tests {
             validate(&OmaCommand::Git(GitCommand::Commit {
                 project,
                 message: "subject\n\nbody\twith tab".into(),
+                amend: true,
             }))
             .is_ok()
         );

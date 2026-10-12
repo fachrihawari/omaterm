@@ -228,13 +228,13 @@ fn commit_writes_head_and_nothing_staged_fails_loudly() {
     std::fs::write(repo.join("b.txt"), b"new\n").unwrap();
     git(&repo, &["add", "b.txt"]);
 
-    let oid = git_commit(&repo, "add b").expect("commit must succeed");
+    let oid = git_commit(&repo, "add b", false).expect("commit must succeed");
     assert!(!oid.is_empty());
     assert_eq!(git_log_message(&repo), "add b");
     assert!(git_status(&repo, 5000).unwrap().is_empty());
 
     // Nothing staged is a loud failure, never an empty commit.
-    let failed = git_commit(&repo, "empty");
+    let failed = git_commit(&repo, "empty", false);
     assert!(
         matches!(failed, Err(GitError::GitFailed(_))),
         "empty stage must fail loudly, got {failed:?}"

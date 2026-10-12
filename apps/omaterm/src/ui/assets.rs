@@ -24,7 +24,9 @@ pub const FOLDER_OPEN: &str = "folder-open";
 pub const FOLDER_GIT: &str = "folder-git-2";
 pub const FILE_TEXT: &str = "file-text";
 pub const GIT_BRANCH: &str = "git-branch";
-pub const GIT_FORK: &str = "git-fork";
+pub const NETWORK: &str = "network";
+/// (`git-fork.svg` stays vendored in `ICONS` for future use; no slot
+/// references it right now.)
 pub const STASH: &str = "archive";
 pub const GIT_COMPARE: &str = "git-compare-arrows";
 pub const EXTERNAL: &str = "external-link";
@@ -87,6 +89,7 @@ const ICONS: &[(&str, &[u8])] = &[
     icon_bytes!("file-text"),
     icon_bytes!("file-code-2"),
     icon_bytes!("git-branch"),
+    icon_bytes!("network"),
     icon_bytes!("git-fork"),
     icon_bytes!("archive"),
     icon_bytes!("git-compare-arrows"),
