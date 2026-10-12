@@ -16329,7 +16329,7 @@ impl WorkspaceView {
         let repo_key = self.active_repo_key(project);
         let files = self.history_panel.files_for(repo_key, &key).cloned();
         // Provenance row for the expanded commit: short OID plus an
-        // explicit copy action. Rows stay free of OID text (narrow panels
+        // explicit copy button. Rows stay free of OID text (narrow panels
         // can't afford it); the full hash is one click away here instead.
         let full_oid = commit.id.as_str().to_owned();
         let short_oid = full_oid.chars().take(7).collect::<String>();
@@ -16353,31 +16353,31 @@ impl WorkspaceView {
                     .child(format!("commit {short_oid}")),
                 )
                 .child(
-                    crate::ui::metrics::text_role(
-                        div()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .flex_shrink_0()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
-                        crate::ui::metrics::META_10,
-                    )
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            if view.shutting_down {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            window.focus(&view.focus_handle);
-                            cx.write_to_clipboard(ClipboardItem::new_string(full_oid.clone()));
-                            view.show_toast("Commit SHA copied".into(), cx);
-                            cx.notify();
-                        }),
-                    )
-                    .child("Copy SHA"),
+                    div()
+                        .p(px(6.0))
+                        .rounded(px(7.0))
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                cx.write_to_clipboard(ClipboardItem::new_string(full_oid.clone()));
+                                view.show_toast("Commit SHA copied".into(), cx);
+                                cx.notify();
+                            }),
+                        )
+                        .child(crate::ui::primitives::cmd_icon(
+                            crate::ui::assets::COPY,
+                            13.0,
+                            crate::ui::theme::colors().muted,
+                        )),
                 ),
         );
         match files {
