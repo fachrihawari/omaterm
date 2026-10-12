@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Instant;
 
 use omaterm_context::GitSyncReport;
 use omaterm_core::{GitCommand, ProjectId};
@@ -57,7 +56,6 @@ impl Operation {
 pub struct PendingSync {
     pub repo: RepoKey,
     pub operation: Operation,
-    pub started: Instant,
     receiver: Receiver<Result<GitSyncReport, String>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -102,7 +100,6 @@ impl PendingSync {
         Ok(Self {
             repo,
             operation,
-            started: Instant::now(),
             receiver,
             worker: Some(worker),
         })
@@ -147,6 +144,7 @@ impl PendingSync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn started_worker_remains_owned_for_shutdown() {
@@ -180,7 +178,6 @@ mod tests {
         let pending = PendingSync {
             repo: RepoKey::root(ProjectId::new()),
             operation: Operation::Fetch { remote: None },
-            started: Instant::now(),
             receiver,
             worker: Some(worker),
         };
@@ -222,7 +219,6 @@ mod tests {
         let mut pending = Some(PendingSync {
             repo: RepoKey::root(ProjectId::new()),
             operation: Operation::Fetch { remote: None },
-            started: Instant::now(),
             receiver,
             worker: Some(worker),
         });
@@ -258,7 +254,6 @@ mod tests {
         let mut pending = Some(PendingSync {
             repo: RepoKey::root(ProjectId::new()),
             operation: Operation::Fetch { remote: None },
-            started: Instant::now(),
             receiver,
             worker: Some(worker),
         });
@@ -276,7 +271,6 @@ mod tests {
             operation: Operation::Push {
                 set_upstream: false,
             },
-            started: Instant::now(),
             receiver,
             worker: None,
         });
@@ -296,7 +290,6 @@ mod tests {
         let mut pending = Some(PendingSync {
             repo: RepoKey::root(origin),
             operation: Operation::Pull { remote: None },
-            started: Instant::now(),
             receiver,
             worker: None,
         });
@@ -324,7 +317,6 @@ mod tests {
             operation: Operation::Push {
                 set_upstream: false,
             },
-            started: Instant::now(),
             receiver,
             worker: None,
         });
@@ -338,7 +330,7 @@ mod tests {
 #[cfg(test)]
 mod worker_tests {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     struct Repo(PathBuf);
 

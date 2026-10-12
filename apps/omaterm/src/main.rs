@@ -347,6 +347,16 @@ struct WorkspaceView {
     /// View-local, never persisted; collapsing the list is the only
     /// chevron in the chrome.
     repo_list_collapsed: HashSet<ProjectId>,
+    /// M20 overflow expansion per project: when the depth-1 scan finds
+    /// more than the 32-row cap, the `+N more` row toggles the remainder
+    /// inline so every polled repo stays clickable.
+    repo_overflow_open: HashSet<ProjectId>,
+    /// Overflow filter drafts per project (substring over the repo name).
+    /// Applies to the overflow tail only — the visible 32 rows never move
+    /// under an active filter, so the active mark can't hide.
+    repo_filter_drafts: HashMap<ProjectId, git_input::GitInput>,
+    /// Project whose overflow filter owns the keyboard, if any.
+    repo_filter_focused: Option<ProjectId>,
     /// One remote action owns its completion channel and originating repo.
     sync_pending: Option<git_sync_panel::PendingSync>,
     /// Per-file blame, keyed by repo/side/path/mode like the scroll
@@ -857,6 +867,7 @@ enum InputOwner {
     Keybindings,
     GitCommit,
     GitStash,
+    RepoFilter,
     BranchPicker,
     Confirmation,
 }
@@ -2656,6 +2667,9 @@ impl WorkspaceView {
             repos_tx,
             repos_rx,
             repo_list_collapsed: HashSet::new(),
+            repo_overflow_open: HashSet::new(),
+            repo_filter_drafts: HashMap::new(),
+            repo_filter_focused: None,
             git_refresh_interval: Duration::from_secs(
                 app_config.resolved_git_refresh_secs().clamp(1, 300),
             ),
@@ -5559,6 +5573,13 @@ impl WorkspaceView {
                     {
                         self.stash_focused = None;
                     }
+                    // Overflow expansion + filter drafts are per project;
+                    // a hidden filter must never keep keyboard ownership.
+                    self.repo_overflow_open.remove(&other);
+                    self.repo_filter_drafts.remove(&other);
+                    if self.repo_filter_focused == Some(other) {
+                        self.repo_filter_focused = None;
+                    }
                 }
             }
             // The newly selected project needs its own scan before any
@@ -6727,6 +6748,12 @@ impl WorkspaceView {
         }
         if self.branch_picker.is_some() {
             return Some(InputOwner::BranchPicker);
+        }
+        if self.repo_filter_focused.is_some()
+            && self.inspector_is_rendered()
+            && self.inspector_tab == InspectorTab::Git
+        {
+            return Some(InputOwner::RepoFilter);
         }
         if self.stash_focused.is_some()
             && self.inspector_is_rendered()
@@ -9927,6 +9954,8 @@ impl WorkspaceView {
         div()
             .h(px(24.0))
             .px(px(6.0))
+            .min_w(px(58.0))
+            .justify_center()
             .flex()
             .items_center()
             .rounded(px(4.0))
@@ -11771,6 +11800,13 @@ impl WorkspaceView {
             return;
         }
         // Focused Git fields own editing chords; other global shortcuts remain available.
+        if self.inspector_is_rendered()
+            && self.inspector_tab == InspectorTab::Git
+            && git_input_view::captures(event)
+            && let Some(project) = self.repo_filter_focused
+        {
+            return self.on_repo_filter_key(project, event, cx);
+        }
         if self.git_panel.commit_focused()
             && self.inspector_is_rendered()
             && self.inspector_tab == InspectorTab::Git
@@ -14336,6 +14372,11 @@ impl WorkspaceView {
             .child(div().flex_1());
         chrome = chrome.child(header);
         if collapsed {
+            // A hidden filter must never keep keyboard ownership.
+            if self.repo_filter_focused == Some(project) {
+                self.repo_filter_focused = None;
+                self.restore_input_owner();
+            }
             return chrome;
         }
 
@@ -14354,13 +14395,18 @@ impl WorkspaceView {
             .iter()
             .map(|entry| repo_key_of(project, scan, entry))
             .collect();
+        // Rows: the active repository renders single-line (name + dirty
+        // dot, 32px) because the branch header below already names its
+        // branch; inactive rows keep two lines (name + muted branch, 46px)
+        // so switching targets stay identifiable. `clean` text is gone:
+        // clean is the default and the M14 body below already says so.
         for (entry, key) in plan.rows.iter().zip(section_keys.iter()) {
             let active = key == &active_key;
             let status = self.git_panel.status_for(key).cloned();
             let branch = status
                 .as_ref()
                 .and_then(|status| status.branch.clone())
-                .unwrap_or_else(|| "…".to_string());
+                .unwrap_or_else(|| "Loading…".to_string());
             let dirty = status.as_ref().is_some_and(|status| {
                 !status.staged.is_empty()
                     || !status.unstaged.is_empty()
@@ -14368,95 +14414,297 @@ impl WorkspaceView {
             });
             let name = entry.name.clone();
             let repo_name = name.clone();
-            let row = div()
-                .h(px(46.0))
-                .flex()
-                .flex_col()
-                .justify_center()
-                .pl(px(20.0))
-                .pr(px(8.0))
+            let click = cx.listener(move |view, _, window, cx| {
+                if view.shutting_down {
+                    return;
+                }
+                cx.stop_propagation();
+                window.focus(&view.focus_handle);
+                view.select_repo(project, repo_name.clone(), cx);
+            });
+            let colors = crate::ui::theme::colors();
+            let base = div()
                 .border_b_1()
-                .border_color(rgb(crate::ui::theme::colors().border))
+                .border_color(rgb(colors.border))
                 .role(crate::ui::metrics::BODY_11)
-                .text_color(rgb(if active {
-                    crate::ui::theme::colors().text
-                } else {
-                    crate::ui::theme::colors().text2
-                }))
+                .text_color(rgb(if active { colors.text } else { colors.text2 }))
                 .cursor_pointer()
                 .hover(|s| {
                     if active {
                         s
                     } else {
-                        s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
+                        s.bg(gpui::rgb(colors.row_hover_bg))
                     }
                 })
-                .when(active, |s| {
-                    s.bg(rgb(crate::ui::theme::colors().tree_selected_bg))
-                })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        if view.shutting_down {
-                            return;
-                        }
-                        cx.stop_propagation();
-                        window.focus(&view.focus_handle);
-                        view.select_repo(project, repo_name.clone(), cx);
-                    }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(name),
-                        )
-                        .when(dirty, |s| {
-                            s.child(
+                .when(active, |s| s.bg(rgb(colors.tree_selected_bg)))
+                .on_mouse_down(MouseButton::Left, click);
+            let dot = dirty.then(|| {
+                div()
+                    .w(px(6.0))
+                    .h(px(6.0))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(gpui::rgb(crate::ui::theme::colors().warning_text))
+            });
+            let row = if active {
+                base.h(px(32.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .pl(px(20.0))
+                    .pr(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(name),
+                    )
+                    .children(dot)
+            } else {
+                base.h(px(46.0))
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .pl(px(20.0))
+                    .pr(px(8.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
                                 div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .flex_shrink_0()
-                                    .rounded_full()
-                                    .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
                             )
-                        }),
-                )
-                .child(
-                    crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
-                        .w_full()
-                        .max_w_full()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .child(branch),
-                );
+                            .children(dot),
+                    )
+                    .child(
+                        crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                            .w_full()
+                            .max_w_full()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child(branch),
+                    )
+            };
             chrome = chrome.child(row);
         }
-        // Cap overflow: name the hidden count.
+        // Cap overflow: the `+N more` row toggles the remainder inline so
+        // every polled repository stays clickable; an open tail shows a
+        // substring filter (tail only — the visible 32 rows never move, so
+        // the active mark can't hide under a filter).
         if plan.overflow > 0 {
+            let open = self.repo_overflow_open.contains(&project);
+            let toggle_label = if open {
+                "Show fewer repositories".to_owned()
+            } else {
+                format!("+{} more repositories", plan.overflow)
+            };
             chrome = chrome.child(
                 div()
                     .h(px(28.0))
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap_1()
                     .pl(px(20.0))
                     .pr(px(8.0))
                     .role(crate::ui::metrics::META_9)
                     .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(format!("+{} more repositories", plan.overflow)),
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            if !view.repo_overflow_open.remove(&project) {
+                                view.repo_overflow_open.insert(project);
+                            } else if view.repo_filter_focused == Some(project) {
+                                // A hidden filter must never keep keyboard
+                                // ownership (mirrors the stash Hidden mode).
+                                view.repo_filter_focused = None;
+                                view.restore_input_owner();
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(crate::ui::assets::icon(
+                        if open {
+                            crate::ui::assets::CHEVRON_DOWN
+                        } else {
+                            crate::ui::assets::CHEVRON_RIGHT
+                        },
+                        12.0,
+                        crate::ui::theme::colors().muted,
+                    ))
+                    .child(toggle_label),
             );
+            if open {
+                let filter_focused = self.repo_filter_focused == Some(project);
+                let filter_content = git_input_view::render(git_input_view::FieldView {
+                    input: self.repo_filter_drafts.get(&project),
+                    placeholder: "Filter repositories…",
+                    focused: filter_focused,
+                    caret_visible: true,
+                });
+                chrome = chrome.child(
+                    div()
+                        .mx_3()
+                        .mb_1()
+                        .h(px(28.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(if filter_focused {
+                            crate::ui::theme::colors().blue2
+                        } else {
+                            crate::ui::theme::colors().border
+                        }))
+                        .bg(rgb(crate::ui::theme::colors().pill_bg))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .h_full()
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .overflow_hidden()
+                                .role(crate::ui::metrics::BODY_11)
+                                .text_color(rgb(crate::ui::theme::colors().text))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        if view.shutting_down {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        window.focus(&view.focus_handle);
+                                        view.repo_filter_focused = Some(project);
+                                        view.git_panel.set_commit_focused(false);
+                                        if let Some(focused) = view.stash_focused.clone()
+                                            && focused.project == project
+                                        {
+                                            view.stash_focused = None;
+                                        }
+                                        view.restore_input_owner();
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(filter_content),
+                        ),
+                );
+                let needle = self
+                    .repo_filter_drafts
+                    .get(&project)
+                    .map(|draft| draft.text().to_owned())
+                    .unwrap_or_default();
+                let tail = scan.repos.get(plan.rows.len()..).unwrap_or_default();
+                let matches = git_repos::filter_repos(tail, &needle);
+                if matches.is_empty() {
+                    chrome = chrome.child(
+                        div()
+                            .h(px(28.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .pl(px(20.0))
+                            .pr(px(8.0))
+                            .role(crate::ui::metrics::META_9)
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child("No repositories match."),
+                    );
+                }
+                for entry in matches {
+                    let key = repo_key_of(project, scan, entry);
+                    let status = self.git_panel.status_for(&key).cloned();
+                    let branch = status
+                        .as_ref()
+                        .and_then(|status| status.branch.clone())
+                        .unwrap_or_else(|| "Loading…".to_string());
+                    let dirty = status.as_ref().is_some_and(|status| {
+                        !status.staged.is_empty()
+                            || !status.unstaged.is_empty()
+                            || !status.untracked.is_empty()
+                    });
+                    let name = entry.name.clone();
+                    let select_name = name.clone();
+                    chrome = chrome.child(
+                        div()
+                            .h(px(32.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .pl(px(20.0))
+                            .pr(px(8.0))
+                            .border_b_1()
+                            .border_color(rgb(crate::ui::theme::colors().border))
+                            .role(crate::ui::metrics::BODY_11)
+                            .text_color(rgb(crate::ui::theme::colors().text2))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    if view.shutting_down {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    window.focus(&view.focus_handle);
+                                    view.select_repo(project, select_name.clone(), cx);
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            )
+                            .child(
+                                crate::ui::metrics::text_role(div(), crate::ui::metrics::META_9)
+                                    .flex_shrink_0()
+                                    .max_w(px(112.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .child(branch),
+                            )
+                            .when(dirty, |s| {
+                                s.child(
+                                    div()
+                                        .w(px(6.0))
+                                        .h(px(6.0))
+                                        .flex_shrink_0()
+                                        .rounded_full()
+                                        .bg(gpui::rgb(crate::ui::theme::colors().warning_text)),
+                                )
+                            }),
+                    );
+                }
+            }
         }
         chrome
     }
@@ -14501,6 +14749,10 @@ impl WorkspaceView {
     fn toggle_repo_list(&mut self, project: ProjectId) {
         if !self.repo_list_collapsed.remove(&project) {
             self.repo_list_collapsed.insert(project);
+        }
+        if self.repo_filter_focused == Some(project) {
+            self.repo_filter_focused = None;
+            self.restore_input_owner();
         }
     }
 
@@ -14549,17 +14801,50 @@ impl WorkspaceView {
                 empty,
                 git_panel::GitEmpty::NoRoot | git_panel::GitEmpty::NotRepo
             );
-            return bar.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(rgb(if amber {
-                        crate::ui::theme::colors().warning_text
-                    } else {
-                        crate::ui::theme::colors().muted
-                    }))
-                    .child(message),
-            );
+            // Failures (never plain non-repo states) offer Retry, mirroring
+            // the history section: the poller would retry on its own cadence,
+            // but an explicit action beats staring at an error line.
+            let mut row = div()
+                .px_2()
+                .py_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .text_color(rgb(if amber {
+                    crate::ui::theme::colors().warning_text
+                } else {
+                    crate::ui::theme::colors().muted
+                }))
+                .child(message);
+            if amber {
+                row = row.child(
+                    div()
+                        .ml(px(8.0))
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg)))
+                        .text_color(rgb(crate::ui::theme::colors().text))
+                        .child("Retry")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                if view.shutting_down {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                window.focus(&view.focus_handle);
+                                view.git_dirty_hint = true;
+                                if let Some(project) = view.coordinator.selected_project_id() {
+                                    view.repo_scan_bust.insert(project);
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                );
+            }
+            return bar.child(row);
         }
         let Some(status) = self
             .git_panel
@@ -14608,11 +14893,17 @@ impl WorkspaceView {
         // the full width now that the actions moved out), sync pill and
         // refresh. Row 2 is the remote action bar (Fetch/Pull/Push). One
         // 40px row holding all of that truncated the branch to a stub in
-        // a narrow inspector. The repo name is intentionally absent: it
-        // duplicates the chrome's highlighted row above (and the collapsed
-        // chrome names it via `chrome_header_label`); single-repo projects
-        // never showed one here anyway (`active_repo` is `None` for them).
+        // a narrow inspector. Multi-repo projects also name the active
+        // repository (muted, after the picker): the chrome highlight alone
+        // was not enough to answer "which repo am I staging in?" after a
+        // keyboard/CLI switch. Single-repo projects show nothing extra.
         let has_upstream = status.upstream.is_some();
+        let active_repo_name = self
+            .coordinator
+            .repo_scan(project)
+            .is_some_and(|scan| scan.repos.len() > 1)
+            .then(|| self.coordinator.active_repo(project))
+            .flatten();
         let mut header = div()
             .flex()
             .flex_col()
@@ -14648,6 +14939,19 @@ impl WorkspaceView {
                                     .rounded(px(4.0)),
                             ),
                     )
+                    .children(active_repo_name.map(|name| {
+                        crate::ui::metrics::text_role(
+                            div()
+                                .flex_shrink_0()
+                                .max_w(px(96.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis(),
+                            crate::ui::metrics::META_10,
+                        )
+                        .text_color(rgb(crate::ui::theme::colors().muted))
+                        .child(format!("· {name}"))
+                    }))
                     .children(sync_pill.map(|sync_pill| {
                         crate::ui::metrics::text_role(
                             crate::ui::primitives::pill()
@@ -14713,13 +15017,63 @@ impl WorkspaceView {
                     }),
             );
         if !dirty {
+            // Disabled composer strip: same 32px geometry as the dirty
+            // composer so clean/dirty switches never shift stash + graph.
+            // Never takes keyboard focus; the Commit cell stays dimmed.
+            // A surviving per-repo draft is named so it doesn't look lost.
+            let repo_key = self.active_repo_key(project);
+            let draft = self
+                .git_panel
+                .commit_input(&repo_key)
+                .map(|input| input.text().trim().to_owned())
+                .unwrap_or_default();
+            let strip = if draft.is_empty() {
+                "Working tree clean.".to_owned()
+            } else {
+                format!("Draft saved — stage to commit: {draft}")
+            };
             header = header.child(
                 div()
-                    .px_3()
-                    .pb_3()
-                    .role(crate::ui::metrics::BODY_11)
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child("Working tree clean."),
+                    .mx_3()
+                    .mb_3()
+                    .h(px(32.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(crate::ui::theme::colors().border))
+                    .bg(rgb(crate::ui::theme::colors().bg2))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .role(crate::ui::metrics::BODY_11)
+                            .text_color(rgb(crate::ui::theme::colors().muted))
+                            .child(strip),
+                    )
+                    .child(
+                        crate::ui::metrics::text_role(
+                            div()
+                                .h_full()
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .flex_shrink_0()
+                                .border_l_1()
+                                .border_color(rgb(crate::ui::theme::colors().border)),
+                            crate::ui::metrics::BODY_11_MEDIUM,
+                        )
+                        .text_color(rgb(crate::ui::theme::colors().muted2))
+                        .child("Commit"),
+                    ),
             );
         }
         if dirty {
@@ -14809,29 +15163,10 @@ impl WorkspaceView {
                     ),
             );
         }
-        if let Some(task) = &self.sync_pending {
-            let project_name = self
-                .coordinator
-                .projects()
-                .iter()
-                .enumerate()
-                .find(|(_, project)| project.id == task.repo.project)
-                .map(|(ordinal, project)| project.display_name(ordinal + 1))
-                .unwrap_or_else(|| "Closed project".into());
-            header = header.child(
-                div()
-                    .px_3()
-                    .pb_2()
-                    .role(crate::ui::metrics::BODY_11)
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(format!(
-                        "{} · {} · {}s",
-                        project_name,
-                        task.operation.pending_label(),
-                        task.started.elapsed().as_secs()
-                    )),
-            );
-        }
+        // No in-flow pending line: the running button already swaps its
+        // label for the pending state (`Fetching…`) and all three disable
+        // while one runs, and completion lands as a toast. An in-flow line
+        // here pushed stash + graph down for the whole operation.
         bar = bar.child(header);
         // Change groups only exist on a dirty tree; a clean tree goes
         // straight to stash + graph (the "Working tree clean" line and the
@@ -15157,99 +15492,108 @@ impl WorkspaceView {
                                         .truncate()
                                         .child(stash.subject.clone()),
                                 )
+                                // Text pills, not icon-only: Pop sits next to
+                                // Apply with destructive-adjacent meaning and
+                                // there is no tooltip infrastructure to explain
+                                // glyphs. Order: Pop, Apply, Drop (Drop keeps
+                                // the two-step confirmation).
                                 .child(
-                                    div()
-                                        .p(px(6.0))
-                                        .rounded(px(7.0))
-                                        .text_color(rgb(crate::ui::theme::colors().muted))
-                                        .hover(|s| {
-                                            s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
-                                        })
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, window, cx| {
-                                                if view.shutting_down {
-                                                    return;
-                                                }
-                                                cx.stop_propagation();
-                                                window.focus(&view.focus_handle);
-                                                view.stash_index_action(
-                                                    project,
-                                                    stash_index,
-                                                    false,
-                                                    cx,
-                                                );
+                                    crate::ui::metrics::text_role(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(
+                                                    crate::ui::theme::colors().row_hover_bg,
+                                                ))
                                             }),
-                                        )
-                                        .child(crate::ui::assets::icon(
-                                            crate::ui::assets::UNDO,
-                                            14.0,
-                                            crate::ui::theme::colors().muted,
-                                        )),
+                                        crate::ui::metrics::META_10,
+                                    )
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            view.stash_index_action(
+                                                project,
+                                                stash_index,
+                                                false,
+                                                cx,
+                                            );
+                                        }),
+                                    )
+                                    .child("Pop"),
                                 )
                                 .child(
-                                    div()
-                                        .p(px(6.0))
-                                        .rounded(px(7.0))
-                                        .text_color(rgb(crate::ui::theme::colors().muted))
-                                        .hover(|s| {
-                                            s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
-                                        })
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, window, cx| {
-                                                if view.shutting_down {
-                                                    return;
-                                                }
-                                                cx.stop_propagation();
-                                                window.focus(&view.focus_handle);
-                                                view.stash_index_action(
-                                                    project,
-                                                    stash_index,
-                                                    true,
-                                                    cx,
-                                                );
+                                    crate::ui::metrics::text_role(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(
+                                                    crate::ui::theme::colors().row_hover_bg,
+                                                ))
                                             }),
-                                        )
-                                        .child(crate::ui::assets::icon(
-                                            crate::ui::assets::CHECK,
-                                            14.0,
-                                            crate::ui::theme::colors().muted,
-                                        )),
+                                        crate::ui::metrics::META_10,
+                                    )
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            view.stash_index_action(project, stash_index, true, cx);
+                                        }),
+                                    )
+                                    .child("Apply"),
                                 )
                                 .child(
-                                    div()
-                                        .p(px(6.0))
-                                        .rounded(px(7.0))
-                                        .text_color(rgb(crate::ui::theme::colors().red))
-                                        .hover(|s| {
-                                            s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
-                                        })
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, window, cx| {
-                                                if view.shutting_down {
-                                                    return;
-                                                }
-                                                cx.stop_propagation();
-                                                window.focus(&view.focus_handle);
-                                                let repo_key = view.active_repo_key(project);
-                                                view.git_panel.select_stash(&repo_key, position);
-                                                view.git_confirm_stash_drop(
-                                                    project,
-                                                    stash_index,
-                                                    stash_subject.clone(),
-                                                    repo_key,
-                                                    window,
-                                                    cx,
-                                                );
+                                    crate::ui::metrics::text_role(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(gpui::rgb(
+                                                    crate::ui::theme::colors().row_hover_bg,
+                                                ))
                                             }),
-                                        )
-                                        .child(crate::ui::assets::icon(
-                                            crate::ui::assets::TRASH,
-                                            14.0,
-                                            crate::ui::theme::colors().red,
-                                        )),
+                                        crate::ui::metrics::META_10,
+                                    )
+                                    .text_color(rgb(crate::ui::theme::colors().red))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _, window, cx| {
+                                            if view.shutting_down {
+                                                return;
+                                            }
+                                            cx.stop_propagation();
+                                            window.focus(&view.focus_handle);
+                                            let repo_key = view.active_repo_key(project);
+                                            view.git_panel.select_stash(&repo_key, position);
+                                            view.git_confirm_stash_drop(
+                                                project,
+                                                stash_index,
+                                                stash_subject.clone(),
+                                                repo_key,
+                                                window,
+                                                cx,
+                                            );
+                                        }),
+                                    )
+                                    .child("Drop"),
                                 ),
                         );
                     }
@@ -15307,6 +15651,53 @@ impl WorkspaceView {
             git_input_view::InputAction::Edit => {}
         }
         cx.notify();
+    }
+
+    /// Overflow filter keys for the multi-repo chrome. Typing narrows the
+    /// overflow tail live (render reads the same draft); Enter selects the
+    /// first match; Esc/Tab releases focus without touching the filter text.
+    fn on_repo_filter_key(
+        &mut self,
+        project: ProjectId,
+        event: &KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match git_input_view::on_key(
+            self.repo_filter_drafts.entry(project).or_default(),
+            event,
+            cx,
+        ) {
+            git_input_view::InputAction::Release => {
+                self.repo_filter_focused = None;
+                self.restore_input_owner();
+            }
+            git_input_view::InputAction::Submit => {
+                if let Some(name) = self.first_overflow_match(project) {
+                    self.select_repo(project, name, cx);
+                }
+            }
+            git_input_view::InputAction::Edit => {}
+        }
+        cx.notify();
+    }
+
+    /// First overflow-tail repo matching the project's filter draft, if any.
+    /// Mirrors the render path so Enter selects exactly what is shown first.
+    fn first_overflow_match(&self, project: ProjectId) -> Option<String> {
+        let scan = self.coordinator.repo_scan(project)?;
+        let plan = git_repos::repo_chrome(Some(scan));
+        if plan.overflow == 0 {
+            return None;
+        }
+        let needle = self
+            .repo_filter_drafts
+            .get(&project)
+            .map(|draft| draft.text())
+            .unwrap_or_default();
+        let tail = scan.repos.get(plan.rows.len()..).unwrap_or_default();
+        git_repos::filter_repos(tail, needle)
+            .first()
+            .map(|entry| entry.name.clone())
     }
 
     /// Fetch one stash list off-thread after mutations or first view.
@@ -15615,8 +16006,9 @@ impl WorkspaceView {
             )
             .child({
                 // Two icon segments: current HEAD/branch vs all local branches.
-                // Active segment is filled; no text label to confuse with the
-                // branch picker.
+                // The muted scope word after the control names the active one:
+                // icon-only segments were undiscoverable, and the word costs
+                // one short cell in a header row that has room for it.
                 let current_scope = self.history_panel.scope_for(repo_key.clone());
                 let is_current = current_scope == omaterm_core::GitHistoryScope::CurrentHead;
                 div()
@@ -15644,6 +16036,19 @@ impl WorkspaceView {
                         cx,
                     ))
             })
+            .child(
+                crate::ui::metrics::text_role(div().flex_shrink_0(), crate::ui::metrics::META_10)
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .child(
+                        if self.history_panel.scope_for(repo_key.clone())
+                            == omaterm_core::GitHistoryScope::CurrentHead
+                        {
+                            "Current"
+                        } else {
+                            "All"
+                        },
+                    ),
+            )
             .child(
                 div()
                     .p(px(6.0))
@@ -15968,6 +16373,58 @@ impl WorkspaceView {
         let key = commit.id.as_str().to_owned();
         let repo_key = self.active_repo_key(project);
         let files = self.history_panel.files_for(repo_key, &key).cloned();
+        // Provenance row for the expanded commit: short OID plus an
+        // explicit copy action. Rows stay free of OID text (narrow panels
+        // can't afford it); the full hash is one click away here instead.
+        let full_oid = commit.id.as_str().to_owned();
+        let short_oid = full_oid.chars().take(7).collect::<String>();
+        section = section.child(
+            div()
+                .h(px(28.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .pr(px(8.0))
+                .child(Self::history_lane_line())
+                .child(
+                    crate::ui::metrics::text_role(
+                        div().flex_1().min_w(px(0.0)).overflow_hidden(),
+                        crate::ui::metrics::META_10,
+                    )
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .child(format!("commit {short_oid}")),
+                )
+                .child(
+                    crate::ui::metrics::text_role(
+                        div()
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(4.0))
+                            .flex_shrink_0()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
+                        crate::ui::metrics::META_10,
+                    )
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            cx.write_to_clipboard(ClipboardItem::new_string(full_oid.clone()));
+                            view.show_toast("Commit SHA copied".into(), cx);
+                            cx.notify();
+                        }),
+                    )
+                    .child("Copy SHA"),
+                ),
+        );
         match files {
             None | Some(git_history_panel::CommitFilesState::Loading) => section.child(
                 div()
@@ -16329,13 +16786,46 @@ impl WorkspaceView {
                 cx.notify();
             }),
         );
-        // Bulk actions: unstage-all on staged, stage-all + discard-all on
-        // working tree. Discard-all opens the same confirmation dialog.
+        // Bulk actions are text buttons (not icon-only): there is no
+        // tooltip infrastructure, so glyphs alone are undiscoverable.
+        // Discard-all opens the same confirmation dialog as row discards.
         if staged_group {
             header = header.child(
-                div()
-                    .p(px(6.0))
-                    .rounded(px(7.0))
+                crate::ui::metrics::text_role(
+                    div()
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
+                    crate::ui::metrics::META_10,
+                )
+                .text_color(rgb(crate::ui::theme::colors().muted))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, window, cx| {
+                        if view.shutting_down {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        window.focus(&view.focus_handle);
+                        view.git_unstage_all(project, cx);
+                    }),
+                )
+                .child("Unstage all"),
+            );
+        } else {
+            header = header
+                .child(
+                    crate::ui::metrics::text_role(
+                        div()
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
+                        crate::ui::metrics::META_10,
+                    )
                     .text_color(rgb(crate::ui::theme::colors().muted))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -16345,60 +16835,34 @@ impl WorkspaceView {
                             }
                             cx.stop_propagation();
                             window.focus(&view.focus_handle);
-                            view.git_unstage_all(project, cx);
+                            view.git_stage_all(project, cx);
                         }),
                     )
-                    .child(crate::ui::primitives::cmd_icon(
-                        crate::ui::assets::UNSTAGE,
-                        14.0,
-                        crate::ui::theme::colors().muted,
-                    )),
-            );
-        } else {
-            header = header
-                .child(
-                    div()
-                        .p(px(6.0))
-                        .rounded(px(7.0))
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                view.git_stage_all(project, cx);
-                            }),
-                        )
-                        .child(crate::ui::primitives::cmd_icon(
-                            crate::ui::assets::STAGE,
-                            14.0,
-                            crate::ui::theme::colors().muted,
-                        )),
+                    .child("Stage all"),
                 )
                 .child(
-                    div()
-                        .p(px(6.0))
-                        .rounded(px(7.0))
-                        .text_color(rgb(crate::ui::theme::colors().muted))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                if view.shutting_down {
-                                    return;
-                                }
-                                cx.stop_propagation();
-                                window.focus(&view.focus_handle);
-                                view.git_discard_all(project, window, cx);
-                            }),
-                        )
-                        .child(crate::ui::primitives::cmd_icon(
-                            crate::ui::assets::UNDO,
-                            14.0,
-                            crate::ui::theme::colors().muted,
-                        )),
+                    crate::ui::metrics::text_role(
+                        div()
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))),
+                        crate::ui::metrics::META_10,
+                    )
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            if view.shutting_down {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            window.focus(&view.focus_handle);
+                            view.git_discard_all(project, window, cx);
+                        }),
+                    )
+                    .child("Discard all"),
                 );
         }
         section = section.child(header);
@@ -22843,6 +23307,7 @@ mod tests {
             InputOwner::Keybindings,
             InputOwner::GitCommit,
             InputOwner::GitStash,
+            InputOwner::RepoFilter,
             InputOwner::BranchPicker,
             InputOwner::Confirmation,
         ] {

@@ -9,6 +9,52 @@
 
 ## Current position
 
+### Git tab UI/UX deep-dive slices 1–5 (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+Follows the `/plan` deep-dive (repo selection + hidden-commit-input flags).
+All slices render-only through the shared `OmaCommand::Git` dispatcher; no
+protocol/CLI shape changes. Narrow-inspector-first: every added cell is
+`flex_shrink_0`-guarded or truncating, no new info on 28/32px rows.
+
+- Slice 1 (repo identity): branch header row 1 names the active repo
+  (`· name`, muted, max 96px, multi-repo projects only; single-repo
+  byte-identical). Active chrome row goes single-line 32px (name + dot —
+  its branch already shows in the header); inactive rows keep two-line
+  46px. Loading branch reads `Loading…`, distinct from stalled states.
+- Slice 2 (always-on composer): the 32px composer renders on clean trees
+  as a disabled strip (`Working tree clean.`, or `Draft saved — stage to
+  commit: …` when a per-repo draft survives) — same geometry as the dirty
+  composer, so clean/dirty switches no longer shift stash + graph. The
+  strip never takes focus; Commit stays dimmed.
+- Slice 3 (overflow): `+N more` becomes a toggle rendering the capped-out
+  tail inline (compact 32px rows, clickable via `select_repo`) plus a
+  substring filter box (tail only — the visible 32 never move, active mark
+  can't hide). `git_repos::filter_repos` pure + unit-tested; per-project
+  drafts, `InputOwner::RepoFilter` + key routing (type/Enter=first
+  match/Esc release), focus cleared on collapse/close/switch (mirrors the
+  stash Hidden-mode rule).
+- Slice 4 (labels): bulk group actions are text (`Stage all`, `Unstage
+  all`, `Discard all`); stash rows are text pills (`Pop`/`Apply`/`Drop`,
+  Drop keeps two-step); Push/Publish button reserves min width so the
+  swap never shifts row 2; the in-flow `Fetching… · Ns` line is gone
+  (button label + completion toast carry it) — header no longer pushes
+  content down. `PendingSync.started` removed (single reader was that
+  line); clippy `-D warnings` clean.
+- Slice 5 (history + help): `Current`/`All` word in the History header
+  names the icon-segment state; expanded commits gain a `commit <short>`
+  + `Copy SHA` row (full hash one click away, rows stay OID-free);
+  status failures gain `Retry` (mirrors history); `git.nav` cheatsheet +
+  `docs/shortcuts.md` cover Left/Right expand/collapse.
+- Out of scope (unchanged): DAG lane graph, multi-line composer, stash
+  file preview, tooltip infra, amend UI (backend stays).
+- Verification: `cargo fmt --all`, `cargo test --workspace` (desktop 304
+  green, incl. new `filter_repos` test), `cargo clippy --workspace
+  --all-targets -- -D warnings` PASS, `python3 scripts/check-docs.py`
+  PASS (53 files, 60/60 methods, 39/39 shortcuts), `git diff --check`
+  PASS. Native Wayland validation (2-repo switch, composer strip states,
+  40-repo overflow+filter, text pills at 280px) remains manual and not
+  claimed passing.
+
 ### Git tab readability: two-line repo rows + two-row branch header — 2026-10-11 (uncommitted)
 
 User screenshot: in a narrow inspector, repo rows crammed name + full
