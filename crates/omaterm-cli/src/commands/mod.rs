@@ -1,6 +1,7 @@
 //! Thin CLI-to-wire mapping. No workspace logic lives here: each command
 //! builds exactly one `(method, params)` pair for the M8 protocol.
 
+pub mod config;
 pub mod diff;
 pub mod file;
 pub mod git;
@@ -10,6 +11,7 @@ pub mod process;
 pub mod project;
 pub mod tab;
 pub mod terminal;
+pub mod update;
 
 use serde_json::Value;
 

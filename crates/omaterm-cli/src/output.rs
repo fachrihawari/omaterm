@@ -83,6 +83,16 @@ fn human_success(method: &str, response: &IpcResponse) -> String {
         "diff.list-files" => render_diff_files(&result),
         "process.list" => render_process_list(&result),
         "process.kill" => render_process_kill(&result),
+        "app.about" => render_about(&result),
+        "app.update-check" => render_update_check(&result),
+        "app.update-apply" => render_update_apply(&result),
+        "config.get" => render_config(&result),
+        "config.set" => format!(
+            "Set {} = {}.",
+            string(&result, "key"),
+            string(&result, "value")
+        ),
+        "config.reset" => format!("Reset {} key(s) to defaults.", number(&result, "cleared")),
         _ => result.to_string(),
     }
 }
@@ -116,12 +126,139 @@ pub fn local_error(code: &str, message: &str, as_json: bool, exit_code: i32) -> 
     exit_code
 }
 
+/// Human form of `app.update-check`: version state in prose on top, the
+/// stable `state` code underneath so agents and humans share the source
+/// of truth.
+fn render_update_check(result: &Value) -> String {
+    let installed = string(result, "installed");
+    let latest = result.get("latest").and_then(Value::as_str);
+    let state = string(result, "state");
+    match (result.get("available").and_then(Value::as_bool), latest) {
+        (Some(true), Some(latest)) => {
+            format!("Update available: {latest} (installed {installed}).\nstate: {state}")
+        }
+        _ => format!("Up to date: {installed} (state: {state})."),
+    }
+}
+
+/// Human form of `app.update-apply`: the stage plus the stable code, so
+/// a scripted caller can branch on the code and a human on the words.
+fn render_update_apply(result: &Value) -> String {
+    let stage = string(result, "stage");
+    let state = string(result, "state");
+    let code = result.get("code").and_then(Value::as_str);
+    let message = result
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match (state.as_str(), code) {
+        ("completed", _) => format!("Update applied ({stage}): {message}"),
+        (_, Some(code)) => format!("Update stopped at {stage} [{code}]: {message}"),
+        (_, None) => format!("Update in progress ({stage})."),
+    }
+}
+
+/// Human form of `app.about`: compact identity line.
+fn render_about(result: &Value) -> String {
+    format!(
+        "omaterm {} (IPC wire v{}, channel {}).",
+        string(result, "version"),
+        string(result, "wire_version"),
+        string(result, "channel")
+    )
+}
+
 fn string(value: &Value, key: &str) -> String {
     value
         .get(key)
         .and_then(Value::as_str)
         .unwrap_or("-")
         .to_owned()
+}
+
+fn number(value: &Value, key: &str) -> u64 {
+    value.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn optional_string(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("(default)")
+        .to_owned()
+}
+
+/// One `key = value` line per known config key (M21 S2), in the same
+/// dotted order as `config.set` accepts them.
+fn render_config(result: &Value) -> String {
+    let mut out = String::from("KEY\tVALUE\n");
+    for (key, value) in [
+        ("appearance.theme", string(result, "theme")),
+        (
+            "appearance.translucent-sidebar",
+            result
+                .get("translucent_sidebar")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "terminal.font-family",
+            optional_string(result, "font_family"),
+        ),
+        (
+            "terminal.font-size",
+            result
+                .get("font_size")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "terminal.scrollback-lines",
+            result
+                .get("scrollback_lines")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "engine default".into()),
+        ),
+        ("terminal.shell", optional_string(result, "shell")),
+        (
+            "automation.enabled",
+            result
+                .get("automation_enabled")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "files.max-results",
+            result
+                .get("max_results")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "files.show-hidden",
+            result
+                .get("show_hidden")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "git.refresh-secs",
+            result
+                .get("git_refresh_secs")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "updates.check-on-startup",
+            result
+                .get("check_on_startup")
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+        ),
+    ] {
+        out.push_str(&format!("{key}\t{value}\n"));
+    }
+    out.trim_end().to_owned()
 }
 
 fn render_repos(result: &Value) -> String {

@@ -126,6 +126,12 @@ test. This table is the minimum supported M9 surface; examples below use it.
 | `diff list-files` | `diff.list-files` | Diff ListFiles | Bounded changed-file headers and hunk counts without bodies |
 | `process list` | `process.list` | Process List | Bounded live descendants belonging to terminal sessions in the selected project |
 | `process kill PID` | `process.kill` | Process Kill | Scoped `SIGTERM` to a project-owned descendant; foreign PIDs denied (`cross_project_denied`), gone PIDs fail with `process_not_found` |
+| `config get` | `config.get` | Config Get | Effective configuration (resolved values, not raw file) |
+| `config set KEY VALUE` | `config.set` | Config Set | Set one dotted key (validated before disk write; `invalid_request` leaves the file untouched) |
+| `config reset [KEY]` | `config.reset` | Config Reset | Reset one key (or all known keys) to compiled defaults |
+| `about` | `app.about` | App About | Application identity: version, IPC wire version, channel |
+| `update check` | `app.update-check` | App UpdateCheck | Check the stable channel for a newer release (async; desktop commits once the bounded check finishes) |
+| `update apply [--confirm-downgrade]` | `app.update-apply` | App UpdateApply | Download, verify (sha256) and atomically install the newest stable release; refuses downgrades without the flag and `managed_by_package_manager` installs |
 
 `terminal new` deliberately creates a new tab, avoiding an unspecified split target.
 `project open` creates a project even if another project uses the same directory.

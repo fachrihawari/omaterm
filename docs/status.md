@@ -9,6 +9,186 @@
 
 ## Current position
 
+### Settings App S3b: verified self-update apply (`feat/settings-app`) — 2026-10-12 (uncommitted)
+
+Milestone [21 — Settings App](2026-10-12-21-milestone-21-settings.md) slice
+S3b, closing the M21 feature set. One command path carries the apply:
+`OmaCommand::App(AppCommand::UpdateApply)` ← `app.update-apply`
+IPC ← `omaterm update apply [--confirm-downgrade]` ← Settings
+`Update now` (GPUI prompt confirm, same modal vocabulary as git
+discard). The sequence in `update.rs::apply<H: ApplyHost>` resolves →
+downloads (bounded size/time) → verifies sha256 against the published
+sidecar (refuses before any exec bit) → stages both managed binaries
+into a temp dir → replaces them atomically beside the running
+executable → confirms `<new> --version` reports the target. The pure
+sequence is unit-tested through a scripted `ApplyHost` (10 `update::`
+tests incl. stage-order and every refusal code); all environment
+effects live behind `LiveApplyHost` behind the same trait.
+
+- **Safety gates:** `pacman -Qo <exe>` owns installs install →
+  `managed_by_package_manager` + `pacman -Syu` guidance, no bytes
+  moved (the package database is never bypassed). `EACCES` escalates
+  exactly one rename through `pkexec` with a **data-only** helper
+  (`update::maybe_run_replace_helper` hooked in `main` — the argument
+  is a path, never code, and the whole app never runs as root);
+  without a polkit agent it refuses `permission_denied` cleanly.
+  Downgrades require the explicit `confirm_downgrade` flag. The
+  checksum is verified before staging and again before rename; a
+  confirm mismatch stops at `restart_required` rather than restarting
+  a mismatched install.
+- **Owner integration:** applies park in their own admission family
+  (one at a time), share the router-wide operation ids (no aliasing
+  with launches/checks), ride the same 20ms poller, and are joined at
+  shutdown like every other worker. Progress arrives as
+  `UpdateApplyInfo{stage,state,code,message}`; the UI renders it,
+  agents branch on `state`/`code` — never on prose.
+- **Verification:** `cargo fmt --all` applied, `git diff --check`
+  PASS, `python3 scripts/check-docs.py` PASS (66/66 CLI+IPC methods
+  both ways, 40/40 shortcuts), `cargo test -p omaterm --bin
+  omaterm-desktop` 324 passed / 0 failed (incl. apply park/commit
+  test + 6 `update::` tests), `-p omaterm-protocol` 6 PASS,
+  `-p omaterm-state` 80 PASS, `-p omaterm-cli` 54 PASS (all green —
+  the earlier CLI failures were an env-ordering artifact), `cargo
+  clippy --workspace --all-targets -- -D warnings` PASS. Native
+  Wayland validation (real-network check, real install apply, prompt
+  flow) remains manual and **not claimed passing**; the apply
+  pipeline is exercised in the disposable guest only, never on this
+  host.
+- New deps (pinned, `Cargo.lock` recorded): `semver 1.0.28`,
+  `ureq 3.4.2` (rustls), `sha2 0.10.9`, `flate2 1.1.10`,
+  `tar 0.4.46` — desktop-only, all cross-checked against
+  `docs/dependencies.md`.
+- Next action: record the deps/licenses in `docs/dependencies.md`,
+  then maintainer decision on the S2–S3b §29/§59/§70 deviations roll-up
+  and a native Wayland validation run.
+
+### Settings App S3a: stable-channel update check (`feat/settings-app`) — 2026-10-12 (uncommitted)
+
+Milestone [21 — Settings App](2026-10-12-21-milestone-21-settings.md) slice
+S3a. `app.about` and `app.update-check` close the read half of the
+update surface with CLI/IPC parity: `omaterm about`,
+`omaterm update check`, the Settings Update tab's `Check now`, and the
+startup check all dispatch the same
+`OmaCommand::App(AppCommand::UpdateCheck)` through the command bus.
+Discovery follows the `releases/latest` **redirect** (`update.rs`
+`tag_from_redirect_url`): no GitHub API call, so no unauthenticated rate
+limit; only plain semver tags are accepted (`v1.2.3-rc.1`, `v1.0`,
+missing tag are all `unavailable`, never guessed). Bounded connect/read
+timeouts; transport teardown classifies honestly as `offline`, and the
+result carries a stable `state` code (`up_to_date`, `update_available`,
+`offline`, `rate_limited`, `unavailable`) that both the Settings render
+and the CLI human line key off — agents never parse prose. The check
+runs on the same owner-spawned worker family as the process queries:
+`dispatch_async` parks the id, the worker resolves the channel, and the
+launch poller commits it into `update_last_check` (zero disk writes).
+Startup check is **on by default** and honors the S2
+`[updates] check-on-startup` opt-out through the canonical config
+(resolved at construction, not read again). A focused test build never
+touches the network: the production spawner is `#[cfg(not(test))]` and
+tests drive the park/commit primitives directly.
+
+- Verification: `cargo fmt --all --check` PASS, `git diff --check`
+  PASS, `python3 scripts/check-docs.py` PASS (65/65 CLI+IPC methods
+  both ways, 40/40 shortcuts),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS
+  (transitive `proc-macro-error2` notice only), desktop binary 316
+  passed / 0 failed (incl. 2 new router tests: identity, park/commit
+  without network; plus 3 `update::` pure tests for release URLs,
+  stable-tag filtering, and semver comparison). Full-workspace run
+  still carries the 2 pre-existing failures recorded under S1
+  (`omaterm-cli` wire-mapping ×8 and
+  `git::tests::timeout_reaps_descendants_holding_pipes`), not touched
+  by this slice. Native Wayland validation (startup check on a live
+  machine, Update tab states, `omaterm update check` against the real
+  channel) remains manual and not claimed passing — the first two
+  require a real network reach, the third a real install.
+- Next action: S3b apply pipeline (download → sha256 verify → stage →
+  atomic rename → elevation when needed → verify + re-exec), gated by
+  the `pacman -Qo` managed-install check, exercised only in a
+  disposable guest.
+
+### Settings App S2: editable configuration (`feat/settings-app`) — 2026-10-12 (uncommitted)
+
+Milestone [21 — Settings App](2026-10-12-21-milestone-21-settings.md) slice
+S2. Configuration is now editable end to end through one command path:
+new `OmaCommand::Config(ConfigCommand::{Get,Set,Reset})` →
+`config.get`/`config.set`/`config.reset` wire methods → `omaterm config
+get|set|reset` CLI → inline Settings controls. The Settings UI, IPC, and
+CLI share `ConfigCommand::Set`, so a click is byte-identical to the CLI
+(`apps/omaterm/src/main.rs` `settings_set_config`). Theme keeps its
+existing persisted preference path (live repaint + write-back in one
+place); booleans are click-to-flip and scalars `−/+` steppers bounded by
+the per-key range (`settings::step_config_value`, pure + tested) — no new
+text-input surface, no new `InputOwner`.
+
+- **State:** the two bespoke savers generalized into
+  `set_config_key(path, key, value)` + `reset_config_key`,
+  reject-before-disk (unknown key/range/malformed ⇒ `ConfigError::Invalid`,
+  file byte-identical), `toml_edit` comment preservation, atomic
+  `0600` write, inline-table support preserved (the old shell-saver
+  regression is pinned by the pre-existing test). New `[updates]
+  check-on-startup` section (default true) parsed + resolvable; 11-key
+  whitelist `CONFIG_KEYS` includes it from day one so the S3a opt-out is
+  settable before the checker lands.
+- **Wire:** 60→63 methods (`config.get/set/reset`), serde
+  `deny_unknown_fields`, bounded key ≤64 bytes / value ≤256 bytes in
+  `ipc_bridge`; decode tests bumped 60→63; `ConfigInfo` DTO + new
+  `config_unavailable` error code; CLI human output (`KEY\tVALUE` table
+  plus set/reset one-liners) and coverage rows 65→69.
+- **Verification:** `cargo fmt --all --check` PASS, `git diff --check`
+  PASS, `python3 scripts/check-docs.py` PASS (63/63 CLI+IPC methods
+  both ways, 40/40 shortcuts), `cargo test -p omaterm-state --lib
+  config::` 13 PASS (3 new: whitelist round-trip, reject-before-disk,
+  reset+comments), `cargo test -p omaterm --bin omaterm-desktop` green
+  incl. new router round-trip test (temp-file seam `OMATERM_CONFIG_FILE`,
+  `#[cfg(test)]`-gated so production always uses the canonical path) and
+  5 `settings::` tests (incl. new stepper), `cargo clippy --workspace
+  --all-targets -- -D warnings` PASS (transitive `proc-macro-error2`
+  notice only). NOT re-verified this slice: full workspace run (2
+  pre-existing failures recorded under S1) and native Wayland
+  validation — not claimed passing.
+- Next action: S3a `app.about` + `app.update-check` with `releases/latest`
+  discovery, startup check default-on honoring `check-on-startup`, zero
+  disk writes.
+
+### Settings App S1: overlay shell + About/License (`feat/settings-app`) — 2026-10-12 (uncommitted)
+
+Milestone [21 — Settings App](2026-10-12-21-milestone-21-settings.md) slice
+S1. One Settings overlay (About / Update / Configuration / License)
+reachable three ways through a single `open_settings()` handler: palette
+`Preferences: Open Settings` (`ViewAction`, closes the palette first like
+the theme rows), new `settings.open` shortcut (`Ctrl+,`, parity in
+`docs/shortcuts.md`), and a gear button in a new second row of the
+Projects sidebar footer (footer 40px single-row → two-row `flex_col`;
+the `Open Folder…` row is byte-identical). Overlay owns input via the
+new `InputOwner::Settings` (`Esc`/`Ctrl+,` close, `1..4` switch
+section, everything else swallowed). S1 content is read-only: About
+(version from `CARGO_PKG_VERSION`, wire `PROTOCOL_VERSION`, OS/arch,
+config path, Copy-version-line toast) and License (offline
+`include_str!` of `LICENSE-MIT` + `LICENSE-APACHE`); the Configuration
+tab shows a startup snapshot marked read-only, the Update tab states
+S3 is pending with manual pacman/install.sh guidance. GPUI-free
+`settings.rs` owns the section enum, palette key, and license text with
+unit tests; `SETTINGS` slot reuses the vendored `settings-2` geometry
+(no new SVG, tint-safety covered). Recorded deviations (blueprint text
+untouched): §61 file-only config, §59 no updater, §70 inventory-only.
+
+- Verification: `cargo fmt --all --check` PASS, `git diff --check`
+  PASS, `python3 scripts/check-docs.py` PASS (53 files, 60/60 methods,
+  40/40 shortcuts), `cargo check -p omaterm --bin omaterm-desktop`
+  PASS, desktop test binary 309 passed / 0 failed (incl. 4 new
+  `settings::` tests), `cargo clippy --workspace --all-targets -- -D
+  warnings` PASS (transitive `proc-macro-error2` future-incompat notice
+  only). `cargo test --workspace` NOT fully green: 8 `omaterm-cli`
+  wire-mapping failures + `git::tests::timeout_reaps_descendants_
+  holding_pipes`, all proven failing on the stashed clean tree
+  (pre-existing, environmental, untouched by this slice). Native
+  Wayland validation (all 3 entry points, `Esc` close, `1..4` nav)
+  remains manual and not claimed passing.
+- Next action: S2 config editable (`ConfigCommand`, `config.*` wire +
+  CLI, inline controls); S2 whitelist already includes
+  `updates.check-on-startup` for the S3a opt-out.
+
 ### History master key: keyring removed, file-backed `master.key` (`feat/history-file-key`) — 2026-10-12
 
 Production history encryption no longer touches any OS keychain / Secret

@@ -45,6 +45,10 @@ pub const STAGE: &str = "plus";
 pub const UNSTAGE: &str = "minus";
 pub const CHEVRON_DOWN: &str = "chevron-down";
 pub const CHEVRON_RIGHT: &str = "chevron-right";
+/// Settings gear slot: reuses the vendored `settings-2` stroke geometry
+/// (already tint-safety tested). `FILE_SETTINGS` names the same bytes for
+/// the file-tree family; this slot is the global chrome entry point.
+pub const SETTINGS: &str = "settings-2";
 /// File-tree document icons (one Lucide glyph per file family; hues stay
 /// in `files.rs` so the tree keeps its per-language colors).
 pub const FILE: &str = "file";

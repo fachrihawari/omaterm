@@ -156,6 +156,12 @@ crates/omaterm-ipc/
 | `diff.list-files` | `DiffCommand::ListFiles` |
 | `process.list` | `ProcessCommand::List` |
 | `process.kill` | `ProcessCommand::Kill` |
+| `config.get` | `ConfigCommand::Get` |
+| `config.set` | `ConfigCommand::Set` |
+| `config.reset` | `ConfigCommand::Reset` |
+| `app.about` | `AppCommand::About` |
+| `app.update-check` | `AppCommand::UpdateCheck` |
+| `app.update-apply` | `AppCommand::UpdateApply` |
 
 ### Socket Path
 

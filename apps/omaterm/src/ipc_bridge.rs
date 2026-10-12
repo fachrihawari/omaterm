@@ -552,6 +552,27 @@ pub fn map_request(
                 project: resolve_project(p.project_id)?,
                 pid: p.pid,
             }),
+            Method::ConfigGet(_) => OmaCommand::Config(omaterm_core::ConfigCommand::Get),
+            Method::ConfigSet(p) => {
+                if p.key.trim().is_empty() || p.key.len() > 64 {
+                    return Err("config key must be a dotted section.key");
+                }
+                if p.value.len() > 256 {
+                    return Err("config value exceeds the length limit");
+                }
+                OmaCommand::Config(omaterm_core::ConfigCommand::Set {
+                    key: p.key,
+                    value: p.value,
+                })
+            }
+            Method::ConfigReset(p) => {
+                OmaCommand::Config(omaterm_core::ConfigCommand::Reset { key: p.key })
+            }
+            Method::AppAbout(_) => OmaCommand::App(omaterm_core::AppCommand::About),
+            Method::AppUpdateCheck(_) => OmaCommand::App(omaterm_core::AppCommand::UpdateCheck),
+            Method::AppUpdateApply(p) => OmaCommand::App(omaterm_core::AppCommand::UpdateApply {
+                confirm_downgrade: p.confirm_downgrade,
+            }),
         })
     })()
     .map_err(|message| invalid(id, message))?;
@@ -756,6 +777,24 @@ fn output_json(output: CommandOutput) -> Value {
         }
         CommandOutput::ProcessKilled { pid, signal } => {
             json!({"pid":pid,"signal":signal})
+        }
+        CommandOutput::ConfigGet(info) => {
+            json!({"theme":info.theme,"translucent_sidebar":info.translucent_sidebar,"font_family":info.font_family,"font_size":info.font_size,"scrollback_lines":info.scrollback_lines,"shell":info.shell,"automation_enabled":info.automation_enabled,"max_results":info.max_results,"show_hidden":info.show_hidden,"git_refresh_secs":info.git_refresh_secs,"check_on_startup":info.check_on_startup})
+        }
+        CommandOutput::ConfigSet { key, value } => {
+            json!({"key":key,"value":value})
+        }
+        CommandOutput::ConfigReset { cleared } => {
+            json!({"cleared":cleared})
+        }
+        CommandOutput::About(info) => {
+            json!({"version":info.version,"wire_version":info.wire_version,"channel":info.channel})
+        }
+        CommandOutput::UpdateCheck(info) => {
+            json!({"installed":info.installed,"latest":info.latest,"available":info.available,"state":info.state})
+        }
+        CommandOutput::UpdateApply(info) => {
+            json!({"stage":info.stage,"state":info.state,"code":info.code,"message":info.message.chars().take(512).collect::<String>()})
         }
     }
 }
