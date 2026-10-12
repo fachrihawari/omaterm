@@ -15890,16 +15890,17 @@ impl WorkspaceView {
             )
     }
 
-    /// One segment of the Graph scope control: a text button that selects
-    /// `scope` and shows a pressed state while it is active. Labels name
-    /// the scopes outright (`Current` vs `All`) — the old `git-branch` /
-    /// `git-fork` glyphs never mapped to the concepts (a fork reads as a
-    /// remote, not "all local branches").
+    /// One segment of the Graph scope control: an icon button that selects
+    /// `scope` and shows a pressed state while it is active. `git-branch`
+    /// is this branch; `network` (connected nodes, like a commit graph) is
+    /// every local branch. The old `git-fork` glyph read as a remote, and
+    /// bare `Current` / `All` words never said current/all *what* — both
+    /// are gone.
     fn history_scope_segment(
         &mut self,
         project: ProjectId,
         scope: omaterm_core::GitHistoryScope,
-        label: &'static str,
+        glyph: &'static str,
         active: bool,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -15909,8 +15910,7 @@ impl WorkspaceView {
             crate::ui::theme::colors().muted
         };
         let mut segment = div()
-            .px(px(8.0))
-            .py(px(4.0))
+            .p(px(4.0))
             .rounded(px(5.0))
             .cursor_pointer()
             .text_color(rgb(color))
@@ -15921,7 +15921,7 @@ impl WorkspaceView {
                     s.bg(gpui::rgb(crate::ui::theme::colors().row_hover_bg))
                 }
             })
-            .child(crate::ui::metrics::text_role(div(), crate::ui::metrics::META_10).child(label))
+            .child(crate::ui::assets::icon(glyph, 14.0, color))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
@@ -15974,8 +15974,9 @@ impl WorkspaceView {
                 }),
             )
             .child({
-                // Two text segments: current HEAD vs all local branches.
-                // Labels name the scopes outright; glyphs never mapped.
+                // Two icon segments: this branch vs every local branch.
+                // Glyphs carry the meaning (branch vs commit-graph nodes);
+                // words and the remote-reading fork are gone.
                 let current_scope = self.history_panel.scope_for(repo_key.clone());
                 let is_current = current_scope == omaterm_core::GitHistoryScope::CurrentHead;
                 div()
@@ -15991,14 +15992,14 @@ impl WorkspaceView {
                     .child(self.history_scope_segment(
                         project,
                         omaterm_core::GitHistoryScope::CurrentHead,
-                        "Current",
+                        crate::ui::assets::GIT_BRANCH,
                         is_current,
                         cx,
                     ))
                     .child(self.history_scope_segment(
                         project,
                         omaterm_core::GitHistoryScope::AllLocalBranches,
-                        "All",
+                        crate::ui::assets::NETWORK,
                         !is_current,
                         cx,
                     ))

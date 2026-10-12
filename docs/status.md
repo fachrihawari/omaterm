@@ -9,6 +9,20 @@
 
 ## Current position
 
+### History scope: proper icons, not longer words (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
+
+User veto on the `This branch` / `All branches` wording (more text in a
+minimum-space panel) and on the old fork glyph: vendored upstream
+`network.svg` from lucide-static v1.49.0 (same pin as every other icon;
+tint-safety test green) and paired it with `git-branch` — one branch vs
+the commit-graph nodes. Scope control is icon-only again with two shapes
+that actually map to the concepts; the `GIT_FORK` slot stays retired.
+- Verification: `cargo fmt --all`, `cargo test -p omaterm --bin
+  omaterm-desktop` (304 green, incl. vendored-icon test), `cargo clippy
+  --workspace --all-targets -- -D warnings` PASS (0 errors), `python3
+  scripts/check-docs.py` PASS, `git diff --check` PASS. Wayland check
+  remains manual.
+
 ### Sidebar footer + history scope labels (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
 
 Two user notes: (1) the `Open Folder…` footer button at the bottom of
