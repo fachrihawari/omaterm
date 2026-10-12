@@ -552,8 +552,14 @@ impl CommandRouter {
         let history_store = omaterm_state::default_history_dir().map(|dir| {
             omaterm_state::HistoryStore::new(dir, omaterm_state::HistoryLimits::default())
         });
+        // File-backed master key; memory-only when no state directory is
+        // usable (the store is `None` in that case too, so history stays
+        // memory-only with a warning instead of failing).
         let provider: Box<dyn omaterm_state::KeyProvider> =
-            Box::new(omaterm_state::OsKeyProvider::omaterm_default());
+            match omaterm_state::FileKeyProvider::omaterm_default() {
+                Some(provider) => Box::new(provider),
+                None => Box::new(omaterm_state::InMemoryKeyProvider::new()),
+            };
         let mut history = HistoryManager::new(history_store, provider);
         history.load_config();
         Self {

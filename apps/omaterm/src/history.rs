@@ -1,13 +1,14 @@
 //! M10 history manager (desktop owner, GPUI-free).
 //!
-//! Owns history configuration, the encrypted store, the OS key provider,
+//! Owns history configuration, the encrypted store, the file-backed key
+//! provider,
 //! per-pane journal buffers, and a single background worker thread that
 //! performs all compression, encryption, and disk I/O. The PTY hot path
 //! never blocks on persistence: flush ticks drain bounded snapshots into
 //! a bounded job queue, and the worker reports acknowledgements back.
 //!
-//! Failure policy (no plaintext fallback, ever): when the keyring is
-//! unavailable, locked, denied, or lost — or when archives fail to save —
+//! Failure policy (no plaintext fallback, ever): when the key file is
+//! unavailable, denied, or lost — or when archives fail to save —
 //! terminals keep running in memory, prior archives are left untouched,
 //! and a recoverable warning is surfaced for the UI and `history status`.
 
@@ -27,8 +28,9 @@ use omaterm_terminal::{
 };
 use zeroize::Zeroize;
 
-/// How long a failed key attempt suppresses keyring retries. The terminal
-/// keeps working in memory meanwhile; unlocking the keyring takes effect
+/// How long a failed key attempt suppresses key-file retries. The terminal
+/// keeps working in memory meanwhile; repairing or recreating the key file
+/// takes effect
 /// on the next attempt without a restart.
 const KEY_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -212,6 +214,11 @@ pub struct HistoryManager {
     /// they can never be mistaken for fresh work.
     epochs: HashMap<String, u64>,
     warning: Option<String>,
+    /// Whether the one-time "previous history format retired" notice was
+    /// installed. Retired (pre-file-key) archives are left untouched on
+    /// disk; the first restore that observes them installs the notice once
+    /// instead of warning per pane.
+    retired_notice_done: bool,
     jobs: Option<mpsc::SyncSender<HistoryJob>>,
     acks: mpsc::Receiver<HistoryAck>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -246,6 +253,7 @@ impl HistoryManager {
             journals: HashMap::new(),
             epochs: HashMap::new(),
             warning: None,
+            retired_notice_done: false,
             jobs: Some(jobs_tx),
             acks: acks_rx,
             worker: worker.ok(),
@@ -554,6 +562,22 @@ impl HistoryManager {
         }
     }
 
+    /// Install the one-time retired-format notice when the pane has
+    /// pre-file-key archives on disk. Those files are never touched; the
+    /// notice fires once per manager lifetime and never clobbers a more
+    /// specific warning already present.
+    fn notice_retired_format(&mut self, store: &HistoryStore, pane_opaque: &str) {
+        if self.retired_notice_done || self.warning.is_some() {
+            return;
+        }
+        if store.has_retired_archives(pane_opaque) {
+            self.warning = Some(
+                "previous history format retired; starting fresh — old files left untouched".into(),
+            );
+            self.retired_notice_done = true;
+        }
+    }
+
     /// Load verified scrollback for restore-before-spawn. Warms the
     /// revision counter so the next save supersedes the restored archive.
     pub fn restore_scrollback(&mut self, pane_opaque: &str) -> RestoreOutcome {
@@ -568,7 +592,10 @@ impl HistoryManager {
             Err(error) => return RestoreOutcome::Unavailable(error.to_string()),
         };
         match store.load_scrollback(&key, pane_opaque) {
-            Ok(HistoryLoad::Missing) => RestoreOutcome::Missing,
+            Ok(HistoryLoad::Missing) => {
+                self.notice_retired_format(&store, pane_opaque);
+                RestoreOutcome::Missing
+            }
             Ok(HistoryLoad::Scrollback(events, revision)) => {
                 self.revisions
                     .insert(pane_opaque.to_string(), revision.max(1));
@@ -632,7 +659,9 @@ impl HistoryManager {
                 self.seqs.insert(pane_opaque.to_string(), seq);
                 self.flushed_seqs.insert(pane_opaque.to_string(), seq);
             }
-            Ok(HistoryLoad::Missing) => {}
+            Ok(HistoryLoad::Missing) => {
+                self.notice_retired_format(&store, pane_opaque);
+            }
             Ok(HistoryLoad::Corrupt { error, .. }) => {
                 self.warning = Some(format!(
                     "saved journal failed verification ({error}); starting fresh"
@@ -817,7 +846,7 @@ impl Drop for HistoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omaterm_state::{HistoryLimits, InMemoryKeyProvider, KeyProviderError};
+    use omaterm_state::{FileKeyProvider, HistoryLimits, InMemoryKeyProvider, KeyProviderError};
 
     fn test_manager() -> (HistoryManager, tempfile_dir::TempDir) {
         let dir = tempfile_dir::TempDir::new();
@@ -862,6 +891,50 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
+    }
+
+    #[test]
+    fn retired_format_notice_fires_once_and_load_stays_missing() {
+        let dir = tempfile_dir::TempDir::new();
+        let history_dir = dir.path().join("history");
+        std::fs::create_dir_all(&history_dir).expect("history dir");
+        // Retired v1 file: valid magic, version 1, arbitrary body.
+        let pane = "a".repeat(32);
+        let mut bytes = b"OMHIST01".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend(vec![0u8; 64]);
+        std::fs::write(history_dir.join(format!("{pane}.4.omhist")), &bytes).expect("retired file");
+        let store = HistoryStore::new(
+            history_dir.clone(),
+            HistoryLimits {
+                max_workspace_bytes: 16 * 1024 * 1024,
+                ..HistoryLimits::default()
+            },
+        );
+        let provider: Box<dyn KeyProvider> = Box::new(FileKeyProvider::with_path(
+            history_dir.join(omaterm_state::MASTER_KEY_FILENAME),
+        ));
+        let mut manager = HistoryManager::new(Some(store), provider);
+        manager.set_enabled(true);
+        assert!(matches!(
+            manager.restore_scrollback(&pane),
+            RestoreOutcome::Missing
+        ));
+        let first = manager.warning().map(str::to_string);
+        assert!(
+            first.as_ref().is_some_and(|text| text.contains("retired")),
+            "one-time retired-format notice installed: {first:?}"
+        );
+        assert!(
+            history_dir.join(format!("{pane}.4.omhist")).exists(),
+            "retired file left untouched"
+        );
+        // Second restore: still missing, same single notice.
+        assert!(matches!(
+            manager.restore_scrollback(&pane),
+            RestoreOutcome::Missing
+        ));
+        assert_eq!(manager.warning().map(str::to_string), first);
     }
 
     #[test]
@@ -965,16 +1038,16 @@ mod tests {
     struct FailingProvider;
     impl KeyProvider for FailingProvider {
         fn get_or_create_master_key(&mut self) -> Result<[u8; 32], KeyProviderError> {
-            Err(KeyProviderError::Locked("test keyring is locked".into()))
+            Err(KeyProviderError::Denied("test key file is denied".into()))
         }
         fn master_key(&self) -> Option<[u8; 32]> {
             None
         }
         fn rotate_master_key(&mut self) -> Result<[u8; 32], KeyProviderError> {
-            Err(KeyProviderError::Locked("test keyring is locked".into()))
+            Err(KeyProviderError::Denied("test key file is denied".into()))
         }
         fn remove_master_key(&mut self) -> Result<(), KeyProviderError> {
-            Err(KeyProviderError::Locked("test keyring is locked".into()))
+            Err(KeyProviderError::Denied("test key file is denied".into()))
         }
     }
 

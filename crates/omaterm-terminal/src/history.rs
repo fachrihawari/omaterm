@@ -9,7 +9,7 @@
 //!
 //! Recording is a hot-path operation (called from the PTY reader pump): it
 //! performs only bounded memory copies and counter updates. Compression,
-//! encryption, keyring access, and disk I/O must never happen here; the
+//! encryption, key access, and disk I/O must never happen here; the
 //! desktop owner drains snapshots and persists them on a background writer.
 
 use std::collections::VecDeque;

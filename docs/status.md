@@ -9,6 +9,59 @@
 
 ## Current position
 
+### History master key: keyring removed, file-backed `master.key` (`feat/history-file-key`) — 2026-10-12
+
+Production history encryption no longer touches any OS keychain / Secret
+Service on any platform: the random 32-byte master key now lives in
+`master.key` (`0600`, inside the history directory) via the new
+`FileKeyProvider` (`crates/omaterm-state/src/history.rs`). Crypto is
+unchanged in kind (ChaCha20-Poly1305, HKDF-SHA256, `getrandom`,
+`zeroize`); only the storage backend moved. `KeyProvider` trait shape is
+unchanged, so the manager/worker/flush paths are untouched; the router
+falls back to a memory-only provider when no state dir is usable
+(`apps/omaterm/src/router.rs`). `keyring =4.2.0` is gone from
+`Cargo.toml`/`Cargo.lock` (no `keyring*` package left; remaining `zbus`
+entries are GPUI's `oo7` subtree).
+
+- **Recorded deviation from blueprint §29** ("OS-backed key storage"):
+  replaced with file permissions (`0600` Unix / inherited per-user ACL on
+  Windows) because the keychain prompt fired on every launch and every
+  30-second key retry, which blocks the default-on goal. Stated plainly,
+  this is a boundary downgrade, not a neutral move: any same-UID reader
+  of the history dir now gets key + archives together (previously the
+  keychain lock/policy stood in between); offline/other-UID protection
+  via encryption is unchanged. **Proposed §29 amendment for maintainer
+  approval** (blueprint text itself not edited): *"The history master
+  key is stored in a `0600` file inside the history directory; no OS
+  keychain is used. At-rest encryption still applies; the residual
+  threat is same-user disk read and forensic recovery."*
+- **Cutover:** hard, no migration. Archive version 1→2 (HKDF labels
+  `…-v2/…`); v1 files are never decrypted, quarantined, or deleted —
+  loads report `Missing` and the first restore/installs the one-time
+  notice *"previous history format retired; starting fresh — old files
+  left untouched"*. Revision scans, quota exemptions, and
+  supersede-deletion skip retired versions, so a high-revision v1 file
+  can never shadow fresh v2 archives; `inventory`/`total_bytes` exclude
+  `master.key` so status never leaks key presence through file counts.
+- **Concurrency:** creation is create-if-absent via temp-then-hardlink
+  (loser adopts the winner's key); a last-writer-wins rename is
+  deliberately avoided so no process orphans the other's archives.
+- Historical docs (M10 milestone spec, acceptance matrix, old status
+  entries) intentionally keep their keyring wording as the record of
+  what was validated then.
+- Verification: `cargo fmt --all --check` PASS, `cargo test --workspace`
+  PASS (desktop 305 incl. new retired-notice test, state 77 incl. 7 new
+  provider/legacy/scan tests, terminal 198, zero failures),
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS (only the
+  known transitive `proc-macro-error2` future-incompat notice),
+  `python3 scripts/check-docs.py` PASS (53 files, 60/60 methods, 39/39
+  shortcuts), `git diff --check` PASS. Toolchain: local 1.99.0 override
+  (`b940084d7`); repo 1.98.1 pin unchanged. No Wayland validation
+  (no render change; the notice string is text-only and unreviewed on
+  screen).
+- Next action: maintainer decision on the §29 amendment; release note
+  one-liner (old archives left in place, fresh start on opt-in).
+
 ### History scope: proper icons, not longer words (`feat/git-tab-improvements`) — 2026-10-12 (uncommitted)
 
 User veto on the `This branch` / `All branches` wording (more text in a
