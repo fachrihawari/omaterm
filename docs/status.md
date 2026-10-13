@@ -9,6 +9,80 @@
 
 ## Current position
 
+### Settings bug fixes: scroll leak, smooth scroll, nav case, footer badge (`feat/settings-app`) — 2026-10-13 (uncommitted)
+
+Four Settings overlay defects found in dogfooding, all fixed in
+`apps/omaterm` (presentation/input only — no wire or command changes).
+
+- **Scroll leak.** The terminal leaf's `on_scroll_wheel` handler had no
+  overlay guard, so the shell scrolled behind the open overlay. It now
+  mirrors `capture_wheel`'s guard (`ctrlp_open` / `keybindings_open` /
+  `settings_open` all block).
+- **Notchy scroll.** The Settings body used GPUI's raw native div scroll
+  (instant deltas, no easing) while the rest of the app eases through
+  `scroll::Motion`. The body now has a tracked `ScrollHandle`
+  (`settings_scroll_handle`, new `WheelTarget::Settings` variant) and
+  wheel events over it route through the same motion path — the routing
+  core of `capture_wheel` was extracted into `route_wheel` and shared.
+  Section switches (nav click or `1–4`) reset the offset to top.
+- **Letter case.** Nav rail labels moved from ALL CAPS to title case
+  (`settings::SettingsSection::label`), matching the macOS System
+  Settings reference; content group titles keep the inspector's
+  uppercase grammar deliberately.
+- **Footer badge.** The sidebar footer Settings button no longer renders
+  a `Ctrl+,` kbd chip (inconsistent with `Open Folder…`; the shortcut
+  stays discoverable via the palette entry and the overlay footer hint).
+- Verification: `cargo fmt --all --check` PASS,
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS,
+  `cargo test --workspace --exclude omaterm-cli` 0 failed,
+  `python3 scripts/check-docs.py` PASS (66/66 methods, 40/40 shortcuts),
+  `git diff --check` PASS. **Wayland validation PASS** (real session):
+  terminal does not scroll while Settings is open; overlay scroll eases
+  like the inspector lists; nav reads title case; footer badge gone.
+- Next action: remaining checklist in
+  `~/.opencode/plan/settings-validation-and-closure.md` (update
+  check/apply on a live machine), then the §59/§61/§70 deviation
+  decision, then commit.
+
+### Settings live-apply gap closed: font, files, git poller (`feat/settings-app`) — 2026-10-13 (uncommitted)
+
+The M21 key table promised "Live-apply: yes" for 10 keys, but
+`apply_settings_live_effect` only implemented theme and translucency;
+font size/family, `files.*`, and `git.refresh-secs` silently waited for a
+new pane or restart. Closed per
+`~/.opencode/plan/settings-live-apply-completion.md` (Option A).
+
+- **New arms** in `apply_settings_live_effect` (`main.rs`): the git
+  poller interval is re-read per tick so the field assignment is
+  sufficient; `files_default_limit` / `files_show_hidden` update in place
+  (the file-tree cache already keys on `show_hidden`, so the next listing
+  rebuilds with the new values).
+- **Font cache key.** `ResolvedFonts` gains a `family` field and
+  `fonts()` now re-resolves when either the effective size or the
+  configured family changes — the same invalidation path font zoom
+  already used, so the PTY grid follows through the normal resize path.
+  Setting `terminal.font-size` / `terminal.font-family` in Settings
+  re-renders existing panes live.
+- **`terminal.shell` row:** confirmed no Settings row exists on any
+  platform (the Windows shell picker lives elsewhere), so the S-D
+  platform-gating slice was void. `terminal.scrollback-lines` and
+  `terminal.shell` keep their documented new-panes contract.
+- No wire/CLI/protocol change — every control still dispatches the same
+  `ConfigCommand::Set`.
+- Verification: `cargo fmt --all --check` PASS,
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS,
+  `cargo test --workspace --exclude omaterm-cli` all suites 0 failed
+  (desktop 198/198), `python3 scripts/check-docs.py` PASS,
+  `git diff --check` PASS. **Wayland validation PASS** (real session,
+  `XDG_SESSION_TYPE=wayland`, debug build): stepping
+  `terminal.font-size` 15.0 → 17.5 → 16.5 in Settings re-rendered
+  existing panes live — the log shows one `terminal font resolved` per
+  step, and the resize was visible on screen. IPC `config set` persists
+  without live-apply (by design; live-apply is the UI handler's job).
+- Next action: commit this slice, then run the remaining checklist in
+  `~/.opencode/plan/settings-validation-and-closure.md` (overlay chrome,
+  pop-ups, inline edit, update check/apply).
+
 ### Settings UI pass 2: macOS-style cards, real switch, editable values (`feat/settings-app`) — 2026-10-12 (uncommitted)
 
 Second UI pass on the Settings overlay, following a macOS System

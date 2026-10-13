@@ -66,6 +66,7 @@ enum WheelTarget {
     Git(ProjectId),
     Diff(ProjectId),
     Editor(DocumentId),
+    Settings,
     Terminal(SessionId),
 }
 
@@ -166,6 +167,10 @@ struct WorkspaceView {
     /// config; S2 replaces the reads with live setters.
     settings_open: bool,
     settings_section: settings::SettingsSection,
+    /// Tracked handle for the Settings body so wheel scrolling runs through
+    /// the same `scroll::Motion` easing as the inspector lists (native div
+    /// scroll applies deltas instantly and feels notchy by comparison).
+    settings_scroll_handle: ScrollHandle,
     /// Effective config snapshot taken at construction for the read-only
     /// Configuration tab. Runtime mutations (theme picker, shell picker)
     /// keep their own view state; S2 re-reads or mutates through setters.
@@ -2150,6 +2155,15 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) {
         if self.shutting_down || self.ctrlp_open || self.keybindings_open || self.settings_open {
+            // The Settings overlay scrolls its own body through the same
+            // motion easing as the inspector lists; the other overlays use
+            // their own tracked uniform-list handles (or have no scroll).
+            if self.settings_open {
+                let handle = self.settings_scroll_handle.clone();
+                if handle.bounds().contains(&event.position) {
+                    self.route_wheel(WheelTarget::Settings, Some(handle), event, window, cx);
+                }
+            }
             return;
         }
         let mut destination = None;
@@ -2260,9 +2274,24 @@ impl WorkspaceView {
                 }
             }
         }
-        let Some((target, handle, line_height)) = destination else {
+        let Some((target, handle, _line_height)) = destination else {
             return;
         };
+        self.route_wheel(target, handle, event, window, cx);
+    }
+
+    /// Shared wheel routing: feed the delta into the target's motion
+    /// animation and consume the event. Called by `capture_wheel` for the
+    /// main surface, and directly for the Settings overlay body.
+    fn route_wheel(
+        &mut self,
+        target: WheelTarget,
+        handle: Option<ScrollHandle>,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let line_height: f32 = self.fonts(&*cx).line_height.into();
         let (delta, precise) = match event.delta {
             ScrollDelta::Lines(delta) if delta.x == 0.0 => {
                 (delta.y * scroll::WHEEL_PIXELS_PER_LINE, false)
@@ -2373,6 +2402,7 @@ impl WorkspaceView {
                         WheelTarget::Editor(doc) => view
                             .active_editor_surface()
                             .is_some_and(|(_, active)| active == doc),
+                        WheelTarget::Settings => view.settings_open,
                         WheelTarget::Diff(project) => {
                             view.coordinator.selected_project_id() == Some(project)
                                 && view.diff_is_active(project)
@@ -2626,6 +2656,7 @@ impl WorkspaceView {
             keybindings_scroll_handle: UniformListScrollHandle::new(),
             settings_open: false,
             settings_section: settings::SettingsSection::About,
+            settings_scroll_handle: ScrollHandle::new(),
             settings_config: app_config.clone(),
             settings_edit: None,
             settings_caret_on: true,
@@ -10597,6 +10628,8 @@ impl WorkspaceView {
             && let Some(section) = settings::SettingsSection::from_index(index)
         {
             self.settings_section = section;
+            self.settings_scroll_handle
+                .set_offset(gpui::point(px(0.0), px(0.0)));
             cx.notify();
         }
     }
@@ -11790,16 +11823,17 @@ impl WorkspaceView {
         .detach();
     }
 
-    /// Resolve (once per font size) and cache the terminal font set.
+    /// Resolve (once per font size/family) and cache the terminal font set.
     fn fonts(&mut self, cx: &App) -> ResolvedFonts {
         // Effective size includes the session zoom multiplier; the cache
         // keys on it so zooming re-resolves metrics (and the PTY grid
-        // follows through the normal resize path).
+        // follows through the normal resize path). Family is keyed too so
+        // a Settings change re-resolves instead of serving stale metrics.
         let font_size = px(self.font_size * self.font_zoom);
         if self
             .fonts
             .as_ref()
-            .is_none_or(|cached| cached.font_size != font_size)
+            .is_none_or(|cached| cached.font_size != font_size || cached.family != self.font_family)
         {
             self.fonts = Some(resolve_terminal_fonts(
                 cx,
@@ -13478,6 +13512,11 @@ impl WorkspaceView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Overlays own the wheel while open (same guard as capture_wheel):
+        // scrolling Settings must not scroll the shell behind it.
+        if self.shutting_down || self.ctrlp_open || self.keybindings_open || self.settings_open {
+            return;
+        }
         let Some(handle) = self.coordinator.registry().get(session_id) else {
             return;
         };
@@ -18871,12 +18910,6 @@ impl WorkspaceView {
                             .child(
                                 crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
                                     .child("Settings"),
-                            )
-                            .child(
-                                crate::ui::primitives::kbd()
-                                    .role(crate::ui::metrics::META_9)
-                                    .text_color(rgb(crate::ui::theme::colors().muted))
-                                    .child("Ctrl+,"),
                             ),
                     ),
             )
@@ -21335,9 +21368,11 @@ impl WorkspaceView {
     }
 
     /// Live-apply what is cheap after a config write (M21 S2): theme and
-    /// translucency repaint immediately; font/scrollback/poller values
-    /// apply to new panes or the next poll tick through the existing
-    /// startup reads, so no restart banner is needed for them.
+    /// translucency repaint immediately; font metrics re-resolve on the
+    /// next render through the `fonts()` cache key (grid resize follows
+    /// the normal path); the git poller and file listing read their
+    /// settings per tick. `terminal.scrollback-lines` and `terminal.shell`
+    /// still apply to new panes only (existing contract).
     fn apply_settings_live_effect(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
             "appearance.theme" => {
@@ -21352,6 +21387,25 @@ impl WorkspaceView {
             }
             "appearance.translucent-sidebar" => {
                 self.translucent_sidebar = self.settings_config.translucent_sidebar();
+            }
+            "git.refresh-secs" => {
+                self.git_refresh_interval = Duration::from_secs(
+                    self.settings_config
+                        .resolved_git_refresh_secs()
+                        .clamp(1, 300),
+                );
+            }
+            "files.max-results" => {
+                self.files_default_limit = self.settings_config.resolved_max_results() as usize;
+            }
+            "files.show-hidden" => {
+                self.files_show_hidden = self.settings_config.show_hidden();
+            }
+            "terminal.font-size" => {
+                self.font_size = self.settings_config.resolved_font_size();
+            }
+            "terminal.font-family" => {
+                self.font_family = self.settings_config.terminal.font_family.clone();
             }
             _ => {}
         }
@@ -22021,6 +22075,8 @@ impl WorkspaceView {
                         cx.listener(move |view, _, _, cx| {
                             cx.stop_propagation();
                             view.settings_section = section;
+                            view.settings_scroll_handle
+                                .set_offset(gpui::point(px(0.0), px(0.0)));
                             cx.notify();
                         }),
                     )
@@ -22049,6 +22105,7 @@ impl WorkspaceView {
             .flex_col()
             .id("settings-body")
             .overflow_y_scroll()
+            .track_scroll(&self.settings_scroll_handle)
             .max_h(px(body_height))
             .child(self.settings_section_body(active, cx));
 
@@ -23433,6 +23490,8 @@ struct ResolvedFonts {
     cell_width: Pixels,
     line_height: Pixels,
     font_size: Pixels,
+    /// Configured family the metrics were resolved for (cache key).
+    family: Option<String>,
 }
 
 fn resolve_terminal_fonts(
@@ -23481,6 +23540,7 @@ fn resolve_terminal_fonts(
         cell_width,
         line_height,
         font_size,
+        family: configured,
     }
 }
 

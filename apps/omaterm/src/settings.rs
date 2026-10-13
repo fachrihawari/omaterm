@@ -28,13 +28,15 @@ impl SettingsSection {
         SettingsSection::License,
     ];
 
-    /// Uppercase nav label, matching the inspector group-header grammar.
+    /// Nav rail label, title case like the macOS System Settings
+    /// reference (the content group titles keep the inspector's
+    /// uppercase grammar — the rail is navigation, not a group header).
     pub fn label(self) -> &'static str {
         match self {
-            SettingsSection::About => "ABOUT",
-            SettingsSection::Update => "UPDATE",
-            SettingsSection::Configuration => "CONFIGURATION",
-            SettingsSection::License => "LICENSE",
+            SettingsSection::About => "About",
+            SettingsSection::Update => "Update",
+            SettingsSection::Configuration => "Configuration",
+            SettingsSection::License => "License",
         }
     }
 
