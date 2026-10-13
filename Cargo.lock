@@ -3860,7 +3860,7 @@ dependencies = [
 
 [[package]]
 name = "omaterm"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-channel 2.5.0",
  "base64 0.22.1",
@@ -3888,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "omaterm-cli"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -3903,7 +3903,7 @@ dependencies = [
 
 [[package]]
 name = "omaterm-context"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "fuzzy-matcher",
  "ignore",
@@ -3917,7 +3917,7 @@ dependencies = [
 
 [[package]]
 name = "omaterm-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "thiserror 2.0.21",
  "uuid",
@@ -3925,7 +3925,7 @@ dependencies = [
 
 [[package]]
 name = "omaterm-ipc"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "libc",
  "omaterm-protocol",
@@ -3936,14 +3936,14 @@ dependencies = [
 
 [[package]]
 name = "omaterm-logging"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
 name = "omaterm-protocol"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3951,7 +3951,7 @@ dependencies = [
 
 [[package]]
 name = "omaterm-state"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "chacha20poly1305",
  "flate2",
@@ -3970,7 +3970,7 @@ dependencies = [
 
 [[package]]
 name = "omaterm-terminal"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",

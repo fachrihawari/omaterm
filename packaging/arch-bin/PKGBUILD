@@ -23,7 +23,7 @@
 
 pkgname=omaterm-bin
 _pkgname=omaterm
-pkgver=0.4.1
+pkgver=0.5.0
 pkgrel=1
 pkgdesc='Terminal-first developer workspace with semantic CLI automation (prebuilt binary)'
 arch=('x86_64')

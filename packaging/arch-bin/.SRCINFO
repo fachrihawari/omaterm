@@ -1,6 +1,6 @@
 pkgbase = omaterm-bin
 	pkgdesc = Terminal-first developer workspace with semantic CLI automation (prebuilt binary)
-	pkgver = 0.4.1
+	pkgver = 0.5.0
 	pkgrel = 1
 	url = https://github.com/fachrihawari/omaterm
 	arch = x86_64
@@ -17,7 +17,7 @@ pkgbase = omaterm-bin
 	optdepends = otf-nerd-fonts: file-tree and git icon glyphs
 	provides = omaterm
 	conflicts = omaterm
-	source = omaterm-0.4.1-x86_64.tar.gz::https://github.com/fachrihawari/omaterm/releases/download/v0.4.1/omaterm-0.4.1-x86_64.tar.gz
+	source = omaterm-0.5.0-x86_64.tar.gz::https://github.com/fachrihawari/omaterm/releases/download/v0.5.0/omaterm-0.5.0-x86_64.tar.gz
 	sha256sums = eedf7cc2dbfe82db7aee85b490a587b9b2e19b6f0d7d439bab75f06124ef65dd
 
 pkgname = omaterm-bin
