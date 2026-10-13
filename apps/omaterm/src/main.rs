@@ -170,6 +170,14 @@ struct WorkspaceView {
     /// Configuration tab. Runtime mutations (theme picker, shell picker)
     /// keep their own view state; S2 re-reads or mutates through setters.
     settings_config: omaterm_state::AppConfig,
+    /// Inline numeric edit in the Configuration tab: which key is being
+    /// typed and the buffer behind it. `None` means no field is focused.
+    settings_edit: Option<SettingsEdit>,
+    /// Caret blink phase for the inline edit (shared ~530ms cadence).
+    settings_caret_on: bool,
+    settings_caret_active: bool,
+    /// Open Settings pop-up (Theme / Font) anchored at the click point.
+    settings_popup: Option<(SettingsPopup, gpui::Point<Pixels>)>,
     /// Admitted update-check operation ids (M21 S3) drained by the
     /// launch poller into `update_last_check` / `update_check_failed`.
     pending_update_checks: HashSet<u64>,
@@ -904,6 +912,22 @@ enum InputOwner {
 enum CompactPanel {
     Projects,
     Inspector,
+}
+
+/// Inline numeric edit in the Settings Configuration tab (M21 UI pass).
+/// The key owns the write target; `input` is the typed buffer, committed
+/// through the same `ConfigCommand::Set` the steppers use.
+struct SettingsEdit {
+    key: &'static str,
+    input: crate::git_input::GitInput,
+}
+
+/// Open Settings pop-up kind (M21 UI pass). Both render as a small
+/// anchored menu of choices; picking one writes through the config bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsPopup {
+    Theme,
+    Font,
 }
 
 impl InputOwner {
@@ -2603,6 +2627,10 @@ impl WorkspaceView {
             settings_open: false,
             settings_section: settings::SettingsSection::About,
             settings_config: app_config.clone(),
+            settings_edit: None,
+            settings_caret_on: true,
+            settings_caret_active: false,
+            settings_popup: None,
             pending_update_checks: HashSet::new(),
             update_last_check: None,
             update_check_failed: None,
@@ -10509,6 +10537,8 @@ impl WorkspaceView {
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_open = false;
+        self.settings_edit = None;
+        self.settings_popup = None;
         self.restore_input_owner();
         cx.notify();
     }
@@ -10526,11 +10556,37 @@ impl WorkspaceView {
     /// is swallowed so typing never reaches the shell behind the overlay.
     fn on_settings_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key_name = event.keystroke.key.to_lowercase().replace('_', "");
-        if key_name == "escape"
-            || (event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.shift
-                && !event.keystroke.modifiers.alt
-                && key_name == ",")
+        // An inline numeric field owns typing while it is open: Enter
+        // commits, Esc cancels, everything else edits the buffer.
+        if self.settings_edit.is_some() {
+            if key_name == "escape" {
+                self.cancel_settings_edit(cx);
+                return;
+            }
+            if matches!(key_name.as_str(), "enter" | "return" | "kpenter") {
+                self.commit_settings_edit(cx);
+                return;
+            }
+            if let Some(edit) = self.settings_edit.as_mut() {
+                let _ = git_input_view::on_key(&mut edit.input, event, cx);
+            }
+            self.settings_caret_on = true;
+            cx.notify();
+            return;
+        }
+        if key_name == "escape" {
+            // Esc closes an open pop-up before it closes the overlay.
+            if self.settings_popup.take().is_some() {
+                cx.notify();
+                return;
+            }
+            self.close_settings(cx);
+            return;
+        }
+        if event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.alt
+            && key_name == ","
         {
             self.close_settings(cx);
             return;
@@ -18815,6 +18871,12 @@ impl WorkspaceView {
                             .child(
                                 crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
                                     .child("Settings"),
+                            )
+                            .child(
+                                crate::ui::primitives::kbd()
+                                    .role(crate::ui::metrics::META_9)
+                                    .text_color(rgb(crate::ui::theme::colors().muted))
+                                    .child("Ctrl+,"),
                             ),
                     ),
             )
@@ -20936,39 +20998,200 @@ impl WorkspaceView {
         self.ctrlp_frame(overlay, box_x, box_w)
     }
 
-    /// One `label · value` row for the read-only About/Configuration tabs.
-    /// Labels are a fixed muted column so values align; S2 replaces the
-    /// Configuration rows with editable controls.
-    fn settings_kv(label: &'static str, value: String) -> Div {
+    // --- Settings overlay chrome primitives (M21 UI pass) -------------
+    //
+    // Modeled on the macOS System Settings vocabulary, adapted to the v5
+    // palette: a section title sits *above* a filled card; the card holds
+    // rows separated by hairlines; each row is a human label with a
+    // single control on the right. GPUI has no transitions, so every
+    // state applies instantly and the selected/active states are
+    // background-only (a border would shift the label by 2px).
+
+    /// A filled group card: `rounded(8)`, `panel2` fill, hairline border,
+    /// rows separated by a 1px divider. Rows are passed already built so
+    /// the card owns only grouping and separation.
+    fn settings_card(rows: Vec<Div>) -> Div {
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .mx_3()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::colors().border))
+            .bg(rgb(crate::ui::theme::colors().panel2))
+            .overflow_hidden();
+        let count = rows.len();
+        for (index, row) in rows.into_iter().enumerate() {
+            if index > 0 {
+                card = card.child(
+                    div()
+                        .h(px(1.0))
+                        .w_full()
+                        .bg(rgb(crate::ui::theme::colors().border)),
+                );
+            }
+            card = card.child(row);
+        }
+        let _ = count;
+        card
+    }
+
+    /// Section title placed above a card, macOS-style: small, muted, no
+    /// hairline (the card edge is the separator).
+    fn settings_group_title(title: &'static str) -> Div {
+        div()
+            .px_3()
+            .pt_3()
+            .pb_1()
+            .role(crate::ui::metrics::META_10)
+            .text_color(rgb(crate::ui::theme::colors().muted))
+            .child(title)
+    }
+
+    /// One row inside a card: title over a muted help line (and the raw
+    /// dotted key, dimmer still), with one control pinned right. The row
+    /// only changes background on hover, so the control never shifts.
+    fn settings_row(key: &str, help: Option<&str>, control: Div) -> Div {
+        let meta = crate::settings::setting_meta(key);
+        let mut text = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden();
+        text = text.child(
+            div()
+                .whitespace_nowrap()
+                .truncate()
+                .role(crate::ui::metrics::BODY_11)
+                .text_color(rgb(crate::ui::theme::colors().text))
+                .child(meta.label),
+        );
+        let help_line = help.unwrap_or(meta.help.as_str());
+        if !help_line.is_empty() {
+            text = text.child(
+                div()
+                    .whitespace_nowrap()
+                    .truncate()
+                    .role(crate::ui::metrics::META_9)
+                    .text_color(rgb(crate::ui::theme::colors().muted))
+                    .child(help_line.to_owned()),
+            );
+        }
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .w_full()
+            .hover(|style| style.bg(rgb(crate::ui::theme::colors().row_hover_bg)))
+            .child(text)
+            .child(div().flex_shrink_0().child(control))
+    }
+
+    /// Read-only `label · value` pair rendered as a right-aligned value
+    /// chip (no card control, so it reads as data not as an action).
+    fn settings_kv(key: &str, value: String) -> Div {
+        Self::settings_row(
+            key,
+            None,
+            div()
+                .role(crate::ui::metrics::META_9)
+                .text_color(rgb(crate::ui::theme::colors().text2))
+                .child(value),
+        )
+    }
+
+    /// Toggle switch: a `rounded_full` track with a knob that sits left
+    /// (off) or right (on). Accent-filled when on. Shape and position
+    /// carry the state, so the light theme only inverts the colors.
+    fn settings_switch(on: bool) -> Div {
+        let colors = crate::ui::theme::colors();
+        let (track_bg, track_border) = if on {
+            (rgb(colors.blue2), colors.blue2)
+        } else {
+            (rgb(colors.pill_bg), colors.pill_border)
+        };
+        let (knob_bg, _) = if on {
+            (rgb(colors.white), colors.blue2)
+        } else {
+            (rgb(colors.muted), colors.pill_border)
+        };
+        div()
+            .w(px(34.0))
+            .h(px(20.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .rounded_full()
+            .border_1()
+            .border_color(rgb(track_border))
+            .bg(track_bg)
+            .px(px(2.0))
+            .when(on, |track| track.justify_end())
+            .when(!on, |track| track.justify_start())
+            .child(div().w(px(14.0)).h(px(14.0)).rounded_full().bg(knob_bg))
+    }
+
+    /// Pop-up menu chip: value plus a downward caret, the macOS
+    /// affordance for "choose from a list".
+    fn settings_popup_chip(text: String) -> Div {
         div()
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
-            .px_3()
-            .py_1()
+            .px(px(8.0))
+            .py(px(3.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::colors().pill_border))
+            .bg(rgb(crate::ui::theme::colors().panel))
+            .role(crate::ui::metrics::BODY_11)
+            .text_color(rgb(crate::ui::theme::colors().text))
+            .hover(|style| style.border_color(rgb(crate::ui::theme::colors().border2)))
+            .child(text)
             .child(
                 div()
-                    .w(px(150.0))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
+                    .role(crate::ui::metrics::META_9)
                     .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(label),
-            )
-            .child(
-                crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
-                    .text_color(rgb(crate::ui::theme::colors().text))
-                    .child(value),
+                    .child("⌄"),
             )
     }
 
-    /// Muted footnote line pinned under a settings section body.
+    /// Square icon-button used for the header close and stepper glyphs.
+    fn settings_button(glyph: &'static str) -> Div {
+        div()
+            .w(px(22.0))
+            .h(px(22.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::colors().pill_border))
+            .bg(rgb(crate::ui::theme::colors().pill_bg))
+            .role(crate::ui::metrics::BODY_11)
+            .text_color(rgb(crate::ui::theme::colors().muted))
+            .hover(|style| {
+                style
+                    .bg(rgb(crate::ui::theme::colors().sidebar_hover_bg))
+                    .border_color(rgb(crate::ui::theme::colors().border2))
+                    .text_color(rgb(crate::ui::theme::colors().text))
+            })
+            .child(glyph)
+    }
+
+    /// Muted footnote pinned under a card.
     fn settings_note(text: String) -> Div {
         div()
             .px_3()
-            .py_2()
+            .pt_1()
+            .pb_2()
+            .role(crate::ui::metrics::META_9)
             .text_color(rgb(crate::ui::theme::colors().muted))
             .child(text)
     }
@@ -21007,6 +21230,98 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Begin an inline numeric edit for `key`, seeding the buffer with the
+    /// current effective value and taking keyboard ownership so the digits
+    /// never reach the shell behind the overlay.
+    fn begin_settings_edit(&mut self, key: &'static str, current: &str, cx: &mut Context<Self>) {
+        let mut input = crate::git_input::GitInput::default();
+        input.insert(current);
+        input.select_all();
+        self.settings_edit = Some(SettingsEdit { key, input });
+        self.settings_popup = None;
+        self.set_input_owner(InputOwner::Settings);
+        self.ensure_settings_caret(cx);
+        cx.notify();
+    }
+
+    /// Commit the inline edit: write the typed text through the shared
+    /// config bus (server-side validation still rejects bad values) and
+    /// drop the field. An empty buffer is treated as cancel.
+    fn commit_settings_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.settings_edit.take() else {
+            return;
+        };
+        let value = edit.input.text().trim().to_owned();
+        if !value.is_empty() {
+            self.settings_set_config(edit.key, value, cx);
+        }
+        self.restore_input_owner();
+        cx.notify();
+    }
+
+    fn cancel_settings_edit(&mut self, cx: &mut Context<Self>) {
+        if self.settings_edit.take().is_some() {
+            self.restore_input_owner();
+            cx.notify();
+        }
+    }
+
+    /// Blink cadence for the inline edit caret, matching the commit field.
+    fn ensure_settings_caret(&mut self, cx: &mut Context<Self>) {
+        if self.settings_caret_active {
+            return;
+        }
+        self.settings_caret_active = true;
+        cx.spawn(async move |weak: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                Timer::after(Duration::from_millis(530)).await;
+                let continuing = weak
+                    .update(cx, |view, cx| {
+                        if view.settings_edit.is_none() || view.shutting_down {
+                            view.settings_caret_active = false;
+                            return false;
+                        }
+                        view.settings_caret_on = !view.settings_caret_on;
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !continuing {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Open a Settings pop-up anchored at the click point.
+    fn open_settings_popup(
+        &mut self,
+        popup: SettingsPopup,
+        anchor: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_popup = Some((popup, anchor));
+        cx.notify();
+    }
+
+    /// Apply one pop-up choice through the config bus, then close it.
+    fn choose_settings_popup(&mut self, key: &'static str, value: String, cx: &mut Context<Self>) {
+        self.settings_popup = None;
+        if key == "appearance.theme" {
+            let preference = match value.as_str() {
+                "dark" => crate::ui::theme::ThemePreference::Dark,
+                "light" => crate::ui::theme::ThemePreference::Light,
+                _ => crate::ui::theme::ThemePreference::System,
+            };
+            self.set_theme_preference(preference, cx);
+            self.refresh_settings_config();
+            cx.notify();
+            return;
+        }
+        self.settings_set_config(key, value, cx);
+    }
+
     /// Re-read the canonical config into the Settings snapshot after a
     /// successful write. Falls back to keeping the last snapshot when
     /// the file cannot be read (the write itself already succeeded).
@@ -21042,162 +21357,167 @@ impl WorkspaceView {
         }
     }
 
-    /// Theme row: click cycles system → dark → light. Routes through the
-    /// existing preference path (which persists), not `config.set`, so
-    /// the live repaint and the write-back stay in one place.
+    /// Theme row: a pop-up chip. The popover (System / Dark / Light) is
+    /// rendered by `render_settings_popup`; this only shows the current
+    /// value and opens it.
     fn settings_theme_row(&mut self, cx: &mut Context<Self>) -> Div {
         let current = self.settings_config.theme().to_owned();
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
-            .child(
-                div()
-                    .w(px(150.0))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child("appearance.theme"),
-            )
-            .child(
-                div()
-                    .text_color(rgb(crate::ui::theme::colors().text))
-                    .hover(|style| style.text_color(gpui::rgb(crate::ui::theme::colors().text)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            cx.stop_propagation();
-                            let next = match view.settings_config.theme() {
-                                "system" => crate::ui::theme::ThemePreference::Dark,
-                                "dark" => crate::ui::theme::ThemePreference::Light,
-                                _ => crate::ui::theme::ThemePreference::System,
-                            };
-                            view.set_theme_preference(next, cx);
-                            view.refresh_settings_config();
-                            cx.notify();
-                        }),
-                    )
-                    .child(format!("{current} (click to cycle)")),
-            )
+        let label = crate::settings::THEME_CHOICES
+            .iter()
+            .find(|(value, _)| *value == current)
+            .map(|(_, label)| (*label).to_owned())
+            .unwrap_or_else(|| current.clone());
+        Self::settings_row(
+            "appearance.theme",
+            None,
+            div()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        view.open_settings_popup(SettingsPopup::Theme, event.position, cx);
+                    }),
+                )
+                .child(Self::settings_popup_chip(label)),
+        )
     }
 
-    /// Boolean row: click flips the value through `config.set`.
+    /// Boolean row: a real toggle switch; click anywhere on the row.
     fn settings_toggle_row(
         &mut self,
         key: &'static str,
         current: bool,
         cx: &mut Context<Self>,
     ) -> Div {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
-            .child(
-                div()
-                    .w(px(150.0))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(key),
-            )
-            .child(
-                div()
-                    .text_color(rgb(crate::ui::theme::colors().text))
-                    .hover(|style| style.text_color(gpui::rgb(crate::ui::theme::colors().text)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
-                            cx.stop_propagation();
-                            view.settings_set_config(key, (!current).to_string(), cx);
-                        }),
-                    )
-                    .child(format!("{current} (click to flip)")),
-            )
+        Self::settings_row(
+            key,
+            None,
+            div()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
+                        view.settings_set_config(key, (!current).to_string(), cx);
+                    }),
+                )
+                .child(Self::settings_switch(current)),
+        )
     }
 
-    /// Scalar row with bounded steppers: `−`/`+` step through
-    /// per-key increments (font 0.5, results/refresh/scrollback integers).
-    /// Steps that would leave the valid range are rejected server-side
-    /// with an error toast and the value stays put (never clamped).
+    /// Scalar row: one segmented control `[− value +]`. The value is
+    /// click-to-edit (an inline `GitInput` field); a step that would leave
+    /// the valid range renders a dead button instead of clamping.
     fn settings_stepper_row(
         &mut self,
         key: &'static str,
         current: &str,
         cx: &mut Context<Self>,
     ) -> Div {
-        let label = current.to_owned();
         let step_down = settings::step_config_value(key, current, -1);
         let step_up = settings::step_config_value(key, current, 1);
-        let stepper = |text: &'static str, next: Option<String>| {
+        let editing = self
+            .settings_edit
+            .as_ref()
+            .is_some_and(|edit| edit.key == key);
+        let seed = current.to_owned();
+        let stepper = |glyph: &'static str, next: Option<String>| {
+            let button = Self::settings_button(glyph);
+            match next {
+                Some(value) => button.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
+                        view.settings_set_config(key, value.clone(), cx);
+                    }),
+                ),
+                None => button,
+            }
+        };
+        // Value cell: an inline editable field while focused, otherwise a
+        // click target that starts editing.
+        let value: Div = if editing {
+            let field = self
+                .settings_edit
+                .as_ref()
+                .map(|edit| {
+                    git_input_view::render(git_input_view::FieldView {
+                        input: Some(&edit.input),
+                        placeholder: "",
+                        focused: true,
+                        caret_visible: self.settings_caret_on,
+                    })
+                })
+                .unwrap_or_else(|| div());
             div()
-                .px_2()
-                .text_color(rgb(crate::ui::theme::colors().muted))
-                .hover(|style| style.text_color(gpui::rgb(crate::ui::theme::colors().text)))
+                .min_w(px(58.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(4.0))
+                .bg(rgb(crate::ui::theme::colors().panel))
+                .role(crate::ui::metrics::BODY_11)
+                .text_color(rgb(crate::ui::theme::colors().text))
+                .child(field)
+        } else {
+            div()
+                .min_w(px(58.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(px(4.0))
+                .role(crate::ui::metrics::BODY_11)
+                .text_color(rgb(crate::ui::theme::colors().text))
+                .hover(|style| style.bg(rgb(crate::ui::theme::colors().panel)))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, _, _, cx| {
                         cx.stop_propagation();
-                        if let Some(value) = next.clone() {
-                            view.settings_set_config(key, value, cx);
-                        }
+                        view.begin_settings_edit(key, &seed, cx);
                     }),
                 )
-                .child(text)
+                .child(current.to_owned())
         };
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
-            .child(
-                div()
-                    .w(px(150.0))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .truncate()
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child(key),
-            )
-            .child(stepper("−", step_down))
-            .child(
-                crate::ui::metrics::text_role(div(), crate::ui::metrics::BODY_11)
-                    .text_color(rgb(crate::ui::theme::colors().text))
-                    .child(label),
-            )
-            .child(stepper("+", step_up))
+        Self::settings_row(
+            key,
+            None,
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px(px(3.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(rgb(crate::ui::theme::colors().pill_border))
+                .bg(rgb(crate::ui::theme::colors().pill_bg))
+                .child(stepper("−", step_down))
+                .child(value)
+                .child(stepper("+", step_up)),
+        )
     }
 
-    /// Update tab (M21 S3a): installed version, channel, and the last
-    /// check outcome rendered from `info.state` (a stable code, never
-    /// prose parsed for status). `Check now` dispatches exactly what the
-    /// startup check and `omaterm update check` dispatch — one command
-    /// path for all three entry points. S3b adds the apply control.
+    /// Update tab (M21 S3a/S3b): channel facts plus the two actions, each
+    /// dispatching the same command the CLI and startup check dispatch.
     fn settings_update_tab(&mut self, cx: &mut Context<Self>) -> Div {
         let installed = env!("CARGO_PKG_VERSION").to_owned();
         let in_flight = !self.pending_update_checks.is_empty();
+        let applying = !self.pending_update_applies.is_empty();
         let status = match &self.update_check_failed {
             Some(error) => format!("check failed: {error}"),
             None => match &self.update_last_check {
-                None if in_flight => "Checking… (bounded, no writes)".into(),
+                None if in_flight => "Checking the stable channel…".into(),
                 None => "Not checked yet in this session.".into(),
                 Some(info) => match info.state.as_str() {
-                    "update_available" => format!(
-                        "Update available: {}",
-                        info.latest.as_deref().unwrap_or("unknown")
-                    ),
+                    "update_available" => {
+                        format!("{} available", info.latest.as_deref().unwrap_or("unknown"))
+                    }
                     "up_to_date" => "Up to date.".into(),
                     "offline" => "Offline — no channel contact.".into(),
                     "rate_limited" => "Rate limited — try again later.".into(),
@@ -21205,87 +21525,66 @@ impl WorkspaceView {
                 },
             },
         };
-        let applying = !self.pending_update_applies.is_empty();
         let apply_line = match &self.update_apply_last {
-            None if applying => "Applying… (bounded; nothing replaced before verify).".to_string(),
+            None if applying => "Downloading and verifying…".to_string(),
             None => "No update applied in this session.".to_string(),
-            Some(info) if info.state == "completed" => {
-                "Update installed. Restart to apply.".to_string()
-            }
+            Some(info) if info.state == "completed" => "Installed — restart to apply.".to_string(),
             Some(info) => match info.code.as_deref() {
                 Some("managed_by_package_manager") => update::managed_install_guidance().into(),
                 Some("checksum_mismatch") => "Refused: checksum mismatch.".into(),
                 Some("permission_denied") => "Refused: the install prefix needs elevation.".into(),
-                Some(code) => format!("Stopped at {} ({}).", info.stage, code),
-                None => format!("Applying… stage {}.", info.stage),
+                Some("download_too_large") => "Refused: artifact exceeds the size cap.".into(),
+                Some("offline") => "Stopped: no channel contact.".into(),
+                Some(code) => format!("Stopped at {stage} ({code}).", stage = info.stage),
+                None => format!("Working — stage {}.", info.stage),
             },
+        };
+        let check_control = if in_flight {
+            Self::settings_popup_chip("Checking…".into())
+        } else {
+            div()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, _, cx| {
+                        cx.stop_propagation();
+                        let _ = view.dispatch_command(
+                            OmaCommand::App(omaterm_core::AppCommand::UpdateCheck),
+                            cx,
+                        );
+                    }),
+                )
+                .child(Self::settings_popup_chip("Check now".into()))
+        };
+        let apply_control = if applying {
+            Self::settings_popup_chip("Working…".into())
+        } else {
+            div()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.prompt_update_apply(window, cx);
+                    }),
+                )
+                .child(Self::settings_popup_chip("Update now".into()))
         };
         div()
             .flex()
             .flex_col()
-            .child(Self::settings_kv("Installed", installed))
-            .child(Self::settings_kv("Channel", update::CHANNEL.into()))
-            .child(Self::settings_kv("Status", status))
-            .child(Self::settings_kv(
-                "Startup check",
-                self.settings_config.check_on_startup().to_string(),
-            ))
-            .child(Self::settings_kv("Apply", apply_line))
-            .child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(if in_flight {
-                        div()
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .child("Checking…")
-                    } else {
-                        div()
-                            .text_color(rgb(crate::ui::theme::colors().text))
-                            .hover(|style| {
-                                style.text_color(gpui::rgb(crate::ui::theme::colors().text))
-                            })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let _ = view.dispatch_command(
-                                        OmaCommand::App(omaterm_core::AppCommand::UpdateCheck),
-                                        cx,
-                                    );
-                                }),
-                            )
-                            .child("Check now")
-                    })
-                    .child(if applying {
-                        div()
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .child("Updating…")
-                    } else {
-                        div()
-                            .text_color(rgb(crate::ui::theme::colors().text))
-                            .hover(|style| {
-                                style.text_color(gpui::rgb(crate::ui::theme::colors().text))
-                            })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
-                                    cx.stop_propagation();
-                                    // One confirm for a destructive,
-                                    // irreversible binary swap, reusing the
-                                    // GPUI prompt like git discard.
-                                    view.prompt_update_apply(window, cx);
-                                }),
-                            )
-                            .child("Update now")
-                    }),
-            )
+            .child(Self::settings_group_title("CHANNEL"))
+            .child(Self::settings_card(vec![
+                Self::settings_kv("Installed", installed),
+                Self::settings_kv("Channel", update::CHANNEL.into()),
+                Self::settings_kv("Last check", status),
+                Self::settings_kv("Last apply", apply_line),
+            ]))
+            .child(Self::settings_group_title("ACTIONS"))
+            .child(Self::settings_card(vec![
+                Self::settings_row("Check for updates", None, check_control),
+                Self::settings_row("Update to the newest release", None, apply_control),
+            ]))
             .child(Self::settings_note(
-                "Update now downloads the signed-by-checksum tarball, verifies sha256, then replaces both binaries atomically (elevation via pkexec when the prefix needs it). Arch/AUR installs are refused with pacman guidance."
+                "Update now downloads the published tarball, verifies its sha256 sidecar, then replaces both binaries atomically — elevating a single rename through pkexec when the install prefix needs it. Arch/AUR installs are refused with pacman guidance."
                     .into(),
             ))
     }
@@ -21319,48 +21618,404 @@ impl WorkspaceView {
         .detach();
     }
 
-    /// Settings overlay (M21 S1): 640px floating panel with a clickable
-    /// section nav (About/Update/Configuration/License) and read-only
-    /// content. Same floating frame as the cheatsheet; `Esc`/`Ctrl+,`
-    /// closes and `1..4` switches section (see `on_settings_key`). S2
-    /// makes Configuration editable, S3 wires the Update checks.
+    /// Body of the selected Settings section (M21 UI pass). Kept apart
+    /// from the chrome so the nav rail and header never churn when a tab
+    /// changes. Returns a column of groups: uppercase header, hairline,
+    /// then rows — the same grammar as the inspector panels.
+    fn settings_section_body(
+        &mut self,
+        section: settings::SettingsSection,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let mut body = div().flex().flex_col().pb_2();
+        match section {
+            settings::SettingsSection::About => {
+                let config_path = omaterm_state::default_config_toml_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "(no config directory)".into());
+                let version = env!("CARGO_PKG_VERSION").to_string();
+                let version_line = format!(
+                    "omaterm {version} (IPC wire v{}, {}/{})",
+                    omaterm_protocol::PROTOCOL_VERSION,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
+                let copy_line = version_line.clone();
+                body = body
+                    .child(Self::settings_group_title("APPLICATION"))
+                    .child(Self::settings_card(vec![
+                        Self::settings_kv("Version", version),
+                        Self::settings_kv(
+                            "IPC wire",
+                            format!("v{}", omaterm_protocol::PROTOCOL_VERSION),
+                        ),
+                        Self::settings_kv(
+                            "Platform",
+                            format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+                        ),
+                        Self::settings_kv("Channel", update::CHANNEL.into()),
+                    ]))
+                    .child(Self::settings_group_title("PATHS"))
+                    .child(Self::settings_card(vec![Self::settings_kv(
+                        "Config file",
+                        config_path,
+                    )]))
+                    .child(Self::settings_group_title("LICENSE"))
+                    .child(Self::settings_card(vec![
+                        Self::settings_kv("Grant", "MIT OR Apache-2.0".into()),
+                        Self::settings_row(
+                            "Copy version line",
+                            None,
+                            div()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_line.clone(),
+                                        ));
+                                        view.push_toast(
+                                            "Version line copied.".into(),
+                                            ToastKind::Success,
+                                            cx,
+                                        );
+                                    }),
+                                )
+                                .child(Self::settings_popup_chip("Copy".into())),
+                        ),
+                    ]));
+            }
+            settings::SettingsSection::Update => {
+                body = body.child(self.settings_update_tab(cx));
+            }
+            settings::SettingsSection::Configuration => {
+                body = body.child(self.settings_configuration_tab(cx));
+            }
+            settings::SettingsSection::License => {
+                for (heading, text) in [
+                    ("MIT", settings::LICENSE_MIT_TEXT),
+                    ("APACHE-2.0", settings::LICENSE_APACHE_TEXT),
+                ] {
+                    body = body.child(Self::settings_group_title(heading));
+                    let mut card = div()
+                        .flex()
+                        .flex_col()
+                        .mx_3()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(rgb(crate::ui::theme::colors().border))
+                        .bg(rgb(crate::ui::theme::colors().panel2))
+                        .p_3()
+                        .gap_2();
+                    // Blank-line-separated paragraphs keep the license's
+                    // own structure; the pane scrolls instead of trying to
+                    // fit ~200 lines on screen.
+                    for paragraph in text.split("\n\n") {
+                        if paragraph.trim().is_empty() {
+                            continue;
+                        }
+                        card = card.child(
+                            div()
+                                .role(crate::ui::metrics::META_9)
+                                .text_color(rgb(crate::ui::theme::colors().text2))
+                                .child(paragraph.trim_end().to_owned()),
+                        );
+                    }
+                    body = body.child(card);
+                }
+            }
+        }
+        body
+    }
+
+    /// Anchored pop-up for Theme and Font choices. Reuses the context-menu
+    /// geometry (`panel2`, `border2`, clamped to the window) so it reads
+    /// as the same layer as the project/terminal menus.
+    fn render_settings_popup(
+        &self,
+        viewport: gpui::Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement;
+        let Some((popup, anchor)) = self.settings_popup else {
+            return div().into_any_element();
+        };
+        let choices: Vec<(String, String)> = match popup {
+            SettingsPopup::Theme => crate::settings::THEME_CHOICES
+                .iter()
+                .map(|(value, label)| ((*value).to_owned(), (*label).to_owned()))
+                .collect(),
+            SettingsPopup::Font => self
+                .settings_font_choices(cx)
+                .into_iter()
+                .map(|name| (name.clone(), name))
+                .collect(),
+        };
+        let key = match popup {
+            SettingsPopup::Theme => "appearance.theme",
+            SettingsPopup::Font => "terminal.font-family",
+        };
+        const ROW_H: f32 = 28.0;
+        const MENU_W: f32 = 200.0;
+        let menu_h = (choices.len() as f32 * ROW_H + 8.0).min(320.0);
+        let viewport_w: f32 = viewport.width.into();
+        let viewport_h: f32 = viewport.height.into();
+        let (left, top) = clamp_menu_anchor(
+            anchor.x.into(),
+            anchor.y.into(),
+            viewport_w,
+            viewport_h,
+            MENU_W,
+            menu_h,
+        );
+        let mut menu = div()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(MENU_W))
+            .max_h(px(menu_h))
+            .id("settings-popup")
+            .overflow_y_scroll()
+            .p(px(4.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(crate::ui::theme::colors().border2))
+            .bg(rgb(crate::ui::theme::colors().panel2))
+            .text_color(rgb(crate::ui::theme::colors().text2));
+        for (value, label) in choices {
+            let chosen = value.clone();
+            menu = menu.child(
+                div()
+                    .h(px(ROW_H))
+                    .flex()
+                    .items_center()
+                    .px(px(8.0))
+                    .rounded(px(4.0))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .hover(|s| s.bg(rgb(crate::ui::theme::colors().row_hover_bg)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            view.choose_settings_popup(key, chosen.clone(), cx);
+                        }),
+                    )
+                    .child(label),
+            );
+        }
+        menu.into_any_element()
+    }
+
+    /// Monospace families offered in the Font pop-up, with the current
+    /// family first so the list is not a needle in a haystack.
+    fn settings_font_choices(&self, cx: &Context<Self>) -> Vec<String> {
+        let installed = cx.text_system().all_font_names();
+        let configured = self.settings_config.terminal.font_family.clone();
+        let mut choices: Vec<String> = Vec::new();
+        if let Some(current) = configured.as_ref()
+            && installed.iter().any(|name| name == current)
+        {
+            choices.push(current.clone());
+        }
+        for preferred in MONO_PREFERENCES {
+            if let Some(name) = installed.iter().find(|name| name.as_str() == *preferred)
+                && !choices.contains(name)
+            {
+                choices.push(name.clone());
+            }
+        }
+        for name in installed {
+            if !choices.contains(&name) && looks_monospace(&name) {
+                choices.push(name);
+            }
+        }
+        choices.truncate(40);
+        choices
+    }
+
+    /// Configuration tab: one card per `config.toml` section, macOS-style.
+    /// Each control dispatches through the shared command bus, so a click
+    /// is byte-identical to `omaterm config set`.
+    fn settings_configuration_tab(&mut self, cx: &mut Context<Self>) -> Div {
+        let history = self
+            .history_status_text()
+            .unwrap_or_else(|| "history: unavailable".into());
+        let font_family = self
+            .settings_config
+            .terminal
+            .font_family
+            .clone()
+            .unwrap_or_else(|| "system default".into());
+        let scrollback = self
+            .settings_config
+            .resolved_scrollback_lines()
+            .map(|lines| lines.to_string())
+            .unwrap_or_else(|| "engine default".into());
+        let mut body = div().flex().flex_col().pb_2();
+
+        body = body
+            .child(Self::settings_group_title("APPEARANCE"))
+            .child(Self::settings_card(vec![
+                self.settings_theme_row(cx),
+                self.settings_toggle_row(
+                    "appearance.translucent-sidebar",
+                    self.settings_config.translucent_sidebar(),
+                    cx,
+                ),
+            ]))
+            .child(Self::settings_group_title("TERMINAL"))
+            .child(Self::settings_card(vec![
+                self.settings_font_row(font_family, cx),
+                self.settings_stepper_row(
+                    "terminal.font-size",
+                    &format!("{:.1}", self.settings_config.resolved_font_size()),
+                    cx,
+                ),
+                self.settings_stepper_row("terminal.scrollback-lines", &scrollback, cx),
+            ]))
+            .child(Self::settings_group_title("FILES"))
+            .child(Self::settings_card(vec![
+                self.settings_toggle_row(
+                    "files.show-hidden",
+                    self.settings_config.show_hidden(),
+                    cx,
+                ),
+                self.settings_stepper_row(
+                    "files.max-results",
+                    &self.settings_config.resolved_max_results().to_string(),
+                    cx,
+                ),
+            ]))
+            .child(Self::settings_group_title("GIT"))
+            .child(Self::settings_card(vec![self.settings_stepper_row(
+                "git.refresh-secs",
+                &self.settings_config.resolved_git_refresh_secs().to_string(),
+                cx,
+            )]))
+            .child(Self::settings_group_title("HISTORY"))
+            .child(Self::settings_card(vec![Self::settings_kv("history.capture", history)]))
+            .child(Self::settings_note(
+                "Encrypted history stays opt-in through the two-step Ctrl+Shift+O arm; disabling deletes the archives."
+                    .into(),
+            ))
+            .child(Self::settings_group_title("AUTOMATION"))
+            .child(Self::settings_card(vec![
+                self.settings_toggle_row(
+                    "automation.enabled",
+                    self.settings_config.automation_enabled(),
+                    cx,
+                ),
+                self.settings_toggle_row(
+                    "updates.check-on-startup",
+                    self.settings_config.check_on_startup(),
+                    cx,
+                ),
+            ]))
+            .child(Self::settings_note(
+                "Automation is recorded in config.toml; the local socket stays on in v0.1. Check on launch resolves the stable channel once per start."
+                    .into(),
+            ));
+        body
+    }
+
+    /// Font row: a pop-up chip listing installed monospace families.
+    fn settings_font_row(&mut self, current: String, cx: &mut Context<Self>) -> Div {
+        Self::settings_row(
+            "terminal.font-family",
+            None,
+            div()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        view.open_settings_popup(SettingsPopup::Font, event.position, cx);
+                    }),
+                )
+                .child(Self::settings_popup_chip(current)),
+        )
+    }
+
     fn render_settings(
         &mut self,
         box_x: f32,
         box_w: f32,
-        _list_height: f32,
+        list_height: f32,
         cx: &mut Context<Self>,
     ) -> Div {
         let active = self.settings_section;
-        let mut nav = div()
+        let colors = crate::ui::theme::colors();
+
+        // Header: gear + wordmark on the left, an explicit close button on
+        // the right. The button is a real bordered box (not bare `x`) so
+        // the escape hatch is discoverable without reading the footer.
+        let header = div()
+            .h(px(40.0))
+            .flex_shrink_0()
             .flex()
             .flex_row()
             .items_center()
-            .px_2()
+            .gap_2()
+            .px_3()
+            .child(crate::ui::primitives::cmd_icon(
+                crate::ui::assets::SETTINGS,
+                14.0,
+                colors.muted,
+            ))
+            .child(
+                div()
+                    .role(crate::ui::metrics::HEADING_10)
+                    .text_color(rgb(colors.text))
+                    .child("Settings"),
+            )
+            .child(
+                div()
+                    .role(crate::ui::metrics::META_9)
+                    .text_color(rgb(colors.muted))
+                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+            )
+            .child(div().flex_1())
+            .child(Self::settings_button("✕").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.close_settings(cx);
+                }),
+            ));
+
+        // Left nav rail: one row per section, index digit on the right.
+        // Selected is background-only so the label never shifts.
+        let mut nav = div()
+            .w(px(134.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
             .py_2()
-            .gap(px(2.0));
+            .px_2();
         for section in settings::SettingsSection::ALL {
             let selected = section == active;
             nav = nav.child(
                 div()
-                    .flex_1()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_center()
-                    .h(px(28.0))
+                    .gap_2()
+                    .h(px(32.0))
+                    .px(px(8.0))
                     .rounded(px(6.0))
                     .bg(rgb(if selected {
-                        crate::ui::theme::colors().tree_selected_bg
+                        colors.tree_selected_bg
                     } else {
-                        crate::ui::theme::colors().panel
+                        colors.panel
                     }))
-                    .text_color(rgb(if selected {
-                        crate::ui::theme::colors().text
-                    } else {
-                        crate::ui::theme::colors().muted
-                    }))
-                    .hover(|style| style.text_color(gpui::rgb(crate::ui::theme::colors().text)))
+                    .hover(|style| {
+                        if selected {
+                            style
+                        } else {
+                            style.bg(rgb(colors.sidebar_hover_bg))
+                        }
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
@@ -21369,220 +22024,68 @@ impl WorkspaceView {
                             cx.notify();
                         }),
                     )
-                    .child(format!("{} {}", section.index() + 1, section.label())),
-            );
-        }
-
-        let config_path = omaterm_state::default_config_toml_path()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "(no config directory)".into());
-        let body: Div = match active {
-            settings::SettingsSection::About => {
-                let version = env!("CARGO_PKG_VERSION").to_string();
-                let version_line = format!(
-                    "omaterm {} (IPC wire v{}, {}/{})",
-                    version,
-                    omaterm_protocol::PROTOCOL_VERSION,
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                );
-                let copy_line = version_line.clone();
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(Self::settings_kv("Version", version))
-                    .child(Self::settings_kv(
-                        "IPC wire",
-                        format!("v{}", omaterm_protocol::PROTOCOL_VERSION),
-                    ))
-                    .child(Self::settings_kv(
-                        "Platform",
-                        format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
-                    ))
-                    .child(Self::settings_kv("Config", config_path))
-                    .child(Self::settings_kv(
-                        "License",
-                        "MIT OR Apache-2.0 (see LICENSE tab)".into(),
+                    .child(crate::ui::assets::icon(
+                        section.icon(),
+                        14.0,
+                        if selected { colors.text } else { colors.muted },
                     ))
                     .child(
                         div()
-                            .px_3()
-                            .py_1()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_color(rgb(crate::ui::theme::colors().muted))
-                                    .hover(|style| {
-                                        style.text_color(gpui::rgb(crate::ui::theme::colors().text))
-                                    })
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |view, _, _, cx| {
-                                            cx.stop_propagation();
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                copy_line.clone(),
-                                            ));
-                                            view.push_toast(
-                                                "Version copied.".into(),
-                                                ToastKind::Success,
-                                                cx,
-                                            );
-                                        }),
-                                    )
-                                    .child("Copy version line"),
-                            ),
-                    )
-            }
-            settings::SettingsSection::Update => self.settings_update_tab(cx),
-            settings::SettingsSection::Configuration => {
-                let history = self
-                    .history_status_text()
-                    .unwrap_or_else(|| "history: unavailable".into());
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(self.settings_theme_row(cx))
-                    .child(self.settings_toggle_row(
-                        "appearance.translucent-sidebar",
-                        self.settings_config.translucent_sidebar(),
-                        cx,
-                    ))
-                    .child(Self::settings_kv("history", history))
-                    .child(Self::settings_kv(
-                        "terminal.font-family",
-                        self.settings_config
-                            .terminal
-                            .font_family
-                            .clone()
-                            .unwrap_or_else(|| "(system default)".into()),
-                    ))
-                    .child(self.settings_stepper_row(
-                        "terminal.font-size",
-                        &format!("{:.1}", self.settings_config.resolved_font_size()),
-                        cx,
-                    ))
-                    .child(self.settings_stepper_row(
-                        "terminal.scrollback-lines",
-                        &self
-                            .settings_config
-                            .resolved_scrollback_lines()
-                            .map(|lines| lines.to_string())
-                            .unwrap_or_else(|| "engine default".into()),
-                        cx,
-                    ))
-                    .child(self.settings_stepper_row(
-                        "files.max-results",
-                        &self.settings_config.resolved_max_results().to_string(),
-                        cx,
-                    ))
-                    .child(self.settings_toggle_row(
-                        "files.show-hidden",
-                        self.settings_config.show_hidden(),
-                        cx,
-                    ))
-                    .child(self.settings_stepper_row(
-                        "git.refresh-secs",
-                        &self.settings_config.resolved_git_refresh_secs().to_string(),
-                        cx,
-                    ))
-                    .child(self.settings_toggle_row(
-                        "automation.enabled",
-                        self.settings_config.automation_enabled(),
-                        cx,
-                    ))
-                    .child(self.settings_toggle_row(
-                        "updates.check-on-startup",
-                        self.settings_config.check_on_startup(),
-                        cx,
-                    ))
-                    .child(Self::settings_note(
-                        "Click a value to cycle it; −/+ step numbers. Changes persist to config.toml immediately."
-                            .into(),
-                    ))
-            }
-            settings::SettingsSection::License => {
-                let mut license = div().flex().flex_col();
-                for (heading, text) in [
-                    ("LICENSE-MIT", settings::LICENSE_MIT_TEXT),
-                    ("LICENSE-APACHE", settings::LICENSE_APACHE_TEXT),
-                ] {
-                    license = license.child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .text_color(rgb(crate::ui::theme::colors().text))
-                            .child(heading),
-                    );
-                    for paragraph in text.split("\n\n") {
-                        if paragraph.trim().is_empty() {
-                            continue;
-                        }
-                        license = license.child(
-                            div()
-                                .px_3()
-                                .pb_2()
-                                .text_color(rgb(crate::ui::theme::colors().text2))
-                                .child(paragraph.to_string()),
-                        );
-                    }
-                }
-                license
-            }
-        };
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .role(crate::ui::metrics::BODY_11)
+                            .text_color(rgb(if selected { colors.text } else { colors.text2 }))
+                            .child(section.label()),
+                    ),
+            );
+        }
+
+        let body_height = list_height.clamp(240.0, 420.0);
+        let content = div()
+            .flex_1()
+            .min_w(px(0.0))
+            .flex()
+            .flex_col()
+            .id("settings-body")
+            .overflow_y_scroll()
+            .max_h(px(body_height))
+            .child(self.settings_section_body(active, cx));
+
+        let body = div()
+            .flex()
+            .flex_row()
+            .min_h(px(0.0))
+            .flex_shrink_0()
+            .child(nav)
+            .child(div().w(px(1.0)).flex_shrink_0().bg(rgb(colors.border)))
+            .child(content);
+
+        let footer = div()
+            .h(px(24.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_3()
+            .role(crate::ui::metrics::META_9)
+            .text_color(rgb(colors.muted))
+            .child("1–4 switch section · esc or ctrl+, close");
 
         let overlay = div()
             .flex()
             .flex_col()
             .rounded(px(8.0))
             .border_1()
-            .border_color(rgb(crate::ui::theme::colors().border2))
+            .border_color(rgb(colors.border2))
             .shadow_lg()
-            .bg(rgb(crate::ui::theme::colors().panel))
-            .text_color(rgb(crate::ui::theme::colors().text))
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_color(rgb(crate::ui::theme::colors().muted))
-                            .child("Settings"),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(1.0))
-                    .w_full()
-                    .bg(rgb(crate::ui::theme::colors().border)),
-            )
-            .child(nav)
-            .child(
-                div()
-                    .h(px(1.0))
-                    .w_full()
-                    .bg(rgb(crate::ui::theme::colors().border)),
-            )
-            .child(
-                div()
-                    .id("settings-body")
-                    .overflow_y_scroll()
-                    .max_h(px(480.0))
-                    .child(body),
-            )
-            .child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_color(rgb(crate::ui::theme::colors().muted))
-                    .child("1–4 switch section · esc / ctrl+, close"),
-            );
+            .bg(rgb(colors.panel))
+            .text_color(rgb(colors.text))
+            .child(header)
+            .child(div().h(px(1.0)).w_full().bg(rgb(colors.border)))
+            .child(body)
+            .child(div().h(px(1.0)).w_full().bg(rgb(colors.border)))
+            .child(footer);
         self.ctrlp_frame(overlay, box_x, box_w)
     }
 
@@ -22276,7 +22779,7 @@ impl Render for WorkspaceView {
             ));
         }
         if self.settings_open {
-            let width = (viewport_w - 32.0).clamp(200.0, 640.0).min(viewport_w);
+            let width = (viewport_w - 32.0).clamp(200.0, 720.0).min(viewport_w);
             floating_overlays.push(self.render_settings(
                 (viewport_w - width) / 2.0,
                 width,
@@ -22352,6 +22855,11 @@ impl Render for WorkspaceView {
                 if event.button == MouseButton::Left && view.close_transient_menus() {
                     cx.notify();
                 }
+                // Settings pop-ups dismiss on any click outside their rows
+                // (rows stop propagation), same as the context menus.
+                if view.settings_popup.take().is_some() {
+                    cx.notify();
+                }
                 if !view.wheel_motions.is_empty() {
                     view.wheel_motions.clear();
                     view.terminal_pixel_offsets.clear();
@@ -22422,6 +22930,7 @@ impl Render for WorkspaceView {
             // Window-level overlays: paint above every panel (including
             // later sibling project cards) and never clip in scroll lists.
             .child(self.render_project_menu_overlay(viewport, cx))
+            .child(self.render_settings_popup(viewport, cx))
             .child(self.render_terminal_menu_overlay(viewport, cx))
             // Toast stack: bottom-right, newest nearest the corner,
             // pointer-transparent (no handlers). Window-level so
@@ -22824,6 +23333,17 @@ const MONO_PREFERENCES: &[&str] = &[
     "Courier New",
     "monospace",
 ];
+
+/// Cheap heuristic for the Font pop-up: keep names that read as monospace
+/// so the list stays useful instead of dumping every installed family.
+fn looks_monospace(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    [
+        "mono", "code", "consol", "courier", "term", "fixed", "iosevka", "hack",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
 
 /// Glyph fallback chain for symbols the primary font lacks.
 fn symbol_fallbacks() -> FontFallbacks {

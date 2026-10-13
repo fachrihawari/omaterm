@@ -38,7 +38,21 @@ impl SettingsSection {
         }
     }
 
-    /// Position in [`SettingsSection::ALL`], for the `1..4` keyboard nav.
+    /// Lucide asset slot for the nav rail. Kept as a `&'static str` (the
+    /// vendored asset name) so this module stays GPUI-free.
+    pub fn icon(self) -> &'static str {
+        match self {
+            SettingsSection::About => "info",
+            SettingsSection::Update => "refresh-cw",
+            SettingsSection::Configuration => "settings-2",
+            SettingsSection::License => "book",
+        }
+    }
+
+    /// Position in [`SettingsSection::ALL`]. The nav rail shows icons, not
+    /// digits, so this is the test-visible order contract that
+    /// [`SettingsSection::from_index`] (the `1..4` keyboard nav) mirrors.
+    #[cfg(test)]
     pub fn index(self) -> usize {
         match self {
             SettingsSection::About => 0,
@@ -63,6 +77,60 @@ pub const LICENSE_MIT_TEXT: &str = include_str!("../../../LICENSE-MIT");
 /// Full Apache-2.0 license text, same embedding contract as
 /// [`LICENSE_MIT_TEXT`].
 pub const LICENSE_APACHE_TEXT: &str = include_str!("../../../LICENSE-APACHE");
+
+/// Human-facing label and one-line description for a config row. The raw
+/// dotted key stays visible (muted, under the label) so a power user can
+/// map the control to `config.toml`, but the primary text is prose —
+/// `terminal.scrollback-lines` reads as "Scrollback", not as a key.
+pub struct SettingMeta {
+    /// Row title (`Font size`).
+    pub label: String,
+    /// One-line explanation; empty when the label is self-evident.
+    pub help: String,
+}
+
+/// Look up the human label for a dotted config key. Unknown keys fall
+/// back to the raw key with no help text so a future key is never
+/// silently mislabeled.
+pub fn setting_meta(key: &str) -> SettingMeta {
+    let (label, help) = match key {
+        "appearance.theme" => ("Theme", "Light, dark, or follow the system"),
+        "appearance.translucent-sidebar" => (
+            "Transparent sidebar",
+            "Blur the desktop behind the project list",
+        ),
+        "terminal.font-family" => ("Font", "Monospace family for terminal text"),
+        "terminal.font-size" => ("Font size", "Point size of terminal text"),
+        "terminal.shell" => ("Shell", "Default shell on Windows"),
+        "terminal.scrollback-lines" => ("Scrollback", "Lines kept per pane above the viewport"),
+        "files.show-hidden" => ("Show hidden files", "Include dotfiles in the file tree"),
+        "files.max-results" => ("Max results", "Upper bound for file listings and search"),
+        "git.refresh-secs" => ("Refresh interval", "Seconds between Git status polls"),
+        "automation.enabled" => (
+            "Automation",
+            "Recorded in config.toml (socket stays on in v0.1)",
+        ),
+        "updates.check-on-startup" => (
+            "Check on launch",
+            "Resolve the stable channel once per start",
+        ),
+        _ => {
+            return SettingMeta {
+                label: key.to_owned(),
+                help: String::new(),
+            };
+        }
+    };
+    SettingMeta {
+        label: label.to_owned(),
+        help: help.to_owned(),
+    }
+}
+
+/// Theme choices in cycle/pop-up order, with their display labels. Shared
+/// by the picker so the visible order and the stored value agree.
+pub const THEME_CHOICES: [(&str, &str); 3] =
+    [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 
 /// Next stepped value for a scalar config row (M21 S2): `direction` is
 /// `-1`/`+1`. Font steps 0.5 within 6–72; counts step by one within
@@ -125,6 +193,13 @@ mod tests {
     }
 
     #[test]
+    fn every_section_has_an_icon_slot() {
+        for section in SettingsSection::ALL {
+            assert!(!section.icon().is_empty());
+        }
+    }
+
+    #[test]
     fn section_index_round_trips_without_wrapping() {
         for (index, section) in SettingsSection::ALL.iter().enumerate() {
             assert_eq!(section.index(), index);
@@ -173,5 +248,30 @@ mod tests {
         );
         // Unknown keys never step.
         assert_eq!(step_config_value("appearance.theme", "dark", 1), None);
+    }
+
+    #[test]
+    fn known_keys_have_human_labels_and_unknown_keys_fall_back() {
+        let meta = setting_meta("terminal.scrollback-lines");
+        assert_eq!(meta.label, "Scrollback");
+        assert!(!meta.help.is_empty());
+        // Every whitelisted key gets a real label (not the raw key).
+        for key in omaterm_state::CONFIG_KEYS {
+            let meta = setting_meta(key);
+            assert_ne!(meta.label, *key, "{key} needs a human label");
+        }
+        // An unknown key is shown verbatim rather than mislabeled.
+        let unknown = setting_meta("future.key");
+        assert_eq!(unknown.label, "future.key");
+        assert!(unknown.help.is_empty());
+    }
+
+    #[test]
+    fn theme_choices_cover_the_known_themes() {
+        let values: Vec<&str> = THEME_CHOICES.iter().map(|(value, _)| *value).collect();
+        assert_eq!(values, vec!["system", "dark", "light"]);
+        for (_, label) in THEME_CHOICES {
+            assert!(!label.is_empty());
+        }
     }
 }

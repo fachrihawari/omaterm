@@ -9,6 +9,96 @@
 
 ## Current position
 
+### Settings UI pass 2: macOS-style cards, real switch, editable values (`feat/settings-app`) — 2026-10-12 (uncommitted)
+
+Second UI pass on the Settings overlay, following a macOS System
+Settings reference. The first pass made controls visible; this one makes
+them read as a settings surface.
+
+- **Cards.** Each `config.toml` section is now one filled `panel2` card
+  (`rounded(8)`, hairline border, rows separated by 1px dividers) with a
+  small muted title *above* it — the macOS grouping, replacing the
+  floating rows-under-a-hairline layout.
+- **Human labels.** Rows lead with prose (`Scrollback`, `Transparent
+  sidebar`, `Check on launch`) over a muted help line; the raw dotted key
+  stays available via `settings::setting_meta` (unit-tested: every
+  whitelisted key has a label; unknown keys fall back verbatim).
+- **Real toggle switch.** `● On` / `○ Off` chips replaced by a
+  `rounded_full` track with a sliding knob (accent when on). State is
+  carried by shape and position, not color alone.
+- **Editable values.** The stepper is one segmented control
+  `[− value +]`; clicking the value opens an inline `GitInput` field
+  (Enter commits, Esc cancels, `InputOwner::Settings` owns typing) with
+  the shared caret blink. Commits still route through the same
+  `ConfigCommand::Set`, so validation is unchanged.
+- **Pop-up pickers.** Theme and Font are `value ⌄` chips opening an
+  anchored menu (`render_settings_popup`, clamped like the context
+  menus). Font lists installed monospace families, current first.
+- **Nav + chrome.** Rail shows an icon per section (no more `ABOUT 1`
+  digits); overlay widened to 720px; License renders in a card with
+  paragraph spacing.
+- **Unchanged contract.** No wire, CLI, protocol, or router change — the
+  pass is presentation plus an inline-edit input path; every control
+  still dispatches the same semantic command.
+- Verification: `cargo fmt --all --check` PASS, `git diff --check` PASS,
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS,
+  `cargo test --workspace --exclude omaterm-cli` 20/20 suites 0 failed,
+  `python3 scripts/check-docs.py` PASS (66/66 methods, 40/40 shortcuts).
+  `omaterm-cli` shows the same 8 pre-existing failures proven on the
+  stashed clean tree — this shell exports `OMATERM_TAB_ID`/`_PROJECT_ID`/
+  `_PANE_ID`, which the CLI tests read via `optional_selector`; not a
+  regression from this pass. **Native Wayland validation is still not
+  claimed passing** — no desktop session here, so card/switch/popup
+  rendering and the inline-edit caret are unverified on screen.
+- Next action: Wayland pass over the four tabs (card metrics, switch,
+  pop-up anchor, inline edit), then the §59/§61/§70 deviation decision.
+
+### Settings UI pass: nav rail, grouped rows, real controls (`feat/settings-app`) — 2026-10-12 (uncommitted)
+
+The S1 shell shipped as flat text — 4 inline buttons, `key value (click
+to flip)` rows, bare `−`/`+` glyphs — which read as a terminal dump
+rather than a settings surface. Reworked to the v5 chrome grammar
+already used by the inspector panels.
+
+- **Shell:** header bar (gear + `Settings` + version + a bordered `✕`
+  close button, so dismissal is discoverable without the footer) above
+  a **left nav rail** (134px, one row per section with its `1–4` digit,
+  selected = background only so labels never shift) beside a scrolling
+  content pane, closed by a hairline plus a footer hint. The overlay is
+  now a two-pane layout, not a single column of four buttons.
+- **Rows:** shared `settings_row` (label left, one control right, hover
+  fill only — control geometry never moves). Grouped by the
+  `config.toml` section they write: APPEARANCE / TERMINAL / HISTORY /
+  FILES / GIT / AUTOMATION / UPDATES, each with an uppercase META_10
+  heading and hairline, matching the inspector group grammar.
+- **Controls:** values render as filled `pill()` chips, not trailing
+  prose. Booleans are a switch (`● On` accent-filled vs `○ Off` flat —
+  shape carries the state so the light theme inverts colors, not
+  meaning). Steppers are bordered `−`/`+` boxes around a centered
+  value chip; a step that would leave the valid range renders a dead
+  button instead of clamping. Cycle-style values get a `▸` chevron.
+- **Tabs:** About splits into APPLICATION / PATHS / LICENSE groups with
+  a `Copy version line` action; License keeps its paragraph structure
+  under per-license headings instead of one undifferentiated dump;
+  Update is CHANNEL / ACTIONS with `Check now` (`↻`) and `Update now`
+  (`↓`) as chips. The sidebar footer button now also shows its
+  `Ctrl+,` hint in a `kbd()` badge.
+- **Unchanged:** every control still dispatches the same
+  `ConfigCommand::Set` / `AppCommand::*` through the command bus, so
+  the UI rewrite is presentation-only — no wire, CLI, router, or
+  validation behavior moved, and no test needed rewriting.
+- Verification: `cargo fmt --all --check` PASS, `git diff --check`
+  PASS, `cargo test --workspace` 21/21 suites 0 failed,
+  `cargo clippy --workspace --all-targets -- -D warnings` PASS,
+  `python3 scripts/check-docs.py` PASS (66/66 methods, 40/40
+  shortcuts). **Native Wayland validation of the new layout is not
+  claimed passing** — no desktop session was available, so the visual
+  result (nav rail widths, chip metrics, switch shape, license
+  wrapping) is unverified on screen and needs a real look.
+- Next action: Wayland pass over the overlay (all four tabs at ~640px,
+  plus a narrow window), then the deferred §59/§61/§70 deviation
+  decision.
+
 ### Windows typing echo no longer waits on a fixed sleep — 2026-10-12
 
 The desktop PTY reader on Windows slept 200ms before every ConPTY read, so
