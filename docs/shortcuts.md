@@ -47,6 +47,7 @@ Design rules:
 | `panel.inspector-tabs` | `Ctrl+Shift+E/G/I` | Inspector Files/Git/Info tab | Global |
 | `finder.files` | `Ctrl+P` | File finder | Global |
 | `palette.commands` | `Ctrl+Shift+P` | Command palette | Global |
+| `settings.open` | `Ctrl+,` | Open Settings (About, Update, Configuration, License) | Global |
 | `diff.hunk-nav` | `Alt+N/P` | Next/previous hunk | Diff preview |
 | `diff.hunk-stage` | `Ctrl+Shift+S` | Stage selected hunk | Diff preview |
 | `diff.hunk-copy` | `Ctrl+Shift+C` | Copy hunk, selection, or editor text | Diff/Terminal/Editor |

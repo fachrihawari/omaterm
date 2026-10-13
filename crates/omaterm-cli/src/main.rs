@@ -28,6 +28,7 @@ use clap::{Parser, Subcommand};
 use omaterm_protocol::{IpcRequest, PROTOCOL_VERSION};
 
 use commands::WireCall;
+use commands::config::ConfigCmd;
 use commands::diff::DiffCmd;
 use commands::file::FileCmd;
 use commands::git::GitCmd;
@@ -37,6 +38,7 @@ use commands::process::ProcessCmd;
 use commands::project::ProjectCmd;
 use commands::tab::TabCmd;
 use commands::terminal::TerminalCmd;
+use commands::update::UpdateCmd;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -109,6 +111,18 @@ enum Commands {
     Process {
         #[command(subcommand)]
         cmd: ProcessCmd,
+    },
+    /// Read and change general configuration.
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
+    /// Show application identity (version, wire protocol, channel).
+    About,
+    /// Stable-channel update operations (S3a: `check`; S3b: `apply`).
+    Update {
+        #[command(subcommand)]
+        cmd: UpdateCmd,
     },
 }
 
@@ -192,6 +206,17 @@ fn build_wire_call(command: &Commands) -> Result<(WireCall, String), String> {
         }
         Commands::Process { cmd } => {
             let call = commands::process::build(cmd);
+            Ok((call.clone(), call.method.clone()))
+        }
+        Commands::Config { cmd } => {
+            commands::config::build(cmd).map(|call| (call.clone(), call.method.clone()))
+        }
+        Commands::About => {
+            let call = commands::update::build_about();
+            Ok((call.clone(), call.method.clone()))
+        }
+        Commands::Update { cmd } => {
+            let call = commands::update::build_update(cmd);
             Ok((call.clone(), call.method.clone()))
         }
     }
@@ -359,8 +384,16 @@ mod tests {
             &["omaterm", "git", "stash-pop", "0"],
             &["omaterm", "git", "stash-drop", "0"],
             &["omaterm", "git", "blame", "src/main.rs"],
+            &["omaterm", "config", "get"],
+            &["omaterm", "config", "set", "terminal.font-size", "13"],
+            &["omaterm", "config", "reset"],
+            &["omaterm", "config", "reset", "appearance.theme"],
+            &["omaterm", "about"],
+            &["omaterm", "update", "check"],
+            &["omaterm", "update", "apply"],
+            &["omaterm", "update", "apply", "--confirm-downgrade"],
         ];
-        assert_eq!(cases.len(), 65);
+        assert_eq!(cases.len(), 73);
         for args in cases {
             let cli = Cli::try_parse_from(*args);
             assert!(cli.is_ok(), "{args:?}: {cli:?}");

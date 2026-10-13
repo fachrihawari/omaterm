@@ -15,6 +15,31 @@ pub enum OmaCommand {
     Git(GitCommand),
     Diff(DiffCommand),
     Process(ProcessCommand),
+    /// General `config.toml` reads/writes (M21 S2). `Get` returns the
+    /// effective config; `Set` validates one dotted key before touching
+    /// the disk (reject-before-write, never clamp); `Reset` clears one
+    /// key (`None` = all keys) back to compiled defaults. History
+    /// enable/disable keeps its own `HistoryCommand` path (destructive,
+    /// two-step); this covers the plain scalar keys only.
+    Config(ConfigCommand),
+    /// App-level identity and update checks (M21 S3). `About` is a pure
+    /// query; `UpdateCheck` asks the desktop owner to resolve the stable
+    /// GitHub channel, so the async result lands on the owner side
+    /// exactly like the git/process workers (never blocking the UI).
+    App(AppCommand),
+}
+
+/// Application identity and stable-channel update checks (M21 S3a).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppCommand {
+    About,
+    UpdateCheck,
+    /// Download, verify and install the newest stable release (M21 S3b).
+    /// `confirm_downgrade` gates a deliberate roll-back: the pipeline
+    /// refuses a downgrade unless the caller explicitly asked for one.
+    UpdateApply {
+        confirm_downgrade: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -381,6 +406,17 @@ pub enum ProcessCommand {
         project: ProjectId,
         pid: u32,
     },
+}
+
+/// General configuration keys (M21 S2, blueprint §61). Dotted key paths
+/// mirroring the `config.toml` layout; the full whitelist lives in
+/// `omaterm_state::config::CONFIG_KEYS`. Unknown keys are rejected with
+/// `invalid_request`, never ignored.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigCommand {
+    Get,
+    Set { key: String, value: String },
+    Reset { key: Option<String> },
 }
 
 /// Authority is kept separate from command data so transport identity cannot

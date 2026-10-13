@@ -273,7 +273,31 @@ pub struct ProcessKill {
     pub project_id: Option<String>,
     pub pid: u32,
 }
-
+/// `config.set` payload (M21 S2): one dotted key plus the raw string value
+/// (`"true"`, `"14"`, `"dark"`). Types are parsed per key on the router
+/// side, never guessed from JSON shape.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigSet {
+    pub key: String,
+    pub value: String,
+}
+/// `config.reset` payload (M21 S2): one dotted key, or absent for every
+/// known key back to compiled defaults.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigReset {
+    pub key: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppUpdateApply {
+    /// Downgrade roll-backs are refused unless this is explicitly true.
+    #[serde(default)]
+    pub confirm_downgrade: bool,
+}
+// `app.about` and `app.update-check` take no parameters; both use
+// `Empty`, like `terminal.list` and `history.status`.
 #[derive(Clone)]
 pub enum Method {
     ProjectList(Empty),
@@ -336,6 +360,12 @@ pub enum Method {
     DiffListFiles(DiffListFiles),
     ProcessList(ProcessList),
     ProcessKill(ProcessKill),
+    ConfigGet(Empty),
+    ConfigSet(ConfigSet),
+    ConfigReset(ConfigReset),
+    AppAbout(Empty),
+    AppUpdateCheck(Empty),
+    AppUpdateApply(AppUpdateApply),
 }
 
 impl Method {
@@ -413,6 +443,12 @@ impl Method {
             "diff.list-files" => decode!(DiffListFiles, DiffListFiles),
             "process.list" => decode!(ProcessList, ProcessList),
             "process.kill" => decode!(ProcessKill, ProcessKill),
+            "config.get" => decode!(Empty, ConfigGet),
+            "config.set" => decode!(ConfigSet, ConfigSet),
+            "config.reset" => decode!(ConfigReset, ConfigReset),
+            "app.about" => decode!(Empty, AppAbout),
+            "app.update-check" => decode!(Empty, AppUpdateCheck),
+            "app.update-apply" => decode!(AppUpdateApply, AppUpdateApply),
             _ => Err(MethodError("unknown method")),
         }
     }
@@ -536,8 +572,20 @@ mod tests {
             ("git.stash-pop", serde_json::json!({"index": 0})),
             ("git.stash-drop", serde_json::json!({"index": 0})),
             ("git.blame", serde_json::json!({"path": "src/main.rs"})),
+            ("config.get", serde_json::json!({})),
+            (
+                "config.set",
+                serde_json::json!({"key": "terminal.font-size", "value": "13"}),
+            ),
+            (
+                "config.reset",
+                serde_json::json!({"key": "terminal.font-size"}),
+            ),
+            ("app.about", serde_json::json!({})),
+            ("app.update-check", serde_json::json!({})),
+            ("app.update-apply", serde_json::json!({})),
         ];
-        assert_eq!(cases.len(), 60);
+        assert_eq!(cases.len(), 66);
         for (name, params) in cases {
             assert!(Method::decode(name, params.clone()).is_ok(), "{name}");
             let mut unknown = params;

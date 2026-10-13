@@ -24,6 +24,11 @@ uuid = "=1.26.1"
 unicode-segmentation = "=1.13.3"
 unicode-width = "=0.2.2"
 zeroize = "=1.9.0"
+semver = "=1.0.28"
+ureq = { version = "=3.4.2", features = ["rustls"] }
+flate2 = "=1.1.10"
+sha2 = "=0.10.9"
+tar = "=0.4.46"
 
 [target.'cfg(not(windows))'.dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "x11"] }

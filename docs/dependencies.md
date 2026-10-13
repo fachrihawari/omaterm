@@ -18,8 +18,31 @@ override explicitly name it and do not change the pin or establish an MSRV.
 | PTY provider | `alacritty_terminal::tty` Unix backend | Alacritty dependency inventory; `libc` MIT OR Apache-2.0 | M3 lifecycle behavior and M4 cleanup coverage recorded below |
 | `serde`, `serde_json`, `libc` for protocol/IPC | `serde` 1.0.228, `serde_json` 1.0.149, `libc` 0.2.189 | Permissive dual licenses in selected manifests; full transitive inventory completed in M11 | M8 protocol/transport integration and release Wayland evidence recorded below |
 | M10 key storage/encryption/compression | `chacha20poly1305` 0.11.0, `hkdf` 0.12.4, `sha2` 0.10.9, `getrandom` 0.4.3, `flate2` 1.1.10, `zeroize` 1.9.0 (file-backed `master.key`, `0600`; `keyring` 4.2.0 removed 2026-10-12 — see amendment record below) | Selected manifests and package license files; full transitive inventory completed in M11 | M10 keyring spike, archive tests and release Wayland evidence recorded below |
+| M21 Settings App self-update | `semver` 1.0.28, `ureq` 3.4.2 (`rustls`), `sha2` 0.10.9, `flate2` 1.1.10, `tar` 0.4.46 — desktop-only direct deps (see selection record) | Selected crate manifests; all permissive, covered by the M11 transitive inventory | M21 offline-channel tests, sha256/verify and pipeline refusal tests pass; real-network check and install apply still owed natively |
 
 ## Selection record
+
+### M21 Settings App — 2026-10-12 (self-update dependencies)
+
+Milestone 21 adds five desktop-only direct dependencies to
+`apps/omaterm` (the workspace core, protocol, state, IPC, CLI and
+logging crates are untouched — no HTTP or archive code enters them, so
+the dependency direction in AGENTS.md still holds):
+
+| Crate | Pinned version | Use | License |
+|---|---|---|---|
+| `semver` | 1.0.28 | Stable-release comparison (`is_newer`) | MIT OR Apache-2.0 |
+| `ureq` | 3.4.2 (`rustls` feature) | `releases/latest` redirect + bounded artifact downloads | MIT OR Apache-2.0 |
+| `sha2` | 0.10.9 | Artifact sha256 verification (already vendored transitively via M10 crypto; now direct in the desktop) | MIT OR Apache-2.0 |
+| `flate2` | 1.1.10 | `tar.gz` artifact decode (already vendored via M10 archives) | MIT OR Apache-2.0 |
+| `tar` | 0.4.46 | Release tarball member extraction | MIT OR Apache-2.0 |
+
+TLS terminates through `ureq` + `rustls`/`webpki-roots` (no
+`native-tls`, no OpenSSL linkage change); `sha2`/`flate2` reuse the
+M10-era lock versions so no second crypto or compression stack enters
+the binary. `tar` is new and pulls `xattr` (transitive); all entries
+carry permissive licenses already covered by the M11 transitive
+inventory, so no new license family is introduced.
 
 ### History master-key amendment — 2026-10-12 (file-backed key, `keyring` removed)
 

@@ -140,6 +140,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
         context: "Global",
     },
     Shortcut {
+        id: "settings.open",
+        chord: "Ctrl+,",
+        action: "Open Settings (About, Update, Configuration, License)",
+        context: "Global",
+    },
+    Shortcut {
         id: "diff.hunk-nav",
         chord: "Alt+N/P",
         action: "Next/previous hunk",

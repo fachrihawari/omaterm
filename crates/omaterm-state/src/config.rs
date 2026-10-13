@@ -58,6 +58,31 @@ pub const KNOWN_THEMES: &[&str] = &["system", "dark", "light"];
 /// Windows shell ids the desktop palette can persist. Absent means PowerShell.
 pub const KNOWN_SHELLS: &[&str] = &["powershell", "cmd", "git-bash"];
 
+/// `[updates]` section (M21 S2/S3a). Whether the desktop checks the stable
+/// GitHub channel at startup. Defaults to on; `false` opts out (manual
+/// `Check for updates` always stays available).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdatesSettings {
+    pub check_on_startup: Option<bool>,
+}
+
+/// Every dotted key `config.set`/`config.reset` accepts (M21 S2). The
+/// `updates.check-on-startup` entry exists from day one so the S3a
+/// opt-out is settable via CLI/IPC before the checker lands.
+pub const CONFIG_KEYS: &[&str] = &[
+    "appearance.theme",
+    "appearance.translucent-sidebar",
+    "terminal.font-family",
+    "terminal.font-size",
+    "terminal.scrollback-lines",
+    "terminal.shell",
+    "automation.enabled",
+    "files.max-results",
+    "files.show-hidden",
+    "git.refresh-secs",
+    "updates.check-on-startup",
+];
+
 /// `[terminal]` section. All keys optional.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TerminalSettings {
@@ -103,6 +128,7 @@ pub struct AppConfig {
     pub automation: AutomationSettings,
     pub files: FilesSettings,
     pub git: GitSettings,
+    pub updates: UpdatesSettings,
 }
 
 impl AppConfig {
@@ -159,6 +185,12 @@ impl AppConfig {
     /// Effective git status refresh interval in seconds.
     pub fn resolved_git_refresh_secs(&self) -> u64 {
         self.git.refresh_secs.unwrap_or(DEFAULT_GIT_REFRESH_SECS)
+    }
+
+    /// Whether the desktop checks for stable-channel updates at startup
+    /// (M21 S3a). Defaults to on; the Settings UI and `config.set` flip it.
+    pub fn check_on_startup(&self) -> bool {
+        self.updates.check_on_startup.unwrap_or(true)
     }
 }
 
@@ -315,6 +347,15 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
         config.git.refresh_secs = Some(secs as u64);
     }
 
+    if let Some(table) = doc.get("updates").and_then(toml_edit::Item::as_table_like)
+        && let Some(item) = table.get("check-on-startup")
+    {
+        let check = item
+            .as_bool()
+            .ok_or_else(|| invalid("updates", "check-on-startup", "expected true or false"))?;
+        config.updates.check_on_startup = Some(check);
+    }
+
     Ok(config)
 }
 
@@ -322,34 +363,7 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
 /// in place. The desktop calls this after a palette choice; it is not a
 /// file the user is expected to edit by hand.
 pub fn save_terminal_shell(path: &Path, shell: &str) -> Result<(), ConfigError> {
-    if !KNOWN_SHELLS.contains(&shell) {
-        return Err(invalid(
-            "terminal",
-            "shell",
-            format!("expected one of {}", KNOWN_SHELLS.join(", ")),
-        ));
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(ConfigError::Io)?;
-    }
-    let mut doc: toml_edit::DocumentMut = match fs::read(path) {
-        Ok(bytes) => {
-            let text = String::from_utf8(bytes)
-                .map_err(|_| ConfigError::Parse("config.toml is not UTF-8".into()))?;
-            text.parse()
-                .map_err(|error| ConfigError::Parse(format!("config.toml parse failed: {error}")))?
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
-        Err(error) => return Err(ConfigError::Io(error)),
-    };
-    if !doc
-        .get("terminal")
-        .is_some_and(toml_edit::Item::is_table_like)
-    {
-        doc["terminal"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    doc["terminal"]["shell"] = toml_edit::value(shell);
-    super::history::write_atomic_0600(path, doc.to_string().as_bytes())
+    set_config_key(path, "terminal.shell", shell)
 }
 
 /// Save the `[appearance] theme` key into the canonical `config.toml`,
@@ -358,13 +372,17 @@ pub fn save_terminal_shell(path: &Path, shell: &str) -> Result<(), ConfigError> 
 /// its parent directory, and the `[appearance]` table when absent. Unknown
 /// theme values are rejected before touching the disk.
 pub fn save_appearance_theme(path: &Path, theme: &str) -> Result<(), ConfigError> {
-    if !KNOWN_THEMES.contains(&theme) {
-        return Err(invalid(
-            "appearance",
-            "theme",
-            format!("expected one of {}", KNOWN_THEMES.join(", ")),
-        ));
-    }
+    set_config_key(path, "appearance.theme", theme)
+}
+
+/// Validate one dotted `section.key` and write it, preserving every other
+/// key, comment, and section via `toml_edit` (M21 S2). Validation runs
+/// before the disk is touched: an invalid value returns
+/// [`ConfigError::Invalid`] and leaves the file byte-identical. `value`
+/// is the raw CLI/IPC string (`"true"`, `"14"`, `"dark"`); types are
+/// parsed per key, never guessed.
+pub fn set_config_key(path: &Path, key: &str, value: &str) -> Result<(), ConfigError> {
+    let parsed = parse_config_value(key, value)?;
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -380,15 +398,164 @@ pub fn save_appearance_theme(path: &Path, theme: &str) -> Result<(), ConfigError
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
         Err(error) => return Err(ConfigError::Io(error)),
     };
-    if !doc.contains_key("appearance") {
-        doc["appearance"] = toml_edit::Item::Table(toml_edit::Table::new());
+    let (section, name) = split_config_key(key)?;
+    if !doc.get(section).is_some_and(toml_edit::Item::is_table_like) {
+        doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let table = doc["appearance"]
-        .as_table_mut()
-        .ok_or_else(|| invalid("appearance", "theme", "section is not a table"))?;
-    table["theme"] = toml_edit::value(theme);
+    // Index assignment (not `as_table_mut`) so inline tables
+    // (`terminal = {...}`) keep working like the old bespoke savers.
+    doc[section][name] = parsed;
     super::history::write_atomic_0600(path, doc.to_string().as_bytes())?;
     Ok(())
+}
+
+/// Clear one dotted key back to its compiled default (`None` = every
+/// known key), preserving comments and unknown sections. Unknown keys
+/// are rejected before touching the disk.
+pub fn reset_config_key(path: &Path, key: Option<&str>) -> Result<(), ConfigError> {
+    let targets: Vec<(&str, &str)> = match key {
+        Some(key) => vec![split_config_key(key)?],
+        None => CONFIG_KEYS
+            .iter()
+            .map(|key| split_config_key(key))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    let mut doc: toml_edit::DocumentMut = match fs::read(path) {
+        Ok(bytes) => {
+            let text = String::from_utf8(bytes)
+                .map_err(|_| ConfigError::Parse("config.toml is not UTF-8".into()))?;
+            text.parse()
+                .map_err(|error| ConfigError::Parse(format!("config.toml parse failed: {error}")))?
+        }
+        // Nothing on disk is already defaults; resetting is a no-op.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(ConfigError::Io(error)),
+    };
+    for (section, name) in targets {
+        if let Some(table) = doc.get_mut(section).and_then(toml_edit::Item::as_table_mut) {
+            table.remove(name);
+        }
+    }
+    super::history::write_atomic_0600(path, doc.to_string().as_bytes())?;
+    Ok(())
+}
+
+fn split_config_key(key: &str) -> Result<(&str, &str), ConfigError> {
+    if !CONFIG_KEYS.contains(&key) {
+        return Err(invalid(
+            "config",
+            key,
+            format!("unknown key (expected one of {})", CONFIG_KEYS.join(", ")),
+        ));
+    }
+    let (section, name) = key
+        .split_once('.')
+        .ok_or_else(|| invalid("config", key, "expected section.key"))?;
+    Ok((section, name))
+}
+
+fn parse_bool(section: &str, name: &str, value: &str) -> Result<toml_edit::Item, ConfigError> {
+    match value.trim().to_lowercase().as_str() {
+        "true" => Ok(toml_edit::value(true)),
+        "false" => Ok(toml_edit::value(false)),
+        _ => Err(invalid(section, name, "expected true or false")),
+    }
+}
+
+fn parse_config_value(key: &str, value: &str) -> Result<toml_edit::Item, ConfigError> {
+    match key {
+        "appearance.theme" => {
+            if !KNOWN_THEMES.contains(&value.trim()) {
+                return Err(invalid(
+                    "appearance",
+                    "theme",
+                    format!("expected one of {}", KNOWN_THEMES.join(", ")),
+                ));
+            }
+            Ok(toml_edit::value(value.trim()))
+        }
+        "appearance.translucent-sidebar" => parse_bool("appearance", "translucent-sidebar", value),
+        "terminal.font-family" => {
+            if value.trim().is_empty() {
+                return Err(invalid("terminal", "font-family", "must not be empty"));
+            }
+            Ok(toml_edit::value(value.trim()))
+        }
+        "terminal.font-size" => {
+            let size: f32 = value
+                .trim()
+                .parse()
+                .map_err(|_| invalid("terminal", "font-size", "expected a number"))?;
+            if !size.is_finite() || size < MIN_FONT_SIZE || size > MAX_FONT_SIZE {
+                return Err(invalid(
+                    "terminal",
+                    "font-size",
+                    format!("expected a size in [{MIN_FONT_SIZE}, {MAX_FONT_SIZE}]"),
+                ));
+            }
+            Ok(toml_edit::value(f64::from(size)))
+        }
+        "terminal.scrollback-lines" => {
+            let lines: i64 = value
+                .trim()
+                .parse()
+                .map_err(|_| invalid("terminal", "scrollback-lines", "expected an integer"))?;
+            if lines < 0 || lines > i64::from(MAX_SCROLLBACK_LINES) {
+                return Err(invalid(
+                    "terminal",
+                    "scrollback-lines",
+                    format!("expected lines in [0, {MAX_SCROLLBACK_LINES}]"),
+                ));
+            }
+            Ok(toml_edit::value(lines))
+        }
+        "terminal.shell" => {
+            if !KNOWN_SHELLS.contains(&value.trim()) {
+                return Err(invalid(
+                    "terminal",
+                    "shell",
+                    format!("expected one of {}", KNOWN_SHELLS.join(", ")),
+                ));
+            }
+            Ok(toml_edit::value(value.trim()))
+        }
+        "automation.enabled" => parse_bool("automation", "enabled", value),
+        "files.max-results" => {
+            let limit: i64 = value
+                .trim()
+                .parse()
+                .map_err(|_| invalid("files", "max-results", "expected an integer"))?;
+            if limit < 1 || limit > i64::from(MAX_FILE_RESULTS) {
+                return Err(invalid(
+                    "files",
+                    "max-results",
+                    format!("expected results in [1, {MAX_FILE_RESULTS}]"),
+                ));
+            }
+            Ok(toml_edit::value(limit))
+        }
+        "files.show-hidden" => parse_bool("files", "show-hidden", value),
+        "git.refresh-secs" => {
+            let secs: i64 = value
+                .trim()
+                .parse()
+                .map_err(|_| invalid("git", "refresh-secs", "expected an integer"))?;
+            if secs < MIN_GIT_REFRESH_SECS as i64 || secs > MAX_GIT_REFRESH_SECS as i64 {
+                return Err(invalid(
+                    "git",
+                    "refresh-secs",
+                    format!("expected seconds in [{MIN_GIT_REFRESH_SECS}, {MAX_GIT_REFRESH_SECS}]"),
+                ));
+            }
+            Ok(toml_edit::value(secs))
+        }
+        "updates.check-on-startup" => parse_bool("updates", "check-on-startup", value),
+        _ => Err(invalid(
+            "config",
+            key,
+            format!("unknown key (expected one of {})", CONFIG_KEYS.join(", ")),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -598,6 +765,91 @@ mod tests {
         let error = save_appearance_theme(&path, "dracula").unwrap_err();
         assert!(matches!(error, ConfigError::Invalid(_)));
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_config_key_round_trips_every_whitelisted_key() {
+        let dir = temp_dir("set-all");
+        let path = dir.join("config.toml");
+        let cases = [
+            ("appearance.theme", "dark", "dark"),
+            ("appearance.translucent-sidebar", "false", "false"),
+            ("terminal.font-family", "JetBrains Mono", "JetBrains Mono"),
+            ("terminal.font-size", "13", "13"),
+            ("terminal.scrollback-lines", "5000", "5000"),
+            ("terminal.shell", "cmd", "cmd"),
+            ("automation.enabled", "false", "false"),
+            ("files.max-results", "250", "250"),
+            ("files.show-hidden", "false", "false"),
+            ("git.refresh-secs", "10", "10"),
+            ("updates.check-on-startup", "false", "false"),
+        ];
+        for (key, raw, _) in cases {
+            set_config_key(&path, key, raw).unwrap();
+        }
+        let loaded = load_app_config_toml(&path).unwrap();
+        assert_eq!(loaded.theme(), "dark");
+        assert!(!loaded.translucent_sidebar());
+        assert_eq!(
+            loaded.terminal.font_family.as_deref(),
+            Some("JetBrains Mono")
+        );
+        assert_eq!(loaded.resolved_font_size(), 13.0);
+        assert_eq!(loaded.resolved_scrollback_lines(), Some(5000));
+        assert_eq!(loaded.terminal.shell.as_deref(), Some("cmd"));
+        assert!(!loaded.automation_enabled());
+        assert_eq!(loaded.resolved_max_results(), 250);
+        assert!(!loaded.show_hidden());
+        assert_eq!(loaded.resolved_git_refresh_secs(), 10);
+        assert!(!loaded.check_on_startup());
+        // Defaults hold when the keys are absent.
+        assert!(AppConfig::default().check_on_startup());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_config_key_rejects_invalid_and_unknown_before_disk() {
+        let dir = temp_dir("set-reject");
+        let path = write_config(&dir, "[appearance]\ntheme = \"dark\"\n");
+        let before = fs::read_to_string(&path).unwrap();
+        for (key, raw) in [
+            ("appearance.theme", "dracula"),
+            ("terminal.font-size", "200"),
+            ("terminal.font-size", "huge"),
+            ("terminal.scrollback-lines", "-1"),
+            ("files.max-results", "0"),
+            ("git.refresh-secs", "0"),
+            ("updates.check-on-startup", "sometimes"),
+            ("terminal.nonexistent", "1"),
+            ("bogus", "1"),
+        ] {
+            let error = set_config_key(&path, key, raw).unwrap_err();
+            assert!(matches!(error, ConfigError::Invalid(_)), "{key}={raw}");
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_config_key_restores_defaults_and_preserves_comments() {
+        let dir = temp_dir("reset-key");
+        let path = write_config(
+            &dir,
+            "# user config\n[appearance]\ntheme = \"dark\"\n[terminal]\nfont-size = 13 # keep me\n",
+        );
+        reset_config_key(&path, Some("appearance.theme")).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# user config"));
+        assert!(text.contains("# keep me"));
+        let loaded = load_app_config_toml(&path).unwrap();
+        assert_eq!(loaded.theme(), "system");
+        assert_eq!(loaded.resolved_font_size(), 13.0);
+        reset_config_key(&path, None).unwrap();
+        let cleared = load_app_config_toml(&path).unwrap();
+        assert_eq!(cleared, AppConfig::default());
+        let error = reset_config_key(&path, Some("nope.key")).unwrap_err();
+        assert!(matches!(error, ConfigError::Invalid(_)));
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::{self, TryRecvError};
 
 use crate::credentials::Credentials;
 use crate::editor::{
@@ -11,13 +12,13 @@ use crate::editor::{
 };
 use crate::history::HistoryManager;
 use omaterm_core::{
-    CommandContext, CommandError, CommandOutput, CommandResult, DiffCommand, EditorCommand,
-    ErrorCode, FileCommand, FileListInfo, GitBlame, GitBranchList, GitCommand, GitStashList,
-    GitStatusInfo, HistoryCommand, HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES,
-    OmaCommand, PaneCommand, PaneContent, PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo,
-    ProcessListInfo, ProjectCommand, ProjectId, ProjectInfo, ProjectReposInfo, ProjectRootInfo,
-    RepoEntry, RepoScan, SessionId, SplitDirection, TabCommand, TabId, TabInfo, TerminalCommand,
-    TerminalInfo,
+    AboutInfo, AppCommand, CommandContext, CommandError, CommandOutput, CommandResult,
+    ConfigCommand, ConfigInfo, DiffCommand, EditorCommand, ErrorCode, FileCommand, FileListInfo,
+    GitBlame, GitBranchList, GitCommand, GitStashList, GitStatusInfo, HistoryCommand,
+    HistoryStatusInfo, JournalEntryInfo, MAX_PROCESS_ENTRIES, OmaCommand, PaneCommand, PaneContent,
+    PaneId, PaneInfo, ProcessCommand, ProcessEntryInfo, ProcessListInfo, ProjectCommand, ProjectId,
+    ProjectInfo, ProjectReposInfo, ProjectRootInfo, RepoEntry, RepoScan, SessionId, SplitDirection,
+    TabCommand, TabId, TabInfo, TerminalCommand, TerminalInfo, UpdateApplyInfo, UpdateCheckInfo,
 };
 use omaterm_protocol::CapabilityToken;
 use omaterm_terminal::history::RecordedEvent;
@@ -29,6 +30,36 @@ use omaterm_terminal::{
 };
 
 const MAX_PENDING_LAUNCHES: usize = 8;
+
+/// Concurrent update checks admitted at once (M21 S3): a check is quick
+/// but user-initiated, so one slot plus a small burst is enough.
+pub const MAX_PENDING_UPDATE_CHECKS: usize = 4;
+
+/// Concurrent self-update applies admitted at once (M21 S3b). One: two
+/// concurrent renames of the same binaries cannot be made safe.
+pub const MAX_PENDING_UPDATE_APPLIES: usize = 1;
+
+/// One admitted self-update (S3b). `confirm_downgrade` is only read by
+/// the production spawner, so the test build allows it unused.
+#[derive(Debug, Clone, Copy)]
+struct PendingUpdateApply {
+    context: CommandContext,
+    #[cfg_attr(test, allow(dead_code))]
+    confirm_downgrade: bool,
+}
+
+/// One in-flight apply worker (S3b): report mailbox plus join handle.
+struct UpdateApplyResult {
+    receiver: mpsc::Receiver<UpdateApplyInfo>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+/// One in-flight update-check worker (M21 S3): the result mailbox plus the
+/// join handle so teardown waits instead of detaching.
+struct UpdateResult {
+    receiver: mpsc::Receiver<UpdateCheckInfo>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
 
 /// Rejection message when no async launch slot is free, shared by the
 /// pending-map gate and the spawn-queue backpressure below. The desktop
@@ -530,9 +561,21 @@ pub struct CommandRouter {
     /// M20 depth-1 repo scan cache, one per project. The router owns this
     /// so the panel, `git.*` wire methods, `omaterm git *` and a future
     /// agent all answer for the same active repository (blueprint §62).
-    /// The desktop scan worker is the only producer (`install_repo_scan`);
-    /// `SetDirectory` / `Delete` invalidate it.
+    /// The desktop scan worker is the sole producer (`install_repo_scan`);
+    /// `SetDirectory`/`Delete` invalidate it.
     repo_scans: HashMap<ProjectId, RepoScan>,
+    /// Pending stable-channel update checks (M21 S3), keyed by owner
+    /// operation id. The router admits and parks the query; the desktop
+    /// owner runs the network call off-thread and commits the result with
+    /// `commit_update_check` — the wire level itself never touches the
+    /// network.
+    pending_update_checks: HashMap<u64, CommandContext>,
+    /// Admitted self-update applies (S3b). One at a time by construction.
+    pending_update_applies: HashMap<u64, PendingUpdateApply>,
+    /// In-flight apply workers keyed by the same owner operation id.
+    update_apply_results: HashMap<u64, UpdateApplyResult>,
+    /// In-flight update-check workers keyed by the same owner operation id.
+    update_results: HashMap<u64, UpdateResult>,
 }
 
 impl std::ops::Deref for CommandRouter {
@@ -580,6 +623,10 @@ impl CommandRouter {
             documents: DocumentStore::default(),
             pending_history: HashMap::new(),
             repo_scans: HashMap::new(),
+            pending_update_checks: HashMap::new(),
+            pending_update_applies: HashMap::new(),
+            update_apply_results: HashMap::new(),
+            update_results: HashMap::new(),
         }
     }
 
@@ -1879,6 +1926,47 @@ impl CommandRouter {
             };
             return self.prepare_process_query(context, project);
         }
+        // Update checks: the single async path. Park first (validation
+        // + admission + queue cap), then spawn the worker, then hand the
+        // owner the same operation id for both.
+        if matches!(command, OmaCommand::App(AppCommand::UpdateCheck)) {
+            match self.prepare_update_check(context) {
+                Ok(operation_id) => {
+                    #[cfg(not(test))]
+                    self.start_update_check_production(operation_id);
+                    return DispatchOutcome {
+                        result: ok(CommandOutput::Pending { operation_id }),
+                        effects: vec![],
+                    };
+                }
+                Err(error) => {
+                    return DispatchOutcome {
+                        result: CommandResult::Err(error),
+                        effects: vec![],
+                    };
+                }
+            }
+        }
+        // Self-update (S3b): the same parking family, but the worker runs
+        // the whole apply pipeline and reports progress stages.
+        if let OmaCommand::App(AppCommand::UpdateApply { confirm_downgrade }) = command {
+            match self.prepare_update_apply(context, confirm_downgrade) {
+                Ok(operation_id) => {
+                    #[cfg(not(test))]
+                    self.start_update_apply_production(operation_id);
+                    return DispatchOutcome {
+                        result: ok(CommandOutput::Pending { operation_id }),
+                        effects: vec![],
+                    };
+                }
+                Err(error) => {
+                    return DispatchOutcome {
+                        result: CommandResult::Err(error),
+                        effects: vec![],
+                    };
+                }
+            }
+        }
         let mut effects = Vec::new();
         let file_opened = match &command {
             OmaCommand::File(FileCommand::Open { project, .. }) => Some(*project),
@@ -1945,6 +2033,11 @@ impl CommandRouter {
                 }
             }
             for (id, finished) in self.poll_process_queries() {
+                if id == operation_id {
+                    return finished;
+                }
+            }
+            for (id, finished) in self.poll_update_checks() {
                 if id == operation_id {
                     return finished;
                 }
@@ -2143,6 +2236,336 @@ impl CommandRouter {
             ));
         }
         outcomes
+    }
+
+    /// Park one admitted update check. Returns the owner operation id the
+    /// desktop uses to run and later commit the result. Only local
+    /// authority may check (an answer is not project-scoped), matching
+    /// the global history admin surface.
+    pub fn prepare_update_check(&mut self, context: CommandContext) -> Result<u64, CommandError> {
+        if !matches!(context, CommandContext::LocalUser) {
+            return Err(CommandError::new(
+                ErrorCode::PermissionDenied,
+                "update check requires local authority",
+            ));
+        }
+        if self.pending_update_checks.len() >= MAX_PENDING_UPDATE_CHECKS {
+            return Err(CommandError::new(
+                ErrorCode::RuntimeFailure,
+                "update check queue is full",
+            ));
+        }
+        // Operation ids share the router-wide `next_operation` sequence
+        // with launches/editors/process queries: the owner polls all
+        // families through one map, and a family-local counter could
+        // alias an unrelated in-flight id.
+        self.next_operation += 1;
+        let operation_id = self.next_operation;
+        self.pending_update_checks.insert(operation_id, context);
+        Ok(operation_id)
+    }
+
+    /// Park one admitted self-update (S3b). Same admission rules as the
+    /// check (local authority only, one queue), so a caller cannot start
+    /// a second apply over a running one.
+    pub fn prepare_update_apply(
+        &mut self,
+        context: CommandContext,
+        confirm_downgrade: bool,
+    ) -> Result<u64, CommandError> {
+        if !matches!(context, CommandContext::LocalUser) {
+            return Err(CommandError::new(
+                ErrorCode::PermissionDenied,
+                "update apply requires local authority",
+            ));
+        }
+        if self.pending_update_applies.len() >= MAX_PENDING_UPDATE_APPLIES {
+            return Err(CommandError::new(
+                ErrorCode::RuntimeFailure,
+                "update apply queue is full (one at a time)",
+            ));
+        }
+        self.next_operation += 1;
+        let operation_id = self.next_operation;
+        self.pending_update_applies.insert(
+            operation_id,
+            PendingUpdateApply {
+                context,
+                confirm_downgrade,
+            },
+        );
+        Ok(operation_id)
+    }
+
+    /// Commit one progress/completion report for a parked apply. A stale
+    /// id is a no-op, never a fabricated progress line.
+    pub fn commit_update_apply(
+        &mut self,
+        operation_id: u64,
+        info: UpdateApplyInfo,
+    ) -> Option<DispatchOutcome> {
+        let pending = self.pending_update_applies.remove(&operation_id)?;
+        if !matches!(pending.context, CommandContext::LocalUser) {
+            return Some(DispatchOutcome {
+                result: CommandResult::Err(CommandError::new(
+                    ErrorCode::PermissionDenied,
+                    "update apply authority was revoked",
+                )),
+                effects: vec![],
+            });
+        }
+        Some(DispatchOutcome {
+            result: ok(CommandOutput::UpdateApply(info)),
+            effects: vec![],
+        })
+    }
+
+    /// Live peeking helper for the owner poller and tests.
+    pub fn update_apply_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.pending_update_applies.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Owner-side poll: retire every finished apply worker.
+    pub fn poll_update_applies(&mut self) -> Vec<(u64, DispatchOutcome)> {
+        let ids = self.update_apply_ids();
+        let mut outcomes = Vec::new();
+        for operation_id in ids {
+            if let Some(outcome) = self.take_update_apply_completion(operation_id) {
+                outcomes.push((operation_id, outcome));
+            }
+        }
+        outcomes
+    }
+
+    /// True while an apply is admitted or in flight.
+    pub fn update_applies_in_flight(&self) -> bool {
+        !self.pending_update_applies.is_empty() || !self.update_apply_results.is_empty()
+    }
+
+    /// Stop accepting applies and join in-flight workers.
+    pub fn shutdown_update_apply_workers(&mut self) -> std::thread::Result<()> {
+        self.pending_update_applies.clear();
+        let mut result = Ok(());
+        for (_, task) in self.update_apply_results.drain() {
+            if let Some(worker) = task.worker
+                && let Err(error) = worker.join()
+            {
+                tracing::warn!(
+                    target: "omaterm::router",
+                    ?error,
+                    "update apply worker did not join cleanly"
+                );
+                result = Err(error);
+            }
+        }
+        result
+    }
+
+    /// Production spawner for one apply: the whole pipeline runs on the
+    /// worker thread (network + files), the UI thread only polls.
+    #[cfg(not(test))]
+    fn start_update_apply_production(&mut self, operation_id: u64) {
+        let Some(pending) = self.pending_update_applies.get(&operation_id).cloned() else {
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("update-apply".into())
+            .spawn(move || {
+                let _ = sender.send(run_update_apply(pending.confirm_downgrade));
+            });
+        self.update_apply_results.insert(
+            operation_id,
+            UpdateApplyResult {
+                receiver,
+                worker: worker.ok(),
+            },
+        );
+    }
+
+    /// Retire one finished apply worker and commit its report.
+    pub fn take_update_apply_completion(&mut self, operation_id: u64) -> Option<DispatchOutcome> {
+        let task = self.update_apply_results.remove(&operation_id)?;
+        if let Some(worker) = task.worker.as_ref()
+            && !worker.is_finished()
+        {
+            self.update_apply_results.insert(operation_id, task);
+            return None;
+        }
+        if let Some(worker) = task.worker
+            && worker.join().is_err()
+        {
+            return self.commit_update_apply(
+                operation_id,
+                UpdateApplyInfo {
+                    stage: crate::update::ApplyStage::Resolve.as_str().to_owned(),
+                    state: "progress".into(),
+                    code: Some("unavailable".into()),
+                    message: "update apply worker stopped before reporting".into(),
+                },
+            );
+        }
+        let info = match task.receiver.try_recv() {
+            Ok(info) => info,
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => UpdateApplyInfo {
+                stage: crate::update::ApplyStage::Resolve.as_str().to_owned(),
+                state: "progress".into(),
+                code: Some("unavailable".into()),
+                message: "update apply worker stopped before reporting".into(),
+            },
+        };
+        self.commit_update_apply(operation_id, info)
+    }
+
+    /// Test-only commit seam for the apply family (no network, no fs).
+    #[cfg(test)]
+    fn commit_update_apply_for_test(
+        &mut self,
+        operation_id: u64,
+        info: UpdateApplyInfo,
+    ) -> Option<DispatchOutcome> {
+        self.commit_update_apply(operation_id, info)
+    }
+
+    /// Commit one computed check for a parked operation. A stale or
+    /// unknown id is a no-op (the caller shut down mid-flight), never a
+    /// fabricated result.
+    pub fn commit_update_check(
+        &mut self,
+        operation_id: u64,
+        info: UpdateCheckInfo,
+    ) -> Option<DispatchOutcome> {
+        let context = self.pending_update_checks.remove(&operation_id)?;
+        if !matches!(context, CommandContext::LocalUser) {
+            // Identity cannot change, but stay defensive rather than
+            // answering on a revoked authority.
+            return Some(DispatchOutcome {
+                result: CommandResult::Err(CommandError::new(
+                    ErrorCode::PermissionDenied,
+                    "update check authority was revoked",
+                )),
+                effects: vec![],
+            });
+        }
+        Some(DispatchOutcome {
+            result: ok(CommandOutput::UpdateCheck(info)),
+            effects: vec![],
+        })
+    }
+
+    /// Live peeking helper for the owner poller and tests.
+    pub fn update_check_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.pending_update_checks.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Owner-side poll: retire every finished worker and return its
+    /// committed outcome pair. Still-running workers stay parked.
+    pub fn poll_update_checks(&mut self) -> Vec<(u64, DispatchOutcome)> {
+        let ids = self.update_check_ids();
+        let mut outcomes = Vec::new();
+        for operation_id in ids {
+            if let Some(outcome) = self.take_update_completion(operation_id) {
+                outcomes.push((operation_id, outcome));
+            }
+        }
+        outcomes
+    }
+
+    /// Retire-helper used only by the update-check tests: commits one
+    /// fabricated result through `commit_update_check` without spawning a
+    /// thread, so no test can ever reach the network.
+    #[cfg(test)]
+    fn commit_update_check_for_test(
+        &mut self,
+        operation_id: u64,
+        info: omaterm_core::UpdateCheckInfo,
+    ) -> Option<DispatchOutcome> {
+        self.commit_update_check(operation_id, info)
+    }
+
+    /// Production spawner: one bounded worker per admitted id.
+    #[cfg(not(test))]
+    fn start_update_check_production(&mut self, operation_id: u64) {
+        let installed = env!("CARGO_PKG_VERSION").to_owned();
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("update-check".into())
+            .spawn(move || {
+                let _ = sender.send(crate::update::check_channel(&installed).into());
+            });
+        self.update_results.insert(
+            operation_id,
+            UpdateResult {
+                receiver,
+                worker: worker.ok(),
+            },
+        );
+    }
+
+    /// Called only by the application owner. Retires one finished check
+    /// and commits its result through the same admission checks as every
+    /// other worker family.
+    pub fn take_update_completion(&mut self, operation_id: u64) -> Option<DispatchOutcome> {
+        let task = self.update_results.remove(&operation_id)?;
+        if let Some(worker) = task.worker.as_ref()
+            && !worker.is_finished()
+        {
+            // Still running: put it back and wait.
+            self.update_results.insert(operation_id, task);
+            return None;
+        }
+        if let Some(worker) = task.worker
+            && worker.join().is_err()
+        {
+            return self.commit_update_check(
+                operation_id,
+                UpdateCheckInfo {
+                    installed: env!("CARGO_PKG_VERSION").to_owned(),
+                    latest: None,
+                    available: false,
+                    state: crate::update::UpdateState::Unavailable.as_str().to_owned(),
+                },
+            );
+        }
+        let info = match task.receiver.try_recv() {
+            Ok(info) => info,
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => UpdateCheckInfo {
+                installed: env!("CARGO_PKG_VERSION").to_owned(),
+                latest: None,
+                available: false,
+                state: crate::update::UpdateState::Unavailable.as_str().to_owned(),
+            },
+        };
+        self.commit_update_check(operation_id, info)
+    }
+
+    /// True while any check is still admitted or in flight (owner poller).
+    pub fn update_checks_in_flight(&self) -> bool {
+        !self.pending_update_checks.is_empty() || !self.update_results.is_empty()
+    }
+
+    /// Stop accepting update checks and join in-flight workers. Call
+    /// during final application shutdown.
+    pub fn shutdown_update_check_workers(&mut self) -> std::thread::Result<()> {
+        self.pending_update_checks.clear();
+        let mut result = Ok(());
+        for (_, task) in self.update_results.drain() {
+            if let Some(worker) = task.worker
+                && let Err(error) = worker.join()
+            {
+                tracing::warn!(
+                    target: "omaterm::router",
+                    ?error,
+                    "update check worker did not join cleanly"
+                );
+                result = Err(error);
+            }
+        }
+        result
     }
 
     /// Stop accepting process queries and join the worker rather than
@@ -3991,12 +4414,251 @@ impl CommandRouter {
                     paused_panes: status.paused_panes,
                 }))
             }
+            OmaCommand::Config(ConfigCommand::Get) => {
+                let config = match config_file_path()
+                    .map(|path| omaterm_state::load_app_config_toml(&path))
+                    .unwrap_or_else(omaterm_state::AppConfig::load)
+                {
+                    Ok(config) => config,
+                    Err(error) => {
+                        return err(ErrorCode::ConfigUnavailable, error.to_string());
+                    }
+                };
+                ok(Out::ConfigGet(ConfigInfo {
+                    theme: config.theme().to_owned(),
+                    translucent_sidebar: config.translucent_sidebar(),
+                    font_family: config.terminal.font_family.clone(),
+                    font_size: config.resolved_font_size(),
+                    scrollback_lines: config.terminal.scrollback_lines,
+                    shell: config.terminal.shell.clone(),
+                    automation_enabled: config.automation_enabled(),
+                    max_results: config.resolved_max_results(),
+                    show_hidden: config.show_hidden(),
+                    git_refresh_secs: config.resolved_git_refresh_secs(),
+                    check_on_startup: config.check_on_startup(),
+                }))
+            }
+            OmaCommand::Config(ConfigCommand::Set { key, value }) => {
+                let Some(path) =
+                    config_file_path().or_else(omaterm_state::default_config_toml_path)
+                else {
+                    return err(ErrorCode::ConfigUnavailable, "no usable config directory");
+                };
+                if let Err(error) = omaterm_state::set_config_key(&path, &key, &value) {
+                    return err(ErrorCode::InvalidRequest, error.to_string());
+                }
+                // Read back the effective value so the caller confirms
+                // without a follow-up `config.get`.
+                let config = match omaterm_state::load_app_config_toml(&path) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        return err(ErrorCode::ConfigUnavailable, error.to_string());
+                    }
+                };
+                let effective = config_effective_value(&config, &key).unwrap_or_default();
+                changed(
+                    effects,
+                    Out::ConfigSet {
+                        key,
+                        value: effective,
+                    },
+                )
+            }
+            OmaCommand::Config(ConfigCommand::Reset { key }) => {
+                let Some(path) =
+                    config_file_path().or_else(omaterm_state::default_config_toml_path)
+                else {
+                    return err(ErrorCode::ConfigUnavailable, "no usable config directory");
+                };
+                let cleared = match key.as_deref() {
+                    Some(_) => 1,
+                    None => omaterm_state::CONFIG_KEYS.len(),
+                };
+                if let Err(error) = omaterm_state::reset_config_key(&path, key.as_deref()) {
+                    return err(ErrorCode::InvalidRequest, error.to_string());
+                }
+                changed(effects, Out::ConfigReset { cleared })
+            }
+            OmaCommand::App(AppCommand::About) => ok(Out::About(AboutInfo {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                wire_version: omaterm_protocol::PROTOCOL_VERSION.to_string(),
+                channel: crate::update::CHANNEL.to_owned(),
+            })),
+            // Update checks are async-only: reaching `dispatch_valid`
+            // means the single-path rule was bypassed.
+            OmaCommand::App(AppCommand::UpdateCheck) => err(
+                ErrorCode::RuntimeFailure,
+                "update check must go through the async owner path",
+            ),
+            OmaCommand::App(AppCommand::UpdateApply { .. }) => err(
+                ErrorCode::RuntimeFailure,
+                "update apply must go through the async owner path",
+            ),
         }
     }
 }
 
+/// Config file override for tests (`OMATERM_CONFIG_FILE`): production
+/// always uses the canonical `~/.config/omaterm/config.toml` path so IPC
+/// callers can never redirect the desktop at an arbitrary file. Tests set
+/// the variable to a temp file while holding the shared env lock.
+fn config_file_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        std::env::var("OMATERM_CONFIG_FILE")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
+/// Run one self-update end to end (S3b). Probe the install kind first:
+/// a package-managed install is refused with pacman guidance before any
+/// byte moves. The pipeline itself lives in `update.rs` and stages
+/// through `LiveApplyHost`; this wrapper turns a refusal into the
+/// stable-shaped report the owner renders.
+#[cfg_attr(test, allow(dead_code))]
+fn run_update_apply(confirm_downgrade: bool) -> UpdateApplyInfo {
+    let installed = env!("CARGO_PKG_VERSION").to_owned();
+    let exe = std::env::current_exe()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // Resolve the channel here, on the worker: a check is cheap and the
+    // apply refuses when there is nothing newer than the target.
+    let target = match crate::update::discover_latest_stable_public(&installed) {
+        Ok(target) => target,
+        Err(stage_refusal) => {
+            let (stage, refusal) = stage_refusal;
+            return apply_refusal_report(stage, refusal);
+        }
+    };
+    // An unconfirmed downgrade is refused before any byte moves.
+    if !confirm_downgrade
+        && crate::update::is_newer(&installed, &target).is_ok_and(|newer| !newer)
+        && target != installed
+    {
+        return apply_refusal_report(
+            crate::update::ApplyStage::Resolve,
+            crate::update::ApplyRefusal::Unavailable,
+        );
+    }
+    let plan = crate::update::ApplyPlan {
+        target,
+        installed,
+        exe_path: exe,
+        install_kind: probe_install_kind(),
+    };
+    let work_dir = match std::env::temp_dir().join("omaterm-self-update") {
+        path if path.as_os_str().is_empty() => {
+            return apply_refusal_report(
+                crate::update::ApplyStage::Resolve,
+                crate::update::ApplyRefusal::StagingFailed,
+            );
+        }
+        path => path,
+    };
+    let _ = std::fs::create_dir_all(&work_dir);
+    match crate::update::apply(&crate::update::LiveApplyHost, &plan, &work_dir) {
+        Ok(stage) => UpdateApplyInfo {
+            stage: stage.as_str().to_owned(),
+            state: "completed".into(),
+            code: None,
+            message: format!("Installed {}", plan.target),
+        },
+        Err((stage, refusal)) => apply_refusal_report(stage, refusal),
+    }
+}
+
+/// Map one refusal onto the wire payload.
+fn apply_refusal_report(
+    stage: crate::update::ApplyStage,
+    refusal_: crate::update::ApplyRefusal,
+) -> UpdateApplyInfo {
+    UpdateApplyInfo {
+        stage: stage.as_str().to_owned(),
+        state: "progress".into(),
+        code: Some(refusal_.code().to_owned()),
+        message: match refusal_ {
+            crate::update::ApplyRefusal::ManagedInstall => {
+                crate::update::managed_install_guidance().to_owned()
+            }
+            other => format!("update stopped at {} ({})", stage.as_str(), other.code()),
+        },
+    }
+}
+
+/// Ask the platform package manager whether it owns the running binary.
+/// `pacman -Qo <path>` is the source of truth on Arch/Omarchy; a missing
+/// binary or any other platform reports `Unknown`, which the pipeline
+/// treats as "try" (the atomic write must still succeed on its own).
+fn probe_install_kind() -> crate::update::InstallKind {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(_) => return crate::update::InstallKind::Unknown,
+    };
+    #[cfg(target_os = "linux")]
+    {
+        if std::process::Command::new("pacman")
+            .arg("-Qo")
+            .arg(&exe)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            return crate::update::InstallKind::Managed;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = &exe;
+    }
+    crate::update::InstallKind::Unknown
+}
+
 fn opaque_pane(pane: PaneId) -> String {
     HistoryManager::opaque_name(pane.0.as_bytes())
+}
+
+/// Effective string form of one dotted config key, mirroring the
+/// `config.get` output so `config.set` can echo without a second query.
+fn config_effective_value(config: &omaterm_state::AppConfig, key: &str) -> Option<String> {
+    match key {
+        "appearance.theme" => Some(config.theme().to_owned()),
+        "appearance.translucent-sidebar" => Some(config.translucent_sidebar().to_string()),
+        "terminal.font-family" => Some(
+            config
+                .terminal
+                .font_family
+                .clone()
+                .unwrap_or_else(|| "(system default)".into()),
+        ),
+        "terminal.font-size" => Some(format!("{:.1}", config.resolved_font_size())),
+        "terminal.scrollback-lines" => Some(
+            config
+                .terminal
+                .scrollback_lines
+                .map(|lines| lines.to_string())
+                .unwrap_or_else(|| "engine default".into()),
+        ),
+        "terminal.shell" => Some(
+            config
+                .terminal
+                .shell
+                .clone()
+                .unwrap_or_else(|| "(platform default)".into()),
+        ),
+        "automation.enabled" => Some(config.automation_enabled().to_string()),
+        "files.max-results" => Some(config.resolved_max_results().to_string()),
+        "files.show-hidden" => Some(config.show_hidden().to_string()),
+        "git.refresh-secs" => Some(config.resolved_git_refresh_secs().to_string()),
+        "updates.check-on-startup" => Some(config.check_on_startup().to_string()),
+        _ => None,
+    }
 }
 
 fn dispose_session(mut session: TerminalSession) {
@@ -9816,6 +10478,241 @@ mod tests {
             .expect("session live");
         let terminal = handle.lock().expect("session lock");
         (terminal.history_enabled(), terminal.history_paused())
+    }
+
+    #[test]
+    fn config_get_set_and_reset_round_trip_through_a_temp_file() {
+        // Serializes with the CLI env guard: `OMATERM_CONFIG_FILE` is
+        // process-global, and the CLI `connection`/`launcher` suites
+        // mutate sibling `OMATERM_*` variables on other threads.
+        let dir = std::env::temp_dir().join(format!(
+            "omaterm-router-config-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("config test dir");
+        let file = dir.join("config.toml");
+        unsafe {
+            std::env::set_var("OMATERM_CONFIG_FILE", file.to_string_lossy().into_owned());
+        }
+        let guard = ConfigFileGuard;
+        let mut router = CommandRouter::new(WorkspaceCoordinator::new(std::env::temp_dir()));
+
+        // Defaults out of an absent file.
+        let got = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Config(ConfigCommand::Get),
+        );
+        let CommandResult::Ok(CommandOutput::ConfigGet(info)) = got.result else {
+            panic!("config get on defaults: {:?}", got.result);
+        };
+        assert_eq!(info.theme, "system");
+        assert!((info.font_size - 14.0).abs() < f32::EPSILON);
+        assert!(info.check_on_startup);
+
+        // Set echoes the effective value without a follow-up query.
+        let set = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Config(ConfigCommand::Set {
+                key: "terminal.font-size".into(),
+                value: "13".into(),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ConfigSet { key, value }) = set.result else {
+            panic!("config set: {:?}", set.result);
+        };
+        assert_eq!(key, "terminal.font-size");
+        assert_eq!(value, "13.0");
+        assert!(has_persistence_dirty(&set.effects));
+
+        // Unknown keys and invalid values fail honestly; the file keeps
+        // only the one valid write.
+        let unknown = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Config(ConfigCommand::Set {
+                key: "terminal.nope".into(),
+                value: "1".into(),
+            }),
+        );
+        assert!(matches!(
+            unknown.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::InvalidRequest
+        ));
+        let invalid = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Config(ConfigCommand::Set {
+                key: "terminal.font-size".into(),
+                value: "200".into(),
+            }),
+        );
+        assert!(matches!(
+            invalid.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::InvalidRequest
+        ));
+
+        // Reset clears back to defaults; full reset reports the whitelist.
+        let reset = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Config(ConfigCommand::Reset {
+                key: Some("terminal.font-size".into()),
+            }),
+        );
+        let CommandResult::Ok(CommandOutput::ConfigReset { cleared }) = reset.result else {
+            panic!("config reset: {:?}", reset.result);
+        };
+        assert_eq!(cleared, 1);
+        let reset_all = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::Config(ConfigCommand::Reset { key: None }),
+        );
+        let CommandResult::Ok(CommandOutput::ConfigReset { cleared }) = reset_all.result else {
+            panic!("config reset all: {:?}", reset_all.result);
+        };
+        assert_eq!(cleared, omaterm_state::CONFIG_KEYS.len());
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_apply_park_and_commit_reports_stages() {
+        let mut router = router();
+        // Foreign authority is denied before admission.
+        let denied = router.dispatch(
+            CommandContext::Project(ProjectId::new()),
+            OmaCommand::App(AppCommand::UpdateApply {
+                confirm_downgrade: true,
+            }),
+        );
+        assert!(matches!(
+            denied.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::PermissionDenied
+        ));
+
+        // Local authority parks one apply and gets a `Pending` receipt.
+        let admitted = match router.prepare_update_apply(CommandContext::LocalUser, false) {
+            Ok(operation_id) => ok(CommandOutput::Pending { operation_id }),
+            Err(error) => CommandResult::Err(error),
+        };
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = admitted else {
+            panic!("apply must park");
+        };
+        assert!(router.update_applies_in_flight());
+
+        // One at a time: a second apply is refused while the first runs.
+        assert!(matches!(
+            router.prepare_update_apply(CommandContext::LocalUser, false),
+            Err(ref error) if error.code == ErrorCode::RuntimeFailure
+        ));
+
+        // A completed report retires the admission exactly once.
+        let outcome = router
+            .commit_update_apply_for_test(
+                operation_id,
+                UpdateApplyInfo {
+                    stage: "restart".into(),
+                    state: "completed".into(),
+                    code: None,
+                    message: "Installed 0.5.0".into(),
+                },
+            )
+            .expect("parked apply must commit");
+        let CommandResult::Ok(CommandOutput::UpdateApply(info)) = outcome.result else {
+            panic!("committed apply: {:?}", outcome.result);
+        };
+        assert_eq!(info.state, "completed");
+        assert!(info.code.is_none());
+        assert!(!router.update_applies_in_flight());
+    }
+
+    /// Clears `OMATERM_CONFIG_FILE` on drop so the override never leaks
+    /// into sibling tests on the same thread.
+    struct ConfigFileGuard;
+
+    #[test]
+    fn update_check_about_reports_identity() {
+        let mut router = router();
+        let about = router.dispatch(
+            CommandContext::LocalUser,
+            OmaCommand::App(AppCommand::About),
+        );
+        let CommandResult::Ok(CommandOutput::About(info)) = about.result else {
+            panic!("about must answer synchronously: {:?}", about.result);
+        };
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            info.wire_version,
+            omaterm_protocol::PROTOCOL_VERSION.to_string()
+        );
+        assert_eq!(info.channel, crate::update::CHANNEL);
+    }
+
+    #[test]
+    fn update_check_park_commit_and_retire_without_network() {
+        let mut router = router();
+        // A foreign authority is denied before any admission.
+        let denied = router.dispatch(
+            CommandContext::Project(ProjectId::new()),
+            OmaCommand::App(AppCommand::UpdateCheck),
+        );
+        assert!(matches!(
+            denied.result,
+            CommandResult::Err(ref error) if error.code == ErrorCode::PermissionDenied
+        ));
+
+        // Local authority parks the query and gets a `Pending` receipt.
+        // NOTE: `dispatch_async` now spawns the network worker in
+        // production builds, so this test drives the parking primitive
+        // directly — the same primitive `dispatch_async` calls — and never
+        // touches the network.
+        let admitted = match router.prepare_update_check(CommandContext::LocalUser) {
+            Ok(operation_id) => DispatchOutcome {
+                result: ok(CommandOutput::Pending { operation_id }),
+                effects: vec![],
+            },
+            Err(error) => DispatchOutcome {
+                result: CommandResult::Err(error),
+                effects: vec![],
+            },
+        };
+        let CommandResult::Ok(CommandOutput::Pending { operation_id }) = admitted.result else {
+            panic!("check must park: {:?}", admitted.result);
+        };
+        assert!(router.update_checks_in_flight());
+
+        // The test build never spawns the network worker: commit the
+        // fabricated result directly and assert the retire path.
+        let injected = UpdateCheckInfo {
+            installed: env!("CARGO_PKG_VERSION").to_owned(),
+            latest: Some("99.0.0".into()),
+            available: true,
+            state: crate::update::UpdateState::UpdateAvailable
+                .as_str()
+                .to_owned(),
+        };
+        let outcome = router
+            .commit_update_check_for_test(operation_id, injected)
+            .expect("parked check must commit");
+        let start = std::time::Instant::now();
+        let _ = start;
+        let CommandResult::Ok(CommandOutput::UpdateCheck(info)) = outcome.result else {
+            panic!("committed check: {:?}", outcome.result);
+        };
+        assert!(info.available);
+        assert_eq!(info.latest.as_deref(), Some("99.0.0"));
+        assert!(!router.update_checks_in_flight());
+        // Retiring is idempotent: the same id never commits twice.
+        assert!(router.poll_update_checks().is_empty());
+    }
+    impl Drop for ConfigFileGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("OMATERM_CONFIG_FILE");
+            }
+        }
     }
 
     #[test]

@@ -79,6 +79,10 @@ pub enum ErrorCode {
     /// The file is not openable as text: binary content or invalid UTF-8
     /// (M19). Rejected with a reason rather than lossy silent conversion.
     NotTextFile,
+    /// No usable config directory exists (M21 S2): `config.get` cannot
+    /// load and `config.set`/`config.reset` cannot persist. Defaults
+    /// still apply in-process; only the file round-trip is unavailable.
+    ConfigUnavailable,
 }
 
 impl ErrorCode {
@@ -119,6 +123,7 @@ impl ErrorCode {
             Self::DocumentConflict => "document_conflict",
             Self::DocumentTooLarge => "document_too_large",
             Self::NotTextFile => "not_text_file",
+            Self::ConfigUnavailable => "config_unavailable",
         }
     }
 }
@@ -227,6 +232,49 @@ pub enum CommandOutput {
         pid: u32,
         signal: &'static str,
     },
+    /// Effective general configuration (M21 S2): the resolved scalar
+    /// values, not the raw `Option` struct — IPC/CLI callers get what
+    /// the desktop actually uses.
+    ConfigGet(ConfigInfo),
+    /// One `config.set` applied: the key plus the effective value read
+    /// back, so callers confirm without a follow-up query.
+    ConfigSet {
+        key: String,
+        value: String,
+    },
+    /// `config.reset` applied: how many known keys were cleared.
+    ConfigReset {
+        cleared: usize,
+    },
+    /// App identity for `app.about` (M21 S3): the compiled-in crate
+    /// version (the owner overrides it with the live binary when one is
+    /// resolved, so a self-updated install reports truthfully) plus the
+    /// IPC wire protocol version, kept distinct — agents gate on the wire
+    /// version for compatibility, never the app version.
+    About(AboutInfo),
+    /// Result of a stable-channel update check (M21 S3a). Pure data; the
+    /// wire level never touches the network (the desktop owner does).
+    UpdateCheck(UpdateCheckInfo),
+    /// Progress or completion of one self-update (M21 S3b). `stage` is one
+    /// of the pipeline's stable names; `state` is `progress` or
+    /// `completed`; `message` is bounded prose for the UI (never used for
+    /// control flow — agents branch on `state`, `stage`, and `code`).
+    UpdateApply(UpdateApplyInfo),
+}
+
+/// One self-update report (M21 S3b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateApplyInfo {
+    /// Pipeline stage: `resolve`, `download`, `verify`, `stage`,
+    /// `replace`, `confirm`, `restart`.
+    pub stage: String,
+    /// `progress` while working, `completed` when the install replaced
+    /// the binaries (and the restart is the caller's gate).
+    pub state: String,
+    /// Stable refusal code when the pipeline stopped (absent on success).
+    pub code: Option<String>,
+    /// Bounded human text, never parsed for control flow.
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,6 +398,49 @@ pub struct HistoryStatusInfo {
     pub archive_files: usize,
     pub archive_bytes: u64,
     pub paused_panes: usize,
+}
+
+/// Effective general configuration for `config.get` (M21 S2). Plain
+/// resolved scalars, matching what the desktop applies at startup.
+/// `font_family`/`shell`/`scrollback_lines` are `None` when unset (engine
+/// or platform default applies); everything else carries its default.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigInfo {
+    pub theme: String,
+    pub translucent_sidebar: bool,
+    pub font_family: Option<String>,
+    pub font_size: f32,
+    pub scrollback_lines: Option<u32>,
+    pub shell: Option<String>,
+    pub automation_enabled: bool,
+    pub max_results: u32,
+    pub show_hidden: bool,
+    pub git_refresh_secs: u64,
+    pub check_on_startup: bool,
+}
+
+/// App identity for `app.about`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AboutInfo {
+    pub version: String,
+    pub wire_version: String,
+    pub channel: String,
+}
+
+/// Outcome of a stable-channel update check. Truly current builds report
+/// `available: false`; pre-releases are never considered (locked
+/// stable-only channel).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateCheckInfo {
+    /// Version compiled into the running binary.
+    pub installed: String,
+    /// Newest stable semver on the channel, when discovered.
+    pub latest: Option<String>,
+    /// True only when `latest` parses and is strictly newer.
+    pub available: bool,
+    /// Stable state identifier, never prose: `up_to_date`,
+    /// `update_available`, `offline`, `rate_limited`, `unavailable`.
+    pub state: String,
 }
 
 /// One bounded journal row for `history list`. Command text comes only from
