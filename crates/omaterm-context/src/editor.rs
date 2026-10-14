@@ -458,6 +458,11 @@ pub fn canonical_document_path(root: &Path, user_path: &Path) -> Result<PathBuf,
             Err(EditorError::NotFound)
         }
         Err(super::boundary::ContextError::Io(error)) => Err(EditorError::Io(error)),
+        // Resolution never takes caller input, so this arm is unreachable
+        // today; map it to a plain I/O error rather than inventing a variant.
+        Err(super::boundary::ContextError::InvalidInput(message)) => {
+            Err(EditorError::Io(std::io::Error::other(message)))
+        }
     }
 }
 

@@ -153,7 +153,7 @@ pub const SKIP_TRAVERSE_NAMES: &[&str] = &[
     ".venv",
 ];
 
-fn is_skipped_dir(entry: &ignore::DirEntry) -> bool {
+pub(crate) fn is_skipped_dir(entry: &ignore::DirEntry) -> bool {
     entry.depth() > 0
         && entry.file_type().is_some_and(|kind| kind.is_dir())
         && SKIP_TRAVERSE_NAMES

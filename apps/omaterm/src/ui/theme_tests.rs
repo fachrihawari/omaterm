@@ -94,10 +94,6 @@ fn light_text_and_semantic_inks_have_readable_contrast() {
         LIGHT.red,
         LIGHT.purple,
         LIGHT.lime,
-        // Editor/diff syntax tokens reuse shared roles: the string, number,
-        // and keyword hues are covered above via orange/cyan/purple, but the
-        // comment approximation has its own token and needs its own row.
-        LIGHT.comment_token,
         LIGHT.active_line_no,
     ] {
         for background in [
@@ -109,10 +105,75 @@ fn light_text_and_semantic_inks_have_readable_contrast() {
             LIGHT.selected_project_bg,
             LIGHT.tree_selected_bg,
         ] {
-            let contrast = (luminance(background) + 0.05) / (luminance(foreground) + 0.05);
+            let contrast = (luminance(background).max(luminance(foreground)) + 0.05)
+                / (luminance(background).min(luminance(foreground)) + 0.05);
             assert!(
                 contrast >= 4.5,
                 "{foreground:06x} on {background:06x}: {contrast}"
+            );
+        }
+    }
+    // Tertiary chrome and editor/diff tokens (counts, hints, line numbers,
+    // comments) render on neutral surfaces, not the saturated selection
+    // fills; they must still clear AA where they actually sit.
+    for foreground in [LIGHT.muted2, LIGHT.line_no, LIGHT.comment_token] {
+        for background in [LIGHT.bg, LIGHT.bg2, LIGHT.panel, LIGHT.panel2] {
+            let contrast = (luminance(background).max(luminance(foreground)) + 0.05)
+                / (luminance(background).min(luminance(foreground)) + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "tertiary {foreground:06x} on {background:06x}: {contrast}"
+            );
+        }
+    }
+}
+
+/// Dark chrome carries the same body/meta text roles as light, so the same
+/// WCAG AA floor applies. Previously `muted2` (3.39) and `line_no` (2.45)
+/// fell below it on real surfaces (counts, hints, line numbers).
+#[test]
+fn dark_text_and_semantic_inks_have_readable_contrast() {
+    for foreground in [
+        DARK.text,
+        DARK.text2,
+        DARK.muted,
+        DARK.blue,
+        DARK.cyan,
+        DARK.green,
+        DARK.yellow,
+        DARK.orange,
+        DARK.red,
+        DARK.purple,
+        DARK.lime,
+        DARK.active_line_no,
+    ] {
+        for background in [
+            DARK.bg,
+            DARK.bg2,
+            DARK.panel,
+            DARK.panel2,
+            DARK.panel3,
+            DARK.selected_project_bg,
+            DARK.tree_selected_bg,
+        ] {
+            let contrast = (luminance(background).max(luminance(foreground)) + 0.05)
+                / (luminance(background).min(luminance(foreground)) + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "{foreground:06x} on {background:06x}: {contrast}"
+            );
+        }
+    }
+    // Editor/diff tokens (comments, line numbers) render on the editor/diff
+    // surfaces, not the saturated panel fills; AA is asserted against the
+    // neutral editor backgrounds they actually use.
+    for foreground in [DARK.comment_token, DARK.muted2, DARK.line_no] {
+        for background in [DARK.bg, DARK.bg2, DARK.panel, DARK.panel2] {
+            let contrast = (luminance(background).max(luminance(foreground)) + 0.05)
+                / (luminance(background).min(luminance(foreground)) + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "tertiary {foreground:06x} on {background:06x}: {contrast}"
             );
         }
     }

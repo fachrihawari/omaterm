@@ -101,6 +101,9 @@ pub fn setting_meta(key: &str) -> SettingMeta {
             "Transparent sidebar",
             "Blur the desktop behind the project list",
         ),
+        "appearance.reduced-motion" => {
+            ("Reduce motion", "Scroll jumps instantly instead of easing")
+        }
         "terminal.font-family" => ("Font", "Monospace family for terminal text"),
         "terminal.font-size" => ("Font size", "Point size of terminal text"),
         "terminal.shell" => ("Shell", "Default shell on Windows"),

@@ -107,6 +107,7 @@ impl From<ContextError> for GitError {
         match error {
             ContextError::PathOutsideRoot => Self::PathOutsideRoot,
             ContextError::Io(error) => Self::Io(error),
+            ContextError::InvalidInput(message) => Self::Io(std::io::Error::other(message)),
         }
     }
 }

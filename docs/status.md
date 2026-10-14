@@ -9,6 +9,272 @@
 
 ## Current position
 
+### Search preview now uses the real editor, read-only — 2026-10-14 (uncommitted)
+
+The preview was a bespoke renderer with its own bounded read. It is now the
+**editor itself in read-only mode**, so preview and editor share one renderer
+and cannot drift on highlighting, tab expansion, or glyph metrics.
+
+**What changed**
+
+- **`EditorViewMode { Editable, ReadOnly }`** threaded through `render_editor`.
+  Read-only gates exactly the editing affordances: no caret, no selection
+  painting, no current-line highlight, no gutter/code click-to-caret, no drag
+  handlers, no cursor position in the footer, and **no `EntityInputHandler`
+  registration** — so the document cannot receive typing by construction.
+  Landed as a behavior-preserving change first (call site passed `Editable`,
+  tests green) before any read-only caller existed.
+- **The preview is a real document.** The match's file opens through the
+  coordinator, so the whole file is available, editor caps/revision tracking
+  and external-change detection apply, and reopening the same path reuses the
+  live document.
+- **Hidden until promoted.** `preview_document` makes the tab strip (and the
+  `Alt+<n>` strip routing) skip the document. Enter clears the slot, which *is*
+  the promotion mechanism. Esc closes the overlay and closes the preview unless
+  the file was already open as a real tab.
+- **Reveal + free scroll.** The match line is revealed via the same
+  `editor_rows_handles` the editor uses; read-only installs no input owner, so
+  nothing re-centers when the user scrolls away.
+- **Deleted:** `render_search_preview`'s bespoke row loop,
+  `omaterm_context::read_file_preview`, `FilePreview`,
+  `DEFAULT_PREVIEW_RADIUS` and their tests, and the preview half of the
+  `content_search` worker (`PreviewRequest`/`PreviewResult`/`submit_preview`/
+  `take_preview`). Net code reduction; one renderer instead of two.
+
+**Two bugs found by dogfooding and fixed**
+
+1. **Preview mounted the file into the pane on focus.** `EditorCommand::Open`
+   is asynchronous, and its completion rides `PendingUiLaunch::EditorOpen`,
+   whose handler calls `editor_activate_selected` — so any preview open stole
+   the active surface. The preview now dispatches through
+   `coordinator.dispatch_async` directly, with no `PendingUiLaunch`, so the
+   document is registered and readable without activating anything.
+2. **Preview never loaded.** The immediate `match` on the dispatch result
+   expected `EditorOpened`, but an async open returns `Pending`. The new
+   `pending_preview_opens` map is drained by the launch poller into
+   `preview_document` (generation-checked, so a superseded request is dropped).
+
+**Verification**
+
+- `cargo fmt --all --check` PASS.
+- `cargo clippy --workspace --all-targets -- -D warnings` PASS.
+- `cargo test --workspace --exclude omaterm-cli` PASS (**858 tests, 0 failed**).
+- `python3 scripts/check-docs.py` PASS (66/66 methods, 46/46 shortcuts).
+
+**NOT verified: on-screen behaviour.** The read-only preview, the hidden-tab
+rule, promotion on Enter, and the reveal-on-open have not been seen rendering.
+This is recorded as a gap, not a pass.
+
+### Phase 3–5: keyboard focus, overlay scroll fix, split search preview — 2026-10-14 (uncommitted)
+
+Continuation of the UI/UX + accessibility overhaul. Three defects and two
+feature slices, all in `apps/omaterm` plus one new read in `omaterm-context`.
+
+**5.1 — overlay scroll leak and click-through (reported by the user)**
+
+Root cause, confirmed in source: the overlay guard in `capture_wheel` returned
+**without `cx.stop_propagation()`** (only `route_wheel` stopped it), and GPUI's
+`Hitbox::should_handle_scroll` is a plain "is the pointer over this hitbox"
+test that ignores z-order — so native scroll containers behind an open overlay
+(`git-panel-scroll`, the files `uniform_list`, editor, diff) still received the
+wheel. The Settings-specific fix from the earlier pass only special-cased
+`settings_open`; palette, cheatsheet, branch picker, and the new search overlay
+were never covered.
+
+- New `overlay_wheel_owner(OverlayFlags)` (pure, tested) + `overlay_wheel_target`
+  route the open overlay's **own** list through the shared `scroll::Motion`
+  easing, then always consume the event.
+- New `WheelTarget::{Palette, Keybindings, ContentSearch, BranchPicker}`.
+- `ctrlp_frame` now calls `.occlude()`, so a click on overlay padding can no
+  longer fall through to the panel behind it (`hit_test` only stops collecting
+  hitboxes behind an element with `HitboxBehavior::BlockMouse`, which no
+  overlay set before).
+
+**5.2–5.6 — global search gains a telescope-style split preview**
+
+- The worker serves search **and** preview jobs on one thread (one active + one
+  replaceable pending, generation-tagged), so a fast arrow sweep cannot render
+  a stale file and no thread is spawned per row.
+- The overlay is now results-left / preview-right. The preview is
+  syntax-highlighted via `editor::tokenize` + `detect_language`, centered on
+  the matched line, scrolled to it, and renders an explicit state for every
+  case (no selection / loading / error / window) — never a silent blank pane.
+- Single click selects and previews; double click or Enter opens the file.
+- New `omaterm_context::read_file_preview`: bounded (bytes/lines/line length),
+  resolves through `canonicalize_under_root` so traversal and symlink escapes
+  are rejected, NUL-probes binaries, and returns
+  `{lines, start_line, total_lines, target_line, language, truncated}`.
+
+**Phase 3 — keyboard and focus parity**
+
+- Roving focus model: `ChromeControl` + `GitSyncAction`, with
+  `chrome_controls()` / `chrome_focus_step()` / `chrome_activate()` derived from
+  **what is actually rendered**, so Tab can never land on an invisible control.
+  Tab / Shift+Tab move the ring, Enter/Space activate, Esc releases.
+- Focus ring: `FOCUS_RING_WIDTH` token + `primitives::focus_ring()` applied to
+  the inspector tabs, tab strip, new-tab button, Git remote actions, and the
+  Projects toggle. Exactly one ring is visible at a time by construction.
+- Context menus take arrow keys (`project_menu_selected` /
+  `terminal_menu_selected`), with the keyboard highlight and hover sharing one
+  visual state.
+- Tooltips: one reusable `components/tooltip.rs` view (`tooltip::attach`)
+  rather than a view type per control; applied to the icon-only Git remote
+  buttons.
+- Click-to-caret wired for the commit field via a new `text_field::FieldBounds`
+  recorder (painted bounds → caret offset), plus double-click word select. The
+  module-wide `#![allow(dead_code)]` from the previous pass is **removed** —
+  every helper is now consumed.
+
+**Phase 4 — tokens, motion, and state polish**
+
+- New `ui/tokens.rs`: named radius / spacing / row-height tokens replacing five
+  ad-hoc radii and nineteen ad-hoc padding values (77 radius and ~60 spacing
+  call sites migrated). Ordering is asserted at compile time.
+- `appearance.reduced-motion` config key (validated, live-applied): disables
+  scroll easing and touchpad momentum. This is the app's `prefers-reduced-motion`
+  equivalent; three `scroll::Motion` tests cover snap, dropped coast, and the
+  easing default.
+- `primitives::status_dot()` replaces stray `●` text glyphs with one measured
+  circle; `primitives::panel_state()` consolidates the one-line loading/empty
+  panel states. Error/warning states stay per-surface on purpose (a Git failure
+  reads red, "git unavailable" amber, a process-query failure red) — the shared
+  enum deliberately does not model them.
+- Git `Failed` now renders `error_text` (red) instead of sharing the amber
+  warning color with `Unavailable`.
+- Letter-spacing (4.7) re-verified against the locked GPUI 0.2.2 source: no
+  tracking field exists on `Styled` or `TextRun`, so the gap stands as recorded
+  in `ui/metrics.rs`.
+
+**Verification** (all run in this tree)
+
+- `cargo fmt --all --check` PASS.
+- `cargo clippy --workspace --all-targets -- -D warnings` PASS.
+- `cargo test --workspace --exclude omaterm-cli` PASS (**865 tests, 0 failed**).
+- `python3 scripts/check-docs.py` PASS (66/66 methods, **46/46 shortcuts**).
+- `git diff --check` PASS.
+
+**NOT verified: no on-screen validation of this batch.** The screen was in use
+for the whole session, so nothing below has been seen rendering. This is
+recorded as a gap, not a pass:
+
+- the overlay scroll fix and `.occlude()` click containment;
+- the split preview layout, its scroll-to-match, and the preview states;
+- the focus ring on each control and the Tab walk order;
+- the context-menu arrow highlight;
+- the tooltip appearance;
+- click-to-caret in the commit field;
+- `reduced-motion` actually changing scroll feel.
+
+Next action: run the Wayland matrix (wide + 640px compact, both themes) for the
+list above, then commit. Everything is unit-tested and type-checked; only the
+rendered behaviour is unproven.
+
+### UI/UX + accessibility overhaul, shared component layer, global search — 2026-10-14 (uncommitted)
+
+Dogfooding reported two concrete defects in the Git commit field (Ctrl+A did
+not select; the caret left a visible gap / shifted glyphs as it moved). Both
+were reproduced, root-caused, fixed, and re-verified on a live Wayland
+session. The fix required a shared component layer because single-line
+editing existed in five divergent implementations.
+
+**Root causes found**
+
+- **Gap/shift on caret move** (`git_input_view.rs`): the field rendered one
+  string as two independently-shaped `StyledText` runs with a fixed 2px caret
+  `div` wedged between them. Re-shaping each side at the caret boundary drops
+  kerning across it, so the text visibly shifted and left a gap. The editor
+  already had the correct discipline (`main.rs` editor rows: shape once,
+  measure the prefix, paint the caret as an overlay).
+- **Ctrl+A / editing class**: routing existed but the model was thin — no
+  word motion, no `Ctrl+Shift+arrow` word selection, no word delete, no
+  undo/redo, no double-click select. `captures()` whitelisted only
+  `a/c/x/v/home/end`.
+- **No reusable components**: `ui/primitives.rs` held only `pill`/`kbd`/
+  `cmd_icon`; every "button" was a bare `div().on_mouse_down(..)` (110
+  occurrences, 0 `on_click`).
+
+**What landed**
+
+- **`ui/components/text_field.rs` (new).** One `TextField` (grapheme-aware
+  caret/selection, word motion, clipboard, bounded undo/redo) plus one key
+  router and one renderer. The renderer shapes the whole line once and paints
+  the caret with a `canvas` overlay measured from the shaped prefix, so the
+  caret can never re-flow the text. 13 unit tests.
+- **All five single-line inputs migrated** to it: Git commit/stash/repo
+  filter, Settings inline edit (via `GitInput`, now a thin wrapper), palette
+  query, cheatsheet filter, branch picker, terminal find. The palette and
+  branch picker lost their bespoke caret/backspace/char arms.
+- **Global content search (`Ctrl+Shift+F`), new feature.** Backend
+  `omaterm-context/src/search.rs`: ignore-aware, symlink-safe, cancellable
+  walk with explicit bounds (50k files, 2 MiB/file, 2000 matches, 100/file,
+  512-byte preview) and a NUL binary probe; literal (case/whole-word) and
+  regex modes. Desktop `content_search.rs`: one background worker, one active
+  + one replaceable pending request, generation-tagged results. Overlay
+  groups matches by file and renders each line with **syntax highlighting**
+  (`editor::tokenize` keyed by `detect_language`) plus a match highlight on
+  top. `Alt+C/W/R` toggle case/word/regex, Enter opens the file in the editor.
+- **Terminal scrollback find moved to `Alt+F`** (scoped to a focused
+  terminal) so `Ctrl+Shift+F` could become global search, matching VSCode.
+  `Alt+F` rather than `Ctrl+F` because `docs/shortcuts.md` reserves bare
+  `Ctrl` bytes for the PTY (Ctrl+F is readline forward-char, 0x06) and that
+  invariant is not worth breaking; `Alt+F` sits with the app's other Alt
+  chords (Alt+Z, Alt+N/P). Registry + `docs/shortcuts.md` updated (41 ids,
+  check-docs enforces parity).
+- **Contrast fixes** (`ui/theme.rs`): dark `muted2` 3.39→5.04, dark
+  `line_no` 2.45→5.04, light `muted2` 4.03→4.73, plus dark `cyan` and `red`
+  which were just under 4.5 on saturated panel fills. Added a dark-theme
+  contrast test mirroring the existing light one; tertiary tokens are
+  asserted against the neutral surfaces they actually render on.
+
+**Verification** (all run in this tree)
+
+- `cargo fmt --all --check` PASS.
+- `cargo clippy --workspace --all-targets -- -D warnings` PASS.
+- `cargo test --workspace --exclude omaterm-cli` PASS (848 tests, 0 failed;
+  desktop binary 344, `omaterm-context` 115).
+- `python3 scripts/check-docs.py` PASS (66/66 methods, 41/41 shortcuts).
+- `git diff --check` PASS.
+- **Native Wayland validation PASS** (real session, release build, isolated
+  `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_RUNTIME_DIR`, fixture repo):
+  caret sits between glyphs with no gap at mid-word positions; `Ctrl+A`
+  selects the whole buffer (visible highlight) and typing replaces it;
+  `Ctrl+Left/Right` word motion lands on word starts; `Ctrl+Backspace`
+  deletes a word; `Ctrl+Z` restores it. Same field behavior confirmed in the
+  cheatsheet filter and terminal find. Global search: overlay opens,
+  `hello` returns 3 results in 4 files grouped by file with line numbers,
+  `format!("hello {name}")` renders with keyword/string token colors and the
+  match highlighted, `Alt+W`/`Alt+R` toggle and re-run, Enter opens the file
+  in the editor with highlighting and closes the overlay.
+- Captures: `docs/evidence/ui-ux-a11y-2026-10-14/` (16 PNGs).
+
+**Known limits / not claimed**
+
+- **Screen readers cannot see the app.** GPUI 0.2.2 ships no accessibility
+  tree (no `accesskit` dependency or feature anywhere in the crate), so there
+  is no framework hook to publish semantics. This is recorded as a
+  framework-level gap, analogous to the existing letter-spacing gap noted in
+  `ui/metrics.rs`. Everything not gated on that tree — keyboard reachability,
+  visible focus, contrast, control semantics — remains actionable and is
+  tracked below.
+- **Not yet done from the plan** (Phases 3–5 remainder): GPUI tab-stops
+  (`focus_next`/`focus_prev`) and a visible focus ring; roving focus for the
+  Files/Git/History lists; keyboard paths for the remaining pointer-only
+  actions; mouse click-to-caret/drag-select inside the shared fields;
+  tooltips for icon-only controls; buttons migrated to Enter/Space
+  activation. `ui/components/text_field.rs` carries a scoped
+  `#![allow(dead_code)]` covering exactly the un-wired pointer helpers
+  (`caret_offset_for_click`, `on_click`, `on_drag`, `offset_for_x`,
+  `select_word_at`, `select_line_at`, `word_end_boundary`, `with_family`,
+  `cell_width`) — verified by removing the allowance and confirming that
+  list — matching the `editor.rs` "dead-code allowed until the surface is
+  wired" precedent.
+- The pre-existing `omaterm-cli` suite failures (8, from exported
+  `OMATERM_*` selectors in this shell) are unchanged and unrelated.
+
+Next action: wire GPUI tab-stops + focus ring and migrate the remaining
+pointer-only controls, then re-run the Wayland matrix at 640px compact in
+both themes.
+
 ### Settings bug fixes: scroll leak, smooth scroll, nav case, footer badge (`feat/settings-app`) — 2026-10-13 (uncommitted)
 
 Four Settings overlay defects found in dogfooding, all fixed in

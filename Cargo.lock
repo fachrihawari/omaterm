@@ -3910,6 +3910,7 @@ dependencies = [
  "libc",
  "notify",
  "omaterm-core",
+ "regex",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "windows-sys 0.59.0",

@@ -1,116 +1,83 @@
 //! Bounded single-line editing shared by Git commit and stash drafts.
-use crate::editor::{EditorCaret, next_grapheme, previous_grapheme};
-use unicode_segmentation::UnicodeSegmentation;
+//!
+//! Since the shared component layer landed, this is a thin typed wrapper over
+//! [`crate::ui::components::text_field::TextField`]: the buffer, caret,
+//! selection, word motion, clipboard, and undo/redo all live in the shared
+//! field. The wrapper exists so Git-specific naming and the message byte
+//! ceiling stay explicit at the call sites.
+use crate::ui::components::text_field::TextField;
 
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct GitInput {
-    text: String,
-    caret: EditorCaret,
+    field: TextField,
 }
 
+impl Default for GitInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// The wrapper mirrors the shared field's editing surface so Git call sites
+// keep their names. Production code reaches the field directly via `field()`;
+// the wrapper accessors below are exercised by `git_input_tests`, which is why
+// they are not dead even though `cargo` cannot see the test call graph.
+#[cfg_attr(not(test), allow(dead_code))]
 impl GitInput {
+    /// A Git draft with the commit-message byte ceiling applied.
+    pub fn new() -> Self {
+        Self {
+            field: TextField::new().with_max_bytes(MAX_MESSAGE_BYTES),
+        }
+    }
     pub fn text(&self) -> &str {
-        &self.text
+        self.field.text()
     }
 
+    // The wrapper exposes the editing surface of the shared field so Git call
+    // sites keep their names. A few accessors are exercised only by the Git
+    // tests today (production paths reach the field directly via `field()`),
+    // hence the scoped allows.
     pub fn cursor(&self) -> usize {
-        self.caret.cursor
-    }
-
-    pub fn selection(&self) -> Option<(usize, usize)> {
-        self.caret.selection_range()
+        self.field.cursor()
     }
 
     pub fn into_text(self) -> String {
-        self.text
+        self.field.into_text()
     }
 
     pub fn selected_text(&self) -> Option<&str> {
-        self.caret
-            .selection_range()
-            .map(|(start, end)| &self.text[start..end])
+        self.field.selected_text()
     }
 
     pub fn insert(&mut self, text: &str) -> bool {
-        let clean: String = text
-            .chars()
-            .filter_map(|ch| match ch {
-                '\n' | '\r' | '\t' => Some(' '),
-                ch if ch.is_control() => None,
-                ch => Some(ch),
-            })
-            .collect();
-        if clean.is_empty() {
-            return false;
-        }
-        let (start, end) = self
-            .caret
-            .selection_range()
-            .unwrap_or((self.caret.cursor, self.caret.cursor));
-        let available = MAX_MESSAGE_BYTES.saturating_sub(self.text.len() - (end - start));
-        let accepted = clean
-            .grapheme_indices(true)
-            .take_while(|(offset, cluster)| offset + cluster.len() <= available)
-            .last()
-            .map_or(0, |(offset, cluster)| offset + cluster.len());
-        if accepted == 0 {
-            return false;
-        }
-        self.text.replace_range(start..end, &clean[..accepted]);
-        self.caret.collapse_to(start + accepted);
-        self.caret.clamp(&self.text);
-        true
+        self.field.insert(text)
     }
 
     pub fn select_all(&mut self) {
-        self.caret.anchor = Some(0);
-        self.caret.cursor = self.text.len();
+        self.field.select_all();
     }
 
     pub fn move_to(&mut self, offset: usize, extend: bool) {
-        if extend {
-            self.caret.anchor.get_or_insert(self.caret.cursor);
-            self.caret.cursor = offset;
-        } else {
-            self.caret.collapse_to(offset);
-        }
-        self.caret.clamp(&self.text);
+        self.field.move_to(offset, extend);
     }
 
     pub fn move_horizontal(&mut self, forward: bool, extend: bool) {
-        let offset = if !extend && let Some((start, end)) = self.caret.selection_range() {
-            if forward { end } else { start }
-        } else if forward {
-            next_grapheme(&self.text, self.caret.cursor)
-        } else {
-            previous_grapheme(&self.text, self.caret.cursor)
-        };
-        self.move_to(offset, extend);
+        self.field.move_horizontal(forward, extend);
     }
 
     pub fn delete(&mut self, forward: bool) -> bool {
-        let (start, end) = self.caret.selection_range().unwrap_or_else(|| {
-            if forward {
-                (
-                    self.caret.cursor,
-                    next_grapheme(&self.text, self.caret.cursor),
-                )
-            } else {
-                (
-                    previous_grapheme(&self.text, self.caret.cursor),
-                    self.caret.cursor,
-                )
-            }
-        });
-        if start == end {
-            return false;
-        }
-        self.text.replace_range(start..end, "");
-        self.caret.collapse_to(start);
-        self.caret.clamp(&self.text);
-        true
+        self.field.delete(forward)
+    }
+    /// Read access to the underlying shared field (routing, render).
+    pub fn field(&self) -> &TextField {
+        &self.field
+    }
+
+    pub fn field_mut(&mut self) -> &mut TextField {
+        &mut self.field
     }
 }
 

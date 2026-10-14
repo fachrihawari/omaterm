@@ -53,7 +53,8 @@ Design rules:
 | `diff.hunk-copy` | `Ctrl+Shift+C` | Copy hunk, selection, or editor text | Diff/Terminal/Editor |
 | `terminal.paste` | `Ctrl+Shift+V` | Paste (two-step for risky content) | Terminal |
 | `terminal.scroll` | `Shift+PageUp/PageDown` | Scrollback (not in alt-screen) | Terminal |
-| `terminal.search` | `Ctrl+Shift+F` | Find in terminal scrollback (Enter next, Shift+Enter previous) | Terminal |
+| `terminal.search` | `Alt+F` | Find in terminal scrollback (Enter next, Shift+Enter previous) | Terminal |
+| `search.files` | `Ctrl+Shift+F` | Search in files (global content search) | Global |
 | `pane.zoom` | `Alt+Z` | Toggle pane zoom (maximize focused pane) | Terminal |
 | `terminal.font-zoom` | `Ctrl +/-/0` | Terminal font size (step in/out, reset) | Terminal |
 | `history.opt-in` | `Ctrl+Shift+O` | Encrypted history opt-in/out (two-step) | Global |
@@ -68,6 +69,11 @@ Design rules:
 | `git.nav` | `Alt+Up/Down/Left/Right/Enter` | Move Git selection, expand/collapse commits, open diff | Git tab |
 | `files.nav` | `Alt+Up/Down/Left/Right/Enter` | Move tree selection, collapse/expand, open file | Files tab |
 | `overlay.dismiss` | `Esc` | Close overlay or dialog | Overlay |
+| `chrome.focus` | `Tab / Shift+Tab` | Move the keyboard focus ring across chrome controls | Global |
+| `chrome.activate` | `Enter / Space` | Activate the focused chrome control | Global |
+| `menu.nav` | `Up/Down/Enter` | Navigate and activate an open context menu | Context menu |
+| `search.files-nav` | `Up/Down/Enter` | Navigate search results, preview, open the file | Search overlay |
+| `search.files-options` | `Alt+C/W/R` | Search case-sensitivity / whole word / regex | Search overlay |
 
 Notes:
 

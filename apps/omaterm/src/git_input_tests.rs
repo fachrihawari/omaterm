@@ -23,7 +23,7 @@ fn selection_collapses_toward_motion_and_cut_deletes_only_selection() {
     input.move_to(11, true);
     assert_eq!(input.selected_text(), Some("world"));
     input.move_horizontal(false, false);
-    assert_eq!(input.caret.cursor, 6);
+    assert_eq!(input.cursor(), 6);
     assert_eq!(input.selected_text(), None);
     input.move_to(11, true);
     input.delete(false);

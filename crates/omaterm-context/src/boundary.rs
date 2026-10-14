@@ -18,6 +18,10 @@ pub enum ContextError {
     PathOutsideRoot,
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// A caller-supplied argument was rejected before any I/O (e.g. an empty
+    /// or unparsable search query). Stable code `invalid_input`.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 impl ContextError {
@@ -28,6 +32,7 @@ impl ContextError {
         match self {
             Self::PathOutsideRoot => "path_outside_root",
             Self::Io(_) => "io_error",
+            Self::InvalidInput(_) => "invalid_input",
         }
     }
 }
@@ -95,6 +100,7 @@ mod tests {
             match error {
                 Err(ContextError::PathOutsideRoot) => {}
                 Err(ContextError::Io(_)) => {}
+                Err(ContextError::InvalidInput(_)) => {}
                 Ok(path) => panic!("escape resolved inside root: {}", path.display()),
             }
         }

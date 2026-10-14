@@ -1,71 +1,34 @@
 //! Keyboard and presentation adapter for the two single-line Git fields.
-use crate::git_input::GitInput;
-use gpui::{
-    App, ClipboardItem, Div, HighlightStyle, KeyDownEvent, StyledText, div, prelude::*, px, rgb,
-};
+//!
+//! The buffer, caret, selection, word motion, clipboard, and undo/redo now
+//! live in [`crate::ui::components::text_field`]. This module only adapts the
+//! `GitInput` wrapper to the shared field so Git call sites keep their names,
+//! and re-exports the shared render so the Git panel keeps one import.
+use gpui::{App, KeyDownEvent};
 
+use crate::git_input::GitInput;
+use crate::ui::components::text_field::{self, FieldAction, FieldStyle, TextField};
+
+/// What a routed keystroke did, so the Git owner can react.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputAction {
     Edit,
     Submit,
     Release,
 }
 
+/// Whether a keystroke is an editing chord the focused field owns.
 pub fn captures(event: &KeyDownEvent) -> bool {
-    let modifiers = event.keystroke.modifiers;
-    !modifiers.alt
-        && !modifiers.platform
-        && (!modifiers.control
-            || matches!(
-                event.keystroke.key.to_lowercase().as_str(),
-                "a" | "c" | "x" | "v" | "home" | "end"
-            ))
+    text_field::captures(event)
 }
 
-pub fn on_key(input: &mut GitInput, event: &KeyDownEvent, cx: &mut App) -> InputAction {
-    let key = event.keystroke.key.to_lowercase().replace('_', "");
-    let modifiers = event.keystroke.modifiers;
-    if modifiers.control {
-        match key.as_str() {
-            "a" => input.select_all(),
-            "c" | "x" => {
-                if let Some(text) = input.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-                    if key == "x" {
-                        input.delete(false);
-                    }
-                }
-            }
-            "v" => {
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    input.insert(&text);
-                }
-            }
-            "home" => input.move_to(0, modifiers.shift),
-            "end" => input.move_to(input.text().len(), modifiers.shift),
-            _ => {}
-        }
-    } else {
-        match key.as_str() {
-            "escape" | "tab" => return InputAction::Release,
-            "enter" | "return" | "kpenter" => return InputAction::Submit,
-            "home" => input.move_to(0, modifiers.shift),
-            "end" => input.move_to(input.text().len(), modifiers.shift),
-            "left" => input.move_horizontal(false, modifiers.shift),
-            "right" => input.move_horizontal(true, modifiers.shift),
-            "backspace" => {
-                input.delete(false);
-            }
-            "delete" => {
-                input.delete(true);
-            }
-            _ => {
-                if let Some(text) = &event.keystroke.key_char {
-                    input.insert(text);
-                }
-            }
-        }
+/// Route one keystroke to the Git field.
+pub fn on_key(input: &mut GitInput, event: &KeyDownEvent, clipboard: &mut App) -> InputAction {
+    match text_field::on_key(input.field_mut(), event, clipboard) {
+        FieldAction::Release => InputAction::Release,
+        FieldAction::Submit => InputAction::Submit,
+        FieldAction::Edited | FieldAction::Ignored => InputAction::Edit,
     }
-    InputAction::Edit
 }
 
 pub struct FieldView<'a> {
@@ -75,69 +38,23 @@ pub struct FieldView<'a> {
     pub caret_visible: bool,
 }
 
-pub fn render(field: FieldView<'_>) -> Div {
-    let colors = crate::ui::theme::colors();
-    let empty = GitInput::default();
-    let input = field.input.unwrap_or(&empty);
-    let text = input.text();
-    let row = div()
-        .flex()
-        .items_center()
-        .min_w(px(0.0))
-        .overflow_hidden()
-        .whitespace_nowrap();
-    if text.is_empty() && !field.focused {
-        return row.text_color(rgb(colors.muted)).child(field.placeholder);
-    }
-    let cursor = if field.focused {
-        input.cursor()
-    } else {
-        text.len()
-    };
-    let styled = |start: usize, end: usize| {
-        let highlights = input
-            .selection()
-            .filter(|_| field.focused)
-            .and_then(|(a, b)| {
-                let a = a.max(start);
-                let b = b.min(end);
-                (a < b).then(|| {
-                    (
-                        a - start..b - start,
-                        HighlightStyle {
-                            background_color: Some({
-                                let (h, s, l, a) = colors.selection_hsla;
-                                gpui::hsla(h, s, l, a)
-                            }),
-                            ..Default::default()
-                        },
-                    )
-                })
-            });
-        StyledText::new(text[start..end].to_owned()).with_highlights(highlights)
-    };
-    row.child(
-        div()
-            .min_w(px(0.0))
-            .flex()
-            .justify_end()
-            .overflow_hidden()
-            .child(div().flex_shrink_0().child(styled(0, cursor))),
-    )
-    .child(
-        div()
-            .w(px(if field.focused { 2.0 } else { 0.0 }))
-            .h(px(15.0))
-            .flex_shrink_0()
-            .when(field.focused && field.caret_visible, |caret| {
-                caret.bg(rgb(colors.text))
-            }),
-    )
-    .child(
-        div()
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .child(styled(cursor, text.len())),
+/// Render a Git field using the shared single-line renderer.
+pub fn render(field: FieldView<'_>) -> gpui::Div {
+    render_tracked(field, None)
+}
+
+/// [`render`] with an optional bounds recorder for click-to-caret.
+pub fn render_tracked(field: FieldView<'_>, bounds: Option<text_field::FieldBounds>) -> gpui::Div {
+    let style = FieldStyle::body();
+    let empty = TextField::new();
+    let text = field.input.map(|input| input.field()).unwrap_or(&empty);
+    text_field::render_tracked(
+        Some(text),
+        field.placeholder,
+        field.focused,
+        field.caret_visible,
+        &style,
+        bounds,
     )
 }
 
@@ -158,6 +75,10 @@ mod tests {
             "delete",
             "home",
             "end",
+            // Newly owned by the shared field (regression guard).
+            "ctrl-backspace",
+            "ctrl-shift-left",
+            "ctrl-z",
         ] {
             let event = KeyDownEvent {
                 keystroke: gpui::Keystroke::parse(chord).unwrap(),

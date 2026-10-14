@@ -22,6 +22,7 @@ pub mod git_sync;
 pub mod ignore;
 pub mod repos;
 pub mod resolve;
+pub mod search;
 
 pub use boundary::{ContextError, canonicalize_under_root};
 pub use diff::{
@@ -65,4 +66,8 @@ pub use ignore::IgnoreFilter;
 pub use repos::{MAX_SCAN_ENTRIES, resolve_repos, scan_repos, scan_repos_with};
 pub use resolve::{
     GIT_TOPLEVEL_TIMEOUT, git_toplevel_of, git_toplevel_of_with, resolve_root, resolve_root_with,
+};
+pub use search::{
+    ContentMatch, ContentSearchResults, MAX_FILE_BYTES, MAX_MATCHES, MAX_MATCHES_PER_FILE,
+    MAX_PREVIEW_BYTES, MAX_QUERY_BYTES, MAX_SEARCH_FILES, SearchOptions, search_in_files,
 };

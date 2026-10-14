@@ -78,14 +78,14 @@ pub const DARK: Palette = Palette {
     text: 0xF2EFFF,
     text2: 0xCFC8EC,
     muted: 0x9C93C4,
-    muted2: 0x6C6394,
+    muted2: 0x9289BC,
     blue: 0x4CC9F0,
     blue2: 0x7C5CFF,
-    cyan: 0x9D7CFF,
+    cyan: 0xA184FF,
     green: 0x2EE6A6,
     yellow: 0xFFD23F,
     orange: 0xFF8A3D,
-    red: 0xFF4D6D,
+    red: 0xFF5C79,
     purple: 0xD96BFF,
     lime: 0xB8F35A,
     header_bg: 0x0F0E17,
@@ -114,9 +114,9 @@ pub const DARK: Palette = Palette {
     kbd_bg: 0x221D35,
     kbd_border: 0x3A3156,
     active_line_no: 0x9C93C4,
-    comment_token: 0x7A70A8,
+    comment_token: 0x8F86B8,
     match_accent: 0xFF4FD8,
-    line_no: 0x564E78,
+    line_no: 0x9289BC,
     line_no_add: 0x2E9E77,
     line_no_del: 0xB04A60,
     diff_add_bg: 0x2EE6A61F,
@@ -141,7 +141,7 @@ pub const LIGHT: Palette = Palette {
     text: 0x202936,
     text2: 0x3C495A,
     muted: 0x596779,
-    muted2: 0x68778B,
+    muted2: 0x5E6C7E,
     blue: 0x175FBD,
     blue2: 0x175FBD,
     cyan: 0x096C79,
@@ -179,7 +179,7 @@ pub const LIGHT: Palette = Palette {
     active_line_no: 0x3C495A,
     comment_token: 0x476D39,
     match_accent: 0x175FBD,
-    line_no: 0x637187,
+    line_no: 0x5E6C7E,
     line_no_add: 0x28653B,
     line_no_del: 0x984047,
     diff_add_bg: 0x2EA0431F,
@@ -278,6 +278,10 @@ pub const SIDEBAR_LABEL_SCRIM_OPACITY: f32 = 0.82;
 /// Was the faint full-rectangle focus stroke.
 #[allow(dead_code)]
 pub const PANE_FOCUS_STROKE_ALPHA: f32 = 0.34;
+/// Keyboard focus ring for chrome controls (Phase 3). Drawn as a border on
+/// the focused control only, so exactly one ring is visible at a time. The
+/// ring color is `blue`; this is the width, in logical pixels.
+pub const FOCUS_RING_WIDTH: f32 = 1.5;
 /// Was the translucent top tab accent.
 #[allow(dead_code)]
 pub const TAB_ACTIVE_TOP_ACCENT_ALPHA: f32 = 0.9;

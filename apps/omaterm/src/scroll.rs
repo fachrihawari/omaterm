@@ -22,6 +22,11 @@ pub struct Motion {
     pub position: f32,
     pub target: f32,
     source: Source,
+    /// When true, scroll jumps straight to the target instead of easing or
+    /// coasting. Set from the `appearance.reduced-motion` config key, which is
+    /// the app's equivalent of the desktop `prefers-reduced-motion` hint: some
+    /// users are made motion-sick by animation, and a terminal is not worth it.
+    reduced: bool,
 }
 
 impl Motion {
@@ -30,7 +35,14 @@ impl Motion {
             position,
             target: position,
             source: Source::Wheel,
+            reduced: false,
         }
+    }
+
+    /// Opt into reduced motion: every push lands on its target immediately.
+    pub fn with_reduced_motion(mut self, reduced: bool) -> Self {
+        self.reduced = reduced;
+        self
     }
 
     pub fn push_wheel(&mut self, delta: f32, min: f32, max: f32) {
@@ -40,6 +52,10 @@ impl Motion {
         }
         self.target = (self.target + delta).clamp(min, max);
         self.source = Source::Wheel;
+        if self.reduced {
+            // No ease-out: land on the target this frame.
+            self.position = self.target;
+        }
     }
 
     /// Applies precise input immediately and records its release velocity. A
@@ -51,7 +67,13 @@ impl Motion {
         self.position = position;
         self.target = position;
         self.source = Source::Touchpad {
-            velocity: if hit_boundary { 0.0 } else { velocity },
+            // Reduced motion also drops the coast: momentum that keeps moving
+            // after the fingers stop is the worst offender for motion sickness.
+            velocity: if hit_boundary || self.reduced {
+                0.0
+            } else {
+                velocity
+            },
         };
     }
 
@@ -121,6 +143,46 @@ mod tests {
         assert_eq!(motion.target, -70.0);
         motion.push_wheel(1000.0, -200.0, 0.0);
         assert_eq!(motion.target, 0.0);
+    }
+
+    /// Reduced motion lands on the target immediately: no ease-out frame is
+    /// needed, so the caller's `advance` sees no work to do.
+    #[test]
+    fn reduced_motion_snaps_wheel_input_to_the_target() {
+        let mut motion = Motion::new(0.0).with_reduced_motion(true);
+        motion.push_wheel(-96.0, -1000.0, 0.0);
+        assert_eq!(motion.position, -96.0, "wheel input must land immediately");
+        assert_eq!(motion.target, -96.0);
+        assert!(
+            !motion.advance(Duration::from_millis(8), Duration::ZERO, -1000.0, 0.0),
+            "nothing left to animate"
+        );
+    }
+
+    /// Reduced motion also drops touchpad momentum: the coast is the part most
+    /// likely to bother motion-sensitive users.
+    #[test]
+    fn reduced_motion_drops_touchpad_coast() {
+        let mut motion = Motion::new(0.0).with_reduced_motion(true);
+        motion.push_touchpad(40.0, Some(Duration::from_millis(10)), 0.0, 1000.0);
+        assert_eq!(motion.position, 40.0);
+        // No velocity means the coast branch settles instead of continuing.
+        assert!(!motion.advance(
+            Duration::from_millis(16),
+            Duration::from_millis(100),
+            0.0,
+            1000.0
+        ));
+        assert_eq!(motion.position, 40.0);
+    }
+
+    /// Full motion is the default, so the setting is opt-in.
+    #[test]
+    fn motion_defaults_to_easing() {
+        let mut motion = Motion::new(0.0);
+        motion.push_wheel(-96.0, -1000.0, 0.0);
+        assert_eq!(motion.position, 0.0, "default motion starts at rest");
+        assert!(motion.advance(Duration::from_millis(8), Duration::ZERO, -1000.0, 0.0));
     }
 
     #[test]

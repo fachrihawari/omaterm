@@ -177,9 +177,15 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         id: "terminal.search",
-        chord: "Ctrl+Shift+F",
+        chord: "Alt+F",
         action: "Find in terminal scrollback (Enter next, Shift+Enter previous)",
         context: "Terminal",
+    },
+    Shortcut {
+        id: "search.files",
+        chord: "Ctrl+Shift+F",
+        action: "Search in files (global content search)",
+        context: "Global",
     },
     Shortcut {
         id: "pane.zoom",
@@ -264,6 +270,36 @@ pub const SHORTCUTS: &[Shortcut] = &[
         chord: "Esc",
         action: "Close overlay or dialog",
         context: "Overlay",
+    },
+    Shortcut {
+        id: "chrome.focus",
+        chord: "Tab / Shift+Tab",
+        action: "Move the keyboard focus ring across chrome controls",
+        context: "Global",
+    },
+    Shortcut {
+        id: "chrome.activate",
+        chord: "Enter / Space",
+        action: "Activate the focused chrome control",
+        context: "Global",
+    },
+    Shortcut {
+        id: "menu.nav",
+        chord: "Up/Down/Enter",
+        action: "Navigate and activate an open context menu",
+        context: "Context menu",
+    },
+    Shortcut {
+        id: "search.files-nav",
+        chord: "Up/Down/Enter",
+        action: "Navigate search results, preview, open the file",
+        context: "Search overlay",
+    },
+    Shortcut {
+        id: "search.files-options",
+        chord: "Alt+C/W/R",
+        action: "Search case-sensitivity / whole word / regex",
+        context: "Search overlay",
     },
 ];
 

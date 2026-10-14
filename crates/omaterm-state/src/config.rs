@@ -72,6 +72,7 @@ pub struct UpdatesSettings {
 pub const CONFIG_KEYS: &[&str] = &[
     "appearance.theme",
     "appearance.translucent-sidebar",
+    "appearance.reduced-motion",
     "terminal.font-family",
     "terminal.font-size",
     "terminal.scrollback-lines",
@@ -99,6 +100,8 @@ pub struct AppearanceSettings {
     pub theme: Option<String>,
     /// See-through, blurred Projects sidebar. Absent means on.
     pub translucent_sidebar: Option<bool>,
+    /// Disable scroll easing and momentum. Absent means full motion.
+    pub reduced_motion: Option<bool>,
 }
 
 /// `[automation]` section. All keys optional.
@@ -161,6 +164,12 @@ impl AppConfig {
     /// Defaults to true. Blur itself is up to the platform compositor.
     pub fn translucent_sidebar(&self) -> bool {
         self.appearance.translucent_sidebar.unwrap_or(true)
+    }
+
+    /// Whether scroll easing and momentum are disabled. Defaults to false
+    /// (full motion), matching the desktop default.
+    pub fn reduced_motion(&self) -> bool {
+        self.appearance.reduced_motion.unwrap_or(false)
     }
 
     /// Whether local automation stays enabled. Defaults to true; when false
@@ -295,6 +304,12 @@ pub fn load_app_config_toml(path: &Path) -> Result<AppConfig, ConfigError> {
                 )
             })?;
             config.appearance.translucent_sidebar = Some(translucent);
+        }
+        if let Some(item) = table.get("reduced-motion") {
+            let reduced = item
+                .as_bool()
+                .ok_or_else(|| invalid("appearance", "reduced-motion", "expected true or false"))?;
+            config.appearance.reduced_motion = Some(reduced);
         }
     }
 
@@ -475,6 +490,7 @@ fn parse_config_value(key: &str, value: &str) -> Result<toml_edit::Item, ConfigE
             Ok(toml_edit::value(value.trim()))
         }
         "appearance.translucent-sidebar" => parse_bool("appearance", "translucent-sidebar", value),
+        "appearance.reduced-motion" => parse_bool("appearance", "reduced-motion", value),
         "terminal.font-family" => {
             if value.trim().is_empty() {
                 return Err(invalid("terminal", "font-family", "must not be empty"));
@@ -595,6 +611,18 @@ mod tests {
         assert!(config.show_hidden());
         assert_eq!(config.resolved_git_refresh_secs(), DEFAULT_GIT_REFRESH_SECS);
         assert!(config.translucent_sidebar());
+        // Full motion by default; reduced motion is opt-in.
+        assert!(!config.reduced_motion());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reduced_motion_parses_and_rejects_non_bool() {
+        let dir = temp_dir("reduced-motion");
+        let path = write_config(&dir, "[appearance]\nreduced-motion = true\n");
+        assert!(load_app_config_toml(&path).unwrap().reduced_motion());
+        let path = write_config(&dir, "[appearance]\nreduced-motion = \"yes\"\n");
+        assert!(load_app_config_toml(&path).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
