@@ -1,0 +1,30 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "oterm",
+      "devDependencies": {
+        "lucide": "^1.58.0",
+        "mygo-cli": "^0.5.5",
+      },
+    },
+  },
+  "packages": {
+    "@egoist/mygo-cli-darwin-arm64": ["@egoist/mygo-cli-darwin-arm64@0.5.5", "", { "os": "darwin", "cpu": "arm64" }, "sha512-k2G3zF6bw2a0rra58KFSlzP6o9G69WPLvNBOzflphH40BOf9tZxKx4YTHujPazC6eJxnvXErMJ/vf+9nk93dsg=="],
+
+    "@egoist/mygo-cli-darwin-x64": ["@egoist/mygo-cli-darwin-x64@0.5.5", "", { "os": "darwin", "cpu": "x64" }, "sha512-9+V8Ck65I4fNFCgzMeJtD8AY3EoelCNX7ShR/iJukjvrBXfTroXgCua16UBEMiLYqtTF+vxA49tLWUSEY47tOg=="],
+
+    "@egoist/mygo-cli-linux-arm64": ["@egoist/mygo-cli-linux-arm64@0.5.5", "", { "os": "linux", "cpu": "arm64" }, "sha512-BU9At6Ji9JX9/y9bT2LK/R7UMtMwrHZ6ygg7JCMrDW7NeZZ0+vaHVp5hQFJbGK/FhmzYC/M6WMIDy+SYODCojw=="],
+
+    "@egoist/mygo-cli-linux-x64": ["@egoist/mygo-cli-linux-x64@0.5.5", "", { "os": "linux", "cpu": "x64" }, "sha512-YQsuof6XcdMHVJFFT90aN23UxyKTxQSscvqKm6X38TPlHANkJ8AfWLEQsljOrnUjrp0S3+Fnzn0NMEbG1JGbWw=="],
+
+    "@egoist/mygo-cli-win32-arm64": ["@egoist/mygo-cli-win32-arm64@0.5.5", "", { "os": "win32", "cpu": "arm64" }, "sha512-LIZ8gL2c0nfwogHm6wmKKi4pPosCHFgUbl6PuuUMAkp2Nw9c/7v2kN26YG/GkIdH01UlOr2F+7OsmeAJvOz71Q=="],
+
+    "@egoist/mygo-cli-win32-x64": ["@egoist/mygo-cli-win32-x64@0.5.5", "", { "os": "win32", "cpu": "x64" }, "sha512-u2fsXgjt1CWpK85PdgM9Yg8MfCAJ85RSRcIv69Qxu/Vljnp5Rd/v0c0kunFme4QEN9HIkmujnDj3j9aLoZf+Uw=="],
+
+    "lucide": ["lucide@1.58.0", "", {}, "sha512-zLmKV6pCsq4awx4vXw6N1WBHim0exJSJjFc8WnnIUzBXk4SuzCb74IET6+akbUERw61U5ODE1JiHgQ1ILrpMKQ=="],
+
+    "mygo-cli": ["mygo-cli@0.5.5", "", { "optionalDependencies": { "@egoist/mygo-cli-darwin-arm64": "0.5.5", "@egoist/mygo-cli-darwin-x64": "0.5.5", "@egoist/mygo-cli-linux-arm64": "0.5.5", "@egoist/mygo-cli-linux-x64": "0.5.5", "@egoist/mygo-cli-win32-arm64": "0.5.5", "@egoist/mygo-cli-win32-x64": "0.5.5" }, "bin": { "mygo": "bin/mygo.js" } }, "sha512-LkddjY8pBO9FygT6o3lG9mV2OUfq+U4a5W2REMg0zmT576MLIQ1tab9k1aNnH2H8bHTsPE5nw8QNuB1jvG5MoQ=="],
+  }
+}

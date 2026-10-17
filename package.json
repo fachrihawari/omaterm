@@ -1,0 +1,14 @@
+{
+  "name": "oterm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "mygo dev",
+    "build": "mygo build",
+    "icons": "bun run scripts/extract-icons.ts"
+  },
+  "devDependencies": {
+    "lucide": "^1.58.0",
+    "mygo-cli": "^0.5.5"
+  }
+}
