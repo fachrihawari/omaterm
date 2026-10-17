@@ -42,11 +42,18 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 			cmdButton(c, iconMore, 14, false)
 		})
 
-		// Code listing.
+		// Code listing. Line 15 carries the mock's cursor block; lines 9–10
+		// are the mock's highlighted range.
 		ui.Scroll(c).Grow(1).Children(func() {
-			ui.Column(c).Padding(8, 0).Children(func() {
+			ui.Column(c).Padding(12, 0).Children(func() {
 				for _, ln := range editorFile {
-					codeLine(c, ln.num, ln.spans)
+					active := ln.num == 9 || ln.num == 10
+					e := codeLine(c, ln.num, ln.spans, active)
+					if ln.num == 15 {
+						e.Children(func() {
+							ui.Box(c).Width(1).Height(16).Background(colText).Margin(0, 2)
+						})
+					}
 				}
 			})
 		})
@@ -63,12 +70,21 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 }
 
 // codeLine renders a gutter number plus colored code spans.
-func codeLine(c *ui.Context, num int, spans []ui.Span) ui.Element {
-	return ui.Row(c).Height(21).Children(func() {
-		ui.Text(c, itoa(num)).Font("JetBrains Mono").FontSize(12).TextColor(colMuted2).Width(46).Padding(0, 12)
+func codeLine(c *ui.Context, num int, spans []ui.Span, active bool) ui.Element {
+	e := ui.Row(c).Height(21)
+	if active {
+		e.Background(ui.Hex("#141a21"))
+	}
+	e.Children(func() {
+		numCol := colMuted2
+		if active {
+			numCol = ui.Hex("#768193")
+		}
+		ui.Text(c, itoa(num)).Font(monoFont).FontSize(12).TextColor(numCol).Width(54).Padding(0, 14)
 		if len(spans) == 0 {
 			spans = []ui.Span{{Text: " "}}
 		}
-		ui.RichText(c, spans...).Font("JetBrains Mono").FontSize(12)
+		ui.RichText(c, spans...).Font(monoFont).FontSize(12)
 	})
+	return e
 }

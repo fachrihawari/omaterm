@@ -11,6 +11,7 @@ import (
 
 var termColorTable = map[int]ui.Color{
 	tcGreen:   colGreen,
+	tcLime:    colLime,
 	tcPurple:  colPurple,
 	tcYellow:  colYellow,
 	tcCyan:    colCyan,
@@ -57,29 +58,48 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 
 func (a *appState) termPane(c *ui.Context, i int) ui.Element {
 	p := &a.panes[i]
-	narrow := a.layout != layoutSingle
-	e := ui.Column(c).Fill().Background(colBg2)
+	// The mock's .subtle-grid under the pane's output.
+	grid := ui.RGBA(255, 255, 255, 0.016)
+	e := ui.Column(c).Fill().Background(colBg2).Draw(func(p *ui.Painter, r ui.Rect) {
+		for x := r.X - 1; x < r.X+r.W; x += 28 {
+			p.Line(x, r.Y, x, r.Y+r.H, 1, grid)
+		}
+		for y := r.Y - 1; y < r.Y+r.H; y += 28 {
+			p.Line(r.X, y, r.X+r.W, y, 1, grid)
+		}
+	})
+	if a.paneFocus == i {
+		// The mock's active pane ring: an inset blue stroke over the edges.
+		e.DrawOver(func(p *ui.Painter, r ui.Rect) {
+			p.Stroke(ui.Rect{X: r.X + 0.5, Y: r.Y + 0.5, W: r.W - 1, H: r.H - 1}, ui.RGBA(90, 169, 255, 0.34), 0, 1)
+		})
+	}
 	e.Children(func() {
-		// Header strip.
-		ui.Row(c).Height(28).AlignItems(ui.Center).Padding(0, 10).Gap(6).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).ClipX().Children(func() {
+		// Header strip: dot, title, shell · pid.
+		ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(8).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).ClipX().Children(func() {
 			kind := dotGreen
 			if p.Dim {
 				kind = dotYellow
 			}
 			dot(c, kind, 6)
-			mutedTxt2(c, p.Title, 10)
-			if !narrow {
-				txt(c, p.Shell, 9, colMuted2)
-				if p.Pid != 0 {
-					txt(c, "· pid "+itoa(p.Pid), 9, colMuted2)
-				}
+			txt(c, p.Title, 10, colText2)
+			meta := p.Shell
+			if p.Pid != 0 {
+				meta += " · pid " + itoa(p.Pid)
 			}
+			mutedTxt2(c, meta, 10)
 		})
 
-		// Output, with the floating action bar over its top right.
-		ui.Box(c).Grow(1).Clip().Children(func() {
+		// Output, with the floating action bar over its top right, showing
+		// while the pane is hovered, as the mock's hover reveal.
+		body := ui.Box(c).Grow(1).Clip()
+		if body.Clicked() {
+			a.paneFocus = i
+		}
+		hovered := body.Hovered()
+		body.Children(func() {
 			ui.Scroll(c).Fill().Children(func() {
-				pad := ui.Column(c).Padding(12, 20).Gap(0)
+				pad := ui.Column(c).Padding(16, 20).Gap(0)
 				if p.Dim {
 					pad = pad.Opacity(0.75)
 				}
@@ -87,38 +107,48 @@ func (a *appState) termPane(c *ui.Context, i int) ui.Element {
 					for _, line := range p.Lines {
 						termLineView(c, line, p.Dim)
 					}
+					if p.Cursor {
+						// The mock's final prompt with its cursor block.
+						ui.Row(c).Margin(32, 0, 0, 0).Gap(8).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, "❯").Font(monoFont).FontSize(12).TextColor(colLime)
+							ui.Box(c).Width(8).Height(15).Background(ui.Hex("#95d7ff"))
+						})
+					}
 				})
 			})
-			ui.Row(c).Absolute().Top(6).Right(8).Gap(0).Radius(6).Border(1, colBorder2).Background(colPaneBar).Padding(1, 2).Children(func() {
-				if cmdButton(c, iconColumns2, 13, false).Tooltip("Split right").Clicked() {
-					a.layout = layoutVertical
-					c.Toast("Vertical terminal split")
-				}
-				if cmdButton(c, iconRows2, 13, false).Tooltip("Split down").Clicked() {
-					a.layout = layoutHorizontal
-					c.Toast("Horizontal terminal split")
-				}
-				if i == 0 {
-					if cmdButton(c, iconRotate, 13, false).Tooltip("Restart").Clicked() {
-						c.Toast("Restarted terminal")
+			if hovered {
+				ui.Row(c).Absolute().Top(7).Right(8).Gap(2).Radius(6).Border(1, colBorder2).Background(colPaneBar).Padding(2, 4).Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.22)).Children(func() {
+					if cmdButton(c, iconColumns2, 14, false).Tooltip("Split right").Clicked() {
+						a.layout = layoutVertical
+						c.Toast("Vertical terminal split")
 					}
-					if cmdButton(c, iconEllipsis, 13, false).Clicked() {
-						c.Toast("More")
+					if cmdButton(c, iconRows2, 14, false).Tooltip("Split down").Clicked() {
+						a.layout = layoutHorizontal
+						c.Toast("Horizontal terminal split")
 					}
-				} else {
-					if cmdButton(c, iconTrash, 13, false).Tooltip("Kill terminal").Clicked() {
-						a.layout = layoutSingle
-						c.Toast("Terminal closed")
+					if i == 0 {
+						if cmdButton(c, iconRotate, 14, false).Tooltip("Restart").Clicked() {
+							c.Toast("Restarted terminal")
+						}
+						if cmdButton(c, iconEllipsis, 14, false).Clicked() {
+							c.Toast("More")
+						}
+					} else {
+						if cmdButton(c, iconTrash, 14, false).Tooltip("Kill terminal").Clicked() {
+							a.layout = layoutSingle
+							c.Toast("Terminal closed")
+						}
 					}
-				}
-			})
+				})
+			}
 		})
 
-		// Pane footer with cwd + size.
-		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(6).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
-			txt(c, a.project().Path, 9, colMuted2)
+		// Pane footer: shell, cwd, dimensions.
+		ui.Row(c).Height(28).AlignItems(ui.Center).Padding(0, 12).Gap(12).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
+			mutedTxt2(c, p.Shell, 10)
+			mutedTxt2(c, a.project().Path, 10)
 			ui.Spacer(c)
-			txt(c, "128×34", 9, colMuted2)
+			mutedTxt2(c, "128×34", 10)
 		})
 	})
 	return e
@@ -136,7 +166,11 @@ func termLineView(c *ui.Context, line termLine, dim bool) ui.Element {
 	if len(spans) == 0 {
 		spans = []ui.Span{{Text: " "}}
 	}
-	return ui.RichText(c, spans...).Font("JetBrains Mono").FontSize(12).LineHeight(1.72)
+	e := ui.RichText(c, spans...).Font(monoFont).FontSize(12).LineHeight(1.72)
+	if line.Top > 0 {
+		e = e.Margin(line.Top, 0, 0, 0)
+	}
+	return e
 }
 
 var _ = fmt.Sprint

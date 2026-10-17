@@ -193,11 +193,11 @@ func diffRowKind(c *ui.Context, num int, del, add bool, spans []ui.Span) ui.Elem
 		if num > 0 {
 			label = itoa(num)
 		}
-		ui.Text(c, label).Font("JetBrains Mono").FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
+		ui.Text(c, label).Font(monoFont).FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
 		if len(spans) == 0 {
 			spans = []ui.Span{{Text: " "}}
 		}
-		ui.RichText(c, spans...).Font("JetBrains Mono").FontSize(12)
+		ui.RichText(c, spans...).Font(monoFont).FontSize(12)
 	})
 	return e
 }
@@ -226,13 +226,13 @@ func (a *appState) inlineDiff(c *ui.Context) ui.Element {
 					} else if ln.add {
 						numCol = colDiffAddLn
 					}
-					ui.Text(c, oldLabel).Font("JetBrains Mono").FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
-					ui.Text(c, newLabel).Font("JetBrains Mono").FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
+					ui.Text(c, oldLabel).Font(monoFont).FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
+					ui.Text(c, newLabel).Font(monoFont).FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
 					spans := ln.spans
 					if len(spans) == 0 {
 						spans = []ui.Span{{Text: " "}}
 					}
-					ui.RichText(c, spans...).Font("JetBrains Mono").FontSize(12)
+					ui.RichText(c, spans...).Font(monoFont).FontSize(12)
 				})
 			}
 		})

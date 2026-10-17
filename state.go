@@ -32,6 +32,7 @@ type gitFile struct {
 
 // termLine is one line of a terminal pane: spans of colored text.
 type termLine struct {
+	Top   float32 // the mock's mt-* margin, in DIPs
 	Spans []span
 }
 
@@ -41,11 +42,12 @@ type span struct {
 }
 
 type paneData struct {
-	Title string
-	Shell string
-	Pid   int
-	Dim   bool // pane 3 renders its output dimmer
-	Lines []termLine
+	Title  string
+	Shell  string
+	Pid    int
+	Dim    bool // pane 3 renders its output dimmer
+	Cursor bool // pane 1 ends with the mock's prompt + cursor block
+	Lines  []termLine
 }
 
 type layoutKind int
@@ -116,7 +118,8 @@ type appState struct {
 	diffStaged bool // diff view shows HEAD↔INDEX
 	diffSplit  bool // split vs inline diff
 
-	panes [3]paneData
+	panes     [3]paneData
+	paneFocus int // the active terminal pane
 
 	fileSearch string
 	fileTree   *fileNode
@@ -174,6 +177,7 @@ func newApp() *appState {
 	}
 	a.setProject(0)
 	a.panes = mockPanes()
+	a.paneFocus = 0
 	a.fileTree = mockFiles()
 	return a
 }

@@ -135,11 +135,11 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 
 func (a *appState) filesPanel(c *ui.Context) ui.Element {
 	return ui.Column(c).Grow(1).Children(func() {
-		// Search box.
+		// Search box, the mock's .selection field without a second border.
 		ui.Box(c).Padding(8).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
 			ui.Row(c).Height(32).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 8).Gap(8).Children(func() {
 				ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(colMuted)
-				ui.TextInput(c, &a.fileSearch).Placeholder("Search files").FontSize(11).Grow(1)
+				ui.TextInputBase(c, &a.fileSearch).Placeholder("Search files").FontSize(11).Grow(1)
 			})
 		})
 
@@ -234,9 +234,9 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 	return ui.Column(c).Grow(1).Children(func() {
 		// Branch + commit box.
 		ui.Column(c).Padding(12).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(colPurple)
-				ui.Text(c, "main").FontSize(11)
+				txt(c, "main", 11, colText)
 				pill(c, "↑0 ↓0")
 				ui.Spacer(c)
 				if cmdButton(c, iconRefresh, 14, false).Clicked() {
@@ -244,17 +244,19 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				}
 				cmdButton(c, iconEllipsis, 14, false)
 			})
-			ui.Box(c).Radius(6).Border(1, colBorder).Background(colInput).Padding(8).Children(func() {
-				ui.TextArea(c, &a.commitMsg).FontSize(11).MinHeight(56).FillWidth()
+			// Commit message box, the mock's .selection textarea.
+			ui.Box(c).Radius(6).Border(1, colBorder).Background(colInput).Children(func() {
+				ui.TextAreaBase(c, &a.commitMsg).FontSize(11).Padding(8).MinHeight(56).FillWidth()
 			})
 			ui.Row(c).Gap(8).Children(func() {
-				commit := ui.PrimaryButton(c, "Commit").Grow(1).Height(32)
+				commit := ui.PrimaryButton(c, "Commit").Grow(1).Height(32).FontSize(11)
 				if commit.Clicked() {
 					if len(a.staged) == 0 {
 						c.Toast("Nothing staged to commit")
 					} else {
 						n := len(a.staged)
 						a.staged = nil
+						a.commitMsg = ""
 						word := "files"
 						if n == 1 {
 							word = "file"
@@ -262,7 +264,12 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 						c.Toast("Committed " + itoa(n) + " staged " + word)
 					}
 				}
-				cmdButton(c, iconChevronDown, 14, false).Width(32).Height(32).Border(1, colBorder2)
+				// Split button for commit options.
+				ui.ButtonBase(c).Width(32).Height(32).Radius(6).Border(1, colBorder2).Shrink(0).Children(func() {
+					ui.Column(c).Fill().Center().Children(func() {
+						ui.Icon(c, iconChevronDown).Width(14).Height(14).TextColor(colMuted)
+					})
+				})
 			})
 		})
 
@@ -325,32 +332,48 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 }
 
 func (a *appState) gitFileRow(c *ui.Context, f *gitFile, staged bool) ui.Element {
-	e := ui.ButtonBase(c).Key(f.Name).FillWidth().Height(40).Padding(0, 12).Gap(8)
+	e := ui.ButtonBase(c).Key(f.Name).FillWidth().Height(40).Padding(0, 12).ClipX()
+	hover := e.Hovered()
+	if hover {
+		e.Background(ui.Hex("#171d25"))
+	}
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			fileBadge(c, f.Name)
-			ui.Column(c).Gap(1).Children(func() {
-				ui.Text(c, f.Name).FontSize(11)
-				ui.Text(c, f.Dir).FontSize(9).TextColor(colMuted)
+			ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
+				txt(c, f.Name, 11, colText)
+				txt(c, f.Dir, 9, colMuted)
 			})
-			ui.Spacer(c)
-			if staged {
-				un := cmdButton(c, iconMinus, 14, false).Tooltip("Unstage")
-				if un.Clicked() {
-					a.unstage(f.Name)
-				}
-				cmdButton(c, iconOpenInNew, 14, false)
-			} else {
-				st := cmdButton(c, iconPlus, 14, false).Tooltip("Stage")
-				if st.Clicked() {
-					a.stage(f.Name)
-				}
-				di := cmdButton(c, iconUndo, 14, false).Tooltip("Discard")
-				if di.Clicked() {
-					a.discard(f.Name)
-				}
+			// The mock's .git-actions stay in layout but are transparent
+			// until the row is hovered.
+			actions := ui.Row(c).Gap(2).Shrink(0)
+			if !hover {
+				actions.Opacity(0)
 			}
-			ui.Text(c, f.Status).FontSize(10).TextColor(statusColor(f.Status))
+			actions.Children(func() {
+				if staged {
+					un := cmdButton(c, iconMinus, 14, false).Tooltip("Unstage")
+					if un.Clicked() {
+						a.unstage(f.Name)
+					}
+					cmdButton(c, iconOpenInNew, 14, false)
+				} else {
+					st := cmdButton(c, iconPlus, 14, false).Tooltip("Stage")
+					if st.Clicked() {
+						a.stage(f.Name)
+					}
+					// Untracked files discard with a trash icon, as the mock.
+					discardIcon := iconUndo
+					if f.Status == "U" || f.Status == "?" {
+						discardIcon = iconTrash
+					}
+					di := cmdButton(c, discardIcon, 14, false).Tooltip("Discard")
+					if di.Clicked() {
+						a.discard(f.Name)
+					}
+				}
+			})
+			txt(c, f.Status, 10, statusColor(f.Status))
 		})
 	})
 	if e.Clicked() {

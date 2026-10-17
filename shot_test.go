@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -25,12 +26,23 @@ func TestShots(t *testing.T) {
 		{"single", func(a *appState) { a.layout = layoutSingle }},
 		{"no-sidebars", func(a *appState) { a.sidebarVisible = false; a.inspectorVisible = false }},
 	}
+	if os.Getenv("SHOT_TOAST") != "" {
+		shots = append(shots, struct {
+			name  string
+			setup func(a *appState)
+		}{"toast", nil})
+	}
 	for _, s := range shots {
 		a := newApp()
 		if s.setup != nil {
 			s.setup(a)
 		}
 		tr := ui.NewTester(a.view, 1440, 900)
+		if s.name == "toast" {
+			tr.Click("phoenix") // shows "Switched to phoenix"
+			tr.Advance(100 * time.Millisecond)
+			tr.Frame()
+		}
 		os.MkdirAll("testdata", 0o755)
 		f, err := os.Create(filepath.Join("testdata", "shot-"+s.name+".png"))
 		if err != nil {

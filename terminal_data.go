@@ -1,11 +1,13 @@
 package main
 
-// Terminal pane contents, transcribed from the mock's pane markup.
+// Terminal pane contents, transcribed from the mock's pane markup. Top is
+// the mock's mt-* margin in DIPs.
 
 // term color indexes
 const (
 	tcDefault = -1
 	tcGreen   = iota
+	tcLime
 	tcPurple
 	tcYellow
 	tcCyan
@@ -23,38 +25,29 @@ func tp(text string) span            { return span{Text: text, Color: tcDefault}
 
 func mockPanes() [3]paneData {
 	p1 := paneData{
-		Title: "bun --filter web dev", Shell: "fish", Pid: 27682,
+		Title: "bun --filter web dev", Shell: "fish", Pid: 27682, Cursor: true,
 		Lines: []termLine{
-			{Spans: []span{tx("omaterm", tcCyan), tp(" on "), tx(" ", tcPurple), tx("main*", tcPurple), tp(" via "), tx("bun", tcYellow), tx(" v1.3.13", tcOrange)}},
+			{Spans: []span{tx("omaterm", tcCyan), tx(" on ", tcMuted), tx(" main*", tcPurple), tx(" via ", tcMuted), tx("bun v1.3.13", tcOrange)}},
 			{Spans: []span{tx("❯", tcGreen), tp(" bun --filter web dev")}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("web dev", tcDim), tx(" $ vite dev", tcMuted)}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("  VITE v6.1.5", tcGreen), tx("  ready in ", tcDefault), tx("1609", tcYellow), tx(" ms", tcDefault)}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("  → Local:   ", tcDim), tx("http://localhost:3000/", tcLink)}},
-			{Spans: []span{tx("  → Network: ", tcDim), tx("use --host to expose", tcMuted)}},
-			{Spans: []span{tx("  → Debug:   ", tcDim), tx("http://localhost:3000/__debug", tcLink)}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("  ⎿  Running…", tcMuted)}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("[vite] connected.", tcMuted)}},
+			{Top: 8, Spans: []span{tp("web dev "), tx("$", tcMuted), tp(" vite dev")}},
+			{Top: 16, Spans: []span{tx("VITE v6.1.5", tcWhite), tx(" ready in ", tcMuted), tx("1609 ms", tcGreen)}},
+			{Top: 12, Spans: []span{tx("➜ ", tcMuted), tp("Local:   "), tx("http://localhost:3000/", tcBlue)}},
+			{Spans: []span{tx("➜ ", tcMuted), tp("Network: "), tx("use --host to expose", tcMuted)}},
+			{Spans: []span{tx("➜ ", tcMuted), tp("Debug:   "), tx("http://localhost:3000/__debug", tcBlue)}},
+			{Top: 12, Spans: []span{tx("└─ Running...", tcCyan)}},
+			{Top: 32, Spans: []span{tx("[vite] connected.", tcMuted)}},
 			{Spans: []span{tx("[vite] hmr update /src/components/GitPanel.tsx", tcMuted)}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("❯", tcGreen)}},
 		},
 	}
 	p2 := paneData{
 		Title: "pnpm api:dev", Shell: "fish", Pid: 27901,
 		Lines: []termLine{
 			{Spans: []span{tx("❯", tcGreen), tp(" pnpm api:dev")}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("> api@1.0.0 dev", tcMuted)}},
+			{Top: 8, Spans: []span{tx("> api@1.0.0 dev", tcMuted)}},
 			{Spans: []span{tx("> tsx watch src/server.ts", tcMuted)}},
-			{Spans: []span{tp("")}},
-			{Spans: []span{tx("✓", tcGreen), tp(" database connected")}},
+			{Top: 12, Spans: []span{tx("✓", tcGreen), tp(" database connected")}},
 			{Spans: []span{tx("✓", tcGreen), tp(" queues initialized")}},
-			{Spans: []span{tx("✓", tcGreen), tp(" server listening "), tx(":4000", tcYellow)}},
+			{Spans: []span{tx("✓", tcGreen), tp(" server listening "), tx(":4000", tcBlue)}},
 		},
 	}
 	p3 := paneData{

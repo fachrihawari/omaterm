@@ -29,13 +29,19 @@ func dot(c *ui.Context, kind int, d float32) ui.Element {
 // cmdButton is the mock's .cmd button: a muted icon, optionally filled
 // and white when active.
 func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Element {
-	e := ui.ButtonBase(c).Padding(size / 2).Radius(4).Shrink(0)
-	if active {
+	// The mock's .cmd: transparent with a 1px transparent border, and on
+	// hover #182029 with a #27313d border and a white icon.
+	e := ui.ButtonBase(c).Padding(size/2).Radius(7).Shrink(0).Border(1, ui.Color{})
+	hover := e.Hovered()
+	switch {
+	case active:
 		e = e.Background(colHover).Border(1, colBorder2)
+	case hover:
+		e = e.Background(ui.Hex("#182029")).Border(1, ui.Hex("#27313d"))
 	}
 	e.Children(func() {
 		i := ui.Icon(c, icon).Width(size).Height(size)
-		if active {
+		if active || hover {
 			i.TextColor(ui.Hex("#ffffff"))
 		} else {
 			i.TextColor(colMuted)
@@ -46,7 +52,7 @@ func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Elemen
 
 // pill is the mock's .pill chip: muted small text on a dark fill.
 func pill(c *ui.Context, text string) ui.Element {
-	return ui.Box(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).Shrink(0).Children(func() {
+	return ui.Row(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).Shrink(0).Justify(ui.Center).Children(func() {
 		ui.Text(c, text).FontSize(9).TextColor(colMuted).SingleLine()
 	})
 }
@@ -95,6 +101,9 @@ func itoa(n int) string {
 	}
 	return string(b[i:])
 }
+
+// monoFont is the mock's monospace family.
+const monoFont = "JetBrains Mono, monospace"
 
 // statusColor colors a git status letter as the mock does.
 func statusColor(status string) ui.Color {

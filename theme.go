@@ -25,6 +25,7 @@ var (
 	colOrange  = ui.Hex("#f3a85f")
 	colRed     = ui.Hex("#ff6f6f")
 	colPurple  = ui.Hex("#c792ea")
+	colLime    = ui.Hex("#b9f263")
 
 	// Surfaces used across the mock.
 	colHover      = ui.Hex("#18202a") // hovered rows / pressed buttons
@@ -78,8 +79,14 @@ func omaTheme() *ui.Theme {
 	t.Selection = colSelection
 	t.Focus = colBlue
 	t.Scrollbar = colBorder2
+	// Toasts and tooltips stay dark, as the mock's .toast.
+	t.Inverse = colPanel3
+	t.InverseText = colText
 	t.Radius = 6
 	t.Spacing = 4
 	t.FontSize = 13
+	// Inter, the mock's UI font, falling back to Noto Sans; JetBrains Mono
+	// for code and terminals, set where they render.
+	t.Font = "Inter, Noto Sans"
 	return t
 }

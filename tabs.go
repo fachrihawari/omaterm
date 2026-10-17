@@ -40,9 +40,15 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	t := &a.tabs[i]
 	active := i == a.activeTab
-	e := ui.ButtonBase(c).Key(i).Height(30).Radius(6).Padding(0, 10).Gap(6).Border(1, ui.Color{})
+	// The mock's .top-tab: rounded top corners, a blue top edge while
+	// active, sitting flush with the content below.
+	e := ui.ButtonBase(c).Key(i).Height(36).Radius(6, 6, 0, 0).Padding(0, 12).Gap(6)
 	if active {
-		e = e.Background(colPanel2).Border(1, colBorder2)
+		e = e.Background(ui.Hex("#141a21")).DrawOver(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W, H: 1}, ui.RGBA(90, 169, 255, 0.9), 0)
+		})
+	} else if e.Hovered() {
+		e = e.Background(colPanel2)
 	}
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
@@ -54,16 +60,22 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			case tabDiff:
 				ui.Icon(c, iconGitCompare).Width(14).Height(14).TextColor(colGreen)
 			}
-			ui.Text(c, t.Label).FontSize(11).TextColor(colText2)
+			labelCol := colText2
+			if active {
+				labelCol = ui.Hex("#ffffff")
+			}
+			ui.Text(c, t.Label).FontSize(12).TextColor(labelCol).SingleLine().Shrink(0)
 			if t.Detail != "" {
-				ui.Text(c, t.Detail).FontSize(9).TextColor(colMuted)
+				ui.Spacer(c)
+				ui.Text(c, t.Detail).FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
 			}
 			if t.Dirty {
-				ui.Text(c, "M").FontSize(9).TextColor(colYellow)
+				ui.Text(c, "M").FontSize(10).TextColor(colYellow).SingleLine().Shrink(0)
 			}
 			if len(a.tabs) > 1 {
-				x := ui.ButtonBase(c).Padding(2).Radius(3).Children(func() {
-					ui.Icon(c, iconX).Width(12).Height(12).TextColor(colMuted)
+				ui.Spacer(c)
+				x := ui.ButtonBase(c).Padding(2).Radius(3).Shrink(0).Children(func() {
+					ui.Icon(c, iconX).Width(14).Height(14).TextColor(colMuted)
 				})
 				if x.Clicked() {
 					a.closeTab(i)
