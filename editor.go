@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
+	"github.com/egoist/mygo/ui/markdown"
 )
 
 // The editor view: a real code editor of the active file, with the
@@ -30,7 +31,8 @@ func (a *appState) openEditorAt(path string, line int) {
 		if lang := editor.LanguageFor(path); lang != nil {
 			buf.SetLanguage(lang)
 		}
-		a.editors[path] = &openFile{Path: path, State: &editor.State{Buffer: buf}}
+		preview := hasSuffix(path, ".md") || hasSuffix(path, ".mdx")
+		a.editors[path] = &openFile{Path: path, State: &editor.State{Buffer: buf}, Preview: preview}
 	}
 	if line > 0 {
 		if st := a.editors[path].State; st != nil {
@@ -98,6 +100,16 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
 			}
 			ui.Spacer(c)
+			isMd := hasSuffix(doc.Path, ".md") || hasSuffix(doc.Path, ".mdx")
+			if isMd {
+				label := "Preview"
+				if doc.Preview {
+					label = "Source"
+				}
+				if cmdButton(c, iconFileText, 14, false).Tooltip(label).Clicked() {
+					doc.Preview = !doc.Preview
+				}
+			}
 			if save := cmdButton(c, iconSave, 14, false); save.Tooltip("Save").Clicked() {
 				a.saveEditor(doc, c)
 			}
@@ -105,8 +117,14 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 			cmdButton(c, iconMore, 14, false)
 		})
 
-		// The real editor.
-		editor.View(c, doc.State).Fill()
+		// The real editor, or markdown preview.
+		isMd := hasSuffix(doc.Path, ".md") || hasSuffix(doc.Path, ".mdx")
+		if isMd && doc.Preview {
+			mdOpts := &markdown.Options{}
+			markdown.View(c, doc.State.Buffer.String(), mdOpts).Fill()
+		} else {
+			editor.View(c, doc.State).Fill()
+		}
 
 		// Status line.
 		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {

@@ -54,7 +54,7 @@ func TestListProjectProcesses(t *testing.T) {
 func TestListProjectPorts(t *testing.T) {
 	dir := t.TempDir()
 	// Start a listener in the project dir.
-	cmd := exec.Command("python3", "-m", "http.server", "0")
+	cmd := exec.Command("python3", "-c", "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(5); time.sleep(10)")
 	cmd.Dir = dir
 	if err := cmd.Start(); err != nil {
 		t.Skip("python3 not available")

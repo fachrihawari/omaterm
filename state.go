@@ -83,8 +83,9 @@ type diffSource struct {
 
 // openFile is one open editor document.
 type openFile struct {
-	Path  string // workspace-relative
-	State *editor.State
+	Path    string // workspace-relative
+	State   *editor.State
+	Preview bool   // markdown preview mode (default true for .md)
 }
 
 type appState struct {
