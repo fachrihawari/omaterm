@@ -101,6 +101,21 @@ func (a *appState) view(c *ui.Context) {
 		}
 	}
 
+	// Remove-project confirmation dialog.
+	if a.removeProjectConfirmOpen != nil {
+		result := ui.AlertDialog(c, a.removeProjectConfirmOpen,
+			"Remove Project",
+			"Remove "+a.pendingRemoveProjectName+" from the list? Files on disk are not deleted.",
+			"Cancel", "Remove")
+		if result == 1 {
+			a.removeProject(a.pendingRemoveProjectIdx)
+			a.removeProjectConfirmOpen = nil
+			c.Toast("Removed " + a.pendingRemoveProjectName)
+		} else if result == 0 {
+			a.removeProjectConfirmOpen = nil
+		}
+	}
+
 	a.renderOverlays(c)
 }
 

@@ -26,6 +26,15 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 		// Project list.
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Padding(8).Gap(4).Children(func() {
+				if len(a.projects) == 0 {
+					ui.Box(c).Padding(16).Children(func() {
+						ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+							ui.Icon(c, iconFolder).Width(20).Height(20).TextColor(colMuted2)
+							ui.Text(c, "No projects").FontSize(11).TextColor(colMuted)
+							ui.Text(c, "Ctrl+O to open a folder").FontSize(10).TextColor(colMuted2)
+						})
+					})
+				}
 				for i := range a.projects {
 					a.projectRow(c, i)
 				}
@@ -84,6 +93,15 @@ func (a *appState) projectRow(c *ui.Context, i int) ui.Element {
 		a.setProject(i)
 		c.Toast("Switched to " + p.Name)
 	}
+	e.ContextMenu(func(m *ui.Menu) {
+		item := m.Item("Remove project")
+		if item.Chosen() {
+			a.pendingRemoveProjectIdx = i
+			a.pendingRemoveProjectName = p.Name
+			open := true
+			a.removeProjectConfirmOpen = &open
+		}
+	})
 	return e
 }
 

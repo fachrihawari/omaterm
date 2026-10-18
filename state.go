@@ -192,6 +192,10 @@ type appState struct {
 	pendingCloseTab     int
 	closeTabConfirmOpen *bool
 
+	pendingRemoveProjectIdx  int
+	pendingRemoveProjectName string
+	removeProjectConfirmOpen *bool
+
 	pendingKillPid  int
 	pendingKillName string
 	killConfirmOpen *bool
@@ -410,6 +414,48 @@ func (a *appState) setProject(i int) {
 	a.rebuildFileTree()
 	a.refreshProcesses()
 	a.saveProjects()
+}
+
+func (a *appState) removeProject(i int) {
+	if i < 0 || i >= len(a.projects) {
+		return
+	}
+	// Stop terminal panes if removing the active project.
+	if i == a.active {
+		a.termPanesMu.Lock()
+		for _, tp := range a.termPanes {
+			if tp != nil {
+				tp.Close()
+			}
+		}
+		a.termPanes = map[string]*terminal.Terminal{}
+		a.termPanesMu.Unlock()
+	}
+	name := a.projects[i].Name
+	a.projects = append(a.projects[:i], a.projects[i+1:]...)
+	if len(a.projects) == 0 {
+		a.active = -1
+		a.workspace = ""
+		a.tabs = nil
+		a.activeTab = -1
+		a.activeView = tabTerminal
+		a.repos = nil
+		a.processes = nil
+		a.ports = nil
+		a.processErr = ""
+		a.processWarn = ""
+		a.stopProcessRefresh()
+	} else {
+		if a.active >= len(a.projects) {
+			a.active = len(a.projects) - 1
+		}
+		if a.active < 0 {
+			a.active = 0
+		}
+		a.setProject(a.active)
+	}
+	a.saveProjects()
+	_ = name
 }
 
 // refreshRepos discovers repos and loads their status, off the UI thread.
