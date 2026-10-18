@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
@@ -211,7 +212,8 @@ type appState struct {
 	gitGraphOpen     bool // GIT GRAPH section expanded
 
 	// Terminal panes (Ghostty VT via MyGo's plugin)
-	termPanes map[string]*terminal.Terminal
+	termPanes   map[string]*terminal.Terminal
+	termPanesMu sync.Mutex
 
 	// Close tab confirmation
 	pendingCloseTab     int
@@ -297,12 +299,14 @@ func (a *appState) setProject(i int) {
 	a.workspace = p.Path
 
 	// Stop and clean up all terminal panes before switching.
+	a.termPanesMu.Lock()
 	for _, tp := range a.termPanes {
 		if tp != nil {
 			tp.Close()
 		}
 	}
 	a.termPanes = map[string]*terminal.Terminal{}
+	a.termPanesMu.Unlock()
 
 	a.tabs = nil
 	for _, name := range p.Tabs {

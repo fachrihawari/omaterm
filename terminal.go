@@ -147,7 +147,10 @@ func (a *appState) activeSplitLeaf() string {
 }
 
 func (a *appState) term(id string) *terminal.Terminal {
-	if t, ok := a.termPanes[id]; ok && t != nil {
+	a.termPanesMu.Lock()
+	t, ok := a.termPanes[id]
+	a.termPanesMu.Unlock()
+	if ok && t != nil {
 		return t
 	}
 	shell := os.Getenv("SHELL")
@@ -159,13 +162,62 @@ func (a *appState) term(id string) *terminal.Terminal {
 		Command: cmd,
 		Dir:     a.workspace,
 		OnTitle: func(title string) {},
-		OnExit:  func(code int) {},
+		OnExit: func(code int) {
+			// When the shell exits (e.g. Ctrl+D / "exit"), close the pane.
+			// Marshal to the main thread since OnExit runs on a terminal
+			// goroutine; in tests (no window) run directly.
+			doClose := func() {
+				// Only act if the pane still exists (not already closed).
+				a.termPanesMu.Lock()
+				if _, ok := a.termPanes[id]; !ok {
+					a.termPanesMu.Unlock()
+					return
+				}
+				// Find the tab containing this terminal.
+				tabIndex := -1
+				isLeaf := false
+				for i, tab := range a.tabs {
+					if tab.Split == nil {
+						continue
+					}
+					for _, tid := range tab.Split.termIDs() {
+						if tid == id {
+							tabIndex = i
+							isLeaf = tab.Split.isLeaf()
+							break
+						}
+					}
+					if tabIndex >= 0 {
+						break
+					}
+				}
+				a.termPanesMu.Unlock()
+				if tabIndex < 0 {
+					return
+				}
+				// Close the pane (or the tab if last pane).
+				if isLeaf {
+					a.closeTab(tabIndex)
+				} else {
+					a.removePane(id)
+				}
+			}
+			if a.win == nil {
+				doClose()
+				return
+			}
+			a.win.Update(doClose)
+		},
 	})
 	if err != nil {
+		a.termPanesMu.Lock()
 		a.termPanes[id] = nil
+		a.termPanesMu.Unlock()
 		return nil
 	}
+	a.termPanesMu.Lock()
 	a.termPanes[id] = t
+	a.termPanesMu.Unlock()
 	return t
 }
 
@@ -185,10 +237,12 @@ func (a *appState) removePane(termID string) {
 	if !removed {
 		return
 	}
+	a.termPanesMu.Lock()
 	if t, ok := a.termPanes[termID]; ok && t != nil {
 		t.Close()
 	}
 	delete(a.termPanes, termID)
+	a.termPanesMu.Unlock()
 	if newRoot == nil {
 		// tab should close; for now leave nil (closeTab handles cleanup)
 		a.setActiveSplit(nil)
@@ -314,10 +368,12 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 // ---------------------------------------------------------------------------
 
 func (a *appState) restartTermPane(termID string) {
+	a.termPanesMu.Lock()
 	if t, ok := a.termPanes[termID]; ok && t != nil {
 		t.Close()
 	}
 	delete(a.termPanes, termID)
+	a.termPanesMu.Unlock()
 	a.term(termID) // recreate
 }
 

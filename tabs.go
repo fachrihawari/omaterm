@@ -112,12 +112,14 @@ func (a *appState) closeTab(i int) {
 		delete(a.editors, t.Path)
 	}
 	if t.Kind == tabTerminal && t.Split != nil {
+		a.termPanesMu.Lock()
 		for _, id := range t.Split.termIDs() {
 			if tp := a.termPanes[id]; tp != nil {
 				tp.Close()
 			}
 			delete(a.termPanes, id)
 		}
+		a.termPanesMu.Unlock()
 	}
 	a.tabs = append(a.tabs[:i], a.tabs[i+1:]...)
 	if a.activeTab >= len(a.tabs) {

@@ -18,11 +18,14 @@ import (
 // stopTermPanes ends every shell a test started, so it does not outlive the
 // test binary.
 func stopTermPanes(a *appState) {
-	for _, tp := range a.termPanes {
+	a.termPanesMu.Lock()
+	for id, tp := range a.termPanes {
+		delete(a.termPanes, id)
 		if tp != nil {
 			tp.Close()
 		}
 	}
+	a.termPanesMu.Unlock()
 }
 
 // The terminal could not be typed into: a project now opens with its first
