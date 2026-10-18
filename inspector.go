@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -53,6 +54,11 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 	}
 	if e.Clicked() {
 		a.inspectorTab = idx
+		if idx == 0 {
+			a.startProcessRefresh()
+		} else {
+			a.stopProcessRefresh()
+		}
 		if idx == 2 && a.gitGraphOpen && len(a.commits) == 0 {
 			a.refreshGraph()
 		}
@@ -81,36 +87,66 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			})
 
+			// PROCESSES
 			ui.Column(c).Gap(8).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					sectionLabel(c, "PROCESSES")
 					ui.Spacer(c)
 					countBadge(c, len(a.processes))
+					if cmdButton(c, iconRefresh, 14, false).Tooltip("Refresh").Clicked() {
+						a.refreshProcesses()
+					}
 				})
+				if a.processErr != "" {
+					ui.Text(c, a.processErr).FontSize(10).TextColor(colRed).Padding(4, 0)
+				}
 				ui.Column(c).Radius(8).Border(1, colBorder).Children(func() {
+					if len(a.processes) == 0 {
+						ui.Box(c).Padding(16).Children(func() {
+							ui.Text(c, "No processes in this project").FontSize(11).TextColor(colMuted)
+						})
+					}
 					for i, p := range a.processes {
 						row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
 						if i > 0 {
 							row = row.BorderWidth(1, 0, 0, 0).BorderColor(colBorder)
 						}
+						proc := p
 						row.Children(func() {
 							dot(c, dotGreen, 6)
-							txt(c, p.Name, 11, colText)
-							mutedTxt2(c, itoa(p.Pid), 11)
+							txt(c, proc.Name, 11, colText)
+							mutedTxt2(c, itoa(proc.Pid), 11)
 							ui.Spacer(c)
-							mutedTxt2(c, p.CPU+" · "+p.Mem, 11)
+							mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
+							if proc.Pid != 1 && proc.Pid != os.Getpid() {
+								if cmdButton(c, iconTrash, 14, false).Tooltip("Kill process").Clicked() {
+									a.pendingKillPid = proc.Pid
+									a.pendingKillName = proc.Name
+									open := true
+									a.killConfirmOpen = &open
+								}
+							}
 						})
 					}
 				})
 			})
 
+			// PORTS
 			ui.Column(c).Gap(8).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					sectionLabel(c, "PORTS")
 					ui.Spacer(c)
 					countBadge(c, len(a.ports))
+					if cmdButton(c, iconRefresh, 14, false).Tooltip("Refresh").Clicked() {
+						a.refreshProcesses()
+					}
 				})
 				ui.Column(c).Radius(8).Border(1, colBorder).Children(func() {
+					if len(a.ports) == 0 {
+						ui.Box(c).Padding(16).Children(func() {
+							ui.Text(c, "No listening ports").FontSize(11).TextColor(colMuted)
+						})
+					}
 					for i, p := range a.ports {
 						row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
 						if i > 0 {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
@@ -15,19 +16,6 @@ import (
 )
 
 // App state: projects, tabs, git data, overlays.
-
-type process struct {
-	Name string
-	Pid  int
-	CPU  string
-	Mem  string
-}
-
-type port struct {
-	Port int
-	Name string
-	Open bool
-}
 
 // termLine is one line of a terminal pane: spans of colored text.
 type termLine struct {
@@ -119,7 +107,8 @@ type openFile struct {
 }
 
 type appState struct {
-	win *mygo.Window
+	win          *mygo.Window
+	processTimer *time.Timer
 
 	projects  []project
 	active    int
@@ -136,8 +125,8 @@ type appState struct {
 
 	inspectorTab int // 0 info, 1 files, 2 git
 
-	processes []process
-	ports     []port
+	processes []service.Process
+	ports     []service.Port
 
 	commitMsg string
 
@@ -157,6 +146,9 @@ type appState struct {
 	activeRepo int
 	repoJob    service.Job
 	repoErr    string
+
+	processJob service.Job
+	processErr string
 
 	// Git remote operations (fetch/pull/push)
 	gitJob  service.Job
@@ -218,6 +210,10 @@ type appState struct {
 	// Close tab confirmation
 	pendingCloseTab     int
 	closeTabConfirmOpen *bool
+
+	pendingKillPid  int
+	pendingKillName string
+	killConfirmOpen *bool
 }
 
 type fileNode struct {
@@ -259,14 +255,6 @@ func newApp() *appState {
 		termPanes:        map[string]*terminal.Terminal{},
 		projects: []project{
 			{Name: "oterm", Path: expand("~/Projects/personal/oterm"), Active: true, Tabs: []string{"dev", "api", "tests"}},
-		},
-		processes: []process{
-			{Name: "bun", Pid: 36587, CPU: "0%", Mem: "6 MB"},
-			{Name: "node", Pid: 36588, CPU: "0%", Mem: "427 MB"},
-		},
-		ports: []port{
-			{Port: 3000, Name: "web", Open: true},
-			{Port: 4000, Name: "api", Open: true},
 		},
 	}
 	a.setProject(0)
@@ -343,6 +331,7 @@ func (a *appState) setProject(i int) {
 	a.refreshRepos()
 	a.rebuildFileIndex()
 	a.rebuildFileTree()
+	a.refreshProcesses()
 }
 
 // refreshRepos discovers repos and loads their status, off the UI thread.
@@ -392,6 +381,60 @@ func (a *appState) refreshActiveRepo() {
 		})
 		return nil
 	}, nil)
+}
+
+// refreshProcesses loads the project's processes and ports.
+func (a *appState) refreshProcesses() {
+	workspace := a.workspace
+	// In test mode (no window) run synchronously to avoid goroutine races.
+	if a.win == nil {
+		procs, err := service.ListProjectProcesses(workspace)
+		ports, _ := service.ListProjectPorts(procs)
+		a.processes = procs
+		a.ports = ports
+		if err != nil {
+			a.processErr = err.Error()
+		} else {
+			a.processErr = ""
+		}
+		return
+	}
+	win := a.win
+	a.processJob.Run(func(ctx context.Context) error {
+		procs, err := service.ListProjectProcesses(workspace)
+		ports, _ := service.ListProjectPorts(procs)
+		win.Update(func() {
+			a.processes = procs
+			a.ports = ports
+			if err != nil {
+				a.processErr = err.Error()
+			} else {
+				a.processErr = ""
+			}
+		})
+		return err
+	}, nil)
+}
+
+// startProcessRefresh begins periodic process/port refresh (5s) while the
+// info panel is visible.
+func (a *appState) startProcessRefresh() {
+	a.stopProcessRefresh()
+	a.refreshProcesses()
+	if a.win == nil {
+		return // no timer in test mode
+	}
+	a.processTimer = time.AfterFunc(5*time.Second, func() {
+		a.win.Update(func() { a.startProcessRefresh() })
+	})
+}
+
+// stopProcessRefresh halts the periodic refresh.
+func (a *appState) stopProcessRefresh() {
+	if a.processTimer != nil {
+		a.processTimer.Stop()
+		a.processTimer = nil
+	}
 }
 
 // rebuildFileIndex refreshes the quick-open file index.

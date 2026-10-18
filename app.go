@@ -2,6 +2,8 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
+
+	"oterm/service"
 )
 
 // The root view: projects sidebar | (tabs + content + inspector) with the
@@ -77,6 +79,25 @@ func (a *appState) view(c *ui.Context) {
 			a.closeTabConfirmOpen = nil
 		} else if result == 0 {
 			a.closeTabConfirmOpen = nil
+		}
+	}
+
+	// Kill-process confirmation dialog.
+	if a.killConfirmOpen != nil {
+		result := ui.AlertDialog(c, a.killConfirmOpen,
+			"Kill Process",
+			"Kill "+a.pendingKillName+" (PID "+itoa(a.pendingKillPid)+")?",
+			"Cancel", "Kill")
+		if result == 1 {
+			if err := service.KillProcess(a.pendingKillPid); err != nil {
+				c.Toast("Kill failed: " + err.Error())
+			} else {
+				c.Toast("Killed " + a.pendingKillName)
+			}
+			a.refreshProcesses()
+			a.killConfirmOpen = nil
+		} else if result == 0 {
+			a.killConfirmOpen = nil
 		}
 	}
 

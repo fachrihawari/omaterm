@@ -29,6 +29,9 @@ func main() {
 			}
 		})
 		a.setProject(0)
+		if a.inspectorTab == 0 && a.inspectorVisible {
+			a.startProcessRefresh()
+		}
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
