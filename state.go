@@ -127,8 +127,9 @@ type appState struct {
 	repoJob    service.Job
 	repoErr    string
 
-	processJob service.Job
-	processErr string
+	processJob  service.Job
+	processErr  string
+	processWarn string
 
 	// Git remote operations (fetch/pull/push)
 	gitJob  service.Job
@@ -444,6 +445,10 @@ func (a *appState) refreshProcesses() {
 		} else {
 			a.processErr = ""
 		}
+		a.processWarn = ""
+		if service.IsWorkspaceTooBroad(workspace) {
+			a.processWarn = "Workspace path is too broad; open a specific project folder"
+		}
 		return
 	}
 	win := a.win
@@ -457,6 +462,11 @@ func (a *appState) refreshProcesses() {
 				a.processErr = err.Error()
 			} else {
 				a.processErr = ""
+			}
+			if service.IsWorkspaceTooBroad(workspace) {
+				a.processWarn = "Workspace path is too broad; open a specific project folder"
+			} else {
+				a.processWarn = ""
 			}
 		})
 		return err
