@@ -256,6 +256,47 @@ func (a *appState) removePane(termID string) {
 // ---------------------------------------------------------------------------
 
 func (a *appState) terminalView(c *ui.Context) ui.Element {
+	if len(a.tabs) == 0 {
+		return ui.Column(c).Fill().Background(colBg2).Center().Gap(12).Children(func() {
+			ui.Box(c).Width(48).Height(48).Radius(12).Border(1, colBorder2).Background(colCard).Children(func() {
+				ui.Column(c).Fill().Center().Children(func() {
+					ui.Icon(c, iconTerminal).Width(24).Height(24).TextColor(colBlue)
+				})
+			})
+			ui.Text(c, "No tabs open").FontSize(16).TextColor(colText).Bold()
+			ui.Text(c, "Open a project or create a terminal to get started").FontSize(12).TextColor(colMuted)
+			ui.Row(c).Gap(8).Margin(8, 0, 0, 0).Children(func() {
+				b := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(8, 16).Background(colCard)
+				if b.Hovered() {
+					b.Background(colHover)
+				}
+				b.Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+						ui.Icon(c, iconFolderPlus).Width(14).Height(14).TextColor(colText2)
+						ui.Text(c, "Open Project").FontSize(12).TextColor(colText2)
+					})
+				})
+				if b.Clicked() {
+					a.openProjectDialog()
+				}
+
+				b2 := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(8, 16).Background(colCard)
+				if b2.Hovered() {
+					b2.Background(colHover)
+				}
+				b2.Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+						ui.Icon(c, iconTerminal).Width(14).Height(14).TextColor(colText2)
+						ui.Text(c, "New Terminal").FontSize(12).TextColor(colText2)
+					})
+				})
+				if b2.Clicked() {
+					a.newTerminalTab()
+				}
+			})
+			ui.Text(c, "Ctrl+O open project  ·  Ctrl+T new terminal  ·  Ctrl+P open file").FontSize(10).TextColor(colMuted2).Margin(8, 0, 0, 0)
+		})
+	}
 	return ui.Column(c).Fill().Background(colBg2).Children(func() {
 		a.renderSplit(c, a.ensureSingleSplit())
 	})

@@ -27,11 +27,28 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Padding(8).Gap(4).Children(func() {
 				if len(a.projects) == 0 {
-					ui.Box(c).Padding(16).Children(func() {
-						ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
-							ui.Icon(c, iconFolder).Width(20).Height(20).TextColor(colMuted2)
-							ui.Text(c, "No projects").FontSize(11).TextColor(colMuted)
-							ui.Text(c, "Ctrl+O to open a folder").FontSize(10).TextColor(colMuted2)
+					ui.Box(c).Padding(24).Children(func() {
+						ui.Column(c).AlignItems(ui.Center).Gap(8).Children(func() {
+							ui.Box(c).Width(40).Height(40).Radius(10).Border(1, colBorder2).Background(colCard).Children(func() {
+								ui.Column(c).Fill().Center().Children(func() {
+									ui.Icon(c, iconFolderPlus).Width(20).Height(20).TextColor(colBlue)
+								})
+							})
+							ui.Text(c, "No projects yet").FontSize(12).TextColor(colText).Bold()
+							ui.Text(c, "Open a folder to get started").FontSize(10).TextColor(colMuted)
+							b := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(6, 14).Background(colCard).Margin(4, 0, 0, 0)
+							if b.Hovered() {
+								b.Background(colHover)
+							}
+							b.Children(func() {
+								ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+									ui.Icon(c, iconFolderPlus).Width(12).Height(12).TextColor(colText2)
+									ui.Text(c, "Open Project").FontSize(11).TextColor(colText2)
+								})
+							})
+							if b.Clicked() {
+								a.openProjectDialog()
+							}
 						})
 					})
 				}

@@ -85,7 +85,7 @@ type diffSource struct {
 type openFile struct {
 	Path    string // workspace-relative
 	State   *editor.State
-	Preview bool   // markdown preview mode (default true for .md)
+	Preview bool // markdown preview mode (default true for .md)
 }
 
 type appState struct {
