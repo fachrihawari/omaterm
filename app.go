@@ -35,6 +35,12 @@ func (a *appState) view(c *ui.Context) {
 				c.Toast("Split right")
 			}
 		})
+		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyEqual, func() {
+			if n := a.activeSplit(); n != nil {
+				equalizeSplit(n)
+				c.Toast("Equalized")
+			}
+		})
 	}
 
 	// Overlay openers, only while no overlay is open.

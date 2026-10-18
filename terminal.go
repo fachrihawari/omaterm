@@ -293,11 +293,13 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 
 		// Terminal view.
 		box := ui.Box(c).Grow(1).Clip()
-		if box.Clicked() || box.Hovered() {
+		hovered := box.Hovered()
+		if hovered || box.Clicked() {
 			a.activePaneTermID = termID
 		}
-		// Focus indicator border.
-		if isActive {
+		// Focus indicator border: follows hover instantly (using this
+		// frame's hover state) and stays on the active pane otherwise.
+		if hovered || isActive {
 			box.DrawOver(func(p *ui.Painter, r ui.Rect) {
 				p.Stroke(ui.Rect{X: r.X + 0.5, Y: r.Y + 0.5, W: r.W - 1, H: r.H - 1},
 					ui.RGBA(90, 169, 255, 0.5), 0, 1)
