@@ -231,8 +231,8 @@ func (a *appState) renderSplit(c *ui.Context, node *splitNode) {
 
 func (a *appState) termPane(c *ui.Context, termID string) {
 	t := a.term(termID)
-	isActive := a.activePaneTermID == termID
-	ui.Column(c).Fill().Background(colBg2).Children(func() {
+	e := ui.Column(c).Fill().Background(colBg2)
+	e.Children(func() {
 		// Header strip.
 		ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(8).
 			BorderWidth(0, 0, 1, 0).BorderColor(colBorder).ClipX().Children(func() {
@@ -261,7 +261,7 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 				a.splitPane(termID, splitHorizontal)
 				c.Toast("Split down")
 			}
-			if cmdButton(c, iconSplit, 14, false).Tooltip("Equalize panes").Clicked() {
+			if cmdButton(c, iconSplit, 14, false).Tooltip("Equalize panes (Ctrl+Shift+=)").Clicked() {
 				if n := a.activeSplit(); n != nil {
 					equalizeSplit(n)
 				}
@@ -271,7 +271,6 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 				a.restartTermPane(termID)
 				c.Toast("Restarted terminal")
 			}
-			// Kill (hide for the only pane).
 			ids := []string{}
 			if n := a.activeSplit(); n != nil {
 				ids = n.termIDs()
@@ -294,21 +293,19 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 		// Terminal view.
 		box := ui.Box(c).Grow(1).Clip()
 		hovered := box.Hovered()
-		if hovered || box.Clicked() {
+		if hovered {
 			a.activePaneTermID = termID
-		}
-		// Focus indicator border: follows hover instantly (using this
-		// frame's hover state) and stays on the active pane otherwise.
-		if hovered || isActive {
-			box.DrawOver(func(p *ui.Painter, r ui.Rect) {
-				p.Stroke(ui.Rect{X: r.X + 0.5, Y: r.Y + 0.5, W: r.W - 1, H: r.H - 1},
-					ui.RGBA(90, 169, 255, 0.5), 0, 1)
-			})
 		}
 		box.Children(func() {
 			terminal.View(c, t).Fill().AutoFocus()
 		})
-
+		// Focus ring on the outer column (not clipped by box).
+		if hovered || a.activePaneTermID == termID {
+			e.DrawOver(func(p *ui.Painter, r ui.Rect) {
+				p.Stroke(ui.Rect{X: r.X + 0.5, Y: r.Y + 0.5, W: r.W - 1, H: r.H - 1},
+					ui.RGBA(90, 169, 255, 0.7), 0, 2)
+			})
+		}
 	})
 }
 
