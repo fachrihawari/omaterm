@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -227,9 +228,77 @@ func newApp() *appState {
 		termPanes:        map[string]*terminal.Terminal{},
 		projects:         []project{},
 	}
-	a.setProject(0)
-	a.paneFocus = 0
+	// Load saved projects.
+	if saved, active := loadSavedProjects(); len(saved) > 0 {
+		a.projects = saved
+		a.active = active
+		a.setProject(a.active)
+	}
 	return a
+}
+
+// savedState is the on-disk project list.
+type savedState struct {
+	Projects []project `json:"projects"`
+	Active   int       `json:"active"`
+}
+
+func stateFilePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = os.ExpandEnv("$HOME/.config")
+	}
+	return filepath.Join(dir, "oterm", "state.json")
+}
+
+func loadSavedProjects() ([]project, int) {
+	data, err := os.ReadFile(stateFilePath())
+	if err != nil {
+		return nil, 0
+	}
+	var st savedState
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, 0
+	}
+	// Validate paths exist.
+	var valid []project
+	for _, p := range st.Projects {
+		if p.Path == "" {
+			continue
+		}
+		if info, err := os.Stat(p.Path); err != nil || !info.IsDir() {
+			continue
+		}
+		if len(p.Tabs) == 0 {
+			p.Tabs = []string{"dev"}
+		}
+		valid = append(valid, p)
+	}
+	active := 0
+	if st.Active >= 0 && st.Active < len(valid) {
+		active = st.Active
+	}
+	return valid, active
+}
+
+func (a *appState) saveProjects() {
+	if len(a.projects) == 0 {
+		// Remove state file if no projects.
+		os.Remove(stateFilePath())
+		return
+	}
+	st := savedState{Projects: a.projects, Active: a.active}
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return
+	}
+	path := stateFilePath()
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	os.Rename(tmp, path)
 }
 
 func (a *appState) project() *project {
@@ -309,6 +378,7 @@ func (a *appState) setProject(i int) {
 	a.rebuildFileIndex()
 	a.rebuildFileTree()
 	a.refreshProcesses()
+	a.saveProjects()
 }
 
 // refreshRepos discovers repos and loads their status, off the UI thread.

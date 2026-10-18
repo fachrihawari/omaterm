@@ -30,11 +30,11 @@ func main() {
 		})
 		if len(a.projects) > 0 {
 			a.setProject(0)
-			if a.inspectorTab == 0 && a.inspectorVisible {
-				a.startProcessRefresh()
-			}
 		} else {
 			a.openProjectDialog()
+		}
+		if a.inspectorTab == 0 && a.inspectorVisible {
+			a.startProcessRefresh()
 		}
 	})
 	if err := mygo.App.Run(); err != nil {

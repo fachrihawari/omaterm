@@ -38,6 +38,9 @@ func ListProjectProcesses(workspace string) ([]Process, error) {
 	if runtime.GOOS != "linux" {
 		return nil, nil
 	}
+	if strings.TrimSpace(workspace) == "" {
+		return nil, nil
+	}
 	abs, err := filepath.Abs(workspace)
 	if err != nil {
 		abs = workspace

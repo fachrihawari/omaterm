@@ -114,6 +114,7 @@ func (a *appState) openProjectDialog() {
 				Tabs: []string{"dev"},
 			})
 			a.setProject(len(a.projects) - 1)
+			a.saveProjects()
 		})
 	}()
 }
