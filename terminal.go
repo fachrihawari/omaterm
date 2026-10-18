@@ -293,7 +293,7 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 
 		// Terminal view.
 		box := ui.Box(c).Grow(1).Clip()
-		if box.Clicked() {
+		if box.Clicked() || box.Hovered() {
 			a.activePaneTermID = termID
 		}
 		// Focus indicator border.
@@ -346,8 +346,11 @@ func (a *appState) newTerminalTabReal() {
 	})
 	a.activeTab = len(a.tabs) - 1
 	a.activeView = tabTerminal
-	if a.activePaneTermID == "" {
-		// will be set on first render
+	if len(a.tabs) > 0 && a.tabs[a.activeTab].Split != nil {
+		ids := a.tabs[a.activeTab].Split.termIDs()
+		if len(ids) > 0 {
+			a.activePaneTermID = ids[0]
+		}
 	}
 }
 

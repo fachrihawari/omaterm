@@ -93,6 +93,12 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	if e.Clicked() {
 		a.activeTab = i
 		a.activeView = t.Kind
+		if t.Kind == tabTerminal && t.Split != nil {
+			ids := t.Split.termIDs()
+			if len(ids) > 0 {
+				a.activePaneTermID = ids[0]
+			}
+		}
 	}
 	return e
 }

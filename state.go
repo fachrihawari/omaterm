@@ -315,6 +315,12 @@ func (a *appState) setProject(i int) {
 	}
 	a.activeTab = 0
 	a.activeView = tabTerminal
+	if len(a.tabs) > 0 && a.tabs[0].Split != nil {
+		ids := a.tabs[0].Split.termIDs()
+		if len(ids) > 0 {
+			a.activePaneTermID = ids[0]
+		}
+	}
 	a.gitBusy = ""
 	a.gitMsg = ""
 	a.gitErr = false
