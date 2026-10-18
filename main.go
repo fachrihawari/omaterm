@@ -30,8 +30,6 @@ func main() {
 		})
 		if len(a.projects) > 0 {
 			a.setProject(0)
-		} else {
-			a.openProjectDialog()
 		}
 		if a.inspectorTab == 0 && a.inspectorVisible {
 			a.startProcessRefresh()

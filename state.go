@@ -199,6 +199,7 @@ type appState struct {
 
 type fileNode struct {
 	Name     string
+	Path     string
 	Dir      bool
 	Open     bool
 	Status   string
@@ -234,6 +235,15 @@ func newApp() *appState {
 		a.projects = saved
 		a.active = active
 		a.setProject(a.active)
+	} else {
+		// No saved projects: use home directory as default.
+		home, _ := os.UserHomeDir()
+		if home == "" {
+			home = "/"
+		}
+		a.projects = []project{{Name: filepath.Base(home), Path: home, Tabs: []string{"dev"}}}
+		a.active = 0
+		a.setProject(0)
 	}
 	return a
 }
@@ -567,16 +577,17 @@ func buildFileNode(parent, name string, isDir bool, depth int) *fileNode {
 	if depth > 3 {
 		return nil
 	}
+	// Skip hidden files/dirs (e.g. .DS_Store, .bashrc).
+	if len(name) > 0 && name[0] == '.' {
+		return nil
+	}
 	if isDir {
 		switch name {
-		case ".git", "node_modules", ".mygo", "build", "dist", ".cache":
-			return nil
-		}
-		if len(name) > 0 && name[0] == '.' {
+		case "node_modules", ".mygo", "build", "dist", ".cache":
 			return nil
 		}
 	}
-	n := &fileNode{Name: name, Dir: isDir, Open: depth < 1}
+	n := &fileNode{Name: name, Path: filepath.Join(parent, name), Dir: isDir, Open: depth < 1}
 	if !isDir {
 		n.Action = "editor"
 		return n

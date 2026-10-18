@@ -221,7 +221,7 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	if a.fileSearch != "" && !n.Dir && !contains(n.Name, a.fileSearch) {
 		return
 	}
-	e := ui.Row(c).Key(n.Name).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(28).Padding(0, 8).PaddingStart(8 + 16*float32(depth)).Gap(6)
+	e := ui.Row(c).Key(n.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(28).Padding(0, 8).PaddingStart(8 + 16*float32(depth)).Gap(6)
 	if e.Hovered() {
 		e.Background(ui.Hex("#171d25"))
 	}
