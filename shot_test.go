@@ -42,7 +42,16 @@ func TestShots(t *testing.T) {
 			a.searchResults, _ = service.SearchContent(context.Background(), a.workspace, "appState")
 			a.updateSearchPreview()
 		}},
-		{"split", func(a *appState) { a.tabs[a.activeTab].Layout = layoutMixed }},
+		{"split", func(a *appState) {
+			a.tabs[a.activeTab].Split = &splitNode{
+				Dir: splitVertical, Ratio: 50,
+				First: &splitNode{TermID: randomTermID()},
+				Second: &splitNode{Dir: splitHorizontal, Ratio: 50,
+					First:  &splitNode{TermID: randomTermID()},
+					Second: &splitNode{TermID: randomTermID()},
+				},
+			}
+		}},
 		{"no-sidebars", func(a *appState) { a.sidebarVisible = false; a.inspectorVisible = false }},
 	}
 	if os.Getenv("SHOT_TOAST") != "" {

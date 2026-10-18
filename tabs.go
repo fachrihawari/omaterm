@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
-	"strings"
 )
 
 // The top tab bar with terminal/editor/diff tabs and the window-level
@@ -106,19 +105,12 @@ func (a *appState) closeTab(i int) {
 	if t.Kind == tabEditor && t.Path != "" {
 		delete(a.editors, t.Path)
 	}
-	if t.Kind == tabTerminal {
-		prefix := t.Path
-		if prefix == "" {
-			prefix = "tab" + itoa(i)
-		}
-		prefix += "/"
-		for key, tp := range a.termPanes {
-			if strings.HasPrefix(key, prefix) {
-				if tp != nil {
-					tp.Close()
-				}
-				delete(a.termPanes, key)
+	if t.Kind == tabTerminal && t.Split != nil {
+		for _, id := range t.Split.termIDs() {
+			if tp := a.termPanes[id]; tp != nil {
+				tp.Close()
 			}
+			delete(a.termPanes, id)
 		}
 	}
 	a.tabs = append(a.tabs[:i], a.tabs[i+1:]...)

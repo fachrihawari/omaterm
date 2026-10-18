@@ -21,6 +21,22 @@ func (a *appState) view(c *ui.Context) {
 	c.OnShortcut(ui.Cmd, ui.KeyO, func() { a.openProjectDialog() })
 	c.OnShortcut(ui.Cmd, ui.KeyT, func() { a.newTerminalTab() })
 
+	// Terminal split shortcuts (only while the terminal is active).
+	if a.activeView == tabTerminal {
+		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyD, func() {
+			if leaf := a.activeSplitLeaf(); leaf != "" {
+				a.splitPane(leaf, splitHorizontal)
+				c.Toast("Split down")
+			}
+		})
+		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyR, func() {
+			if leaf := a.activeSplitLeaf(); leaf != "" {
+				a.splitPane(leaf, splitVertical)
+				c.Toast("Split right")
+			}
+		})
+	}
+
 	// Overlay openers, only while no overlay is open.
 	if a.overlay == overlayNone {
 		c.OnShortcut(ui.Cmd, ui.KeyP, func() { a.openOverlay(overlayQuickOpen) })

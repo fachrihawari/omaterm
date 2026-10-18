@@ -185,8 +185,8 @@ func TestTerminalTabStartsSingle(t *testing.T) {
 	if len(a.tabs) != before+1 {
 		t.Fatalf("tabs = %d, want %d", len(a.tabs), before+1)
 	}
-	if l := a.termLayout(); l != layoutSingle {
-		t.Fatalf("new tab layout = %v, want single", l)
+	if sp := a.activeSplit(); sp == nil || !sp.isLeaf() {
+		t.Fatalf("new tab should be a single pane, got %+v", sp)
 	}
 	if len(a.termPanes) == 0 {
 		t.Fatal("no pane started for the new tab")
@@ -206,20 +206,62 @@ func TestSplitIsPerTab(t *testing.T) {
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
 
-	a.setTermLayout(layoutVertical)
+	leaf := a.activeSplitLeaf()
+	a.splitPane(leaf, splitVertical)
 	tr.Frame()
-	if a.termLayout() != layoutVertical {
+	if sp := a.activeSplit(); sp == nil || sp.isLeaf() || sp.Dir != splitVertical {
 		t.Fatal("the split did not stick to its tab")
 	}
 	tr.Key(ui.Cmd, ui.KeyT)
 	tr.Frame()
-	if l := a.termLayout(); l != layoutSingle {
-		t.Fatalf("a new tab inherited the layout %v, want single", l)
+	if sp := a.activeSplit(); sp == nil || !sp.isLeaf() {
+		t.Fatalf("a new tab should be single, got %+v", sp)
 	}
 	a.activeTab = 0
 	a.activeView = tabTerminal
 	tr.Frame()
-	if a.termLayout() != layoutVertical {
+	if sp := a.activeSplit(); sp == nil || sp.isLeaf() || sp.Dir != splitVertical {
 		t.Fatal("the first tab lost its split")
+	}
+}
+
+// Splitting can build arbitrary trees (up to 5+ panes) and closing a
+// pane keeps the surviving sessions alive.
+func TestSplitTreeUpToFivePanes(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	ids := a.activeSplit().termIDs()
+	if len(ids) != 1 {
+		t.Fatalf("start panes = %d, want 1", len(ids))
+	}
+	// Split the (single) pane four times -> 5 panes.
+	for i := 0; i < 4; i++ {
+		a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+	}
+
+	if got := a.activeSplit().leafCount(); got != 5 {
+		t.Fatalf("leaf count = %d, want 5", got)
+	}
+	// Terminals are created lazily on render; frame to materialize them.
+	tr.Frame()
+	if len(a.termPanes) != 5 {
+		t.Fatalf("terminals = %d, want 5", len(a.termPanes))
+	}
+
+	// Close a middle pane; survivors keep their terminals.
+	victim := a.activeSplit().termIDs()[2]
+	a.removePane(victim)
+	tr.Frame()
+	if _, ok := a.termPanes[victim]; ok {
+		t.Fatal("closed pane's terminal was not removed")
+	}
+	if got := a.activeSplit().leafCount(); got != 4 {
+		t.Fatalf("leaf count after close = %d, want 4", got)
+	}
+	if len(a.termPanes) != 4 {
+		t.Fatalf("terminals after close = %d, want 4", len(a.termPanes))
 	}
 }

@@ -48,15 +48,6 @@ type paneData struct {
 	Lines  []termLine
 }
 
-type layoutKind int
-
-const (
-	layoutSingle layoutKind = iota
-	layoutVertical
-	layoutHorizontal
-	layoutMixed // all three panes: split right, then split down
-)
-
 type topTabKind int
 
 const (
@@ -74,9 +65,8 @@ type topTab struct {
 	Icon   int
 	Dirty  bool
 	Path   string // editor tabs: workspace-relative file path
-	// Layout is a terminal tab's pane arrangement. The zero value is
-	// layoutSingle, so a fresh tab shows one pane until it is split.
-	Layout layoutKind
+	// Split is the terminal pane tree (nil or single leaf = one pane).
+	Split *splitNode
 }
 
 const (
@@ -141,8 +131,7 @@ type appState struct {
 	inspectorVisible bool
 	sidebarW         float32
 	inspectorW       float32
-	splitVPct        float32
-	splitHPct        float32
+	activePaneTermID string // TermID of the focused terminal pane
 
 	inspectorTab int // 0 info, 1 files, 2 git
 
@@ -259,8 +248,7 @@ func newApp() *appState {
 		inspectorVisible: true,
 		sidebarW:         210,
 		inspectorW:       330,
-		splitVPct:        50,
-		splitHPct:        50,
+		activePaneTermID: "",
 		searchSplit:      35,
 		diffSplit:        true,
 		commitMsg:        "",
@@ -318,7 +306,8 @@ func (a *appState) setProject(i int) {
 
 	a.tabs = nil
 	for _, name := range p.Tabs {
-		t := topTab{Kind: tabTerminal, Label: name, Dot: dotGreen}
+		t := topTab{Kind: tabTerminal, Label: name, Dot: dotGreen,
+			Split: &splitNode{TermID: randomTermID()}}
 		if name == "tests" {
 			t.Dot = dotYellow
 		}
