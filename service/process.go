@@ -43,6 +43,9 @@ func ListProjectProcesses(workspace string) ([]Process, error) {
 	if strings.TrimSpace(workspace) == "" {
 		return nil, nil
 	}
+	if IsWorkspaceTooBroad(workspace) {
+		return nil, nil
+	}
 	abs, err := filepath.EvalSymlinks(workspace)
 	if err != nil {
 		abs, _ = filepath.Abs(workspace)
@@ -463,6 +466,15 @@ func TerminalPids() []int {
 // IsWorkspaceTooBroad reports whether the workspace path is so broad that
 // scoping would include too many unrelated processes.
 func IsWorkspaceTooBroad(workspace string) bool {
+	// Expand ~.
+	if strings.HasPrefix(workspace, "~") {
+		home, _ := os.UserHomeDir()
+		if len(workspace) == 1 {
+			workspace = home
+		} else if len(workspace) > 1 && workspace[1] == '/' {
+			workspace = filepath.Join(home, workspace[2:])
+		}
+	}
 	abs, err := filepath.EvalSymlinks(workspace)
 	if err != nil {
 		abs, _ = filepath.Abs(workspace)

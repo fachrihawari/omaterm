@@ -267,9 +267,18 @@ func loadSavedProjects() ([]project, int) {
 		if p.Path == "" {
 			continue
 		}
-		if info, err := os.Stat(p.Path); err != nil || !info.IsDir() {
+		abs, err := filepath.Abs(p.Path)
+		if err != nil {
 			continue
 		}
+		if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+			continue
+		}
+		// Reject overly broad paths that would match all processes.
+		if service.IsWorkspaceTooBroad(abs) {
+			continue
+		}
+		p.Path = abs
 		if len(p.Tabs) == 0 {
 			p.Tabs = []string{"dev"}
 		}
@@ -283,12 +292,23 @@ func loadSavedProjects() ([]project, int) {
 }
 
 func (a *appState) saveProjects() {
+	if a.win == nil {
+		return // don't persist in test mode
+	}
 	if len(a.projects) == 0 {
 		// Remove state file if no projects.
 		os.Remove(stateFilePath())
 		return
 	}
-	st := savedState{Projects: a.projects, Active: a.active}
+	// Resolve all paths to absolute before saving.
+	projects := make([]project, len(a.projects))
+	copy(projects, a.projects)
+	for i := range projects {
+		if abs, err := filepath.Abs(projects[i].Path); err == nil {
+			projects[i].Path = abs
+		}
+	}
+	st := savedState{Projects: projects, Active: a.active}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return
