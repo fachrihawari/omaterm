@@ -101,9 +101,17 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					ui.Text(c, a.processErr).FontSize(10).TextColor(colRed).Padding(4, 0)
 				}
 				ui.Column(c).Radius(8).Border(1, colBorder).Children(func() {
-					if len(a.processes) == 0 {
+					if a.processes == nil {
 						ui.Box(c).Padding(16).Children(func() {
-							ui.Text(c, "No processes in this project").FontSize(11).TextColor(colMuted)
+							ui.Text(c, "Loading…").FontSize(11).TextColor(colMuted)
+						})
+					} else if len(a.processes) == 0 {
+						ui.Box(c).Padding(20).Children(func() {
+							ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+								ui.Icon(c, iconTerminal).Width(20).Height(20).TextColor(colMuted2)
+								ui.Text(c, "No processes in this project").FontSize(11).TextColor(colMuted)
+								ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(colMuted2)
+							})
 						})
 					}
 					for i, p := range a.processes {
@@ -142,9 +150,17 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					}
 				})
 				ui.Column(c).Radius(8).Border(1, colBorder).Children(func() {
-					if len(a.ports) == 0 {
+					if a.processes == nil {
 						ui.Box(c).Padding(16).Children(func() {
-							ui.Text(c, "No listening ports").FontSize(11).TextColor(colMuted)
+							ui.Text(c, "Loading…").FontSize(11).TextColor(colMuted)
+						})
+					} else if len(a.ports) == 0 {
+						ui.Box(c).Padding(20).Children(func() {
+							ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+								ui.Icon(c, iconGlobe).Width(20).Height(20).TextColor(colMuted2)
+								ui.Text(c, "No listening ports").FontSize(11).TextColor(colMuted)
+								ui.Text(c, "Start a dev server to see its port here").FontSize(10).TextColor(colMuted2)
+							})
 						})
 					}
 					for i, p := range a.ports {
