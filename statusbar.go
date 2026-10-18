@@ -11,7 +11,11 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 	return ui.Row(c).Height(24).AlignItems(ui.Center).Background(colStatusBg).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
 		statusSegment(c, func() {
 			ui.Icon(c, iconGitBranch).Width(12).Height(12).TextColor(colMuted)
-			ui.Text(c, a.project().Branch).FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
+			branch := ""
+			if p := a.project(); p != nil {
+				branch = p.Branch
+			}
+			ui.Text(c, branch).FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
 		})
 		statusSegment(c, func() {
 			ui.Text(c, "●").FontSize(8).TextColor(colGreen)

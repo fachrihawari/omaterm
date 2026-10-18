@@ -17,26 +17,6 @@ import (
 
 // App state: projects, tabs, git data, overlays.
 
-// termLine is one line of a terminal pane: spans of colored text.
-type termLine struct {
-	Top   float32
-	Spans []span
-}
-
-type span struct {
-	Text  string
-	Color int
-}
-
-type paneData struct {
-	Title  string
-	Shell  string
-	Pid    int
-	Dim    bool
-	Cursor bool
-	Lines  []termLine
-}
-
 type topTabKind int
 
 const (
@@ -132,7 +112,6 @@ type appState struct {
 
 	diffSplit bool
 
-	panes     [3]paneData
 	paneFocus int
 
 	fileSearch string
@@ -234,13 +213,6 @@ type project struct {
 }
 
 func newApp() *appState {
-	home, _ := os.UserHomeDir()
-	expand := func(p string) string {
-		if len(p) > 1 && p[:2] == "~/" {
-			return filepath.Join(home, p[2:])
-		}
-		return p
-	}
 	a := &appState{
 		sidebarVisible:   true,
 		inspectorVisible: true,
@@ -253,17 +225,19 @@ func newApp() *appState {
 		graphLimit:       300,
 		editors:          map[string]*openFile{},
 		termPanes:        map[string]*terminal.Terminal{},
-		projects: []project{
-			{Name: "oterm", Path: expand("~/Projects/personal/oterm"), Active: true, Tabs: []string{"dev", "api", "tests"}},
-		},
+		projects:         []project{},
 	}
 	a.setProject(0)
-	a.panes = mockPanes()
 	a.paneFocus = 0
 	return a
 }
 
-func (a *appState) project() *project { return &a.projects[a.active] }
+func (a *appState) project() *project {
+	if a.active < 0 || a.active >= len(a.projects) {
+		return nil
+	}
+	return &a.projects[a.active]
+}
 
 // activeRepoRef returns the active repo, or nil when none was discovered.
 func (a *appState) activeRepoRef() *service.Repo {
@@ -282,6 +256,9 @@ func (a *appState) gitCount() int {
 }
 
 func (a *appState) setProject(i int) {
+	if i < 0 || i >= len(a.projects) {
+		return
+	}
 	a.active = i
 	p := &a.projects[i]
 	a.workspace = p.Path
@@ -464,7 +441,12 @@ func branchDelta(ahead, behind int) string {
 
 // rebuildFileTree builds the inspector file tree from the real workspace.
 func (a *appState) rebuildFileTree() {
-	root := &fileNode{Name: a.project().Name, Dir: true, Open: true}
+	p := a.project()
+	rootName := "workspace"
+	if p != nil {
+		rootName = p.Name
+	}
+	root := &fileNode{Name: rootName, Dir: true, Open: true}
 	a.fileTree = root
 	if a.workspace == "" {
 		return

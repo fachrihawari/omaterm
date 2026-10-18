@@ -80,10 +80,17 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 						})
 					})
 					ui.Column(c).Gap(2).MinWidth(0).Grow(1).Children(func() {
-						txt(c, a.project().Name, 12, colText)
-						txt(c, a.project().Path, 10, colMuted)
+						if p := a.project(); p != nil {
+							txt(c, p.Name, 12, colText)
+							txt(c, p.Path, 10, colMuted)
+						} else {
+							txt(c, "No project open", 12, colText)
+							txt(c, "Ctrl+O to open a folder", 10, colMuted)
+						}
 					})
-					pill(c, a.project().Branch)
+					if p := a.project(); p != nil {
+						pill(c, p.Branch)
+					}
 				})
 			})
 

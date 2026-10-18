@@ -62,6 +62,11 @@ func TestShots(t *testing.T) {
 	}
 	for _, s := range shots {
 		a := newApp()
+		// Shots need a project to render against; use the repo itself.
+		if len(a.projects) == 0 {
+			a.projects = []project{{Name: "oterm", Path: ".", Tabs: []string{"dev", "api", "tests"}}}
+			a.setProject(0)
+		}
 		// The tester has no window, so the async refreshers no-op; load
 		// repo data synchronously instead.
 		if repos := service.DiscoverRepos(a.workspace, 1); len(repos) > 0 {
