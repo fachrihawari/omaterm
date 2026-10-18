@@ -1,6 +1,9 @@
 package main
 
 import (
+	"path/filepath"
+
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -16,7 +19,7 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 			ui.Text(c, "PROJECTS").FontSize(10).TextColor(colMuted).LetterSpacing(1.4).Padding(0, 6).SingleLine().Shrink(0)
 			ui.Spacer(c)
 			if cmdButton(c, iconFolderPlus, 14, false).Tooltip("Open project").Clicked() {
-				c.Toast("Open project")
+				a.openProjectDialog()
 			}
 		})
 
@@ -31,12 +34,12 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 
 		// Footer: Open Project button with its ⌘O key chip.
 		ui.Box(c).Padding(8).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
-			b := ui.ButtonBase(c).FillWidth().Height(32).Radius(6).Border(1, colBorder2)
+			b := ui.Row(c).FillWidth().Focusable().Cursor(ui.CursorPointer).Height(32).Radius(6).Border(1, colBorder2)
 			if b.Hovered() {
 				b.Background(colHover)
 			}
 			b.Children(func() {
-				ui.Row(c).Fill().Center().Gap(8).Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Padding(0, 8).Children(func() {
 					ui.Icon(c, iconFolderPlus).Width(14).Height(14).TextColor(colText2)
 					ui.Text(c, "Open Project").FontSize(11).TextColor(colText2).SingleLine().Shrink(0)
 					ui.Spacer(c)
@@ -52,15 +55,16 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 func (a *appState) projectRow(c *ui.Context, i int) ui.Element {
 	p := &a.projects[i]
 	selected := i == a.active
-	e := ui.ButtonBase(c).Key(i).FillWidth().Radius(8).Padding(10, 10).Border(1, ui.Color{})
+	// A plain row, left-aligned; ButtonBase would center its content.
+	e := ui.Row(c).Key(i).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Radius(8).Padding(10, 10).Border(1, ui.Color{})
 	if selected {
 		e = e.Background(colHover).Border(1, colBorder2)
 	} else if e.Hovered() {
 		e = e.Background(ui.Hex("#171d25"))
 	}
 	e.Children(func() {
-		ui.Column(c).Gap(4).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).FillWidth().Gap(4).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 				kind := dotGray
 				if p.Active {
 					kind = dotGreen
@@ -81,4 +85,35 @@ func (a *appState) projectRow(c *ui.Context, i int) ui.Element {
 		c.Toast("Switched to " + p.Name)
 	}
 	return e
+}
+
+// openProjectDialog shows a native folder picker and adds the chosen folder
+// as a project, or switches to it when already listed.
+func (a *appState) openProjectDialog() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Parent:    a.win,
+			Title:     "Open Project",
+			Directory: true,
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		dir := paths[0]
+		a.win.Update(func() {
+			// Switch to it when already in the list.
+			for i, p := range a.projects {
+				if p.Path == dir {
+					a.setProject(i)
+					return
+				}
+			}
+			a.projects = append(a.projects, project{
+				Name: filepath.Base(dir),
+				Path: dir,
+				Tabs: []string{"dev"},
+			})
+			a.setProject(len(a.projects) - 1)
+		})
+	}()
 }

@@ -1,90 +1,140 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
 )
 
-// The read-only editor view showing App.tsx, matching the mock's
-// breadcrumb + line-number code listing.
+// The editor view: a real code editor of the active file, with the
+// mock's breadcrumb and status line around it.
 
-var editorFile = []struct {
-	num   int
-	spans []ui.Span
-}{
-	{1, []ui.Span{{Text: "import", Color: synKeyword}, {Text: " { "}, {Text: "useState", Color: synVar}, {Text: " } "}, {Text: "from", Color: synKeyword}, {Text: " "}, {Text: "'react'", Color: synString}, {Text: ";"}}},
-	{2, []ui.Span{{Text: "import", Color: synKeyword}, {Text: " "}, {Text: "TerminalProject", Color: synType}, {Text: " "}, {Text: "from", Color: synKeyword}, {Text: " "}, {Text: "'./TerminalProject'", Color: synString}, {Text: ";"}}},
-	{3, []ui.Span{{Text: "import", Color: synKeyword}, {Text: " "}, {Text: "Inspector", Color: synType}, {Text: " "}, {Text: "from", Color: synKeyword}, {Text: " "}, {Text: "'./Inspector'", Color: synString}, {Text: ";"}}},
-	{4, nil},
-	{5, []ui.Span{{Text: "export default function", Color: synKeyword}, {Text: " "}, {Text: "App", Color: synFunc}, {Text: "() "}, {Text: "{", Color: synBrace}}},
-	{6, []ui.Span{{Text: "  "}, {Text: "const", Color: synKeyword}, {Text: " [project, setProject] = "}, {Text: "useState", Color: synFunc}, {Text: "("}, {Text: "'dev'", Color: synString}, {Text: ");"}}},
-	{7, []ui.Span{{Text: "  "}, {Text: "const", Color: synKeyword}, {Text: " [inspector, setInspector] = "}, {Text: "useState", Color: synFunc}, {Text: "("}, {Text: "'info'", Color: synString}, {Text: ");"}}},
-	{8, nil},
-	{9, []ui.Span{{Text: "  "}, {Text: "return", Color: synKeyword}, {Text: " ("}}},
-	{10, []ui.Span{{Text: "    <", Color: synPunct}, {Text: "Shell", Color: synType}, {Text: ">", Color: synPunct}}},
-	{11, []ui.Span{{Text: "      <", Color: synPunct}, {Text: "TerminalProject", Color: synType}, {Text: " id", Color: synVar}, {Text: "={", Color: synPunct}, {Text: "project", Color: synVar}, {Text: "} />", Color: synPunct}}},
-	{12, []ui.Span{{Text: "      <", Color: synPunct}, {Text: "Inspector", Color: synType}, {Text: " tab", Color: synVar}, {Text: "={", Color: synPunct}, {Text: "inspector", Color: synVar}, {Text: "} />", Color: synPunct}}},
-	{13, []ui.Span{{Text: "    </", Color: synPunct}, {Text: "Shell", Color: synType}, {Text: ">", Color: synPunct}}},
-	{14, []ui.Span{{Text: "  );"}}},
-	{15, []ui.Span{{Text: "}", Color: synBrace}}},
+// openEditor opens path (workspace-relative) in an editor tab.
+func (a *appState) openEditor(path string) {
+	a.openEditorAt(path, 0)
+}
+
+// openEditorAt opens path and moves the caret to line (1-based, 0 = keep).
+func (a *appState) openEditorAt(path string, line int) {
+	if _, ok := a.editors[path]; !ok {
+		abs := filepath.Join(a.workspace, path)
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			return
+		}
+		buf := editor.NewBuffer(string(data))
+		if lang := editor.LanguageFor(path); lang != nil {
+			buf.SetLanguage(lang)
+		}
+		a.editors[path] = &openFile{Path: path, State: &editor.State{Buffer: buf}}
+	}
+	if line > 0 {
+		if st := a.editors[path].State; st != nil {
+			st.GoTo(editor.Pos{Line: line - 1, Col: 0})
+		}
+	}
+	if a.win != nil {
+		mygo.App.AddRecentDocument(filepath.Join(a.workspace, path))
+	}
+	a.focusEditorTab(path)
+}
+
+// focusEditorTab activates the tab showing path, creating one if needed.
+func (a *appState) focusEditorTab(path string) {
+	for i, t := range a.tabs {
+		if t.Kind == tabEditor && t.Path == path {
+			a.activeTab = i
+			a.activeView = tabEditor
+			return
+		}
+	}
+	a.tabs = append(a.tabs, topTab{
+		Kind:  tabEditor,
+		Label: filepath.Base(path),
+		Icon:  fileIconTS,
+		Path:  path,
+	})
+	a.activeTab = len(a.tabs) - 1
+	a.activeView = tabEditor
+}
+
+// activeEditor returns the document of the active editor tab, or nil.
+func (a *appState) activeEditor() *openFile {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) {
+		return nil
+	}
+	t := a.tabs[a.activeTab]
+	if t.Kind != tabEditor {
+		return nil
+	}
+	return a.editors[t.Path]
 }
 
 func (a *appState) editorView(c *ui.Context) ui.Element {
+	doc := a.activeEditor()
+	if doc == nil {
+		return ui.Column(c).Fill().Background(colCodeBg).Center().Children(func() {
+			ui.Text(c, "No file open").FontSize(13).TextColor(colMuted)
+			ui.Text(c, "Ctrl+P to open a file").FontSize(11).TextColor(colMuted2).Margin(4, 0, 0, 0)
+		})
+	}
+
 	return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
 		// Breadcrumb + actions.
 		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-			ui.Text(c, "src").FontSize(10).TextColor(colMuted)
-			ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(colMuted2)
-			ui.Text(c, "components").FontSize(10).TextColor(colMuted)
-			ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(colMuted2)
-			ui.Text(c, "App.tsx").FontSize(10).TextColor(colText2)
+			parts := strings.Split(doc.Path, string(filepath.Separator))
+			for i, part := range parts {
+				if i > 0 {
+					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(colMuted2)
+				}
+				col := colMuted
+				if i == len(parts)-1 {
+					col = colText2
+				}
+				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
+			}
 			ui.Spacer(c)
+			if save := cmdButton(c, iconSave, 14, false); save.Tooltip("Save").Clicked() {
+				a.saveEditor(doc, c)
+			}
 			cmdButton(c, iconSplit, 14, false)
 			cmdButton(c, iconMore, 14, false)
 		})
 
-		// Code listing. Line 15 carries the mock's cursor block; lines 9–10
-		// are the mock's highlighted range.
-		ui.Scroll(c).Grow(1).Children(func() {
-			ui.Column(c).Padding(12, 0).Children(func() {
-				for _, ln := range editorFile {
-					active := ln.num == 9 || ln.num == 10
-					e := codeLine(c, ln.num, ln.spans, active)
-					if ln.num == 15 {
-						e.Children(func() {
-							ui.Box(c).Width(1).Height(16).Background(colText).Margin(0, 2)
-						})
-					}
-				}
-			})
-		})
+		// The real editor.
+		editor.View(c, doc.State).Fill()
 
-		// Editor status line.
+		// Status line.
 		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
-			ui.Text(c, "Ln 15, Col 2").FontSize(10).TextColor(colMuted)
-			ui.Text(c, "Spaces: 2").FontSize(10).TextColor(colMuted)
+			pos := doc.State.CursorPos()
+			ui.Text(c, "Ln "+itoa(pos.Line+1)+", Col "+itoa(pos.Col+1)).FontSize(10).TextColor(colMuted)
 			ui.Text(c, "UTF-8").FontSize(10).TextColor(colMuted)
 			ui.Spacer(c)
-			ui.Text(c, "TypeScript React").FontSize(10).TextColor(colMuted)
+			if doc.State.Buffer.Modified() {
+				ui.Text(c, "●").FontSize(10).TextColor(colYellow)
+			}
+			lang := ""
+			if l := doc.State.Buffer.Language(); l != nil {
+				lang = l.Name
+			}
+			ui.Text(c, lang).FontSize(10).TextColor(colMuted)
 		})
 	})
 }
 
-// codeLine renders a gutter number plus colored code spans.
-func codeLine(c *ui.Context, num int, spans []ui.Span, active bool) ui.Element {
-	e := ui.Row(c).Height(21)
-	if active {
-		e.Background(ui.Hex("#141a21"))
+// saveEditor writes the buffer back to disk.
+func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
+	abs := filepath.Join(a.workspace, doc.Path)
+	text := doc.State.Buffer.String()
+	if err := os.WriteFile(abs, []byte(text), 0o644); err != nil {
+		c.Toast("Save failed: " + err.Error())
+		return
 	}
-	e.Children(func() {
-		numCol := colMuted2
-		if active {
-			numCol = ui.Hex("#768193")
-		}
-		ui.Text(c, itoa(num)).Font(monoFont).FontSize(12).TextColor(numCol).Width(54).Padding(0, 14)
-		if len(spans) == 0 {
-			spans = []ui.Span{{Text: " "}}
-		}
-		ui.RichText(c, spans...).Font(monoFont).FontSize(12)
-	})
-	return e
+	doc.State.Buffer.MarkSaved()
+	c.Toast("Saved " + doc.Path)
+	a.refreshActiveRepo()
 }

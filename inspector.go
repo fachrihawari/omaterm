@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"strings"
+
 	"github.com/egoist/mygo/ui"
+
+	"oterm/service"
 )
 
 // The right inspector: Info / Files / Git panels behind a tab strip.
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
 	return ui.Column(c).FillHeight().Background(colPanel).BorderWidth(0, 0, 0, 1).BorderColor(colBorder).Children(func() {
-		// Tab strip.
 		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
 			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
 			a.inspectorTabButton(c, 1, iconFolder, "Files", 0)
@@ -49,6 +53,9 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 	}
 	if e.Clicked() {
 		a.inspectorTab = idx
+		if idx == 2 && a.gitGraphOpen && len(a.commits) == 0 {
+			a.refreshGraph()
+		}
 	}
 	return e
 }
@@ -58,7 +65,6 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 func (a *appState) infoPanel(c *ui.Context) ui.Element {
 	return ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(12).Gap(16).Children(func() {
-			// Project card.
 			ui.Column(c).Gap(8).Children(func() {
 				sectionLabel(c, "PROJECT")
 				ui.Row(c).Radius(8).Border(1, colBorder).Background(colCard).Padding(12).Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
@@ -75,7 +81,6 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			})
 
-			// Processes.
 			ui.Column(c).Gap(8).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					sectionLabel(c, "PROCESSES")
@@ -99,7 +104,6 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			})
 
-			// Ports.
 			ui.Column(c).Gap(8).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					sectionLabel(c, "PORTS")
@@ -135,7 +139,6 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 
 func (a *appState) filesPanel(c *ui.Context) ui.Element {
 	return ui.Column(c).Grow(1).Children(func() {
-		// Search box, the mock's .selection field without a second border.
 		ui.Box(c).Padding(8).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
 			ui.Row(c).Height(32).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 8).Gap(8).Children(func() {
 				ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(colMuted)
@@ -145,8 +148,10 @@ func (a *appState) filesPanel(c *ui.Context) ui.Element {
 
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Padding(4, 0).Children(func() {
-				for _, n := range a.fileTree.Children {
-					a.fileNodeView(c, n, 0)
+				if a.fileTree != nil {
+					for _, n := range a.fileTree.Children {
+						a.fileNodeView(c, n, 0)
+					}
 				}
 			})
 		})
@@ -157,9 +162,12 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	if a.fileSearch != "" && !n.Dir && !contains(n.Name, a.fileSearch) {
 		return
 	}
-	e := ui.ButtonBase(c).Key(n.Name).FillWidth().Height(28).Padding(0, 8).PaddingStart(8 + 16*float32(depth)).Gap(6)
+	e := ui.Row(c).Key(n.Name).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(28).Padding(0, 8).PaddingStart(8 + 16*float32(depth)).Gap(6)
+	if e.Hovered() {
+		e.Background(ui.Hex("#171d25"))
+	}
 	e.Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 			if n.Dir {
 				ic := iconChevronRight
 				if n.Open {
@@ -185,10 +193,8 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	if e.Clicked() {
 		if n.Dir {
 			n.Open = !n.Open
-		} else if n.Action == "diff" {
-			a.activeView = tabDiff
-		} else if n.Action == "editor" {
-			a.activeView = tabEditor
+		} else {
+			a.openEditor(a.nodePath(n))
 		}
 	}
 	if n.Dir && n.Open {
@@ -198,12 +204,42 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	}
 }
 
+// nodePath reconstructs the workspace-relative path of a file node by
+// walking the tree.
+func (a *appState) nodePath(target *fileNode) string {
+	var path []string
+	var walk func(n *fileNode, acc []string) bool
+	walk = func(n *fileNode, acc []string) bool {
+		acc = append(acc, n.Name)
+		if n == target {
+			path = acc
+			return true
+		}
+		for _, ch := range n.Children {
+			if walk(ch, acc) {
+				return true
+			}
+		}
+		return false
+	}
+	if a.fileTree != nil {
+		// Skip the synthetic root node.
+		for _, ch := range a.fileTree.Children {
+			if walk(ch, nil) {
+				break
+			}
+		}
+	}
+	return strings.Join(path, "/")
+}
+
 func contains(s, sub string) bool {
 	if len(sub) > len(s) {
 		return false
 	}
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
+	ls, lsub := strings.ToLower(s), strings.ToLower(sub)
+	for i := 0; i+len(lsub) <= len(ls); i++ {
+		if ls[i:i+len(lsub)] == lsub {
 			return true
 		}
 	}
@@ -215,6 +251,8 @@ func fileBadge(c *ui.Context, name string) ui.Element {
 	switch {
 	case hasSuffix(name, ".tsx") || hasSuffix(name, ".ts"):
 		return ui.Text(c, "TS").FontSize(10).FontWeight(700).TextColor(synTS).Width(18)
+	case hasSuffix(name, ".go"):
+		return ui.Text(c, "GO").FontSize(10).FontWeight(700).TextColor(colCyan).Width(18)
 	case hasSuffix(name, ".json"):
 		return ui.Text(c, "{ }").FontSize(10).FontWeight(700).TextColor(synJSON).Width(18)
 	case hasSuffix(name, ".md"):
@@ -232,182 +270,495 @@ func hasSuffix(s, suf string) bool {
 
 func (a *appState) gitPanel(c *ui.Context) ui.Element {
 	return ui.Column(c).Grow(1).Children(func() {
+		// Repo switcher when several repos were discovered.
+		if len(a.repos) > 1 {
+			a.repoSwitcher(c)
+		}
+
+		r := a.activeRepoRef()
+		if r == nil {
+			ui.Column(c).Grow(1).Center().Gap(8).Children(func() {
+				ui.Icon(c, iconGitBranch).Width(22).Height(22).TextColor(colMuted2)
+				ui.Text(c, "No git repository found").FontSize(12).TextColor(colMuted)
+				if a.repoErr != "" {
+					ui.Text(c, a.repoErr).FontSize(10).TextColor(colMuted2)
+				}
+				b := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(5, 12).Children(func() {
+					ui.Text(c, "Search again").FontSize(11).TextColor(colText2)
+				})
+				if b.Clicked() {
+					a.refreshRepos()
+				}
+			})
+			return
+		}
+
 		// Branch + commit box.
 		ui.Column(c).Padding(12).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
 			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(colPurple)
-				txt(c, "main", 11, colText)
-				pill(c, "↑0 ↓0")
+				txt(c, r.Branch, 11, colText)
+				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
 				ui.Spacer(c)
-				if cmdButton(c, iconRefresh, 14, false).Clicked() {
-					c.Toast("Refreshed git status")
+				remote := r.HasRemote
+				if b := cmdButton(c, iconDownload, 14, false).Tooltip("Fetch"); !remote {
+					b.Disabled(true)
+				} else if b.Clicked() {
+					a.gitFetch(c)
 				}
-				cmdButton(c, iconEllipsis, 14, false)
+				if b := cmdButton(c, iconArrowDown, 14, false).Tooltip("Pull"); !remote {
+					b.Disabled(true)
+				} else if b.Clicked() {
+					a.gitPull(c)
+				}
+				if b := cmdButton(c, iconArrowUp, 14, false).Tooltip("Push"); !remote {
+					b.Disabled(true)
+				} else if b.Clicked() {
+					a.gitPush(c)
+				}
+				if cmdButton(c, iconRefresh, 14, false).Tooltip("Refresh").Clicked() {
+					a.refreshActiveRepo()
+				}
+				if cmdButton(c, iconOpenInNew, 14, false).Tooltip("Open graph in pane").Clicked() {
+					a.openGraphTab()
+				}
 			})
-			// Commit message box, the mock's .selection textarea.
 			ui.Box(c).Radius(6).Border(1, colBorder).Background(colInput).Children(func() {
-				ui.TextAreaBase(c, &a.commitMsg).FontSize(11).Padding(8).MinHeight(56).FillWidth()
+				ui.TextAreaBase(c, &a.commitMsg).Placeholder("Commit message…").FontSize(11).Padding(8).MinHeight(56).FillWidth()
 			})
 			ui.Row(c).Gap(8).Children(func() {
 				commit := ui.PrimaryButton(c, "Commit").Grow(1).Height(32).FontSize(11)
 				if commit.Clicked() {
-					if len(a.staged) == 0 {
-						c.Toast("Nothing staged to commit")
-					} else {
-						n := len(a.staged)
-						a.staged = nil
-						a.commitMsg = ""
-						word := "files"
-						if n == 1 {
-							word = "file"
-						}
-						c.Toast("Committed " + itoa(n) + " staged " + word)
-					}
+					a.gitCommit(c)
 				}
-				// Split button for commit options.
-				ui.ButtonBase(c).Width(32).Height(32).Radius(6).Border(1, colBorder2).Shrink(0).Children(func() {
-					ui.Column(c).Fill().Center().Children(func() {
-						ui.Icon(c, iconChevronDown).Width(14).Height(14).TextColor(colMuted)
-					})
-				})
+				if stash := cmdButton(c, iconArchive, 14, false); stash.Tooltip("Stash changes").Clicked() {
+					a.gitStashPush(c)
+				}
 			})
+			if a.gitBusy != "" || a.gitMsg != "" {
+				msg := a.gitMsg
+				if a.gitBusy != "" {
+					msg = a.gitBusy
+				}
+				col := colMuted
+				if a.gitBusy == "" && a.gitErr {
+					col = colRed
+				}
+				ui.Text(c, msg).FontSize(10).TextColor(col).SingleLine()
+			}
 		})
 
-		// Staged + changes lists.
+		// All sections scroll together, in normal flow: while there is
+		// room they all show, and only when the content outgrows the
+		// panel does it scroll. Collapsing a section gives the others
+		// the space.
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Children(func() {
-				a.gitSection(c, "STAGED CHANGES", len(a.staged), true)
-				for i := range a.staged {
-					a.gitFileRow(c, &a.staged[i], true)
+				a.gitSection(c, "STAGED CHANGES", len(r.Staged), true)
+				if !a.stagedCollapsed {
+					for i := range r.Staged {
+						a.gitFileRow(c, &r.Staged[i], true)
+					}
 				}
-				a.gitSection(c, "CHANGES", len(a.changes), false)
-				for i := range a.changes {
-					a.gitFileRow(c, &a.changes[i], false)
+				a.gitSection(c, "CHANGES", len(r.Changes), false)
+				if !a.changesCollapsed {
+					for i := range r.Changes {
+						a.gitFileRow(c, &r.Changes[i], false)
+					}
 				}
+				a.gitGraphSection(c)
+				a.stashSection(c, r)
 			})
 		})
 
 		// Footer.
 		ui.Row(c).Padding(12).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
-			ui.Text(c, "origin/main").FontSize(10).TextColor(colMuted)
+			ui.Text(c, r.RelPath).FontSize(10).TextColor(colMuted).SingleLine()
 			ui.Spacer(c)
-			ui.Text(c, "HEAD 84a2f73").FontSize(10).TextColor(colMuted)
+			ui.Text(c, "HEAD "+r.Head).FontSize(10).TextColor(colMuted).SingleLine()
 		})
 	})
 }
 
+// repoSwitcher lets the user pick the active repo when several exist.
+func (a *appState) repoSwitcher(c *ui.Context) {
+	ui.Box(c).Padding(8, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+		ui.ScrollHorizontal(c).FillWidth().Children(func() {
+			ui.Row(c).Gap(6).Children(func() {
+				for i := range a.repos {
+					r := &a.repos[i]
+					active := i == a.activeRepo
+					label := r.Name
+					if n := len(r.Staged) + len(r.Changes); n > 0 {
+						label += " ·" + itoa(n)
+					}
+					e := ui.ButtonBase(c).Key(r.Root).Height(26).Radius(13).Padding(0, 12).Shrink(0).Children(func() {
+						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+							ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(colMuted)
+							ui.Text(c, label).FontSize(10).SingleLine().Shrink(0)
+						})
+					})
+					if active {
+						e.Background(colHover).Border(1, colBorder2)
+					} else {
+						e.Border(1, colBorder)
+					}
+					if e.Clicked() && !active {
+						a.activeRepo = i
+						a.commits = nil
+					}
+				}
+			})
+		})
+	})
+}
+
+func (a *appState) gitCommit(c *ui.Context) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	if len(r.Staged) == 0 {
+		c.Toast("Nothing staged to commit")
+		return
+	}
+	msg := strings.TrimSpace(a.commitMsg)
+	if msg == "" {
+		c.Toast("Commit message is empty")
+		return
+	}
+	if err := service.CommitStaged(r.Root, msg); err != nil {
+		c.Toast("Commit failed: " + err.Error())
+		return
+	}
+	n := len(r.Staged)
+	a.commitMsg = ""
+	a.refreshActiveRepo()
+	word := "files"
+	if n == 1 {
+		word = "file"
+	}
+	c.Toast("Committed " + itoa(n) + " " + word)
+}
+
 func (a *appState) gitSection(c *ui.Context, label string, count int, staged bool) ui.Element {
-	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center)
+	collapsed := &a.stagedCollapsed
+	if !staged {
+		collapsed = &a.changesCollapsed
+	}
+	icon := iconChevronRight
+	if !*collapsed {
+		icon = iconChevronDown
+	}
+	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if !staged {
 		e = e.BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Margin(4, 0, 0, 0)
 	}
 	e.Children(func() {
-		ui.Icon(c, iconChevronDown).Width(14).Height(14).TextColor(colMuted)
+		ui.Icon(c, icon).Width(14).Height(14).TextColor(colMuted)
 		txt(c, label, 10, colMuted).LetterSpacing(1.0)
 		countBadge(c, count)
 		ui.Spacer(c)
+		r := a.activeRepoRef()
 		if staged {
 			all := cmdButton(c, iconMinus, 14, false).Tooltip("Unstage all")
-			if all.Clicked() {
-				a.changes = append(a.changes, a.staged...)
-				a.staged = nil
-				c.Toast("Unstaged all changes")
+			if all.Clicked() && r != nil {
+				if err := service.UnstageAll(r.Root); err != nil {
+					c.Toast("Git error: " + err.Error())
+				} else {
+					a.refreshActiveRepo()
+				}
 			}
 		} else {
 			stageAll := cmdButton(c, iconPlus, 14, false).Tooltip("Stage all")
-			if stageAll.Clicked() {
-				a.staged = append(a.staged, a.changes...)
-				a.changes = nil
-				c.Toast("Staged all changes")
-			}
-			discardAll := cmdButton(c, iconUndo, 14, false).Tooltip("Discard all")
-			if discardAll.Clicked() {
-				a.changes = nil
-				c.Toast("Discarded all unstaged changes")
+			if stageAll.Clicked() && r != nil {
+				if err := service.StageAll(r.Root); err != nil {
+					c.Toast("Git error: " + err.Error())
+				} else {
+					a.refreshActiveRepo()
+				}
 			}
 		}
-		cmdButton(c, iconEllipsis, 14, false)
 	})
+	if e.Clicked() {
+		*collapsed = !*collapsed
+	}
 	return e
 }
 
-func (a *appState) gitFileRow(c *ui.Context, f *gitFile, staged bool) ui.Element {
-	e := ui.ButtonBase(c).Key(f.Name).FillWidth().Height(40).Padding(0, 12).ClipX()
+// gitGraphSection renders the commit graph as a collapsible section.
+func (a *appState) gitGraphSection(c *ui.Context) {
+	icon := iconChevronRight
+	if a.gitGraphOpen {
+		icon = iconChevronDown
+	}
+	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Margin(4, 0, 0, 0)
+	e.Children(func() {
+		ui.Icon(c, icon).Width(14).Height(14).TextColor(colMuted)
+		txt(c, "GIT GRAPH", 10, colMuted).LetterSpacing(1.0)
+		countBadge(c, len(a.commits))
+		ui.Spacer(c)
+		if cmdButton(c, iconOpenInNew, 14, false).Tooltip("Open in pane").Clicked() {
+			a.openGraphTab()
+		}
+	})
+	if e.Clicked() {
+		a.gitGraphOpen = !a.gitGraphOpen
+		if a.gitGraphOpen && len(a.commits) == 0 {
+			a.refreshGraph()
+		}
+	}
+	if a.gitGraphOpen {
+		if len(a.commits) == 0 {
+			ui.Text(c, "Loading…").FontSize(11).TextColor(colMuted).Padding(12)
+		} else {
+			a.graphCompactView(c)
+		}
+	}
+}
+
+func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui.Element {
+	e := ui.Row(c).Key(f.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(40).Padding(0, 12).ClipX().AlignItems(ui.Center).Gap(8)
 	hover := e.Hovered()
 	if hover {
 		e.Background(ui.Hex("#171d25"))
 	}
 	e.Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			fileBadge(c, f.Name)
-			ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
-				txt(c, f.Name, 11, colText)
-				txt(c, f.Dir, 9, colMuted)
-			})
-			// The mock's .git-actions stay in layout but are transparent
-			// until the row is hovered.
-			actions := ui.Row(c).Gap(2).Shrink(0)
-			if !hover {
-				actions.Opacity(0)
-			}
-			actions.Children(func() {
-				if staged {
-					un := cmdButton(c, iconMinus, 14, false).Tooltip("Unstage")
-					if un.Clicked() {
-						a.unstage(f.Name)
-					}
-					cmdButton(c, iconOpenInNew, 14, false)
-				} else {
-					st := cmdButton(c, iconPlus, 14, false).Tooltip("Stage")
-					if st.Clicked() {
-						a.stage(f.Name)
-					}
-					// Untracked files discard with a trash icon, as the mock.
-					discardIcon := iconUndo
-					if f.Status == "U" || f.Status == "?" {
-						discardIcon = iconTrash
-					}
-					di := cmdButton(c, discardIcon, 14, false).Tooltip("Discard")
-					if di.Clicked() {
-						a.discard(f.Name)
+		fileBadge(c, pathBase(f.Path))
+		ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
+			txt(c, pathBase(f.Path), 11, colText)
+			txt(c, pathDir(f.Path), 9, colMuted)
+		})
+		actions := ui.Row(c).Gap(2).Shrink(0)
+		if !hover {
+			actions.Opacity(0)
+		}
+		actions.Children(func() {
+			r := a.activeRepoRef()
+			if staged {
+				un := cmdButton(c, iconMinus, 14, false).Tooltip("Unstage")
+				if un.Clicked() && r != nil {
+					if err := service.Unstage(r.Root, f.Path); err != nil {
+						c.Toast("Git error: " + err.Error())
+					} else {
+						a.refreshActiveRepo()
 					}
 				}
-			})
-			txt(c, f.Status, 10, statusColor(f.Status))
+			} else {
+				st := cmdButton(c, iconPlus, 14, false).Tooltip("Stage")
+				if st.Clicked() && r != nil {
+					if err := service.Stage(r.Root, f.Path); err != nil {
+						c.Toast("Git error: " + err.Error())
+					} else {
+						a.refreshActiveRepo()
+					}
+				}
+				discardIcon := iconUndo
+				if f.Status == "U" || f.Status == "?" {
+					discardIcon = iconTrash
+				}
+				di := cmdButton(c, discardIcon, 14, false).Tooltip("Discard")
+				if di.Clicked() && r != nil {
+					if err := service.Discard(r.Root, f.Path, f.Status == "U"); err != nil {
+						c.Toast("Git error: " + err.Error())
+					} else {
+						a.refreshActiveRepo()
+					}
+				}
+			}
 		})
+		txt(c, f.Status, 10, statusColor(f.Status))
 	})
 	if e.Clicked() {
-		a.diffStaged = staged
-		a.activeView = tabDiff
+		a.openWorkingDiff(f.Path, staged)
 	}
 	return e
 }
 
-func (a *appState) stage(name string) {
-	for i, f := range a.changes {
-		if f.Name == name {
-			a.changes = append(a.changes[:i], a.changes[i+1:]...)
-			a.staged = append(a.staged, f)
-			return
+// stashSection renders the STASHES section, collapsible like the others,
+// with its create form and list in the panel's normal scroll.
+func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
+	icon := iconChevronRight
+	if !a.stashCollapsed {
+		icon = iconChevronDown
+	}
+	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Margin(4, 0, 0, 0)
+	e.Children(func() {
+		ui.Icon(c, icon).Width(14).Height(14).TextColor(colMuted)
+		txt(c, "STASHES", 10, colMuted).LetterSpacing(1.0)
+		countBadge(c, len(r.Stashes))
+		ui.Spacer(c)
+	})
+	if e.Clicked() {
+		a.stashCollapsed = !a.stashCollapsed
+	}
+
+	if !a.stashCollapsed {
+		// Create-stash form.
+		ui.Box(c).Padding(6, 12).Children(func() {
+			ui.Row(c).Height(28).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 8).Gap(6).Children(func() {
+				ui.Icon(c, iconArchive).Width(12).Height(12).TextColor(colMuted)
+				ui.TextInputBase(c, &a.stashMsg).Placeholder("Stash message…").FontSize(10).Grow(1)
+				track := cmdButton(c, iconPlus, 12, false).Tooltip("Stash (include untracked)")
+				if track.Clicked() {
+					a.gitStashPushUntracked(c)
+				}
+			})
+		})
+
+		for i := range r.Stashes {
+			a.stashRow(c, r, &r.Stashes[i])
 		}
 	}
 }
 
-func (a *appState) unstage(name string) {
-	for i, f := range a.staged {
-		if f.Name == name {
-			a.staged = append(a.staged[:i], a.staged[i+1:]...)
-			a.changes = append(a.changes, f)
-			return
+func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
+	e := ui.Row(c).Key(s.Ref).FillWidth().Justify(ui.Start).Cursor(ui.CursorPointer).Height(38).Padding(0, 12).ClipX().AlignItems(ui.Center).Gap(8)
+	hover := e.Hovered()
+	if hover {
+		e.Background(ui.Hex("#171d25"))
+	}
+	e.Children(func() {
+		ui.Icon(c, iconArchive).Width(14).Height(14).TextColor(colYellow)
+		ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
+			txt(c, s.Message, 11, colText)
+			meta := s.Ref
+			if s.Branch != "" {
+				meta += " · " + s.Branch
+			}
+			meta += " · " + relativeTime(s.When)
+			txt(c, meta, 9, colMuted)
+		})
+		actions := ui.Row(c).Gap(2).Shrink(0)
+		if !hover {
+			actions.Opacity(0)
 		}
+		actions.Children(func() {
+			idx := s.Index
+			apply := cmdButton(c, iconRotate, 14, false).Tooltip("Apply")
+			if apply.Clicked() {
+				a.gitStashApply(c, idx)
+			}
+			pop := cmdButton(c, iconExternalLink, 14, false).Tooltip("Pop")
+			if pop.Clicked() {
+				a.gitStashPop(c, idx)
+			}
+			drop := cmdButton(c, iconTrash, 14, false).Tooltip("Drop")
+			if drop.Clicked() {
+				a.gitStashDrop(c, idx)
+			}
+		})
+	})
+	if e.Clicked() {
+		a.openStashDiff(s.Index)
 	}
 }
 
-func (a *appState) discard(name string) {
-	for i, f := range a.changes {
-		if f.Name == name {
-			a.changes = append(a.changes[:i], a.changes[i+1:]...)
-			return
-		}
+func (a *appState) gitStashPush(c *ui.Context) {
+	a.gitStashPushOpt(c, false)
+}
+
+func (a *appState) gitStashPushUntracked(c *ui.Context) {
+	a.gitStashPushOpt(c, true)
+}
+
+func (a *appState) gitStashPushOpt(c *ui.Context, untracked bool) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
 	}
+	if len(r.Changes)+len(r.Staged) == 0 {
+		c.Toast("Nothing to stash")
+		return
+	}
+	if err := service.StashPush(r.Root, a.stashMsg, untracked); err != nil {
+		c.Toast("Stash failed: " + err.Error())
+		return
+	}
+	a.stashMsg = ""
+	a.refreshActiveRepo()
+	c.Toast("Stashed changes")
+}
+
+func (a *appState) gitStashApply(c *ui.Context, index int) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	if err := service.StashApply(r.Root, index); err != nil {
+		c.Toast("Apply failed: " + err.Error())
+		return
+	}
+	a.refreshActiveRepo()
+	c.Toast("Applied stash@{" + itoa(index) + "}")
+}
+
+func (a *appState) gitStashPop(c *ui.Context, index int) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	if err := service.StashPop(r.Root, index); err != nil {
+		c.Toast("Pop failed: " + err.Error())
+		return
+	}
+	a.refreshActiveRepo()
+	c.Toast("Popped stash@{" + itoa(index) + "}")
+}
+
+func (a *appState) gitStashDrop(c *ui.Context, index int) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	if err := service.StashDrop(r.Root, index); err != nil {
+		c.Toast("Drop failed: " + err.Error())
+		return
+	}
+	a.refreshActiveRepo()
+	c.Toast("Dropped stash@{" + itoa(index) + "}")
+}
+
+// gitRemoteOp runs a network git command off the UI thread, showing its
+// progress in the panel while it runs.
+func (a *appState) gitRemoteOp(verb string, fn func(root string) (string, error)) {
+	r := a.activeRepoRef()
+	if r == nil || a.win == nil {
+		return
+	}
+	root := r.Root
+	win := a.win
+	a.gitBusy = verb + "…"
+	a.gitMsg = ""
+	a.gitErr = false
+	a.gitJob.Run(func(ctx context.Context) error {
+		out, err := fn(root)
+		msg := strings.TrimSpace(out)
+		if err == nil {
+			msg = verb + " done"
+		} else if msg == "" {
+			msg = verb + " failed"
+		} else if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = msg[:i]
+		}
+		win.Update(func() {
+			a.gitBusy = ""
+			a.gitMsg = msg
+			a.gitErr = err != nil
+			a.refreshActiveRepo()
+		})
+		return err
+	}, nil)
+}
+
+func (a *appState) gitFetch(c *ui.Context) {
+	a.gitRemoteOp("Fetch", service.Fetch)
+}
+
+func (a *appState) gitPull(c *ui.Context) {
+	a.gitRemoteOp("Pull", service.Pull)
+}
+
+func (a *appState) gitPush(c *ui.Context) {
+	a.gitRemoteOp("Push", service.Push)
 }

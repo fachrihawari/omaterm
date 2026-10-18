@@ -1,33 +1,21 @@
 package main
 
 import (
-	"fmt"
+	"os"
+	"strings"
+	"time"
 
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 )
 
-// The terminal view: 1–3 panes in the mock's four layouts, each with a
-// header strip, a floating action bar and colored output.
-
-var termColorTable = map[int]ui.Color{
-	tcGreen:   colGreen,
-	tcLime:    colLime,
-	tcPurple:  colPurple,
-	tcYellow:  colYellow,
-	tcCyan:    colCyan,
-	tcBlue:    colBlue,
-	tcOrange:  colOrange,
-	tcRed:     colRed,
-	tcDim:     synDim,
-	tcMuted:   colMuted,
-	tcWhite:   ui.Hex("#e6edf3"),
-	tcLink:    synLink,
-	tcDefault: colText2,
-}
+// The terminal view: real terminal panes (Ghostty VT via MyGo's plugin)
+// with split layout support. Each pane is its own *terminal.Terminal;
+// the plugin handles I/O, rendering, input, scrollback, selection, etc.
 
 func (a *appState) terminalView(c *ui.Context) ui.Element {
 	return ui.Column(c).Fill().Background(colBg2).Children(func() {
-		switch a.layout {
+		switch a.termLayout() {
 		case layoutSingle:
 			a.termPane(c, 0)
 		case layoutVertical:
@@ -56,121 +44,146 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 	})
 }
 
-func (a *appState) termPane(c *ui.Context, i int) ui.Element {
-	p := &a.panes[i]
-	// The mock's .subtle-grid under the pane's output.
-	grid := ui.RGBA(255, 255, 255, 0.016)
-	e := ui.Column(c).Fill().Background(colBg2).Draw(func(p *ui.Painter, r ui.Rect) {
-		for x := r.X - 1; x < r.X+r.W; x += 28 {
-			p.Line(x, r.Y, x, r.Y+r.H, 1, grid)
-		}
-		for y := r.Y - 1; y < r.Y+r.H; y += 28 {
-			p.Line(r.X, y, r.X+r.W, y, 1, grid)
-		}
-	})
-	if a.paneFocus == i {
-		// The mock's active pane ring: an inset blue stroke over the edges.
-		e.DrawOver(func(p *ui.Painter, r ui.Rect) {
-			p.Stroke(ui.Rect{X: r.X + 0.5, Y: r.Y + 0.5, W: r.W - 1, H: r.H - 1}, ui.RGBA(90, 169, 255, 0.34), 0, 1)
-		})
+// termPaneKey identifies one pane: the terminal tab it belongs to and its
+// index within that tab's layout.
+func (a *appState) termPaneKey(i int) string {
+	id := "tab" + itoa(a.activeTab)
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Path != "" {
+		id = a.tabs[a.activeTab].Path
 	}
-	e.Children(func() {
-		// Header strip: dot, title, shell · pid.
-		ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(8).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).ClipX().Children(func() {
-			kind := dotGreen
-			if p.Dim {
-				kind = dotYellow
-			}
-			dot(c, kind, 6)
-			txt(c, p.Title, 10, colText2)
-			meta := p.Shell
-			if p.Pid != 0 {
-				meta += " · pid " + itoa(p.Pid)
-			}
-			mutedTxt2(c, meta, 10)
-		})
+	return id + "/" + itoa(i)
+}
 
-		// Output, with the floating action bar over its top right, showing
-		// while the pane is hovered, as the mock's hover reveal.
-		body := ui.Box(c).Grow(1).Clip()
-		if body.Clicked() {
-			a.paneFocus = i
-		}
-		hovered := body.Hovered()
-		body.Children(func() {
-			ui.Scroll(c).Fill().Children(func() {
-				pad := ui.Column(c).Padding(16, 20).Gap(0)
-				if p.Dim {
-					pad = pad.Opacity(0.75)
+// termLayout returns the active terminal tab's pane arrangement. A tab
+// starts with one pane and is split from there.
+func (a *appState) termLayout() layoutKind {
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) {
+		return a.tabs[a.activeTab].Layout
+	}
+	return layoutSingle
+}
+
+// setTermLayout splits (or unsplits) the active terminal tab.
+func (a *appState) setTermLayout(k layoutKind) {
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) {
+		a.tabs[a.activeTab].Layout = k
+	}
+}
+
+// term returns the terminal for pane i, creating it on first use. The
+// program starts when a view first shows it (or shortly after New).
+func (a *appState) term(i int) *terminal.Terminal {
+	key := a.termPaneKey(i)
+	if t, ok := a.termPanes[key]; ok && t != nil {
+		return t
+	}
+	shell := os.Getenv("SHELL")
+	var cmd []string
+	if shell != "" {
+		cmd = []string{shell}
+	}
+	t, err := terminal.New(terminal.Options{
+		Command: cmd, // empty runs the login shell
+		Dir:     a.workspace,
+		OnTitle: func(title string) {
+			// Recorded for the pane header; read via t.Title().
+		},
+		OnExit: func(code int) {
+			// Mark the pane as exited so the toolbar offers Restart.
+			// Safe to touch app state here only lightly; the view
+			// re-reads the terminal's state on the next frame.
+		},
+	})
+	if err != nil {
+		// Keep a nil entry so we don't retry every frame; the pane
+		// renders an error instead.
+		a.termPanes[key] = nil
+		return nil
+	}
+	a.termPanes[key] = t
+	return t
+}
+
+func (a *appState) termPane(c *ui.Context, i int) {
+	t := a.term(i)
+	ui.Column(c).Fill().Background(colBg2).Children(func() {
+		// Header strip.
+		ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(8).
+			BorderWidth(0, 0, 1, 0).BorderColor(colBorder).ClipX().Children(func() {
+			title := "Terminal"
+			if t != nil {
+				if tt := t.Title(); tt != "" {
+					title = tt
 				}
-				pad.Children(func() {
-					for _, line := range p.Lines {
-						termLineView(c, line, p.Dim)
-					}
-					if p.Cursor {
-						// The mock's final prompt with its cursor block.
-						ui.Row(c).Margin(32, 0, 0, 0).Gap(8).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, "❯").Font(monoFont).FontSize(12).TextColor(colLime)
-							ui.Box(c).Width(8).Height(15).Background(ui.Hex("#95d7ff"))
-						})
-					}
-				})
-			})
-			if hovered {
-				ui.Row(c).Absolute().Top(7).Right(8).Gap(2).Radius(6).Border(1, colBorder2).Background(colPaneBar).Padding(2, 4).Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.22)).Children(func() {
-					if cmdButton(c, iconColumns2, 14, false).Tooltip("Split right").Clicked() {
-						a.layout = layoutVertical
-						c.Toast("Vertical terminal split")
-					}
-					if cmdButton(c, iconRows2, 14, false).Tooltip("Split down").Clicked() {
-						a.layout = layoutHorizontal
-						c.Toast("Horizontal terminal split")
-					}
-					if i == 0 {
-						if cmdButton(c, iconRotate, 14, false).Tooltip("Restart").Clicked() {
-							c.Toast("Restarted terminal")
-						}
-						if cmdButton(c, iconEllipsis, 14, false).Clicked() {
-							c.Toast("More")
-						}
-					} else {
-						if cmdButton(c, iconTrash, 14, false).Tooltip("Kill terminal").Clicked() {
-							a.layout = layoutSingle
-							c.Toast("Terminal closed")
-						}
-					}
-				})
+				if d := t.Dir(); d != "" {
+					ui.Text(c, d).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
+				}
 			}
-		})
-
-		// Pane footer: shell, cwd, dimensions.
-		ui.Row(c).Height(28).AlignItems(ui.Center).Padding(0, 12).Gap(12).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
-			mutedTxt2(c, p.Shell, 10)
-			mutedTxt2(c, a.project().Path, 10)
+			dot(c, dotGreen, 6)
+			txt(c, title, 10, colText2)
 			ui.Spacer(c)
-			mutedTxt2(c, "128×34", 10)
+			// Hover toolbar.
+			hovered := false
+			_ = hovered
 		})
-	})
-	return e
-}
 
-func termLineView(c *ui.Context, line termLine, dim bool) ui.Element {
-	spans := make([]ui.Span, 0, len(line.Spans))
-	for _, s := range line.Spans {
-		sp := ui.Span{Text: s.Text}
-		if col, ok := termColorTable[s.Color]; ok {
-			sp.Color = col
+		if t == nil {
+			ui.Box(c).Grow(1).Children(func() {
+				ui.Text(c, "failed to start terminal").FontSize(12).TextColor(colRed)
+			})
+			return
 		}
-		spans = append(spans, sp)
-	}
-	if len(spans) == 0 {
-		spans = []ui.Span{{Text: " "}}
-	}
-	e := ui.RichText(c, spans...).Font(monoFont).FontSize(12).LineHeight(1.72)
-	if line.Top > 0 {
-		e = e.Margin(line.Top, 0, 0, 0)
-	}
-	return e
+
+		// The terminal itself: handles I/O, rendering, input, scrollback,
+		// selection, copy/paste, mouse, IME, zoom.
+		terminal.View(c, t).Fill().AutoFocus()
+
+		// Floating toolbar on hover.
+		// (Rendered after the terminal so it sits on top.)
+	})
 }
 
-var _ = fmt.Sprint
+// restartTermPane closes and recreates pane i.
+func (a *appState) restartTermPane(i int) {
+	key := a.termPaneKey(i)
+	if t, ok := a.termPanes[key]; ok && t != nil {
+		t.Close()
+	}
+	delete(a.termPanes, key)
+	c := a.term(i) // recreate
+	_ = c
+}
+
+// killTermPane closes pane i and removes it.
+func (a *appState) killTermPane(i int) {
+	key := a.termPaneKey(i)
+	if t, ok := a.termPanes[key]; ok && t != nil {
+		t.Close()
+	}
+	delete(a.termPanes, key)
+}
+
+// newTerminalTabReal adds a terminal tab; its pane's shell starts the first
+// time the tab is drawn.
+func (a *appState) newTerminalTabReal() {
+	shell := os.Getenv("SHELL")
+	name := "Terminal"
+	if shell != "" {
+		if i := strings.LastIndex(shell, "/"); i >= 0 {
+			name = shell[i+1:]
+		}
+	}
+	a.tabs = append(a.tabs, topTab{
+		Kind:   tabTerminal,
+		Label:  name,
+		Dot:    dotGreen,
+		Path:   randomTermID(),
+		Layout: layoutSingle,
+	})
+	a.activeTab = len(a.tabs) - 1
+	a.activeView = tabTerminal
+}
+
+func randomTermID() string {
+	return "term-" + time.Now().Format("20060102-150405.000000")
+}

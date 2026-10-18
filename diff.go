@@ -2,63 +2,102 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
+
+	"oterm/service"
 )
 
-// The diff view: INDEX ↔ WORKING TREE for GitPanel.tsx, split or inline,
-// with stage/discard actions in its toolbar.
+// The diff view: a real editor.DiffView comparing two buffers, with the
+// mock's toolbar of stage/discard/split/inline actions.
 
-// The split diff's two sides, transcribed from the mock: the left column
-// (INDEX) and the right (WORKING TREE) each show their own lines.
-
-type sideLine struct {
-	num   int
-	del   bool
-	add   bool
-	spans []ui.Span
+// openWorkingDiff shows INDEX ↔ WORKING TREE for path.
+func (a *appState) openWorkingDiff(path string, staged bool) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	var oldSrc, newSrc, scope string
+	if staged {
+		oldSrc, _ = service.HeadVersion(r.Root, path)
+		newSrc, _ = service.IndexVersion(r.Root, path)
+		scope = "Staged · HEAD ↔ INDEX"
+	} else {
+		oldSrc, _ = service.IndexVersion(r.Root, path)
+		if oldSrc == "" {
+			oldSrc, _ = service.HeadVersion(r.Root, path)
+		}
+		data, err := readFileAbs(r.Root, path)
+		if err == nil {
+			newSrc = data
+		}
+		scope = "Working Tree · INDEX ↔ WORKING TREE"
+	}
+	a.setDiffBuffers(oldSrc, newSrc, path)
+	a.diffSrc = diffSource{Kind: map[bool]diffSourceKind{true: diffStaged, false: diffWorking}[staged], Path: path, Repo: r.Root}
+	a.diffTitle = path + " · " + scope
+	a.focusDiffTab(path)
 }
 
-var diffLeft = []sideLine{
-	{1, false, false, []ui.Span{{Text: "type", Color: synKeyword}, {Text: " "}, {Text: "Props", Color: synType}, {Text: " = "}, {Text: "{", Color: synBrace}}},
-	{2, false, false, []ui.Span{{Text: "  "}, {Text: "repo", Color: synVar}, {Text: ": "}, {Text: "Repository", Color: synType}, {Text: ";"}}},
-	{3, false, false, []ui.Span{{Text: "}", Color: synBrace}, {Text: ";"}}},
-	{4, false, false, nil},
-	{5, false, false, []ui.Span{{Text: "export function", Color: synBool}, {Text: " "}, {Text: "GitPanel", Color: synFunc}, {Text: "(", Color: synPunct}, {Text: "props", Color: synVar}, {Text: ": "}, {Text: "Props", Color: synType}, {Text: ") "}, {Text: "{", Color: synBrace}}},
-	{6, true, false, []ui.Span{{Text: "  "}, {Text: "return", Color: synKeyword}, {Text: " <", Color: synPunct}, {Text: "div", Color: synType}, {Text: ">", Color: synPunct}, {Text: "{props.repo.name}", Color: synVar}, {Text: "</", Color: synPunct}, {Text: "div", Color: synType}, {Text: ">", Color: synPunct}, {Text: ";"}}},
-	{7, false, false, []ui.Span{{Text: "}", Color: synBrace}}},
+// openStashDiff shows the patch of stash@{index}.
+func (a *appState) openStashDiff(index int) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	patch, err := service.StashShow(r.Root, index)
+	if err != nil {
+		return
+	}
+	a.setDiffBuffers("", patch, "")
+	a.diffSrc = diffSource{Kind: diffStash, Repo: r.Root, Stash: index}
+	a.diffTitle = "stash@{" + itoa(index) + "}"
+	a.focusDiffTab("stash")
 }
 
-var diffRight = []sideLine{
-	{1, false, false, []ui.Span{{Text: "type", Color: synKeyword}, {Text: " "}, {Text: "Props", Color: synType}, {Text: " = "}, {Text: "{", Color: synBrace}}},
-	{2, false, false, []ui.Span{{Text: "  "}, {Text: "repo", Color: synVar}, {Text: ": "}, {Text: "Repository", Color: synType}, {Text: ";"}}},
-	{3, false, true, []ui.Span{{Text: "  "}, {Text: "compact", Color: synVar}, {Text: "?: "}, {Text: "boolean", Color: synBool}, {Text: ";"}}},
-	{4, false, false, []ui.Span{{Text: "}", Color: synBrace}, {Text: ";"}}},
-	{5, false, false, nil},
-	{6, false, false, []ui.Span{{Text: "export function", Color: synBool}, {Text: " "}, {Text: "GitPanel", Color: synFunc}, {Text: "(", Color: synPunct}, {Text: "props", Color: synVar}, {Text: ": "}, {Text: "Props", Color: synType}, {Text: ") "}, {Text: "{", Color: synBrace}}},
-	{7, false, true, []ui.Span{{Text: "  "}, {Text: "const", Color: synKeyword}, {Text: " "}, {Text: "changes", Color: synVar}, {Text: " = "}, {Text: "useGitChanges", Color: synFunc}, {Text: "(props.repo.path);"}}},
-	{8, false, true, []ui.Span{{Text: "  "}, {Text: "return", Color: synKeyword}, {Text: " <", Color: synPunct}, {Text: "ChangeList", Color: synType}, {Text: " items", Color: synVar}, {Text: "={", Color: synPunct}, {Text: "changes", Color: synVar}, {Text: "} />", Color: synPunct}, {Text: ";"}}},
-	{9, false, false, []ui.Span{{Text: "}", Color: synBrace}}},
+// openCommitDiff shows the commit's full patch against its first parent.
+func (a *appState) openCommitDiff(hash string) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	patch, err := service.ShowCommitPatch(r.Root, hash)
+	if err != nil {
+		return
+	}
+	a.setDiffBuffers("", patch, "")
+	a.diffSrc = diffSource{Kind: diffCommit, Repo: r.Root, Commit: hash}
+	a.diffTitle = "Commit " + shortHash(hash)
+	a.focusDiffTab("commit")
 }
 
-// The inline diff's unified rows: old and new line numbers.
-type inlineLine struct {
-	oldNo int
-	newNo int
-	del   bool
-	add   bool
-	spans []ui.Span
+func (a *appState) setDiffBuffers(oldSrc, newSrc, path string) {
+	a.diffOld = editor.NewBuffer(oldSrc)
+	a.diffNew = editor.NewBuffer(newSrc)
+	if path != "" {
+		if lang := editor.LanguageFor(path); lang != nil {
+			a.diffOld.SetLanguage(lang)
+			a.diffNew.SetLanguage(lang)
+		}
+	}
 }
 
-var diffInline = []inlineLine{
-	{1, 1, false, false, diffLeft[0].spans},
-	{2, 2, false, false, diffLeft[1].spans},
-	{0, 3, false, true, diffRight[2].spans},
-	{3, 4, false, false, diffLeft[2].spans},
-	{4, 5, false, false, nil},
-	{5, 6, false, false, diffLeft[4].spans},
-	{6, 0, true, false, diffLeft[5].spans},
-	{0, 7, false, true, diffRight[6].spans},
-	{0, 8, false, true, diffRight[7].spans},
-	{7, 9, false, false, diffLeft[6].spans},
+// focusDiffTab activates a diff tab, creating it if needed.
+func (a *appState) focusDiffTab(key string) {
+	for i, t := range a.tabs {
+		if t.Kind == tabDiff && t.Path == key {
+			a.activeTab = i
+			a.activeView = tabDiff
+			return
+		}
+	}
+	a.tabs = append(a.tabs, topTab{
+		Kind:  tabDiff,
+		Label: "Diff",
+		Icon:  fileIconDiff,
+		Path:  key,
+	})
+	a.activeTab = len(a.tabs) - 1
+	a.activeView = tabDiff
 }
 
 func (a *appState) diffView(c *ui.Context) ui.Element {
@@ -66,41 +105,58 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 		// Toolbar.
 		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(colPanel).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
 			ui.Icon(c, iconGitCompare).Width(16).Height(16).TextColor(colGreen)
-			ui.Text(c, "GitPanel.tsx").FontSize(12)
-			scope := "Working Tree · INDEX ↔ WORKING TREE"
-			if a.diffStaged {
-				scope = "Staged · HEAD ↔ INDEX"
-			}
-			ui.Text(c, scope).FontSize(10).TextColor(colMuted)
+			ui.Text(c, a.diffTitle).FontSize(12).SingleLine().Shrink(0)
 
 			ui.Spacer(c)
 
-			stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Background(ui.Hex("#222b36")).Children(func() {
+			// Stage/unstage only makes sense for working/staged file diffs.
+			if a.diffSrc.Kind == diffWorking || a.diffSrc.Kind == diffStaged {
+				staged := a.diffSrc.Kind == diffStaged
 				label := "Stage File"
-				if a.diffStaged {
+				if staged {
 					label = "Unstage File"
 				}
-				ui.Text(c, label).FontSize(10).TextColor(colText2)
-			})
-			if stage.Clicked() {
-				a.diffStaged = !a.diffStaged
-				if a.diffStaged {
-					c.Toast("File staged")
-				} else {
-					c.Toast("File moved to unstaged changes")
-				}
-			}
-
-			if !a.diffStaged {
-				discard := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
-					ui.Text(c, "Discard").FontSize(10).TextColor(colRed)
+				stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Background(ui.Hex("#222b36")).Children(func() {
+					ui.Text(c, label).FontSize(10).TextColor(colText2)
 				})
-				if discard.Clicked() {
-					c.Toast("Discarded working tree changes")
+				if stage.Clicked() {
+					var err error
+					if staged {
+						err = service.Unstage(a.diffSrc.Repo, a.diffSrc.Path)
+					} else {
+						err = service.Stage(a.diffSrc.Repo, a.diffSrc.Path)
+					}
+					if err != nil {
+						c.Toast("Git error: " + err.Error())
+					} else {
+						a.refreshActiveRepo()
+					}
 				}
-			}
 
-			ui.Box(c).Width(1).Height(16).Background(colBorder).Margin(0, 4)
+				if !staged {
+					discard := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
+						ui.Text(c, "Discard").FontSize(10).TextColor(colRed)
+					})
+					if discard.Clicked() {
+						untracked := false
+						if r := a.activeRepoRef(); r != nil {
+							for _, f := range r.Changes {
+								if f.Path == a.diffSrc.Path && f.Status == "U" {
+									untracked = true
+								}
+							}
+						}
+						if err := service.Discard(a.diffSrc.Repo, a.diffSrc.Path, untracked); err != nil {
+							c.Toast("Git error: " + err.Error())
+						} else {
+							a.refreshActiveRepo()
+							a.activeView = tabTerminal
+						}
+					}
+				}
+
+				ui.Box(c).Width(1).Height(16).Background(colBorder).Margin(0, 4)
+			}
 
 			split := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
 				t := ui.Text(c, "Split").FontSize(10)
@@ -133,108 +189,30 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			}
 		})
 
+		if a.diffOld == nil || a.diffNew == nil {
+			ui.Column(c).Grow(1).Center().Children(func() {
+				ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(colMuted)
+			})
+			return
+		}
+
+		layout := editor.DiffUnified
 		if a.diffSplit {
-			a.splitDiff(c)
-		} else {
-			a.inlineDiff(c)
+			layout = editor.DiffSplit
 		}
+		ds := &editor.DiffState{
+			Old:    a.diffOld,
+			New:    a.diffNew,
+			Layout: layout,
+			Inline: editor.DiffInlineWord,
+		}
+		editor.DiffView(c, ds).Grow(1)
 	})
 }
 
-func (a *appState) splitDiff(c *ui.Context) ui.Element {
-	return ui.SplitPercent(c, &a.diffSplitPct, func() {
-		// Left: INDEX.
-		ui.Column(c).Fill().BorderWidth(0, 1, 0, 0).BorderColor(colBorder).Children(func() {
-			ui.Box(c).Height(28).Padding(0, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Background(colDiffTop).Children(func() {
-				ui.Column(c).Fill().Children(func() {
-					ui.Text(c, "INDEX · GitPanel.tsx").FontSize(10).TextColor(colMuted).Padding(9, 0).SingleLine()
-				})
-			})
-			ui.Scroll(c).Grow(1).Children(func() {
-				ui.Column(c).Padding(8, 0).Children(func() {
-					for _, ln := range diffLeft {
-						diffRowKind(c, ln.num, ln.del, false, ln.spans)
-					}
-				})
-			})
-		})
-	}, func() {
-		// Right: WORKING TREE.
-		ui.Column(c).Fill().Children(func() {
-			ui.Box(c).Height(28).Padding(0, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Background(colDiffTop).Children(func() {
-				ui.Text(c, "WORKING TREE · GitPanel.tsx").FontSize(10).TextColor(colMuted).Padding(9, 0).SingleLine()
-			})
-			ui.Scroll(c).Grow(1).Children(func() {
-				ui.Column(c).Padding(8, 0).Children(func() {
-					for _, ln := range diffRight {
-						diffRowKind(c, ln.num, false, ln.add, ln.spans)
-					}
-				})
-			})
-		})
-	}).Grow(1)
-}
-
-func diffRowKind(c *ui.Context, num int, del, add bool, spans []ui.Span) ui.Element {
-	e := ui.Row(c).Height(21)
-	if del {
-		e = e.Background(colDiffDel)
-	} else if add {
-		e = e.Background(colDiffAdd)
+func shortHash(h string) string {
+	if len(h) > 8 {
+		return h[:8]
 	}
-	e.Children(func() {
-		numCol := colMuted2
-		if del {
-			numCol = colDiffDelLn
-		} else if add {
-			numCol = colDiffAddLn
-		}
-		label := ""
-		if num > 0 {
-			label = itoa(num)
-		}
-		ui.Text(c, label).Font(monoFont).FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
-		if len(spans) == 0 {
-			spans = []ui.Span{{Text: " "}}
-		}
-		ui.RichText(c, spans...).Font(monoFont).FontSize(12)
-	})
-	return e
-}
-
-func (a *appState) inlineDiff(c *ui.Context) ui.Element {
-	return ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(8, 0).Children(func() {
-			for _, ln := range diffInline {
-				e := ui.Row(c).Height(21)
-				if ln.del {
-					e = e.Background(colDiffDel)
-				} else if ln.add {
-					e = e.Background(colDiffAdd)
-				}
-				e.Children(func() {
-					oldLabel, newLabel := "", ""
-					if ln.oldNo > 0 {
-						oldLabel = itoa(ln.oldNo)
-					}
-					if ln.newNo > 0 {
-						newLabel = itoa(ln.newNo)
-					}
-					numCol := colMuted2
-					if ln.del {
-						numCol = colDiffDelLn
-					} else if ln.add {
-						numCol = colDiffAddLn
-					}
-					ui.Text(c, oldLabel).Font(monoFont).FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
-					ui.Text(c, newLabel).Font(monoFont).FontSize(12).TextColor(numCol).Width(46).Padding(0, 12)
-					spans := ln.spans
-					if len(spans) == 0 {
-						spans = []ui.Span{{Text: " "}}
-					}
-					ui.RichText(c, spans...).Font(monoFont).FontSize(12)
-				})
-			}
-		})
-	})
+	return h
 }

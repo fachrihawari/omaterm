@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"oterm/service"
 )
 
 // Renders the app's views to PNGs in testdata/ for visual comparison
@@ -18,12 +21,28 @@ func TestShots(t *testing.T) {
 		setup func(a *appState)
 	}{
 		{"terminal", nil},
-		{"editor", func(a *appState) { a.activeView = tabEditor }},
-		{"diff", func(a *appState) { a.activeView = tabDiff }},
-		{"diff-inline", func(a *appState) { a.activeView = tabDiff; a.diffSplit = false }},
+		{"editor", func(a *appState) { a.openEditor("app.go") }},
+		{"diff", func(a *appState) {
+			if r := a.activeRepoRef(); r != nil && len(r.Changes) > 0 {
+				a.openWorkingDiff(r.Changes[0].Path, false)
+			}
+		}},
+		{"graph", func(a *appState) { a.activeView = tabGraph }},
+		{"git-history", func(a *appState) { a.inspectorTab = 2; a.gitGraphOpen = true }},
 		{"files", func(a *appState) { a.inspectorTab = 1 }},
 		{"git", func(a *appState) { a.inspectorTab = 2 }},
-		{"single", func(a *appState) { a.layout = layoutSingle }},
+		{"quick-open", func(a *appState) {
+			a.fileIndex = service.IndexFiles(a.workspace, 100000)
+			a.openOverlay(overlayQuickOpen)
+		}},
+		{"command-palette", func(a *appState) { a.openOverlay(overlayCommandPalette) }},
+		{"global-search", func(a *appState) {
+			a.openOverlay(overlayGlobalSearch)
+			a.searchQuery = "appState"
+			a.searchResults, _ = service.SearchContent(context.Background(), a.workspace, "appState")
+			a.updateSearchPreview()
+		}},
+		{"split", func(a *appState) { a.tabs[a.activeTab].Layout = layoutMixed }},
 		{"no-sidebars", func(a *appState) { a.sidebarVisible = false; a.inspectorVisible = false }},
 	}
 	if os.Getenv("SHOT_TOAST") != "" {
@@ -34,12 +53,23 @@ func TestShots(t *testing.T) {
 	}
 	for _, s := range shots {
 		a := newApp()
+		// The tester has no window, so the async refreshers no-op; load
+		// repo data synchronously instead.
+		if repos := service.DiscoverRepos(a.workspace, 1); len(repos) > 0 {
+			a.repos = repos
+			a.activeRepo = 0
+		}
+		a.commits, _ = service.Log(a.workspace, 300)
 		if s.setup != nil {
 			s.setup(a)
 		}
-		tr := ui.NewTester(a.view, 1440, 900)
+		w, h := 1440, 900
+		if os.Getenv("SHOT_WIDE") != "" {
+			w, h = 2560, 1440 // the maximized case, where alignment shows
+		}
+		tr := ui.NewTester(a.view, w, h)
 		if s.name == "toast" {
-			tr.Click("phoenix") // shows "Switched to phoenix"
+			tr.Click("oterm") // shows "Switched to oterm"
 			tr.Advance(100 * time.Millisecond)
 			tr.Frame()
 		}

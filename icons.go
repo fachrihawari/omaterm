@@ -108,6 +108,27 @@ var iconUndoSVG []byte
 //go:embed icons/x.svg
 var iconXSVG []byte
 
+//go:embed icons/save.svg
+var iconSaveSVG []byte
+
+//go:embed icons/git-fork.svg
+var iconGitGraphSVG []byte
+
+//go:embed icons/archive.svg
+var iconArchiveSVG []byte
+
+//go:embed icons/arrow-down.svg
+var iconArrowDownSVG []byte
+
+//go:embed icons/arrow-up.svg
+var iconArrowUpSVG []byte
+
+//go:embed icons/download.svg
+var iconDownloadSVG []byte
+
+//go:embed icons/square-terminal.svg
+var iconSquareTerminalSVG []byte
+
 var (
 	iconBell           = ui.MustParseSVG(iconBellSVG)
 	iconChevronDown    = ui.MustParseSVG(iconChevronDownSVG)
@@ -143,4 +164,11 @@ var (
 	iconTrash          = ui.MustParseSVG(iconTrashSVG)
 	iconUndo           = ui.MustParseSVG(iconUndoSVG)
 	iconX              = ui.MustParseSVG(iconXSVG)
+	iconSave           = ui.MustParseSVG(iconSaveSVG)
+	iconGitGraph       = ui.MustParseSVG(iconGitGraphSVG)
+	iconArchive        = ui.MustParseSVG(iconArchiveSVG)
+	iconArrowDown      = ui.MustParseSVG(iconArrowDownSVG)
+	iconArrowUp        = ui.MustParseSVG(iconArrowUpSVG)
+	iconDownload       = ui.MustParseSVG(iconDownloadSVG)
+	iconSquareTerminal = ui.MustParseSVG(iconSquareTerminalSVG)
 )

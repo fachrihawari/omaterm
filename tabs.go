@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
+	"strings"
 )
 
 // The top tab bar with terminal/editor/diff tabs and the window-level
@@ -27,8 +28,8 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 		})
 
 		ui.Row(c).AlignItems(ui.Center).Gap(2).Padding(0, 8).Children(func() {
-			if cmdButton(c, iconSearch, 16, false).Clicked() {
-				c.Toast("Search")
+			if cmdButton(c, iconSearch, 16, false).Tooltip("Search in files").Clicked() {
+				a.openOverlay(overlayGlobalSearch)
 			}
 			if cmdButton(c, iconPanelRight, 16, a.inspectorVisible).Clicked() {
 				a.inspectorVisible = !a.inspectorVisible
@@ -59,6 +60,8 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 				ui.Icon(c, iconFileCode).Width(14).Height(14).TextColor(synTS)
 			case tabDiff:
 				ui.Icon(c, iconGitCompare).Width(14).Height(14).TextColor(colGreen)
+			case tabGraph:
+				ui.Icon(c, iconGitGraph).Width(14).Height(14).TextColor(colPurple)
 			}
 			labelCol := colText2
 			if active {
@@ -71,6 +74,11 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			}
 			if t.Dirty {
 				ui.Text(c, "M").FontSize(10).TextColor(colYellow).SingleLine().Shrink(0)
+			}
+			if t.Kind == tabEditor && t.Path != "" {
+				if doc := a.editors[t.Path]; doc != nil && doc.State.Buffer.Modified() {
+					ui.Text(c, "●").FontSize(10).TextColor(colYellow).SingleLine().Shrink(0)
+				}
 			}
 			if len(a.tabs) > 1 {
 				ui.Spacer(c)
@@ -90,13 +98,29 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	return e
 }
 
-func (a *appState) newTerminalTab() {
-	a.tabs = append(a.tabs, topTab{Kind: tabTerminal, Label: "Tab " + itoa(len(a.tabs)+1), Dot: dotGreen})
-	a.activeTab = len(a.tabs) - 1
-	a.activeView = tabTerminal
-}
-
 func (a *appState) closeTab(i int) {
+	if i < 0 || i >= len(a.tabs) {
+		return
+	}
+	t := a.tabs[i]
+	if t.Kind == tabEditor && t.Path != "" {
+		delete(a.editors, t.Path)
+	}
+	if t.Kind == tabTerminal {
+		prefix := t.Path
+		if prefix == "" {
+			prefix = "tab" + itoa(i)
+		}
+		prefix += "/"
+		for key, tp := range a.termPanes {
+			if strings.HasPrefix(key, prefix) {
+				if tp != nil {
+					tp.Close()
+				}
+				delete(a.termPanes, key)
+			}
+		}
+	}
 	a.tabs = append(a.tabs[:i], a.tabs[i+1:]...)
 	if a.activeTab >= len(a.tabs) {
 		a.activeTab = len(a.tabs) - 1
@@ -104,4 +128,27 @@ func (a *appState) closeTab(i int) {
 	if a.activeTab >= 0 {
 		a.activeView = a.tabs[a.activeTab].Kind
 	}
+}
+
+// closeActiveTab closes the active tab, asking for confirmation when an
+// editor has unsaved changes.
+func (a *appState) closeActiveTab(c *ui.Context) {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) {
+		return
+	}
+	t := a.tabs[a.activeTab]
+	if t.Kind == tabEditor && t.Path != "" {
+		if doc := a.editors[t.Path]; doc != nil && doc.State.Buffer.Modified() {
+			open := true
+			a.pendingCloseTab = a.activeTab
+			a.closeTabConfirmOpen = &open
+			return
+		}
+	}
+	a.closeTab(a.activeTab)
+}
+
+// newTerminalTab creates a tab backed by a real terminal pane.
+func (a *appState) newTerminalTab() {
+	a.newTerminalTabReal()
 }

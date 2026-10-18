@@ -7,4 +7,5 @@ export default defineConfig({
   identifier: "com.example.oterm",
   version: "0.1.0",
   out: "build",
+  macos: { minimumSystemVersion: "13.0" },
 });

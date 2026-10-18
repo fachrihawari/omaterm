@@ -9,7 +9,8 @@ import (
 
 func main() {
 	mygo.App.WhenReady(func() {
-		mygo.NewWindow(mygo.WindowOptions{
+		a := newApp()
+		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "omaterm",
 			Width:           1440,
 			Height:          900,
@@ -17,8 +18,17 @@ func main() {
 			MinHeight:       560,
 			BackgroundColor: "#0b0e12",
 			StateKey:        "main",
-			Content:         ui.View(newApp().view),
+			Content:         ui.View(a.view),
 		})
+		// Now that the window exists, kick the initial async loads.
+		a.win.OnClosed(func() {
+			for _, t := range a.termPanes {
+				if t != nil {
+					t.Close()
+				}
+			}
+		})
+		a.setProject(0)
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
