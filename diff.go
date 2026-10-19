@@ -220,7 +220,19 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			Layout: layout,
 			Inline: editor.DiffInlineWord,
 		}
-		editor.DiffView(c, ds).Grow(1)
+		// Stats line.
+		if a.diffSrc.Commit != "" {
+			add, del, _ := service.CommitStats(a.diffSrc.Repo, a.diffSrc.Commit)
+			if add > 0 || del > 0 {
+				ui.Row(c).Padding(4, 12).Gap(8).Children(func() {
+					ui.Text(c, "+"+itoa(add)).FontSize(10).TextColor(colGreen).SingleLine().Shrink(0)
+					ui.Text(c, "-"+itoa(del)).FontSize(10).TextColor(colRed).SingleLine().Shrink(0)
+				})
+			}
+		}
+		ui.Box(c).Grow(1).Padding(0, 8).Children(func() {
+			editor.DiffView(c, ds).Fill()
+		})
 	})
 }
 

@@ -244,15 +244,17 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) u
 						row.Background(ui.Hex("#171d25"))
 					}
 					row.Children(func() {
-						fileBadge(c, pathBase(fp))
-						txt(c, pathBase(fp), 10, colText2)
-						if dir := pathDir(fp); dir != "" {
+						fileBadge(c, pathBase(fp.Path))
+						txt(c, pathBase(fp.Path), 10, colText2)
+						// Show status letter.
+						txt(c, fp.Status, 10, statusColor(fp.Status))
+						if dir := pathDir(fp.Path); dir != "" {
 							ui.Spacer(c)
 							mutedTxt2(c, dir, 9)
 						}
 					})
 					if row.Clicked() {
-						a.openCommitFileDiff(cm.Hash, fp)
+						a.openCommitFileDiff(cm.Hash, fp.Path)
 					}
 				}
 			})
@@ -295,15 +297,16 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 						row.Background(ui.Hex("#171d25"))
 					}
 					row.Children(func() {
-						fileBadge(c, pathBase(fp))
-						txt(c, pathBase(fp), 10, colText2)
-						if dir := pathDir(fp); dir != "" {
+						fileBadge(c, pathBase(fp.Path))
+						txt(c, pathBase(fp.Path), 10, colText2)
+						txt(c, fp.Status, 10, statusColor(fp.Status))
+						if dir := pathDir(fp.Path); dir != "" {
 							ui.Spacer(c)
 							mutedTxt2(c, dir, 9)
 						}
 					})
 					if row.Clicked() {
-						a.openCommitFileDiff(cm.Hash, fp)
+						a.openCommitFileDiff(cm.Hash, fp.Path)
 					}
 				}
 			})

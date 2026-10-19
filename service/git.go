@@ -35,6 +35,12 @@ type Commit struct {
 	Refs    []string // branch/tag/HEAD decorations
 }
 
+// CommitFile is one file changed in a commit, with its status (M/A/D/R/C).
+type CommitFile struct {
+	Status string // M, A, D, R, C, etc.
+	Path   string
+}
+
 // Repo describes one discovered git repository and its status.
 type Repo struct {
 	Root    string // absolute path of the worktree root
@@ -407,23 +413,60 @@ func ShowCommitFilePatch(root, hash, file string) (string, error) {
 	return gitCmd(root, "show", "--format=", "--patch", hash, "--", file)
 }
 
-// CommitFiles returns the list of files changed in the given commit.
-func CommitFiles(root, hash string) ([]string, error) {
-	out, err := gitCmd(root, "diff-tree", "--no-commit-id", "--name-only", "-r", hash)
+// CommitFiles returns the files changed in the given commit with their status.
+func CommitFiles(root, hash string) ([]CommitFile, error) {
+	out, err := gitCmd(root, "diff-tree", "--no-commit-id", "--name-status", "-r", hash)
 	if err != nil {
-		out, err = gitCmd(root, "show", "--name-only", "--format=", hash)
+		out, err = gitCmd(root, "show", "--name-status", "--format=", hash)
 		if err != nil {
 			return nil, err
 		}
 	}
-	var files []string
+	var files []CommitFile
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if line != "" {
-			files = append(files, line)
+		if line == "" {
+			continue
 		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		status := fields[0]
+		// Handle rename/copy: "R100	old	new" -> use new path.
+		path := fields[len(fields)-1]
+		files = append(files, CommitFile{Status: status, Path: path})
 	}
 	return files, nil
+}
+
+// CommitStats returns insertions and deletions for a commit.
+func CommitStats(root, hash string) (additions, deletions int, err error) {
+	out, err := gitCmd(root, "show", "--format=", "--stat", "--stat-width=200", hash)
+	if err != nil {
+		return 0, 0, err
+	}
+	// Parse the summary line: "N files changed, X insertions(+), Y deletions(-)"
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "insertion") || strings.Contains(line, "deletion") {
+			// Parse numbers.
+			for _, part := range strings.Split(line, ",") {
+				part = strings.TrimSpace(part)
+				if strings.Contains(part, "insertion") {
+					numStr := strings.Fields(part)[0]
+					n, _ := strconv.Atoi(numStr)
+					additions = n
+				}
+				if strings.Contains(part, "deletion") {
+					numStr := strings.Fields(part)[0]
+					n, _ := strconv.Atoi(numStr)
+					deletions = n
+				}
+			}
+		}
+	}
+	return additions, deletions, nil
 }
 
 // ListBranches returns the list of local branches.
