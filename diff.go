@@ -56,17 +56,31 @@ func (a *appState) openStashDiff(index int) {
 
 // openCommitDiff shows the commit's full patch against its first parent.
 func (a *appState) openCommitDiff(hash string) {
+	a.openCommitFileDiff(hash, "")
+}
+
+func (a *appState) openCommitFileDiff(hash, file string) {
 	r := a.activeRepoRef()
 	if r == nil {
 		return
 	}
-	patch, err := service.ShowCommitPatch(r.Root, hash)
+	var patch string
+	var err error
+	if file != "" {
+		patch, err = service.ShowCommitFilePatch(r.Root, hash, file)
+	} else {
+		patch, err = service.ShowCommitPatch(r.Root, hash)
+	}
 	if err != nil {
 		return
 	}
-	a.setDiffBuffers("", patch, "")
+	title := "Commit " + shortHash(hash)
+	if file != "" {
+		title += " · " + pathBase(file)
+	}
+	a.setDiffBuffers("", patch, file)
 	a.diffSrc = diffSource{Kind: diffCommit, Repo: r.Root, Commit: hash}
-	a.diffTitle = "Commit " + shortHash(hash)
+	a.diffTitle = title
 	a.focusDiffTab("commit")
 }
 

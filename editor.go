@@ -120,8 +120,12 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 		// The real editor, or markdown preview.
 		isMd := hasSuffix(doc.Path, ".md") || hasSuffix(doc.Path, ".mdx")
 		if isMd && doc.Preview {
-			mdOpts := &markdown.Options{}
-			markdown.View(c, doc.State.Buffer.String(), mdOpts).Fill()
+			ui.Scroll(c).Fill().Padding(16, 24).Children(func() {
+				mdOpts := &markdown.Options{}
+				ui.Box(c).MaxWidth(900).Children(func() {
+					markdown.View(c, doc.State.Buffer.String(), mdOpts)
+				})
+			})
 		} else {
 			editor.View(c, doc.State).Fill()
 		}

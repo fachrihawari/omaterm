@@ -19,7 +19,6 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 			a.inspectorTabButton(c, 1, iconFolder, "Files", 0)
 			a.inspectorTabButton(c, 2, iconGitBranch, "Git", a.gitCount())
 			ui.Spacer(c)
-			cmdButton(c, iconEllipsis, 14, false).Margin(0, 4)
 		})
 
 		switch a.inspectorTab {
@@ -198,13 +197,6 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 
 func (a *appState) filesPanel(c *ui.Context) ui.Element {
 	return ui.Column(c).Grow(1).Children(func() {
-		ui.Box(c).Padding(8).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-			ui.Row(c).Height(32).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 8).Gap(8).Children(func() {
-				ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(colMuted)
-				ui.TextInputBase(c, &a.fileSearch).Placeholder("Search files").FontSize(11).Grow(1)
-			})
-		})
-
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Padding(4, 0).Children(func() {
 				if a.fileTree != nil {
@@ -228,11 +220,6 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	e.Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 			if n.Dir {
-				ic := iconChevronRight
-				if n.Open {
-					ic = iconChevronDown
-				}
-				ui.Icon(c, ic).Width(14).Height(14).TextColor(colMuted)
 				fi := iconFolder
 				if n.Open {
 					fi = iconFolderOpen
@@ -354,32 +341,73 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 
 		// Branch + commit box.
 		ui.Column(c).Padding(12).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+			// Load branches if needed (or if repo changed).
+			if r != nil && a.branchesRepo != r.Root {
+				if bs, err := service.ListBranches(r.Root); err == nil {
+					a.branches = bs
+					a.branchesRepo = r.Root
+					a.currentBranch = r.Branch
+				}
+			}
+			if a.currentBranch == "" && r != nil {
+				a.currentBranch = r.Branch
+			}
 			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(colPurple)
-				txt(c, r.Branch, 11, colText)
+				if len(a.branches) > 0 {
+					sel := ui.SelectBase[string](c, &a.currentBranch)
+					sel.Trigger.Padding(2, 6).Border(1, colBorder2).Radius(4).Children(func() {
+						txt(c, a.currentBranch, 11, colText)
+					})
+					sel.Popup(func(panel ui.Element) {
+						panel.Padding(4).Background(colPanel).Border(1, colBorder2).Radius(6)
+						for _, b := range a.branches {
+							item := sel.Item(b).Padding(4, 8)
+							if item.Highlighted() {
+								item.Background(colHover)
+							}
+							item.Children(func() {
+								txt(c, b, 11, colText)
+							})
+						}
+					})
+					if sel.Trigger.Changed() {
+						r2 := a.activeRepoRef()
+						if r2 != nil {
+							if out, err := service.Checkout(r2.Root, a.currentBranch); err != nil {
+								c.Toast("Checkout failed: " + out)
+								a.currentBranch = r.Branch
+							} else {
+								c.Toast("Switched to " + a.currentBranch)
+								a.refreshActiveRepo()
+								a.branches = nil
+								a.branchesRepo = ""
+							}
+						}
+					}
+				} else {
+					txt(c, r.Branch, 11, colText)
+				}
 				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
 				ui.Spacer(c)
 				remote := r.HasRemote
-				if b := cmdButton(c, iconDownload, 14, false).Tooltip("Fetch"); !remote {
+				if b := cmdButton(c, iconDownload, 12, false).Tooltip("Fetch"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitFetch(c)
 				}
-				if b := cmdButton(c, iconArrowDown, 14, false).Tooltip("Pull"); !remote {
+				if b := cmdButton(c, iconArrowDown, 12, false).Tooltip("Pull"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitPull(c)
 				}
-				if b := cmdButton(c, iconArrowUp, 14, false).Tooltip("Push"); !remote {
+				if b := cmdButton(c, iconArrowUp, 12, false).Tooltip("Push"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitPush(c)
 				}
 				if cmdButton(c, iconRefresh, 14, false).Tooltip("Refresh").Clicked() {
 					a.refreshActiveRepo()
-				}
-				if cmdButton(c, iconOpenInNew, 14, false).Tooltip("Open graph in pane").Clicked() {
-					a.openGraphTab()
 				}
 			})
 			ui.Box(c).Radius(6).Border(1, colBorder).Background(colInput).Children(func() {

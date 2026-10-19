@@ -18,9 +18,6 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 			}
 			ui.Text(c, "PROJECTS").FontSize(10).TextColor(colMuted).LetterSpacing(1.4).Padding(0, 6).SingleLine().Shrink(0)
 			ui.Spacer(c)
-			if cmdButton(c, iconFolderPlus, 14, false).Tooltip("Open project").Clicked() {
-				a.openProjectDialog()
-			}
 		})
 
 		// Project list.
@@ -74,6 +71,9 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 					})
 				})
 			})
+			if b.Clicked() {
+				a.openProjectDialog()
+			}
 		})
 	})
 }
@@ -100,8 +100,6 @@ func (a *appState) projectRow(c *ui.Context, i int) ui.Element {
 					d.Shadow(0, 0, 10, 0, ui.RGBA(99, 213, 141, 0.24))
 				}
 				ui.Text(c, p.Name).FontSize(12).TextColor(colText).SingleLine()
-				ui.Spacer(c)
-				ui.Text(c, p.Branch).FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
 			})
 			ui.Text(c, p.Path).FontSize(9).TextColor(colMuted).Padding(0, 16).SingleLine()
 		})

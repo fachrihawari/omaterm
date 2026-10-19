@@ -362,10 +362,6 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 				}
 				c.Toast("Equalized")
 			}
-			if cmdButton(c, iconRotate, 14, false).Tooltip("Restart terminal").Clicked() {
-				a.restartTermPane(termID)
-				c.Toast("Restarted terminal")
-			}
 			ids := []string{}
 			if n := a.activeSplit(); n != nil {
 				ids = n.termIDs()
@@ -407,16 +403,6 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 // ---------------------------------------------------------------------------
 // Toolbar actions
 // ---------------------------------------------------------------------------
-
-func (a *appState) restartTermPane(termID string) {
-	a.termPanesMu.Lock()
-	if t, ok := a.termPanes[termID]; ok && t != nil {
-		t.Close()
-	}
-	delete(a.termPanes, termID)
-	a.termPanesMu.Unlock()
-	a.term(termID) // recreate
-}
 
 func (a *appState) killTermPaneByTermID(termID string) {
 	a.removePane(termID)

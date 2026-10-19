@@ -401,3 +401,48 @@ func IndexVersion(root, path string) (string, error) {
 func ShowCommitPatch(root, hash string) (string, error) {
 	return gitCmd(root, "show", "--format=", "--patch", hash)
 }
+
+// ShowCommitFilePatch returns the diff for a single file in a commit.
+func ShowCommitFilePatch(root, hash, file string) (string, error) {
+	return gitCmd(root, "show", "--format=", "--patch", hash, "--", file)
+}
+
+// CommitFiles returns the list of files changed in the given commit.
+func CommitFiles(root, hash string) ([]string, error) {
+	out, err := gitCmd(root, "diff-tree", "--no-commit-id", "--name-only", "-r", hash)
+	if err != nil {
+		out, err = gitCmd(root, "show", "--name-only", "--format=", hash)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+// ListBranches returns the list of local branches.
+func ListBranches(root string) ([]string, error) {
+	out, err := gitCmd(root, "branch", "--format=%(refname:short)")
+	if err != nil {
+		return nil, err
+	}
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, nil
+}
+
+// Checkout switches to the given branch.
+func Checkout(root, branch string) (string, error) {
+	return gitCmd(root, "checkout", branch)
+}

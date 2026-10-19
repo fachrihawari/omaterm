@@ -226,12 +226,43 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) u
 		_ = w
 	})
 	if e.Clicked() {
-		a.openCommitDiff(cm.Hash)
+		if a.expandedCommit == cm.Hash {
+			a.expandedCommit = ""
+		} else {
+			a.expandedCommit = cm.Hash
+		}
+	}
+	// Show modified files when expanded.
+	if a.expandedCommit == cm.Hash {
+		files, err := service.CommitFiles(a.activeRepoRef().Root, cm.Hash)
+		if err == nil && len(files) > 0 {
+			ui.Column(c).Padding(0, 0, 4, 24).Gap(2).Children(func() {
+				for _, f := range files {
+					fp := f
+					row := ui.Row(c).Height(22).Padding(0, 8).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+					if row.Hovered() {
+						row.Background(ui.Hex("#171d25"))
+					}
+					row.Children(func() {
+						fileBadge(c, pathBase(fp))
+						txt(c, pathBase(fp), 10, colText2)
+						if dir := pathDir(fp); dir != "" {
+							ui.Spacer(c)
+							mutedTxt2(c, dir, 9)
+						}
+					})
+					if row.Clicked() {
+						a.openCommitFileDiff(cm.Hash, fp)
+					}
+				}
+			})
+		}
 	}
 	return e
 }
 
 func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graphLane) ui.Element {
+	expanded := a.expandedCommit == cm.Hash
 	e := ui.Row(c).Key(cm.Hash).FillWidth().Height(26).AlignItems(ui.Center).Gap(8).Cursor(ui.CursorPointer).Padding(0, 10)
 	if e.Hovered() {
 		e.Background(ui.Hex("#171d25"))
@@ -242,7 +273,41 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 		ui.Text(c, relativeTime(cm.Time)).FontSize(9).TextColor(colMuted2).SingleLine().Shrink(0)
 	})
 	if e.Clicked() {
-		a.openCommitDiff(cm.Hash)
+		if expanded {
+			a.expandedCommit = ""
+		} else {
+			a.expandedCommit = cm.Hash
+		}
+	}
+	// Show modified files when expanded.
+	if expanded {
+		r := a.activeRepoRef()
+		if r == nil {
+			return e
+		}
+		files, err := service.CommitFiles(r.Root, cm.Hash)
+		if err == nil && len(files) > 0 {
+			ui.Column(c).Padding(0, 0, 0, 24).Gap(2).Children(func() {
+				for _, f := range files {
+					fp := f
+					row := ui.Row(c).Height(22).Padding(0, 8).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+					if row.Hovered() {
+						row.Background(ui.Hex("#171d25"))
+					}
+					row.Children(func() {
+						fileBadge(c, pathBase(fp))
+						txt(c, pathBase(fp), 10, colText2)
+						if dir := pathDir(fp); dir != "" {
+							ui.Spacer(c)
+							mutedTxt2(c, dir, 9)
+						}
+					})
+					if row.Clicked() {
+						a.openCommitFileDiff(cm.Hash, fp)
+					}
+				}
+			})
+		}
 	}
 	return e
 }

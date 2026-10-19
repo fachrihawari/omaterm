@@ -175,10 +175,16 @@ type appState struct {
 	stashMsg              string
 	stashIncludeUntracked bool
 
+	// Git branch switching
+	branches      []string
+	branchesRepo  string
+	currentBranch string
+
 	// Git graph
-	commits    []service.Commit
-	graphJob   service.Job
-	graphLimit int
+	commits        []service.Commit
+	expandedCommit string
+	graphJob       service.Job
+	graphLimit     int
 	// Git panel collapsible sections
 	stagedCollapsed  bool
 	changesCollapsed bool
@@ -398,6 +404,10 @@ func (a *appState) setProject(i int) {
 	a.gitBusy = ""
 	a.gitMsg = ""
 	a.gitErr = false
+	a.branches = nil
+	a.branchesRepo = ""
+	a.currentBranch = ""
+	a.expandedCommit = ""
 
 	// Reset per-project state.
 	a.repos = nil
