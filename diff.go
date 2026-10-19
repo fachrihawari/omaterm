@@ -54,6 +54,7 @@ func (a *appState) openStashDiff(index int) {
 		a.diffOld = nil
 		a.diffNew = nil
 		a.diffPatch = &fp
+		a.diffGen++
 	} else {
 		a.setDiffBuffers("", patch, "")
 		a.diffPatch = nil
@@ -105,6 +106,7 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 		a.diffOld = nil
 		a.diffNew = nil
 		a.diffPatch = &fp
+		a.diffGen++
 	} else {
 		a.setDiffBuffers("", patch, file)
 		a.diffPatch = nil
@@ -117,6 +119,7 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 func (a *appState) setDiffBuffers(oldSrc, newSrc, path string) {
 	a.diffOld = editor.NewBuffer(oldSrc)
 	a.diffNew = editor.NewBuffer(newSrc)
+	a.diffGen++
 	if path != "" {
 		if lang := editor.LanguageFor(path); lang != nil {
 			a.diffOld.SetLanguage(lang)
@@ -142,6 +145,21 @@ func (a *appState) focusDiffTab(key string) {
 	})
 	a.activeTab = len(a.tabs) - 1
 	a.activeView = tabDiff
+}
+
+// diffViewKey identifies the content + layout a persisted DiffState shows.
+// The DiffState is rebuilt only when this key changes, so scrolling
+// survives re-renders.
+func (a *appState) diffViewKey() string {
+	kind := "patch"
+	if a.diffPatch == nil {
+		kind = "bufs"
+	}
+	layout := "unified"
+	if a.diffSplit {
+		layout = "split"
+	}
+	return a.diffTitle + "\x00" + kind + "\x00" + layout + "\x00" + itoa(a.diffGen)
 }
 
 func (a *appState) diffView(c *ui.Context) ui.Element {
@@ -233,23 +251,33 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			}
 		})
 
-		ds := &editor.DiffState{
-			Layout: editor.DiffUnified,
-			Inline: editor.DiffInlineWord,
-		}
-		if a.diffSplit {
-			ds.Layout = editor.DiffSplit
-		}
-		if a.diffPatch != nil {
-			ds.SetPatch(*a.diffPatch)
-		} else if a.diffOld != nil && a.diffNew != nil {
-			ds.Old = a.diffOld
-			ds.New = a.diffNew
-		} else {
-			ui.Column(c).Grow(1).Center().Children(func() {
-				ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(colMuted)
-			})
-			return
+		// Keep one DiffState alive across frames: MyGo stores the viewport
+		// scroll inside DiffState, so rebuilding it per frame resets the
+		// scrollbar before every draw. Rebuild only when the content or
+		// the split/inline layout changes.
+		key := a.diffViewKey()
+		ds := a.diffDs
+		if ds == nil || a.diffKey != key {
+			ds = &editor.DiffState{
+				Layout: editor.DiffUnified,
+				Inline: editor.DiffInlineWord,
+			}
+			if a.diffSplit {
+				ds.Layout = editor.DiffSplit
+			}
+			if a.diffPatch != nil {
+				ds.SetPatch(*a.diffPatch)
+			} else if a.diffOld != nil && a.diffNew != nil {
+				ds.Old = a.diffOld
+				ds.New = a.diffNew
+			} else {
+				ui.Column(c).Grow(1).Center().Children(func() {
+					ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(colMuted)
+				})
+				return
+			}
+			a.diffDs = ds
+			a.diffKey = key
 		}
 		// Stats line.
 		if a.diffSrc.Commit != "" && a.diffSrc.Path == "" {

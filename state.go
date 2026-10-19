@@ -144,6 +144,9 @@ type appState struct {
 	diffOld   *editor.Buffer
 	diffNew   *editor.Buffer
 	diffPatch *editor.FilePatch
+	diffDs    *editor.DiffState // persisted: scroll state lives inside DiffState
+	diffKey   string            // content key the persisted DiffState was built from
+	diffGen   int               // bumped every time new diff content is loaded
 	diffSrc   diffSource
 	diffTitle string
 
@@ -419,6 +422,7 @@ func (a *appState) setProject(i int) {
 	a.editors = map[string]*openFile{}
 	a.fileTree = nil
 	a.diffOld, a.diffNew, a.diffPatch = nil, nil, nil
+	a.diffDs, a.diffKey = nil, ""
 	a.closeOverlay()
 
 	a.refreshRepos()
