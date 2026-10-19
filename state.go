@@ -143,6 +143,7 @@ type appState struct {
 	editors   map[string]*openFile // workspace-relative path -> open document
 	diffOld   *editor.Buffer
 	diffNew   *editor.Buffer
+	diffPatch *editor.FilePatch
 	diffSrc   diffSource
 	diffTitle string
 
@@ -417,7 +418,7 @@ func (a *appState) setProject(i int) {
 	a.fileIndex = nil
 	a.editors = map[string]*openFile{}
 	a.fileTree = nil
-	a.diffOld, a.diffNew = nil, nil
+	a.diffOld, a.diffNew, a.diffPatch = nil, nil, nil
 	a.closeOverlay()
 
 	a.refreshRepos()

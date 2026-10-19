@@ -48,7 +48,16 @@ func (a *appState) openStashDiff(index int) {
 	if err != nil {
 		return
 	}
-	a.setDiffBuffers("", patch, "")
+	files, perr := editor.ParsePatch(patch)
+	if perr == nil && len(files) > 0 {
+		fp := files[0]
+		a.diffOld = nil
+		a.diffNew = nil
+		a.diffPatch = &fp
+	} else {
+		a.setDiffBuffers("", patch, "")
+		a.diffPatch = nil
+	}
 	a.diffSrc = diffSource{Kind: diffStash, Repo: r.Root, Stash: index}
 	a.diffTitle = "stash@{" + itoa(index) + "}"
 	a.focusDiffTab("stash")
@@ -78,8 +87,29 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 	if file != "" {
 		title += " · " + pathBase(file)
 	}
-	a.setDiffBuffers("", patch, file)
-	a.diffSrc = diffSource{Kind: diffCommit, Repo: r.Root, Commit: hash}
+	// Use SetPatch so the diff viewer renders the patch properly
+	// (hunks with line numbers, +/- highlighting) instead of treating
+	// the patch text as file content.
+	files, perr := editor.ParsePatch(patch)
+	if perr == nil && len(files) > 0 {
+		// Find the right file if specified.
+		fp := files[0]
+		if file != "" {
+			for _, f := range files {
+				if f.NewName == file || f.OldName == file {
+					fp = f
+					break
+				}
+			}
+		}
+		a.diffOld = nil
+		a.diffNew = nil
+		a.diffPatch = &fp
+	} else {
+		a.setDiffBuffers("", patch, file)
+		a.diffPatch = nil
+	}
+	a.diffSrc = diffSource{Kind: diffCommit, Repo: r.Root, Commit: hash, Path: file}
 	a.diffTitle = title
 	a.focusDiffTab("commit")
 }
@@ -203,25 +233,26 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			}
 		})
 
-		if a.diffOld == nil || a.diffNew == nil {
+		ds := &editor.DiffState{
+			Layout: editor.DiffUnified,
+			Inline: editor.DiffInlineWord,
+		}
+		if a.diffSplit {
+			ds.Layout = editor.DiffSplit
+		}
+		if a.diffPatch != nil {
+			ds.SetPatch(*a.diffPatch)
+		} else if a.diffOld != nil && a.diffNew != nil {
+			ds.Old = a.diffOld
+			ds.New = a.diffNew
+		} else {
 			ui.Column(c).Grow(1).Center().Children(func() {
 				ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(colMuted)
 			})
 			return
 		}
-
-		layout := editor.DiffUnified
-		if a.diffSplit {
-			layout = editor.DiffSplit
-		}
-		ds := &editor.DiffState{
-			Old:    a.diffOld,
-			New:    a.diffNew,
-			Layout: layout,
-			Inline: editor.DiffInlineWord,
-		}
 		// Stats line.
-		if a.diffSrc.Commit != "" {
+		if a.diffSrc.Commit != "" && a.diffSrc.Path == "" {
 			add, del, _ := service.CommitStats(a.diffSrc.Repo, a.diffSrc.Commit)
 			if add > 0 || del > 0 {
 				ui.Row(c).Padding(4, 12).Gap(8).Children(func() {
