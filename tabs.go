@@ -17,7 +17,10 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 		}
 
 		ui.Row(c).Grow(1).AlignItems(ui.End).Padding(0, 4).Gap(4).ClipX().Children(func() {
-			for i := range a.tabs {
+			for i := 0; i < len(a.tabs); i++ {
+				if i >= len(a.tabs) {
+					break
+				}
 				a.topTab(c, i)
 			}
 			if cmdButton(c, iconPlus, 16, false).Margin(0, 2).Clicked() {
@@ -38,6 +41,9 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 }
 
 func (a *appState) topTab(c *ui.Context, i int) ui.Element {
+	if i < 0 || i >= len(a.tabs) {
+		return ui.Box(c)
+	}
 	t := &a.tabs[i]
 	active := i == a.activeTab
 	// The mock's .top-tab: rounded top corners, a blue top edge while
