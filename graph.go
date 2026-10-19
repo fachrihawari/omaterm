@@ -167,7 +167,7 @@ func (a *appState) graphView(c *ui.Context) ui.Element {
 				ui.Text(c, r.Name+" · "+r.Branch).FontSize(10).TextColor(colMuted)
 			}
 			ui.Spacer(c)
-			if cmdButton(c, iconRefresh, 14, false).Tooltip("Reload history").Clicked() {
+			if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Reload history").Clicked() {
 				a.refreshGraph()
 			}
 		})
@@ -206,10 +206,6 @@ func (a *appState) graphCompactView(c *ui.Context) ui.Element {
 }
 
 func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) ui.Element {
-	w := float32(lane.MaxLane+1) * laneWidth
-	if w < laneWidth {
-		w = laneWidth
-	}
 	e := ui.Row(c).Key(cm.Hash).FillWidth().Height(graphRowH).AlignItems(ui.Center).Gap(10).Cursor(ui.CursorPointer).Padding(0, 12)
 	if e.Hovered() {
 		e.Background(ui.Hex("#171d25"))
@@ -223,7 +219,6 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) u
 		}
 		ui.Text(c, cm.Author).FontSize(10).TextColor(colMuted).Width(120).SingleLine().Shrink(0)
 		ui.Text(c, relativeTime(cm.Time)).FontSize(10).TextColor(colMuted2).Width(56).SingleLine().Shrink(0)
-		_ = w
 	})
 	if e.Clicked() {
 		if a.expandedCommit == cm.Hash {
@@ -234,31 +229,7 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) u
 	}
 	// Show modified files when expanded.
 	if a.expandedCommit == cm.Hash {
-		files, err := service.CommitFiles(a.activeRepoRef().Root, cm.Hash)
-		if err == nil && len(files) > 0 {
-			ui.Column(c).Padding(0, 0, 4, 24).Gap(2).Children(func() {
-				for _, f := range files {
-					fp := f
-					row := ui.Row(c).Height(22).Padding(0, 8).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-					if row.Hovered() {
-						row.Background(ui.Hex("#171d25"))
-					}
-					row.Children(func() {
-						fileBadge(c, pathBase(fp.Path))
-						txt(c, pathBase(fp.Path), 10, colText2)
-						// Show status letter.
-						txt(c, fp.Status, 10, statusColor(fp.Status))
-						if dir := pathDir(fp.Path); dir != "" {
-							ui.Spacer(c)
-							mutedTxt2(c, dir, 9)
-						}
-					})
-					if row.Clicked() {
-						a.openCommitFileDiff(cm.Hash, fp.Path)
-					}
-				}
-			})
-		}
+		a.commitFileList(c, cm)
 	}
 	return e
 }
@@ -283,36 +254,77 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 	}
 	// Show modified files when expanded.
 	if expanded {
-		r := a.activeRepoRef()
-		if r == nil {
-			return e
-		}
-		files, err := service.CommitFiles(r.Root, cm.Hash)
-		if err == nil && len(files) > 0 {
-			ui.Column(c).Padding(0, 0, 0, 24).Gap(2).Children(func() {
-				for _, f := range files {
-					fp := f
-					row := ui.Row(c).Height(22).Padding(0, 8).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-					if row.Hovered() {
-						row.Background(ui.Hex("#171d25"))
-					}
-					row.Children(func() {
-						fileBadge(c, pathBase(fp.Path))
-						txt(c, pathBase(fp.Path), 10, colText2)
-						txt(c, fp.Status, 10, statusColor(fp.Status))
-						if dir := pathDir(fp.Path); dir != "" {
-							ui.Spacer(c)
-							mutedTxt2(c, dir, 9)
-						}
-					})
-					if row.Clicked() {
-						a.openCommitFileDiff(cm.Hash, fp.Path)
-					}
-				}
-			})
-		}
+		a.commitFileList(c, cm)
 	}
 	return e
+}
+
+// commitFileList renders the files of an expanded commit as a VS Code-like
+// "Files Changed" list: a status letter, a file badge, the name and its
+// directory, each in a fixed column so rows line up.
+func (a *appState) commitFileList(c *ui.Context, cm *service.Commit) {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	files, err := service.CommitFiles(r.Root, cm.Hash)
+	if err != nil || len(files) == 0 {
+		return
+	}
+	add, del, _ := service.CommitStats(r.Root, cm.Hash)
+
+	ui.Column(c).Padding(0, 0, 4, 22).Children(func() {
+		// Header: how much changed.
+		ui.Row(c).Height(22).PaddingStart(26).PaddingEnd(10).Gap(8).AlignItems(ui.Center).Children(func() {
+			n := len(files)
+			word := "files changed"
+			if n == 1 {
+				word = "file changed"
+			}
+			txt(c, itoa(n)+" "+word, 9, colMuted2)
+			if add > 0 || del > 0 {
+				ui.Spacer(c)
+				txt(c, "+"+itoa(add), 9, colGreen)
+				txt(c, "-"+itoa(del), 9, colRed)
+			}
+		})
+		for _, f := range files {
+			a.commitFileRow(c, cm.Hash, f)
+		}
+	})
+}
+
+// commitFileRow is one file of an expanded commit.
+func (a *appState) commitFileRow(c *ui.Context, hash string, f service.CommitFile) {
+	row := ui.Row(c).Key(hash + ":" + f.Path).FillWidth().Height(24).
+		PaddingStart(26).PaddingEnd(10).Gap(6).AlignItems(ui.Center).
+		Cursor(ui.CursorPointer).ClipX()
+	if row.Hovered() {
+		row.Background(ui.Hex("#171d25"))
+	}
+	row.Children(func() {
+		// Status column first, fixed width, so names never shift.
+		ui.Box(c).Width(12).Shrink(0).Children(func() {
+			txt(c, f.Status, 10, statusColor(f.Status)).FontWeight(700)
+		})
+		fileBadge(c, pathBase(f.Path))
+		ui.Text(c, pathBase(f.Path)).FontSize(11).TextColor(colText2).SingleLine().Grow(1).MinWidth(0)
+		if dir := pathDir(f.Path); dir != "" {
+			txt(c, truncTxtPath(dir, 28), 9, colMuted2)
+		}
+	})
+	if row.Clicked() {
+		a.openCommitFileDiff(hash, f.Path)
+	}
+}
+
+// truncTxtPath shortens a directory path to max characters, keeping its
+// tail, which is the part that identifies it.
+func truncTxtPath(s string, max int) string {
+	if len(s) <= max || max < 2 {
+		return s
+	}
+	return "…" + s[len(s)-(max-1):]
 }
 
 // graphCanvas draws the lanes of one row.

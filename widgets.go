@@ -26,6 +26,11 @@ func dot(c *ui.Context, kind int, d float32) ui.Element {
 	})
 }
 
+// iconBtn is the glyph size every inline command button uses. cmdButton
+// pads by size/2, so a single value keeps glyphs and hit boxes identical
+// across toolbars.
+const iconBtn = 14.0
+
 // cmdButton is the mock's .cmd button: a muted icon, optionally filled
 // and white when active.
 func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Element {
@@ -114,6 +119,8 @@ func statusColor(status string) ui.Color {
 		return colYellow
 	case "D":
 		return colRed
+	case "R", "C":
+		return colBlue
 	}
 	return colMuted
 }

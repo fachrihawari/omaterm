@@ -106,15 +106,15 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				if doc.Preview {
 					label = "Source"
 				}
-				if cmdButton(c, iconFileText, 14, false).Tooltip(label).Clicked() {
+				if cmdButton(c, iconFileText, iconBtn, false).Tooltip(label).Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}
-			if save := cmdButton(c, iconSave, 14, false); save.Tooltip("Save").Clicked() {
+			if save := cmdButton(c, iconSave, iconBtn, false); save.Tooltip("Save").Clicked() {
 				a.saveEditor(doc, c)
 			}
-			cmdButton(c, iconSplit, 14, false)
-			cmdButton(c, iconMore, 14, false)
+			cmdButton(c, iconSplit, iconBtn, false)
+			cmdButton(c, iconMore, iconBtn, false)
 		})
 
 		// The real editor, or markdown preview.
@@ -122,7 +122,9 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 		if isMd && doc.Preview {
 			ui.Scroll(c).Fill().Padding(16, 24).Children(func() {
 				mdOpts := &markdown.Options{}
-				ui.Box(c).MaxWidth(900).Children(func() {
+				// Center the measure: a Column aligns children to Start,
+				// which would pile the leftover width onto the right.
+				ui.Box(c).MaxWidth(900).AlignSelf(ui.Center).Children(func() {
 					markdown.View(c, doc.State.Buffer.String(), mdOpts)
 				})
 			})

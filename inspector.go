@@ -99,7 +99,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					sectionLabel(c, "PROCESSES")
 					ui.Spacer(c)
 					countBadge(c, len(a.processes))
-					if cmdButton(c, iconRefresh, 14, false).Tooltip("Refresh").Clicked() {
+					if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
 						a.refreshProcesses()
 					}
 				})
@@ -133,7 +133,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							ui.Spacer(c)
 							mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
 							if proc.Pid != 1 && proc.Pid != os.Getpid() {
-								if cmdButton(c, iconTrash, 14, false).Tooltip("Kill process").Clicked() {
+								if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
 									a.pendingKillPid = proc.Pid
 									a.pendingKillName = proc.Name
 									open := true
@@ -151,7 +151,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					sectionLabel(c, "PORTS")
 					ui.Spacer(c)
 					countBadge(c, len(a.ports))
-					if cmdButton(c, iconRefresh, 14, false).Tooltip("Refresh").Clicked() {
+					if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
 						a.refreshProcesses()
 					}
 				})
@@ -181,7 +181,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							mutedTxt2(c, port.Name, 11)
 							ui.Spacer(c)
 							if port.Open {
-								if cmdButton(c, iconExternalLink, 14, false).Clicked() {
+								if cmdButton(c, iconExternalLink, iconBtn, false).Clicked() {
 									c.Toast("Open :" + itoa(port.Port))
 								}
 							}
@@ -213,23 +213,33 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	if a.fileSearch != "" && !n.Dir && !contains(n.Name, a.fileSearch) {
 		return
 	}
-	e := ui.Row(c).Key(n.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(28).Padding(0, 8).PaddingStart(8 + 16*float32(depth)).Gap(6)
+	e := ui.Row(c).Key(n.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(28).Padding(0, 8).PaddingStart(8 + 18*float32(depth)).Gap(4)
 	if e.Hovered() {
 		e.Background(ui.Hex("#171d25"))
 	}
 	e.Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4).Children(func() {
+			// Disclosure column: always present, so folder and file
+			// badges line up on one grid at every depth.
+			if n.Dir {
+				ci := iconChevronRight
+				if n.Open {
+					ci = iconChevronDown
+				}
+				ui.Icon(c, ci).Width(12).Height(12).TextColor(colMuted2)
+			} else {
+				ui.Box(c).Width(12)
+			}
 			if n.Dir {
 				fi := iconFolder
 				if n.Open {
 					fi = iconFolderOpen
 				}
-				ui.Icon(c, fi).Width(16).Height(16).TextColor(synFolderIc)
+				ui.Icon(c, fi).Width(18).Height(18).TextColor(synFolderIc)
 			} else {
-				ui.Box(c).Width(14)
 				fileBadge(c, n.Name)
 			}
-			ui.Text(c, n.Name).FontSize(11).TextColor(colText2)
+			ui.Text(c, n.Name).FontSize(11).TextColor(colText2).SingleLine()
 			ui.Spacer(c)
 			if n.Status != "" {
 				ui.Text(c, n.Status).FontSize(10).TextColor(statusColor(n.Status))
@@ -292,7 +302,8 @@ func contains(s, sub string) bool {
 	return false
 }
 
-// fileBadge renders the little "TS"/"{ }" emblem or a file icon.
+// fileBadge renders the little "TS"/"{ }" emblem or a file icon. Every
+// branch is 18 wide so badges line up across rows and panels.
 func fileBadge(c *ui.Context, name string) ui.Element {
 	switch {
 	case hasSuffix(name, ".tsx") || hasSuffix(name, ".ts"):
@@ -302,9 +313,9 @@ func fileBadge(c *ui.Context, name string) ui.Element {
 	case hasSuffix(name, ".json"):
 		return ui.Text(c, "{ }").FontSize(10).FontWeight(700).TextColor(synJSON).Width(18)
 	case hasSuffix(name, ".md"):
-		return ui.Icon(c, iconFileText).Width(16).Height(16).TextColor(colBlue).MarginStart(1)
+		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(colBlue)
 	default:
-		return ui.Icon(c, iconFileText).Width(16).Height(16).TextColor(colMuted).MarginStart(1)
+		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(colMuted)
 	}
 }
 
@@ -354,59 +365,31 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 			}
 			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(colPurple)
-				if len(a.branches) > 0 {
-					sel := ui.SelectBase[string](c, &a.currentBranch)
-					sel.Trigger.Padding(2, 6).Border(1, colBorder2).Radius(4).Children(func() {
-						txt(c, a.currentBranch, 11, colText)
-					})
-					sel.Popup(func(panel ui.Element) {
-						panel.Padding(4).Background(colPanel).Border(1, colBorder2).Radius(6)
-						for _, b := range a.branches {
-							item := sel.Item(b).Padding(4, 8)
-							if item.Highlighted() {
-								item.Background(colHover)
-							}
-							item.Children(func() {
-								txt(c, b, 11, colText)
-							})
-						}
-					})
-					if sel.Trigger.Changed() {
-						r2 := a.activeRepoRef()
-						if r2 != nil {
-							if out, err := service.Checkout(r2.Root, a.currentBranch); err != nil {
-								c.Toast("Checkout failed: " + out)
-								a.currentBranch = r.Branch
-							} else {
-								c.Toast("Switched to " + a.currentBranch)
-								a.refreshActiveRepo()
-								a.branches = nil
-								a.branchesRepo = ""
-							}
-						}
-					}
-				} else {
-					txt(c, r.Branch, 11, colText)
+				trigger := ui.ButtonBase(c).Radius(4).Padding(2, 6).Border(1, colBorder2).Shrink(0).Children(func() {
+					txt(c, a.currentBranch, 11, colText)
+				})
+				if trigger.Clicked() {
+					a.openBranchOverlay()
 				}
 				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
 				ui.Spacer(c)
 				remote := r.HasRemote
-				if b := cmdButton(c, iconDownload, 12, false).Tooltip("Fetch"); !remote {
+				if b := cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitFetch(c)
 				}
-				if b := cmdButton(c, iconArrowDown, 12, false).Tooltip("Pull"); !remote {
+				if b := cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitPull(c)
 				}
-				if b := cmdButton(c, iconArrowUp, 12, false).Tooltip("Push"); !remote {
+				if b := cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitPush(c)
 				}
-				if cmdButton(c, iconRefresh, 14, false).Tooltip("Refresh").Clicked() {
+				if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
 					a.refreshActiveRepo()
 				}
 			})
@@ -418,7 +401,7 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				if commit.Clicked() {
 					a.gitCommit(c)
 				}
-				if stash := cmdButton(c, iconArchive, 14, false); stash.Tooltip("Stash changes").Clicked() {
+				if stash := cmdButton(c, iconArchive, iconBtn, false); stash.Tooltip("Stash changes").Clicked() {
 					a.gitStashPush(c)
 				}
 			})
@@ -548,7 +531,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 		ui.Spacer(c)
 		r := a.activeRepoRef()
 		if staged {
-			all := cmdButton(c, iconMinus, 14, false).Tooltip("Unstage all")
+			all := cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage all")
 			if all.Clicked() && r != nil {
 				if err := service.UnstageAll(r.Root); err != nil {
 					c.Toast("Git error: " + err.Error())
@@ -557,7 +540,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 				}
 			}
 		} else {
-			stageAll := cmdButton(c, iconPlus, 14, false).Tooltip("Stage all")
+			stageAll := cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stage all")
 			if stageAll.Clicked() && r != nil {
 				if err := service.StageAll(r.Root); err != nil {
 					c.Toast("Git error: " + err.Error())
@@ -585,7 +568,7 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 		txt(c, "GIT GRAPH", 10, colMuted).LetterSpacing(1.0)
 		countBadge(c, len(a.commits))
 		ui.Spacer(c)
-		if cmdButton(c, iconOpenInNew, 14, false).Tooltip("Open in pane").Clicked() {
+		if cmdButton(c, iconOpenInNew, iconBtn, false).Tooltip("Open in pane").Clicked() {
 			a.openGraphTab()
 		}
 	})
@@ -623,7 +606,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 		actions.Children(func() {
 			r := a.activeRepoRef()
 			if staged {
-				un := cmdButton(c, iconMinus, 14, false).Tooltip("Unstage")
+				un := cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage")
 				if un.Clicked() && r != nil {
 					if err := service.Unstage(r.Root, f.Path); err != nil {
 						c.Toast("Git error: " + err.Error())
@@ -632,7 +615,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 					}
 				}
 			} else {
-				st := cmdButton(c, iconPlus, 14, false).Tooltip("Stage")
+				st := cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stage")
 				if st.Clicked() && r != nil {
 					if err := service.Stage(r.Root, f.Path); err != nil {
 						c.Toast("Git error: " + err.Error())
@@ -644,7 +627,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				if f.Status == "U" || f.Status == "?" {
 					discardIcon = iconTrash
 				}
-				di := cmdButton(c, discardIcon, 14, false).Tooltip("Discard")
+				di := cmdButton(c, discardIcon, iconBtn, false).Tooltip("Discard")
 				if di.Clicked() && r != nil {
 					if err := service.Discard(r.Root, f.Path, f.Status == "U"); err != nil {
 						c.Toast("Git error: " + err.Error())
@@ -686,7 +669,7 @@ func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
 			ui.Row(c).Height(28).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 8).Gap(6).Children(func() {
 				ui.Icon(c, iconArchive).Width(12).Height(12).TextColor(colMuted)
 				ui.TextInputBase(c, &a.stashMsg).Placeholder("Stash message…").FontSize(10).Grow(1)
-				track := cmdButton(c, iconPlus, 12, false).Tooltip("Stash (include untracked)")
+				track := cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stash (include untracked)")
 				if track.Clicked() {
 					a.gitStashPushUntracked(c)
 				}
@@ -722,15 +705,15 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 		}
 		actions.Children(func() {
 			idx := s.Index
-			apply := cmdButton(c, iconRotate, 14, false).Tooltip("Apply")
+			apply := cmdButton(c, iconRotate, iconBtn, false).Tooltip("Apply")
 			if apply.Clicked() {
 				a.gitStashApply(c, idx)
 			}
-			pop := cmdButton(c, iconExternalLink, 14, false).Tooltip("Pop")
+			pop := cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Pop")
 			if pop.Clicked() {
 				a.gitStashPop(c, idx)
 			}
-			drop := cmdButton(c, iconTrash, 14, false).Tooltip("Drop")
+			drop := cmdButton(c, iconTrash, iconBtn, false).Tooltip("Drop")
 			if drop.Clicked() {
 				a.gitStashDrop(c, idx)
 			}

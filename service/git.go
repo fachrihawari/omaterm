@@ -415,26 +415,34 @@ func ShowCommitFilePatch(root, hash, file string) (string, error) {
 
 // CommitFiles returns the files changed in the given commit with their status.
 func CommitFiles(root, hash string) ([]CommitFile, error) {
-	out, err := gitCmd(root, "diff-tree", "--no-commit-id", "--name-status", "-r", hash)
+	out, err := gitCmd(root, "diff-tree", "--no-commit-id", "--name-status", "-r", "-M", hash)
 	if err != nil {
-		out, err = gitCmd(root, "show", "--name-status", "--format=", hash)
+		out, err = gitCmd(root, "show", "--name-status", "--format=", "-M", hash)
 		if err != nil {
 			return nil, err
 		}
 	}
 	var files []CommitFile
 	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		fields := strings.Fields(line)
+		// Split on tabs only: paths may contain spaces.
+		fields := strings.Split(line, "\t")
 		if len(fields) < 2 {
 			continue
 		}
-		status := fields[0]
-		// Handle rename/copy: "R100	old	new" -> use new path.
-		path := fields[len(fields)-1]
+		status := strings.TrimSpace(fields[0])
+		// Normalize rename/copy scores: "R100" -> "R", "C075" -> "C".
+		if len(status) > 1 {
+			status = status[:1]
+		}
+		// For renames and copies the last field is the new path.
+		path := strings.TrimSpace(fields[len(fields)-1])
+		if path == "" {
+			continue
+		}
 		files = append(files, CommitFile{Status: status, Path: path})
 	}
 	return files, nil

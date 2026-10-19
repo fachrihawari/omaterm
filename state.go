@@ -60,6 +60,7 @@ const (
 	overlayQuickOpen
 	overlayCommandPalette
 	overlayGlobalSearch
+	overlayBranch
 )
 
 // diffSourceKind says what the diff view compares.
@@ -174,6 +175,11 @@ type appState struct {
 	searchJob      service.Job
 	searchSplit    float32
 	searchPreview  *editor.State // read-only preview editor
+
+	// Branch picker (modal)
+	branchQuery    string
+	branchSelected int
+	branchList     ui.ListState
 
 	// Git stash
 	stashMsg              string

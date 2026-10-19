@@ -129,6 +129,9 @@ var iconDownloadSVG []byte
 //go:embed icons/square-terminal.svg
 var iconSquareTerminalSVG []byte
 
+//go:embed icons/check.svg
+var iconCheckSVG []byte
+
 var (
 	iconBell           = ui.MustParseSVG(iconBellSVG)
 	iconChevronDown    = ui.MustParseSVG(iconChevronDownSVG)
@@ -171,4 +174,5 @@ var (
 	iconArrowUp        = ui.MustParseSVG(iconArrowUpSVG)
 	iconDownload       = ui.MustParseSVG(iconDownloadSVG)
 	iconSquareTerminal = ui.MustParseSVG(iconSquareTerminalSVG)
+	iconCheck          = ui.MustParseSVG(iconCheckSVG)
 )

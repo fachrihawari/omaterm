@@ -60,6 +60,9 @@ var commandRegistry = []Command{
 	{ID: "git.stashPop", Title: "Git: Pop Latest Stash", Category: "Git",
 		Enabled: func(a *appState) bool { r := a.activeRepoRef(); return r != nil && len(r.Stashes) > 0 },
 		Run:     func(a *appState, c *ui.Context) { a.gitStashPop(c, 0) }},
+	{ID: "git.switchBranch", Title: "Git: Switch Branch…", Category: "Git",
+		Enabled: func(a *appState) bool { return a.activeRepoRef() != nil },
+		Run:     func(a *appState, c *ui.Context) { a.openBranchOverlay() }},
 }
 
 // gitStageAll stages everything in the active repo.

@@ -267,3 +267,98 @@ func TestCloseTab(t *testing.T) {
 		t.Fatalf("tabs = %d, want %d", len(a.tabs), n-1)
 	}
 }
+
+// Rename and copy statuses from git arrive with a similarity score
+// ("R100", "C075"); the UI shows the single letter.
+func TestCommitFileStatusNormalized(t *testing.T) {
+	a := newTestApp(t)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	dir := r.Root
+	git := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	git("mv", "hello.txt", "renamed.txt")
+	git("commit", "-q", "-am", "rename")
+
+	hash := service.HeadSha(dir)
+	if hash == "" {
+		t.Fatal("no HEAD")
+	}
+	files, err := service.CommitFiles(dir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
+	}
+	if got := files[0].Status; got != "R" {
+		t.Errorf("status = %q, want R", got)
+	}
+	if got := files[0].Path; got != "renamed.txt" {
+		t.Errorf("path = %q, want renamed.txt", got)
+	}
+}
+
+// The branch picker opens as an overlay, preselects the current branch,
+// and closes on Escape.
+func TestBranchOverlay(t *testing.T) {
+	a := newTestApp(t)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	a.currentBranch = r.Branch
+
+	a.openBranchOverlay()
+	if a.overlay != overlayBranch {
+		t.Fatalf("overlay = %v, want overlayBranch", a.overlay)
+	}
+	if len(a.branches) == 0 {
+		t.Fatal("branches not loaded")
+	}
+	if a.branchSelected >= len(a.branchItems()) {
+		t.Fatalf("branchSelected = %d out of range", a.branchSelected)
+	}
+	if got := a.branchItems()[a.branchSelected].Value; got != r.Branch {
+		t.Errorf("preselected %q, want %q", got, r.Branch)
+	}
+
+	a.closeOverlay()
+	if a.overlay != overlayNone {
+		t.Errorf("overlay = %v after close, want none", a.overlay)
+	}
+}
+
+// The diff view keeps one DiffState across frames so its scroll position
+// survives re-renders.
+func TestDiffViewKeyStable(t *testing.T) {
+	a := newTestApp(t)
+	a.setDiffBuffers("a\n", "b\n", "hello.txt")
+	a.diffTitle = "hello.txt"
+	a.diffSrc = diffSource{Kind: diffWorking, Path: "hello.txt"}
+
+	first := a.diffViewKey()
+	if second := a.diffViewKey(); second != first {
+		t.Errorf("key changed without new content: %q -> %q", first, second)
+	}
+
+	// New content must change the key so the viewer rebuilds.
+	a.setDiffBuffers("a\n", "c\n", "hello.txt")
+	if got := a.diffViewKey(); got == first {
+		t.Error("key did not change after new content")
+	}
+
+	// Toggling the layout rebuilds it too.
+	before := a.diffViewKey()
+	a.diffSplit = !a.diffSplit
+	if got := a.diffViewKey(); got == before {
+		t.Error("key did not change after layout toggle")
+	}
+}

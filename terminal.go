@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
@@ -356,7 +358,7 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 				a.splitPane(termID, splitHorizontal)
 				c.Toast("Split down")
 			}
-			if cmdButton(c, iconSplit, 14, false).Tooltip("Equalize panes (Ctrl+Shift+=)").Clicked() {
+			if cmdButton(c, iconSplit, iconBtn, false).Tooltip("Equalize panes (Ctrl+Shift+=)").Clicked() {
 				if n := a.activeSplit(); n != nil {
 					equalizeSplit(n)
 				}
@@ -367,7 +369,7 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 				ids = n.termIDs()
 			}
 			if len(ids) > 1 {
-				if cmdButton(c, iconTrash, 14, false).Tooltip("Close pane").Clicked() {
+				if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Close pane").Clicked() {
 					a.removePane(termID)
 					c.Toast("Pane closed")
 				}
@@ -446,6 +448,10 @@ func equalizeSplit(n *splitNode) {
 	equalizeSplit(n.Second)
 }
 
+// termSeq makes every terminal ID unique: time.Now alone is too coarse,
+// so splits made in the same microsecond would share a pane.
+var termSeq atomic.Uint64
+
 func randomTermID() string {
-	return "term-" + time.Now().Format("20060102-150405.000000")
+	return "term-" + time.Now().Format("20060102-150405.000000") + "-" + strconv.FormatUint(termSeq.Add(1), 10)
 }

@@ -30,6 +30,10 @@ func (a *appState) openOverlay(k overlayKind) {
 		a.searchSelected = 0
 		a.searchResults = nil
 		a.searchPreview = nil
+	case overlayBranch:
+		a.branchQuery = ""
+		a.branchSelected = 0
+		a.branchList = ui.ListState{}
 	}
 }
 
@@ -47,6 +51,8 @@ func (a *appState) renderOverlays(c *ui.Context) {
 		a.dialog(c, 680, 560, func() { a.commandPaletteBody(c) })
 	case overlayGlobalSearch:
 		a.dialog(c, 1100, 700, func() { a.globalSearchBody(c) })
+	case overlayBranch:
+		a.dialog(c, 520, 480, func() { a.branchBody(c) })
 	}
 }
 
@@ -249,6 +255,161 @@ func (a *appState) overlayFooter(c *ui.Context, hints ...string) {
 			ui.Text(c, h).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
 		}
 	})
+}
+
+// --- Branch picker ---
+
+// openBranchOverlay shows the branch picker, like quick open.
+func (a *appState) openBranchOverlay() {
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	if bs, err := service.ListBranches(r.Root); err == nil {
+		a.branches = bs
+		a.branchesRepo = r.Root
+	}
+	if a.currentBranch == "" {
+		a.currentBranch = r.Branch
+	}
+	a.openOverlay(overlayBranch)
+	a.branchSelected = 0
+	for i, b := range a.branches {
+		if b == a.currentBranch {
+			a.branchSelected = i
+			break
+		}
+	}
+	a.branchList = ui.ListState{}
+	a.branchList.ScrollIntoView(a.branchSelected)
+}
+
+// branchItems filters the branch list by the query.
+func (a *appState) branchItems() []service.FuzzyMatch {
+	return service.FuzzyFilter(a.branches, a.branchQuery, 100)
+}
+
+func (a *appState) branchBody(c *ui.Context) {
+	items := a.branchItems()
+	if a.branchSelected >= len(items) {
+		a.branchSelected = len(items) - 1
+	}
+	if a.branchSelected < 0 {
+		a.branchSelected = 0
+	}
+	if c.Shortcut(0, ui.KeyDown) {
+		a.moveBranchSelection(1, len(items))
+	}
+	if c.Shortcut(0, ui.KeyUp) {
+		a.moveBranchSelection(-1, len(items))
+	}
+
+	submit := false
+	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+		ui.Row(c).Height(30).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
+			ui.Icon(c, iconGitBranch).Width(14).Height(14).TextColor(colMuted)
+			ti := ui.TextInputBase(c, &a.branchQuery).Placeholder("Switch branch…").FontSize(13).Grow(1)
+			if ti.Changed() {
+				a.branchSelected = 0
+			}
+			if ti.Submitted() {
+				submit = true
+			}
+		})
+	})
+
+	a.branchList.Selected = &a.branchSelected
+	a.branchList.Key = func(i int) any { return items[i].Value }
+	list := ui.List(c, &a.branchList, len(items), func(i int) {
+		a.branchRow(c, items[i].Value, i == a.branchSelected)
+	}).Grow(1).Padding(6).Children(func() {
+		if len(items) == 0 {
+			ui.Box(c).Padding(20).Children(func() {
+				ui.Text(c, "No matching branches").FontSize(12).TextColor(colMuted)
+			})
+		}
+	})
+	if list.Submitted() || c.Shortcut(0, ui.KeyEnter) {
+		submit = true
+	}
+	if submit {
+		a.checkoutBranch(c, items)
+	}
+
+	a.overlayFooter(c, "↑↓ navigate", "↵ checkout", "esc close")
+}
+
+// moveBranchSelection moves the branch choice by d and keeps it in view.
+func (a *appState) moveBranchSelection(d, n int) {
+	if n == 0 {
+		return
+	}
+	next := a.branchSelected + d
+	if next < 0 {
+		next = 0
+	}
+	if next > n-1 {
+		next = n - 1
+	}
+	if next == a.branchSelected {
+		return
+	}
+	a.branchSelected = next
+	a.branchList.ScrollIntoView(next)
+}
+
+// checkoutBranch switches to the selected branch and closes the picker.
+func (a *appState) checkoutBranch(c *ui.Context, items []service.FuzzyMatch) {
+	if a.branchSelected < 0 || a.branchSelected >= len(items) {
+		return
+	}
+	r := a.activeRepoRef()
+	if r == nil {
+		return
+	}
+	name := items[a.branchSelected].Value
+	if name == a.currentBranch {
+		a.closeOverlay()
+		return
+	}
+	out, err := service.Checkout(r.Root, name)
+	if err != nil {
+		// Keep the picker open so another branch can be tried.
+		c.Toast("Checkout failed: " + strings.TrimSpace(out))
+		return
+	}
+	a.currentBranch = name
+	a.branches = nil
+	a.branchesRepo = ""
+	a.closeOverlay()
+	a.refreshActiveRepo()
+	c.Toast("Switched to " + name)
+}
+
+// branchRow renders one branch, marking the current one.
+func (a *appState) branchRow(c *ui.Context, name string, selected bool) {
+	cur := name == a.currentBranch
+	e := ui.Row(c).Key(name).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if selected {
+		e.Background(colHover)
+	} else if e.Hovered() {
+		e.Background(ui.Hex("#171d25"))
+	}
+	e.Children(func() {
+		if cur {
+			ui.Icon(c, iconCheck).Width(14).Height(14).TextColor(colGreen)
+		} else {
+			ui.Box(c).Width(14)
+		}
+		ui.Text(c, name).FontSize(12).TextColor(colText).SingleLine().Grow(1).MinWidth(0)
+		if cur {
+			pill(c, "current")
+		}
+	})
+	if e.Clicked() {
+		a.branchSelected = 0
+		a.checkoutBranch(c, []service.FuzzyMatch{{Value: name}})
+	}
 }
 
 // --- Command palette ---

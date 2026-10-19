@@ -22,13 +22,20 @@ func TestShots(t *testing.T) {
 	}{
 		{"terminal", nil},
 		{"editor", func(a *appState) { a.openEditor("app.go") }},
+		{"markdown", func(a *appState) { a.openEditor("README.md") }},
 		{"diff", func(a *appState) {
 			if r := a.activeRepoRef(); r != nil && len(r.Changes) > 0 {
 				a.openWorkingDiff(r.Changes[0].Path, false)
 			}
 		}},
 		{"graph", func(a *appState) { a.activeView = tabGraph }},
-		{"git-history", func(a *appState) { a.inspectorTab = 2; a.gitGraphOpen = true }},
+		{"git-history", func(a *appState) {
+			a.inspectorTab = 2
+			a.gitGraphOpen = true
+			if len(a.commits) > 0 {
+				a.expandedCommit = a.commits[0].Hash
+			}
+		}},
 		{"files", func(a *appState) { a.inspectorTab = 1 }},
 		{"git", func(a *appState) { a.inspectorTab = 2 }},
 		{"quick-open", func(a *appState) {
@@ -36,6 +43,12 @@ func TestShots(t *testing.T) {
 			a.openOverlay(overlayQuickOpen)
 		}},
 		{"command-palette", func(a *appState) { a.openOverlay(overlayCommandPalette) }},
+		{"branch", func(a *appState) {
+			if r := a.activeRepoRef(); r != nil {
+				a.currentBranch = r.Branch
+			}
+			a.openBranchOverlay()
+		}},
 		{"global-search", func(a *appState) {
 			a.openOverlay(overlayGlobalSearch)
 			a.searchQuery = "appState"
