@@ -600,14 +600,18 @@ func (a *appState) startSystemStats() {
 	if a.win == nil {
 		return // no invented numbers in tests
 	}
-	sample := func() {
-		a.sysStats = a.sysSampler.Sample()
-	}
-	sample()
+	a.sysStats = a.sysSampler.Sample()
+	a.scheduleSystemStats()
+}
+
+// scheduleSystemStats samples again 3s from now. It does not sample on the
+// way in: the CPU delta is between consecutive samples, and a second sample
+// right after the first would measure no elapsed time.
+func (a *appState) scheduleSystemStats() {
 	a.sysTimer = time.AfterFunc(3*time.Second, func() {
 		a.win.Update(func() {
-			sample()
-			a.startSystemStats()
+			a.sysStats = a.sysSampler.Sample()
+			a.scheduleSystemStats()
 		})
 	})
 }
