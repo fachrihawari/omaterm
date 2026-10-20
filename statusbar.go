@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 
@@ -69,13 +70,16 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 	})
 }
 
-// plural renders n with its noun, singular at one: "1 process", "2 processes".
+// plural renders n with its noun, singular at one: "1 process",
+// "2 processes", "2 ports".
 func plural(n int, noun string) string {
-	s := itoa(n) + " " + noun
-	if n != 1 {
-		s += "s"
+	if n == 1 {
+		return itoa(n) + " " + noun
 	}
-	return s
+	if strings.HasSuffix(noun, "s") {
+		return itoa(n) + " " + noun + "es"
+	}
+	return itoa(n) + " " + noun + "s"
 }
 
 // statusSegment is one full-height, hoverable status bar cell.

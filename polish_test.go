@@ -31,6 +31,16 @@ func TestStatusBarCountsAndNoMockStats(t *testing.T) {
 	if !tr.HasText("0 ports") {
 		t.Error("port count missing")
 	}
+	// A noun already ending in s takes "es", not another s: the live
+	// status bar read "11 processs".
+	a.processes = append(a.processes, service.Process{Name: "two", Pid: 3})
+	tr.Frame()
+	if !tr.HasText("2 processes") {
+		t.Error("plural of a noun ending in s is wrong")
+	}
+	if tr.HasText("processs") {
+		t.Error("doubled s in the plural")
+	}
 	for _, mock := range []string{"CPU 3%", "MEM 1.3 GB"} {
 		if tr.HasText(mock) {
 			t.Errorf("invented status value %q still rendered", mock)
