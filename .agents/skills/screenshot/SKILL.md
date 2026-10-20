@@ -109,9 +109,16 @@ wclick move 1365 94                             # move without clicking
 
 `wclick` is a wrapper around `wlrctl`, which drives the
 `zwlr_virtual_pointer_v1` protocol. That matters: it needs no `uinput`
-device and no root, unlike `ydotool`, whose daemon fails with
-`failed to open uinput device: Permission denied` unless the user is in the
-`input` group.
+device and no root.
+
+`ydotool` can work too, but it needs setup. Its unit ships under
+`/usr/lib/systemd/user/`, so `sudo systemctl start ydotool` reports
+`Unit ydotool.service not found` — the system manager has no such unit. Use
+`systemctl --user`. Even then `ydotoold` dies with
+`failed to open uinput device: Permission denied`, because `/dev/uinput` is
+`root:input 0660` and the package expects `usermod -aG input $USER` followed
+by a fresh login. Prefer `wclick` for captures; reach for `ydotool` only when
+you need `mousemove --absolute` in apps outside this compositor.
 
 Two gotchas when picking coordinates:
 
