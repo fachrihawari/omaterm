@@ -5,7 +5,8 @@ description: >
   reports, UI review, or attaching visual evidence. Use when asked to take a
   screenshot, grab the screen, capture a window or region, or record what the
   app looks like. Covers omarchy capture, grim/slurp, window geometry, HiDPI
-  scaling, and the failure modes that make captures hang.
+  scaling, driving the UI with wtype/wclick, and the failure modes that make
+  captures hang.
 ---
 
 # Screenshots on Omarchy
@@ -93,6 +94,36 @@ convert window.png -crop 340x120+1100+80 +repage -resize 250% detail.png
 
 `+repage` matters: without it the crop keeps its original canvas offset and
 later tools misplace it.
+
+## Clicking the app before capturing
+
+Many shots are only meaningful after driving the UI into a state — opening a
+panel, switching tabs, expanding a row. `wtype` covers typing and key
+chords, and `wclick` covers the pointer:
+
+```bash
+wtype -M ctrl -M shift -k p -m shift -m ctrl   # command palette
+wclick click 1365 94                            # absolute logical coords
+wclick move 1365 94                             # move without clicking
+```
+
+`wclick` is a wrapper around `wlrctl`, which drives the
+`zwlr_virtual_pointer_v1` protocol. That matters: it needs no `uinput`
+device and no root, unlike `ydotool`, whose daemon fails with
+`failed to open uinput device: Permission denied` unless the user is in the
+`input` group.
+
+Two gotchas when picking coordinates:
+
+- **`wclick` takes absolute logical screen coordinates**, not window-relative
+  ones. Add the window's `at` offset from `hyprctl clients -j`. A click meant
+  for a tab inside a window at `5,31` must include that `5,31`.
+- **Convert from the screenshot before clicking.** The PNG is in physical
+  pixels (1.25× here), so an element at `x=1700` in the image sits at
+  `1700 / 1.25 = 1360` logical, plus the window offset.
+
+Verify each click landed before capturing — read the PNG back and confirm the
+state changed. A click that silently misses looks exactly like a UI bug.
 
 ## Verify, then clean up
 
