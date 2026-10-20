@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
 )
 
 // The mock's oma.* palette (omaterm_mock_ui_v5.html, dark theme).
@@ -16,7 +17,7 @@ var (
 	colText    = ui.Hex("#d7dde5")
 	colText2   = ui.Hex("#bcc5d0")
 	colMuted   = ui.Hex("#7f8a99")
-	colMuted2  = ui.Hex("#596474")
+	colMuted2  = ui.Hex("#76828f")
 	colBlue    = ui.Hex("#5aa9ff")
 	colBlue2   = ui.Hex("#2f81f7")
 	colCyan    = ui.Hex("#61d8df")
@@ -89,4 +90,15 @@ func omaTheme() *ui.Theme {
 	// for code and terminals, set where they render.
 	t.Font = "Inter, Noto Sans"
 	return t
+}
+
+// omaEditorTheme overrides the one editor color that is too dim to read:
+// MyGo derives the gutter from TextMuted at 75% alpha (~3.1:1 on our code
+// background). The rest of the fields stay zero and resolve to the
+// default theme, so syntax colors keep following the window theme.
+func omaEditorTheme() *editor.Theme {
+	return &editor.Theme{
+		LineNumber:       colMuted,
+		ActiveLineNumber: colText,
+	}
 }

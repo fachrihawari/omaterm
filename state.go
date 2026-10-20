@@ -87,6 +87,8 @@ type openFile struct {
 	Path    string // workspace-relative
 	State   *editor.State
 	Preview bool // markdown preview mode (default true for .md)
+	Binary  bool // not text: show a placeholder instead of the editor
+	Size    int64
 }
 
 type appState struct {
@@ -111,14 +113,18 @@ type appState struct {
 	processes []service.Process
 	ports     []service.Port
 
+	// Machine load shown in the status bar.
+	sysStats   service.SystemStats
+	sysSampler service.SystemSampler
+	sysTimer   *time.Timer
+
 	commitMsg string
 
 	diffSplit bool
 
 	paneFocus int
 
-	fileSearch string
-	fileTree   *fileNode
+	fileTree *fileNode
 
 	// --- Real workspace/git state ---
 
@@ -150,6 +156,14 @@ type appState struct {
 	diffGen   int               // bumped every time new diff content is loaded
 	diffSrc   diffSource
 	diffTitle string
+
+	// Binary diffs have no text to show; the view renders a placeholder
+	// with the file's name and size instead.
+	diffBinary     bool
+	diffBinaryName string
+	diffBinarySize int64
+	diffAdd        int // line stats of the shown patch
+	diffDel        int
 
 	// --- Overlays ---
 
@@ -192,9 +206,12 @@ type appState struct {
 
 	// Git graph
 	commits        []service.Commit
+	graphLoaded    bool // commits has been read at least once
 	expandedCommit string
 	graphJob       service.Job
 	graphLimit     int
+	commitFiles    map[string][]service.CommitFile // per-hash cache: two git calls per frame otherwise
+	commitStats    map[string][2]int
 	// Git panel collapsible sections
 	stagedCollapsed  bool
 	changesCollapsed bool
@@ -249,6 +266,8 @@ func newApp() *appState {
 		graphLimit:       300,
 		editors:          map[string]*openFile{},
 		termPanes:        map[string]*terminal.Terminal{},
+		commitFiles:      map[string][]service.CommitFile{},
+		commitStats:      map[string][2]int{},
 		projects:         []project{},
 	}
 	// Load saved projects.
@@ -424,6 +443,9 @@ func (a *appState) setProject(i int) {
 	a.activeRepo = 0
 	a.repoErr = ""
 	a.commits = nil
+	a.graphLoaded = false
+	a.commitFiles = map[string][]service.CommitFile{}
+	a.commitStats = map[string][2]int{}
 	a.fileIndex = nil
 	a.editors = map[string]*openFile{}
 	a.fileTree = nil
@@ -569,6 +591,33 @@ func (a *appState) refreshProcesses() {
 		})
 		return err
 	}, nil)
+}
+
+// startSystemStats samples CPU and memory now, then every 3s while the
+// window lives. The first sample only primes the CPU delta.
+func (a *appState) startSystemStats() {
+	a.stopSystemStats()
+	if a.win == nil {
+		return // no invented numbers in tests
+	}
+	sample := func() {
+		a.sysStats = a.sysSampler.Sample()
+	}
+	sample()
+	a.sysTimer = time.AfterFunc(3*time.Second, func() {
+		a.win.Update(func() {
+			sample()
+			a.startSystemStats()
+		})
+	})
+}
+
+// stopSystemStats halts the periodic machine-load sampling.
+func (a *appState) stopSystemStats() {
+	if a.sysTimer != nil {
+		a.sysTimer.Stop()
+		a.sysTimer = nil
+	}
 }
 
 // startProcessRefresh begins periodic process/port refresh (5s) while the

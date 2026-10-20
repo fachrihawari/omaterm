@@ -146,7 +146,10 @@ func (a *appState) refreshGraph() {
 		if err != nil {
 			return err
 		}
-		win.Update(func() { a.commits = commits })
+		win.Update(func() {
+			a.commits = commits
+			a.graphLoaded = true
+		})
 		return nil
 	}, nil)
 }
@@ -183,8 +186,12 @@ func (a *appState) graphView(c *ui.Context) ui.Element {
 		})
 
 		if len(a.commits) == 0 {
+			msg := "No commits"
+			if !a.graphLoaded {
+				msg = "Loading…"
+			}
 			ui.Column(c).Grow(1).Center().Children(func() {
-				ui.Text(c, "No commits").FontSize(12).TextColor(colMuted)
+				ui.Text(c, msg).FontSize(12).TextColor(colMuted)
 			})
 			return
 		}
@@ -271,27 +278,35 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 
 // commitFileList renders the files of an expanded commit as a VS Code-like
 // "Files Changed" list: a status letter, a file badge, the name and its
-// directory, each in a fixed column so rows line up.
+// directory, each in a fixed column so rows line up. The list and its
+// stats are cached per hash: rendering used to run two git commands every
+// frame while a commit was expanded.
 func (a *appState) commitFileList(c *ui.Context, cm *service.Commit) {
 	r := a.activeRepoRef()
 	if r == nil {
 		return
 	}
-	files, err := service.CommitFiles(r.Root, cm.Hash)
-	if err != nil || len(files) == 0 {
+	files, ok := a.commitFiles[cm.Hash]
+	if !ok {
+		var err error
+		files, err = service.CommitFiles(r.Root, cm.Hash)
+		if err != nil {
+			return
+		}
+		add, del, _ := service.CommitStats(r.Root, cm.Hash)
+		a.commitFiles[cm.Hash] = files
+		a.commitStats[cm.Hash] = [2]int{add, del}
+	}
+	if len(files) == 0 {
 		return
 	}
-	add, del, _ := service.CommitStats(r.Root, cm.Hash)
+	stats := a.commitStats[cm.Hash]
+	add, del := stats[0], stats[1]
 
 	ui.Column(c).Padding(0, 0, 4, 22).Children(func() {
 		// Header: how much changed.
 		ui.Row(c).Height(22).PaddingStart(26).PaddingEnd(10).Gap(8).AlignItems(ui.Center).Children(func() {
-			n := len(files)
-			word := "files changed"
-			if n == 1 {
-				word = "file changed"
-			}
-			txt(c, itoa(n)+" "+word, 9, colMuted2)
+			txt(c, pathListSummary(len(files)), 9, colMuted2)
 			if add > 0 || del > 0 {
 				ui.Spacer(c)
 				txt(c, "+"+itoa(add), 9, colGreen)

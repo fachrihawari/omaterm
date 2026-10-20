@@ -6,8 +6,8 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-//go:embed icons/bell.svg
-var iconBellSVG []byte
+//go:embed icons/alert-triangle.svg
+var iconAlertSVG []byte
 
 //go:embed icons/chevron-down.svg
 var iconChevronDownSVG []byte
@@ -133,7 +133,7 @@ var iconSquareTerminalSVG []byte
 var iconCheckSVG []byte
 
 var (
-	iconBell           = ui.MustParseSVG(iconBellSVG)
+	iconAlert          = ui.MustParseSVG(iconAlertSVG)
 	iconChevronDown    = ui.MustParseSVG(iconChevronDownSVG)
 	iconChevronRight   = ui.MustParseSVG(iconChevronRightSVG)
 	iconColumns2       = ui.MustParseSVG(iconColumns2SVG)

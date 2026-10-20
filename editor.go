@@ -9,6 +9,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
+
+	"oterm/service"
 )
 
 // The editor view: a real code editor of the active file, with the
@@ -27,16 +29,29 @@ func (a *appState) openEditorAt(path string, line int) {
 		if err != nil {
 			return
 		}
-		buf := editor.NewBuffer(string(data))
-		if lang := editor.LanguageFor(path); lang != nil {
-			buf.SetLanguage(lang)
+		doc := &openFile{Path: path}
+		if service.IsBinary(data) {
+			// Reading a PNG as text shows mojibake, and an editor full of
+			// it is worse than an honest placeholder.
+			doc.Binary = true
+			if info, err := os.Stat(abs); err == nil {
+				doc.Size = info.Size()
+			}
+			a.editors[path] = doc
+		} else {
+			buf := editor.NewBuffer(string(data))
+			if lang := editor.LanguageFor(path); lang != nil {
+				buf.SetLanguage(lang)
+			}
+			preview := hasSuffix(path, ".md") || hasSuffix(path, ".mdx")
+			doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme()}
+			doc.Preview = preview
+			a.editors[path] = doc
 		}
-		preview := hasSuffix(path, ".md") || hasSuffix(path, ".mdx")
-		a.editors[path] = &openFile{Path: path, State: &editor.State{Buffer: buf}, Preview: preview}
 	}
 	if line > 0 {
-		if st := a.editors[path].State; st != nil {
-			st.GoTo(editor.Pos{Line: line - 1, Col: 0})
+		if doc := a.editors[path]; doc != nil && doc.State != nil {
+			doc.State.GoTo(editor.Pos{Line: line - 1, Col: 0})
 		}
 	}
 	if a.win != nil {
@@ -84,6 +99,19 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 			ui.Text(c, "Ctrl+P to open a file").FontSize(11).TextColor(colMuted2).Margin(4, 0, 0, 0)
 		})
 	}
+	if doc.Binary {
+		return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
+			ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+				ui.Text(c, doc.Path).FontSize(10).TextColor(colText2).SingleLine().Shrink(0)
+			})
+			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
+				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(colMuted2)
+				ui.Text(c, pathBase(doc.Path)).FontSize(13).TextColor(colText2)
+				ui.Text(c, "Binary file · "+service.FormatBytes(uint64(doc.Size))+" · preview not available").
+					FontSize(11).TextColor(colMuted)
+			})
+		})
+	}
 
 	return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
 		// Breadcrumb + actions.
@@ -122,10 +150,14 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 		if isMd && doc.Preview {
 			ui.Scroll(c).Fill().Padding(16, 24).Children(func() {
 				mdOpts := &markdown.Options{}
-				// Center the measure: a Column aligns children to Start,
-				// which would pile the leftover width onto the right.
-				ui.Box(c).MaxWidth(900).AlignSelf(ui.Center).Children(func() {
-					markdown.View(c, doc.State.Buffer.String(), mdOpts)
+				// A ~720 DIP measure keeps lines in the 80-char reading
+				// range. The Row spans the viewport and centers the box:
+				// AlignSelf alone measured from the scroll content, which
+				// drifted left on a wide window.
+				ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
+					ui.Box(c).WidthPercent(100).MaxWidth(720).Children(func() {
+						markdown.View(c, stripFrontMatter(doc.State.Buffer.String()), mdOpts)
+					})
 				})
 			})
 		} else {

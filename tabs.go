@@ -11,7 +11,8 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 	return ui.Row(c).Height(42).AlignItems(ui.End).Background(colBg).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
 		// Show-projects button, only while the sidebar is hidden.
 		if !a.sidebarVisible {
-			if cmdButton(c, iconPanelLeft, 16, false).MarginStart(8).Clicked() {
+			if cmdButton(c, iconPanelLeft, 16, false).MarginStart(8).
+				Tooltip("Show Projects").Label("Show Projects").Clicked() {
 				a.sidebarVisible = true
 			}
 		}
@@ -81,13 +82,21 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 				ui.Text(c, "M").FontSize(10).TextColor(colYellow).SingleLine().Shrink(0)
 			}
 			if t.Kind == tabEditor && t.Path != "" {
-				if doc := a.editors[t.Path]; doc != nil && doc.State.Buffer.Modified() {
+				if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
 					ui.Text(c, "●").FontSize(10).TextColor(colYellow).SingleLine().Shrink(0)
 				}
 			}
 			if len(a.tabs) > 1 {
 				ui.Spacer(c)
-				x := ui.ButtonBase(c).Padding(2).Radius(3).Shrink(0).Children(func() {
+				// The close button is always laid out, so tabs keep their
+				// width, but it only shows on the active or hovered tab.
+				showClose := active || e.Hovered()
+				opacity := float32(0)
+				if showClose {
+					opacity = 1
+				}
+				x := ui.ButtonBase(c).Padding(2).Radius(3).Shrink(0).
+					Opacity(opacity).Disabled(!showClose).Children(func() {
 					ui.Icon(c, iconX).Width(14).Height(14).TextColor(colMuted)
 				})
 				if x.Clicked() {
@@ -144,7 +153,7 @@ func (a *appState) closeActiveTab(c *ui.Context) {
 	}
 	t := a.tabs[a.activeTab]
 	if t.Kind == tabEditor && t.Path != "" {
-		if doc := a.editors[t.Path]; doc != nil && doc.State.Buffer.Modified() {
+		if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
 			open := true
 			a.pendingCloseTab = a.activeTab
 			a.closeTabConfirmOpen = &open

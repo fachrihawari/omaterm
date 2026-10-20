@@ -191,7 +191,9 @@ func (a *appState) openQuickSelection(items []service.FuzzyMatch) {
 	a.closeOverlay()
 }
 
-// overlayRow renders one list row with the matched bytes highlighted.
+// overlayRow renders one list row: the file's name with the matched bytes
+// highlighted, and its directory on the right. Showing only the base name
+// on the left keeps the row from repeating the path.
 func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selected bool) {
 	e := ui.Row(c).Key(path).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if selected {
@@ -199,9 +201,11 @@ func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selecte
 	} else if e.Hovered() {
 		e.Background(ui.Hex("#171d25"))
 	}
+	base := pathBase(path)
+	offset := len(path) - len(base)
 	e.Children(func() {
-		fileBadge(c, pathBase(path))
-		a.highlightedPath(c, path, indices)
+		fileBadge(c, base)
+		a.highlightedSegment(c, base, offset, indices)
 		if dir := pathDir(path); dir != "" {
 			ui.Spacer(c)
 			ui.Text(c, dir).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
@@ -213,15 +217,18 @@ func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selecte
 	}
 }
 
-// highlightedPath renders path with the matched bytes in the accent color.
-func (a *appState) highlightedPath(c *ui.Context, path string, indices []int) {
-	if len(indices) == 0 {
-		ui.Text(c, path).FontSize(12).TextColor(colText2).SingleLine().Shrink(0)
-		return
-	}
+// highlightedSegment renders text with the matched byte offsets (which
+// index the full path) in the accent color; offset is where text starts.
+func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, indices []int) {
 	in := map[int]bool{}
 	for _, i := range indices {
-		in[i] = true
+		if i >= offset && i < offset+len(text) {
+			in[i-offset] = true
+		}
+	}
+	if len(in) == 0 {
+		ui.Text(c, text).FontSize(12).TextColor(colText2).SingleLine().Shrink(0)
+		return
 	}
 	var spans []ui.Span
 	var cur strings.Builder
@@ -237,13 +244,13 @@ func (a *appState) highlightedPath(c *ui.Context, path string, indices []int) {
 		spans = append(spans, ui.Span{Text: cur.String(), Color: col})
 		cur.Reset()
 	}
-	for i := 0; i < len(path); i++ {
+	for i := 0; i < len(text); i++ {
 		on := in[i]
 		if on != curOn && cur.Len() > 0 {
 			flush(curOn)
 		}
 		curOn = on
-		cur.WriteByte(path[i])
+		cur.WriteByte(text[i])
 	}
 	flush(curOn)
 	ui.RichText(c, spans...).FontSize(12).SingleLine().Shrink(0)
@@ -582,7 +589,7 @@ func (a *appState) updateSearchPreview() {
 	}
 	text := strings.Join(lines, "\n")
 	if a.searchPreview == nil {
-		a.searchPreview = &editor.State{ReadOnly: true}
+		a.searchPreview = &editor.State{ReadOnly: true, Theme: omaEditorTheme()}
 	}
 	if a.searchPreview.Buffer == nil {
 		a.searchPreview.Buffer = editor.NewBuffer(text)

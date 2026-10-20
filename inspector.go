@@ -64,7 +64,9 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 		if idx == 2 && wasTab != 2 {
 			a.refreshActiveRepo()
 		}
-		if idx == 2 && a.gitGraphOpen && len(a.commits) == 0 {
+		// Load history once so the GIT GRAPH count is real, not a
+		// misleading 0 that only fixes itself when the section opens.
+		if idx == 2 && !a.graphLoaded {
 			a.refreshGraph()
 		}
 	}
@@ -86,8 +88,17 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					})
 					ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
 						if p := a.project(); p != nil {
-							ui.Text(c, p.Name).FontSize(12).TextColor(colText).
-								SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							// The branch chip shares the name's line, so a
+							// long branch can only squeeze the name, never
+							// the path below it.
+							ui.Row(c).Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+								ui.Text(c, p.Name).FontSize(12).TextColor(colText).
+									SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+								ui.Spacer(c)
+								if p.Branch != "" {
+									pillShrink(c, p.Branch)
+								}
+							})
 							ui.Text(c, p.Path).FontSize(10).TextColor(colMuted).
 								SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(p.Path)
 						} else {
@@ -95,9 +106,6 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							txt(c, "Ctrl+O to open a folder", 10, colMuted)
 						}
 					})
-					if p := a.project(); p != nil {
-						pillShrink(c, p.Branch)
-					}
 				})
 			})
 
@@ -218,9 +226,6 @@ func (a *appState) filesPanel(c *ui.Context) ui.Element {
 }
 
 func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
-	if a.fileSearch != "" && !n.Dir && !contains(n.Name, a.fileSearch) {
-		return
-	}
 	e := ui.Row(c).Key(n.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(28).Padding(0, 8).PaddingStart(8 + 18*float32(depth)).Gap(4)
 	if e.Hovered() {
 		e.Background(ui.Hex("#171d25"))
@@ -295,19 +300,6 @@ func (a *appState) nodePath(target *fileNode) string {
 		}
 	}
 	return strings.Join(path, "/")
-}
-
-func contains(s, sub string) bool {
-	if len(sub) > len(s) {
-		return false
-	}
-	ls, lsub := strings.ToLower(s), strings.ToLower(sub)
-	for i := 0; i+len(lsub) <= len(ls); i++ {
-		if ls[i:i+len(lsub)] == lsub {
-			return true
-		}
-	}
-	return false
 }
 
 // fileBadge renders the little "TS"/"{ }" emblem or a file icon. Every
@@ -388,17 +380,17 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				ui.Spacer(c)
 				remote := r.HasRemote
 				if b := cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch").Label("Fetch"); !remote {
-					b.Disabled(true)
+					b.Disabled(true).Opacity(0.45)
 				} else if b.Clicked() {
 					a.gitFetch(c)
 				}
 				if b := cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull").Label("Pull"); !remote {
-					b.Disabled(true)
+					b.Disabled(true).Opacity(0.45)
 				} else if b.Clicked() {
 					a.gitPull(c)
 				}
 				if b := cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push").Label("Push"); !remote {
-					b.Disabled(true)
+					b.Disabled(true).Opacity(0.45)
 				} else if b.Clicked() {
 					a.gitPush(c)
 				}
@@ -408,12 +400,14 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 			})
 			ui.Row(c).Gap(8).Children(func() {
 				commit := ui.PrimaryButton(c, "Commit").Grow(1).Height(32).FontSize(11)
+				if !a.commitReady() {
+					commit.Disabled(true).Opacity(0.55)
+				}
 				if commit.Clicked() {
 					a.gitCommit(c)
 				}
-				if stash := cmdButton(c, iconArchive, iconBtn, false); stash.Tooltip("Stash changes").Clicked() {
-					a.gitStashPush(c)
-				}
+				// Stashing lives in the STASHES section, where its message
+				// field is; an icon here read as a second trash can.
 			})
 			if a.gitBusy != "" || a.gitMsg != "" {
 				msg := a.gitMsg
@@ -486,11 +480,20 @@ func (a *appState) repoSwitcher(c *ui.Context) {
 					if e.Clicked() && !active {
 						a.activeRepo = i
 						a.commits = nil
+						a.graphLoaded = false
 					}
 				}
 			})
 		})
 	})
+}
+
+// commitReady reports whether the Commit button can do anything: there
+// are staged files, no remote operation is running, and a message exists.
+func (a *appState) commitReady() bool {
+	r := a.activeRepoRef()
+	return r != nil && len(r.Staged) > 0 && a.gitBusy == "" &&
+		strings.TrimSpace(a.commitMsg) != ""
 }
 
 func (a *appState) gitCommit(c *ui.Context) {
@@ -576,7 +579,11 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 	e.Children(func() {
 		ui.Icon(c, icon).Width(14).Height(14).TextColor(colMuted)
 		txt(c, "GIT GRAPH", 10, colMuted).LetterSpacing(1.0)
-		countBadge(c, len(a.commits))
+		if a.graphLoaded {
+			countBadge(c, len(a.commits))
+		} else {
+			countBadgeText(c, "—")
+		}
 		ui.Spacer(c)
 		if cmdButton(c, iconOpenInNew, iconBtn, false).Tooltip("Open in pane").Clicked() {
 			a.openGraphTab()
@@ -584,13 +591,15 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 	})
 	if e.Clicked() {
 		a.gitGraphOpen = !a.gitGraphOpen
-		if a.gitGraphOpen && len(a.commits) == 0 {
+		if a.gitGraphOpen && !a.graphLoaded {
 			a.refreshGraph()
 		}
 	}
 	if a.gitGraphOpen {
-		if len(a.commits) == 0 {
+		if !a.graphLoaded {
 			ui.Text(c, "Loading…").FontSize(11).TextColor(colMuted).Padding(12)
+		} else if len(a.commits) == 0 {
+			ui.Text(c, "No commits").FontSize(11).TextColor(colMuted).Padding(12)
 		} else {
 			a.graphCompactView(c)
 		}
@@ -732,10 +741,6 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 	if e.Clicked() {
 		a.openStashDiff(s.Index)
 	}
-}
-
-func (a *appState) gitStashPush(c *ui.Context) {
-	a.gitStashPushOpt(c, false)
 }
 
 func (a *appState) gitStashPushUntracked(c *ui.Context) {

@@ -11,7 +11,7 @@ func main() {
 	mygo.App.WhenReady(func() {
 		a := newApp()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:           "omaterm",
+			Title:           "oterm",
 			Width:           1440,
 			Height:          900,
 			MinWidth:        900,
@@ -22,6 +22,7 @@ func main() {
 		})
 		// Now that the window exists, kick the initial async loads.
 		a.win.OnClosed(func() {
+			a.stopSystemStats()
 			for _, t := range a.termPanes {
 				if t != nil {
 					t.Close()
@@ -38,6 +39,7 @@ func main() {
 		if len(a.projects) > 0 {
 			a.setProject(0)
 		}
+		a.startSystemStats()
 		if a.inspectorTab == 0 && a.inspectorVisible {
 			a.startProcessRefresh()
 		}

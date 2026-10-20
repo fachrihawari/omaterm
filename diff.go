@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
@@ -32,9 +35,14 @@ func (a *appState) openWorkingDiff(path string, staged bool) {
 		}
 		scope = "Working Tree · INDEX ↔ WORKING TREE"
 	}
-	a.setDiffBuffers(oldSrc, newSrc, path)
 	a.diffSrc = diffSource{Kind: map[bool]diffSourceKind{true: diffStaged, false: diffWorking}[staged], Path: path, Repo: r.Root}
 	a.diffTitle = path + " · " + scope
+	if service.IsBinary([]byte(oldSrc)) || service.IsBinary([]byte(newSrc)) {
+		a.setDiffBinary(path, fileSize(filepath.Join(r.Root, path)))
+		a.focusDiffTab(path)
+		return
+	}
+	a.setDiffBuffers(oldSrc, newSrc, path)
 	a.focusDiffTab(path)
 }
 
@@ -48,19 +56,27 @@ func (a *appState) openStashDiff(index int) {
 	if err != nil {
 		return
 	}
-	files, perr := editor.ParsePatch(patch)
-	if perr == nil && len(files) > 0 {
-		fp := files[0]
-		a.diffOld = nil
-		a.diffNew = nil
-		a.diffPatch = &fp
-		a.diffGen++
-	} else {
-		a.setDiffBuffers("", patch, "")
-		a.diffPatch = nil
-	}
 	a.diffSrc = diffSource{Kind: diffStash, Repo: r.Root, Stash: index}
-	a.diffTitle = "stash@{" + itoa(index) + "}"
+	title := "stash@{" + itoa(index) + "}"
+	if files, perr := editor.ParsePatch(patch); perr == nil && len(files) > 0 {
+		fp := files[0]
+		name := fp.NewName
+		if name == "" {
+			name = fp.OldName
+		}
+		if name != "" {
+			title += " · " + pathBase(name)
+		}
+		a.diffTitle = title
+		if fp.Binary {
+			a.setDiffBinary(name, 0)
+		} else {
+			a.setDiffPatch(fp)
+		}
+	} else {
+		a.diffTitle = title
+		a.setDiffBuffers("", patch, "")
+	}
 	a.focusDiffTab("stash")
 }
 
@@ -84,6 +100,7 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 	if err != nil {
 		return
 	}
+	a.diffSrc = diffSource{Kind: diffCommit, Repo: r.Root, Commit: hash, Path: file}
 	title := "Commit " + shortHash(hash)
 	if file != "" {
 		title += " · " + pathBase(file)
@@ -91,8 +108,7 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 	// Use SetPatch so the diff viewer renders the patch properly
 	// (hunks with line numbers, +/- highlighting) instead of treating
 	// the patch text as file content.
-	files, perr := editor.ParsePatch(patch)
-	if perr == nil && len(files) > 0 {
+	if files, perr := editor.ParsePatch(patch); perr == nil && len(files) > 0 {
 		// Find the right file if specified.
 		fp := files[0]
 		if file != "" {
@@ -103,22 +119,89 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 				}
 			}
 		}
-		a.diffOld = nil
-		a.diffNew = nil
-		a.diffPatch = &fp
-		a.diffGen++
+		shown := fp.NewName
+		if shown == "" {
+			shown = fp.OldName
+		}
+		// The title names the file actually shown, so a commit opened
+		// without a path does not present files[0] as the whole commit.
+		if shown != "" && file == "" {
+			title += " · " + pathBase(shown)
+			if len(files) > 1 {
+				title += " (1/" + itoa(len(files)) + ")"
+			}
+		}
+		a.diffTitle = title
+		if fp.Binary {
+			a.setDiffBinary(shown, 0)
+		} else {
+			a.setDiffPatch(fp)
+		}
 	} else {
+		a.diffTitle = title
 		a.setDiffBuffers("", patch, file)
-		a.diffPatch = nil
 	}
-	a.diffSrc = diffSource{Kind: diffCommit, Repo: r.Root, Commit: hash, Path: file}
-	a.diffTitle = title
 	a.focusDiffTab("commit")
 }
 
+// setDiffPatch shows a parsed file patch and caches its line counts for
+// the toolbar, so the stats do not run git on every frame.
+func (a *appState) setDiffPatch(fp editor.FilePatch) {
+	a.diffBinary = false
+	a.diffBinaryName = ""
+	a.diffBinarySize = 0
+	a.diffOld = nil
+	a.diffNew = nil
+	a.diffPatch = &fp
+	a.diffAdd, a.diffDel = patchStats(fp)
+	a.diffGen++
+}
+
+// setDiffBinary shows a placeholder for a file with no text diff.
+func (a *appState) setDiffBinary(name string, size int64) {
+	a.diffOld = nil
+	a.diffNew = nil
+	a.diffPatch = nil
+	a.diffBinary = true
+	a.diffBinaryName = name
+	a.diffBinarySize = size
+	a.diffAdd, a.diffDel = 0, 0
+	a.diffGen++
+}
+
+// patchStats counts added and deleted lines in a file patch.
+func patchStats(fp editor.FilePatch) (add, del int) {
+	for _, h := range fp.Hunks {
+		for _, line := range h.Lines {
+			if line == "" {
+				continue
+			}
+			switch line[0] {
+			case '+':
+				add++
+			case '-':
+				del++
+			}
+		}
+	}
+	return add, del
+}
+
+// fileSize returns the size of abs, or 0 when it cannot be read.
+func fileSize(abs string) int64 {
+	if info, err := os.Stat(abs); err == nil {
+		return info.Size()
+	}
+	return 0
+}
+
 func (a *appState) setDiffBuffers(oldSrc, newSrc, path string) {
+	a.diffBinary = false
+	a.diffBinaryName = ""
+	a.diffBinarySize = 0
 	a.diffOld = editor.NewBuffer(oldSrc)
 	a.diffNew = editor.NewBuffer(newSrc)
+	a.diffAdd, a.diffDel = 0, 0
 	a.diffGen++
 	if path != "" {
 		if lang := editor.LanguageFor(path); lang != nil {
@@ -155,6 +238,9 @@ func (a *appState) diffViewKey() string {
 	if a.diffPatch == nil {
 		kind = "bufs"
 	}
+	if a.diffBinary {
+		kind = "binary"
+	}
 	layout := "unified"
 	if a.diffSplit {
 		layout = "split"
@@ -167,7 +253,14 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 		// Toolbar.
 		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(colPanel).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
 			ui.Icon(c, iconGitCompare).Width(16).Height(16).TextColor(colGreen)
-			ui.Text(c, a.diffTitle).FontSize(12).SingleLine().Shrink(0)
+			ui.Text(c, a.diffTitle).FontSize(12).SingleLine().Shrink(1).MinWidth(0).
+				Ellipsis("…").Tooltip(a.diffTitle)
+
+			// Per-file line stats, next to the title they belong to.
+			if !a.diffBinary && (a.diffAdd > 0 || a.diffDel > 0) {
+				ui.Text(c, "+"+itoa(a.diffAdd)).FontSize(10).TextColor(colGreen).SingleLine().Shrink(0)
+				ui.Text(c, "-"+itoa(a.diffDel)).FontSize(10).TextColor(colRed).SingleLine().Shrink(0)
+			}
 
 			ui.Spacer(c)
 
@@ -251,6 +344,34 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			}
 		})
 
+		if a.diffBinary {
+			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
+				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(colMuted2)
+				name := a.diffBinaryName
+				if name == "" {
+					name = a.diffTitle
+				}
+				ui.Text(c, pathBase(name)).FontSize(13).TextColor(colText2)
+				size := ""
+				if a.diffBinarySize > 0 {
+					size = service.FormatBytes(uint64(a.diffBinarySize)) + " · "
+				}
+				ui.Text(c, "Binary file · "+size+"no text diff to show").FontSize(11).TextColor(colMuted)
+			})
+			return
+		}
+
+		// Side labels in split view, so it is clear which column is which
+		// side of the comparison.
+		if a.diffSplit {
+			oldLabel, newLabel := a.diffSideLabels()
+			ui.Row(c).Height(24).Padding(0, 16).Gap(8).Background(colDiffTop).
+				BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+				ui.Text(c, oldLabel).FontSize(9).TextColor(colMuted).LetterSpacing(1.0).Grow(1).SingleLine()
+				ui.Text(c, newLabel).FontSize(9).TextColor(colMuted).LetterSpacing(1.0).Grow(1).SingleLine()
+			})
+		}
+
 		// Keep one DiffState alive across frames: MyGo stores the viewport
 		// scroll inside DiffState, so rebuilding it per frame resets the
 		// scrollbar before every draw. Rebuild only when the content or
@@ -261,6 +382,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			ds = &editor.DiffState{
 				Layout: editor.DiffUnified,
 				Inline: editor.DiffInlineWord,
+				Theme:  omaEditorTheme(),
 			}
 			if a.diffSplit {
 				ds.Layout = editor.DiffSplit
@@ -279,20 +401,24 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			a.diffDs = ds
 			a.diffKey = key
 		}
-		// Stats line.
-		if a.diffSrc.Commit != "" && a.diffSrc.Path == "" {
-			add, del, _ := service.CommitStats(a.diffSrc.Repo, a.diffSrc.Commit)
-			if add > 0 || del > 0 {
-				ui.Row(c).Padding(4, 12).Gap(8).Children(func() {
-					ui.Text(c, "+"+itoa(add)).FontSize(10).TextColor(colGreen).SingleLine().Shrink(0)
-					ui.Text(c, "-"+itoa(del)).FontSize(10).TextColor(colRed).SingleLine().Shrink(0)
-				})
-			}
-		}
 		ui.Box(c).Grow(1).Padding(0, 8).Children(func() {
 			editor.DiffView(c, ds).Fill()
 		})
 	})
+}
+
+// diffSideLabels names the two columns of a split diff.
+func (a *appState) diffSideLabels() (oldLabel, newLabel string) {
+	switch a.diffSrc.Kind {
+	case diffStaged:
+		return "HEAD", "INDEX"
+	case diffCommit:
+		return "PARENT", "COMMIT"
+	case diffStash:
+		return "STASH^", "STASH"
+	default:
+		return "INDEX", "WORKING TREE"
+	}
 }
 
 func shortHash(h string) string {
@@ -300,4 +426,13 @@ func shortHash(h string) string {
 		return h[:8]
 	}
 	return h
+}
+
+// pathListSummary renders "N files changed" for a commit, singular at one.
+func pathListSummary(n int) string {
+	word := "files changed"
+	if n == 1 {
+		word = "file changed"
+	}
+	return itoa(n) + " " + word
 }

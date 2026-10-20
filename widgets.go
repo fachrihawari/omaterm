@@ -66,7 +66,7 @@ func pill(c *ui.Context, text string) ui.Element {
 // stays, but a long label ellipsizes instead of pushing its siblings out.
 func pillShrink(c *ui.Context, text string) ui.Element {
 	e := ui.Row(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).
-		Shrink(0).MaxWidthPercent(55).Justify(ui.Center)
+		Shrink(0).MaxWidthPercent(45).Justify(ui.Center)
 	e.Children(func() {
 		ui.Text(c, text).FontSize(9).TextColor(colMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 	})
@@ -81,8 +81,14 @@ func sectionLabel(c *ui.Context, text string) ui.Element {
 
 // countBadge is the small rounded count next to section labels.
 func countBadge(c *ui.Context, n int) ui.Element {
+	return countBadgeText(c, itoa(n))
+}
+
+// countBadgeText is countBadge with arbitrary text, for a count that is
+// not known yet ("—").
+func countBadgeText(c *ui.Context, s string) ui.Element {
 	return ui.Box(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).Shrink(0).Children(func() {
-		ui.Text(c, itoa(n)).FontSize(9).TextColor(colMuted).SingleLine()
+		ui.Text(c, s).FontSize(9).TextColor(colMuted).SingleLine()
 	})
 }
 

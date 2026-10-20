@@ -148,7 +148,7 @@ func searchContentGo(ctx context.Context, root, query string) ([]Match, error) {
 
 func searchFile(ctx context.Context, root, path, lowerQuery string, matches *[]Match, mu *sync.Mutex) {
 	data, err := os.ReadFile(path)
-	if err != nil || isBinary(data) {
+	if err != nil || IsBinary(data) {
 		return
 	}
 	rel, _ := filepath.Rel(root, path)
@@ -191,7 +191,9 @@ func searchFile(ctx context.Context, root, path, lowerQuery string, matches *[]M
 	}
 }
 
-func isBinary(data []byte) bool {
+// IsBinary reports whether data looks like a binary file: a NUL byte in
+// its first 8 KB, as git decides.
+func IsBinary(data []byte) bool {
 	n := len(data)
 	if n > 8000 {
 		n = 8000

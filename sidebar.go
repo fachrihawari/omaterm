@@ -67,7 +67,7 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 					ui.Text(c, "Open Project").FontSize(11).TextColor(colText2).SingleLine().Shrink(0)
 					ui.Spacer(c)
 					ui.Row(c).Radius(4).Border(1, ui.Hex("#313b48")).Background(ui.Hex("#161b22")).Padding(2, 6).Shrink(0).Children(func() {
-						ui.Text(c, "⌘O").FontSize(9).TextColor(colMuted).SingleLine()
+						ui.Text(c, primaryKey("O")).FontSize(9).TextColor(colMuted).SingleLine()
 					})
 				})
 			})
