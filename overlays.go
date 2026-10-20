@@ -56,13 +56,35 @@ func (a *appState) renderOverlays(c *ui.Context) {
 	}
 }
 
+// dialogTopFraction is where a dialog's panel starts, as a share of the
+// window height. DialogBase centers its panel; editors such as VS Code
+// hang the quick open, command palette and search panels near the top
+// instead, so that a short panel stays under the eye rather than floating
+// in the middle of the window.
+const dialogTopFraction = 0.2
+
+// dialogMinBottom keeps a panel off the window's bottom edge.
+const dialogMinBottom = 24
+
 // dialog shows body in a panel the app styles itself, over a dim backdrop.
 // ui.Modal would wrap the content in the theme's own padding and
 // background, which read as a dark frame around it.
 func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
 	open := true
-	ui.DialogBase(c, &open, func(_, panel ui.Element) {
-		panel.Background(colPanel).Radius(10).Border(1, colBorder2).
+	_, winH := c.Size()
+	top := winH * dialogTopFraction
+	// The panel sizes to its content, but its cap must leave room for the
+	// top offset, or a tall panel would hang off the bottom.
+	if avail := winH - top - dialogMinBottom; avail > 0 && h > avail {
+		h = avail
+	}
+	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
+		// DialogBase centers the panel along the backdrop's main axis.
+		// Starting the column at its top and offsetting the panel keeps
+		// the horizontal centering, and puts the panel at a fixed share of
+		// the window height whatever its own height is.
+		backdrop.Justify(ui.Start)
+		panel.Top(top).Background(colPanel).Radius(10).Border(1, colBorder2).
 			Width(w).MaxHeight(h).Clip().
 			Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.45))
 		body()

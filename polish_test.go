@@ -1,6 +1,7 @@
 package main
 
 import (
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,5 +275,50 @@ func TestCommitFileListCached(t *testing.T) {
 	}
 	if !tr.HasText("sentinel.go") {
 		t.Error("cached file list was not rendered")
+	}
+}
+
+// dialogPanelSpan returns the first and last row of the open dialog panel,
+// found by its border in the window's middle column.
+func dialogPanelSpan(t *testing.T, img *image.RGBA) (top, bottom int) {
+	t.Helper()
+	x := img.Bounds().Dx() / 2
+	top, bottom = -1, -1
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		o := img.PixOffset(x, y)
+		if img.Pix[o] == 0x30 && img.Pix[o+1] == 0x3a && img.Pix[o+2] == 0x48 {
+			if top < 0 {
+				top = y
+			}
+			bottom = y
+		}
+	}
+	return top, bottom
+}
+
+// Overlays hang from 20% of the window height, as VS Code's do, rather than
+// being centered: a short dialog used to sit in the middle of the window.
+func TestDialogHangsFromTop(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.fileIndex = []string{"app.go", "state.go", "theme.go"}
+
+	const w, h = 1440, 900
+	wantTop := int(h * dialogTopFraction)
+	for _, kind := range []overlayKind{overlayQuickOpen, overlayCommandPalette, overlayGlobalSearch, overlayBranch} {
+		a.overlay = kind
+		tr := ui.NewTester(a.view, w, h)
+		tr.Frame()
+		top, bottom := dialogPanelSpan(t, tr.Image())
+		if top < 0 {
+			t.Fatalf("overlay %v: no panel found", kind)
+		}
+		if top != wantTop {
+			t.Errorf("overlay %v: panel starts at %d, want %d (%.0f%% of the window)",
+				kind, top, wantTop, dialogTopFraction*100)
+		}
+		if bottom >= h-dialogMinBottom {
+			t.Errorf("overlay %v: panel reaches %d, past the %d bottom margin", kind, bottom, dialogMinBottom)
+		}
 	}
 }
