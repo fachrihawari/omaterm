@@ -223,10 +223,40 @@ func (a *appState) term(id string) *terminal.Terminal {
 	return t
 }
 
+// axisWeight is how many columns (or rows) a subtree takes along dir: a
+// leaf takes one, a split along the same axis takes one per leaf it holds,
+// and a split across the other axis counts as a single column.
+func (n *splitNode) axisWeight(dir splitDir) int {
+	if n == nil {
+		return 0
+	}
+	if n.isLeaf() || n.Dir != dir {
+		return 1
+	}
+	return n.First.axisWeight(dir) + n.Second.axisWeight(dir)
+}
+
+// rebalance makes siblings along one axis share the space equally, so a
+// split never leaves one pane half the width of its neighbours.
+func rebalance(n *splitNode) {
+	if n == nil || n.isLeaf() {
+		return
+	}
+	rebalance(n.First)
+	rebalance(n.Second)
+	w1, w2 := n.First.axisWeight(n.Dir), n.Second.axisWeight(n.Dir)
+	if w1+w2 > 0 {
+		n.Ratio = 100 * float32(w1) / float32(w1+w2)
+	}
+}
+
 func (a *appState) splitPane(termID string, dir splitDir) {
 	root := a.ensureSingleSplit()
 	if r := root.splitLeaf(termID, dir, randomTermID()); r != nil {
 		a.setActiveSplit(r)
+	}
+	if n := a.activeSplit(); n != nil {
+		rebalance(n)
 	}
 }
 
@@ -250,6 +280,7 @@ func (a *appState) removePane(termID string) {
 		a.setActiveSplit(nil)
 	} else {
 		a.setActiveSplit(newRoot)
+		rebalance(newRoot)
 	}
 }
 
@@ -350,19 +381,13 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 			txt(c, title, 10, colText2)
 			ui.Spacer(c)
 			// Compact toolbar.
-			if cmdButton(c, iconColumns2, 14, false).Tooltip("Split right (Ctrl+Shift+R)").Clicked() {
+			if cmdButton(c, iconColumns2, iconBtn, false).Tooltip("Split right (Ctrl+Shift+R)").Clicked() {
 				a.splitPane(termID, splitVertical)
 				c.Toast("Split right")
 			}
-			if cmdButton(c, iconRows2, 14, false).Tooltip("Split down (Ctrl+Shift+D)").Clicked() {
+			if cmdButton(c, iconRows2, iconBtn, false).Tooltip("Split down (Ctrl+Shift+D)").Clicked() {
 				a.splitPane(termID, splitHorizontal)
 				c.Toast("Split down")
-			}
-			if cmdButton(c, iconSplit, iconBtn, false).Tooltip("Equalize panes (Ctrl+Shift+=)").Clicked() {
-				if n := a.activeSplit(); n != nil {
-					equalizeSplit(n)
-				}
-				c.Toast("Equalized")
 			}
 			ids := []string{}
 			if n := a.activeSplit(); n != nil {
@@ -436,16 +461,6 @@ func (a *appState) newTerminalTabReal() {
 			a.activePaneTermID = ids[0]
 		}
 	}
-}
-
-// equalizeSplit resets every split ratio in the tree to 50/50.
-func equalizeSplit(n *splitNode) {
-	if n == nil || n.isLeaf() {
-		return
-	}
-	n.Ratio = 50
-	equalizeSplit(n.First)
-	equalizeSplit(n.Second)
 }
 
 // termSeq makes every terminal ID unique: time.Now alone is too coarse,

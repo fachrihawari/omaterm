@@ -29,6 +29,20 @@ func TestShots(t *testing.T) {
 			}
 		}},
 		{"graph", func(a *appState) { a.activeView = tabGraph }},
+		{"graph-merges", func(a *appState) {
+			// A synthetic history with merges, so lane junctions and
+			// continuity are visible on every run.
+			a.activeView = tabGraph
+			a.commits = []service.Commit{
+				{Hash: "1a2b3c4d5e6f", Short: "1a2b3c4", Subject: "Merge pull request #4 from feature/chat", Author: "Ada", Parents: []string{"aa11", "ff99"}, Time: time.Now()},
+				{Hash: "aa11", Short: "aa11", Subject: "fix: guided question position on chat ui", Author: "Ada", Parents: []string{"cc22"}, Time: time.Now()},
+				{Hash: "ff99", Short: "ff99", Subject: "feat: move vps egress to all traffic", Author: "Ada", Parents: []string{"cc22"}, Time: time.Now()},
+				{Hash: "cc22", Short: "cc22", Subject: "Merge pull request #3 from dev", Author: "Ada", Parents: []string{"dd33", "ee44"}, Time: time.Now()},
+				{Hash: "ee44", Short: "ee44", Subject: "feat: add simple RAG to the chatbot", Author: "Ada", Parents: []string{"dd33"}, Time: time.Now()},
+				{Hash: "dd33", Short: "dd33", Subject: "refactor: TDSS UI to be person view oriented", Author: "Ada", Parents: []string{"bb55"}, Time: time.Now()},
+				{Hash: "bb55", Short: "bb55", Subject: "fix: logging module location on seed gcs", Author: "Ada", Parents: nil, Time: time.Now()},
+			}
+		}},
 		{"git-history", func(a *appState) {
 			a.inspectorTab = 2
 			a.gitGraphOpen = true
@@ -64,6 +78,11 @@ func TestShots(t *testing.T) {
 					Second: &splitNode{TermID: randomTermID()},
 				},
 			}
+		}},
+		{"split-balanced", func(a *appState) {
+			// Three panes from a single one must end up equal thirds.
+			a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+			a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
 		}},
 		{"no-sidebars", func(a *appState) { a.sidebarVisible = false; a.inspectorVisible = false }},
 	}

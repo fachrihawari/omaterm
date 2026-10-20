@@ -268,3 +268,151 @@ func TestSplitTreeUpToFivePanes(t *testing.T) {
 		t.Fatalf("terminals after close = %d, want 4", len(a.termPanes))
 	}
 }
+
+// Splitting a pane balances it against its siblings: A | B split from A
+// gives three equal thirds, not 25 | 25 | 50.
+func TestSplitBalancesSiblings(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	// Build A | B.
+	a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+	root := a.activeSplit()
+	if root.isLeaf() || root.Ratio != 50 {
+		t.Fatalf("A|B ratio = %v, want 50", root.Ratio)
+	}
+
+	// Split A (the first leaf).
+	a.splitPane(root.termIDs()[0], splitVertical)
+	root = a.activeSplit()
+	if got, want := root.Ratio, float32(200.0/3.0); abs(got-want) > 0.01 {
+		t.Errorf("three-pane root ratio = %v, want %v", got, want)
+	}
+	if got := root.First.Ratio; got != 50 {
+		t.Errorf("inner ratio = %v, want 50", got)
+	}
+	// Each of the three columns is a third of the width.
+	for i, w := range splitWidths(root, 900) {
+		if abs(w-300) > 1 {
+			t.Errorf("pane %d width = %v, want 300", i, w)
+		}
+	}
+}
+
+// Splitting twice keeps four panes equal.
+func TestSplitBalancesFourPanes(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+	a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+	a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+
+	root := a.activeSplit()
+	if got := root.leafCount(); got != 4 {
+		t.Fatalf("panes = %d, want 4", got)
+	}
+	for i, w := range splitWidths(root, 800) {
+		if abs(w-200) > 1 {
+			t.Errorf("pane %d width = %v, want 200", i, w)
+		}
+	}
+}
+
+// Removing a pane rebalances the survivors.
+func TestRemoveRebalances(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+	a.splitPane(a.activeSplit().termIDs()[0], splitVertical)
+	root := a.activeSplit()
+	if got := root.leafCount(); got != 3 {
+		t.Fatalf("panes = %d, want 3", got)
+	}
+
+	// Close the middle pane; the two survivors split the width evenly.
+	a.removePane(root.termIDs()[1])
+	root = a.activeSplit()
+	if got := root.leafCount(); got != 2 {
+		t.Fatalf("panes after close = %d, want 2", got)
+	}
+	if root.Ratio != 50 {
+		t.Errorf("ratio after close = %v, want 50", root.Ratio)
+	}
+}
+
+// splitWidths returns the width each leaf gets in a total of total DIPs.
+func splitWidths(n *splitNode, total float32) []float32 {
+	if n.isLeaf() {
+		return []float32{total}
+	}
+	ratio := n.Ratio / 100
+	if ratio == 0 {
+		ratio = 0.5
+	}
+	var out []float32
+	out = append(out, splitWidths(n.First, total*ratio)...)
+	return append(out, splitWidths(n.Second, total*(1-ratio))...)
+}
+
+func abs(f float32) float32 {
+	if f < 0 {
+		return -f
+	}
+	return f
+}
+
+// A linear history must join each commit to the ones above and below, so
+// the lane reads as one line rather than a stub per row.
+func TestGraphLaneContinuity(t *testing.T) {
+	commits := []service.Commit{
+		{Hash: "c", Parents: []string{"b"}},
+		{Hash: "b", Parents: []string{"a"}},
+		{Hash: "a"},
+	}
+	lanes := computeLanes(commits)
+
+	if lanes[0].FromAbove {
+		t.Error("the newest commit has nothing above it")
+	}
+	if !lanes[0].Continues {
+		t.Error("the newest commit must continue into the row below")
+	}
+	for i := 1; i < len(commits); i++ {
+		if !lanes[i].FromAbove {
+			t.Errorf("commit %d is not joined to the row above", i)
+		}
+	}
+	if lanes[len(commits)-1].Continues {
+		t.Error("the root commit must not continue below")
+	}
+}
+
+// A merge allocates a lane for its second parent; that lane needs its own
+// descent, while a merge into an existing lane must not repaint it.
+func TestGraphMergeLaneFlags(t *testing.T) {
+	commits := []service.Commit{
+		{Hash: "m", Parents: []string{"b", "f"}}, // merge
+		{Hash: "f", Parents: []string{"a"}},
+		{Hash: "b", Parents: []string{"a"}},
+		{Hash: "a"},
+	}
+	lanes := computeLanes(commits)
+
+	var newLaneEdges int
+	for _, e := range lanes[0].Edges {
+		if e.Kind == edgeMerge && e.NewLane {
+			newLaneEdges++
+		}
+	}
+	if newLaneEdges != 1 {
+		t.Errorf("merge rows with a fresh lane = %d, want 1", newLaneEdges)
+	}
+}

@@ -28,12 +28,20 @@ type graphLane struct {
 	NodeLane int
 	MaxLane  int
 	Edges    []graphEdge
+	// FromAbove and Continues say whether the node's lane is joined to the
+	// row above and to the row below, so the line reads as continuous
+	// rather than as a stub inside each row.
+	FromAbove bool
+	Continues bool
 }
 
 type graphEdge struct {
 	FromLane, ToLane int
 	Color            ui.Color
 	Kind             edgeKind
+	// NewLane marks an edge into a lane this row allocated: nothing above
+	// painted it, so it must draw its own descent.
+	NewLane bool
 }
 
 type edgeKind int
@@ -79,6 +87,7 @@ func computeLanes(commits []service.Commit) []graphLane {
 			delete(active, cm.Hash)
 		}
 		gl.NodeLane = lane
+		gl.FromAbove = expected
 		nodeCol := laneColors[lane%len(laneColors)]
 
 		// Continue other lanes straight through this row.
@@ -102,13 +111,14 @@ func computeLanes(commits []service.Commit) []graphLane {
 			} else if pi == 0 {
 				// First parent keeps the node's lane.
 				active[p] = lane
+				gl.Continues = true
 			} else {
 				// Extra parents of a merge get their own lane.
 				pl := alloc()
 				active[p] = pl
 				gl.Edges = append(gl.Edges, graphEdge{
 					FromLane: lane, ToLane: pl,
-					Color: nodeCol, Kind: edgeMerge,
+					Color: nodeCol, Kind: edgeMerge, NewLane: true,
 				})
 			}
 		}
@@ -343,28 +353,41 @@ func (a *appState) graphCanvas(c *ui.Context, lane graphLane, rowH float32) ui.E
 				// Full-height vertical line.
 				p.Fill(ui.Rect{X: laneX(e.FromLane) - 1, Y: r.Y, W: 2, H: r.H}, e.Color, 0)
 			case edgeMerge:
-				// Vertical from top (or node) to node height, then a step
-				// to the target lane continuing down.
+				// Vertical from the node down to midY, a step to the target
+				// lane, then down. The descent is only painted for a lane
+				// this row created; an existing lane was already painted
+				// full-height by the straight pass.
 				x1, x2 := laneX(e.FromLane), laneX(e.ToLane)
 				if x1 == x2 {
-					p.Fill(ui.Rect{X: x1 - 1, Y: midY, W: 2, H: r.H - (midY - r.Y)}, e.Color, 0)
+					if e.NewLane {
+						p.Fill(ui.Rect{X: x1 - 1, Y: midY, W: 2, H: r.H - (midY - r.Y)}, e.Color, 0)
+					}
 					break
 				}
-				// Down from the node to midY, horizontal to target lane,
-				// then down.
 				xLo, xHi := x1, x2
 				if xLo > xHi {
 					xLo, xHi = xHi, xLo
 				}
 				p.Fill(ui.Rect{X: xLo, Y: midY - 1, W: xHi - xLo, H: 2}, e.Color, 0)
-				p.Fill(ui.Rect{X: x2 - 1, Y: midY, W: 2, H: r.H - (midY - r.Y)}, e.Color, 0)
+				if e.NewLane {
+					// The new lane takes its own color from the row below,
+					// so its descent must match or the line seams there.
+					dc := laneColors[e.ToLane%len(laneColors)]
+					p.Fill(ui.Rect{X: x2 - 1, Y: midY, W: 2, H: r.H - (midY - r.Y)}, dc, 0)
+				}
 			}
 		}
 
-		// Node: circle on the node's lane, connected upward to the row top.
+		// Node: circle on the node's lane, joined to the rows above and
+		// below when the lane runs on through them.
 		nx := laneX(lane.NodeLane)
 		nodeCol := laneColors[lane.NodeLane%len(laneColors)]
-		p.Fill(ui.Rect{X: nx - 1, Y: r.Y, W: 2, H: r.H / 2}, nodeCol, 0)
+		if lane.FromAbove {
+			p.Fill(ui.Rect{X: nx - 1, Y: r.Y, W: 2, H: r.H / 2}, nodeCol, 0)
+		}
+		if lane.Continues {
+			p.Fill(ui.Rect{X: nx - 1, Y: midY, W: 2, H: r.H / 2}, nodeCol, 0)
+		}
 		p.Fill(ui.Rect{X: nx - nodeRadius, Y: midY - nodeRadius, W: nodeRadius * 2, H: nodeRadius * 2}, nodeCol, nodeRadius)
 	})
 }
