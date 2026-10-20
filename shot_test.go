@@ -52,6 +52,25 @@ func TestShots(t *testing.T) {
 		}},
 		{"files", func(a *appState) { a.inspectorTab = 1 }},
 		{"git", func(a *appState) { a.inspectorTab = 2 }},
+		{"info-long-branch", func(a *appState) {
+			a.inspectorTab = 0
+			// Live process CPU would make the shot differ on every run.
+			a.processes = []service.Process{}
+			a.ports = []service.Port{}
+			a.currentBranch = "feature/very-long-branch-name-that-would-overflow-the-inspector"
+			if p := a.project(); p != nil {
+				p.Branch = a.currentBranch
+			}
+		}},
+		{"git-long-branch", func(a *appState) {
+			// A name wider than the panel must ellipsize, leaving the
+			// remote actions inside the row.
+			a.inspectorTab = 2
+			if r := a.activeRepoRef(); r != nil {
+				a.branchesRepo = r.Root // don't reload over the override
+			}
+			a.currentBranch = "feature/very-long-branch-name-that-would-overflow-the-inspector"
+		}},
 		{"quick-open", func(a *appState) {
 			a.fileIndex = service.IndexFiles(a.workspace, 100000)
 			a.openOverlay(overlayQuickOpen)

@@ -28,6 +28,13 @@ func main() {
 				}
 			}
 		})
+		// Git status goes stale while the app is in the background; reload
+		// it when the window comes back instead of asking for a button.
+		a.win.OnFocus(func() {
+			if a.inspectorVisible && a.inspectorTab == 2 {
+				a.refreshActiveRepo()
+			}
+		})
 		if len(a.projects) > 0 {
 			a.setProject(0)
 		}

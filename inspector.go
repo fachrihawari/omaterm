@@ -52,11 +52,17 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 		e.BorderWidth(0, 0, 2, 0).BorderColor(colBlue2)
 	}
 	if e.Clicked() {
+		wasTab := a.inspectorTab
 		a.inspectorTab = idx
 		if idx == 0 {
 			a.startProcessRefresh()
 		} else {
 			a.stopProcessRefresh()
+		}
+		// Entering the Git tab re-reads status, so switching to it never
+		// shows a stale tree from before the user left.
+		if idx == 2 && wasTab != 2 {
+			a.refreshActiveRepo()
 		}
 		if idx == 2 && a.gitGraphOpen && len(a.commits) == 0 {
 			a.refreshGraph()
@@ -78,17 +84,19 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							ui.Icon(c, iconFolderGit).Width(16).Height(16).TextColor(colBlue)
 						})
 					})
-					ui.Column(c).Gap(2).MinWidth(0).Grow(1).Children(func() {
+					ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
 						if p := a.project(); p != nil {
-							txt(c, p.Name, 12, colText)
-							txt(c, p.Path, 10, colMuted)
+							ui.Text(c, p.Name).FontSize(12).TextColor(colText).
+								SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							ui.Text(c, p.Path).FontSize(10).TextColor(colMuted).
+								SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(p.Path)
 						} else {
 							txt(c, "No project open", 12, colText)
 							txt(c, "Ctrl+O to open a folder", 10, colMuted)
 						}
 					})
 					if p := a.project(); p != nil {
-						pill(c, p.Branch)
+						pillShrink(c, p.Branch)
 					}
 				})
 			})
@@ -365,32 +373,34 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 			}
 			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(colPurple)
-				trigger := ui.ButtonBase(c).Radius(4).Padding(2, 6).Border(1, colBorder2).Shrink(0).Children(func() {
-					txt(c, a.currentBranch, 11, colText)
+				// The branch trigger is the only child allowed to give up
+				// width: a long name ellipsizes instead of pushing the
+				// remote actions past the panel's edge.
+				trigger := ui.ButtonBase(c).Radius(4).Padding(2, 6).Border(1, colBorder2).Shrink(1).MinWidth(0).Children(func() {
+					ui.Text(c, a.currentBranch).FontSize(11).TextColor(colText).
+						SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 				})
+				trigger.Tooltip(a.currentBranch)
 				if trigger.Clicked() {
 					a.openBranchOverlay()
 				}
 				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
 				ui.Spacer(c)
 				remote := r.HasRemote
-				if b := cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch"); !remote {
+				if b := cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch").Label("Fetch"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitFetch(c)
 				}
-				if b := cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull"); !remote {
+				if b := cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull").Label("Pull"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitPull(c)
 				}
-				if b := cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push"); !remote {
+				if b := cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push").Label("Push"); !remote {
 					b.Disabled(true)
 				} else if b.Clicked() {
 					a.gitPush(c)
-				}
-				if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
-					a.refreshActiveRepo()
 				}
 			})
 			ui.Box(c).Radius(6).Border(1, colBorder).Background(colInput).Children(func() {

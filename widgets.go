@@ -62,6 +62,18 @@ func pill(c *ui.Context, text string) ui.Element {
 	})
 }
 
+// pillShrink is pill in a row where it may have to give up width: the chip
+// stays, but a long label ellipsizes instead of pushing its siblings out.
+func pillShrink(c *ui.Context, text string) ui.Element {
+	e := ui.Row(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).
+		Shrink(0).MaxWidthPercent(55).Justify(ui.Center)
+	e.Children(func() {
+		ui.Text(c, text).FontSize(9).TextColor(colMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+	})
+	e.Tooltip(text)
+	return e
+}
+
 // sectionLabel is the uppercase muted label above inspector sections.
 func sectionLabel(c *ui.Context, text string) ui.Element {
 	return ui.Text(c, text).FontSize(10).TextColor(colMuted).LetterSpacing(1.2).SingleLine().Shrink(0)

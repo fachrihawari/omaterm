@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -414,5 +415,92 @@ func TestGraphMergeLaneFlags(t *testing.T) {
 	}
 	if newLaneEdges != 1 {
 		t.Errorf("merge rows with a fresh lane = %d, want 1", newLaneEdges)
+	}
+}
+
+// A long branch name must ellipsize in place instead of pushing the remote
+// actions (fetch/pull/push) past the inspector's edge.
+func TestBranchRowLongName(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo discovered")
+	}
+	long := "feature/very-long-branch-name-that-would-overflow-the-inspector-panel"
+	cmd := exec.Command("git", "checkout", "-q", "-b", long)
+	cmd.Dir = r.Root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout: %s\n%s", err, out)
+	}
+	fresh, err := service.RepoStatus(r.Root, a.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.repos = []service.Repo{*fresh}
+	a.currentBranch = long
+	a.inspectorTab = 2
+	a.inspectorVisible = true
+
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	// The inspector is 330 wide, flush against the right edge.
+	inspectorLeft := float32(1440 - 330)
+	branch, ok := tr.Find(long)
+	if !ok {
+		t.Fatalf("branch name %q not rendered", long)
+	}
+	if branch.X+branch.W > 1440 {
+		t.Errorf("branch trigger runs past the window: right edge %.1f", branch.X+branch.W)
+	}
+	for _, label := range []string{"Fetch", "Pull", "Push"} {
+		btn, ok := tr.Find(label)
+		if !ok {
+			t.Fatalf("%s button not rendered", label)
+		}
+		if btn.X < inspectorLeft {
+			t.Errorf("%s starts at %.1f, left of the inspector at %.1f", label, btn.X, inspectorLeft)
+		}
+		if btn.X+btn.W > 1440 {
+			t.Errorf("%s is clipped: right edge %.1f past 1440", label, btn.X+btn.W)
+		}
+		if btn.X < branch.X+branch.W {
+			t.Errorf("%s at %.1f overlaps the branch trigger ending at %.1f", label, btn.X, branch.X+branch.W)
+		}
+	}
+}
+
+// The Info card carries the project name, its path and a branch chip in one
+// row. A long branch used to take the whole row and squeeze the name column
+// to nothing; the text column keeps its space and the chip ellipsizes.
+func TestInfoCardLongBranch(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.currentBranch = "feature/very-long-branch-name-that-would-overflow-the-inspector"
+	if p := a.project(); p != nil {
+		p.Name = "probe-project"
+		p.Branch = a.currentBranch
+	}
+	a.inspectorTab = 0
+	a.inspectorVisible = true
+	a.sidebarVisible = false // the sidebar shows the name too; isolate the card
+
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	name, ok := tr.Find("probe-project")
+	if !ok {
+		t.Fatal("project name not rendered")
+	}
+	if name.W < 40 {
+		t.Errorf("project name collapsed to %v wide; the branch chip took its space", name.W)
+	}
+	branch, ok := tr.Find(a.currentBranch)
+	if !ok {
+		t.Fatal("branch label not rendered")
+	}
+	if branch.X+branch.W > 1440 {
+		t.Errorf("branch label runs past the window: %.1f", branch.X+branch.W)
 	}
 }
