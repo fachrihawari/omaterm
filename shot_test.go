@@ -54,9 +54,6 @@ func TestShots(t *testing.T) {
 		{"git", func(a *appState) { a.inspectorTab = 2 }},
 		{"info-long-branch", func(a *appState) {
 			a.inspectorTab = 0
-			// Live process CPU would make the shot differ on every run.
-			a.processes = []service.Process{}
-			a.ports = []service.Port{}
 			a.currentBranch = "feature/very-long-branch-name-that-would-overflow-the-inspector"
 			if p := a.project(); p != nil {
 				p.Branch = a.currentBranch
@@ -125,6 +122,11 @@ func TestShots(t *testing.T) {
 			a.activeRepo = 0
 		}
 		a.commits, _ = service.Log(a.workspace, 300)
+		// Live process stats (CPU, memory, PID) change on every run and
+		// would make the shots differ each time. The Info panel is a
+		// placeholder here; its layout is what these shots check.
+		a.processes = []service.Process{{Name: "oterm", Pid: 1234, CPU: "2.5%", Mem: "64 MB"}}
+		a.ports = []service.Port{{Port: 8080, Name: "http", Open: true, Pid: 1234, Process: "oterm"}}
 		if s.setup != nil {
 			s.setup(a)
 		}
