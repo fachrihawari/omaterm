@@ -19,6 +19,30 @@ func (a *appState) openWorkingDiff(path string, staged bool) {
 	if r == nil {
 		return
 	}
+	if isRasterImagePath(path) {
+		// Pictures need their bytes as they are: the text helpers trim
+		// trailing newlines, which would corrupt a bitmap.
+		var oldData, newData []byte
+		if staged {
+			oldData, _ = service.HeadBytes(r.Root, path)
+			newData, _ = service.IndexBytes(r.Root, path)
+		} else {
+			oldData, _ = service.IndexBytes(r.Root, path)
+			if len(oldData) == 0 {
+				oldData, _ = service.HeadBytes(r.Root, path)
+			}
+			newData, _ = os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(path)))
+		}
+		a.diffSrc = diffSource{Kind: map[bool]diffSourceKind{true: diffStaged, false: diffWorking}[staged], Path: path, Repo: r.Root}
+		scope := "Working Tree · INDEX ↔ WORKING TREE"
+		if staged {
+			scope = "Staged · HEAD ↔ INDEX"
+		}
+		a.diffTitle = path + " · " + scope
+		a.setDiffImageData(path, oldData, newData)
+		a.focusDiffTab(path)
+		return
+	}
 	var oldSrc, newSrc, scope string
 	if staged {
 		oldSrc, _ = service.HeadVersion(r.Root, path)
@@ -68,9 +92,16 @@ func (a *appState) openStashDiff(index int) {
 			title += " · " + pathBase(name)
 		}
 		a.diffTitle = title
-		if fp.Binary {
+		switch {
+		case fp.Binary && isRasterImagePath(name):
+			// The patch only says the pictures differ; the viewer wants
+			// the two versions themselves.
+			oldData, _ := service.ShowBytes(r.Root, "stash@{"+itoa(index)+"}^1", name)
+			newData, _ := service.ShowBytes(r.Root, "stash@{"+itoa(index)+"}", name)
+			a.setDiffImageData(name, oldData, newData)
+		case fp.Binary:
 			a.setDiffBinary(name, 0)
-		} else {
+		default:
 			a.setDiffPatch(fp)
 		}
 	} else {
@@ -132,9 +163,17 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 			}
 		}
 		a.diffTitle = title
-		if fp.Binary {
+		switch {
+		case fp.Binary && isRasterImagePath(shown):
+			// Compare the picture against the commit's first parent, or
+			// against nothing for a root commit.
+			parent := hash + "^"
+			oldData, _ := service.ShowBytes(r.Root, parent, shown)
+			newData, _ := service.ShowBytes(r.Root, hash, shown)
+			a.setDiffImageData(shown, oldData, newData)
+		case fp.Binary:
 			a.setDiffBinary(shown, 0)
-		} else {
+		default:
 			a.setDiffPatch(fp)
 		}
 	} else {
@@ -148,12 +187,30 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 // the toolbar, so the stats do not run git on every frame.
 func (a *appState) setDiffPatch(fp editor.FilePatch) {
 	a.diffBinary = false
+	a.diffImage = false
 	a.diffBinaryName = ""
 	a.diffBinarySize = 0
+	a.diffImgOld, a.diffImgNew = imageSide{}, imageSide{}
 	a.diffOld = nil
 	a.diffNew = nil
 	a.diffPatch = &fp
 	a.diffAdd, a.diffDel = patchStats(fp)
+	a.diffGen++
+}
+
+// setDiffImageData shows two versions of a picture side by side. An empty
+// side is one the file does not exist in.
+func (a *appState) setDiffImageData(name string, oldData, newData []byte) {
+	a.diffOld = nil
+	a.diffNew = nil
+	a.diffPatch = nil
+	a.diffBinary = false
+	a.diffImage = true
+	a.diffBinaryName = name
+	a.diffBinarySize = int64(len(newData))
+	a.diffImgOld = decodeImage(name, oldData)
+	a.diffImgNew = decodeImage(name, newData)
+	a.diffAdd, a.diffDel = 0, 0
 	a.diffGen++
 }
 
@@ -163,8 +220,10 @@ func (a *appState) setDiffBinary(name string, size int64) {
 	a.diffNew = nil
 	a.diffPatch = nil
 	a.diffBinary = true
+	a.diffImage = false
 	a.diffBinaryName = name
 	a.diffBinarySize = size
+	a.diffImgOld, a.diffImgNew = imageSide{}, imageSide{}
 	a.diffAdd, a.diffDel = 0, 0
 	a.diffGen++
 }
@@ -197,8 +256,10 @@ func fileSize(abs string) int64 {
 
 func (a *appState) setDiffBuffers(oldSrc, newSrc, path string) {
 	a.diffBinary = false
+	a.diffImage = false
 	a.diffBinaryName = ""
 	a.diffBinarySize = 0
+	a.diffImgOld, a.diffImgNew = imageSide{}, imageSide{}
 	a.diffOld = editor.NewBuffer(oldSrc)
 	a.diffNew = editor.NewBuffer(newSrc)
 	a.diffAdd, a.diffDel = 0, 0
@@ -240,6 +301,9 @@ func (a *appState) diffViewKey() string {
 	}
 	if a.diffBinary {
 		kind = "binary"
+	}
+	if a.diffImage {
+		kind = "image"
 	}
 	layout := "unified"
 	if a.diffSplit {
@@ -313,36 +377,47 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				ui.Box(c).Width(1).Height(16).Background(colBorder).Margin(0, 4)
 			}
 
-			split := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
-				t := ui.Text(c, "Split").FontSize(10)
+			// Split/Inline choose between two text layouts; a picture or
+			// binary diff has no lines to lay out.
+			if !a.diffImage && !a.diffBinary {
+				split := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
+					t := ui.Text(c, "Split").FontSize(10)
+					if a.diffSplit {
+						t.TextColor(ui.Hex("#ffffff"))
+					} else {
+						t.TextColor(colMuted)
+					}
+				})
 				if a.diffSplit {
-					t.TextColor(ui.Hex("#ffffff"))
-				} else {
-					t.TextColor(colMuted)
+					split.Background(ui.Hex("#222b36"))
 				}
-			})
-			if a.diffSplit {
-				split.Background(ui.Hex("#222b36"))
-			}
-			if split.Clicked() {
-				a.diffSplit = true
-			}
+				if split.Clicked() {
+					a.diffSplit = true
+				}
 
-			inline := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
-				t := ui.Text(c, "Inline").FontSize(10)
+				inline := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
+					t := ui.Text(c, "Inline").FontSize(10)
+					if !a.diffSplit {
+						t.TextColor(ui.Hex("#ffffff"))
+					} else {
+						t.TextColor(colMuted)
+					}
+				})
 				if !a.diffSplit {
-					t.TextColor(ui.Hex("#ffffff"))
-				} else {
-					t.TextColor(colMuted)
+					inline.Background(ui.Hex("#222b36"))
 				}
-			})
-			if !a.diffSplit {
-				inline.Background(ui.Hex("#222b36"))
-			}
-			if inline.Clicked() {
-				a.diffSplit = false
+				if inline.Clicked() {
+					a.diffSplit = false
+				}
 			}
 		})
+
+		// A picture diff is the two pictures side by side: a binary patch
+		// has no lines to compare, and Split/Inline describe text.
+		if a.diffImage {
+			a.imageDiff(c, a.diffImgOld, a.diffImgNew)
+			return
+		}
 
 		if a.diffBinary {
 			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {

@@ -30,7 +30,23 @@ func (a *appState) openEditorAt(path string, line int) {
 			return
 		}
 		doc := &openFile{Path: path}
-		if service.IsBinary(data) {
+		switch {
+		case isImagePath(path):
+			// A picture opens in the viewer. An SVG is text too, so its
+			// source stays reachable behind the preview toggle.
+			img := decodeImage(path, data)
+			doc.Image = &img
+			doc.Size = int64(len(data))
+			if !service.IsBinary(data) {
+				buf := editor.NewBuffer(string(data))
+				if lang := editor.LanguageFor(path); lang != nil {
+					buf.SetLanguage(lang)
+				}
+				doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme()}
+				doc.Preview = true
+			}
+			a.editors[path] = doc
+		case service.IsBinary(data):
 			// Reading a PNG as text shows mojibake, and an editor full of
 			// it is worse than an honest placeholder.
 			doc.Binary = true
@@ -38,7 +54,7 @@ func (a *appState) openEditorAt(path string, line int) {
 				doc.Size = info.Size()
 			}
 			a.editors[path] = doc
-		} else {
+		default:
 			buf := editor.NewBuffer(string(data))
 			if lang := editor.LanguageFor(path); lang != nil {
 				buf.SetLanguage(lang)
@@ -99,6 +115,9 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 			ui.Text(c, "Ctrl+P to open a file").FontSize(11).TextColor(colMuted2).Margin(4, 0, 0, 0)
 		})
 	}
+	if doc.Image != nil && (doc.State == nil || doc.Preview) {
+		return a.imageView(c, doc)
+	}
 	if doc.Binary {
 		return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
 			ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
@@ -128,6 +147,16 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
 			}
 			ui.Spacer(c)
+			if doc.Image != nil {
+				// An SVG opened in the viewer can flip to its source.
+				label := "Preview"
+				if doc.Preview {
+					label = "Source"
+				}
+				if cmdButton(c, iconImage, iconBtn, false).Tooltip(label).Clicked() {
+					doc.Preview = !doc.Preview
+				}
+			}
 			isMd := hasSuffix(doc.Path, ".md") || hasSuffix(doc.Path, ".mdx")
 			if isMd {
 				label := "Preview"
@@ -193,4 +222,121 @@ func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
 	doc.State.Buffer.MarkSaved()
 	c.Toast("Saved " + doc.Path)
 	a.refreshActiveRepo()
+}
+
+// imageView shows a picture the way an image viewer does: the file's path
+// above, the picture scaled to fit the pane, and its format, dimensions
+// and size below. There is nothing to edit, so the save action is gone.
+func (a *appState) imageView(c *ui.Context, doc *openFile) ui.Element {
+	img := doc.Image
+	return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
+		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+			parts := strings.Split(doc.Path, string(filepath.Separator))
+			for i, part := range parts {
+				if i > 0 {
+					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(colMuted2)
+				}
+				col := colMuted
+				if i == len(parts)-1 {
+					col = colText2
+				}
+				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
+			}
+			ui.Spacer(c)
+			if doc.State != nil {
+				if cmdButton(c, iconFileCode, iconBtn, false).Tooltip("Source").Clicked() {
+					doc.Preview = false
+				}
+			}
+		})
+
+		ui.Box(c).Grow(1).Padding(16).Children(func() {
+			if img.Pic == nil {
+				ui.Column(c).Fill().Center().Gap(6).Children(func() {
+					ui.Icon(c, iconImage).Width(28).Height(28).TextColor(colMuted2)
+					ui.Text(c, "Could not decode this picture").FontSize(12).TextColor(colText2)
+					ui.Text(c, pathBase(doc.Path)).FontSize(10).TextColor(colMuted)
+				})
+				return
+			}
+			// A big picture shrinks to fit; a small one keeps its size, so
+			// a 24px icon is not blown up into a blurry smear. A vector
+			// scales up cleanly, so it may fill the pane.
+			fit := ui.ScaleDown
+			if img.Vector {
+				fit = ui.Contain
+			}
+			ui.Box(c).Fill().Radius(8).Border(1, colBorder).Background(ui.Hex("#0c0f13")).Padding(12).Children(func() {
+				ui.Image(c, img.Pic).Fit(fit).Fill()
+			})
+		})
+
+		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
+			dims := itoa(int(img.W)) + " × " + itoa(int(img.H)) + " px"
+			ui.Text(c, dims).FontSize(10).TextColor(colMuted)
+			ui.Text(c, service.FormatBytes(uint64(img.Size))).FontSize(10).TextColor(colMuted)
+			ui.Spacer(c)
+			ui.Text(c, imageFormat(doc.Path)).FontSize(10).TextColor(colMuted)
+		})
+	})
+}
+
+// imageDiff shows two versions of a picture side by side, which is what a
+// picture diff is: a binary patch has no lines to compare. Missing
+// versions, as an untracked or deleted file, say so instead of showing a
+// broken box.
+func (a *appState) imageDiff(c *ui.Context, old, new imageSide) ui.Element {
+	oldLabel, newLabel := a.diffSideLabels()
+	sideHeader := func(label string, side imageSide) {
+		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, label).FontSize(9).TextColor(colMuted).LetterSpacing(1.0).
+				SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
+			ui.Spacer(c)
+			switch {
+			case side.Missing:
+				ui.Text(c, "missing").FontSize(9).TextColor(colMuted2).Shrink(0)
+			case side.Pic != nil:
+				ui.Text(c, itoa(int(side.W))+" × "+itoa(int(side.H))+" px").
+					FontSize(9).TextColor(colMuted2).SingleLine().Shrink(0)
+				ui.Text(c, service.FormatBytes(uint64(side.Size))).
+					FontSize(9).TextColor(colMuted2).SingleLine().Shrink(0)
+			}
+		})
+	}
+	return ui.Column(c).Grow(1).Background(colCodeBg).Children(func() {
+		ui.Row(c).Height(24).Padding(0, 16).Gap(16).Background(colDiffTop).
+			BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+			sideHeader(oldLabel, old)
+			sideHeader(newLabel, new)
+		})
+		ui.Row(c).Grow(1).Children(func() {
+			imageDiffSide(c, old, "Not in "+oldLabel)
+			imageDiffSide(c, new, "Not in "+newLabel)
+		})
+	})
+}
+
+func imageDiffSide(c *ui.Context, side imageSide, missingLabel string) {
+	ui.Box(c).Grow(1).MinWidth(0).FillHeight().Padding(12).Children(func() {
+		ui.Box(c).Fill().Radius(8).Border(1, colBorder).Background(ui.Hex("#0c0f13")).Padding(12).Children(func() {
+			switch {
+			case side.Missing:
+				ui.Column(c).Fill().Center().Gap(6).Children(func() {
+					ui.Icon(c, iconImage).Width(24).Height(24).TextColor(colMuted2)
+					ui.Text(c, missingLabel).FontSize(11).TextColor(colMuted)
+				})
+			case side.Pic == nil:
+				ui.Column(c).Fill().Center().Gap(6).Children(func() {
+					ui.Icon(c, iconImage).Width(24).Height(24).TextColor(colMuted2)
+					ui.Text(c, "Could not decode this picture").FontSize(11).TextColor(colMuted)
+				})
+			default:
+				fit := ui.ScaleDown
+				if side.Vector {
+					fit = ui.Contain
+				}
+				ui.Image(c, side.Pic).Fit(fit).Fill()
+			}
+		})
+	})
 }

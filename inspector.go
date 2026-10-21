@@ -314,6 +314,8 @@ func fileBadge(c *ui.Context, name string) ui.Element {
 		return ui.Text(c, "{ }").FontSize(10).FontWeight(700).TextColor(synJSON).Width(18)
 	case hasSuffix(name, ".md"):
 		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(colBlue)
+	case isImagePath(name):
+		return ui.Icon(c, iconImage).Width(18).Height(18).TextColor(colGreen)
 	default:
 		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(colMuted)
 	}

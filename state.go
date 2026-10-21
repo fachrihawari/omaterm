@@ -89,6 +89,7 @@ type openFile struct {
 	Preview bool // markdown preview mode (default true for .md)
 	Binary  bool // not text: show a placeholder instead of the editor
 	Size    int64
+	Image   *imageSide // a picture: shown in the image viewer
 }
 
 type appState struct {
@@ -158,10 +159,14 @@ type appState struct {
 	diffTitle string
 
 	// Binary diffs have no text to show; the view renders a placeholder
-	// with the file's name and size instead.
+	// with the file's name and size instead. A picture's two versions go
+	// in diffImgOld/diffImgNew and are shown as pictures.
 	diffBinary     bool
+	diffImage      bool
 	diffBinaryName string
 	diffBinarySize int64
+	diffImgOld     imageSide
+	diffImgNew     imageSide
 	diffAdd        int // line stats of the shown patch
 	diffDel        int
 

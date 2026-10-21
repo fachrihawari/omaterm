@@ -63,7 +63,11 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			case tabTerminal:
 				dot(c, t.Dot, 8)
 			case tabEditor:
-				ui.Icon(c, iconFileCode).Width(14).Height(14).TextColor(synTS)
+				if isImagePath(t.Path) {
+					ui.Icon(c, iconImage).Width(14).Height(14).TextColor(colGreen)
+				} else {
+					ui.Icon(c, iconFileCode).Width(14).Height(14).TextColor(synTS)
+				}
 			case tabDiff:
 				ui.Icon(c, iconGitCompare).Width(14).Height(14).TextColor(colGreen)
 			case tabGraph:

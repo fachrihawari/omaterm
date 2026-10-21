@@ -342,6 +342,17 @@ func Show(root, rev, path string) (string, error) {
 	return gitCmd(root, "show", rev+":"+path)
 }
 
+// ShowBytes returns the raw bytes of path at rev, for pictures: gitCmd
+// trims trailing newlines, which would corrupt a bitmap. An empty rev
+// reads the index.
+func ShowBytes(root, rev, path string) ([]byte, error) {
+	cmd := exec.Command("git", "show", rev+":"+path)
+	if root != "" {
+		cmd.Dir = root
+	}
+	return cmd.Output()
+}
+
 // Log returns commits newest first, all branches, with decorations.
 func Log(root string, limit int) ([]Commit, error) {
 	args := []string{
@@ -391,6 +402,16 @@ func HeadVersion(root, path string) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// HeadBytes returns the raw bytes of path at HEAD, for pictures.
+func HeadBytes(root, path string) ([]byte, error) {
+	return ShowBytes(root, "HEAD", path)
+}
+
+// IndexBytes returns the raw bytes of path in the index, for pictures.
+func IndexBytes(root, path string) ([]byte, error) {
+	return ShowBytes(root, "", path)
 }
 
 // IndexVersion returns the staged (index) content of path.

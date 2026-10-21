@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"image"
+	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,6 +49,31 @@ func TestShots(t *testing.T) {
 		{"terminal", nil, nil},
 		{"editor", func(a *appState) { a.openEditor("app.go") },
 			func(a *appState) error { return wantView(a, tabEditor, "app.go") }},
+		{"image", func(a *appState) { a.openEditor("resources/icon.png") },
+			func(a *appState) error {
+				if err := wantView(a, tabEditor, "resources/icon.png"); err != nil {
+					return err
+				}
+				if a.editors["resources/icon.png"].Image.Pic == nil {
+					return errShot("picture was not decoded")
+				}
+				return nil
+			}},
+		{"image-diff", func(a *appState) {
+			// Synthetic pictures: two versions of one file, as a working
+			// tree change would show them.
+			a.diffSrc = diffSource{Kind: diffWorking, Path: "assets/logo.png"}
+			a.setDiffImageData("assets/logo.png",
+				shotPicture(560, 360, 0),
+				shotPicture(560, 360, 1))
+			a.diffTitle = "assets/logo.png · Working Tree · INDEX ↔ WORKING TREE"
+			a.focusDiffTab("assets/logo.png")
+		}, func(a *appState) error {
+			if !a.diffImage || a.diffImgOld.Pic == nil || a.diffImgNew.Pic == nil {
+				return errShot("picture diff was not loaded")
+			}
+			return nil
+		}},
 		{"markdown", func(a *appState) { a.openEditor(mdFile) },
 			func(a *appState) error { return wantView(a, tabEditor, mdFile) }},
 		{"diff", func(a *appState) {
@@ -208,10 +237,10 @@ func TestShots(t *testing.T) {
 			return nil
 		}},
 		{"binary-diff", func(a *appState) {
-			a.setDiffBinary("assets/logo.png", 78*1024)
-			a.diffTitle = "assets/logo.png · Working Tree · INDEX ↔ WORKING TREE"
-			a.diffSrc = diffSource{Kind: diffWorking, Path: "assets/logo.png"}
-			a.focusDiffTab("assets/logo.png")
+			a.setDiffBinary("assets/models.bin", 78*1024)
+			a.diffTitle = "assets/models.bin · Working Tree · INDEX ↔ WORKING TREE"
+			a.diffSrc = diffSource{Kind: diffWorking, Path: "assets/models.bin"}
+			a.focusDiffTab("assets/models.bin")
 		}, func(a *appState) error {
 			if !a.diffBinary {
 				return errShot("binary diff placeholder was not set")
@@ -294,10 +323,46 @@ func wantView(a *appState, kind topTabKind, path string) error {
 	if doc == nil {
 		return errShot(path + " was not opened")
 	}
-	if doc.State == nil && !doc.Binary {
+	if doc.State == nil && !doc.Binary && doc.Image == nil {
 		return errShot(path + " has no editor state")
 	}
 	return nil
+}
+
+// shotPicture builds a small deterministic bitmap: a diagonal gradient
+// with a ring, so the picture goldens show a real image rather than a
+// flat rectangle. variant picks the color pair.
+func shotPicture(w, h int, variant int) []byte {
+	from := color.RGBA{R: 40, G: 110, B: 220, A: 255}
+	to := color.RGBA{R: 140, G: 90, B: 230, A: 255}
+	if variant == 1 {
+		from = color.RGBA{R: 40, G: 170, B: 120, A: 255}
+		to = color.RGBA{R: 220, G: 180, B: 60, A: 255}
+	}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	cx, cy := float64(w)*0.5, float64(h)*0.5
+	ring := float64(min(w, h)) * 0.3
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			t := (float64(x)/float64(w-1) + float64(y)/float64(h-1)) / 2
+			c := color.RGBA{
+				R: uint8(float64(from.R)*(1-t) + float64(to.R)*t),
+				G: uint8(float64(from.G)*(1-t) + float64(to.G)*t),
+				B: uint8(float64(from.B)*(1-t) + float64(to.B)*t),
+				A: 255,
+			}
+			d := math.Hypot(float64(x)-cx, float64(y)-cy)
+			if d > ring-4 && d < ring {
+				c = color.RGBA{R: 240, G: 245, B: 255, A: 255}
+			}
+			img.SetRGBA(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err) // encoding to memory does not fail
+	}
+	return buf.Bytes()
 }
 
 // shotLinearCommits is a fixed, newest-first history for the graph shot.

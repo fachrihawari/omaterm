@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,11 +125,11 @@ func TestBinaryDiffAndEditorPlaceholder(t *testing.T) {
 	if r == nil {
 		t.Fatal("no repo")
 	}
-	bin := filepath.Join(r.Root, "image.png")
-	if err := os.WriteFile(bin, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"), 0o644); err != nil {
+	bin := filepath.Join(r.Root, "blob.bin")
+	if err := os.WriteFile(bin, []byte{0x00, 0x01, 0x02, 0xff, 0x00}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Stage(r.Root, "image.png"); err != nil {
+	if err := service.Stage(r.Root, "blob.bin"); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err := service.RepoStatus(r.Root, a.workspace)
@@ -135,7 +138,7 @@ func TestBinaryDiffAndEditorPlaceholder(t *testing.T) {
 	}
 	a.repos[0] = *fresh
 
-	a.openWorkingDiff("image.png", false)
+	a.openWorkingDiff("blob.bin", false)
 	if !a.diffBinary {
 		t.Fatal("binary diff did not switch to the placeholder")
 	}
@@ -143,8 +146,8 @@ func TestBinaryDiffAndEditorPlaceholder(t *testing.T) {
 		t.Error("binary diff still holds text buffers")
 	}
 
-	a.openEditor("image.png")
-	doc := a.editors["image.png"]
+	a.openEditor("blob.bin")
+	doc := a.editors["blob.bin"]
 	if doc == nil || !doc.Binary {
 		t.Fatal("binary file opened as text")
 	}
@@ -155,6 +158,233 @@ func TestBinaryDiffAndEditorPlaceholder(t *testing.T) {
 	}
 	if doc.State != nil {
 		t.Error("binary document has an editor state")
+	}
+}
+
+// testPNG encodes a w×h solid picture, for the preview tests.
+func testPNG(t *testing.T, w, h int, c color.Color) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// Clicking a picture opens a viewer with the picture and its dimensions,
+// not a binary placeholder.
+func TestImageEditorPreview(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	data := testPNG(t, 40, 24, color.RGBA{R: 90, G: 169, B: 255, A: 255})
+	if err := os.WriteFile(filepath.Join(r.Root, "logo.png"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.openEditor("logo.png")
+	doc := a.editors["logo.png"]
+	if doc == nil || doc.Image == nil {
+		t.Fatal("image file did not open in the picture viewer")
+	}
+	if doc.Binary || doc.State != nil {
+		t.Error("picture opened as a binary placeholder or as text")
+	}
+	if doc.Image.Pic == nil {
+		t.Fatal("picture not decoded")
+	}
+	if doc.Image.W != 40 || doc.Image.H != 24 {
+		t.Errorf("picture size = %v×%v, want 40×24", doc.Image.W, doc.Image.H)
+	}
+
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("40 × 24 px") {
+		t.Error("picture dimensions not shown")
+	}
+	if !tr.HasText("PNG") {
+		t.Error("picture format not shown")
+	}
+	if tr.HasText("Binary file") {
+		t.Error("picture still shows the binary placeholder")
+	}
+}
+
+// An SVG is a picture and text: it opens in the viewer and keeps its
+// source behind a toggle.
+func TestSVGPreview(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16"><rect width="24" height="16" fill="#5aa9ff"/></svg>`
+	if err := os.WriteFile(filepath.Join(r.Root, "swatch.svg"), []byte(svg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.openEditor("swatch.svg")
+	doc := a.editors["swatch.svg"]
+	if doc == nil || doc.Image == nil {
+		t.Fatal("SVG did not open as a picture")
+	}
+	if doc.State == nil {
+		t.Fatal("SVG source was not kept")
+	}
+	if !doc.Image.Vector {
+		t.Error("SVG should be marked as a vector, so it can scale up")
+	}
+	if !doc.Preview {
+		t.Error("SVG should start in the picture preview")
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("24 × 16 px") {
+		t.Error("SVG dimensions not shown")
+	}
+	if !tr.HasText("SVG") {
+		t.Error("SVG format not shown")
+	}
+
+	// The source view is still reachable.
+	doc.Preview = false
+	tr = ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if tr.HasText("24 × 16 px") {
+		t.Error("source view still shows the picture")
+	}
+}
+
+// The diff of two pictures is the two pictures, not "Binary files differ".
+func TestImageDiffPreview(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	old := testPNG(t, 20, 10, color.RGBA{R: 255, A: 255})
+	if err := os.WriteFile(filepath.Join(r.Root, "logo.png"), old, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Stage(r.Root, "logo.png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CommitStaged(r.Root, "add logo"); err != nil {
+		t.Fatal(err)
+	}
+	newData := testPNG(t, 20, 10, color.RGBA{B: 255, A: 255})
+	if err := os.WriteFile(filepath.Join(r.Root, "logo.png"), newData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.openWorkingDiff("logo.png", false)
+	if !a.diffImage {
+		t.Fatal("picture diff did not switch to the picture view")
+	}
+	if a.diffBinary || a.diffPatch != nil || a.diffOld != nil {
+		t.Error("picture diff still holds the text/binary state")
+	}
+	if a.diffImgOld.Pic == nil || a.diffImgNew.Pic == nil {
+		t.Fatal("one of the picture versions was not decoded")
+	}
+	if a.diffImgOld.Size != int64(len(old)) || a.diffImgNew.Size != int64(len(newData)) {
+		t.Error("picture sizes do not match the two versions")
+	}
+
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("INDEX") || !tr.HasText("WORKING TREE") {
+		t.Error("picture diff side labels not rendered")
+	}
+	if !tr.HasText("20 × 10") {
+		t.Error("picture dimensions not rendered")
+	}
+	if tr.HasText("Binary file") {
+		t.Error("picture diff still shows the binary placeholder")
+	}
+
+	// The picture state must not leak into a text diff.
+	a.openWorkingDiff("hello.txt", false)
+	if a.diffImage || a.diffOld == nil || a.diffNew == nil {
+		t.Error("text diff did not restore the text buffers")
+	}
+}
+
+// A picture that only exists in the working tree shows one side missing.
+func TestImageDiffAddedFile(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	data := testPNG(t, 8, 6, color.White)
+	if err := os.WriteFile(filepath.Join(r.Root, "new.png"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.openWorkingDiff("new.png", false)
+	if !a.diffImage {
+		t.Fatal("new picture did not open the picture diff")
+	}
+	if !a.diffImgOld.Missing {
+		t.Error("old side should be missing for a new picture")
+	}
+	if a.diffImgNew.Pic == nil {
+		t.Error("new side was not decoded")
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("Not in INDEX") {
+		t.Error("missing side not explained")
+	}
+}
+
+// A commit's picture diff compares the commit against its parent.
+func TestImageDiffCommit(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	if err := os.WriteFile(filepath.Join(r.Root, "logo.png"),
+		testPNG(t, 12, 8, color.Black), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Stage(r.Root, "logo.png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CommitStaged(r.Root, "add logo"); err != nil {
+		t.Fatal(err)
+	}
+	// Change it in a second commit, so the commit has a parent version.
+	if err := os.WriteFile(filepath.Join(r.Root, "logo.png"),
+		testPNG(t, 12, 8, color.White), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Stage(r.Root, "logo.png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CommitStaged(r.Root, "brighten logo"); err != nil {
+		t.Fatal(err)
+	}
+	hash := service.HeadSha(r.Root)
+	a.openCommitFileDiff(hash, "logo.png")
+	if !a.diffImage {
+		t.Fatal("commit picture diff did not switch to the picture view")
+	}
+	if a.diffImgOld.Pic == nil || a.diffImgNew.Pic == nil {
+		t.Fatal("commit picture versions not decoded")
 	}
 }
 
