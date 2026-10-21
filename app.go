@@ -12,40 +12,17 @@ import (
 func (a *appState) view(c *ui.Context) {
 	c.SetTheme(omaTheme())
 
-	// Window shortcuts. Ctrl-based on Linux (MyGo maps ui.Cmd to the
-	// platform's primary modifier).
-	c.OnShortcut(ui.Cmd, ui.KeyB, func() { a.sidebarVisible = !a.sidebarVisible })
-	c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyB, func() { a.inspectorVisible = !a.inspectorVisible })
-	c.OnShortcut(ui.Cmd, ui.Key1, func() { a.activeView = tabTerminal })
-	c.OnShortcut(ui.Cmd, ui.Key2, func() { a.activeView = tabEditor })
-	c.OnShortcut(ui.Cmd, ui.Key3, func() { a.activeView = tabDiff })
-	c.OnShortcut(ui.Cmd, ui.KeyW, func() { a.closeActiveTab(c) })
-	c.OnShortcut(ui.Cmd, ui.KeyO, func() { a.openProjectDialog() })
-	c.OnShortcut(ui.Cmd, ui.KeyT, func() { a.newTerminalTab() })
+	// Every window shortcut comes from the binding table in
+	// keybindings.go, which also feeds the command palette and the
+	// Keyboard Shortcuts overlay. The table is registered first: it reads
+	// whether the terminal had the keyboard in the last frame, so a key
+	// the shell needs (Ctrl+S, Ctrl+Q) is not taken from it.
+	a.registerKeybindings(c)
+	a.overlayWindowKeys(c)
 
-	// Terminal split shortcuts (only while the terminal is active).
-	if a.activeView == tabTerminal {
-		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyD, func() {
-			if leaf := a.activeSplitLeaf(); leaf != "" {
-				a.splitPane(leaf, splitHorizontal)
-				c.Toast("Split down")
-			}
-		})
-		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyR, func() {
-			if leaf := a.activeSplitLeaf(); leaf != "" {
-				a.splitPane(leaf, splitVertical)
-				c.Toast("Split right")
-			}
-		})
-	}
-
-	// Overlay openers, only while no overlay is open.
-	if a.overlay == overlayNone {
-		c.OnShortcut(ui.Cmd, ui.KeyP, func() { a.openOverlay(overlayQuickOpen) })
-		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyP, func() { a.openOverlay(overlayCommandPalette) })
-		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyF, func() { a.openOverlay(overlayGlobalSearch) })
-	}
-	a.overlayShortcuts(c)
+	// The terminal view records again, while it builds below, whether a
+	// pane took the keyboard.
+	a.termFocus = false
 
 	ui.Column(c).Fill().Background(colBg).Children(func() {
 		if a.sidebarVisible {

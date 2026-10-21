@@ -175,6 +175,13 @@ func TestShots(t *testing.T) {
 				}
 				return nil
 			}},
+		{"shortcuts", func(a *appState) { a.openOverlay(overlayShortcuts) },
+			func(a *appState) error {
+				if a.overlay != overlayShortcuts {
+					return errShot("keyboard shortcuts did not open")
+				}
+				return nil
+			}},
 		{"branch", func(a *appState) {
 			if r := a.activeRepoRef(); r != nil {
 				a.currentBranch = r.Branch
@@ -254,6 +261,9 @@ func TestShots(t *testing.T) {
 		// saved state, which made the shots depend on what was open.
 		a.projects = []project{{Name: "oterm", Path: wd, Tabs: []string{"dev", "api", "tests"}}}
 		a.active = 0
+		// A live shell would print its prompt whenever it got round to it,
+		// which made the terminal goldens differ between runs.
+		a.termCmd = []string{"sleep", "120"}
 		a.setProject(0)
 		// The tester has no window, so the async refreshers no-op; load
 		// repo data synchronously instead.

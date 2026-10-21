@@ -52,25 +52,34 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 		e.BorderWidth(0, 0, 2, 0).BorderColor(colBlue2)
 	}
 	if e.Clicked() {
-		wasTab := a.inspectorTab
-		a.inspectorTab = idx
-		if idx == 0 {
-			a.startProcessRefresh()
-		} else {
-			a.stopProcessRefresh()
-		}
-		// Entering the Git tab re-reads status, so switching to it never
-		// shows a stale tree from before the user left.
-		if idx == 2 && wasTab != 2 {
-			a.refreshActiveRepo()
-		}
-		// Load history once so the GIT GRAPH count is real, not a
-		// misleading 0 that only fixes itself when the section opens.
-		if idx == 2 && !a.graphLoaded {
-			a.refreshGraph()
-		}
+		a.showInspectorTab(idx)
 	}
 	return e
+}
+
+// showInspectorTab switches the inspector to Info (0), Files (1) or Git
+// (2), loading what that tab shows.
+func (a *appState) showInspectorTab(idx int) {
+	if !a.inspectorVisible {
+		a.inspectorVisible = true
+	}
+	wasTab := a.inspectorTab
+	a.inspectorTab = idx
+	if idx == 0 {
+		a.startProcessRefresh()
+	} else {
+		a.stopProcessRefresh()
+	}
+	// Entering the Git tab re-reads status, so switching to it never
+	// shows a stale tree from before the user left.
+	if idx == 2 && wasTab != 2 {
+		a.refreshActiveRepo()
+	}
+	// Load history once so the GIT GRAPH count is real, not a
+	// misleading 0 that only fixes itself when the section opens.
+	if idx == 2 && !a.graphLoaded {
+		a.refreshGraph()
+	}
 }
 
 // INFO
@@ -103,7 +112,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(p.Path)
 						} else {
 							txt(c, "No project open", 12, colText)
-							txt(c, "Ctrl+O to open a folder", 10, colMuted)
+							txt(c, keyLabels("app.openProject")+" to open a folder", 10, colMuted)
 						}
 					})
 				})

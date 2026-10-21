@@ -74,6 +74,15 @@ func pillShrink(c *ui.Context, text string) ui.Element {
 	return e
 }
 
+// keyChip is the key hint the palette and the shortcuts overlay show:
+// a small bordered chip, as VS Code's keybinding labels.
+func keyChip(c *ui.Context, label string) ui.Element {
+	return ui.Row(c).Radius(4).Border(1, ui.Hex("#313b48")).Background(ui.Hex("#161b22")).
+		Padding(2, 6).Shrink(0).Children(func() {
+		ui.Text(c, label).FontSize(9).TextColor(colMuted).SingleLine()
+	})
+}
+
 // sectionLabel is the uppercase muted label above inspector sections.
 func sectionLabel(c *ui.Context, text string) ui.Element {
 	return ui.Text(c, text).FontSize(10).TextColor(colMuted).LetterSpacing(1.2).SingleLine().Shrink(0)

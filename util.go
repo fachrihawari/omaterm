@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -53,15 +52,6 @@ func pathDir(p string) string {
 // pathBase returns the last element of a path.
 func pathBase(p string) string {
 	return filepath.Base(p)
-}
-
-// primaryKey renders a shortcut label for the platform's primary
-// modifier: "Ctrl+O" on Linux, "⌘O" on macOS.
-func primaryKey(key string) string {
-	if runtime.GOOS == "darwin" {
-		return "⌘" + key
-	}
-	return "Ctrl+" + key
 }
 
 // stripFrontMatter drops a leading YAML front matter block (--- ... ---)

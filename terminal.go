@@ -155,10 +155,11 @@ func (a *appState) term(id string) *terminal.Terminal {
 	if ok && t != nil {
 		return t
 	}
-	shell := os.Getenv("SHELL")
-	var cmd []string
-	if shell != "" {
-		cmd = []string{shell}
+	cmd := a.termCmd
+	if len(cmd) == 0 {
+		if shell := os.Getenv("SHELL"); shell != "" {
+			cmd = []string{shell}
+		}
 	}
 	t, err := terminal.New(terminal.Options{
 		Command: cmd,
@@ -250,14 +251,23 @@ func rebalance(n *splitNode) {
 	}
 }
 
-func (a *appState) splitPane(termID string, dir splitDir) {
+// splitPane splits the pane termID and returns the new pane's ID, or ""
+// when the pane was not found.
+func (a *appState) splitPane(termID string, dir splitDir) string {
+	newID := randomTermID()
 	root := a.ensureSingleSplit()
-	if r := root.splitLeaf(termID, dir, randomTermID()); r != nil {
+	if r := root.splitLeaf(termID, dir, newID); r != nil {
 		a.setActiveSplit(r)
 	}
 	if n := a.activeSplit(); n != nil {
 		rebalance(n)
 	}
+	for _, id := range a.activeSplit().termIDs() {
+		if id == newID {
+			return newID
+		}
+	}
+	return ""
 }
 
 func (a *appState) removePane(termID string) {
@@ -268,6 +278,9 @@ func (a *appState) removePane(termID string) {
 	newRoot, removed := removeLeaf(root, termID)
 	if !removed {
 		return
+	}
+	if a.activePaneTermID == termID {
+		a.activePaneTermID = ""
 	}
 	a.termPanesMu.Lock()
 	if t, ok := a.termPanes[termID]; ok && t != nil {
@@ -281,6 +294,14 @@ func (a *appState) removePane(termID string) {
 	} else {
 		a.setActiveSplit(newRoot)
 		rebalance(newRoot)
+		// A pane closed under the keyboard: give it to the first one left,
+		// unless the caller picked another.
+		if a.activePaneTermID == "" {
+			if ids := newRoot.termIDs(); len(ids) > 0 {
+				a.activePaneTermID = ids[0]
+				a.paneFocus = ids[0]
+			}
+		}
 	}
 }
 
@@ -327,7 +348,11 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 					a.newTerminalTab()
 				}
 			})
-			ui.Text(c, "Ctrl+O open project  ·  Ctrl+T new terminal  ·  Ctrl+P open file").FontSize(10).TextColor(colMuted2).Margin(8, 0, 0, 0)
+			ui.Text(c, keyLabels("app.openProject")+" open project  ·  "+
+				keyLabels("terminal.new")+" new terminal  ·  "+
+				keyLabels("file.quickOpen")+" open file  ·  "+
+				keyLabels("help.keyboardShortcuts")+" shortcuts").
+				FontSize(10).TextColor(colMuted2).Margin(8, 0, 0, 0)
 		})
 	}
 	return ui.Column(c).Fill().Background(colBg2).Children(func() {
@@ -381,13 +406,11 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 			txt(c, title, 10, colText2)
 			ui.Spacer(c)
 			// Compact toolbar.
-			if cmdButton(c, iconColumns2, iconBtn, false).Tooltip("Split right (Ctrl+Shift+R)").Clicked() {
-				a.splitPane(termID, splitVertical)
-				c.Toast("Split right")
+			if cmdButton(c, iconColumns2, iconBtn, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
+				a.splitActivePaneAt(c, termID, splitVertical)
 			}
-			if cmdButton(c, iconRows2, iconBtn, false).Tooltip("Split down (Ctrl+Shift+D)").Clicked() {
-				a.splitPane(termID, splitHorizontal)
-				c.Toast("Split down")
+			if cmdButton(c, iconRows2, iconBtn, false).Tooltip("Split down (" + keyLabels("terminal.splitDown") + ")").Clicked() {
+				a.splitActivePaneAt(c, termID, splitHorizontal)
 			}
 			ids := []string{}
 			if n := a.activeSplit(); n != nil {
@@ -414,8 +437,14 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 		if hovered {
 			a.activePaneTermID = termID
 		}
+		// The pane with the keyboard is what lets the shell keep Ctrl+S
+		// and friends; FocusBind lets the app send the keyboard to the
+		// pane next to this one.
+		if box.FocusWithin() {
+			a.termFocus = true
+		}
 		box.Children(func() {
-			terminal.View(c, t).Fill().AutoFocus()
+			terminal.View(c, t).Fill().AutoFocus().FocusBind(&a.paneFocus, termID)
 		})
 		// Focus ring on the outer column (not clipped by box).
 		if hovered || a.activePaneTermID == termID {
@@ -459,6 +488,7 @@ func (a *appState) newTerminalTabReal() {
 		ids := a.tabs[a.activeTab].Split.termIDs()
 		if len(ids) > 0 {
 			a.activePaneTermID = ids[0]
+			a.paneFocus = ids[0]
 		}
 	}
 }

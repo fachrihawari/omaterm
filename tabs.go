@@ -31,7 +31,13 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 		})
 
 		ui.Row(c).AlignItems(ui.Center).Gap(2).Padding(0, 8).Children(func() {
-			if cmdButton(c, iconSearch, 16, false).Tooltip("Search in files").Clicked() {
+			if cmdButton(c, iconKeyboard, 16, false).
+				Tooltip("Keyboard Shortcuts (" + keyLabels("help.keyboardShortcuts") + ")").
+				Label("Keyboard Shortcuts").Clicked() {
+				a.openOverlay(overlayShortcuts)
+			}
+			if cmdButton(c, iconSearch, 16, false).
+				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
 			if cmdButton(c, iconPanelRight, 16, a.inspectorVisible).Clicked() {
@@ -110,16 +116,44 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 		})
 	})
 	if e.Clicked() {
-		a.activeTab = i
-		a.activeView = t.Kind
-		if t.Kind == tabTerminal && t.Split != nil {
-			ids := t.Split.termIDs()
-			if len(ids) > 0 {
-				a.activePaneTermID = ids[0]
-			}
-		}
+		a.activateTab(i)
 	}
 	return e
+}
+
+// activateTab makes tab i the active one and gives the keyboard to its
+// terminal pane, as selecting an editor tab focuses the editor.
+func (a *appState) activateTab(i int) {
+	if i < 0 || i >= len(a.tabs) {
+		return
+	}
+	t := a.tabs[i]
+	a.activeTab = i
+	a.activeView = t.Kind
+	if t.Kind == tabTerminal && t.Split != nil {
+		if ids := t.Split.termIDs(); len(ids) > 0 {
+			a.activePaneTermID = ids[0]
+			a.paneFocus = ids[0]
+		}
+	}
+}
+
+// activateKind shows kind: the active tab when it already is of that kind,
+// else the first tab of it, else just the view, which then says there is
+// nothing to show. Ctrl+2 must not jump from the second editor back to
+// the first.
+func (a *appState) activateKind(kind topTabKind) {
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == kind {
+		a.activeView = kind
+		return
+	}
+	for i, t := range a.tabs {
+		if t.Kind == kind {
+			a.activateTab(i)
+			return
+		}
+	}
+	a.activeView = kind
 }
 
 func (a *appState) closeTab(i int) {
@@ -140,12 +174,22 @@ func (a *appState) closeTab(i int) {
 		}
 		a.termPanesMu.Unlock()
 	}
+	wasActive := a.activeTab == i
+	if i < a.activeTab {
+		a.activeTab--
+	}
 	a.tabs = append(a.tabs[:i], a.tabs[i+1:]...)
 	if a.activeTab >= len(a.tabs) {
 		a.activeTab = len(a.tabs) - 1
 	}
 	if a.activeTab >= 0 {
-		a.activeView = a.tabs[a.activeTab].Kind
+		if wasActive {
+			// The tab that took its place gets the keyboard, as clicking
+			// it would; a closed pane must not keep FocusBind waiting.
+			a.activateTab(a.activeTab)
+		} else {
+			a.activeView = a.tabs[a.activeTab].Kind
+		}
 	}
 }
 

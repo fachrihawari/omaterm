@@ -55,7 +55,7 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 			})
 		})
 
-		// Footer: Open Project button with its ⌘O key chip.
+		// Footer: Open Project button with its key chip.
 		ui.Box(c).Padding(8).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
 			b := ui.Row(c).FillWidth().Focusable().Cursor(ui.CursorPointer).Height(32).Radius(6).Border(1, colBorder2)
 			if b.Hovered() {
@@ -67,7 +67,7 @@ func (a *appState) projectsSidebar(c *ui.Context) ui.Element {
 					ui.Text(c, "Open Project").FontSize(11).TextColor(colText2).SingleLine().Shrink(0)
 					ui.Spacer(c)
 					ui.Row(c).Radius(4).Border(1, ui.Hex("#313b48")).Background(ui.Hex("#161b22")).Padding(2, 6).Shrink(0).Children(func() {
-						ui.Text(c, primaryKey("O")).FontSize(9).TextColor(colMuted).SingleLine()
+						ui.Text(c, keyLabels("app.openProject")).FontSize(9).TextColor(colMuted).SingleLine()
 					})
 				})
 			})

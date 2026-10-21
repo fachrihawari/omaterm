@@ -61,6 +61,7 @@ const (
 	overlayCommandPalette
 	overlayGlobalSearch
 	overlayBranch
+	overlayShortcuts
 )
 
 // diffSourceKind says what the diff view compares.
@@ -102,6 +103,8 @@ type appState struct {
 	activeTab int
 
 	activeView topTabKind
+	// prevView is the view Ctrl+` returns to when the terminal is shown.
+	prevView topTabKind
 
 	sidebarVisible   bool
 	inspectorVisible bool
@@ -122,8 +125,6 @@ type appState struct {
 	commitMsg string
 
 	diffSplit bool
-
-	paneFocus int
 
 	fileTree *fileNode
 
@@ -186,6 +187,11 @@ type appState struct {
 	cmdSelected int
 	cmdList     ui.ListState
 
+	// Keyboard Shortcuts (Ctrl+Shift+/)
+	keyQuery    string
+	keySelected int
+	keyList     ui.ListState
+
 	// Global search (Ctrl+Shift+F)
 	searchQuery    string
 	searchSelected int
@@ -226,6 +232,14 @@ type appState struct {
 	// Terminal panes (Ghostty VT via MyGo's plugin)
 	termPanes   map[string]*terminal.Terminal
 	termPanesMu sync.Mutex
+	// termCmd runs instead of the user's shell, for the screenshot suite:
+	// a live shell prints its prompt at an unpredictable moment.
+	termCmd []string
+	// termFocus says a pane had the keyboard in the last frame: the
+	// app's shortcuts use it to let the shell keep keys like Ctrl+S.
+	termFocus bool
+	// paneFocus is the pane that should have the keyboard (FocusBind).
+	paneFocus string
 
 	// Close tab confirmation
 	pendingCloseTab     int
@@ -433,6 +447,7 @@ func (a *appState) setProject(i int) {
 		ids := a.tabs[0].Split.termIDs()
 		if len(ids) > 0 {
 			a.activePaneTermID = ids[0]
+			a.paneFocus = ids[0]
 		}
 	}
 	a.gitBusy = ""

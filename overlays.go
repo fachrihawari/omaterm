@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -34,6 +35,10 @@ func (a *appState) openOverlay(k overlayKind) {
 		a.branchQuery = ""
 		a.branchSelected = 0
 		a.branchList = ui.ListState{}
+	case overlayShortcuts:
+		a.keyQuery = ""
+		a.keySelected = 0
+		a.keyList = ui.ListState{}
 	}
 }
 
@@ -53,6 +58,8 @@ func (a *appState) renderOverlays(c *ui.Context) {
 		a.dialog(c, 1100, 700, func() { a.globalSearchBody(c) })
 	case overlayBranch:
 		a.dialog(c, 520, 480, func() { a.branchBody(c) })
+	case overlayShortcuts:
+		a.dialog(c, 900, 680, func() { a.keyboardShortcutsBody(c) })
 	}
 }
 
@@ -66,17 +73,24 @@ const dialogTopFraction = 0.2
 // dialogMinBottom keeps a panel off the window's bottom edge.
 const dialogMinBottom = 24
 
+// dialogMinSide keeps a panel off the window's side edges.
+const dialogMinSide = 24
+
 // dialog shows body in a panel the app styles itself, over a dim backdrop.
 // ui.Modal would wrap the content in the theme's own padding and
 // background, which read as a dark frame around it.
 func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
 	open := true
-	_, winH := c.Size()
+	winW, winH := c.Size()
 	top := winH * dialogTopFraction
 	// The panel sizes to its content, but its cap must leave room for the
-	// top offset, or a tall panel would hang off the bottom.
+	// top offset, or a tall panel would hang off the bottom. The width is
+	// capped too: the shortcuts list is wider than the minimum window.
 	if avail := winH - top - dialogMinBottom; avail > 0 && h > avail {
 		h = avail
+	}
+	if avail := winW - 2*dialogMinSide; avail > 0 && w > avail {
+		w = avail
 	}
 	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
 		// DialogBase centers the panel along the backdrop's main axis.
@@ -94,10 +108,10 @@ func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
 	}
 }
 
-// overlayShortcuts installs only the Escape shortcut at window level;
+// overlayWindowKeys installs only the Escape shortcut at window level;
 // arrow/enter handling lives inside each overlay body so it takes
 // precedence over the scroll container.
-func (a *appState) overlayShortcuts(c *ui.Context) {
+func (a *appState) overlayWindowKeys(c *ui.Context) {
 	if a.overlay == overlayNone {
 		return
 	}
@@ -279,7 +293,7 @@ func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, in
 }
 
 func (a *appState) overlayFooter(c *ui.Context, hints ...string) {
-	ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(14).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
+	ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(14).Background(colPanel).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
 		for _, h := range hints {
 			ui.Text(c, h).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
 		}
@@ -557,12 +571,11 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 		if !enabled {
 			titleCol = colMuted2
 		}
-		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().Shrink(0)
+		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().
+			Shrink(1).MinWidth(0).Ellipsis("…")
 		ui.Spacer(c)
-		if e.Keys != "" {
-			ui.Row(c).Radius(4).Border(1, ui.Hex("#313b48")).Background(ui.Hex("#161b22")).Padding(2, 6).Shrink(0).Children(func() {
-				ui.Text(c, e.Keys).FontSize(9).TextColor(colMuted).SingleLine()
-			})
+		if keys := keyPrimary(e.ID); keys != "" {
+			keyChip(c, keys)
 		}
 	})
 	if row.Clicked() && enabled {
@@ -781,4 +794,184 @@ func (a *appState) searchPreviewPane(c *ui.Context) {
 		}
 		editor.View(c, a.searchPreview).Fill()
 	})
+}
+
+// --- Keyboard shortcuts ---
+
+// keymapEntry is one command in the shortcuts overlay: its keys and when
+// they apply.
+type keymapEntry struct {
+	Command
+	Keys  []keyBinding
+	Scope keyScope
+}
+
+// keymapItems lists the commands that have keys, filtered by the query.
+// The query matches the title, the category, the scope and the keys, so
+// "ctrl+shift+d" and "split" both find the split commands.
+func (a *appState) keymapItems() []keymapEntry {
+	q := strings.ToLower(strings.TrimSpace(a.keyQuery))
+	out := make([]keymapEntry, 0, len(commandRegistry))
+	for _, cmd := range commandRegistry {
+		bs := bindingsFor(cmd.ID)
+		if len(bs) == 0 {
+			continue
+		}
+		if q != "" {
+			labels := make([]string, len(bs))
+			for i, b := range bs {
+				labels[i] = b.Combo.Label()
+			}
+			hay := strings.ToLower(cmd.Category + " " + cmd.Title + " " +
+				bs[0].Scope.String() + " " + strings.Join(labels, " "))
+			if !strings.Contains(hay, q) {
+				continue
+			}
+		}
+		out = append(out, keymapEntry{Command: cmd, Keys: bs, Scope: bs[0].Scope})
+	}
+	// Group by category, then by name, so related commands sit together as
+	// they do in VS Code's list. The table's order is for reading the
+	// source, not for the dialog.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Category != out[j].Category {
+			return out[i].Category < out[j].Category
+		}
+		return out[i].Title < out[j].Title
+	})
+	return out
+}
+
+func (a *appState) keyboardShortcutsBody(c *ui.Context) {
+	items := a.keymapItems()
+	if a.keySelected >= len(items) {
+		a.keySelected = len(items) - 1
+	}
+	if a.keySelected < 0 {
+		a.keySelected = 0
+	}
+	if c.Shortcut(0, ui.KeyDown) {
+		a.moveKeymapSelection(1, len(items))
+	}
+	if c.Shortcut(0, ui.KeyUp) {
+		a.moveKeymapSelection(-1, len(items))
+	}
+
+	submit := false
+	ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 16).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+		ui.Text(c, "Keyboard Shortcuts").FontSize(13).Bold().TextColor(colText)
+		ui.Spacer(c)
+		ui.Text(c, keyLabels("help.keyboardShortcuts")).FontSize(10).TextColor(colMuted2)
+	})
+	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+		ui.Row(c).Height(30).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
+			ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(colMuted)
+			ti := ui.TextInputBase(c, &a.keyQuery).Placeholder("Type a command or a key").FontSize(13).Grow(1)
+			if ti.Changed() {
+				a.keySelected = 0
+			}
+			if ti.Submitted() {
+				submit = true
+			}
+			ui.Spacer(c)
+			ui.Text(c, itoa(len(items))+" commands").FontSize(10).TextColor(colMuted2).Shrink(0)
+		})
+	})
+
+	// Column headings, so the When and Key columns read as columns.
+	ui.Row(c).Height(22).AlignItems(ui.Center).Padding(0, 16).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+		ui.Text(c, "COMMAND").FontSize(9).TextColor(colMuted).LetterSpacing(1.2).Shrink(0)
+		ui.Spacer(c)
+		ui.Text(c, "WHEN").FontSize(9).TextColor(colMuted).LetterSpacing(1.2).Width(78).Shrink(0)
+		// The keys are right-aligned in their column, so its heading is too.
+		ui.Row(c).Width(220).Justify(ui.End).Shrink(0).Children(func() {
+			ui.Text(c, "KEY").FontSize(9).TextColor(colMuted).LetterSpacing(1.2).Shrink(0)
+		})
+	})
+
+	a.keyList.Selected = &a.keySelected
+	a.keyList.Key = func(i int) any { return items[i].ID }
+	list := ui.List(c, &a.keyList, len(items), func(i int) {
+		a.keymapRow(c, items[i], i == a.keySelected)
+	}).Grow(1).Padding(6).Children(func() {
+		if len(items) == 0 {
+			ui.Box(c).Padding(20).Children(func() {
+				ui.Text(c, "No matching commands").FontSize(12).TextColor(colMuted)
+			})
+		}
+	})
+	if list.Submitted() || c.Shortcut(0, ui.KeyEnter) {
+		submit = true
+	}
+	if submit {
+		a.runKeymapSelection(c, items)
+	}
+
+	a.overlayFooter(c, "type to filter", "↑↓ navigate", "↵ run", "esc close")
+}
+
+// moveKeymapSelection moves the shortcuts choice by d and keeps it in view.
+func (a *appState) moveKeymapSelection(d, n int) {
+	if n == 0 {
+		return
+	}
+	next := a.keySelected + d
+	if next < 0 {
+		next = 0
+	}
+	if next > n-1 {
+		next = n - 1
+	}
+	if next == a.keySelected {
+		return
+	}
+	a.keySelected = next
+	a.keyList.ScrollIntoView(next)
+}
+
+// runKeymapSelection closes the overlay and runs the chosen command, as
+// choosing it in the palette would.
+func (a *appState) runKeymapSelection(c *ui.Context, items []keymapEntry) {
+	if a.keySelected < 0 || a.keySelected >= len(items) {
+		return
+	}
+	cmd := items[a.keySelected]
+	if cmd.Enabled != nil && !cmd.Enabled(a) {
+		return
+	}
+	a.closeOverlay()
+	cmd.Run(a, c)
+}
+
+// keymapRow renders one command with its keys and scope.
+func (a *appState) keymapRow(c *ui.Context, e keymapEntry, selected bool) {
+	enabled := e.Enabled == nil || e.Enabled(a)
+	row := ui.Row(c).Key(e.ID).FillWidth().Height(34).Padding(0, 10).Gap(10).
+		Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if selected {
+		row.Background(colHover)
+	} else if row.Hovered() {
+		row.Background(ui.Hex("#171d25"))
+	}
+	row.Children(func() {
+		titleCol := colText2
+		if !enabled {
+			titleCol = colMuted2
+		}
+		ui.Text(c, e.Category+":").FontSize(10).TextColor(colMuted2).Width(64).SingleLine().Shrink(0)
+		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().
+			Shrink(1).MinWidth(0).Ellipsis("…")
+		ui.Spacer(c)
+		ui.Text(c, e.Scope.String()).FontSize(9).TextColor(colMuted2).Width(78).
+			SingleLine().Shrink(0)
+		ui.Row(c).Width(220).Justify(ui.End).Gap(4).Children(func() {
+			for _, b := range e.Keys {
+				keyChip(c, b.Combo.Label())
+			}
+		})
+	})
+	if row.Clicked() && enabled {
+		a.closeOverlay()
+		e.Run(a, c)
+	}
 }

@@ -112,7 +112,7 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 	if doc == nil {
 		return ui.Column(c).Fill().Background(colCodeBg).Center().Children(func() {
 			ui.Text(c, "No file open").FontSize(13).TextColor(colMuted)
-			ui.Text(c, "Ctrl+P to open a file").FontSize(11).TextColor(colMuted2).Margin(4, 0, 0, 0)
+			ui.Text(c, keyLabels("file.quickOpen")+" to open a file").FontSize(11).TextColor(colMuted2).Margin(4, 0, 0, 0)
 		})
 	}
 	if doc.Image != nil && (doc.State == nil || doc.Preview) {
@@ -163,11 +163,13 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				if doc.Preview {
 					label = "Source"
 				}
-				if cmdButton(c, iconFileText, iconBtn, false).Tooltip(label).Clicked() {
+				if cmdButton(c, iconFileText, iconBtn, false).
+					Tooltip(label + " (" + keyLabels("markdown.togglePreview") + ")").Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}
-			if save := cmdButton(c, iconSave, iconBtn, false); save.Tooltip("Save").Clicked() {
+			if save := cmdButton(c, iconSave, iconBtn, false).
+				Tooltip("Save (" + keyLabels("file.save") + ")"); save.Clicked() {
 				a.saveEditor(doc, c)
 			}
 			cmdButton(c, iconSplit, iconBtn, false)
