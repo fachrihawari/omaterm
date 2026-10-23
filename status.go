@@ -28,6 +28,20 @@ func (a *appState) startPanes() {
 	}()
 }
 
+// trackViewed tells the panes which session the user looks at: the one
+// shown while the window has the focus. Its panes' changes are seen as
+// they come, and its unread marks go.
+func (a *appState) trackViewed() {
+	viewed := a.viewedSession()
+	if a.win != nil && !a.win.IsFocused() {
+		viewed = ""
+	}
+	if viewed != a.lastViewed {
+		a.lastViewed = viewed
+		a.panes.SetViewed(viewed)
+	}
+}
+
 // hookPanes connects the registry's events to the app.
 func (a *appState) hookPanes() {
 	a.panes.OnExit = func(id string, code int) {
@@ -52,6 +66,12 @@ func (a *appState) syncStatus() {
 		}
 	}
 	a.git.setDirs(dirs)
+	if a.win != nil {
+		if t := a.windowTitle(); t != a.title {
+			a.title = t
+			a.win.SetTitle(t)
+		}
+	}
 	for id, n := range next {
 		if prev[id].Dir != n.Dir {
 			a.saveSoon()

@@ -11,6 +11,7 @@ import (
 
 func (a *appState) view(c *ui.Context) {
 	a.drainPosted()
+	a.trackViewed()
 	c.SetTheme(omaTheme())
 
 	// Every window shortcut comes from the binding table in

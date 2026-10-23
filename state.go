@@ -265,6 +265,12 @@ type appState struct {
 
 	// renaming is the session being renamed in the sidebar, renameText
 	// its name as typed.
+	// notified is when each session last notified.
+	notified map[string]time.Time
+	title    string
+	// lastViewed is the session last told to the panes as viewed.
+	lastViewed string
+
 	renaming   string
 	renameText string
 	paneFailed map[string]bool
@@ -339,6 +345,7 @@ func newApp() *appState {
 		paneFailed:       map[string]bool{},
 		git:              newGitWatch(),
 		arrived:          map[string]bool{},
+		notified:         map[string]time.Time{},
 		ws:               map[string]*projectWS{},
 		saved:            map[string][]model.Session{},
 		paneDirs:         map[string]string{},

@@ -185,6 +185,12 @@ var keybindings = append([]keyBinding{
 	{"terminal.splitRight", combo(ui.Cmd|ui.Shift, ui.KeyR), scopeTerminal},
 	{"pane.zoom", combo(ui.Cmd|ui.Shift, ui.KeyEnter), scopeTerminal},
 
+	// Sessions: the one that needs you, and the next and previous in the
+	// sidebar's order.
+	{"session.attention", combo(ui.Cmd|ui.Shift, ui.KeyJ), scopeGlobal},
+	{"session.next", combo(ui.Alt, ui.KeyDown), scopeGlobal},
+	{"session.prev", combo(ui.Alt, ui.KeyUp), scopeGlobal},
+
 	// Editor.
 	{"file.save", combo(ui.Cmd, ui.KeyS), scopeEditor},
 }, digitBindings()...)
