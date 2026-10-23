@@ -8,7 +8,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // The right inspector: Info / Files / Git panels behind a tab strip.
@@ -231,7 +231,7 @@ func (a *appState) updateSection(c *ui.Context) {
 		ui.Row(c).Radius(8).Border(1, colBorder).Background(colCard).Padding(12).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(colMuted)
 			ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
-				label := "oterm"
+				label := "omaterm"
 				if v := mygo.App.Version(); v != "" {
 					label += " " + v
 				}

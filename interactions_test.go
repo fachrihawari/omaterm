@@ -8,7 +8,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // newTestApp returns an app whose workspace is a temp git repo holding a

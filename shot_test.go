@@ -15,7 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // Renders the app's views to PNGs in testdata/ for visual comparison
@@ -23,7 +23,7 @@ import (
 //
 // The suite pins everything that would otherwise drift between runs: the
 // workspace is this repo, the project list is replaced (not loaded from
-// ~/.config/oterm/state.json), git data comes from fixed fixtures, and
+// ~/.config/omaterm/state.json), git data comes from fixed fixtures, and
 // processes, ports and machine load are fixed values. A shot that fails
 // to open the view it is named for fails the test instead of silently
 // writing a picture of the terminal.
@@ -35,7 +35,7 @@ func TestShots(t *testing.T) {
 	// The app's workspace, and the path the shots show, is a fixed one: the
 	// repo is cloned somewhere else in CI, and the path is part of the
 	// picture.
-	const shotWorkspace = "/home/you/Projects/oterm"
+	const shotWorkspace = "/home/you/Projects/omaterm"
 	// Pin "now": relative labels in the graph would otherwise change as
 	// the suite runs at a different hour.
 	shotNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -85,7 +85,7 @@ func TestShots(t *testing.T) {
 			// clone, and a live file would make the golden depend on it.
 			a.setDiffBuffers(
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hi \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"world\"))\n}\n",
-				"package main\n\nfunc greet(name string) string {\n\treturn \"hello \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"oterm\"))\n}\n",
+				"package main\n\nfunc greet(name string) string {\n\treturn \"hello \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"omaterm\"))\n}\n",
 				"main.go")
 			a.diffTitle = "main.go · Working Tree · INDEX ↔ WORKING TREE"
 			a.diffSrc = diffSource{Kind: diffWorking, Path: "main.go"}
@@ -99,7 +99,7 @@ func TestShots(t *testing.T) {
 		{"diff-inline", func(a *appState) {
 			a.setDiffBuffers(
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hi \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"world\"))\n}\n",
-				"package main\n\nfunc greet(name string) string {\n\treturn \"hello \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"oterm\"))\n}\n",
+				"package main\n\nfunc greet(name string) string {\n\treturn \"hello \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"omaterm\"))\n}\n",
 				"main.go")
 			a.diffTitle = "main.go · Working Tree · INDEX ↔ WORKING TREE"
 			a.diffSrc = diffSource{Kind: diffWorking, Path: "main.go"}
@@ -265,7 +265,7 @@ func TestShots(t *testing.T) {
 		a := newApp()
 		// Pin the workspace and project list: newApp() reads the user's
 		// saved state, which made the shots depend on what was open.
-		a.projects = []project{{Name: "oterm", Path: wd, Tabs: []string{"dev", "api", "tests"}}}
+		a.projects = []project{{Name: "omaterm", Path: wd, Tabs: []string{"dev", "api", "tests"}}}
 		a.active = 0
 		// A live shell would print its prompt whenever it got round to it,
 		// which made the terminal goldens differ between runs.
@@ -284,7 +284,7 @@ func TestShots(t *testing.T) {
 			a.activeRepo = 0
 			// The graph header shows the repo's directory name, which is the
 			// checkout's; pin it so the goldens hold in CI.
-			a.repos[0].Name = "oterm"
+			a.repos[0].Name = "omaterm"
 			// Fixed branch name: the checked-out branch differs between
 			// clones and while reviewing a feature branch.
 			a.currentBranch = "main"
@@ -310,8 +310,8 @@ func TestShots(t *testing.T) {
 		}
 		// Fixed process, port and machine-load values: real ones differ
 		// on every run.
-		a.processes = []service.Process{{Name: "oterm", Pid: 1234, CPU: "2.5%", Mem: "64 MB"}}
-		a.ports = []service.Port{{Port: 8080, Name: "http", Open: true, Pid: 1234, Process: "oterm"}}
+		a.processes = []service.Process{{Name: "omaterm", Pid: 1234, CPU: "2.5%", Mem: "64 MB"}}
+		a.ports = []service.Port{{Port: 8080, Name: "http", Open: true, Pid: 1234, Process: "omaterm"}}
 		a.sysStats = service.SystemStats{CPUPercent: 3, MemUsed: 1395864371, MemTotal: 17179869184, OK: true}
 		if s.setup != nil {
 			s.setup(a)

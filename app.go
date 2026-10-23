@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/egoist/mygo/ui"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // The root view: projects sidebar | (tabs + content + inspector) with the

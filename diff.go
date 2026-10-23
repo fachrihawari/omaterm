@@ -7,7 +7,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // The diff view: a real editor.DiffView comparing two buffers, with the

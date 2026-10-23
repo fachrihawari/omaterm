@@ -1,4 +1,4 @@
-# Releasing oterm
+# Releasing omaterm
 
 CI runs on every push to `dev` and every pull request: `gofmt`, `go vet`,
 the tests, a build, and cross-compiles for macOS, Windows and Linux ARM64. A

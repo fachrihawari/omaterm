@@ -41,7 +41,7 @@ jobs:
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             notes="$(sed -n "/^## ${GITHUB_REF_NAME#v}/,\$p" CHANGELOG.md | tail -n +2)"
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --draft --verify-tag --title "oterm ${GITHUB_REF_NAME#v}" \
+              --draft --verify-tag --title "omaterm ${GITHUB_REF_NAME#v}" \
               --notes "${notes:-Release ${GITHUB_REF_NAME#v}}"
           fi
 

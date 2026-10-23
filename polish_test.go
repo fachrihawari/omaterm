@@ -12,7 +12,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // The status bar said "1 processes" and carried invented CPU/MEM numbers.

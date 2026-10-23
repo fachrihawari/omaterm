@@ -4,8 +4,8 @@ node_modules/
 /.mygo/
 mygo_windows_*.syso
 
-# Local `go build -o oterm .` output. `mygo build` writes to build/ instead.
-/oterm
+# Local `go build -o omaterm .` output. `mygo build` writes to build/ instead.
+/omaterm
 
 # The key that signs updates. Installed apps accept only updates signed
 # with it, so anyone who reads it can ship code to every user: it lives in

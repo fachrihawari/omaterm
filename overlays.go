@@ -9,7 +9,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // Overlays: quick open (Ctrl+P), command palette (Ctrl+Shift+P) and the

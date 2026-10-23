@@ -7,7 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // The bottom status bar. Each segment is a full-height hoverable cell, as

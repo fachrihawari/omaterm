@@ -34,7 +34,7 @@ type Port struct {
 }
 
 // ListProjectProcesses returns processes whose CWD is under workspace, or
-// that are descendants of the oterm process itself (terminal shells and
+// that are descendants of the omaterm process itself (terminal shells and
 // their children).
 func ListProjectProcesses(workspace string) ([]Process, error) {
 	if runtime.GOOS != "linux" {
@@ -70,8 +70,8 @@ func ListProjectProcesses(workspace string) ([]Process, error) {
 		}
 	}
 
-	// Build a set of project PIDs: descendants of the oterm process itself.
-	// Terminal shells and their children are all descendants of oterm.
+	// Build a set of project PIDs: descendants of the omaterm process itself.
+	// Terminal shells and their children are all descendants of omaterm.
 	pidSet := map[int]bool{}
 	for _, desc := range descendantsOf(os.Getpid()) {
 		pidSet[desc] = true
@@ -458,7 +458,7 @@ func resolvePortName(port int, fallback string) string {
 }
 
 // ListProjectProcesses signature changed: now accepts terminal PIDs.
-// TerminalPids returns the PIDs of shells spawned by oterm.
+// TerminalPids returns the PIDs of shells spawned by omaterm.
 func TerminalPids() []int {
 	return nil // placeholder; populated by app state
 }

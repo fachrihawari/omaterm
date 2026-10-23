@@ -284,7 +284,7 @@ func TestKeyboardShortcutsOverlay(t *testing.T) {
 	}
 }
 
-// Ctrl+W still closes the active tab from the terminal, an oterm choice:
+// Ctrl+W still closes the active tab from the terminal, an omaterm choice:
 // closing a tab is the app's job even while the shell has the keyboard.
 func TestCloseTabFromTerminal(t *testing.T) {
 	a := newTestApp(t)

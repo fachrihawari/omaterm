@@ -10,17 +10,17 @@ import (
 
 func main() {
 	// Updates come from the signed manifests of the GitHub releases named in
-	// mygo.json. The native window is the one for this app: oterm shows
+	// mygo.json. The native window is the one for this app: omaterm shows
 	// no web page, so it needs no webview to offer an update. The app's own
 	// Info panel and palette check from there; a menu bar would not exist on
-	// Linux, where oterm mostly runs.
+	// Linux, where omaterm mostly runs.
 	mygo.Use(native.Plugin)
 	updatesReady = true
 
 	mygo.App.WhenReady(func() {
 		a := newApp()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:           "oterm",
+			Title:           "omaterm",
 			Width:           1440,
 			Height:          900,
 			MinWidth:        900,

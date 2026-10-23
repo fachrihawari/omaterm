@@ -10,7 +10,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // The editor view: a real code editor of the active file, with the

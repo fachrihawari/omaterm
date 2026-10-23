@@ -3,6 +3,25 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.7.0
+
+### The app is OmaTerm
+
+The project is omaterm, so the app now says so everywhere: the window title,
+the menu entry, the configuration directory and the package names. Nothing
+else changed: your projects, tabs and settings are read from the old
+location the first time and kept from then on.
+
+Install it with the release's own installer, which puts the app in
+`~/.local/omaterm.app`:
+
+```sh
+curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh
+```
+
+An install of 0.6.x stays where it is; remove it with the old
+`install.sh --uninstall` if you want only one copy.
+
 ## 0.6.1
 
 ### Releases build themselves
@@ -15,7 +34,7 @@ pull request, so a broken build is caught before it reaches a release.
 
 ### Updates from inside the app
 
-oterm can now update itself. It checks the signed releases of the project
+omaterm can now update itself. It checks the signed releases of the project
 in the background, once a day, and offers a newer version with its notes:
 install it, skip that version, or be reminded later.
 

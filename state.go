@@ -13,7 +13,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
-	"oterm/service"
+	"omaterm/service"
 )
 
 // App state: projects, tabs, git data, overlays.
@@ -314,13 +314,29 @@ func stateFilePath() string {
 	if err != nil {
 		dir = os.ExpandEnv("$HOME/.config")
 	}
+	return filepath.Join(dir, "omaterm", "state.json")
+}
+
+// legacyStateFilePath is where the app kept the project list while it was
+// called oterm. Renaming the app must not lose it.
+func legacyStateFilePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = os.ExpandEnv("$HOME/.config")
+	}
 	return filepath.Join(dir, "oterm", "state.json")
 }
 
 func loadSavedProjects() ([]project, int) {
 	data, err := os.ReadFile(stateFilePath())
 	if err != nil {
-		return nil, 0
+		// The rename moved the file: read the old one, so the project list
+		// survives. The next save writes it to the new path.
+		if legacy, legacyErr := os.ReadFile(legacyStateFilePath()); legacyErr == nil {
+			data = legacy
+		} else {
+			return nil, 0
+		}
 	}
 	var st savedState
 	if err := json.Unmarshal(data, &st); err != nil {

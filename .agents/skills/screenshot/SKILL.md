@@ -66,7 +66,7 @@ Hyprland reports logical coordinates, so read them from the client and hand
 them to `grim`:
 
 ```bash
-geo=$(hyprctl clients -j | jq -r '.[] | select(.class == "oterm")
+geo=$(hyprctl clients -j | jq -r '.[] | select(.class == "omaterm")
   | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')
 timeout 15 grim -g "$geo" /tmp/opencode/window.png
 ```

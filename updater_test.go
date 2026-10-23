@@ -21,7 +21,7 @@ func TestUpdateSection(t *testing.T) {
 	if !tr.HasText("UPDATES") {
 		t.Error("the Info panel has no UPDATES section")
 	}
-	if !tr.HasText("UPDATES") || !tr.HasText("oterm") {
+	if !tr.HasText("UPDATES") || !tr.HasText("omaterm") {
 		t.Error("the UPDATES section does not name the app")
 	}
 	if err := tr.Click("Check"); err != nil {
