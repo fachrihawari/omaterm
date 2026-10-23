@@ -1,8 +1,10 @@
 # Releasing oterm
 
 CI runs on every push to `dev` and every pull request: `gofmt`, `go vet`,
-the tests, a build, cross-compiles for macOS, Windows and Linux ARM64, and a
-check that the screenshot goldens still match what the code renders.
+the tests, a build, and cross-compiles for macOS, Windows and Linux ARM64. A
+second job renders every screenshot and keeps them as an artifact; it does
+not compare bytes yet, because the goldens depend on the system's fonts
+(Inter and JetBrains Mono, else whatever the runner has).
 
 Releases are cut from a tag:
 
