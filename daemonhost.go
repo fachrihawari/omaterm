@@ -87,8 +87,9 @@ func (a *appState) useDaemon() {
 			r.Remove(id)
 		}
 	}
-	if v := r.Version(); v != appVersion() {
-		a.daemonStale = v
+	// Another build, even of this version: its sessions run older code.
+	if r.Version() != daemon.Build(appVersion()) {
+		a.daemonStale = daemon.VersionOf(r.Version())
 	}
 }
 
@@ -155,7 +156,7 @@ func (a *appState) daemonBanner(c *ui.Context) {
 	ui.Row(c.Key("daemon-banner")).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).
 		Radius(8).Background(pal.Raised).Border(1, pal.Border).Children(func() {
 		ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(pal.Accent)
-		ui.Text(c, "omaterm updated: your sessions still run in "+a.daemonStale+"'s session daemon.").
+		ui.Text(c, "omaterm updated: your sessions still run in the previous build's session daemon ("+a.daemonStale+").").
 			FontSize(12).TextColor(pal.TextSoft).Grow(1).MinWidth(0)
 		later := ui.ButtonBase(c).Padding(4, 10).Radius(6).Height(26).Children(func() {
 			ui.Text(c, "Later").FontSize(12).TextColor(pal.TextMuted)

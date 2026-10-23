@@ -76,7 +76,7 @@ func (a *appState) openFromArgs(args []string, wd string) {
 func main() {
 	// The session daemon the app starts: no window, the panes' shells.
 	if len(os.Args) > 1 && os.Args[1] == "__daemon" {
-		err := daemon.Run(daemon.Options{Version: appVersion(),
+		err := daemon.Run(daemon.Options{Version: daemon.Build(appVersion()),
 			Serve: os.Getenv("OMATERM_SERVICE") != "", Restore: os.Getenv("OMATERM_SERVICE") != ""})
 		if err != nil {
 			log.Print(err)
@@ -87,7 +87,7 @@ func main() {
 	// omaterm <command> is the CLI: it drives the running app's sessions
 	// over the control socket, and never opens a window.
 	if len(os.Args) > 1 && cli.IsCommand(os.Args[1]) {
-		cli.Version = appVersion()
+		cli.Version, cli.Build = appVersion(), daemon.Build(appVersion())
 		os.Exit(cli.Run(os.Args[1:]))
 	}
 	// A dev build started from a pane must not take the pane's variables

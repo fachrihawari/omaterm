@@ -56,7 +56,7 @@ func daemonCmd(args []string) error {
 		}
 		return daemon.StartProcess()
 	case "serve":
-		return daemon.Run(daemon.Options{Serve: true, Restore: true, Version: Version})
+		return daemon.Run(daemon.Options{Serve: true, Restore: true, Version: Build})
 	case "install-service":
 		return installService()
 	case "uninstall-service":

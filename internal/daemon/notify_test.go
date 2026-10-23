@@ -81,3 +81,30 @@ func TestDaemonQuietWithApp(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 	}
 }
+
+// Once the app goes, the session it showed is no more in view: its agent
+// finishing notifies.
+func TestAppLeavingUnviews(t *testing.T) {
+	d, socket, ch := notifyDaemon(t)
+	r, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Start(session.StartOptions{ID: "a1", Session: "s1", Exec: true,
+		Command: []string{"sh", "-c", `read x; printf '\033]7501;state=working\007'; sleep 0.5; printf '\033]7501;state=done\007'; sleep 30`}, Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetViewed("s1")
+	time.Sleep(200 * time.Millisecond)
+	r.Close()
+	waitFor(t, "app gone", func() bool { return !d.appAttached() })
+	d.reg.Get("a1").Write([]byte("go\r"))
+	select {
+	case n := <-ch:
+		if n.session != "s1" {
+			t.Fatalf("notification %+v", n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no notification for the session the app showed last")
+	}
+}

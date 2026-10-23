@@ -1,10 +1,14 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"omaterm/internal/paths"
 )
@@ -59,4 +63,41 @@ func ServiceInstalled() bool {
 // systemctl runs systemctl --user.
 func systemctl(args ...string) error {
 	return exec.Command("systemctl", append([]string{"--user"}, args...)...).Run()
+}
+
+// Build names this executable's build: its version and a hash of the
+// executable itself, so two builds of one version differ. The app
+// compares it with its daemon's to offer restarting sessions in a newer
+// daemon.
+func Build(version string) string {
+	buildOnce.Do(func() {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+		f, err := os.Open(exe)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err == nil {
+			buildHash = hex.EncodeToString(h.Sum(nil))[:12]
+		}
+	})
+	if buildHash == "" {
+		return version
+	}
+	return version + "+" + buildHash
+}
+
+var (
+	buildOnce sync.Once
+	buildHash string
+)
+
+// VersionOf is a build's version, without its hash.
+func VersionOf(build string) string {
+	v, _, _ := strings.Cut(build, "+")
+	return v
 }

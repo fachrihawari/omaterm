@@ -417,7 +417,13 @@ func (d *Daemon) Subscribe(fn func(proto.Message)) func() {
 		d.mu.Lock()
 		delete(d.subs, id)
 		d.clients--
+		gone := len(d.subs) == 0
 		d.mu.Unlock()
+		// With no app, no session is in view: what they do from now on is
+		// unread, and notifies.
+		if gone {
+			d.reg.SetViewed("")
+		}
 	}
 }
 

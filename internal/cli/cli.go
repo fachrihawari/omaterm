@@ -36,8 +36,9 @@ var Commands = []string{
 // IsCommand tells a subcommand from a path to open.
 func IsCommand(arg string) bool { return slices.Contains(Commands, arg) }
 
-// Version is the app's version, set by main.
-var Version = "dev"
+// Version is the app's version, and Build its build (daemon.Build), set
+// by main.
+var Version, Build = "dev", "dev"
 
 // Errors of exit statuses other than 1.
 var (
