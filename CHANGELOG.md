@@ -3,6 +3,14 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.6.1
+
+### Releases build themselves
+
+A tag now builds every platform and uploads it, signed, to a draft
+release: macOS, Windows, Linux and Linux ARM64. CI checks each push and
+pull request, so a broken build is caught before it reaches a release.
+
 ## 0.6.0
 
 ### Updates from inside the app

@@ -1,7 +1,7 @@
 {
   "name": "oterm",
   "identifier": "com.example.oterm",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "out": "build",
   "macos": {
     "minimumSystemVersion": "13.0"
