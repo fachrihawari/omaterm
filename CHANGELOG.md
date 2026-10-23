@@ -3,6 +3,65 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## Unreleased
+
+### Your Omarchy theme, everywhere
+
+OmaTerm takes its colors from the active Omarchy theme: the window, the
+terminals and the editors. Switch themes and it follows within a moment,
+no restart needed. Light themes are first-class, and the theme's colors are
+checked for contrast, so text stays readable on any of them. Off Omarchy,
+pick Dark or Light from the command palette.
+
+### Projects and their sessions
+
+The sidebar lists each project with its sessions under it, and switching
+projects no longer ends the shells of the one you leave. Panes are cards
+you can resize by their dividers, zoom (Ctrl+Shift+Enter), and move by
+dragging a header onto another pane: drop it on an edge to split there,
+or in the middle to swap.
+
+### See what your agents are doing
+
+Each session shows whether it is working, needs you, failed or is done,
+for Claude Code, Codex, Gemini, OpenCode, Pi and other agents, and for any
+program that reports its status. When one needs you while you look away,
+a notification says so; click it, or press Ctrl+Shift+J, to go there. The
+window title counts the sessions waiting on you.
+
+### The omaterm command
+
+Agents and scripts can drive your sessions: `omaterm split --down -- go
+test ./...`, `omaterm wait <pane> --exit`, `omaterm read`, `omaterm send`
+and more; `omaterm help` lists them. `omaterm skill setup` teaches Claude
+Code, Codex, Pi and OpenCode to use it, and tells OmaTerm which
+conversation runs in which pane. "Install Command Line Tool" in the
+palette puts it on your PATH.
+
+### Browser panes
+
+Open a web page beside your terminals with Ctrl+Shift+O, or `omaterm split
+--url localhost:5173`. With Remote Control on (in the palette), agents can
+read, click, type into and screenshot it with `omaterm browser`.
+
+### Sessions come back, and keep running
+
+Sessions now keep running when you close the window, and the next launch
+shows them as they went on. A daemon runs them; `omaterm daemon status`
+shows it, and `omaterm daemon install-service` keeps it running across
+logins as a systemd user service. If the daemon has to restart, for
+example after an update ("Restart Session Daemon" in the palette),
+sessions come back with their scrollback, and agents resume their
+conversation.
+
+### What did that turn change?
+
+The Changes tab (Ctrl+Shift+A) shows what an agent changed in its last
+turn, beside your uncommitted and branch changes, and lets you revert or
+keep each hunk. `omaterm diff --turn` prints the same. Git status no
+longer takes the repository's lock, so it never makes an agent's commit
+fail.
+
 ## 0.7.0
 
 ### The app is OmaTerm
