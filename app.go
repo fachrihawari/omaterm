@@ -19,6 +19,14 @@ func (a *appState) view(c *ui.Context) {
 	// Keyboard Shortcuts overlay.
 	a.registerKeybindings(c)
 	a.overlayWindowKeys(c)
+	for _, id := range a.queuedActions {
+		for _, cmd := range commandRegistry {
+			if cmd.ID == id && (cmd.Enabled == nil || cmd.Enabled(a)) {
+				cmd.Run(a, c)
+			}
+		}
+	}
+	a.queuedActions = nil
 
 	root := ui.Column(c).Fill()
 	a.wash(root)

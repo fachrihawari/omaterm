@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/cli"
 	"omaterm/internal/session"
 	"omaterm/service"
 )
@@ -51,6 +52,34 @@ var commandRegistry = append([]Command{
 	{ID: "app.zoomReset", Title: "Reset Font Size", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.zoomFont(0) }},
 
+	{ID: "cli.install", Title: "Install Command Line Tool", Category: "App",
+		Run: func(a *appState, c *ui.Context) {
+			if where, err := cli.InstallCLI(); err != nil {
+				toast(c, "Could not install: "+err.Error())
+			} else {
+				toast(c, "Installed "+where)
+			}
+		}},
+	{ID: "agents.setup", Title: "Set Up Agent Integration", Category: "App",
+		Run: func(a *appState, c *ui.Context) {
+			for _, k := range []string{"claude", "agents"} {
+				if err := cli.InstallSkill(k); err != nil {
+					toast(c, "Agent setup failed: "+err.Error())
+					return
+				}
+			}
+			toast(c, "Agents started in omaterm now know their session")
+		}},
+	{ID: "remote.toggle", Title: "Toggle Remote Control", Category: "App",
+		Run: func(a *appState, c *ui.Context) {
+			a.settings.RemoteControl = !a.settings.RemoteControl
+			a.saveSettings()
+			if a.settings.RemoteControl {
+				toast(c, "Remote Control on: agents can drive the window and browser panes")
+			} else {
+				toast(c, "Remote Control off")
+			}
+		}},
 	{ID: "theme.omarchy", Title: "Theme: Follow Omarchy", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeOmarchy) }},
 	{ID: "theme.dark", Title: "Theme: Dark", Category: "View",
@@ -292,4 +321,12 @@ func (a *appState) checkForUpdates(c *ui.Context) {
 		return
 	}
 	updater.CheckForUpdates()
+}
+
+// toast shows a message, when there is a window to show it in (a command
+// run through the socket has none).
+func toast(c *ui.Context, msg string) {
+	if c != nil {
+		c.Toast(msg)
+	}
 }

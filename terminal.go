@@ -1,6 +1,7 @@
 package main
 
 import (
+	"omaterm/internal/paths"
 	"omaterm/internal/session"
 	"os"
 	"strings"
@@ -162,19 +163,29 @@ func (a *appState) term(id string) *terminal.Terminal {
 	if dir == "" {
 		dir = a.workspace
 	}
-	p, err := a.panes.Start(session.StartOptions{
-		ID: id, Session: sessionID, Dir: dir,
-		Command: a.termCmd, Exec: len(a.termCmd) > 0,
-		Font:            terminal.Font{Family: a.termFont, Size: a.fontSize},
-		Theme:           omaTermTheme(),
-		MinimumContrast: a.minimumContrast(),
-		Padding:         terminal.Padding{X: 10, Y: 6},
-	})
+	p, err := a.startPane(id, sessionID, dir, a.termCmd, len(a.termCmd) > 0)
 	if err != nil {
 		a.paneFailed[id] = true
 		return nil
 	}
 	return p.Term()
+}
+
+// startPane runs a pane's shell, running command first when set (or only
+// command, with exec), in dir.
+func (a *appState) startPane(id, sessionID, dir string, command []string, exec bool) (*session.Pane, error) {
+	env := []string{"PATH=" + os.Getenv("PATH") + string(os.PathListSeparator) + paths.BinDir()}
+	if a.ctl != nil {
+		env = append(env, "OMATERM_SOCKET="+a.ctl.Path())
+	}
+	return a.panes.Start(session.StartOptions{
+		ID: id, Session: sessionID, Dir: dir,
+		Command: command, Exec: exec, Env: env,
+		Font:            terminal.Font{Family: a.termFont, Size: a.fontSize},
+		Theme:           omaTermTheme(),
+		MinimumContrast: a.minimumContrast(),
+		Padding:         terminal.Padding{X: 10, Y: 6},
+	})
 }
 
 // paneExited closes a pane whose shell exited: the pane, or its tab when

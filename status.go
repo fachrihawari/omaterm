@@ -59,6 +59,9 @@ func (a *appState) syncStatus() {
 	prev := a.status
 	a.status = next
 	a.statusChanged(prev, next)
+	if a.host != nil {
+		a.host.changed()
+	}
 	dirs := map[string]bool{}
 	for _, i := range next {
 		if d := i.WorkDir(); d != "" {

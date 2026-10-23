@@ -38,14 +38,19 @@ func (a *appState) stashWorkspace() {
 // sessions, else a session per tab name it starts with.
 func (a *appState) restoreWorkspace(p *project) {
 	a.wsOwner = p.ID
-	if w := a.ws[p.ID]; w != nil {
-		delete(a.ws, p.ID)
-		a.tabs, a.activeTab, a.activeView = w.tabs, w.activeTab, w.activeView
-		a.activePaneTermID, a.editors = w.activePane, w.editors
-		return
+	w := a.ws[p.ID]
+	if w == nil {
+		w = a.buildWorkspace(p)
 	}
-	a.tabs = nil
-	a.editors = map[string]*openFile{}
+	delete(a.ws, p.ID)
+	a.tabs, a.activeTab, a.activeView = w.tabs, w.activeTab, w.activeView
+	a.activePaneTermID, a.editors = w.activePane, w.editors
+}
+
+// buildWorkspace makes the workspace of a project not yet shown this run:
+// its saved sessions, else a session per tab name it starts with.
+func (a *appState) buildWorkspace(p *project) *projectWS {
+	w := &projectWS{editors: map[string]*openFile{}, activeView: tabTerminal}
 	if saved := a.saved[p.ID]; len(saved) > 0 {
 		delete(a.saved, p.ID)
 		for _, s := range saved {
@@ -57,11 +62,14 @@ func (a *appState) restoreWorkspace(p *project) {
 				if pane.Dir != "" {
 					a.paneDirs[pane.ID] = pane.Dir
 				}
+				if pane.Agent != nil {
+					a.paneAgents[pane.ID] = pane.Agent
+				}
 			}
-			a.tabs = append(a.tabs, topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split})
+			w.tabs = append(w.tabs, topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split})
 		}
 	}
-	if len(a.tabs) == 0 {
+	if len(w.tabs) == 0 {
 		names := p.Tabs
 		if len(names) == 0 {
 			names = []string{"dev"}
@@ -72,17 +80,29 @@ func (a *appState) restoreWorkspace(p *project) {
 			if name == "tests" {
 				t.Dot = dotYellow
 			}
-			a.tabs = append(a.tabs, t)
+			w.tabs = append(w.tabs, t)
 		}
 	}
-	a.activeTab = 0
-	a.activeView = tabTerminal
-	a.activePaneTermID = ""
-	if len(a.tabs) > 0 && a.tabs[0].Split != nil {
-		if ids := a.tabs[0].Split.termIDs(); len(ids) > 0 {
-			a.activePaneTermID = ids[0]
+	if len(w.tabs) > 0 && w.tabs[0].Split != nil {
+		if ids := w.tabs[0].Split.termIDs(); len(ids) > 0 {
+			w.activePane = ids[0]
 		}
 	}
+	return w
+}
+
+// workspaceOf returns a project's workspace to change: the shown one's
+// fields, through a.tabs, or the one it waits in, made if need be.
+func (a *appState) workspaceTabs(p *project) *[]topTab {
+	if p.ID == a.wsOwner {
+		return &a.tabs
+	}
+	w := a.ws[p.ID]
+	if w == nil {
+		w = a.buildWorkspace(p)
+		a.ws[p.ID] = w
+	}
+	return &w.tabs
 }
 
 // projectTabs returns a project's tabs, shown or not.

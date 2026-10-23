@@ -169,9 +169,19 @@ install_app_dir() {
     done <"$app_dir/$NAME.desktop" >"$data_home/applications/$NAME.desktop"
   fi
 
+  # The omaterm command, for shells outside the app: a link that survives
+  # updates, which replace the app's directory but keep its path. A file of
+  # the user's own there is left alone.
+  local link="$HOME/.local/bin/$NAME"
+  mkdir -p "$HOME/.local/bin"
+  if [[ ! -e "$link" || -L "$link" ]]; then
+    ln -sfn "$app_dir/$NAME" "$link"
+  fi
+
   echo ""
   echo "OmaTerm installed to $app_dir."
-  echo "Open it from the applications menu, or run $app_dir/$NAME"
+  echo "Open it from the applications menu, or run $NAME (from ~/.local/bin)."
+  echo "Run '$NAME skill setup' to let coding agents drive its sessions."
   echo "It updates itself from the project's releases."
 }
 

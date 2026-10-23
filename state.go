@@ -11,6 +11,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/agent"
+	"omaterm/internal/ctl"
 	"omaterm/internal/model"
 	"omaterm/internal/session"
 	"omaterm/service"
@@ -42,6 +44,8 @@ type topTab struct {
 	// Zoomed is the pane shown alone, "" for all.
 	Split  *splitNode
 	Zoomed string
+	// AgentNamed tells a name an agent gave the session.
+	AgentNamed bool
 }
 
 const (
@@ -242,13 +246,22 @@ type appState struct {
 	// wsOwner is the project whose workspace a.tabs is. saved are the
 	// sessions state.json had for projects not yet shown, paneDirs the
 	// directories their panes start in.
-	ws        map[string]*projectWS
-	wsOwner   string
-	saved     map[string][]model.Session
-	paneDirs  map[string]string
-	saveTimer *time.Timer
-	panesStop func()
-	git       *gitWatch
+	ws       map[string]*projectWS
+	wsOwner  string
+	saved    map[string][]model.Session
+	paneDirs map[string]string
+	// paneAgents are the agent conversations panes ran when saved, which
+	// their restore resumes (Phase 5).
+	paneAgents map[string]*agent.Session
+	saveTimer  *time.Timer
+	panesStop  func()
+	// ctl serves the control socket; host is what it calls.
+	ctl *ctl.Server
+	// queuedActions are commands `omaterm do` asked for, which the next
+	// frame runs.
+	queuedActions []string
+	host          *localHost
+	git           *gitWatch
 
 	// The panes' layout: handles of keyed elements, a divider being
 	// dragged, the drop zone last shown, the drop preview's target and
@@ -351,6 +364,7 @@ func newApp() *appState {
 		ws:               map[string]*projectWS{},
 		saved:            map[string][]model.Session{},
 		paneDirs:         map[string]string{},
+		paneAgents:       map[string]*agent.Session{},
 		status:           map[string]session.Info{},
 		commitFiles:      map[string][]service.CommitFile{},
 		commitStats:      map[string][2]int{},
