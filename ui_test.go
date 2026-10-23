@@ -109,3 +109,23 @@ func TestPaneTitle(t *testing.T) {
 		t.Errorf("program title: %q", got)
 	}
 }
+
+// The palette puts the session needing you first, and "> " keeps to
+// commands.
+func TestPaletteRanking(t *testing.T) {
+	a := twoProjectApp(t)
+	defer stopTermPanes(a)
+	a.newTerminalTabReal()
+	waiting := a.tabs[1]
+	a.status[waiting.Split.termIDs()[0]] = session.Info{ID: waiting.Split.termIDs()[0], Session: waiting.ID, Status: session.Waiting}
+	got := a.paletteCommands()
+	if len(got) == 0 || got[0].ID != "session:"+waiting.ID {
+		t.Fatalf("first entry %+v", got[0].Command)
+	}
+	a.cmdQuery = "> zoom"
+	for _, e := range a.paletteCommands() {
+		if e.Category == "Session" || e.Category == "Setting" {
+			t.Fatalf("> query found %s", e.ID)
+		}
+	}
+}

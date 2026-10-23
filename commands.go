@@ -267,7 +267,7 @@ func (a *appState) zoomFont(d int) {
 func (a *appState) applyFontSize() {
 	a.panes.Each(func(p *session.Pane) {
 		if t := p.Term(); t != nil {
-			t.SetFont(terminal.Font{Size: a.fontSize})
+			t.SetFont(terminal.Font{Family: a.termFont, Size: a.fontSize})
 		}
 	})
 	for _, doc := range a.editors {

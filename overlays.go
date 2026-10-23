@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/session"
 	"omaterm/service"
 )
 
@@ -461,25 +463,152 @@ type paletteEntry struct {
 	Command
 	Score   float64
 	Indices []int
+	// Info is a session entry's status, shown as its icon; On a setting's
+	// state, shown as a check.
+	Info    *session.Info
+	Setting bool
+	On      bool
 }
 
-func (a *appState) paletteCommands() []paletteEntry {
-	titles := make([]string, len(commandRegistry))
-	for i, cmd := range commandRegistry {
-		titles[i] = cmd.Category + ": " + cmd.Title
+// paletteSources are what the palette finds besides commands: sessions of
+// every project (those needing you first), projects, and settings.
+func (a *appState) paletteSources() []paletteEntry {
+	var out []paletteEntry
+	type sess struct {
+		e paletteEntry
+		u int
 	}
-	matches := service.FuzzyFilter(titles, a.cmdQuery, 100)
-	out := make([]paletteEntry, 0, len(matches))
-	for _, m := range matches {
-		// Find the command by title index.
-		for i, cmd := range commandRegistry {
-			if titles[i] == m.Value {
-				out = append(out, paletteEntry{Command: cmd, Score: m.Score, Indices: m.Indices})
-				break
+	var ss []sess
+	for pi, p := range a.projects {
+		for _, t := range a.projectTabs(p.ID) {
+			if t.Kind != tabTerminal {
+				continue
 			}
+			info, _ := a.sessionInfo(t)
+			pi, id := pi, t.ID
+			e := paletteEntry{Command: Command{ID: "session:" + t.ID, Category: "Session",
+				Title: p.Name + " › " + a.sessionName(t, info),
+				Run:   func(a *appState, c *ui.Context) { a.focusSession(pi, id) }}}
+			e.Info = &info
+			u := 0
+			switch statusState(info) {
+			case iconWaiting:
+				u = 3
+			case iconFailed:
+				u = 2
+			case iconDone:
+				u = 1
+			}
+			ss = append(ss, sess{e, u})
 		}
 	}
+	slices.SortStableFunc(ss, func(x, y sess) int { return y.u - x.u })
+	for _, s := range ss {
+		out = append(out, s.e)
+	}
+	for pi, p := range a.projects {
+		pi := pi
+		out = append(out, paletteEntry{Command: Command{ID: "project:" + p.ID, Category: "Project", Title: p.Name,
+			Run: func(a *appState, c *ui.Context) { a.switchProject(pi) }}})
+	}
+	toggle := func(id, title string, on bool, set func(*Settings)) {
+		out = append(out, paletteEntry{Setting: true, On: on, Command: Command{ID: "setting:" + id, Category: "Setting", Title: title,
+			Run: func(a *appState, c *ui.Context) { set(&a.settings); a.applySettings() }}})
+	}
+	st := a.settings
+	toggle("dim", "Dim Unfocused Panes", st.DimUnfocused, func(s *Settings) { s.DimUnfocused = !s.DimUnfocused })
+	toggle("compact", "Compact Density", st.Density == "compact", func(s *Settings) {
+		s.Density = map[bool]string{true: "comfortable", false: "compact"}[s.Density == "compact"]
+	})
+	toggle("wash", "Wash Background", st.Background != "plain", func(s *Settings) {
+		s.Background = map[bool]string{true: "plain", false: "wash"}[s.Background != "plain"]
+	})
+	toggle("focusmouse", "Focus Follows Mouse", st.FocusFollowsMouse, func(s *Settings) { s.FocusFollowsMouse = !s.FocusFollowsMouse })
+	toggle("motion", "Reduce Motion", st.ReduceMotion, func(s *Settings) { s.ReduceMotion = !s.ReduceMotion })
+	toggle("notify-waiting", "Notify When a Session Needs You", st.Notify.Waiting, func(s *Settings) { s.Notify.Waiting = !s.Notify.Waiting })
+	toggle("notify-done", "Notify When a Session Finishes", st.Notify.Done, func(s *Settings) { s.Notify.Done = !s.Notify.Done })
+	toggle("notify-error", "Notify When a Session Fails", st.Notify.Error, func(s *Settings) { s.Notify.Error = !s.Notify.Error })
 	return out
+}
+
+// paletteCommands finds what the query asks for: "> " limits it to
+// commands, "@" to sessions. With no query, sessions come first, those
+// needing you at the top.
+func (a *appState) paletteCommands() []paletteEntry {
+	q := strings.TrimSpace(a.cmdQuery)
+	onlyCmds, onlySessions := strings.HasPrefix(q, ">"), strings.HasPrefix(q, "@")
+	q = strings.TrimSpace(strings.TrimLeft(q, ">@"))
+	var pool []paletteEntry
+	if !onlyCmds {
+		for _, e := range a.paletteSources() {
+			if onlySessions && e.Category != "Session" {
+				continue
+			}
+			pool = append(pool, e)
+		}
+	}
+	if !onlySessions {
+		for _, cmd := range commandRegistry {
+			pool = append(pool, paletteEntry{Command: cmd})
+		}
+	}
+	titles := make([]string, len(pool))
+	index := map[string][]int{}
+	for i, e := range pool {
+		titles[i] = e.Category + ": " + e.Title
+		index[titles[i]] = append(index[titles[i]], i)
+	}
+	matches := service.FuzzyFilter(titles, q, 200)
+	out := make([]paletteEntry, 0, len(matches))
+	used := map[int]bool{}
+	for _, m := range matches {
+		for _, i := range index[m.Value] {
+			if used[i] {
+				continue
+			}
+			used[i] = true
+			e := pool[i]
+			e.Score, e.Indices = m.Score, m.Indices
+			if e.Category == "Session" && len(q) <= 3 {
+				e.Score += 0.2
+			}
+			out = append(out, e)
+		}
+	}
+	if q == "" {
+		// Keep the pool's order: sessions, projects, settings, commands.
+		slices.SortStableFunc(out, func(x, y paletteEntry) int { return idx(pool, x.ID) - idx(pool, y.ID) })
+	} else {
+		slices.SortStableFunc(out, func(x, y paletteEntry) int {
+			switch {
+			case x.Score > y.Score:
+				return -1
+			case x.Score < y.Score:
+				return 1
+			}
+			return 0
+		})
+	}
+	return out
+}
+
+func idx(pool []paletteEntry, id string) int {
+	for i, e := range pool {
+		if e.ID == id {
+			return i
+		}
+	}
+	return len(pool)
+}
+
+// applySettings takes the changed settings into effect and keeps them.
+func (a *appState) applySettings() {
+	a.panes.Each(func(p *session.Pane) {
+		if t := p.Term(); t != nil {
+			t.SetMinimumContrast(a.minimumContrast())
+		}
+	})
+	a.saveSettings()
 }
 
 func (a *appState) commandPaletteBody(c *ui.Context) {
@@ -501,7 +630,7 @@ func (a *appState) commandPaletteBody(c *ui.Context) {
 	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 		ui.Row(c).Height(30).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
 			ui.Icon(c, iconSquareTerminal).Width(14).Height(14).TextColor(pal.TextMuted)
-			ti := ui.TextInputBase(c, &a.cmdQuery).Placeholder("Type a command").FontSize(13).Grow(1)
+			ti := ui.TextInputBase(c, &a.cmdQuery).Placeholder("Search sessions, commands and settings  (> commands · @ sessions)").FontSize(13).Grow(1)
 			if ti.Changed() {
 				a.cmdSelected = 0
 			}
@@ -566,7 +695,18 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 		row.Background(pal.Hover)
 	}
 	row.Children(func() {
-		ui.Text(c, e.Category+":").FontSize(10).TextColor(pal.TextFaint).Width(64).SingleLine().Shrink(0)
+		switch {
+		case e.Info != nil:
+			if statusState(*e.Info) != iconNone {
+				a.statusIcon(c, *e.Info, 14)
+			} else {
+				ui.Icon(c, programIcon(firstNonEmpty(e.Info.Agent, e.Info.Process))).Size(14, 14).TextColor(pal.TextFaint)
+			}
+		case e.Category == "Project":
+			ui.Icon(c, iconFolder).Size(14, 14).TextColor(pal.TextFaint)
+		default:
+			ui.Text(c, e.Category+":").FontSize(10).TextColor(pal.TextFaint).Width(64).SingleLine().Shrink(0)
+		}
 		titleCol := pal.TextSoft
 		if !enabled {
 			titleCol = pal.TextFaint
@@ -574,7 +714,15 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().
 			Shrink(1).MinWidth(0).Ellipsis("…")
 		ui.Spacer(c)
-		if keys := keyPrimary(e.ID); keys != "" {
+		if e.Setting {
+			if e.On {
+				ui.Icon(c, iconCheck).Size(14, 14).TextColor(pal.Accent)
+			}
+		} else if e.Info != nil {
+			if text, _, fg := statusWords(*e.Info, nowFunc()); text != "" {
+				ui.Text(c, text).FontSize(11.5).TextColor(fg).SingleLine().Shrink(0)
+			}
+		} else if keys := keyPrimary(e.ID); keys != "" {
 			keyChip(c, keys)
 		}
 	})

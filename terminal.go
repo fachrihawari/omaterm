@@ -165,7 +165,7 @@ func (a *appState) term(id string) *terminal.Terminal {
 	p, err := a.panes.Start(session.StartOptions{
 		ID: id, Session: sessionID, Dir: dir,
 		Command: a.termCmd, Exec: len(a.termCmd) > 0,
-		Font:            terminal.Font{Size: a.fontSize},
+		Font:            terminal.Font{Family: a.termFont, Size: a.fontSize},
 		Theme:           omaTermTheme(),
 		MinimumContrast: a.minimumContrast(),
 		Padding:         terminal.Padding{X: 10, Y: 6},

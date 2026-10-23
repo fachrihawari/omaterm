@@ -268,6 +268,8 @@ type appState struct {
 	// notified is when each session last notified.
 	notified map[string]time.Time
 	title    string
+	// termFont is the terminals' font family (fonts.go).
+	termFont string
 	// lastViewed is the session last told to the panes as viewed.
 	lastViewed string
 
@@ -356,6 +358,7 @@ func newApp() *appState {
 		settings:         loadSettings(),
 	}
 	a.hookPanes()
+	a.termFont = termFontFamily()
 	a.loadUIPrefs()
 	a.themeMode = a.settings.Theme
 	a.applyTheme(themeSource(a.themeMode))
