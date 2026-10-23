@@ -1,0 +1,788 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmaTerm UI Mockup</title>
+<style>
+/* ------------------------------------------------------------------
+   Tokens derived from the active Omarchy theme (plan Phase 0.3).
+   Light = lupine (current), Dark = tokyo-night. Semantic ok/warn/bad
+   are hue-checked: lupine's "green" is violet, so ok is synthesized.
+   ------------------------------------------------------------------ */
+:root, [data-theme="light"] {
+  --bg:#fafafa; --wash:#ededed; --wash2:#e9ebf1; --glow:rgba(50,100,235,.12);
+  --card:#fafafa; --raised:#fdfdfd; --popover:#ffffff; --input:#ffffff; --code:#fafafa;
+  --hover:rgba(33,33,33,.045); --rowsel:#ffffff; --chip:rgba(33,33,33,.05);
+  --border:rgba(33,33,33,.07); --border-strong:rgba(33,33,33,.12);
+  --edge-top:rgba(255,255,255,.9); --edge-bot:rgba(33,33,33,.06);
+  --shadow1:rgba(0,0,0,.07); --shadow2:rgba(0,0,0,.035); --shadow-float:rgba(0,0,0,.14);
+  --scrim:rgba(0,0,0,.12); --veil:rgba(237,237,237,.28);
+  --text:#212121; --text-strong:#000000; --text-soft:#3a3a3a; --muted:#6f6f6f; --faint:#8c8c8c;
+  --accent:#3264eb; --accent-text:#ffffff; --sel:#d0d0d0;
+  --ok:#1f8a4c; --warn:#b45f06; --bad:#d1293d; --info:#3264eb;
+  --att:#b45f06; --att-soft:rgba(180,95,6,.12); --on-bad:#ffffff; --done:#212121; --on-done:#fafafa;
+  --diff-add:rgba(31,138,76,.10); --diff-del:rgba(209,41,61,.10);
+  /* raw ANSI (terminal content uses the theme author's colors) */
+  --a1:#c900c4; --a2:#4a2fd0; --a3:#026fde; --a4:#3264eb; --a5:#8a4ad7; --a6:#0c67de; --a8:#9e9e9e;
+  --a9:#f930fb; --a10:#9f85e0; --a12:#5482ff;
+}
+[data-theme="dark"] {
+  --bg:#1a1b26; --wash:#12131b; --wash2:#151827; --glow:rgba(122,162,247,.16);
+  --card:#1a1b26; --raised:#232532; --popover:#232532; --input:#1f202c; --code:#1a1b26;
+  --hover:rgba(169,177,214,.06); --rowsel:rgba(169,177,214,.10); --chip:rgba(169,177,214,.07);
+  --border:rgba(169,177,214,.08); --border-strong:rgba(169,177,214,.14);
+  --edge-top:rgba(192,202,245,.18); --edge-bot:rgba(192,202,245,.06);
+  --shadow1:rgba(0,0,0,.35); --shadow2:rgba(0,0,0,.20); --shadow-float:rgba(0,0,0,.45);
+  --scrim:rgba(0,0,0,.35); --veil:rgba(18,19,27,.42);
+  --text:#a9b1d6; --text-strong:#c0caf5; --text-soft:#9aa1c3; --muted:#787f9f; --faint:#5f6584;
+  --accent:#7aa2f7; --accent-text:#11121a; --sel:#292e42;
+  --ok:#9ece6a; --warn:#e0af68; --bad:#f7768e; --info:#7aa2f7;
+  --att:#e0af68; --att-soft:rgba(224,175,104,.14); --on-bad:#1a1b26; --done:#a9b1d6; --on-done:#1a1b26;
+  --diff-add:rgba(158,206,106,.10); --diff-del:rgba(247,118,142,.10);
+  --a1:#f7768e; --a2:#9ece6a; --a3:#e0af68; --a4:#7aa2f7; --a5:#ad8ee6; --a6:#449dab; --a8:#414868;
+  --a9:#ff7a93; --a10:#b9f27c; --a12:#7da6ff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: #2b2d33; color: #e6e6e6;
+  font: 13px/1.4 "Inter", "Noto Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.mono, .term { font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace; }
+
+/* ---------- demo chrome (outside the app) ---------- */
+.demo {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; position: sticky; top: 0; z-index: 50;
+  background: #1e1f24; border-bottom: 1px solid #34363e;
+}
+.demo h1 { font-size: 14px; margin: 0 12px 0 0; font-weight: 600; color: #fff; }
+.demo .grp { display: flex; gap: 2px; background: #2a2c33; padding: 3px; border-radius: 9px; }
+.demo button {
+  border: 0; background: transparent; color: #b8bcc8; font: inherit; font-size: 12.5px;
+  padding: 6px 12px; border-radius: 7px; cursor: pointer;
+}
+.demo button.on { background: #44475a; color: #fff; }
+.demo .note { color: #8d92a3; font-size: 12px; margin-left: auto; }
+.stage { padding: 24px 20px 40px; display: flex; justify-content: center; }
+.scr { display: none; }
+.scr.on { display: block; }
+.caption { max-width: 1440px; margin: 0 auto 12px; color: #a3a8b8; font-size: 12.5px; }
+
+/* ---------- window ---------- */
+.win {
+  width: 1440px; height: 860px; max-width: 100%;
+  border-radius: 12px; overflow: hidden; position: relative;
+  display: flex; flex-direction: column; color: var(--text);
+  background:
+    radial-gradient(1200px 600px at 100% 0%, var(--glow), transparent 55%),
+    linear-gradient(180deg, var(--wash), var(--wash2));
+  box-shadow: 0 30px 80px rgba(0,0,0,.45);
+}
+.body { flex: 1; display: flex; min-height: 0; }
+
+/* ---------- elevation helpers (plan 1.1) ---------- */
+.raised {
+  background: var(--raised);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 var(--edge-top), 0 1px 1px var(--shadow1), 0 2px 2px -1px var(--shadow1), 0 4px 6px -3px var(--shadow1);
+}
+[data-theme="light"] .raised { box-shadow: 0 1px 2px var(--shadow1), 0 1px 6px var(--shadow2); }
+.floating {
+  background: var(--popover); border: 1px solid var(--border-strong);
+  box-shadow: inset 0 1px 0 var(--edge-top), 0 16px 40px var(--shadow-float), 0 2px 6px var(--shadow1);
+}
+
+/* icon slots: fixed size, svg fills slot (low specificity so .ib/.sbar can override) */
+[data-ic] { display: inline-flex; flex: none; width: 14px; height: 14px; align-items: center; justify-content: center; }
+:where([data-ic]) > svg { width: 100%; height: 100%; }
+.sbar [data-ic] { width: 11px; height: 11px; }
+
+/* ---------- sidebar (plan 1.5) ---------- */
+.side { width: 240px; flex: none; display: flex; flex-direction: column; padding: 0 6px 0 8px; }
+.side-h { height: 40px; display: flex; align-items: center; gap: 4px; padding: 0 2px; }
+.side-h .lbl { font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .02em; flex: 1; padding-left: 4px; }
+.ib {
+  width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+  color: var(--muted); cursor: pointer; border: 1px solid transparent;
+}
+.ib:hover { background: var(--hover); color: var(--text); }
+.ib svg { width: 15px; height: 15px; }
+.side-list { flex: 1; overflow: hidden; }
+.proj { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 8px; color: var(--muted); font-size: 12.5px; font-weight: 600; margin-top: 6px; }
+.proj .chev { width: 12px; height: 12px; color: var(--faint); }
+.proj .name { flex: 1; }
+.proj .add { opacity: 0; }
+.proj:hover .add { opacity: 1; }
+.proj.collapsed .chev { transform: rotate(-90deg); }
+.row {
+  height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 22px;
+  border-radius: 8px; margin-bottom: 1px; cursor: pointer; position: relative;
+  transition: background .11s;
+}
+.row:hover { background: var(--hover); }
+.row.sel { background: var(--rowsel); border: 1px solid var(--border); box-shadow: 0 1px 2px var(--shadow2); }
+[data-theme="dark"] .row.sel { box-shadow: inset 0 1px 0 var(--edge-bot); }
+.row .pi { width: 14px; height: 14px; color: var(--faint); flex: none; }
+.row .nm { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.unread .nm { font-weight: 650; color: var(--text-strong); }
+.row.exited .nm { color: var(--muted); }
+.row .br { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.row .sp { flex: 1; }
+.row .tm { font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.side-f { height: 44px; display: flex; align-items: center; gap: 4px; padding: 0 2px 6px; }
+.chipc {
+  height: 24px; border-radius: 12px; padding: 0 8px 0 6px; display: flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 500; color: var(--muted); background: var(--chip); font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.chipc.att { color: var(--att); background: var(--att-soft); }
+
+/* ---------- status icons (plan 1.5) ---------- */
+.st { width: 14px; height: 14px; flex: none; display: inline-block; }
+.st svg { width: 100%; height: 100%; overflow: visible; }
+.st.s12 { width: 12px; height: 12px; }
+.st.s13 { width: 13px; height: 13px; }
+.spin { animation: spin 1s linear infinite; transform-origin: 50% 50%; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pulse { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: .65; } 50% { opacity: 1; } }
+
+/* ---------- main column ---------- */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.pills { height: 36px; display: flex; align-items: center; gap: 4px; padding: 5px 8px 5px 0; }
+.pill {
+  height: 26px; border-radius: 13px; padding: 0 10px; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; border: 1px solid transparent;
+}
+.pill:hover { background: var(--hover); }
+.pill.on { color: var(--text); }
+.pill .x { width: 12px; height: 12px; opacity: 0; color: var(--faint); }
+.pill.on .x, .pill:hover .x { opacity: 1; }
+.pill .fi { width: 13px; height: 13px; color: var(--faint); }
+.pill .dirty { color: var(--warn); font-size: 10px; }
+.pills .plus { width: 26px; height: 26px; border-radius: 13px; }
+.pills .gap { flex: 1; }
+.content { flex: 1; display: flex; gap: 8px; padding: 0 8px 8px 0; min-height: 0; }
+.panes { flex: 1; display: flex; gap: 8px; min-width: 0; position: relative; }
+.col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+/* ---------- pane cards (plan 1.3/1.4) ---------- */
+.pane {
+  border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  position: relative; background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 var(--edge-bot), 0 1px 1px var(--shadow1), 0 2px 2px -1px var(--shadow1), 0 4px 6px -3px var(--shadow1);
+}
+[data-theme="light"] .pane { box-shadow: 0 1px 2px var(--shadow1), 0 1px 6px var(--shadow2); }
+.pane.focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.pane.dim::after { content: ""; position: absolute; inset: 0; background: var(--veil); pointer-events: none; }
+.ph { height: 30px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 10px; }
+.grip { height: 24px; border-radius: 6px; padding: 0 6px; margin-left: -6px; display: flex; align-items: center; gap: 7px; flex: 0 1 auto; min-width: 60px; overflow: hidden; cursor: grab; }
+.grip .cwd { max-width: 160px; flex: 0 1 auto; min-width: 0; }
+.grip .t { flex: none; }
+.gchip, .schip { flex: none; }
+.grip:hover { background: var(--hover); }
+.grip .logo { width: 14px; height: 14px; color: var(--faint); flex: none; }
+.grip .t { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.pane:not(.focus) .grip .t { color: var(--muted); }
+.grip .cwd { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gchip {
+  height: 20px; border-radius: 6px; padding: 0 7px; display: flex; align-items: center; gap: 5px;
+  background: var(--chip); font-size: 11.5px; color: var(--text-soft); white-space: nowrap;
+}
+.gchip svg { width: 11px; height: 11px; color: var(--faint); }
+.gchip .add { color: var(--ok); } .gchip .del { color: var(--bad); }
+.ph .sp { flex: 1; }
+.schip {
+  height: 20px; border-radius: 6px; padding: 0 7px; display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; white-space: nowrap; background: var(--chip); color: var(--muted);
+}
+.schip.att { background: var(--att-soft); color: var(--att); font-weight: 500; }
+.schip.bad { background: color-mix(in oklab, var(--bad) 10%, transparent); color: var(--bad); }
+.hctl { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; width: 0; overflow: hidden; }
+.pane:hover .hctl { width: auto; }
+.pane:hover .hctl { opacity: 1; }
+.hctl { flex: none; }
+.hctl .ib { width: 22px; height: 22px; } .hctl .ib svg { width: 13px; height: 13px; }
+
+/* ---------- terminal content ---------- */
+.term {
+  flex: 1; padding: 6px 10px 10px; font-size: 12.5px; line-height: 1.5; white-space: pre; overflow: hidden;
+  color: var(--text); background: var(--code);
+}
+.term .k1 { color: var(--a1); } .term .k2 { color: var(--a2); } .term .k3 { color: var(--a3); }
+.term .k4 { color: var(--a4); } .term .k5 { color: var(--a5); } .term .k6 { color: var(--a6); }
+.term .k8 { color: var(--a8); } .term .k10 { color: var(--a10); } .term .k12 { color: var(--a12); }
+.term .dim { color: var(--muted); } .term .b { font-weight: 700; color: var(--text-strong); }
+.term .ok { color: var(--ok); } .term .warn { color: var(--warn); }
+.term .claude { color: #d97757; }
+.term .hl { background: var(--sel); }
+.term .cur { background: var(--text); color: var(--card); }
+.term .rule { color: var(--border-strong); }
+
+/* ---------- inspector card ---------- */
+.insp { width: 330px; flex: none; border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; }
+.itabs { height: 38px; display: flex; align-items: flex-end; gap: 14px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+.itab { padding: 0 0 9px; font-size: 12.5px; color: var(--muted); position: relative; display: flex; gap: 6px; align-items: center; cursor: pointer; }
+.itab.on { color: var(--text); font-weight: 600; }
+.itab.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
+.badge { min-width: 16px; height: 16px; border-radius: 8px; background: var(--chip); color: var(--muted); font-size: 10.5px; display: grid; place-items: center; padding: 0 4px; font-weight: 600; }
+.ibody { flex: 1; overflow: hidden; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.sect { font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .03em; text-transform: uppercase; margin: 2px 0 -4px; }
+.card2 { border-radius: 8px; background: var(--card); border: 1px solid var(--border); padding: 10px 12px; }
+.kv { display: grid; grid-template-columns: 70px 1fr; gap: 6px 10px; font-size: 12px; }
+.kv .k { color: var(--faint); } .kv .v { color: var(--text-soft); }
+.plist .p { display: flex; align-items: center; gap: 8px; height: 28px; font-size: 12px; border-radius: 6px; padding: 0 6px; }
+.plist .p:hover { background: var(--hover); }
+.plist .p .n { color: var(--text); } .plist .p .m { color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; }
+.dotg { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+
+/* ---------- status bar ---------- */
+.sbar { height: 24px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 14px; font-size: 11.5px; color: var(--faint); }
+.sbar span { display: flex; align-items: center; gap: 5px; } .sbar svg { width: 11px; height: 11px; }
+.sbar .sp { flex: 1; }
+
+/* ---------- browser pane (plan Phase 4) ---------- */
+.bbar { height: 34px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px; }
+.bbar .ib { width: 24px; height: 24px; } .bbar .ib svg { width: 14px; height: 14px; }
+.addr {
+  flex: 1; height: 24px; border-radius: 7px; background: var(--input); border: 1px solid var(--border);
+  display: flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 12px; color: var(--text-soft); min-width: 0;
+}
+.addr .host { color: var(--text); } .addr .fav { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); flex: none; }
+.load { position: absolute; left: 0; right: 0; top: 63px; height: 2px; background: linear-gradient(90deg, transparent, var(--accent) 40%, transparent); opacity: .7; }
+.page { flex: 1; background: #ffffff; color: #1f2328; padding: 36px 48px; overflow: hidden; font-family: system-ui, sans-serif; }
+.page h2 { margin: 0 0 4px; font-size: 26px; letter-spacing: -.02em; }
+.page .sub { color: #6b7280; margin-bottom: 22px; font-size: 13px; }
+.page .todo { border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; max-width: 420px; }
+.page .todo input { width: 100%; border: 0; border-bottom: 1px solid #e5e7eb; padding: 12px 14px; font: inherit; font-size: 14px; outline: 2px solid #6366f1; outline-offset: -2px; }
+.page .todo div { padding: 10px 14px; border-bottom: 1px solid #f1f2f4; font-size: 14px; display: flex; gap: 10px; align-items: center; }
+.page .todo div:last-child { border: 0; color: #6b7280; font-size: 12px; }
+.page .todo .ck { width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid #c4c8d0; }
+.page .todo .ck.on { background: #6366f1; border-color: #6366f1; }
+.agentmark {
+  position: absolute; right: 14px; bottom: 14px; height: 26px; border-radius: 13px; padding: 0 10px 0 8px;
+  display: flex; align-items: center; gap: 6px; font-size: 11.5px; background: var(--popover); color: var(--text-soft);
+  border: 1px solid var(--border-strong); box-shadow: 0 6px 18px var(--shadow-float);
+}
+
+/* ---------- command palette ---------- */
+.scrim { position: absolute; inset: 0; background: var(--scrim); }
+.palette {
+  position: absolute; left: 50%; top: 13%; transform: translateX(-50%); width: 640px; border-radius: 12px; overflow: hidden;
+}
+.pq { height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--border); font-size: 15px; color: var(--text-strong); }
+.pq svg { width: 16px; height: 16px; color: var(--faint); }
+.pq .caret { width: 1.5px; height: 18px; background: var(--accent); margin-left: -8px; }
+.pq .hint { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+.pl { padding: 6px; }
+.psec { font-size: 11px; font-weight: 600; color: var(--faint); padding: 8px 10px 4px; }
+.pit { height: 34px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 7px; font-size: 13px; color: var(--text); }
+.pit.on { background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.pit .d { color: var(--faint); font-size: 12px; }
+.pit .m { color: var(--accent); font-weight: 600; }
+.pit .sp { flex: 1; }
+.pit svg.lg { width: 15px; height: 15px; color: var(--faint); }
+.kbd { height: 20px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--border-strong); background: var(--chip); font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; font-family: inherit; }
+.sw { width: 28px; height: 16px; border-radius: 8px; background: var(--accent); position: relative; }
+.sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent-text); }
+.pfoot { height: 34px; display: flex; align-items: center; gap: 14px; padding: 0 14px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--faint); }
+
+/* ---------- changes panel (plan 5d) ---------- */
+.seg { display: flex; background: var(--chip); border-radius: 8px; padding: 2px; }
+.seg div { flex: 1; text-align: center; font-size: 12px; padding: 4px 0; border-radius: 6px; color: var(--muted); }
+.seg div.on { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px var(--shadow1); }
+.csum { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.csum .add { color: var(--ok); } .csum .del { color: var(--bad); }
+.csum .sp { flex: 1; }
+.flist .f { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 6px; border-radius: 6px; font-size: 12px; }
+.flist .f:hover { background: var(--hover); }
+.flist .f .s { width: 14px; font-weight: 700; font-size: 11px; text-align: center; }
+.flist .f .s.M { color: var(--warn); } .flist .f .s.A { color: var(--ok); } .flist .f .s.D { color: var(--bad); }
+.flist .f .dir { color: var(--faint); } .flist .f .nm { color: var(--text); }
+.flist .f .n { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.flist .f.open { background: var(--hover); }
+.diff { border-radius: 8px; border: 1px solid var(--border); overflow: hidden; font-size: 11.5px; line-height: 1.55; }
+.diff .hh { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--chip); color: var(--faint); font-size: 11px; }
+.diff .hh .sp { flex: 1; }
+.hbtn { height: 20px; border-radius: 5px; padding: 0 7px; font-size: 11px; display: inline-flex; align-items: center; border: 1px solid var(--border-strong); color: var(--text-soft); background: var(--raised); font-family: "Inter", system-ui, sans-serif; }
+.hbtn.pri { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+.diff .l { white-space: pre; padding: 0 8px 0 0; display: flex; }
+.diff .l .g { width: 30px; text-align: right; padding-right: 8px; color: var(--faint); flex: none; }
+.diff .l.a { background: var(--diff-add); } .diff .l.a .c { color: var(--text); }
+.diff .l.d { background: var(--diff-del); } .diff .l.d .c { color: var(--text); }
+.diff .l.a .g { color: var(--ok); } .diff .l.d .g { color: var(--bad); }
+
+/* ---------- drag / drop preview (plan 1.4) ---------- */
+.dragging { transform: scale(.985); opacity: .55; }
+.ghost {
+  position: absolute; height: 26px; border-radius: 7px; padding: 0 10px 0 8px; display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; font-weight: 600; color: var(--text); z-index: 5; pointer-events: none;
+}
+.ghost svg { width: 14px; height: 14px; color: var(--faint); }
+.drop {
+  position: absolute; left: 8px; right: 8px; bottom: 8px; height: calc(50% - 8px); border-radius: 9px;
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 28px color-mix(in oklab, var(--accent) 22%, transparent);
+  border: 1.5px dashed color-mix(in oklab, var(--accent) 55%, transparent);
+  display: grid; place-items: center; z-index: 4;
+}
+.drop .lab { height: 26px; border-radius: 13px; padding: 0 12px; background: var(--accent); color: var(--accent-text); font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.drop .lab svg { width: 13px; height: 13px; }
+.cursor { position: absolute; z-index: 6; width: 18px; height: 18px; pointer-events: none; }
+
+.legend { max-width: 1440px; margin: 16px auto 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px 24px; color: #a3a8b8; font-size: 12.5px; }
+.legend b { color: #e6e6e6; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="demo">
+  <h1>OmaTerm · UI mockup</h1>
+  <div class="grp" id="screens">
+    <button data-s="main" class="on">Main window</button>
+    <button data-s="browser">Browser pane + palette</button>
+    <button data-s="changes">Changes + drag</button>
+  </div>
+  <div class="grp" id="themes">
+    <button data-t="light" class="on">Light · lupine</button>
+    <button data-t="dark">Dark · tokyo-night</button>
+  </div>
+  <span class="note">Static mockup: colors come from the Omarchy theme</span>
+</div>
+
+<!-- ================================================================ -->
+<!-- SCREEN 1: MAIN WINDOW                                             -->
+<!-- ================================================================ -->
+<div class="stage scr on" id="s-main"><div>
+<p class="caption">Main window. Projects with session rows and live status, pill tabs, panes as cards with headers (status chip, git chip), dimmed unfocused pane, inspector as a card. Hover a pane to see its controls.</p>
+<div class="win" data-theme="light">
+  <div class="body">
+    <aside class="side">
+      <div class="side-h">
+        <div class="ib" data-ic="panel"></div><span class="lbl">Projects</span>
+        <div class="ib" data-ic="plus"></div><div class="ib" data-ic="folderplus"></div>
+      </div>
+      <div class="side-list">
+        <div class="proj"><span class="chev" data-ic="chev"></span><span class="name">oterm</span><div class="ib add" data-ic="plus"></div></div>
+        <div class="row sel unread"><span class="pi" data-ic="claude"></span><span class="nm">theme-reload</span><span class="sp"></span><span class="tm">2m</span><span class="st" data-st="waiting"></span></div>
+        <div class="row"><span class="pi" data-ic="bun"></span><span class="nm">dev server</span><span class="sp"></span><span class="tm">now</span><span class="st" data-st="working"></span></div>
+        <div class="row unread"><span class="pi" data-ic="go"></span><span class="nm">tests</span><span class="sp"></span><span class="tm">4m</span><span class="st" data-st="done"></span></div>
+        <div class="row"><span class="pi" data-ic="term"></span><span class="nm">zsh</span><span class="br">feat/cards</span><span class="sp"></span><span class="tm">1h</span><span class="st"></span></div>
+
+        <div class="proj"><span class="chev" data-ic="chev"></span><span class="name">kero-notes</span><div class="ib add" data-ic="plus"></div></div>
+        <div class="row"><span class="pi" data-ic="codex"></span><span class="nm">review PR #214</span><span class="sp"></span><span class="tm">6m</span><span class="st" data-st="progress"></span></div>
+        <div class="row exited"><span class="pi" data-ic="term"></span><span class="nm">build</span><span class="sp"></span><span class="tm">3h</span><span class="st" data-st="exited"></span></div>
+
+        <div class="proj collapsed"><span class="chev" data-ic="chev"></span><span class="name">dotfiles</span><span class="st s12" data-st="failed"></span></div>
+        <div class="proj collapsed"><span class="chev" data-ic="chev"></span><span class="name">omarchy-themes</span></div>
+      </div>
+      <div class="side-f">
+        <div class="ib" data-ic="folderplus"></div><div class="ib" data-ic="cmd"></div><span style="flex:1"></span>
+        <div class="chipc att"><span class="st s12" data-st="waiting"></span>1</div>
+        <div class="chipc"><span class="st s12" data-st="working"></span>2</div>
+        <div class="chipc"><span class="st s12" data-st="done"></span>1</div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="pills">
+        <div class="pill on raised"><span class="st s12" data-st="waiting"></span>theme-reload<span class="x" data-ic="x"></span></div>
+        <div class="pill"><span class="st s12" data-st="working"></span>dev server<span class="x" data-ic="x"></span></div>
+        <div class="pill"><span class="st s12" data-st="done"></span>tests<span class="x" data-ic="x"></span></div>
+        <div class="pill"><span class="fi" data-ic="file"></span>theme.go<span class="dirty">●</span><span class="x" data-ic="x"></span></div>
+        <div class="pill"><span class="fi" data-ic="diff" style="color:var(--ok)"></span>omarchy.go<span class="x" data-ic="x"></span></div>
+        <div class="ib plus" data-ic="plus"></div>
+        <span class="gap"></span>
+        <div class="ib" data-ic="search"></div><div class="ib" data-ic="kbd"></div><div class="ib" data-ic="panelr"></div>
+      </div>
+
+      <div class="content">
+        <div class="panes">
+          <!-- left: Claude Code waiting for permission -->
+          <div class="pane focus" style="flex:1.15">
+            <div class="ph">
+              <div class="grip"><span class="st s13" data-st="waiting"></span><span class="t">Claude Code</span><span class="cwd">~/Projects/oterm</span></div>
+              <div class="gchip"><span data-ic="branch"></span>feat/theme <span class="add">+42</span> <span class="del">−7</span></div>
+              <span class="sp"></span>
+              <div class="schip att">Needs permission</div>
+              <div class="hctl"><div class="ib" data-ic="cols"></div><div class="ib" data-ic="rows"></div><div class="ib" data-ic="max"></div><div class="ib" data-ic="x"></div></div>
+            </div>
+<div class="term"><span class="claude">✻</span> <span class="b">Claude Code</span> <span class="dim">v2.1.304 · Opus 5.5 · ~/Projects/oterm</span>
+
+<span class="dim">&gt;</span> Make the theme follow Omarchy and hot-reload on theme-set
+
+<span class="b">●</span> I'll watch <span class="k4">~/.local/state/omarchy/current</span> and derive the
+  palette from <span class="k4">colors.toml</span> with a hue check for ok/warn/bad.
+
+<span class="ok">●</span> <span class="b">Update</span>(internal/theme/omarchy.go)
+  <span class="dim">⎿  Added 42 lines, removed 7 lines</span>
+
+<span class="ok">●</span> <span class="b">Update</span>(themewatch.go)
+  <span class="dim">⎿  Added 31 lines</span>
+
+<span class="warn">●</span> <span class="b">Bash</span>(go test ./internal/theme/...)
+  <span class="dim">⎿  Waiting…</span>
+<span class="rule">──────────────────────────────────────────────────────────</span>
+ <span class="b">Bash command</span>
+   go test ./internal/theme/...
+   <span class="dim">Run the theme package tests</span>
+
+ Do you want to proceed?
+ <span class="k4">❯ 1. Yes</span>
+   2. Yes, and don't ask again for <span class="b">go test</span> commands
+   3. No
+
+ <span class="dim">Esc to cancel · Tab to amend</span></div>
+          </div>
+
+          <div class="col" style="flex:1">
+            <!-- right top: dev server (working) -->
+            <div class="pane" style="flex:1">
+              <div class="ph">
+                <div class="grip"><span class="st s13" data-st="working"></span><span class="t">bun run dev</span><span class="cwd">~/Projects/oterm/web</span></div>
+                <span class="sp"></span>
+                <div class="schip">:5173</div>
+                <div class="hctl"><div class="ib" data-ic="cols"></div><div class="ib" data-ic="rows"></div><div class="ib" data-ic="max"></div><div class="ib" data-ic="x"></div></div>
+              </div>
+<div class="term"><span class="dim">~/Projects/oterm/web</span> <span class="k4">feat/theme</span> <span class="k5">❯</span> bun run dev
+<span class="dim">$ vite</span>
+
+  <span class="ok b">VITE</span> <span class="ok">v7.1.3</span>  <span class="dim">ready in</span> <span class="b">312</span> <span class="dim">ms</span>
+
+  <span class="ok">➜</span>  <span class="b">Local</span>:   <span class="k6">http://localhost:<span class="b">5173</span>/</span>
+  <span class="dim">➜  Network: use --host to expose</span>
+
+<span class="dim">12:04:11</span> <span class="k6">[vite]</span> <span class="ok">hmr update</span> <span class="dim">/src/App.tsx</span>
+<span class="dim">12:04:19</span> <span class="k6">[vite]</span> <span class="ok">hmr update</span> <span class="dim">/src/theme.css</span>
+<span class="cur"> </span></div>
+            </div>
+            <!-- right bottom: tests (done, unfocused + dimmed) -->
+            <div class="pane dim" style="flex:.8">
+              <div class="ph">
+                <div class="grip"><span class="logo" data-ic="go"></span><span class="t">go test ./...</span><span class="cwd">~/Projects/oterm</span></div>
+                <span class="sp"></span>
+                <div class="schip">2.1s</div>
+                <div class="hctl"><div class="ib" data-ic="cols"></div><div class="ib" data-ic="rows"></div><div class="ib" data-ic="max"></div><div class="ib" data-ic="x"></div></div>
+              </div>
+<div class="term"><span class="dim">~/Projects/oterm</span> <span class="k4">feat/theme</span> <span class="k5">❯</span> go test ./...
+<span class="ok">ok</span>  	omaterm                  2.104s
+<span class="ok">ok</span>  	omaterm/internal/osc     0.012s
+<span class="ok">ok</span>  	omaterm/internal/theme   0.031s
+<span class="ok">ok</span>  	omaterm/service          0.418s
+<span class="dim">~/Projects/oterm</span> <span class="k4">feat/theme</span> <span class="k5">❯</span> </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- inspector card -->
+        <div class="insp raised">
+          <div class="itabs"><div class="itab on">Info</div><div class="itab">Files</div><div class="itab">Git <span class="badge">3</span></div><div class="itab">Changes</div></div>
+          <div class="ibody">
+            <div class="sect">Project</div>
+            <div class="card2"><div class="kv">
+              <span class="k">Name</span><span class="v">oterm</span>
+              <span class="k">Path</span><span class="v mono" style="font-size:11.5px">~/Projects/oterm</span>
+              <span class="k">Branch</span><span class="v">feat/theme <span style="color:var(--faint)">↑2</span></span>
+              <span class="k">Sessions</span><span class="v">4 · 1 needs you</span>
+            </div></div>
+            <div class="sect">Processes</div>
+            <div class="plist">
+              <div class="p"><span class="st s12" data-st="waiting"></span><span class="n">claude</span><span class="m">3.1% · 412 MB</span></div>
+              <div class="p"><span class="dotg"></span><span class="n">bun · vite</span><span class="m">1.4% · 188 MB</span></div>
+              <div class="p"><span class="dotg"></span><span class="n">gopls</span><span class="m">0.2% · 296 MB</span></div>
+            </div>
+            <div class="sect">Ports</div>
+            <div class="plist">
+              <div class="p"><span data-ic="globe" style="width:13px;height:13px;color:var(--faint)"></span><span class="n mono">:5173</span><span class="m">vite</span></div>
+              <div class="p"><span data-ic="globe" style="width:13px;height:13px;color:var(--faint)"></span><span class="n mono">:6060</span><span class="m">gopls</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="sbar">
+    <span><span data-ic="folder"></span>oterm › feat/theme</span>
+    <span><span class="dotg" style="width:6px;height:6px"></span>3 processes</span>
+    <span><span data-ic="globe"></span>2 ports</span>
+    <span class="sp"></span><span>Theme: lupine</span><span>CPU 6%</span><span>MEM 7.4 GB</span>
+  </div>
+</div>
+</div></div>
+
+<!-- ================================================================ -->
+<!-- SCREEN 2: BROWSER PANE + COMMAND PALETTE                          -->
+<!-- ================================================================ -->
+<div class="stage scr" id="s-browser"><div>
+<p class="caption">Browser pane beside an agent (Ctrl+Shift+O). The agent drives it with <span class="mono">omaterm browser type '#new-todo' "Buy milk" --enter</span>. On top: the mixed command palette (Ctrl+Shift+P) with sessions, commands and settings.</p>
+<div class="win" data-theme="light">
+  <div class="body">
+    <aside class="side">
+      <div class="side-h"><div class="ib" data-ic="panel"></div><span class="lbl">Projects</span><div class="ib" data-ic="plus"></div><div class="ib" data-ic="folderplus"></div></div>
+      <div class="side-list">
+        <div class="proj"><span class="chev" data-ic="chev"></span><span class="name">todo-app</span></div>
+        <div class="row sel"><span class="pi" data-ic="claude"></span><span class="nm">add todo filters</span><span class="sp"></span><span class="tm">now</span><span class="st" data-st="working"></span></div>
+        <div class="row"><span class="pi" data-ic="bun"></span><span class="nm">dev server</span><span class="sp"></span><span class="tm">12m</span><span class="st" data-st="working"></span></div>
+        <div class="proj"><span class="chev" data-ic="chev"></span><span class="name">oterm</span></div>
+        <div class="row unread"><span class="pi" data-ic="claude"></span><span class="nm">theme-reload</span><span class="sp"></span><span class="tm">2m</span><span class="st" data-st="waiting"></span></div>
+        <div class="row unread"><span class="pi" data-ic="go"></span><span class="nm">tests</span><span class="sp"></span><span class="tm">4m</span><span class="st" data-st="done"></span></div>
+      </div>
+      <div class="side-f"><div class="ib" data-ic="folderplus"></div><div class="ib" data-ic="cmd"></div><span style="flex:1"></span>
+        <div class="chipc att"><span class="st s12" data-st="waiting"></span>1</div><div class="chipc"><span class="st s12" data-st="working"></span>2</div><div class="chipc"><span class="st s12" data-st="done"></span>1</div></div>
+    </aside>
+    <div class="main">
+      <div class="pills">
+        <div class="pill on raised"><span class="st s12" data-st="working"></span>add todo filters<span class="x" data-ic="x"></span></div>
+        <div class="pill"><span class="st s12" data-st="working"></span>dev server<span class="x" data-ic="x"></span></div>
+        <div class="ib plus" data-ic="plus"></div><span class="gap"></span>
+        <div class="ib" data-ic="search"></div><div class="ib" data-ic="kbd"></div><div class="ib" data-ic="panelr"></div>
+      </div>
+      <div class="content">
+        <div class="panes">
+          <div class="pane" style="flex:.85">
+            <div class="ph">
+              <div class="grip"><span class="st s13" data-st="working"></span><span class="t">Claude Code</span><span class="cwd">~/code/todo-app</span></div>
+              <div class="gchip"><span data-ic="branch"></span>filters <span class="add">+88</span> <span class="del">−12</span></div>
+              <span class="sp"></span><div class="schip">1m 12s</div>
+            </div>
+<div class="term"><span class="dim">&gt;</span> Add All/Active/Done filters and verify in the browser
+
+<span class="ok">●</span> <span class="b">Update</span>(src/TodoList.tsx)
+  <span class="dim">⎿  Added 64 lines, removed 9 lines</span>
+
+<span class="ok">●</span> <span class="b">Bash</span>(omaterm split --url localhost:5173)
+  <span class="dim">⎿  pane b2x9q7r</span>
+
+<span class="ok">●</span> <span class="b">Bash</span>(omaterm browser type '#new-todo' "Buy milk" --enter)
+  <span class="dim">⎿  ok</span>
+
+<span class="ok">●</span> <span class="b">Bash</span>(omaterm browser click 'button[data-filter=active]')
+  <span class="dim">⎿  ok</span>
+
+<span class="claude">✻</span> <span class="claude">Verifying filters…</span> <span class="dim">(1m 12s · esc to interrupt)</span>
+<span class="rule">────────────────────────────────────────────</span>
+<span class="dim">&gt;</span> <span class="cur"> </span></div>
+          </div>
+          <!-- browser pane -->
+          <div class="pane focus" style="flex:1.15">
+            <div class="ph">
+              <div class="grip"><span class="logo" data-ic="globe"></span><span class="t">Todos · localhost:5173</span></div>
+              <span class="sp"></span>
+              <div class="hctl" style="opacity:1"><div class="ib" data-ic="cols"></div><div class="ib" data-ic="rows"></div><div class="ib" data-ic="max"></div><div class="ib" data-ic="x"></div></div>
+            </div>
+            <div class="bbar">
+              <div class="ib" data-ic="left"></div><div class="ib" data-ic="right" style="opacity:.4"></div><div class="ib" data-ic="reload"></div>
+              <div class="addr"><span class="fav"></span><span class="dim">http://</span><span class="host">localhost:5173</span><span class="dim">/?filter=active</span></div>
+              <div class="ib" data-ic="ext"></div>
+            </div>
+            <div class="load"></div>
+            <div class="page">
+              <h2>Todos</h2>
+              <div class="sub">3 items · showing <b>Active</b></div>
+              <div class="todo">
+                <input value="Buy milk" readonly>
+                <div><span class="ck"></span>Buy milk</div>
+                <div><span class="ck"></span>Ship OmaTerm 0.8</div>
+                <div><span class="ck"></span>Try the Tern SDK</div>
+                <div>All · <b style="color:#6366f1">Active</b> · Done</div>
+              </div>
+            </div>
+            <div class="agentmark"><span class="st s12" data-st="working"></span>Driven by Claude Code</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="sbar"><span><span data-ic="folder"></span>todo-app › filters</span><span><span class="dotg" style="width:6px;height:6px"></span>2 processes</span><span><span data-ic="globe"></span>1 port</span><span class="sp"></span><span>CPU 9%</span><span>MEM 7.9 GB</span></div>
+
+  <!-- palette overlay -->
+  <div class="scrim"></div>
+  <div class="palette floating">
+    <div class="pq"><span data-ic="search"></span>the<span class="caret"></span><span class="hint">&gt; commands · @ sessions</span></div>
+    <div class="pl">
+      <div class="psec">Sessions</div>
+      <div class="pit on"><span class="st" data-st="waiting"></span><span><span class="d">oterm ›</span> <span class="m">the</span>me-reload</span><span class="sp"></span><span class="d">Needs permission</span></div>
+      <div class="pit"><span class="st" data-st="done"></span><span><span class="d">oterm ›</span> tests</span><span class="sp"></span><span class="d">Finished 4m ago</span></div>
+      <div class="psec">Commands</div>
+      <div class="pit"><svg class="lg" data-ic2="palette"></svg><span><span class="m">The</span>me: Follow Omarchy</span><span class="sp"></span><span class="d">current · lupine</span></div>
+      <div class="pit"><svg class="lg" data-ic2="palette"></svg><span><span class="m">The</span>me: Dark</span><span class="sp"></span></div>
+      <div class="pit"><svg class="lg" data-ic2="globe"></svg><span>Open Browser Pane</span><span class="sp"></span><span class="kbd">Ctrl+Shift+O</span></div>
+      <div class="pit"><svg class="lg" data-ic2="bell"></svg><span>Go to Session That Needs You</span><span class="sp"></span><span class="kbd">Ctrl+Shift+J</span></div>
+      <div class="psec">Settings</div>
+      <div class="pit"><svg class="lg" data-ic2="eye"></svg><span>Dim Unfocused Panes</span><span class="sp"></span><span class="sw"></span></div>
+    </div>
+    <div class="pfoot"><span>↑↓ navigate</span><span>Enter open</span><span>Esc close</span></div>
+  </div>
+</div>
+</div></div>
+
+<!-- ================================================================ -->
+<!-- SCREEN 3: CHANGES PANEL + DRAG                                    -->
+<!-- ================================================================ -->
+<div class="stage scr" id="s-changes"><div>
+<p class="caption">Left: dragging the "Claude Code" pane by its header onto the lower half of "lazygit" (preview: Split down). Right: the Changes tab (Ctrl+Shift+A). Last Turn shows only what the agent changed in its last turn, with per-hunk Revert and Keep.</p>
+<div class="win" data-theme="light">
+  <div class="body">
+    <aside class="side">
+      <div class="side-h"><div class="ib" data-ic="panel"></div><span class="lbl">Projects</span><div class="ib" data-ic="plus"></div><div class="ib" data-ic="folderplus"></div></div>
+      <div class="side-list">
+        <div class="proj"><span class="chev" data-ic="chev"></span><span class="name">oterm</span></div>
+        <div class="row sel unread"><span class="pi" data-ic="claude"></span><span class="nm">theme-reload</span><span class="sp"></span><span class="tm">now</span><span class="st" data-st="done"></span></div>
+        <div class="row"><span class="pi" data-ic="bun"></span><span class="nm">dev server</span><span class="sp"></span><span class="tm">18m</span><span class="st" data-st="working"></span></div>
+        <div class="row"><span class="pi" data-ic="term"></span><span class="nm">zsh</span><span class="sp"></span><span class="tm">1h</span><span class="st"></span></div>
+        <div class="proj collapsed"><span class="chev" data-ic="chev"></span><span class="name">kero-notes</span><span class="st s12" data-st="progress"></span></div>
+      </div>
+      <div class="side-f"><div class="ib" data-ic="folderplus"></div><div class="ib" data-ic="cmd"></div><span style="flex:1"></span>
+        <div class="chipc"><span class="st s12" data-st="working"></span>2</div><div class="chipc"><span class="st s12" data-st="done"></span>1</div></div>
+    </aside>
+    <div class="main">
+      <div class="pills">
+        <div class="pill on raised"><span class="st s12" data-st="done"></span>theme-reload<span class="x" data-ic="x"></span></div>
+        <div class="pill"><span class="st s12" data-st="working"></span>dev server<span class="x" data-ic="x"></span></div>
+        <div class="ib plus" data-ic="plus"></div><span class="gap"></span>
+        <div class="ib" data-ic="search"></div><div class="ib" data-ic="kbd"></div><div class="ib" data-ic="panelr"></div>
+      </div>
+      <div class="content">
+        <div class="panes">
+          <div class="pane dragging" style="flex:1">
+            <div class="ph">
+              <div class="grip"><span class="st s13" data-st="done"></span><span class="t">Claude Code</span><span class="cwd">~/Projects/oterm</span></div>
+              <span class="sp"></span><div class="schip">Done</div>
+            </div>
+<div class="term"><span class="ok">●</span> <span class="b">Bash</span>(go test ./internal/theme/...)
+  <span class="dim">⎿  ok  omaterm/internal/theme  0.031s</span>
+
+<span class="b">●</span> Theme now follows Omarchy and reloads on
+  <span class="k4">omarchy-theme-set</span>. 3 files changed.
+
+<span class="rule">────────────────────────────────────</span>
+<span class="dim">&gt;</span> <span class="cur"> </span></div>
+          </div>
+          <div class="pane focus" style="flex:1">
+            <div class="ph">
+              <div class="grip"><span class="logo" data-ic="branch"></span><span class="t">lazygit</span><span class="cwd">~/Projects/oterm</span></div>
+              <span class="sp"></span>
+            </div>
+<div class="term"><span class="k4">┌─[1] Status──────────────┐</span>
+<span class="k4">│</span> oterm → <span class="ok">feat/theme</span>       <span class="k4">│</span>
+<span class="k4">└─────────────────────────┘</span>
+┌─[2] Files ──────────────┐
+│ <span class="warn">M</span> internal/theme/…go    │
+│ <span class="warn">M</span> themewatch.go         │
+│ <span class="ok">A</span> theme/omarchy_test.go │
+└─────────────────────────┘</div>
+            <div class="drop"><div class="lab"><span data-ic="rows"></span>Split down</div></div>
+          </div>
+          <div class="ghost floating" style="left:46%;top:62%"><span class="st s13" data-st="done"></span>Claude Code</div>
+          <svg class="cursor" style="left:calc(46% + 70px);top:calc(62% + 14px)" viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.5L10 19z" fill="var(--text-strong)" stroke="var(--card)" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        </div>
+
+        <!-- Changes tab -->
+        <div class="insp raised" style="width:400px">
+          <div class="itabs"><div class="itab">Info</div><div class="itab">Files</div><div class="itab">Git <span class="badge">3</span></div><div class="itab on">Changes</div></div>
+          <div class="ibody" style="gap:10px">
+            <div class="seg"><div class="on">Last Turn</div><div>Uncommitted</div><div>Branch</div></div>
+            <div class="csum"><span>3 files</span><span class="add">+80</span><span class="del">−7</span><span>· since turn 2m ago</span><span class="sp"></span><div class="ib" data-ic="reload" style="width:22px;height:22px"></div><div class="ib" data-ic="ext" style="width:22px;height:22px"></div></div>
+            <div class="flist">
+              <div class="f open"><span class="s M">M</span><span><span class="dir">internal/theme/</span><span class="nm">omarchy.go</span></span><span class="n"><span style="color:var(--ok)">+42</span> <span style="color:var(--bad)">−7</span></span></div>
+            </div>
+            <div class="diff mono">
+              <div class="hh"><span>@@ -18,9 +18,16 @@ func LoadOmarchy</span><span class="sp"></span><span class="hbtn">Keep</span><span class="hbtn pri">Revert</span></div>
+              <div class="l"><span class="g">18</span><span class="c">  data, err := os.ReadFile(path)</span></div>
+              <div class="l d"><span class="g">−</span><span class="c">  if mode := m["mode"]; mode == "" {</span></div>
+              <div class="l d"><span class="g">−</span><span class="c">    return Source{}, errNoMode</span></div>
+              <div class="l a"><span class="g">+</span><span class="c">  src.Dark = m["mode"] == "dark"</span></div>
+              <div class="l a"><span class="g">+</span><span class="c">  if m["mode"] == "" {</span></div>
+              <div class="l a"><span class="g">+</span><span class="c">    src.Dark = luminance(bg) &lt; 0.4</span></div>
+              <div class="l a"><span class="g">+</span><span class="c">  }</span></div>
+              <div class="l"><span class="g">27</span><span class="c">  src.Accent = hex(m["accent"])</span></div>
+              <div class="hh"><span>@@ -61,4 +68,8 @@ func ansi</span><span class="sp"></span><span class="hbtn">Keep</span><span class="hbtn pri">Revert</span></div>
+              <div class="l a"><span class="g">+</span><span class="c">  if g, err := ghostty(dir); err == nil {</span></div>
+              <div class="l a"><span class="g">+</span><span class="c">    src.ANSI = g.Palette</span></div>
+              <div class="l a"><span class="g">+</span><span class="c">  }</span></div>
+            </div>
+            <div class="flist">
+              <div class="f"><span class="s M">M</span><span><span class="nm">themewatch.go</span></span><span class="n"><span style="color:var(--ok)">+31</span></span></div>
+              <div class="f"><span class="s A">A</span><span><span class="dir">internal/theme/</span><span class="nm">omarchy_test.go</span></span><span class="n"><span style="color:var(--ok)">+7</span></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="sbar"><span><span data-ic="folder"></span>oterm › feat/theme</span><span><span class="dotg" style="width:6px;height:6px"></span>2 processes</span><span class="sp"></span><span>CPU 4%</span><span>MEM 7.2 GB</span></div>
+</div>
+</div></div>
+
+<div class="legend">
+  <div><b>Status icons</b>: spinning arc = working · arc filling up = progress · amber ring with pulsing dot = needs you · red "!" = failed · filled check = done, unread · ✕ = exited · no icon = idle shell</div>
+  <div><b>Footer chips</b>: counts of sessions that need you, are working, or are done. Click one to jump to the next such session (Ctrl+Shift+J for "needs you").</div>
+  <div><b>Pane header</b>: status or program logo, title, cwd, git chip (branch +added −removed), status chip. Controls appear on hover. Drag the title to move or swap panes.</div>
+  <div><b>Theme</b>: every color here is derived from the Omarchy theme. Switching the Omarchy theme recolors the app live.</div>
+</div>
+
+<script>
+// Inline icons (Lucide-style strokes). Program logos are simplified marks.
+const S = (d, extra='') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
+const IC = {
+  panel: S('<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/>'),
+  panelr: S('<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/>'),
+  plus: S('<path d="M12 5v14M5 12h14"/>'),
+  folderplus: S('<path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/>'),
+  folder: S('<path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/>'),
+  chev: S('<path d="M6 9l6 6 6-6"/>'),
+  cmd: S('<path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/>'),
+  x: S('<path d="M6 6l12 12M18 6L6 18"/>'),
+  file: S('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+  diff: S('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V15a3 3 0 0 0 3 3h6.5M18 15.5V9a3 3 0 0 0-3-3H8.5"/>'),
+  search: S('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>'),
+  kbd: S('<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),
+  branch: S('<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-6 4-11 8"/>'),
+  cols: S('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
+  rows: S('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/>'),
+  max: S('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
+  globe: S('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
+  left: S('<path d="M15 18l-6-6 6-6"/>'), right: S('<path d="M9 18l6-6-6-6"/>'),
+  reload: S('<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>'),
+  ext: S('<path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'),
+  term: S('<path d="M4 17l6-5-6-5M12 19h8"/>'),
+  palette: S('<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c1 0 1.7-.8 1.7-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.7 1.7-1.7H16a6 6 0 0 0 6-6c0-4.4-4.5-8.2-10-8.2z"/>'),
+  bell: S('<path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>'),
+  eye: S('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+  // program marks (monochrome, tinted by TextFaint)
+  claude: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 6.2L19 5l-3.2 5.4L22 12l-6.2 1.6L19 19l-5.4-3.2L12 22l-1.6-6.2L5 19l3.2-5.4L2 12l6.2-1.6L5 5l5.4 3.2z"/></svg>`,
+  codex: S('<path d="M12 2l8.5 5v10L12 22l-8.5-5V7z"/><path d="M8 10l3 2-3 2M13 15h3"/>'),
+  bun: S('<path d="M3 14c0-4.5 4-8 9-8s9 3.5 9 8c0 2.8-4 5-9 5s-9-2.2-9-5z"/><path d="M9 13h.01M15 13h.01M10.5 15.5c.8.6 2.2.6 3 0"/>'),
+  go: `<svg viewBox="0 0 24 24" fill="currentColor"><text x="12" y="16.5" font-size="11" font-weight="800" text-anchor="middle" font-family="Inter, sans-serif">go</text></svg>`,
+};
+// Status icons, matching plan 1.5.
+const ST = {
+  working: `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--text)" stroke-opacity=".15" stroke-width="1.7"/><g class="spin"><path d="M8 2a6 6 0 0 1 5.6 3.9" fill="none" stroke="var(--text)" stroke-width="1.7" stroke-linecap="round"/></g></svg>`,
+  progress: `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--text)" stroke-opacity=".15" stroke-width="1.7"/><path d="M8 2a6 6 0 0 1 3.5 10.9" fill="none" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round"/></svg>`,
+  waiting: `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--att)" stroke-width="1.7"/><circle class="pulse" cx="8" cy="8" r="2.5" fill="var(--att)"/></svg>`,
+  failed: `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--bad)"/><path d="M8 4.5v4.2" stroke="var(--on-bad)" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.3" r="1" fill="var(--on-bad)"/></svg>`,
+  done: `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="var(--done)"/><path d="M5 8.2l2 2 4-4.2" fill="none" stroke="var(--on-done)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  exited: `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="var(--faint)" stroke-width="1.5"/><path d="M6 6l4 4M10 6l-4 4" stroke="var(--faint)" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+};
+document.querySelectorAll('[data-ic]').forEach(el => { el.innerHTML = IC[el.dataset.ic] || ''; });
+document.querySelectorAll('svg[data-ic2]').forEach(el => { el.outerHTML = IC[el.dataset.ic2].replace('<svg', '<svg class="lg"'); });
+document.querySelectorAll('[data-st]').forEach(el => { el.innerHTML = ST[el.dataset.st] || ''; });
+
+// Screen + theme switching.
+const setOn = (grp, btn) => grp.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+document.getElementById('screens').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return; setOn(e.currentTarget, b);
+  document.querySelectorAll('.scr').forEach(s => s.classList.toggle('on', s.id === 's-' + b.dataset.s));
+});
+document.getElementById('themes').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return; setOn(e.currentTarget, b);
+  document.querySelectorAll('.win').forEach(w => w.dataset.theme = b.dataset.t);
+  document.querySelectorAll('.sbar span').forEach(s => { if (s.textContent.startsWith('Theme:')) s.textContent = 'Theme: ' + (b.dataset.t === 'dark' ? 'tokyo-night' : 'lupine'); });
+});
+</script>
+</body>
+</html>
