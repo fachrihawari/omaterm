@@ -15,8 +15,20 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/theme"
 	"omaterm/service"
 )
+
+// shotTheme loads one of the Omarchy theme fixtures.
+func shotTheme(t *testing.T, name string) theme.Source {
+	t.Helper()
+	src, err := theme.ParseColors(filepath.Join("internal", "theme", "testdata", name+".toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.Name = name
+	return src
+}
 
 // Renders the app's views to PNGs in testdata/ for visual comparison
 // against the mock. Run: go test -run TestShots
@@ -51,6 +63,9 @@ func TestShots(t *testing.T) {
 		check func(a *appState) error
 	}{
 		{"terminal", nil, nil},
+		{"theme-light", func(a *appState) { a.applyTheme(shotTheme(t, "lupine")) }, nil},
+		{"theme-tokyo", func(a *appState) { a.applyTheme(shotTheme(t, "tokyo-night")) }, nil},
+		{"theme-mono", func(a *appState) { a.applyTheme(shotTheme(t, "white")) }, nil},
 		{"editor", func(a *appState) { a.openEditor("app.go") },
 			func(a *appState) error { return wantView(a, tabEditor, "app.go") }},
 		{"image", func(a *appState) { a.openEditor("resources/icon.png") },

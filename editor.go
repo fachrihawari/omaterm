@@ -110,39 +110,39 @@ func (a *appState) activeEditor() *openFile {
 func (a *appState) editorView(c *ui.Context) ui.Element {
 	doc := a.activeEditor()
 	if doc == nil {
-		return ui.Column(c).Fill().Background(colCodeBg).Center().Children(func() {
-			ui.Text(c, "No file open").FontSize(13).TextColor(colMuted)
-			ui.Text(c, keyLabels("file.quickOpen")+" to open a file").FontSize(11).TextColor(colMuted2).Margin(4, 0, 0, 0)
+		return ui.Column(c).Fill().Background(pal.Code).Center().Children(func() {
+			ui.Text(c, "No file open").FontSize(13).TextColor(pal.TextMuted)
+			ui.Text(c, keyLabels("file.quickOpen")+" to open a file").FontSize(11).TextColor(pal.TextFaint).Margin(4, 0, 0, 0)
 		})
 	}
 	if doc.Image != nil && (doc.State == nil || doc.Preview) {
 		return a.imageView(c, doc)
 	}
 	if doc.Binary {
-		return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
-			ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-				ui.Text(c, doc.Path).FontSize(10).TextColor(colText2).SingleLine().Shrink(0)
+		return ui.Column(c).Fill().Background(pal.Code).Children(func() {
+			ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+				ui.Text(c, doc.Path).FontSize(10).TextColor(pal.TextSoft).SingleLine().Shrink(0)
 			})
 			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
-				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(colMuted2)
-				ui.Text(c, pathBase(doc.Path)).FontSize(13).TextColor(colText2)
+				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(pal.TextFaint)
+				ui.Text(c, pathBase(doc.Path)).FontSize(13).TextColor(pal.TextSoft)
 				ui.Text(c, "Binary file · "+service.FormatBytes(uint64(doc.Size))+" · preview not available").
-					FontSize(11).TextColor(colMuted)
+					FontSize(11).TextColor(pal.TextMuted)
 			})
 		})
 	}
 
-	return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
+	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
 		// Breadcrumb + actions.
-		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			parts := strings.Split(doc.Path, string(filepath.Separator))
 			for i, part := range parts {
 				if i > 0 {
-					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(colMuted2)
+					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(pal.TextFaint)
 				}
-				col := colMuted
+				col := pal.TextMuted
 				if i == len(parts)-1 {
-					col = colText2
+					col = pal.TextSoft
 				}
 				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
 			}
@@ -196,19 +196,19 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 		}
 
 		// Status line.
-		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
+		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
 			pos := doc.State.CursorPos()
-			ui.Text(c, "Ln "+itoa(pos.Line+1)+", Col "+itoa(pos.Col+1)).FontSize(10).TextColor(colMuted)
-			ui.Text(c, "UTF-8").FontSize(10).TextColor(colMuted)
+			ui.Text(c, "Ln "+itoa(pos.Line+1)+", Col "+itoa(pos.Col+1)).FontSize(10).TextColor(pal.TextMuted)
+			ui.Text(c, "UTF-8").FontSize(10).TextColor(pal.TextMuted)
 			ui.Spacer(c)
 			if doc.State.Buffer.Modified() {
-				ui.Text(c, "●").FontSize(10).TextColor(colYellow)
+				ui.Text(c, "●").FontSize(10).TextColor(pal.Warn)
 			}
 			lang := ""
 			if l := doc.State.Buffer.Language(); l != nil {
 				lang = l.Name
 			}
-			ui.Text(c, lang).FontSize(10).TextColor(colMuted)
+			ui.Text(c, lang).FontSize(10).TextColor(pal.TextMuted)
 		})
 	})
 }
@@ -231,16 +231,16 @@ func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
 // and size below. There is nothing to edit, so the save action is gone.
 func (a *appState) imageView(c *ui.Context, doc *openFile) ui.Element {
 	img := doc.Image
-	return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
-		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
+		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			parts := strings.Split(doc.Path, string(filepath.Separator))
 			for i, part := range parts {
 				if i > 0 {
-					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(colMuted2)
+					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(pal.TextFaint)
 				}
-				col := colMuted
+				col := pal.TextMuted
 				if i == len(parts)-1 {
-					col = colText2
+					col = pal.TextSoft
 				}
 				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
 			}
@@ -255,9 +255,9 @@ func (a *appState) imageView(c *ui.Context, doc *openFile) ui.Element {
 		ui.Box(c).Grow(1).Padding(16).Children(func() {
 			if img.Pic == nil {
 				ui.Column(c).Fill().Center().Gap(6).Children(func() {
-					ui.Icon(c, iconImage).Width(28).Height(28).TextColor(colMuted2)
-					ui.Text(c, "Could not decode this picture").FontSize(12).TextColor(colText2)
-					ui.Text(c, pathBase(doc.Path)).FontSize(10).TextColor(colMuted)
+					ui.Icon(c, iconImage).Width(28).Height(28).TextColor(pal.TextFaint)
+					ui.Text(c, "Could not decode this picture").FontSize(12).TextColor(pal.TextSoft)
+					ui.Text(c, pathBase(doc.Path)).FontSize(10).TextColor(pal.TextMuted)
 				})
 				return
 			}
@@ -268,17 +268,17 @@ func (a *appState) imageView(c *ui.Context, doc *openFile) ui.Element {
 			if img.Vector {
 				fit = ui.Contain
 			}
-			ui.Box(c).Fill().Radius(8).Border(1, colBorder).Background(ui.Hex("#0c0f13")).Padding(12).Children(func() {
+			ui.Box(c).Fill().Radius(8).Border(1, pal.Border).Background(pal.Code).Padding(12).Children(func() {
 				ui.Image(c, img.Pic).Fit(fit).Fill()
 			})
 		})
 
-		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
+		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
 			dims := itoa(int(img.W)) + " × " + itoa(int(img.H)) + " px"
-			ui.Text(c, dims).FontSize(10).TextColor(colMuted)
-			ui.Text(c, service.FormatBytes(uint64(img.Size))).FontSize(10).TextColor(colMuted)
+			ui.Text(c, dims).FontSize(10).TextColor(pal.TextMuted)
+			ui.Text(c, service.FormatBytes(uint64(img.Size))).FontSize(10).TextColor(pal.TextMuted)
 			ui.Spacer(c)
-			ui.Text(c, imageFormat(doc.Path)).FontSize(10).TextColor(colMuted)
+			ui.Text(c, imageFormat(doc.Path)).FontSize(10).TextColor(pal.TextMuted)
 		})
 	})
 }
@@ -291,23 +291,23 @@ func (a *appState) imageDiff(c *ui.Context, old, new imageSide) ui.Element {
 	oldLabel, newLabel := a.diffSideLabels()
 	sideHeader := func(label string, side imageSide) {
 		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, label).FontSize(9).TextColor(colMuted).LetterSpacing(1.0).
+			ui.Text(c, label).FontSize(9).TextColor(pal.TextMuted).LetterSpacing(1.0).
 				SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
 			ui.Spacer(c)
 			switch {
 			case side.Missing:
-				ui.Text(c, "missing").FontSize(9).TextColor(colMuted2).Shrink(0)
+				ui.Text(c, "missing").FontSize(9).TextColor(pal.TextFaint).Shrink(0)
 			case side.Pic != nil:
 				ui.Text(c, itoa(int(side.W))+" × "+itoa(int(side.H))+" px").
-					FontSize(9).TextColor(colMuted2).SingleLine().Shrink(0)
+					FontSize(9).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 				ui.Text(c, service.FormatBytes(uint64(side.Size))).
-					FontSize(9).TextColor(colMuted2).SingleLine().Shrink(0)
+					FontSize(9).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 			}
 		})
 	}
-	return ui.Column(c).Grow(1).Background(colCodeBg).Children(func() {
-		ui.Row(c).Height(24).Padding(0, 16).Gap(16).Background(colDiffTop).
-			BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+	return ui.Column(c).Grow(1).Background(pal.Code).Children(func() {
+		ui.Row(c).Height(24).Padding(0, 16).Gap(16).Background(pal.Sidebar).
+			BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			sideHeader(oldLabel, old)
 			sideHeader(newLabel, new)
 		})
@@ -320,17 +320,17 @@ func (a *appState) imageDiff(c *ui.Context, old, new imageSide) ui.Element {
 
 func imageDiffSide(c *ui.Context, side imageSide, missingLabel string) {
 	ui.Box(c).Grow(1).MinWidth(0).FillHeight().Padding(12).Children(func() {
-		ui.Box(c).Fill().Radius(8).Border(1, colBorder).Background(ui.Hex("#0c0f13")).Padding(12).Children(func() {
+		ui.Box(c).Fill().Radius(8).Border(1, pal.Border).Background(pal.Code).Padding(12).Children(func() {
 			switch {
 			case side.Missing:
 				ui.Column(c).Fill().Center().Gap(6).Children(func() {
-					ui.Icon(c, iconImage).Width(24).Height(24).TextColor(colMuted2)
-					ui.Text(c, missingLabel).FontSize(11).TextColor(colMuted)
+					ui.Icon(c, iconImage).Width(24).Height(24).TextColor(pal.TextFaint)
+					ui.Text(c, missingLabel).FontSize(11).TextColor(pal.TextMuted)
 				})
 			case side.Pic == nil:
 				ui.Column(c).Fill().Center().Gap(6).Children(func() {
-					ui.Icon(c, iconImage).Width(24).Height(24).TextColor(colMuted2)
-					ui.Text(c, "Could not decode this picture").FontSize(11).TextColor(colMuted)
+					ui.Icon(c, iconImage).Width(24).Height(24).TextColor(pal.TextFaint)
+					ui.Text(c, "Could not decode this picture").FontSize(11).TextColor(pal.TextMuted)
 				})
 			default:
 				fit := ui.ScaleDown

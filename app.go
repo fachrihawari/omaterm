@@ -19,7 +19,7 @@ func (a *appState) view(c *ui.Context) {
 	a.registerKeybindings(c)
 	a.overlayWindowKeys(c)
 
-	ui.Column(c).Fill().Background(colBg).Children(func() {
+	ui.Column(c).Fill().Background(pal.Wash).Children(func() {
 		if a.sidebarVisible {
 			ui.Split(c, &a.sidebarW, func() {
 				a.projectsSidebar(c)
@@ -126,18 +126,18 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 	}
 	result := -1
 	ui.DialogBase(c, open, func(backdrop, panel ui.Element) {
-		backdrop.Background(ui.RGBA(0, 0, 0, 0.5))
-		panel.Background(colPanel).Radius(10).Border(1, colBorder2).
+		backdrop.Background(pal.Scrim)
+		panel.Background(pal.Popover).Radius(10).Border(1, pal.BorderStrong).
 			Width(420).MaxHeight(300).Padding(16).Gap(12).
-			Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.4))
+			Shadow(0, 10, 30, 0, pal.FloatShadow)
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			if danger {
-				ui.Icon(c, iconAlert).Width(16).Height(16).TextColor(colRed)
+				ui.Icon(c, iconAlert).Width(16).Height(16).TextColor(pal.Bad)
 			}
-			ui.Text(c, title).FontSize(14).Bold().TextColor(colText)
+			ui.Text(c, title).FontSize(14).Bold().TextColor(pal.Text)
 		})
 		if message != "" {
-			ui.Text(c, message).FontSize(12).TextColor(colMuted)
+			ui.Text(c, message).FontSize(12).TextColor(pal.TextMuted)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			for i, label := range buttons {
@@ -152,8 +152,8 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 						result = i
 					}
 				} else {
-					btn := ui.ButtonBase(c).Padding(6, 14).Radius(6).Border(1, colBorder2).Height(32).Children(func() {
-						ui.Text(c, label).FontSize(12).TextColor(colText2)
+					btn := ui.ButtonBase(c).Padding(6, 14).Radius(6).Border(1, pal.BorderStrong).Height(32).Children(func() {
+						ui.Text(c, label).FontSize(12).TextColor(pal.TextSoft)
 					})
 					if btn.Clicked() {
 						result = i
@@ -175,12 +175,12 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 // dangerButton is a filled red button for destructive confirmations. The
 // theme's red is light, so its label is dark for contrast.
 func dangerButton(c *ui.Context, label string) ui.Element {
-	e := ui.ButtonBase(c).Height(32).Padding(6, 14).Radius(6).Background(colRed).Shrink(0)
+	e := ui.ButtonBase(c).Height(32).Padding(6, 14).Radius(6).Background(pal.Bad).Shrink(0)
 	if e.Hovered() {
-		e.Background(ui.Hex("#ff8585"))
+		e.Background(pal.Bad.Alpha(0.85))
 	}
 	e.Children(func() {
-		ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(ui.Hex("#20100f"))
+		ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(pal.OnBad)
 	})
 	return e
 }

@@ -231,6 +231,14 @@ type appState struct {
 	termPanes   map[string]*terminal.Terminal
 	termPanesMu sync.Mutex
 
+	// settings are the user's preferences (settings.json); themeMode is
+	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
+	// last loaded, themeWatchStop ends the theme watch.
+	settings       Settings
+	themeMode      string
+	themeStamp     time.Time
+	themeWatchStop func()
+
 	// posted is work handed to the UI thread while there is no window, as
 	// in tests: view runs it at the start of the next frame (see post).
 	postedMu sync.Mutex
@@ -289,7 +297,10 @@ func newApp() *appState {
 		commitFiles:      map[string][]service.CommitFile{},
 		commitStats:      map[string][2]int{},
 		projects:         []project{},
+		settings:         loadSettings(),
 	}
+	a.themeMode = a.settings.Theme
+	a.applyTheme(themeSource(a.themeMode))
 	// Load saved projects.
 	if saved, active := loadSavedProjects(); len(saved) > 0 {
 		a.projects = saved
@@ -497,6 +508,7 @@ func (a *appState) setProject(i int) {
 // active project (newApp chose it, but had no window for the results to
 // reach), and the timers of the status bar and the Info panel.
 func (a *appState) start() {
+	a.startThemeWatch()
 	if a.project() != nil {
 		a.loadProjectData()
 	}

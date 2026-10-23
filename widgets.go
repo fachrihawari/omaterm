@@ -10,11 +10,11 @@ import (
 func dotColor(kind int) ui.Color {
 	switch kind {
 	case dotYellow:
-		return colYellow
+		return pal.Warn
 	case dotGray:
-		return colMuted2
+		return pal.TextFaint
 	default:
-		return colGreen
+		return pal.Ok
 	}
 }
 
@@ -40,16 +40,16 @@ func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Elemen
 	hover := e.Hovered()
 	switch {
 	case active:
-		e = e.Background(colHover).Border(1, colBorder2)
+		e = e.Background(pal.Hover).Border(1, pal.BorderStrong)
 	case hover:
-		e = e.Background(ui.Hex("#182029")).Border(1, ui.Hex("#27313d"))
+		e = e.Background(pal.Hover).Border(1, pal.BorderStrong)
 	}
 	e.Children(func() {
 		i := ui.Icon(c, icon).Width(size).Height(size)
 		if active || hover {
-			i.TextColor(ui.Hex("#ffffff"))
+			i.TextColor(pal.TextStrong)
 		} else {
-			i.TextColor(colMuted)
+			i.TextColor(pal.TextMuted)
 		}
 	})
 	return e
@@ -57,18 +57,18 @@ func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Elemen
 
 // pill is the mock's .pill chip: muted small text on a dark fill.
 func pill(c *ui.Context, text string) ui.Element {
-	return ui.Row(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).Shrink(0).Justify(ui.Center).Children(func() {
-		ui.Text(c, text).FontSize(9).TextColor(colMuted).SingleLine()
+	return ui.Row(c).Radius(9).Padding(1, 6).Background(pal.Chip).Shrink(0).Justify(ui.Center).Children(func() {
+		ui.Text(c, text).FontSize(9).TextColor(pal.TextMuted).SingleLine()
 	})
 }
 
 // pillShrink is pill in a row where it may have to give up width: the chip
 // stays, but a long label ellipsizes instead of pushing its siblings out.
 func pillShrink(c *ui.Context, text string) ui.Element {
-	e := ui.Row(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).
+	e := ui.Row(c).Radius(9).Padding(1, 6).Background(pal.Chip).
 		Shrink(0).MaxWidthPercent(45).Justify(ui.Center)
 	e.Children(func() {
-		ui.Text(c, text).FontSize(9).TextColor(colMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		ui.Text(c, text).FontSize(9).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 	})
 	e.Tooltip(text)
 	return e
@@ -77,15 +77,15 @@ func pillShrink(c *ui.Context, text string) ui.Element {
 // keyChip is the key hint the palette and the shortcuts overlay show:
 // a small bordered chip, as VS Code's keybinding labels.
 func keyChip(c *ui.Context, label string) ui.Element {
-	return ui.Row(c).Radius(4).Border(1, ui.Hex("#313b48")).Background(ui.Hex("#161b22")).
+	return ui.Row(c).Radius(4).Border(1, pal.KbdBorder).Background(pal.Kbd).
 		Padding(2, 6).Shrink(0).Children(func() {
-		ui.Text(c, label).FontSize(9).TextColor(colMuted).SingleLine()
+		ui.Text(c, label).FontSize(9).TextColor(pal.TextMuted).SingleLine()
 	})
 }
 
 // sectionLabel is the uppercase muted label above inspector sections.
 func sectionLabel(c *ui.Context, text string) ui.Element {
-	return ui.Text(c, text).FontSize(10).TextColor(colMuted).LetterSpacing(1.2).SingleLine().Shrink(0)
+	return ui.Text(c, text).FontSize(10).TextColor(pal.TextMuted).LetterSpacing(1.2).SingleLine().Shrink(0)
 }
 
 // countBadge is the small rounded count next to section labels.
@@ -96,8 +96,8 @@ func countBadge(c *ui.Context, n int) ui.Element {
 // countBadgeText is countBadge with arbitrary text, for a count that is
 // not known yet ("—").
 func countBadgeText(c *ui.Context, s string) ui.Element {
-	return ui.Box(c).Radius(9).Padding(1, 6).Background(ui.Hex("#222b36")).Shrink(0).Children(func() {
-		ui.Text(c, s).FontSize(9).TextColor(colMuted).SingleLine()
+	return ui.Box(c).Radius(9).Padding(1, 6).Background(pal.Chip).Shrink(0).Children(func() {
+		ui.Text(c, s).FontSize(9).TextColor(pal.TextMuted).SingleLine()
 	})
 }
 
@@ -117,7 +117,7 @@ func truncTxt(c *ui.Context, s string, size float32, col ui.Color, max int) ui.E
 
 // mutedTxt2 is txt in the mock's muted color.
 func mutedTxt2(c *ui.Context, s string, size float32) ui.Element {
-	return txt(c, s, size, colMuted)
+	return txt(c, s, size, pal.TextMuted)
 }
 
 func itoa(n int) string {
@@ -141,13 +141,13 @@ const monoFont = "JetBrains Mono, monospace"
 func statusColor(status string) ui.Color {
 	switch status {
 	case "A", "U", "?":
-		return colGreen
+		return pal.Ok
 	case "M":
-		return colYellow
+		return pal.Warn
 	case "D":
-		return colRed
+		return pal.Bad
 	case "R", "C":
-		return colBlue
+		return pal.Accent
 	}
-	return colMuted
+	return pal.TextMuted
 }

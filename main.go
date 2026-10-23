@@ -6,6 +6,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
+
+	"omaterm/internal/theme"
 )
 
 func main() {
@@ -25,12 +27,15 @@ func main() {
 			Height:          900,
 			MinWidth:        900,
 			MinHeight:       560,
-			BackgroundColor: "#0b0e12",
+			BackgroundColor: theme.Hex(pal.Wash),
 			StateKey:        "main",
 			Content:         ui.View(a.view),
 		})
 		a.win.OnClosed(func() {
 			a.stopSystemStats()
+			if a.themeWatchStop != nil {
+				a.themeWatchStop()
+			}
 			for _, t := range a.termPanes {
 				if t != nil {
 					t.Close()
@@ -40,6 +45,7 @@ func main() {
 		// Git status goes stale while the app is in the background; reload
 		// it when the window comes back instead of asking for a button.
 		a.win.OnFocus(func() {
+			a.recheckTheme()
 			if a.inspectorVisible && a.inspectorTab == 2 {
 				a.refreshActiveRepo()
 			}

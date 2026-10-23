@@ -14,7 +14,7 @@ import (
 // the mock's footer buttons.
 
 func (a *appState) statusBar(c *ui.Context) ui.Element {
-	return ui.Row(c).Height(24).AlignItems(ui.Center).Background(colStatusBg).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
+	return ui.Row(c).Height(24).AlignItems(ui.Center).Background(pal.Wash).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
 		// Project and branch: the only identity left when the sidebar is
 		// hidden, so it stays visible and ellipsizes rather than pushing
 		// the counters out.
@@ -26,26 +26,26 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 				branch = p.Branch
 			}
 			if name != "" {
-				ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(colMuted)
-				ui.Text(c, name).FontSize(10).TextColor(colText2).SingleLine().
+				ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(pal.TextMuted)
+				ui.Text(c, name).FontSize(10).TextColor(pal.TextSoft).SingleLine().
 					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(150).Tooltip(name)
 				if branch != "" {
-					ui.Text(c, "›").FontSize(10).TextColor(colMuted2).Shrink(0)
+					ui.Text(c, "›").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
 				}
 			}
 			if branch != "" {
-				ui.Icon(c, iconGitBranch).Width(12).Height(12).TextColor(colMuted)
-				ui.Text(c, branch).FontSize(10).TextColor(colMuted).SingleLine().
+				ui.Icon(c, iconGitBranch).Width(12).Height(12).TextColor(pal.TextMuted)
+				ui.Text(c, branch).FontSize(10).TextColor(pal.TextMuted).SingleLine().
 					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(160).Tooltip(branch)
 			}
 		})
 		statusSegment(c, func() {
-			ui.Text(c, "●").FontSize(8).TextColor(colGreen)
-			ui.Text(c, plural(len(a.processes), "process")).FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
+			ui.Text(c, "●").FontSize(8).TextColor(pal.Ok)
+			ui.Text(c, plural(len(a.processes), "process")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
 		})
 		statusSegment(c, func() {
-			ui.Icon(c, iconRadio).Width(12).Height(12).TextColor(colMuted)
-			ui.Text(c, plural(len(a.ports), "port")).FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
+			ui.Icon(c, iconRadio).Width(12).Height(12).TextColor(pal.TextMuted)
+			ui.Text(c, plural(len(a.ports), "port")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
 		})
 
 		ui.Spacer(c)
@@ -56,13 +56,13 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 			if a.sysStats.CPUPercent >= 0 {
 				statusSegment(c, func() {
 					ui.Text(c, "CPU "+strconv.Itoa(int(math.Round(a.sysStats.CPUPercent)))+"%").
-						FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
+						FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
 				})
 			}
 			if a.sysStats.MemTotal > 0 {
 				statusSegment(c, func() {
 					ui.Text(c, "MEM "+service.FormatBytes(a.sysStats.MemUsed)).
-						FontSize(10).TextColor(colMuted).SingleLine().Shrink(0).
+						FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0).
 						Tooltip(service.FormatBytes(a.sysStats.MemUsed) + " of " + service.FormatBytes(a.sysStats.MemTotal) + " used")
 				})
 			}
@@ -86,7 +86,7 @@ func plural(n int, noun string) string {
 func statusSegment(c *ui.Context, children func()) ui.Element {
 	e := ui.ButtonBase(c).FillHeight().Padding(0, 10)
 	if e.Hovered() {
-		e.Background(colInput)
+		e.Background(pal.Input)
 	}
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(children)

@@ -98,9 +98,9 @@ func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
 		// the horizontal centering, and puts the panel at a fixed share of
 		// the window height whatever its own height is.
 		backdrop.Justify(ui.Start)
-		panel.Top(top).Background(colPanel).Radius(10).Border(1, colBorder2).
+		panel.Top(top).Background(pal.Popover).Radius(10).Border(1, pal.BorderStrong).
 			Width(w).MaxHeight(h).Clip().
-			Shadow(0, 12, 40, 0, ui.RGBA(0, 0, 0, 0.45))
+			Shadow(0, 12, 40, 0, pal.FloatShadow)
 		body()
 	})
 	if !open {
@@ -164,9 +164,9 @@ func (a *appState) quickOpenBody(c *ui.Context) {
 	}
 
 	submit := false
-	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-		ui.Row(c).Height(30).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
-			ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(colMuted)
+	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+		ui.Row(c).Height(30).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
+			ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(pal.TextMuted)
 			ti := ui.TextInputBase(c, &a.quickQuery).Placeholder("Search files by name").FontSize(13).Grow(1)
 			if ti.Changed() {
 				a.quickSelected = 0
@@ -186,7 +186,7 @@ func (a *appState) quickOpenBody(c *ui.Context) {
 	}).Grow(1).Padding(6).Children(func() {
 		if len(items) == 0 {
 			ui.Box(c).Padding(20).Children(func() {
-				ui.Text(c, "No matching files").FontSize(12).TextColor(colMuted)
+				ui.Text(c, "No matching files").FontSize(12).TextColor(pal.TextMuted)
 			})
 		}
 	})
@@ -233,9 +233,9 @@ func (a *appState) openQuickSelection(items []service.FuzzyMatch) {
 func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selected bool) {
 	e := ui.Row(c).Key(path).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if selected {
-		e.Background(colHover)
+		e.Background(pal.Hover)
 	} else if e.Hovered() {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	base := pathBase(path)
 	offset := len(path) - len(base)
@@ -244,7 +244,7 @@ func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selecte
 		a.highlightedSegment(c, base, offset, indices)
 		if dir := pathDir(path); dir != "" {
 			ui.Spacer(c)
-			ui.Text(c, dir).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
+			ui.Text(c, dir).FontSize(10).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
 	})
 	if e.Clicked() {
@@ -263,7 +263,7 @@ func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, in
 		}
 	}
 	if len(in) == 0 {
-		ui.Text(c, text).FontSize(12).TextColor(colText2).SingleLine().Shrink(0)
+		ui.Text(c, text).FontSize(12).TextColor(pal.TextSoft).SingleLine().Shrink(0)
 		return
 	}
 	var spans []ui.Span
@@ -273,9 +273,9 @@ func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, in
 		if cur.Len() == 0 {
 			return
 		}
-		col := colText2
+		col := pal.TextSoft
 		if on {
-			col = colBlue
+			col = pal.Accent
 		}
 		spans = append(spans, ui.Span{Text: cur.String(), Color: col})
 		cur.Reset()
@@ -293,9 +293,9 @@ func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, in
 }
 
 func (a *appState) overlayFooter(c *ui.Context, hints ...string) {
-	ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(14).Background(colPanel).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
+	ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(14).Background(pal.Sidebar).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
 		for _, h := range hints {
-			ui.Text(c, h).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
+			ui.Text(c, h).FontSize(10).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
 	})
 }
@@ -348,9 +348,9 @@ func (a *appState) branchBody(c *ui.Context) {
 	}
 
 	submit := false
-	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-		ui.Row(c).Height(30).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
-			ui.Icon(c, iconGitBranch).Width(14).Height(14).TextColor(colMuted)
+	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+		ui.Row(c).Height(30).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
+			ui.Icon(c, iconGitBranch).Width(14).Height(14).TextColor(pal.TextMuted)
 			ti := ui.TextInputBase(c, &a.branchQuery).Placeholder("Switch branch…").FontSize(13).Grow(1)
 			if ti.Changed() {
 				a.branchSelected = 0
@@ -368,7 +368,7 @@ func (a *appState) branchBody(c *ui.Context) {
 	}).Grow(1).Padding(6).Children(func() {
 		if len(items) == 0 {
 			ui.Box(c).Padding(20).Children(func() {
-				ui.Text(c, "No matching branches").FontSize(12).TextColor(colMuted)
+				ui.Text(c, "No matching branches").FontSize(12).TextColor(pal.TextMuted)
 			})
 		}
 	})
@@ -434,17 +434,17 @@ func (a *appState) branchRow(c *ui.Context, name string, selected bool) {
 	cur := name == a.currentBranch
 	e := ui.Row(c).Key(name).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if selected {
-		e.Background(colHover)
+		e.Background(pal.Hover)
 	} else if e.Hovered() {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		if cur {
-			ui.Icon(c, iconCheck).Width(14).Height(14).TextColor(colGreen)
+			ui.Icon(c, iconCheck).Width(14).Height(14).TextColor(pal.Ok)
 		} else {
 			ui.Box(c).Width(14)
 		}
-		ui.Text(c, name).FontSize(12).TextColor(colText).SingleLine().Grow(1).MinWidth(0)
+		ui.Text(c, name).FontSize(12).TextColor(pal.Text).SingleLine().Grow(1).MinWidth(0)
 		if cur {
 			pill(c, "current")
 		}
@@ -498,9 +498,9 @@ func (a *appState) commandPaletteBody(c *ui.Context) {
 	}
 
 	submit := false
-	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-		ui.Row(c).Height(30).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
-			ui.Icon(c, iconSquareTerminal).Width(14).Height(14).TextColor(colMuted)
+	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+		ui.Row(c).Height(30).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
+			ui.Icon(c, iconSquareTerminal).Width(14).Height(14).TextColor(pal.TextMuted)
 			ti := ui.TextInputBase(c, &a.cmdQuery).Placeholder("Type a command").FontSize(13).Grow(1)
 			if ti.Changed() {
 				a.cmdSelected = 0
@@ -561,15 +561,15 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 	enabled := e.Enabled == nil || e.Enabled(a)
 	row := ui.Row(c).Key(e.ID).FillWidth().Height(34).Padding(0, 10).Gap(10).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if selected {
-		row.Background(colHover)
+		row.Background(pal.Hover)
 	} else if row.Hovered() {
-		row.Background(ui.Hex("#171d25"))
+		row.Background(pal.Hover)
 	}
 	row.Children(func() {
-		ui.Text(c, e.Category+":").FontSize(10).TextColor(colMuted2).Width(64).SingleLine().Shrink(0)
-		titleCol := colText2
+		ui.Text(c, e.Category+":").FontSize(10).TextColor(pal.TextFaint).Width(64).SingleLine().Shrink(0)
+		titleCol := pal.TextSoft
 		if !enabled {
-			titleCol = colMuted2
+			titleCol = pal.TextFaint
 		}
 		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().
 			Shrink(1).MinWidth(0).Ellipsis("…")
@@ -657,9 +657,9 @@ func (a *appState) globalSearchBody(c *ui.Context) {
 
 	submit := false
 	// Search input.
-	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-		ui.Row(c).Height(34).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
-			ui.Icon(c, iconSearch).Width(15).Height(15).TextColor(colMuted)
+	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+		ui.Row(c).Height(34).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
+			ui.Icon(c, iconSearch).Width(15).Height(15).TextColor(pal.TextMuted)
 			ti := ui.TextInputBase(c, &a.searchQuery).Placeholder("Search in files (content)").FontSize(13).Grow(1)
 			if ti.Changed() {
 				a.runSearch()
@@ -668,7 +668,7 @@ func (a *appState) globalSearchBody(c *ui.Context) {
 				submit = true
 			}
 			ui.Spacer(c)
-			ui.Text(c, itoa(len(a.searchResults))+" results").FontSize(10).TextColor(colMuted2).Shrink(0)
+			ui.Text(c, itoa(len(a.searchResults))+" results").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
 		})
 	})
 
@@ -739,7 +739,7 @@ func (a *appState) searchResultsPane(c *ui.Context) bool {
 				if a.searchQuery != "" {
 					msg = "No results"
 				}
-				ui.Text(c, msg).FontSize(12).TextColor(colMuted)
+				ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted)
 			})
 		}
 	})
@@ -749,16 +749,16 @@ func (a *appState) searchResultsPane(c *ui.Context) bool {
 func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool) {
 	e := ui.Row(c).Key(m.Path+":"+itoa(m.Line)+":"+itoa(m.Start)).FillWidth().Padding(6, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if selected {
-		e.Background(colHover)
+		e.Background(pal.Hover)
 	} else if e.Hovered() {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				fileBadge(c, pathBase(m.Path))
-				ui.Text(c, m.Path).FontSize(11).TextColor(colText2).SingleLine().Shrink(0)
-				ui.Text(c, ":"+itoa(m.Line)).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
+				ui.Text(c, m.Path).FontSize(11).TextColor(pal.TextSoft).SingleLine().Shrink(0)
+				ui.Text(c, ":"+itoa(m.Line)).FontSize(10).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 			})
 			// Line text with the match highlighted.
 			ui.Row(c).ClipX().Children(func() {
@@ -771,9 +771,9 @@ func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool
 					after = m.Text[m.End:]
 				}
 				ui.RichText(c,
-					ui.Span{Text: before, Color: colMuted},
-					ui.Span{Text: match, Color: colYellow},
-					ui.Span{Text: after, Color: colMuted},
+					ui.Span{Text: before, Color: pal.TextMuted},
+					ui.Span{Text: match, Color: pal.Warn},
+					ui.Span{Text: after, Color: pal.TextMuted},
 				).Font(monoFont).FontSize(11).SingleLine()
 			})
 		})
@@ -785,10 +785,10 @@ func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool
 }
 
 func (a *appState) searchPreviewPane(c *ui.Context) {
-	ui.Column(c).Fill().BorderWidth(0, 0, 0, 1).BorderColor(colBorder).Children(func() {
+	ui.Column(c).Fill().BorderWidth(0, 0, 0, 1).BorderColor(pal.Border).Children(func() {
 		if a.searchPreview == nil {
 			ui.Column(c).Fill().Center().Children(func() {
-				ui.Text(c, "Select a result to preview").FontSize(12).TextColor(colMuted)
+				ui.Text(c, "Select a result to preview").FontSize(12).TextColor(pal.TextMuted)
 			})
 			return
 		}
@@ -872,14 +872,14 @@ func (a *appState) keyboardShortcutsBody(c *ui.Context) {
 	}
 
 	submit := false
-	ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 16).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-		ui.Text(c, "Keyboard Shortcuts").FontSize(13).Bold().TextColor(colText)
+	ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 16).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+		ui.Text(c, "Keyboard Shortcuts").FontSize(13).Bold().TextColor(pal.Text)
 		ui.Spacer(c)
-		ui.Text(c, keyLabels("help.keyboardShortcuts")).FontSize(10).TextColor(colMuted2)
+		ui.Text(c, keyLabels("help.keyboardShortcuts")).FontSize(10).TextColor(pal.TextFaint)
 	})
-	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-		ui.Row(c).Height(30).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
-			ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(colMuted)
+	ui.Box(c).Padding(10, 12).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+		ui.Row(c).Height(30).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 10).Gap(8).Children(func() {
+			ui.Icon(c, iconSearch).Width(14).Height(14).TextColor(pal.TextMuted)
 			ti := ui.TextInputBase(c, &a.keyQuery).Placeholder("Type a command or a key").FontSize(13).Grow(1)
 			if ti.Changed() {
 				a.keySelected = 0
@@ -888,18 +888,18 @@ func (a *appState) keyboardShortcutsBody(c *ui.Context) {
 				submit = true
 			}
 			ui.Spacer(c)
-			ui.Text(c, itoa(len(items))+" commands").FontSize(10).TextColor(colMuted2).Shrink(0)
+			ui.Text(c, itoa(len(items))+" commands").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
 		})
 	})
 
 	// Column headings, so the When and Key columns read as columns.
-	ui.Row(c).Height(22).AlignItems(ui.Center).Padding(0, 16).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-		ui.Text(c, "COMMAND").FontSize(9).TextColor(colMuted).LetterSpacing(1.2).Shrink(0)
+	ui.Row(c).Height(22).AlignItems(ui.Center).Padding(0, 16).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+		ui.Text(c, "COMMAND").FontSize(9).TextColor(pal.TextMuted).LetterSpacing(1.2).Shrink(0)
 		ui.Spacer(c)
-		ui.Text(c, "WHEN").FontSize(9).TextColor(colMuted).LetterSpacing(1.2).Width(78).Shrink(0)
+		ui.Text(c, "WHEN").FontSize(9).TextColor(pal.TextMuted).LetterSpacing(1.2).Width(78).Shrink(0)
 		// The keys are right-aligned in their column, so its heading is too.
 		ui.Row(c).Width(220).Justify(ui.End).Shrink(0).Children(func() {
-			ui.Text(c, "KEY").FontSize(9).TextColor(colMuted).LetterSpacing(1.2).Shrink(0)
+			ui.Text(c, "KEY").FontSize(9).TextColor(pal.TextMuted).LetterSpacing(1.2).Shrink(0)
 		})
 	})
 
@@ -910,7 +910,7 @@ func (a *appState) keyboardShortcutsBody(c *ui.Context) {
 	}).Grow(1).Padding(6).Children(func() {
 		if len(items) == 0 {
 			ui.Box(c).Padding(20).Children(func() {
-				ui.Text(c, "No matching commands").FontSize(12).TextColor(colMuted)
+				ui.Text(c, "No matching commands").FontSize(12).TextColor(pal.TextMuted)
 			})
 		}
 	})
@@ -963,20 +963,20 @@ func (a *appState) keymapRow(c *ui.Context, e keymapEntry, selected bool) {
 	row := ui.Row(c).Key(e.ID).FillWidth().Height(34).Padding(0, 10).Gap(10).
 		Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if selected {
-		row.Background(colHover)
+		row.Background(pal.Hover)
 	} else if row.Hovered() {
-		row.Background(ui.Hex("#171d25"))
+		row.Background(pal.Hover)
 	}
 	row.Children(func() {
-		titleCol := colText2
+		titleCol := pal.TextSoft
 		if !enabled {
-			titleCol = colMuted2
+			titleCol = pal.TextFaint
 		}
-		ui.Text(c, e.Category+":").FontSize(10).TextColor(colMuted2).Width(64).SingleLine().Shrink(0)
+		ui.Text(c, e.Category+":").FontSize(10).TextColor(pal.TextFaint).Width(64).SingleLine().Shrink(0)
 		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().
 			Shrink(1).MinWidth(0).Ellipsis("…")
 		ui.Spacer(c)
-		ui.Text(c, e.Scope.String()).FontSize(9).TextColor(colMuted2).Width(78).
+		ui.Text(c, e.Scope.String()).FontSize(9).TextColor(pal.TextFaint).Width(78).
 			SingleLine().Shrink(0)
 		ui.Row(c).Width(220).Justify(ui.End).Gap(4).Children(func() {
 			// A family as long as the digits shows its range: Alt+1 … Alt+9

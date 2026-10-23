@@ -313,17 +313,17 @@ func (a *appState) diffViewKey() string {
 }
 
 func (a *appState) diffView(c *ui.Context) ui.Element {
-	return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
+	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
 		// Toolbar.
-		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(colPanel).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-			ui.Icon(c, iconGitCompare).Width(16).Height(16).TextColor(colGreen)
+		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(pal.Sidebar).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+			ui.Icon(c, iconGitCompare).Width(16).Height(16).TextColor(pal.Ok)
 			ui.Text(c, a.diffTitle).FontSize(12).SingleLine().Shrink(1).MinWidth(0).
 				Ellipsis("…").Tooltip(a.diffTitle)
 
 			// Per-file line stats, next to the title they belong to.
 			if !a.diffBinary && (a.diffAdd > 0 || a.diffDel > 0) {
-				ui.Text(c, "+"+itoa(a.diffAdd)).FontSize(10).TextColor(colGreen).SingleLine().Shrink(0)
-				ui.Text(c, "-"+itoa(a.diffDel)).FontSize(10).TextColor(colRed).SingleLine().Shrink(0)
+				ui.Text(c, "+"+itoa(a.diffAdd)).FontSize(10).TextColor(pal.Ok).SingleLine().Shrink(0)
+				ui.Text(c, "-"+itoa(a.diffDel)).FontSize(10).TextColor(pal.Bad).SingleLine().Shrink(0)
 			}
 
 			ui.Spacer(c)
@@ -335,8 +335,8 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				if staged {
 					label = "Unstage File"
 				}
-				stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Background(ui.Hex("#222b36")).Children(func() {
-					ui.Text(c, label).FontSize(10).TextColor(colText2)
+				stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Background(pal.Chip).Children(func() {
+					ui.Text(c, label).FontSize(10).TextColor(pal.TextSoft)
 				})
 				if stage.Clicked() {
 					var err error
@@ -354,7 +354,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 
 				if !staged {
 					discard := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
-						ui.Text(c, "Discard").FontSize(10).TextColor(colRed)
+						ui.Text(c, "Discard").FontSize(10).TextColor(pal.Bad)
 					})
 					if discard.Clicked() {
 						untracked := false
@@ -374,7 +374,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 					}
 				}
 
-				ui.Box(c).Width(1).Height(16).Background(colBorder).Margin(0, 4)
+				ui.Box(c).Width(1).Height(16).Background(pal.Border).Margin(0, 4)
 			}
 
 			// Split/Inline choose between two text layouts; a picture or
@@ -383,13 +383,13 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				split := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
 					t := ui.Text(c, "Split").FontSize(10)
 					if a.diffSplit {
-						t.TextColor(ui.Hex("#ffffff"))
+						t.TextColor(pal.TextStrong)
 					} else {
-						t.TextColor(colMuted)
+						t.TextColor(pal.TextMuted)
 					}
 				})
 				if a.diffSplit {
-					split.Background(ui.Hex("#222b36"))
+					split.Background(pal.Chip)
 				}
 				if split.Clicked() {
 					a.diffSplit = true
@@ -398,13 +398,13 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				inline := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
 					t := ui.Text(c, "Inline").FontSize(10)
 					if !a.diffSplit {
-						t.TextColor(ui.Hex("#ffffff"))
+						t.TextColor(pal.TextStrong)
 					} else {
-						t.TextColor(colMuted)
+						t.TextColor(pal.TextMuted)
 					}
 				})
 				if !a.diffSplit {
-					inline.Background(ui.Hex("#222b36"))
+					inline.Background(pal.Chip)
 				}
 				if inline.Clicked() {
 					a.diffSplit = false
@@ -421,17 +421,17 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 
 		if a.diffBinary {
 			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
-				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(colMuted2)
+				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(pal.TextFaint)
 				name := a.diffBinaryName
 				if name == "" {
 					name = a.diffTitle
 				}
-				ui.Text(c, pathBase(name)).FontSize(13).TextColor(colText2)
+				ui.Text(c, pathBase(name)).FontSize(13).TextColor(pal.TextSoft)
 				size := ""
 				if a.diffBinarySize > 0 {
 					size = service.FormatBytes(uint64(a.diffBinarySize)) + " · "
 				}
-				ui.Text(c, "Binary file · "+size+"no text diff to show").FontSize(11).TextColor(colMuted)
+				ui.Text(c, "Binary file · "+size+"no text diff to show").FontSize(11).TextColor(pal.TextMuted)
 			})
 			return
 		}
@@ -440,10 +440,10 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 		// side of the comparison.
 		if a.diffSplit {
 			oldLabel, newLabel := a.diffSideLabels()
-			ui.Row(c).Height(24).Padding(0, 16).Gap(8).Background(colDiffTop).
-				BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-				ui.Text(c, oldLabel).FontSize(9).TextColor(colMuted).LetterSpacing(1.0).Grow(1).SingleLine()
-				ui.Text(c, newLabel).FontSize(9).TextColor(colMuted).LetterSpacing(1.0).Grow(1).SingleLine()
+			ui.Row(c).Height(24).Padding(0, 16).Gap(8).Background(pal.Sidebar).
+				BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+				ui.Text(c, oldLabel).FontSize(9).TextColor(pal.TextMuted).LetterSpacing(1.0).Grow(1).SingleLine()
+				ui.Text(c, newLabel).FontSize(9).TextColor(pal.TextMuted).LetterSpacing(1.0).Grow(1).SingleLine()
 			})
 		}
 
@@ -470,7 +470,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				ds.New = a.diffNew
 			} else {
 				ui.Column(c).Grow(1).Center().Children(func() {
-					ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(colMuted)
+					ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(pal.TextMuted)
 				})
 				return
 			}

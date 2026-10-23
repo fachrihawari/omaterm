@@ -13,7 +13,7 @@ import (
 
 // laneColors cycles through the theme's accent colors.
 var laneColors = []ui.Color{
-	colBlue, colGreen, colPurple, colYellow, colCyan, colOrange, colLime, colRed,
+	pal.Accent, pal.Ok, pal.ANSI[5], pal.Warn, pal.ANSI[6], pal.Syn.Meta, pal.ANSI[10], pal.Bad,
 }
 
 const (
@@ -172,12 +172,12 @@ func (a *appState) openGraphTab() {
 
 // graphView is the full-pane graph with a commit list.
 func (a *appState) graphView(c *ui.Context) ui.Element {
-	return ui.Column(c).Fill().Background(colCodeBg).Children(func() {
-		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(colPanel).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
-			ui.Icon(c, iconGitGraph).Width(16).Height(16).TextColor(colPurple)
+	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
+		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(pal.Sidebar).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+			ui.Icon(c, iconGitGraph).Width(16).Height(16).TextColor(pal.ANSI[5])
 			ui.Text(c, "Git Graph").FontSize(12)
 			if r := a.activeRepoRef(); r != nil {
-				ui.Text(c, r.Name+" · "+r.Branch).FontSize(10).TextColor(colMuted)
+				ui.Text(c, r.Name+" · "+r.Branch).FontSize(10).TextColor(pal.TextMuted)
 			}
 			ui.Spacer(c)
 			if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Reload history").Clicked() {
@@ -191,7 +191,7 @@ func (a *appState) graphView(c *ui.Context) ui.Element {
 				msg = "Loading…"
 			}
 			ui.Column(c).Grow(1).Center().Children(func() {
-				ui.Text(c, msg).FontSize(12).TextColor(colMuted)
+				ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted)
 			})
 			return
 		}
@@ -211,7 +211,7 @@ func (a *appState) graphView(c *ui.Context) ui.Element {
 func (a *appState) graphCompactView(c *ui.Context) ui.Element {
 	if len(a.commits) == 0 {
 		return ui.Column(c).Padding(12).Children(func() {
-			ui.Text(c, "No history").FontSize(11).TextColor(colMuted)
+			ui.Text(c, "No history").FontSize(11).TextColor(pal.TextMuted)
 		})
 	}
 	lanes := computeLanes(a.commits)
@@ -225,17 +225,17 @@ func (a *appState) graphCompactView(c *ui.Context) ui.Element {
 func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) ui.Element {
 	e := ui.Row(c).Key(cm.Hash).FillWidth().Height(graphRowH).AlignItems(ui.Center).Gap(10).Cursor(ui.CursorPointer).Padding(0, 12)
 	if e.Hovered() {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		a.graphCanvas(c, lane, graphRowH)
-		ui.Text(c, cm.Short).Font(monoFont).FontSize(11).TextColor(colMuted2).Width(58).SingleLine().Shrink(0)
-		ui.Text(c, cm.Subject).FontSize(12).TextColor(colText2).SingleLine().Grow(1).MinWidth(0)
+		ui.Text(c, cm.Short).Font(monoFont).FontSize(11).TextColor(pal.TextFaint).Width(58).SingleLine().Shrink(0)
+		ui.Text(c, cm.Subject).FontSize(12).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
 		for _, ref := range cm.Refs {
 			pill(c, ref)
 		}
-		ui.Text(c, cm.Author).FontSize(10).TextColor(colMuted).Width(120).SingleLine().Shrink(0)
-		ui.Text(c, relativeTime(cm.Time)).FontSize(10).TextColor(colMuted2).Width(56).SingleLine().Shrink(0)
+		ui.Text(c, cm.Author).FontSize(10).TextColor(pal.TextMuted).Width(120).SingleLine().Shrink(0)
+		ui.Text(c, relativeTime(cm.Time)).FontSize(10).TextColor(pal.TextFaint).Width(56).SingleLine().Shrink(0)
 	})
 	if e.Clicked() {
 		if a.expandedCommit == cm.Hash {
@@ -255,12 +255,12 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 	expanded := a.expandedCommit == cm.Hash
 	e := ui.Row(c).Key(cm.Hash).FillWidth().Height(26).AlignItems(ui.Center).Gap(8).Cursor(ui.CursorPointer).Padding(0, 10)
 	if e.Hovered() {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		a.graphCanvas(c, lane, 26)
-		ui.Text(c, cm.Subject).FontSize(11).TextColor(colText2).SingleLine().Grow(1).MinWidth(0)
-		ui.Text(c, relativeTime(cm.Time)).FontSize(9).TextColor(colMuted2).SingleLine().Shrink(0)
+		ui.Text(c, cm.Subject).FontSize(11).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
+		ui.Text(c, relativeTime(cm.Time)).FontSize(9).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 	})
 	if e.Clicked() {
 		if expanded {
@@ -306,11 +306,11 @@ func (a *appState) commitFileList(c *ui.Context, cm *service.Commit) {
 	ui.Column(c).Padding(0, 0, 4, 22).Children(func() {
 		// Header: how much changed.
 		ui.Row(c).Height(22).PaddingStart(26).PaddingEnd(10).Gap(8).AlignItems(ui.Center).Children(func() {
-			txt(c, pathListSummary(len(files)), 9, colMuted2)
+			txt(c, pathListSummary(len(files)), 9, pal.TextFaint)
 			if add > 0 || del > 0 {
 				ui.Spacer(c)
-				txt(c, "+"+itoa(add), 9, colGreen)
-				txt(c, "-"+itoa(del), 9, colRed)
+				txt(c, "+"+itoa(add), 9, pal.Ok)
+				txt(c, "-"+itoa(del), 9, pal.Bad)
 			}
 		})
 		for _, f := range files {
@@ -325,7 +325,7 @@ func (a *appState) commitFileRow(c *ui.Context, hash string, f service.CommitFil
 		PaddingStart(26).PaddingEnd(10).Gap(6).AlignItems(ui.Center).
 		Cursor(ui.CursorPointer).ClipX()
 	if row.Hovered() {
-		row.Background(ui.Hex("#171d25"))
+		row.Background(pal.Hover)
 	}
 	row.Children(func() {
 		// Status column first, fixed width, so names never shift.
@@ -333,9 +333,9 @@ func (a *appState) commitFileRow(c *ui.Context, hash string, f service.CommitFil
 			txt(c, f.Status, 10, statusColor(f.Status)).FontWeight(700)
 		})
 		fileBadge(c, pathBase(f.Path))
-		ui.Text(c, pathBase(f.Path)).FontSize(11).TextColor(colText2).SingleLine().Grow(1).MinWidth(0)
+		ui.Text(c, pathBase(f.Path)).FontSize(11).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
 		if dir := pathDir(f.Path); dir != "" {
-			txt(c, truncTxtPath(dir, 28), 9, colMuted2)
+			txt(c, truncTxtPath(dir, 28), 9, pal.TextFaint)
 		}
 	})
 	if row.Clicked() {

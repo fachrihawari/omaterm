@@ -514,9 +514,11 @@ func dialogPanelSpan(t *testing.T, img *image.RGBA) (top, bottom int) {
 	t.Helper()
 	x := img.Bounds().Dx() / 2
 	top, bottom = -1, -1
+	want := pal.BorderStrong.Over(pal.Popover)
+	near := func(a, b uint8) bool { return a >= b-2 && a <= b+2 }
 	for y := 0; y < img.Bounds().Dy(); y++ {
 		o := img.PixOffset(x, y)
-		if img.Pix[o] == 0x30 && img.Pix[o+1] == 0x3a && img.Pix[o+2] == 0x48 {
+		if near(img.Pix[o], want.R) && near(img.Pix[o+1], want.G) && near(img.Pix[o+2], want.B) {
 			if top < 0 {
 				top = y
 			}

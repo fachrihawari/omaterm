@@ -14,8 +14,8 @@ import (
 // The right inspector: Info / Files / Git panels behind a tab strip.
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
-	return ui.Column(c).FillHeight().Background(colPanel).BorderWidth(0, 0, 0, 1).BorderColor(colBorder).Children(func() {
-		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+	return ui.Column(c).FillHeight().Background(pal.Sidebar).BorderWidth(0, 0, 0, 1).BorderColor(pal.Border).Children(func() {
+		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
 			a.inspectorTabButton(c, 1, iconFolder, "Files", 0)
 			a.inspectorTabButton(c, 2, iconGitBranch, "Git", a.gitCount())
@@ -38,9 +38,9 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0)
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-			col := colMuted
+			col := pal.TextMuted
 			if active {
-				col = colText2
+				col = pal.TextSoft
 			}
 			ui.Icon(c, icon).Width(14).Height(14).TextColor(col)
 			ui.Text(c, label).FontSize(11).TextColor(col).SingleLine().Shrink(0)
@@ -50,7 +50,7 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 		})
 	})
 	if active {
-		e.BorderWidth(0, 0, 2, 0).BorderColor(colBlue2)
+		e.BorderWidth(0, 0, 2, 0).BorderColor(pal.Accent)
 	}
 	if e.Clicked() {
 		a.showInspectorTab(idx)
@@ -90,10 +90,10 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 		ui.Column(c).Padding(12).Gap(16).Children(func() {
 			ui.Column(c).Gap(8).Children(func() {
 				sectionLabel(c, "PROJECT")
-				ui.Row(c).Radius(8).Border(1, colBorder).Background(colCard).Padding(12).Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
-					ui.Box(c).Width(28).Height(28).Radius(6).Border(1, colBorder2).Background(ui.Hex("#10151a")).Shrink(0).Children(func() {
+				ui.Row(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Padding(12).Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
+					ui.Box(c).Width(28).Height(28).Radius(6).Border(1, pal.BorderStrong).Background(pal.Input).Shrink(0).Children(func() {
 						ui.Column(c).Fill().Center().Children(func() {
-							ui.Icon(c, iconFolderGit).Width(16).Height(16).TextColor(colBlue)
+							ui.Icon(c, iconFolderGit).Width(16).Height(16).TextColor(pal.Accent)
 						})
 					})
 					ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
@@ -102,18 +102,18 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							// long branch can only squeeze the name, never
 							// the path below it.
 							ui.Row(c).Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
-								ui.Text(c, p.Name).FontSize(12).TextColor(colText).
+								ui.Text(c, p.Name).FontSize(12).TextColor(pal.Text).
 									SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 								ui.Spacer(c)
 								if p.Branch != "" {
 									pillShrink(c, p.Branch)
 								}
 							})
-							ui.Text(c, p.Path).FontSize(10).TextColor(colMuted).
+							ui.Text(c, p.Path).FontSize(10).TextColor(pal.TextMuted).
 								SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(p.Path)
 						} else {
-							txt(c, "No project open", 12, colText)
-							txt(c, keyLabels("app.openProject")+" to open a folder", 10, colMuted)
+							txt(c, "No project open", 12, pal.Text)
+							txt(c, keyLabels("app.openProject")+" to open a folder", 10, pal.TextMuted)
 						}
 					})
 				})
@@ -130,31 +130,31 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					}
 				})
 				if a.processErr != "" {
-					ui.Text(c, a.processErr).FontSize(10).TextColor(colRed).Padding(4, 0)
+					ui.Text(c, a.processErr).FontSize(10).TextColor(pal.Bad).Padding(4, 0)
 				}
-				ui.Column(c).Radius(8).Border(1, colBorder).Children(func() {
+				ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
 					if a.processes == nil {
 						ui.Box(c).Padding(16).Children(func() {
-							ui.Text(c, "Loading…").FontSize(11).TextColor(colMuted)
+							ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
 						})
 					} else if len(a.processes) == 0 {
 						ui.Box(c).Padding(20).Children(func() {
 							ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
-								ui.Icon(c, iconTerminal).Width(20).Height(20).TextColor(colMuted2)
-								ui.Text(c, "No processes in this project").FontSize(11).TextColor(colMuted)
-								ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(colMuted2)
+								ui.Icon(c, iconTerminal).Width(20).Height(20).TextColor(pal.TextFaint)
+								ui.Text(c, "No processes in this project").FontSize(11).TextColor(pal.TextMuted)
+								ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(pal.TextFaint)
 							})
 						})
 					}
 					for i, p := range a.processes {
 						row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
 						if i > 0 {
-							row = row.BorderWidth(1, 0, 0, 0).BorderColor(colBorder)
+							row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
 						}
 						proc := p
 						row.Children(func() {
 							dot(c, dotGreen, 6)
-							txt(c, proc.Name, 11, colText)
+							txt(c, proc.Name, 11, pal.Text)
 							mutedTxt2(c, itoa(proc.Pid), 11)
 							ui.Spacer(c)
 							mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
@@ -181,29 +181,29 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 						a.refreshProcesses()
 					}
 				})
-				ui.Column(c).Radius(8).Border(1, colBorder).Children(func() {
+				ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
 					if a.processes == nil {
 						ui.Box(c).Padding(16).Children(func() {
-							ui.Text(c, "Loading…").FontSize(11).TextColor(colMuted)
+							ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
 						})
 					} else if len(a.ports) == 0 {
 						ui.Box(c).Padding(20).Children(func() {
 							ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
-								ui.Icon(c, iconGlobe).Width(20).Height(20).TextColor(colMuted2)
-								ui.Text(c, "No listening ports").FontSize(11).TextColor(colMuted)
-								ui.Text(c, "Start a dev server to see its port here").FontSize(10).TextColor(colMuted2)
+								ui.Icon(c, iconGlobe).Width(20).Height(20).TextColor(pal.TextFaint)
+								ui.Text(c, "No listening ports").FontSize(11).TextColor(pal.TextMuted)
+								ui.Text(c, "Start a dev server to see its port here").FontSize(10).TextColor(pal.TextFaint)
 							})
 						})
 					}
 					for i, p := range a.ports {
 						row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
 						if i > 0 {
-							row = row.BorderWidth(1, 0, 0, 0).BorderColor(colBorder)
+							row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
 						}
 						port := p
 						row.Children(func() {
-							ui.Icon(c, iconGlobe).Width(14).Height(14).TextColor(colBlue)
-							txt(c, itoa(port.Port), 11, colText)
+							ui.Icon(c, iconGlobe).Width(14).Height(14).TextColor(pal.Accent)
+							txt(c, itoa(port.Port), 11, pal.Text)
 							mutedTxt2(c, port.Name, 11)
 							ui.Spacer(c)
 							if port.Open {
@@ -228,28 +228,28 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 func (a *appState) updateSection(c *ui.Context) {
 	ui.Column(c).Gap(8).Children(func() {
 		sectionLabel(c, "UPDATES")
-		ui.Row(c).Radius(8).Border(1, colBorder).Background(colCard).Padding(12).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(colMuted)
+		ui.Row(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Padding(12).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(pal.TextMuted)
 			ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
 				label := "omaterm"
 				if v := mygo.App.Version(); v != "" {
 					label += " " + v
 				}
-				txt(c, label, 11, colText2)
+				txt(c, label, 11, pal.TextSoft)
 				// A build that cannot update itself, such as a development
 				// build or one a package manager installed, says so here
 				// rather than only in the window after a click.
 				if updatesReady && !mygo.Updater.Enabled() {
 					ui.Text(c, "This build cannot update itself").FontSize(10).
-						TextColor(colMuted).SingleLine().Ellipsis("…")
+						TextColor(pal.TextMuted).SingleLine().Ellipsis("…")
 				}
 			})
-			b := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(4, 10).Shrink(0)
+			b := ui.ButtonBase(c).Radius(6).Border(1, pal.BorderStrong).Padding(4, 10).Shrink(0)
 			if b.Hovered() {
-				b.Background(colHover)
+				b.Background(pal.Hover)
 			}
 			b.Children(func() {
-				ui.Text(c, "Check").FontSize(10).TextColor(colText2)
+				ui.Text(c, "Check").FontSize(10).TextColor(pal.TextSoft)
 			})
 			if b.Clicked() {
 				a.checkForUpdates(c)
@@ -277,7 +277,7 @@ func (a *appState) filesPanel(c *ui.Context) ui.Element {
 func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	e := ui.Row(c).Key(n.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(28).Padding(0, 8).PaddingStart(8 + 18*float32(depth)).Gap(4)
 	if e.Hovered() {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4).Children(func() {
@@ -288,7 +288,7 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 				if n.Open {
 					ci = iconChevronDown
 				}
-				ui.Icon(c, ci).Width(12).Height(12).TextColor(colMuted2)
+				ui.Icon(c, ci).Width(12).Height(12).TextColor(pal.TextFaint)
 			} else {
 				ui.Box(c).Width(12)
 			}
@@ -297,11 +297,11 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 				if n.Open {
 					fi = iconFolderOpen
 				}
-				ui.Icon(c, fi).Width(18).Height(18).TextColor(synFolderIc)
+				ui.Icon(c, fi).Width(18).Height(18).TextColor(pal.Syn.Folder)
 			} else {
 				fileBadge(c, n.Name)
 			}
-			ui.Text(c, n.Name).FontSize(11).TextColor(colText2).SingleLine()
+			ui.Text(c, n.Name).FontSize(11).TextColor(pal.TextSoft).SingleLine()
 			ui.Spacer(c)
 			if n.Status != "" {
 				ui.Text(c, n.Status).FontSize(10).TextColor(statusColor(n.Status))
@@ -356,17 +356,17 @@ func (a *appState) nodePath(target *fileNode) string {
 func fileBadge(c *ui.Context, name string) ui.Element {
 	switch {
 	case hasSuffix(name, ".tsx") || hasSuffix(name, ".ts"):
-		return ui.Text(c, "TS").FontSize(10).FontWeight(700).TextColor(synTS).Width(18)
+		return ui.Text(c, "TS").FontSize(10).FontWeight(700).TextColor(pal.Syn.FileTS).Width(18)
 	case hasSuffix(name, ".go"):
-		return ui.Text(c, "GO").FontSize(10).FontWeight(700).TextColor(colCyan).Width(18)
+		return ui.Text(c, "GO").FontSize(10).FontWeight(700).TextColor(pal.ANSI[6]).Width(18)
 	case hasSuffix(name, ".json"):
-		return ui.Text(c, "{ }").FontSize(10).FontWeight(700).TextColor(synJSON).Width(18)
+		return ui.Text(c, "{ }").FontSize(10).FontWeight(700).TextColor(pal.Syn.FileJSON).Width(18)
 	case hasSuffix(name, ".md"):
-		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(colBlue)
+		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(pal.Accent)
 	case isImagePath(name):
-		return ui.Icon(c, iconImage).Width(18).Height(18).TextColor(colGreen)
+		return ui.Icon(c, iconImage).Width(18).Height(18).TextColor(pal.Ok)
 	default:
-		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(colMuted)
+		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(pal.TextMuted)
 	}
 }
 
@@ -386,13 +386,13 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 		r := a.activeRepoRef()
 		if r == nil {
 			ui.Column(c).Grow(1).Center().Gap(8).Children(func() {
-				ui.Icon(c, iconGitBranch).Width(22).Height(22).TextColor(colMuted2)
-				ui.Text(c, "No git repository found").FontSize(12).TextColor(colMuted)
+				ui.Icon(c, iconGitBranch).Width(22).Height(22).TextColor(pal.TextFaint)
+				ui.Text(c, "No git repository found").FontSize(12).TextColor(pal.TextMuted)
 				if a.repoErr != "" {
-					ui.Text(c, a.repoErr).FontSize(10).TextColor(colMuted2)
+					ui.Text(c, a.repoErr).FontSize(10).TextColor(pal.TextFaint)
 				}
-				b := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(5, 12).Children(func() {
-					ui.Text(c, "Search again").FontSize(11).TextColor(colText2)
+				b := ui.ButtonBase(c).Radius(6).Border(1, pal.BorderStrong).Padding(5, 12).Children(func() {
+					ui.Text(c, "Search again").FontSize(11).TextColor(pal.TextSoft)
 				})
 				if b.Clicked() {
 					a.refreshRepos()
@@ -402,7 +402,7 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 		}
 
 		// Branch + commit box.
-		ui.Column(c).Padding(12).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+		ui.Column(c).Padding(12).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			// Load branches if needed (or if repo changed).
 			if r != nil && a.branchesRepo != r.Root {
 				if bs, err := service.ListBranches(r.Root); err == nil {
@@ -415,12 +415,12 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				a.currentBranch = r.Branch
 			}
 			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
-				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(colPurple)
+				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(pal.ANSI[5])
 				// The branch trigger is the only child allowed to give up
 				// width: a long name ellipsizes instead of pushing the
 				// remote actions past the panel's edge.
-				trigger := ui.ButtonBase(c).Radius(4).Padding(2, 6).Border(1, colBorder2).Shrink(1).MinWidth(0).Children(func() {
-					ui.Text(c, a.currentBranch).FontSize(11).TextColor(colText).
+				trigger := ui.ButtonBase(c).Radius(4).Padding(2, 6).Border(1, pal.BorderStrong).Shrink(1).MinWidth(0).Children(func() {
+					ui.Text(c, a.currentBranch).FontSize(11).TextColor(pal.Text).
 						SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 				})
 				trigger.Tooltip(a.currentBranch)
@@ -446,7 +446,7 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 					a.gitPush(c)
 				}
 			})
-			ui.Box(c).Radius(6).Border(1, colBorder).Background(colInput).Children(func() {
+			ui.Box(c).Radius(6).Border(1, pal.Border).Background(pal.Input).Children(func() {
 				ui.TextAreaBase(c, &a.commitMsg).Placeholder("Commit message…").FontSize(11).Padding(8).MinHeight(56).FillWidth()
 			})
 			ui.Row(c).Gap(8).Children(func() {
@@ -465,9 +465,9 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				if a.gitBusy != "" {
 					msg = a.gitBusy
 				}
-				col := colMuted
+				col := pal.TextMuted
 				if a.gitBusy == "" && a.gitErr {
-					col = colRed
+					col = pal.Bad
 				}
 				ui.Text(c, msg).FontSize(10).TextColor(col).SingleLine()
 			}
@@ -497,17 +497,17 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 		})
 
 		// Footer.
-		ui.Row(c).Padding(12).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Children(func() {
-			ui.Text(c, r.RelPath).FontSize(10).TextColor(colMuted).SingleLine()
+		ui.Row(c).Padding(12).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
+			ui.Text(c, r.RelPath).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 			ui.Spacer(c)
-			ui.Text(c, "HEAD "+r.Head).FontSize(10).TextColor(colMuted).SingleLine()
+			ui.Text(c, "HEAD "+r.Head).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 		})
 	})
 }
 
 // repoSwitcher lets the user pick the active repo when several exist.
 func (a *appState) repoSwitcher(c *ui.Context) {
-	ui.Box(c).Padding(8, 12).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+	ui.Box(c).Padding(8, 12).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 		ui.ScrollHorizontal(c).FillWidth().Children(func() {
 			ui.Row(c).Gap(6).Children(func() {
 				for i := range a.repos {
@@ -519,14 +519,14 @@ func (a *appState) repoSwitcher(c *ui.Context) {
 					}
 					e := ui.ButtonBase(c).Key(r.Root).Height(26).Radius(13).Padding(0, 12).Shrink(0).Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-							ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(colMuted)
+							ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(pal.TextMuted)
 							ui.Text(c, label).FontSize(10).SingleLine().Shrink(0)
 						})
 					})
 					if active {
-						e.Background(colHover).Border(1, colBorder2)
+						e.Background(pal.Hover).Border(1, pal.BorderStrong)
 					} else {
-						e.Border(1, colBorder)
+						e.Border(1, pal.Border)
 					}
 					if e.Clicked() && !active {
 						a.activeRepo = i
@@ -586,11 +586,11 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 	}
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if !staged {
-		e = e.BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Margin(4, 0, 0, 0)
+		e = e.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	}
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(colMuted)
-		txt(c, label, 10, colMuted).LetterSpacing(1.0)
+		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		txt(c, label, 10, pal.TextMuted).LetterSpacing(1.0)
 		countBadge(c, count)
 		ui.Spacer(c)
 		r := a.activeRepoRef()
@@ -626,10 +626,10 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 	if a.gitGraphOpen {
 		icon = iconChevronDown
 	}
-	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Margin(4, 0, 0, 0)
+	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(colMuted)
-		txt(c, "GIT GRAPH", 10, colMuted).LetterSpacing(1.0)
+		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		txt(c, "GIT GRAPH", 10, pal.TextMuted).LetterSpacing(1.0)
 		if a.graphLoaded {
 			countBadge(c, len(a.commits))
 		} else {
@@ -648,9 +648,9 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 	}
 	if a.gitGraphOpen {
 		if !a.graphLoaded {
-			ui.Text(c, "Loading…").FontSize(11).TextColor(colMuted).Padding(12)
+			ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted).Padding(12)
 		} else if len(a.commits) == 0 {
-			ui.Text(c, "No commits").FontSize(11).TextColor(colMuted).Padding(12)
+			ui.Text(c, "No commits").FontSize(11).TextColor(pal.TextMuted).Padding(12)
 		} else {
 			a.graphCompactView(c)
 		}
@@ -661,13 +661,13 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 	e := ui.Row(c).Key(f.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(40).Padding(0, 12).ClipX().AlignItems(ui.Center).Gap(8)
 	hover := e.Hovered()
 	if hover {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		fileBadge(c, pathBase(f.Path))
 		ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
-			txt(c, pathBase(f.Path), 11, colText)
-			txt(c, pathDir(f.Path), 9, colMuted)
+			txt(c, pathBase(f.Path), 11, pal.Text)
+			txt(c, pathDir(f.Path), 9, pal.TextMuted)
 		})
 		actions := ui.Row(c).Gap(2).Shrink(0)
 		if !hover {
@@ -722,10 +722,10 @@ func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
 	if !a.stashCollapsed {
 		icon = iconChevronDown
 	}
-	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(colBorder).Margin(4, 0, 0, 0)
+	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(colMuted)
-		txt(c, "STASHES", 10, colMuted).LetterSpacing(1.0)
+		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		txt(c, "STASHES", 10, pal.TextMuted).LetterSpacing(1.0)
 		countBadge(c, len(r.Stashes))
 		ui.Spacer(c)
 	})
@@ -736,8 +736,8 @@ func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
 	if !a.stashCollapsed {
 		// Create-stash form.
 		ui.Box(c).Padding(6, 12).Children(func() {
-			ui.Row(c).Height(28).Radius(6).Border(1, colBorder).Background(colInput).AlignItems(ui.Center).Padding(0, 8).Gap(6).Children(func() {
-				ui.Icon(c, iconArchive).Width(12).Height(12).TextColor(colMuted)
+			ui.Row(c).Height(28).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 8).Gap(6).Children(func() {
+				ui.Icon(c, iconArchive).Width(12).Height(12).TextColor(pal.TextMuted)
 				ui.TextInputBase(c, &a.stashMsg).Placeholder("Stash message…").FontSize(10).Grow(1)
 				track := cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stash (include untracked)")
 				if track.Clicked() {
@@ -756,18 +756,18 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 	e := ui.Row(c).Key(s.Ref).FillWidth().Justify(ui.Start).Cursor(ui.CursorPointer).Height(38).Padding(0, 12).ClipX().AlignItems(ui.Center).Gap(8)
 	hover := e.Hovered()
 	if hover {
-		e.Background(ui.Hex("#171d25"))
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
-		ui.Icon(c, iconArchive).Width(14).Height(14).TextColor(colYellow)
+		ui.Icon(c, iconArchive).Width(14).Height(14).TextColor(pal.Warn)
 		ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
-			txt(c, s.Message, 11, colText)
+			txt(c, s.Message, 11, pal.Text)
 			meta := s.Ref
 			if s.Branch != "" {
 				meta += " · " + s.Branch
 			}
 			meta += " · " + relativeTime(s.When)
-			txt(c, meta, 9, colMuted)
+			txt(c, meta, 9, pal.TextMuted)
 		})
 		actions := ui.Row(c).Gap(2).Shrink(0)
 		if !hover {

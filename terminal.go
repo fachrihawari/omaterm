@@ -165,6 +165,7 @@ func (a *appState) term(id string) *terminal.Terminal {
 		Command: cmd,
 		Dir:     a.workspace,
 		Font:    terminal.Font{Size: a.fontSize},
+		Theme:   omaTermTheme(),
 		OnTitle: func(title string) {},
 		OnExit: func(code int) {
 			// When the shell exits (e.g. Ctrl+D / "exit"), close the pane.
@@ -307,37 +308,37 @@ func (a *appState) removePaneIn(tab int, termID string) {
 
 func (a *appState) terminalView(c *ui.Context) ui.Element {
 	if len(a.tabs) == 0 {
-		return ui.Column(c).Fill().Background(colBg2).Center().Gap(12).Children(func() {
-			ui.Box(c).Width(48).Height(48).Radius(12).Border(1, colBorder2).Background(colCard).Children(func() {
+		return ui.Column(c).Fill().Background(pal.Card).Center().Gap(12).Children(func() {
+			ui.Box(c).Width(48).Height(48).Radius(12).Border(1, pal.BorderStrong).Background(pal.Raised).Children(func() {
 				ui.Column(c).Fill().Center().Children(func() {
-					ui.Icon(c, iconTerminal).Width(24).Height(24).TextColor(colBlue)
+					ui.Icon(c, iconTerminal).Width(24).Height(24).TextColor(pal.Accent)
 				})
 			})
-			ui.Text(c, "No tabs open").FontSize(16).TextColor(colText).Bold()
-			ui.Text(c, "Open a project or create a terminal to get started").FontSize(12).TextColor(colMuted)
+			ui.Text(c, "No tabs open").FontSize(16).TextColor(pal.Text).Bold()
+			ui.Text(c, "Open a project or create a terminal to get started").FontSize(12).TextColor(pal.TextMuted)
 			ui.Row(c).Gap(8).Margin(8, 0, 0, 0).Children(func() {
-				b := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(8, 16).Background(colCard)
+				b := ui.ButtonBase(c).Radius(6).Border(1, pal.BorderStrong).Padding(8, 16).Background(pal.Raised)
 				if b.Hovered() {
-					b.Background(colHover)
+					b.Background(pal.Hover)
 				}
 				b.Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-						ui.Icon(c, iconFolderPlus).Width(14).Height(14).TextColor(colText2)
-						ui.Text(c, "Open Project").FontSize(12).TextColor(colText2)
+						ui.Icon(c, iconFolderPlus).Width(14).Height(14).TextColor(pal.TextSoft)
+						ui.Text(c, "Open Project").FontSize(12).TextColor(pal.TextSoft)
 					})
 				})
 				if b.Clicked() {
 					a.openProjectDialog()
 				}
 
-				b2 := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(8, 16).Background(colCard)
+				b2 := ui.ButtonBase(c).Radius(6).Border(1, pal.BorderStrong).Padding(8, 16).Background(pal.Raised)
 				if b2.Hovered() {
-					b2.Background(colHover)
+					b2.Background(pal.Hover)
 				}
 				b2.Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-						ui.Icon(c, iconTerminal).Width(14).Height(14).TextColor(colText2)
-						ui.Text(c, "New Terminal").FontSize(12).TextColor(colText2)
+						ui.Icon(c, iconTerminal).Width(14).Height(14).TextColor(pal.TextSoft)
+						ui.Text(c, "New Terminal").FontSize(12).TextColor(pal.TextSoft)
 					})
 				})
 				if b2.Clicked() {
@@ -348,10 +349,10 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 				keyLabels("terminal.new")+" new terminal  ·  "+
 				keyLabels("file.quickOpen")+" open file  ·  "+
 				keyLabels("help.keyboardShortcuts")+" shortcuts").
-				FontSize(10).TextColor(colMuted2).Margin(8, 0, 0, 0)
+				FontSize(10).TextColor(pal.TextFaint).Margin(8, 0, 0, 0)
 		})
 	}
-	return ui.Column(c).Fill().Background(colBg2).Children(func() {
+	return ui.Column(c).Fill().Background(pal.Card).Children(func() {
 		a.renderSplit(c, a.ensureSingleSplit())
 	})
 }
@@ -380,11 +381,11 @@ func (a *appState) renderSplit(c *ui.Context, node *splitNode) {
 
 func (a *appState) termPane(c *ui.Context, termID string) {
 	t := a.term(termID)
-	e := ui.Column(c).Fill().Background(colBg2)
+	e := ui.Column(c).Fill().Background(pal.Card)
 	e.Children(func() {
 		// Header strip.
 		ui.Row(c).Height(32).AlignItems(ui.Center).Padding(0, 12).Gap(8).
-			BorderWidth(0, 0, 1, 0).BorderColor(colBorder).ClipX().Children(func() {
+			BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).ClipX().Children(func() {
 			kind := dotGreen
 			if t == nil {
 				kind = dotGray
@@ -396,10 +397,10 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 					title = tt
 				}
 				if d := t.Dir(); d != "" {
-					ui.Text(c, d).FontSize(10).TextColor(colMuted2).SingleLine().Shrink(0)
+					ui.Text(c, d).FontSize(10).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 				}
 			}
-			txt(c, title, 10, colText2)
+			txt(c, title, 10, pal.TextSoft)
 			ui.Spacer(c)
 			// Compact toolbar.
 			if cmdButton(c, iconColumns2, iconBtn, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
@@ -422,7 +423,7 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 
 		if t == nil {
 			ui.Box(c).Grow(1).Children(func() {
-				ui.Text(c, "failed to start terminal").FontSize(12).TextColor(colRed)
+				ui.Text(c, "failed to start terminal").FontSize(12).TextColor(pal.Bad)
 			})
 			return
 		}
@@ -440,7 +441,7 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 		if hovered || a.activePaneTermID == termID {
 			e.DrawOver(func(p *ui.Painter, r ui.Rect) {
 				p.Stroke(ui.Rect{X: r.X + 0.5, Y: r.Y + 0.5, W: r.W - 1, H: r.H - 1},
-					ui.RGBA(90, 169, 255, 0.7), 0, 2)
+					pal.Focus.Alpha(0.7), 0, 2)
 			})
 		}
 	})

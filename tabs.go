@@ -8,7 +8,7 @@ import (
 // controls on the right.
 
 func (a *appState) tabBar(c *ui.Context) ui.Element {
-	return ui.Row(c).Height(42).AlignItems(ui.End).Background(colBg).BorderWidth(0, 0, 1, 0).BorderColor(colBorder).Children(func() {
+	return ui.Row(c).Height(42).AlignItems(ui.End).Background(pal.Wash).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 		// Show-projects button, only while the sidebar is hidden.
 		if !a.sidebarVisible {
 			if cmdButton(c, iconPanelLeft, 16, false).MarginStart(8).
@@ -57,11 +57,11 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	// active, sitting flush with the content below.
 	e := ui.ButtonBase(c).Key(i).Height(36).Radius(6, 6, 0, 0).Padding(0, 12).Gap(6)
 	if active {
-		e = e.Background(ui.Hex("#141a21")).DrawOver(func(p *ui.Painter, r ui.Rect) {
-			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W, H: 1}, ui.RGBA(90, 169, 255, 0.9), 0)
+		e = e.Background(pal.Raised).DrawOver(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W, H: 1}, pal.Accent, 0)
 		})
 	} else if e.Hovered() {
-		e = e.Background(colPanel2)
+		e = e.Background(pal.Raised)
 	}
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
@@ -70,30 +70,30 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 				dot(c, t.Dot, 8)
 			case tabEditor:
 				if isImagePath(t.Path) {
-					ui.Icon(c, iconImage).Width(14).Height(14).TextColor(colGreen)
+					ui.Icon(c, iconImage).Width(14).Height(14).TextColor(pal.Ok)
 				} else {
-					ui.Icon(c, iconFileCode).Width(14).Height(14).TextColor(synTS)
+					ui.Icon(c, iconFileCode).Width(14).Height(14).TextColor(pal.Syn.FileTS)
 				}
 			case tabDiff:
-				ui.Icon(c, iconGitCompare).Width(14).Height(14).TextColor(colGreen)
+				ui.Icon(c, iconGitCompare).Width(14).Height(14).TextColor(pal.Ok)
 			case tabGraph:
-				ui.Icon(c, iconGitGraph).Width(14).Height(14).TextColor(colPurple)
+				ui.Icon(c, iconGitGraph).Width(14).Height(14).TextColor(pal.ANSI[5])
 			}
-			labelCol := colText2
+			labelCol := pal.TextSoft
 			if active {
-				labelCol = ui.Hex("#ffffff")
+				labelCol = pal.TextStrong
 			}
 			ui.Text(c, t.Label).FontSize(12).TextColor(labelCol).SingleLine().Shrink(0)
 			if t.Detail != "" {
 				ui.Spacer(c)
-				ui.Text(c, t.Detail).FontSize(10).TextColor(colMuted).SingleLine().Shrink(0)
+				ui.Text(c, t.Detail).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
 			}
 			if t.Dirty {
-				ui.Text(c, "M").FontSize(10).TextColor(colYellow).SingleLine().Shrink(0)
+				ui.Text(c, "M").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
 			}
 			if t.Kind == tabEditor && t.Path != "" {
 				if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
-					ui.Text(c, "●").FontSize(10).TextColor(colYellow).SingleLine().Shrink(0)
+					ui.Text(c, "●").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
 				}
 			}
 			if len(a.tabs) > 1 {
@@ -107,7 +107,7 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 				}
 				x := ui.ButtonBase(c).Padding(2).Radius(3).Shrink(0).
 					Opacity(opacity).Disabled(!showClose).Children(func() {
-					ui.Icon(c, iconX).Width(14).Height(14).TextColor(colMuted)
+					ui.Icon(c, iconX).Width(14).Height(14).TextColor(pal.TextMuted)
 				})
 				if x.Clicked() {
 					a.closeTab(i)

@@ -50,6 +50,13 @@ var commandRegistry = append([]Command{
 	{ID: "app.zoomReset", Title: "Reset Font Size", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.zoomFont(0) }},
 
+	{ID: "theme.omarchy", Title: "Theme: Follow Omarchy", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeOmarchy) }},
+	{ID: "theme.dark", Title: "Theme: Dark", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeDark) }},
+	{ID: "theme.light", Title: "Theme: Light", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeLight) }},
+
 	{ID: "view.toggleSidebar", Title: "Toggle Sidebar", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.sidebarVisible = !a.sidebarVisible }},
 	{ID: "view.toggleInspector", Title: "Toggle Inspector", Category: "View",
