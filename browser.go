@@ -33,6 +33,10 @@ type webEntry struct {
 	editing      bool
 	focusAddress bool
 	focused      bool
+	// yieldKeys hides the page for a frame, which gives the keyboard back
+	// to the window: a shortcut the page took opens what types in the
+	// window, as the find bar or the palette.
+	yieldKeys bool
 	// The find bar: shown, its query, and its matches.
 	finding  bool
 	query    string
@@ -63,8 +67,9 @@ func (a *appState) ensureWeb(id string) *webEntry {
 	if a.win == nil {
 		return e
 	}
+	secret := newID() + newID()
 	v, err := a.win.NewWebView(mygo.WebViewOptions{
-		Page: mygo.PageOptions{DevTools: mygo.DevToolsEnabled},
+		Page: mygo.PageOptions{DevTools: mygo.DevToolsEnabled, PreloadScript: pageKeysScript(secret)},
 	})
 	if err != nil {
 		e.err = err.Error()
@@ -72,6 +77,23 @@ func (a *appState) ensureWeb(id string) *webEntry {
 	}
 	e.view = v
 	page := v.Page()
+	// The app's shortcuts, which the page took (webkeys.go).
+	page.OnWillNavigate(func(n *mygo.NavigateEvent) {
+		if cmd, ok := pageKey(n, secret); ok {
+			a.post(func() {
+				if a.webs[id] != e {
+					return
+				}
+				a.activePaneTermID = id
+				a.queuedActions = append(a.queuedActions, cmd)
+				switch cmd {
+				case "browser.reload", "browser.back", "browser.forward":
+				default:
+					e.yieldKeys = true
+				}
+			})
+		}
+	})
 	// The page's events come on the UI thread: they change what the pane
 	// shows, and what is saved of it.
 	page.OnDidNavigate(func(url string) {
@@ -235,6 +257,14 @@ func (a *appState) browserCard(c *ui.Context, tab *topTab, id string, multi, foc
 				}
 				ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
 			})
+		case e.yieldKeys:
+			// Counted as focused, the page is not handed the keyboard again
+			// while the pane keeps the window's focus: only as it comes
+			// back to the pane.
+			e.yieldKeys = false
+			e.focused = true
+			ui.Box(c.Key("web-yield")).Grow(1)
+			a.post(func() {}) // the page shows again next frame
 		default:
 			ref := a.handle("web-" + id)
 			web := ui.WebView(c.Key("web"), e.view).Grow(1).Bind(ref)

@@ -73,7 +73,7 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 		switch method {
 		case "state", "create", "split", "close", "restart", "rename", "focus", "select", "wait",
 			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions":
-			return nil, proto.Errorf(proto.CodeAppClosed, "omaterm's control socket is off (settings.json controlSocket)")
+			return d.forward(ctx, method, raw)
 		}
 	}
 	switch method {
@@ -433,7 +433,7 @@ func (d *Daemon) startPaneWith(sessionID, id, dir string, command, env []string,
 // command on its PATH, where to reach the app, and the app's display.
 func (d *Daemon) paneEnv() []string {
 	env := []string{
-		"PATH=" + os.Getenv("PATH") + string(os.PathListSeparator) + paths.BinDir(),
+		"PATH=" + paths.BinDir() + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"OMATERM_SOCKET=" + paths.SocketPath(),
 	}
 	return append(env, d.envList()...)
@@ -544,5 +544,41 @@ func (d *Daemon) restore() {
 	}
 	if n > 0 {
 		log.Printf("restored %d panes", n)
+	}
+}
+
+// ForwardedCall is a call of the omaterm command the daemon passes to the
+// app following it (event "call"), which answers with call.answer.
+type ForwardedCall struct {
+	ID     int64           `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// forward passes a call to the app, which owns the sessions while open,
+// and returns its answer: the first app's to answer.
+func (d *Daemon) forward(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	ch := make(chan proto.Message, 1)
+	d.mu.Lock()
+	d.nextCall++
+	id := d.nextCall
+	d.calls[id] = ch
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		delete(d.calls, id)
+		d.mu.Unlock()
+	}()
+	d.broadcast(proto.Message{Event: "call", Result: mustJSON(ForwardedCall{ID: id, Method: method, Params: raw})})
+	select {
+	case m := <-ch:
+		if m.Error != "" {
+			return nil, proto.Errorf(m.Code, m.Error)
+		}
+		return m.Result, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(10 * time.Minute):
+		return nil, proto.Errorf(proto.CodeTimeout, "the app did not answer")
 	}
 }

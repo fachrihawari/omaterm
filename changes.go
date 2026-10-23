@@ -27,8 +27,10 @@ type changeSet struct {
 
 	// What the list is of: the pane, its worktree, the base's revision
 	// and name, and its files.
-	pane     string
-	root     string
+	pane string
+	root string
+	// notRepo tells a pane outside any git repository.
+	notRepo  bool
 	rev      string
 	baseName string
 	files    []gitsnap.File
@@ -101,6 +103,7 @@ func (a *appState) refreshChanges(force bool) {
 		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		r, err := gitsnap.Open(ctx, dir)
+		notRepo := err != nil
 		var rev, name string
 		var files []gitsnap.File
 		if err == nil {
@@ -113,7 +116,11 @@ func (a *appState) refreshChanges(force bool) {
 				return
 			}
 			cs.loading, cs.pane = false, pane
-			cs.err = ""
+			cs.err, cs.notRepo = "", notRepo
+			if notRepo {
+				cs.files = nil
+				return
+			}
 			if err != nil {
 				cs.err, cs.files = err.Error(), nil
 				return
@@ -278,6 +285,10 @@ func (a *appState) changesPanel(c *ui.Context) {
 				a.refreshChanges(true)
 			}
 		})
+		if cs.notRepo {
+			ui.Text(c, "This pane's folder is not in a git repository.").FontSize(12).TextColor(pal.TextMuted).Padding(8, 2)
+			return
+		}
 		if cs.err != "" {
 			ui.Text(c, cs.err).FontSize(12).TextColor(pal.Bad)
 			return

@@ -22,8 +22,9 @@ func (a *appState) startPanes() {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
+			case now := <-t.C:
 				a.saveHistories(false)
+				a.post(func() { a.detachHidden(now) })
 			}
 		}
 	}()

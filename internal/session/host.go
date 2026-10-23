@@ -19,6 +19,9 @@ type Handle interface {
 	Changed() <-chan struct{}
 	// Term is the terminal a view shows.
 	Term() *terminal.Terminal
+	// TermIfOpen is Term when the app has one, nil else: it never opens
+	// one (for a daemon pane, an attach connection).
+	TermIfOpen() *terminal.Terminal
 	Write(b []byte) error
 	Text(scrollback bool, lines int) string
 	History(force bool) []byte

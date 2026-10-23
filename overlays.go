@@ -604,7 +604,7 @@ func idx(pool []paletteEntry, id string) int {
 // applySettings takes the changed settings into effect and keeps them.
 func (a *appState) applySettings() {
 	a.panes.Each(func(p session.Handle) {
-		if t := p.Term(); t != nil {
+		if t := p.TermIfOpen(); t != nil {
 			t.SetMinimumContrast(a.minimumContrast())
 		}
 	})

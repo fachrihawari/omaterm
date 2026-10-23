@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,4 +174,46 @@ func TestServiceRestores(t *testing.T) {
 		txt := p.Text(true, 0)
 		return strings.Contains(txt, "old-scrollback") && strings.Contains(txt, "restored")
 	})
+}
+
+// While an app follows the daemon, the omaterm command's calls that reach
+// the daemon go to the app, as a browser op must: the first app to
+// answer wins, and an app with its control socket off refuses.
+func TestForwardsToApp(t *testing.T) {
+	_, socket, _ := offlineDaemon(t, false, nil)
+	slow, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Close()
+	fast, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fast.Close()
+	slow.OnCall = func(method string, _ json.RawMessage) (any, error) {
+		time.Sleep(500 * time.Millisecond)
+		return proto.BrowserResult{Text: "slow"}, nil
+	}
+	fast.OnCall = func(method string, raw json.RawMessage) (any, error) {
+		var p proto.BrowserParams
+		json.Unmarshal(raw, &p)
+		return proto.BrowserResult{Text: method + ":" + p.Op}, nil
+	}
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got := call[proto.BrowserResult](t, c, "browser", proto.BrowserParams{ID: "x", Op: "title"})
+	if got.Text != "browser:title" {
+		t.Fatalf("answer %q, want the fast app's", got.Text)
+	}
+	fast.OnCall = func(string, json.RawMessage) (any, error) {
+		return nil, proto.Errorf(proto.CodeAppClosed, "control socket off")
+	}
+	slow.Close()
+	if err := c.Call("state", nil, nil); proto.CodeOf(err) != proto.CodeAppClosed {
+		t.Fatalf("refused call: %v", err)
+	}
 }

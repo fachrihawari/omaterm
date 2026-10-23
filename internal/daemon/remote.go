@@ -34,6 +34,9 @@ type Remote struct {
 	OnLost func(ids []string)
 	// Spawn starts a daemon when none answers: StartProcess.
 	Spawn func() error
+	// OnCall answers a call of the omaterm command the daemon forwarded,
+	// as the app's control socket would.
+	OnCall func(method string, params json.RawMessage) (any, error)
 	// OnConnection tells that the connection to the daemon went
 	// (reconnecting) or came back.
 	OnConnection func(reconnecting bool)
@@ -257,6 +260,11 @@ func (r *Remote) events(c *client.Client) {
 			var infos map[string]session.Info
 			if json.Unmarshal(m.Result, &infos) == nil {
 				r.update(infos)
+			}
+		case "call":
+			var fc ForwardedCall
+			if json.Unmarshal(m.Result, &fc) == nil {
+				go r.answer(c, fc)
 			}
 		case "notice":
 			var n struct{ Pane, Title, Body string }
@@ -527,6 +535,24 @@ func (p *remotePane) Term() *terminal.Terminal {
 	return t
 }
 
+// TermIfOpen is the app's terminal of the pane, nil while it shows none.
+func (p *remotePane) TermIfOpen() *terminal.Terminal {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.term
+}
+
+// Detach closes the app's terminal of a pane, whose attach connection
+// goes; the pane goes on, and Term attaches again.
+func (r *Remote) Detach(id string) {
+	r.mu.Lock()
+	h := r.handles[id]
+	r.mu.Unlock()
+	if h != nil {
+		h.detach()
+	}
+}
+
 // detach closes the app's terminal of the pane; the pane goes on.
 func (p *remotePane) detach() {
 	p.mu.Lock()
@@ -668,3 +694,19 @@ func (s *stream) UseTheme(t *terminal.Theme) error {
 }
 
 func (s *stream) Close() error { return s.conn.Close() }
+
+// answer answers a forwarded call through OnCall.
+func (r *Remote) answer(c *client.Client, fc ForwardedCall) {
+	m := proto.Message{ID: fc.ID}
+	var res any
+	err := proto.Errorf(proto.CodeAppClosed, "the app does not answer the omaterm command")
+	if r.OnCall != nil {
+		res, err = r.OnCall(fc.Method, fc.Params)
+	}
+	if err != nil {
+		m.Error, m.Code = err.Error(), proto.CodeOf(err)
+	} else if b, err := json.Marshal(res); err == nil {
+		m.Result = b
+	}
+	c.Call("call.answer", m, nil)
+}

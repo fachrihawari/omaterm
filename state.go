@@ -281,10 +281,13 @@ type appState struct {
 	// another protocol.
 	daemonStale        string
 	daemonReconnecting bool
-	daemonRefusedOpen  *bool
-	daemonRefusedPID   int
-	host               *localHost
-	git                *gitWatch
+	// paneShown is when each pane was last shown: a daemon pane hidden
+	// long lets go of its terminal in the app (detachHidden).
+	paneShown         map[string]time.Time
+	daemonRefusedOpen *bool
+	daemonRefusedPID  int
+	host              *localHost
+	git               *gitWatch
 
 	// The panes' layout: handles of keyed elements, a divider being
 	// dragged, the drop zone last shown, the drop preview's target and
@@ -386,6 +389,7 @@ func newApp() *appState {
 		editors:          map[string]*openFile{},
 		panes:            session.NewLocalHost(),
 		paneFailed:       map[string]bool{},
+		paneShown:        map[string]time.Time{},
 		git:              newGitWatch(),
 		arrived:          map[string]bool{},
 		notified:         map[string]time.Time{},

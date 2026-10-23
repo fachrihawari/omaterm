@@ -325,7 +325,7 @@ func (a *appState) zoomFont(d int) {
 // open, not just the ones built from now on.
 func (a *appState) applyFontSize() {
 	a.panes.Each(func(p session.Handle) {
-		if t := p.Term(); t != nil {
+		if t := p.TermIfOpen(); t != nil {
 			t.SetFont(terminal.Font{Family: a.termFont, Size: a.fontSize})
 		}
 	})

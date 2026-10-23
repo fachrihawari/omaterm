@@ -81,6 +81,10 @@ type Daemon struct {
 	// new panes take over the daemon's own: the daemon may have started
 	// in another session than the app's latest.
 	env map[string]string
+	// calls are the omaterm command's calls forwarded to the app, by id,
+	// waiting for its answer.
+	calls    map[int64]chan proto.Message
+	nextCall int64
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -133,7 +137,7 @@ func Start(opts Options) (*Daemon, error) {
 	}
 	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
-		started: time.Now(), env: map[string]string{}}
+		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}}
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(session.Info, session.Status) { d.changed() }
@@ -364,6 +368,17 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 			}
 		}
 		d.mu.Unlock()
+		return true, nil
+	case "call.answer":
+		var m proto.Message
+		json.Unmarshal(raw, &m)
+		d.mu.Lock()
+		ch := d.calls[m.ID]
+		delete(d.calls, m.ID) // the first app to answer wins
+		d.mu.Unlock()
+		if ch != nil {
+			ch <- m
+		}
 		return true, nil
 	case "clients":
 		d.mu.Lock()

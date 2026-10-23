@@ -5,6 +5,7 @@ import (
 	"omaterm/internal/session"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -148,6 +149,7 @@ func (a *appState) activeSplitLeaf() string {
 }
 
 func (a *appState) term(id string) *terminal.Terminal {
+	a.paneShown[id] = time.Now()
 	if p := a.panes.Get(id); p != nil {
 		return p.Term()
 	}
@@ -185,7 +187,9 @@ func (a *appState) startPane(id, sessionID, dir string, command []string, exec b
 // startPaneWith is startPane with the scrollback a restored pane shows
 // above its shell.
 func (a *appState) startPaneWith(id, sessionID, dir string, command []string, exec bool, history []byte) (session.Handle, error) {
-	env := []string{"PATH=" + os.Getenv("PATH") + string(os.PathListSeparator) + paths.BinDir()}
+	// The omaterm command comes first: another program of that name on
+	// the PATH must not answer for it in a pane.
+	env := []string{"PATH=" + paths.BinDir() + string(os.PathListSeparator) + os.Getenv("PATH")}
 	if a.ctl != nil {
 		env = append(env, "OMATERM_SOCKET="+a.ctl.Path())
 	}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"omaterm/internal/client"
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
+	"omaterm/internal/proto"
 	"omaterm/internal/session"
 )
 
@@ -56,6 +59,14 @@ func (a *appState) useDaemon() {
 			}
 			a.queuedToasts = append(a.queuedToasts, "Session daemon restarted: sessions restored")
 		})
+	}
+	// The omaterm command's calls that reach the daemon while the window
+	// is open come here, unless the control socket is off.
+	r.OnCall = func(method string, params json.RawMessage) (any, error) {
+		if !a.settings.ControlSocket || a.host == nil {
+			return nil, proto.Errorf(proto.CodeAppClosed, "omaterm's control socket is off (Settings: controlSocket)")
+		}
+		return a.host.Handle(context.Background(), method, params)
 	}
 	r.OnConnection = func(reconnecting bool) {
 		a.post(func() { a.daemonReconnecting = reconnecting })
@@ -169,4 +180,32 @@ func (a *appState) restartDaemon() bool {
 	a.saveState()
 	go r.Restart()
 	return true
+}
+
+// hiddenDetach is how long a daemon pane goes unshown before the app lets
+// go of its terminal: each shown pane is a second emulator, the
+// daemon's being the first.
+const hiddenDetach = 10 * time.Minute
+
+// detachHidden lets go of the terminals of the daemon panes not shown for
+// hiddenDetach; showing one attaches it again. UI thread.
+func (a *appState) detachHidden(now time.Time) {
+	r, ok := a.panes.(*daemon.Remote)
+	if !ok {
+		return
+	}
+	shown := map[string]bool{}
+	if n := a.activeSplit(); n != nil && a.activeView == tabTerminal {
+		for _, id := range n.termIDs() {
+			shown[id] = true
+		}
+	}
+	r.Each(func(p session.Handle) {
+		id := p.ID()
+		if shown[id] || p.TermIfOpen() == nil || now.Sub(a.paneShown[id]) < hiddenDetach {
+			return
+		}
+		r.Detach(id)
+		delete(a.paneShown, id)
+	})
 }

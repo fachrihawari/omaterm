@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"omaterm/internal/gitsnap"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+
+	"github.com/egoist/mygo/ui"
 )
 
 // An agent starting a turn snapshots its worktree; one going on after a
@@ -148,5 +151,102 @@ func TestMultiFileCommitDiff(t *testing.T) {
 	a.diffFileShow(1)
 	if !strings.Contains(a.diffTitle, "b.txt") || a.diffPatch == nil {
 		t.Fatalf("second file: %q", a.diffTitle)
+	}
+}
+
+// changesFixture is an app whose pane's agent took a turn in a repo, which
+// added a line to a.txt; its status is pinned, the pane not started.
+func changesFixture(t *testing.T, status session.Status) (*appState, *ui.Tester, string) {
+	t.Helper()
+	a := newTestApp(t)
+	dir := a.workspace
+	path := filepath.Join(dir, "a.txt")
+	os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o644)
+	r, err := gitsnap.Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := r.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(path, []byte("one\ntwo\nagent line\nthree\n"), 0o644)
+	id := a.activeSplitLeaf()
+	info := session.Info{ID: id, Dir: dir, Agent: "claude", Status: status, Progress: -1,
+		Turn: &session.Turn{Tree: tree, Root: r.Root, At: time.Now().UnixMilli()}}
+	a.inspectorVisible, a.inspectorTab = true, 3
+	a.termCmd = []string{"sh", "-c", "sleep 30"}
+	view := func(c *ui.Context) {
+		a.status[id] = info // the pane's own status would replace it
+		a.view(c)
+	}
+	return a, ui.NewTester(view, 1440, 900), path
+}
+
+func frameUntil(t *testing.T, tr *ui.Tester, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		tr.Frame()
+		if ok() {
+			return
+		}
+	}
+	t.Fatalf("timed out: %s (texts %q)", what, tr.Texts())
+}
+
+// openTurnFile opens a.txt in the Changes panel, and returns it once its
+// diff loaded.
+func openTurnFile(t *testing.T, a *appState, tr *ui.Tester) *changeFile {
+	t.Helper()
+	frameUntil(t, tr, "the turn's file", func() bool { return tr.HasText("a.txt") })
+	if err := tr.Click("a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	frameUntil(t, tr, "the diff", func() bool {
+		cf := a.changes.open["a.txt"]
+		return cf != nil && cf.ds != nil
+	})
+	return a.changes.open["a.txt"]
+}
+
+// Revert in the Changes panel puts the turn's hunk back on disk.
+func TestChangesRevertHunk(t *testing.T) {
+	a, tr, path := changesFixture(t, session.Idle)
+	defer stopTermPanes(a)
+	cf := openTurnFile(t, a, tr)
+	if !cf.ds.HunkActions {
+		t.Fatal("no Revert on the turn's hunk")
+	}
+	// The buttons show on the change under the pointer: the third line,
+	// below the file's row.
+	row, _ := tr.Find("a.txt")
+	tr.Move(row.X+80, row.Y+row.H/2+70)
+	frameUntil(t, tr, "the hunk's buttons", func() bool { return tr.HasText("Revert") })
+	if os.Getenv("OMATERM_SHOT_REVERT") != "" {
+		f, _ := os.Create(os.Getenv("OMATERM_SHOT_REVERT"))
+		png.Encode(f, tr.Image())
+		f.Close()
+	}
+	if err := tr.Click("Revert"); err != nil {
+		t.Fatal(err)
+	}
+	frameUntil(t, tr, "reverted on disk", func() bool {
+		b, _ := os.ReadFile(path)
+		return string(b) == "one\ntwo\nthree\n"
+	})
+}
+
+// While the agent works, the turn's hunks offer no Revert, and a revert
+// asked anyway leaves the file alone.
+func TestChangesNoRevertWhileWorking(t *testing.T) {
+	a, tr, path := changesFixture(t, session.Working)
+	defer stopTermPanes(a)
+	cf := openTurnFile(t, a, tr)
+	if cf.ds.HunkActions {
+		t.Fatal("Revert offered while the agent works")
+	}
+	a.revertHunk(nil, cf, 0)
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "agent line") {
+		t.Fatalf("reverted while working: %q", b)
 	}
 }

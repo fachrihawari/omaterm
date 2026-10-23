@@ -42,7 +42,7 @@ func themeSource(mode string) theme.Source {
 func (a *appState) applyTheme(src theme.Source) {
 	setPalette(src)
 	a.panes.Each(func(p session.Handle) {
-		if t := p.Term(); t != nil {
+		if t := p.TermIfOpen(); t != nil {
 			t.SetTheme(termTheme, nil)
 			t.SetMinimumContrast(a.minimumContrast())
 		}

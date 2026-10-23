@@ -95,6 +95,9 @@ func (p *Pane) ID() string { return p.info.ID }
 // Term is the pane's terminal, for a view to show.
 func (p *Pane) Term() *terminal.Terminal { return p.term }
 
+// TermIfOpen is Term: a pane in the app always has its terminal.
+func (p *Pane) TermIfOpen() *terminal.Terminal { return p.term }
+
 // Changed is closed on the pane's next change of Info.
 func (p *Pane) Changed() <-chan struct{} {
 	p.mu.Lock()
