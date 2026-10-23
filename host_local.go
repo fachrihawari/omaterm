@@ -15,6 +15,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
+	"omaterm/internal/gitsnap"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
 	"omaterm/internal/pty"
@@ -765,7 +766,51 @@ func (h *localHost) handleMore(ctx context.Context, method string, raw json.RawM
 	return h.handleGit(ctx, method, raw)
 }
 
-// handleGit runs the git methods (Phase 5).
+// handleGit runs the git methods: a pane's changed files (git.changes)
+// and its patch (git.diff), against a base.
 func (h *localHost) handleGit(ctx context.Context, method string, raw json.RawMessage) (any, error, bool) {
-	return nil, nil, false
+	if method != "git.changes" && method != "git.diff" {
+		return nil, nil, false
+	}
+	p, err := decode[proto.GitParams](raw)
+	if err != nil {
+		return nil, err, true
+	}
+	pane, err := h.pane(p.Pane)
+	if err != nil {
+		return nil, err, true
+	}
+	info := pane.Info()
+	base := p.Base
+	if base == "" {
+		base = gitsnap.BaseHead
+	}
+	turn := ""
+	if info.Turn != nil {
+		turn = info.Turn.Tree
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	r, err := gitsnap.Open(ctx, info.WorkDir())
+	if err != nil {
+		return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.Pane+" is not in a git repository"), true
+	}
+	rev, _, err := r.Base(ctx, base, turn)
+	if err != nil {
+		return nil, err, true
+	}
+	if method == "git.changes" {
+		files, err := r.Changes(ctx, rev, "")
+		return files, err, true
+	}
+	paths := make([]string, 0, len(p.Paths))
+	for _, path := range p.Paths {
+		rel, err := filepath.Rel(r.Root, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return nil, proto.Errorf(proto.CodeUsage, path+" is outside the repository"), true
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+	}
+	patch, err := r.Patch(ctx, rev, "", paths...)
+	return proto.ReadResult{Text: patch}, err, true
 }

@@ -161,10 +161,15 @@ type appState struct {
 	diffNew   *editor.Buffer
 	diffPatch *editor.FilePatch
 	diffDs    *editor.DiffState // persisted: scroll state lives inside DiffState
-	diffKey   string            // content key the persisted DiffState was built from
-	diffGen   int               // bumped every time new diff content is loaded
-	diffSrc   diffSource
-	diffTitle string
+	// diffFiles are the files of a multi-file diff (a commit, a stash),
+	// diffFileIdx the one shown, diffFileShow what shows another.
+	diffFiles    []editor.FilePatch
+	diffFileIdx  int
+	diffFileShow func(int)
+	diffKey      string // content key the persisted DiffState was built from
+	diffGen      int    // bumped every time new diff content is loaded
+	diffSrc      diffSource
+	diffTitle    string
 
 	// Binary diffs have no text to show; the view renders a placeholder
 	// with the file's name and size instead. A picture's two versions go
@@ -255,6 +260,8 @@ type appState struct {
 	paneAgents map[string]*agent.Session
 	// paneURLs are the pages of browser panes, which run no shell, and
 	// paneTitles their titles; webs their web views (browser.go).
+	// restoring are the panes of the last run not yet started again.
+	restoring  map[string]bool
 	paneURLs   map[string]string
 	paneTitles map[string]string
 	webs       map[string]*webEntry
@@ -280,6 +287,11 @@ type appState struct {
 	previewKey   string
 	previewSince time.Time
 	arrived      map[string]bool
+
+	// changes is the Changes panel's state; snaps the turn snapshots
+	// being taken.
+	changes changeSet
+	snaps   turnSnapshots
 
 	// renaming is the session being renamed in the sidebar, renameText
 	// its name as typed.
@@ -371,6 +383,7 @@ func newApp() *appState {
 		paneDirs:         map[string]string{},
 		paneAgents:       map[string]*agent.Session{},
 		paneURLs:         map[string]string{},
+		restoring:        map[string]bool{},
 		paneTitles:       map[string]string{},
 		webs:             map[string]*webEntry{},
 		status:           map[string]session.Info{},

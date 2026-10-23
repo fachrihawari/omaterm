@@ -169,6 +169,8 @@ var commandRegistry = append([]Command{
 	{ID: "browser.devtools", Title: "Toggle Developer Tools", Category: "Browser",
 		Enabled: func(a *appState) bool { return a.focusedWeb() != nil && a.focusedWeb().view != nil },
 		Run:     func(a *appState, c *ui.Context) { a.focusedWeb().view.Page().OpenDevTools() }},
+	{ID: "view.changes", Title: "Show Changes", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.inspectorVisible = true; a.showInspectorTab(3) }},
 	{ID: "pane.zoom", Title: "Zoom Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.toggleZoom() }},

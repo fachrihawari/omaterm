@@ -19,6 +19,7 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
 			a.inspectorTabButton(c, 1, iconFolder, "Files", 0)
 			a.inspectorTabButton(c, 2, iconGitBranch, "Git", a.gitCount())
+			a.inspectorTabButton(c, 3, iconGitCompare, "Changes", len(a.changes.files))
 			ui.Spacer(c)
 		})
 
@@ -27,6 +28,8 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 			a.filesPanel(c)
 		case 2:
 			a.gitPanel(c)
+		case 3:
+			a.changesPanel(c)
 		default:
 			a.infoPanel(c)
 		}

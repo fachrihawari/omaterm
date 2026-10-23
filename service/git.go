@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -58,8 +59,12 @@ type Repo struct {
 	HasRemote bool
 }
 
+// gitCmd runs git in root. It never takes the index's optional lock, so
+// an agent committing beside the panel never finds it held, and never asks
+// for a password.
 func gitCmd(root string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"--no-optional-locks"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	if root != "" {
 		cmd.Dir = root
 	}

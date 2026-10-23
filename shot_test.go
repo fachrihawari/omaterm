@@ -15,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/gitsnap"
 	"omaterm/internal/session"
 	"omaterm/internal/theme"
 	"omaterm/service"
@@ -42,6 +43,29 @@ func shotStatuses(a *appState) {
 	set(1, session.Info{Status: session.Idle, Unread: true, Process: "go", Message: "Tests passed"})
 	set(2, session.Info{Status: session.Working, Agent: "codex", Process: "codex", Progress: 40})
 	a.activePaneTermID = a.tabs[0].Split.termIDs()[0]
+}
+
+// shotChanges shows the Changes tab with a pinned list: what a pane's
+// agent changed in its last turn.
+func shotChanges(a *appState) {
+	id := a.activeSplitLeaf()
+	at := nowFunc().Add(-3 * time.Minute).UnixMilli()
+	dir := a.project().Path // the pinned path the shots show
+	a.status[id] = session.Info{ID: id, Session: a.tabs[0].ID, Agent: "claude", Process: "claude", Status: session.Idle,
+		Unread: true, Progress: -1, Dir: dir, Turn: &session.Turn{Tree: "4b825dc", Root: dir, At: at}}
+	a.inspectorVisible, a.inspectorTab = true, 3
+	cs := &a.changes
+	cs.base = gitsnap.BaseTurn
+	cs.key = id + "|" + cs.base + "|4b825dc"
+	cs.stamp = service.GitStamp(service.RepoRoot(dir))
+	cs.loadedAt = nowFunc()
+	cs.pane, cs.root = id, dir
+	cs.files = []gitsnap.File{
+		{Path: "internal/theme/omarchy.go", Status: "modified", Added: 42, Removed: 7},
+		{Path: "themewatch.go", Status: "modified", Added: 31},
+		{Path: "internal/theme/omarchy_test.go", Status: "added", Added: 7},
+	}
+	cs.open = map[string]*changeFile{}
 }
 
 // shotTheme loads one of the Omarchy theme fixtures.
@@ -90,6 +114,7 @@ func TestShots(t *testing.T) {
 		{"terminal", nil, nil},
 		{"theme-light", func(a *appState) { a.applyTheme(shotTheme(t, "lupine")) }, nil},
 		{"sidebar-sessions", shotStatuses, nil},
+		{"changes", shotChanges, nil},
 		{"sessions-light", func(a *appState) { a.applyTheme(shotTheme(t, "lupine")); shotStatuses(a) }, nil},
 		{"theme-tokyo", func(a *appState) { a.applyTheme(shotTheme(t, "tokyo-night")) }, nil},
 		{"theme-mono", func(a *appState) { a.applyTheme(shotTheme(t, "white")) }, nil},

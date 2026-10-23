@@ -163,7 +163,12 @@ func (a *appState) term(id string) *terminal.Terminal {
 	if dir == "" {
 		dir = a.workspace
 	}
-	p, err := a.startPane(id, sessionID, dir, a.termCmd, len(a.termCmd) > 0)
+	command, exec := a.termCmd, len(a.termCmd) > 0
+	history, resume := a.restoreOptions(id)
+	if resume != nil && !exec {
+		command = resume
+	}
+	p, err := a.startPaneWith(id, sessionID, dir, command, exec, history)
 	if err != nil {
 		a.paneFailed[id] = true
 		return nil
@@ -174,6 +179,12 @@ func (a *appState) term(id string) *terminal.Terminal {
 // startPane runs a pane's shell, running command first when set (or only
 // command, with exec), in dir.
 func (a *appState) startPane(id, sessionID, dir string, command []string, exec bool) (*session.Pane, error) {
+	return a.startPaneWith(id, sessionID, dir, command, exec, nil)
+}
+
+// startPaneWith is startPane with the scrollback a restored pane shows
+// above its shell.
+func (a *appState) startPaneWith(id, sessionID, dir string, command []string, exec bool, history []byte) (*session.Pane, error) {
 	env := []string{"PATH=" + os.Getenv("PATH") + string(os.PathListSeparator) + paths.BinDir()}
 	if a.ctl != nil {
 		env = append(env, "OMATERM_SOCKET="+a.ctl.Path())
@@ -185,6 +196,7 @@ func (a *appState) startPane(id, sessionID, dir string, command []string, exec b
 		Theme:           omaTermTheme(),
 		MinimumContrast: a.minimumContrast(),
 		Padding:         terminal.Padding{X: 10, Y: 6},
+		History:         history,
 	})
 }
 
@@ -412,6 +424,9 @@ func randomTermID() string { return newID() }
 // closePaneRuntime ends what a pane runs: its shell, or its page.
 func (a *appState) closePaneRuntime(id string) {
 	a.panes.Remove(id)
+	os.Remove(historyPath(id))
+	delete(a.restoring, id)
+	delete(a.paneAgents, id)
 	a.dropWeb(id)
 	delete(a.paneDirs, id)
 	delete(a.paneFailed, id)

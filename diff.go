@@ -82,7 +82,18 @@ func (a *appState) openStashDiff(index int) {
 	}
 	a.diffSrc = diffSource{Kind: diffStash, Repo: r.Root, Stash: index}
 	title := "stash@{" + itoa(index) + "}"
+	a.diffFiles, a.diffFileShow = nil, nil
 	if files, perr := editor.ParsePatch(patch); perr == nil && len(files) > 0 {
+		if len(files) > 1 {
+			a.diffFiles = files
+			a.diffFileShow = func(i int) {
+				a.diffFileIdx = i
+				a.showPatchFile(files[i], "stash@{"+itoa(index)+"} · ", r.Root, "stash@{"+itoa(index)+"}^1", "stash@{"+itoa(index)+"}")
+			}
+			a.diffFileShow(0)
+			a.focusDiffTab("stash")
+			return
+		}
 		fp := files[0]
 		name := fp.NewName
 		if name == "" {
@@ -139,6 +150,19 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 	// Use SetPatch so the diff viewer renders the patch properly
 	// (hunks with line numbers, +/- highlighting) instead of treating
 	// the patch text as file content.
+	a.diffFiles, a.diffFileShow = nil, nil
+	if files, perr := editor.ParsePatch(patch); perr == nil && len(files) > 1 && file == "" {
+		// A whole commit: every file, one at a time, with the toolbar's
+		// file strip to go from one to the next.
+		a.diffFiles = files
+		a.diffFileShow = func(i int) {
+			a.diffFileIdx = i
+			a.showPatchFile(files[i], "Commit "+shortHash(hash)+" · ", r.Root, hash+"^", hash)
+		}
+		a.diffFileShow(0)
+		a.focusDiffTab("commit")
+		return
+	}
 	if files, perr := editor.ParsePatch(patch); perr == nil && len(files) > 0 {
 		// Find the right file if specified.
 		fp := files[0]
@@ -181,6 +205,56 @@ func (a *appState) openCommitFileDiff(hash, file string) {
 		a.setDiffBuffers("", patch, file)
 	}
 	a.focusDiffTab("commit")
+}
+
+// showPatchFile shows one file of a multi-file patch: its patch, or its
+// two pictures, or a binary placeholder.
+func (a *appState) showPatchFile(fp editor.FilePatch, prefix, root, oldRev, newRev string) {
+	name := fp.NewName
+	if name == "" {
+		name = fp.OldName
+	}
+	a.diffTitle = prefix + pathBase(name)
+	switch {
+	case fp.Binary && isRasterImagePath(name):
+		oldData, _ := service.ShowBytes(root, oldRev, name)
+		newData, _ := service.ShowBytes(root, newRev, name)
+		a.setDiffImageData(name, oldData, newData)
+	case fp.Binary:
+		a.setDiffBinary(name, 0)
+	default:
+		a.setDiffPatch(fp)
+	}
+}
+
+// diffFileStrip goes from file to file of a multi-file diff: "3/7", with
+// the previous and next files, and a menu of them all.
+func (a *appState) diffFileStrip(c *ui.Context) {
+	n := len(a.diffFiles)
+	if n < 2 || a.diffFileShow == nil {
+		return
+	}
+	i := a.diffFileIdx
+	ui.Row(c.Key("files")).Gap(2).AlignItems(ui.Center).Shrink(0).Children(func() {
+		if cmdButton(c, iconChevronLeft, 13, false).Tooltip("Previous file").Clicked() && i > 0 {
+			a.diffFileShow(i - 1)
+		}
+		label := ui.Text(c, itoa(i+1)+"/"+itoa(n)).FontSize(11.5).TextColor(pal.TextMuted).SingleLine().Cursor(ui.CursorPointer)
+		label.ContextMenu(func(m *ui.Menu) {
+			for k, f := range a.diffFiles {
+				name := f.NewName
+				if name == "" {
+					name = f.OldName
+				}
+				if m.Item(name).Chosen() {
+					a.diffFileShow(k)
+				}
+			}
+		})
+		if cmdButton(c, iconChevronRight, 13, false).Tooltip("Next file").Clicked() && i < n-1 {
+			a.diffFileShow(i + 1)
+		}
+	})
 }
 
 // setDiffPatch shows a parsed file patch and caches its line counts for
@@ -326,6 +400,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				ui.Text(c, "-"+itoa(a.diffDel)).FontSize(10).TextColor(pal.Bad).SingleLine().Shrink(0)
 			}
 
+			a.diffFileStrip(c)
 			ui.Spacer(c)
 
 			// Stage/unstage only makes sense for working/staged file diffs.

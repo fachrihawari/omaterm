@@ -16,6 +16,18 @@ func (a *appState) startPanes() {
 	go a.panes.Run(ctx)
 	go a.git.run(ctx, func() { a.post(func() {}) })
 	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				a.saveHistories(false)
+			}
+		}
+	}()
+	go func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -47,6 +59,7 @@ func (a *appState) hookPanes() {
 	a.panes.OnExit = func(id string, code int) {
 		a.post(func() { a.paneExited(id) })
 	}
+	a.panes.OnStatus = a.onStatus
 	a.panes.OnNotice = func(id, title, body string) {
 		a.post(func() { a.programNotice(id, title, body) })
 	}

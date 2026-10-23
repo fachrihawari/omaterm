@@ -179,6 +179,7 @@ var keybindings = append([]keyBinding{
 	{"view.files", combo(ui.Cmd|ui.Shift, ui.KeyE), scopeGlobal},
 	{"view.git", combo(ui.Cmd|ui.Shift, ui.KeyG), scopeGlobal},
 	{"view.info", combo(ui.Cmd|ui.Shift, ui.KeyI), scopeGlobal},
+	{"view.changes", combo(ui.Cmd|ui.Shift, ui.KeyA), scopeGlobal},
 
 	// Tabs. Ctrl+W closes one even from the terminal: closing a tab is
 	// the app's job in a terminal-first app.

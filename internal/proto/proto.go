@@ -222,6 +222,15 @@ func ReadLine(r *bufio.Reader, max int) ([]byte, error) {
 	}
 }
 
+// GitParams ask for a pane's changes against a base: "turn" (where its
+// agent's last turn started), "head" (uncommitted) or "branch" (since
+// the default branch), of some paths or all.
+type GitParams struct {
+	Pane  string   `json:"pane"`
+	Base  string   `json:"base,omitempty"`
+	Paths []string `json:"paths,omitempty"`
+}
+
 // BrowserParams are what `omaterm browser` asks of a browser pane: an op,
 // and the element (a CSS selector), text and timeout it takes.
 type BrowserParams struct {

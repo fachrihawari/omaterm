@@ -117,6 +117,7 @@ func main() {
 				a.themeWatchStop()
 			}
 			a.saveState()
+			a.saveHistories(true)
 			a.saveUIPrefs()
 			if a.ctl != nil {
 				a.ctl.Close()

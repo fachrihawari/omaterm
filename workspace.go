@@ -59,6 +59,7 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 				continue
 			}
 			for _, pane := range s.Panes {
+				a.restoring[pane.ID] = true
 				if pane.Dir != "" {
 					a.paneDirs[pane.ID] = pane.Dir
 				}
