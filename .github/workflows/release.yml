@@ -1,7 +1,7 @@
 name: Release
 
 # Tag flow:
-#   1. bump `version` in mygo.config.ts and add its section to CHANGELOG.md
+#   1. bump `version` in mygo.json and add its section to CHANGELOG.md
 #   2. commit, then push the tag v<version>
 #   3. this workflow creates a draft release and builds every platform into
 #      it, signed with the update key, so apps can update to it
@@ -26,11 +26,11 @@ jobs:
 
       # A tag that disagrees with the configuration would publish the build
       # under another version, so nothing is built.
-      - name: Check the tag matches mygo.config.ts
+      - name: Check the tag matches mygo.json
         run: |
-          want="v$(sed -n 's/^ *version: *"\(.*\)",$/\1/p' mygo.config.ts)"
+          want="v$(jq -r .version mygo.json)"
           if [[ "$GITHUB_REF_NAME" != "$want" ]]; then
-            echo "tag $GITHUB_REF_NAME does not match $want in mygo.config.ts" >&2
+            echo "tag $GITHUB_REF_NAME does not match $want in mygo.json" >&2
             exit 1
           fi
 

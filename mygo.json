@@ -1,0 +1,13 @@
+{
+  "name": "oterm",
+  "identifier": "com.example.oterm",
+  "version": "0.6.0",
+  "out": "build",
+  "macos": {
+    "minimumSystemVersion": "13.0"
+  },
+  "updates": {
+    "publicKey": "FaHunv4qiHNHes409Ko7lBU/Bc9Vqkha1W5t2Cg0br8=",
+    "github": "fachrihawari/omaterm"
+  }
+}

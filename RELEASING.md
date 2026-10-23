@@ -8,7 +8,7 @@ not compare bytes yet, because the goldens depend on the system's fonts
 
 Releases are cut from a tag:
 
-1. Bump `version` in `mygo.config.ts` and add that version's section to
+1. Bump `version` in `mygo.json` and add that version's section to
    `CHANGELOG.md`. The section becomes the release notes the update window
    shows, so write it for the user.
 2. Commit and push, then tag and push the tag:
@@ -18,7 +18,7 @@ Releases are cut from a tag:
    git push origin dev --follow-tags
    ```
 
-3. `release.yml` checks the tag against `mygo.config.ts`, creates a draft
+3. `release.yml` checks the tag against `mygo.json`, creates a draft
    release, and builds every platform into it: macOS, Windows, Linux and
    Linux ARM64. Each build is signed with the update key and carries its
    `update-<platform>.json` manifest.
@@ -30,7 +30,7 @@ keeps them as workflow artifacts, with no release and no updates.
 
 ## The signing key
 
-`mygo keygen` made the pair. The public key is in `mygo.config.ts`; the
+`mygo keygen` made the pair. The public key is in `mygo.json`; the
 secret one is in `~/.config/mygo/update-keys/mygo-update.key` and in the
 repository secret `MYGO_UPDATER_PRIVATE_KEY`. Keep it in both places: without
 it, installed apps cannot be updated, and anyone who has it can ship code to
