@@ -31,13 +31,17 @@ var iconDatabaseSVG []byte
 //go:embed icons/bell.svg
 var iconBellSVG []byte
 
+//go:embed icons/chevron-left.svg
+var iconChevronLeftSVG []byte
+
 var (
-	iconMaximize = ui.MustParseSVG(iconMaximizeSVG)
-	iconMinimize = ui.MustParseSVG(iconMinimizeSVG)
-	iconServer   = ui.MustParseSVG(iconServerSVG)
-	iconActivity = ui.MustParseSVG(iconActivitySVG)
-	iconDatabase = ui.MustParseSVG(iconDatabaseSVG)
-	iconBell     = ui.MustParseSVG(iconBellSVG)
+	iconMaximize    = ui.MustParseSVG(iconMaximizeSVG)
+	iconMinimize    = ui.MustParseSVG(iconMinimizeSVG)
+	iconServer      = ui.MustParseSVG(iconServerSVG)
+	iconActivity    = ui.MustParseSVG(iconActivitySVG)
+	iconDatabase    = ui.MustParseSVG(iconDatabaseSVG)
+	iconBell        = ui.MustParseSVG(iconBellSVG)
+	iconChevronLeft = ui.MustParseSVG(iconChevronLeftSVG)
 )
 
 // programIcons maps a program's name to its logo: Simple Icons' for those

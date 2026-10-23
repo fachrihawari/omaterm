@@ -340,6 +340,9 @@ func (a *appState) protoState(started time.Time) proto.State {
 			s := proto.Session{ID: t.ID, Project: p.ID, Zoomed: t.Zoomed, Layout: toLayout(t.Split), AgentNamed: t.AgentNamed}
 			for _, id := range t.Split.termIDs() {
 				info, ok := a.status[id]
+				if a.isBrowser(id) {
+					info, ok = a.browserInfo(id, t.ID), true
+				}
 				if !ok {
 					if pane := a.panes.Get(id); pane != nil {
 						info = pane.Info()
@@ -445,7 +448,9 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 		dir = proj.Path
 	}
 	a.paneDirs[paneID] = dir
-	if _, err := a.startPane(paneID, tab.ID, dir, p.Command, false); err != nil {
+	if p.URL != "" {
+		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
+	} else if _, err := a.startPane(paneID, tab.ID, dir, p.Command, false); err != nil {
 		a.paneFailed[paneID] = true
 		return nil, err
 	}
@@ -542,7 +547,9 @@ func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 		workDir = a.paneDirs[p.Split]
 	}
 	a.paneDirs[paneID] = workDir
-	if _, err := a.startPane(paneID, tab.ID, workDir, p.Command, false); err != nil {
+	if p.URL != "" {
+		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
+	} else if _, err := a.startPane(paneID, tab.ID, workDir, p.Command, false); err != nil {
 		a.paneFailed[paneID] = true
 		return nil, err
 	}
@@ -591,7 +598,7 @@ func (a *appState) cliCloseSession(id string) error {
 		return nil
 	}
 	for _, pid := range (*tabs)[ti].Split.termIDs() {
-		a.panes.Remove(pid)
+		a.closePaneRuntime(pid)
 	}
 	*tabs = append((*tabs)[:ti], (*tabs)[ti+1:]...)
 	a.saveSoon()
@@ -613,7 +620,7 @@ func (a *appState) cliClosePane(id string) error {
 	root, _ := removeLeaf((*tabs)[ti].Split, id)
 	rebalance(root)
 	(*tabs)[ti].Split = root
-	a.panes.Remove(id)
+	a.closePaneRuntime(id)
 	a.saveSoon()
 	return nil
 }
@@ -723,7 +730,42 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 
 var _ = model.Version
 
-// handleMore runs the methods of later phases: browser and git.
+// handleMore runs the methods of the browser and git.
 func (h *localHost) handleMore(ctx context.Context, method string, raw json.RawMessage) (any, error, bool) {
+	switch method {
+	case "browser":
+		p, err := decode[proto.BrowserParams](raw)
+		if err != nil {
+			return nil, err, true
+		}
+		type answer struct {
+			r   *proto.BrowserResult
+			err error
+		}
+		ch := make(chan answer, 1)
+		if _, err := h.onUI(func() (any, error) {
+			h.a.browse(p, func(r *proto.BrowserResult, err error) { ch <- answer{r, err} })
+			return nil, nil
+		}); err != nil {
+			return nil, err, true
+		}
+		wait := time.Duration(p.TimeoutMS)*time.Millisecond + 30*time.Second
+		if p.TimeoutMS <= 0 {
+			wait = browseTimeout + 30*time.Second
+		}
+		select {
+		case r := <-ch:
+			return r.r, r.err, true
+		case <-time.After(wait):
+			return nil, proto.Errorf(proto.CodeTimeout, "the page did not answer"), true
+		case <-ctx.Done():
+			return nil, ctx.Err(), true
+		}
+	}
+	return h.handleGit(ctx, method, raw)
+}
+
+// handleGit runs the git methods (Phase 5).
+func (h *localHost) handleGit(ctx context.Context, method string, raw json.RawMessage) (any, error, bool) {
 	return nil, nil, false
 }

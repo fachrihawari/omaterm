@@ -173,7 +173,7 @@ func (a *appState) closeTab(i int) {
 	}
 	if t.Kind == tabTerminal && t.Split != nil {
 		for _, id := range t.Split.termIDs() {
-			a.panes.Remove(id)
+			a.closePaneRuntime(id)
 		}
 		a.saveSoon()
 	}

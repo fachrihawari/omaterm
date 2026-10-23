@@ -53,10 +53,12 @@ type Info struct {
 
 	// Dir is the shell's directory; ProcessDir the foreground program's
 	// when it differs, as an agent's that went into a worktree.
-	Dir        string   `json:"dir,omitempty"`
-	ProcessDir string   `json:"processDir,omitempty"`
-	Title      string   `json:"title,omitempty"`
-	Command    []string `json:"command,omitempty"`
+	Dir        string `json:"dir,omitempty"`
+	ProcessDir string `json:"processDir,omitempty"`
+	Title      string `json:"title,omitempty"`
+	// URL is a browser pane's page; a browser pane runs no shell.
+	URL     string   `json:"url,omitempty"`
+	Command []string `json:"command,omitempty"`
 
 	Status Status `json:"status"`
 	// Since is when Status last changed, Activity when output last came

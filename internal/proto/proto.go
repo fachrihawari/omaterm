@@ -221,3 +221,20 @@ func ReadLine(r *bufio.Reader, max int) ([]byte, error) {
 		}
 	}
 }
+
+// BrowserParams are what `omaterm browser` asks of a browser pane: an op,
+// and the element (a CSS selector), text and timeout it takes.
+type BrowserParams struct {
+	ID        string `json:"id"`
+	Op        string `json:"op"`
+	Selector  string `json:"selector,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Enter     bool   `json:"enter,omitempty"`
+	TimeoutMS int64  `json:"timeout,omitempty"`
+}
+
+// BrowserResult is what it answers: text, or a screenshot.
+type BrowserResult struct {
+	Text string `json:"text,omitempty"`
+	PNG  []byte `json:"png,omitempty"`
+}

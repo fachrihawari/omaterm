@@ -145,7 +145,11 @@ func (a *appState) divider(c *ui.Context, n *splitNode, key string) {
 
 // paneCard is a pane: a card with its header and its terminal.
 func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
-	t := a.term(id)
+	browser := a.isBrowser(id)
+	var t *terminal.Terminal
+	if !browser {
+		t = a.term(id)
+	}
 	focused := a.activePaneTermID == id
 	card := ui.Column(c.Key("pane-" + id)).Grow(1).Basis(0).MinWidth(0).MinHeight(0).
 		Radius(a.cardRadius()).Clip().Bind(a.handle("card-" + id))
@@ -179,6 +183,13 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 
 	dragging := false
 	card.Children(func() {
+		if browser {
+			dragging = a.browserCard(c, tab, id, multi, focused, hovered)
+			if zone != zoneNone {
+				a.dropPreview(c, id, zone)
+			}
+			return
+		}
 		dragging = a.paneHeader(c, tab, id, t, multi, focused, hovered)
 		if t == nil {
 			ui.Box(c).Grow(1).Padding(12).Children(func() {
@@ -227,6 +238,10 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 // focusPane gives a pane of the active tab the keyboard.
 func (a *appState) focusPane(id string) {
 	a.activePaneTermID = id
+	if a.isBrowser(id) {
+		a.handle("web-" + id).Focus()
+		return
+	}
 	a.handle("term-" + id).Focus()
 }
 

@@ -299,7 +299,7 @@ func (a *appState) removePaneIn(tab int, termID string) {
 	if a.activePaneTermID == termID {
 		a.activePaneTermID = ""
 	}
-	a.panes.Remove(termID)
+	a.closePaneRuntime(termID)
 	a.saveSoon()
 	a.tabs[tab].Split = newRoot
 	if newRoot != nil {
@@ -408,3 +408,11 @@ func (a *appState) newTerminalTabReal() {
 }
 
 func randomTermID() string { return newID() }
+
+// closePaneRuntime ends what a pane runs: its shell, or its page.
+func (a *appState) closePaneRuntime(id string) {
+	a.panes.Remove(id)
+	a.dropWeb(id)
+	delete(a.paneDirs, id)
+	delete(a.paneFailed, id)
+}

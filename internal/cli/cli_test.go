@@ -78,3 +78,23 @@ func TestExitCodes(t *testing.T) {
 		t.Errorf("bad report: %d", code)
 	}
 }
+
+func TestBrowserOf(t *testing.T) {
+	st := proto.State{Sessions: []proto.Session{
+		{ID: "s1", Focus: "t1", Panes: []proto.Pane{{ID: "t1"}, {ID: "b1", URL: "http://localhost:3000/"}}},
+		{ID: "s2", Focus: "t2", Panes: []proto.Pane{{ID: "t2"}, {ID: "b2", URL: "x"}, {ID: "b3", URL: "y"}}},
+		{ID: "s3", Panes: []proto.Pane{{ID: "t3"}}},
+	}}
+	if got, err := browserOf(st, target{session: "s1"}); err != nil || got != "b1" {
+		t.Errorf("session's one browser: %q %v", got, err)
+	}
+	if _, err := browserOf(st, target{session: "s2"}); err == nil {
+		t.Error("several browsers need a name")
+	}
+	if _, err := browserOf(st, target{session: "s3"}); err == nil {
+		t.Error("no browser")
+	}
+	if _, err := browserOf(st, target{session: "s1", pane: "t1", byPane: true}); err == nil {
+		t.Error("a terminal named as a browser")
+	}
+}

@@ -253,6 +253,11 @@ type appState struct {
 	// paneAgents are the agent conversations panes ran when saved, which
 	// their restore resumes (Phase 5).
 	paneAgents map[string]*agent.Session
+	// paneURLs are the pages of browser panes, which run no shell, and
+	// paneTitles their titles; webs their web views (browser.go).
+	paneURLs   map[string]string
+	paneTitles map[string]string
+	webs       map[string]*webEntry
 	saveTimer  *time.Timer
 	panesStop  func()
 	// ctl serves the control socket; host is what it calls.
@@ -365,6 +370,9 @@ func newApp() *appState {
 		saved:            map[string][]model.Session{},
 		paneDirs:         map[string]string{},
 		paneAgents:       map[string]*agent.Session{},
+		paneURLs:         map[string]string{},
+		paneTitles:       map[string]string{},
+		webs:             map[string]*webEntry{},
 		status:           map[string]session.Info{},
 		commitFiles:      map[string][]service.CommitFile{},
 		commitStats:      map[string][2]int{},

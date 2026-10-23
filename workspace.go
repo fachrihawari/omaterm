@@ -65,6 +65,9 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 				if pane.Agent != nil {
 					a.paneAgents[pane.ID] = pane.Agent
 				}
+				if pane.URL != "" {
+					a.paneURLs[pane.ID], a.paneTitles[pane.ID] = pane.URL, pane.Title
+				}
 			}
 			w.tabs = append(w.tabs, topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split})
 		}
@@ -121,7 +124,7 @@ func (a *appState) closeProjectPanes(id string) {
 	for _, t := range a.projectTabs(id) {
 		if t.Kind == tabTerminal && t.Split != nil {
 			for _, pid := range t.Split.termIDs() {
-				a.panes.Remove(pid)
+				a.closePaneRuntime(pid)
 			}
 		}
 	}
@@ -199,7 +202,17 @@ func (a *appState) state() model.State {
 				if dir == "" {
 					dir = abs
 				}
-				s.Panes = append(s.Panes, model.Pane{ID: id, Dir: dir})
+				if url, ok := a.paneURLs[id]; ok {
+					s.Panes = append(s.Panes, model.Pane{ID: id, URL: url, Title: a.paneTitles[id]})
+					continue
+				}
+				pane := model.Pane{ID: id, Dir: dir}
+				if info, ok := a.status[id]; ok && info.AgentSession != nil {
+					pane.Agent = info.AgentSession
+				} else if ag := a.paneAgents[id]; ag != nil && a.panes.Get(id) == nil {
+					pane.Agent = ag
+				}
+				s.Panes = append(s.Panes, pane)
 			}
 			st.Sessions = append(st.Sessions, s)
 		}

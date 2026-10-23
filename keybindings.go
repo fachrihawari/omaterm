@@ -133,6 +133,9 @@ const (
 	scopeTerminal
 	// scopeEditor bindings work while an editor tab is shown.
 	scopeEditor
+	// scopeBrowser bindings work while a browser pane has the keyboard;
+	// they take keys a terminal would otherwise get (Ctrl+L, Ctrl+R).
+	scopeBrowser
 )
 
 // String names the scope as the shortcuts overlay shows it.
@@ -142,6 +145,8 @@ func (s keyScope) String() string {
 		return "Terminal"
 	case scopeEditor:
 		return "Editor"
+	case scopeBrowser:
+		return "Browser"
 	}
 	return "Anywhere"
 }
@@ -184,6 +189,15 @@ var keybindings = append([]keyBinding{
 	{"terminal.splitDown", combo(ui.Cmd|ui.Shift, ui.KeyD), scopeTerminal},
 	{"terminal.splitRight", combo(ui.Cmd|ui.Shift, ui.KeyR), scopeTerminal},
 	{"pane.zoom", combo(ui.Cmd|ui.Shift, ui.KeyEnter), scopeTerminal},
+
+	// Browser panes: Ctrl+Shift+O opens one (Ctrl+O opens a project), and
+	// the browser's own keys work while one has the keyboard.
+	{"browser.open", combo(ui.Cmd|ui.Shift, ui.KeyO), scopeGlobal},
+	{"browser.focusAddress", combo(ui.Cmd, ui.KeyL), scopeBrowser},
+	{"browser.reload", combo(ui.Cmd, ui.KeyR), scopeBrowser},
+	{"browser.back", combo(ui.Alt, ui.KeyLeft), scopeBrowser},
+	{"browser.forward", combo(ui.Alt, ui.KeyRight), scopeBrowser},
+	{"browser.find", combo(ui.Cmd, ui.KeyF), scopeBrowser},
 
 	// Sessions: the one that needs you, and the next and previous in the
 	// sidebar's order.
@@ -288,6 +302,8 @@ func (a *appState) keyActive(b keyBinding) bool {
 		return a.activeView == tabTerminal
 	case scopeEditor:
 		return a.activeView == tabEditor
+	case scopeBrowser:
+		return a.focusedWeb() != nil
 	}
 	return true
 }
@@ -347,6 +363,10 @@ func checkKeybindings() []string {
 func scopesOverlap(a, b keyScope) bool {
 	if a == b || a == scopeGlobal || b == scopeGlobal {
 		return true
+	}
+	// A browser pane is in the terminal view: their keys compete.
+	if a == scopeBrowser || b == scopeBrowser {
+		return a == scopeTerminal || b == scopeTerminal
 	}
 	// The terminal view hides the editor and the Git panel, so its
 	// bindings never compete with theirs.
