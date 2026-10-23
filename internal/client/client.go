@@ -68,6 +68,7 @@ func Dial(path string) (*Client, error) {
 }
 
 func (c *Client) read(r *bufio.Reader) {
+	defer close(c.events) // a subscriber's range ends with the connection
 	defer close(c.closed)
 	for {
 		line, err := proto.ReadLine(r, proto.MaxLine)
@@ -136,7 +137,8 @@ func (c *Client) CallContext(ctx context.Context, method string, params, out any
 	}
 }
 
-// Events are the events of a subscribed client.
+// Events are the events of a subscribed client, until the connection
+// ends.
 func (c *Client) Events() <-chan proto.Message { return c.events }
 
 // Close closes the connection.

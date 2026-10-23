@@ -30,7 +30,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -158,6 +158,8 @@ func run(args []string) error {
 		return hookCmd(args)
 	case "cli":
 		return cliCmd(args)
+	case "daemon":
+		return daemonCmd(args)
 	}
 
 	c, err := connect()
@@ -932,6 +934,7 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …
   omaterm skill setup|status|show|remove [--agent claude|codex|pi|opencode]
   omaterm cli install|uninstall|status
+  omaterm daemon status|stop|restart|install-service|uninstall-service
   omaterm do <action>, omaterm actions
   omaterm version
 

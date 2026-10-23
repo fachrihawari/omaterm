@@ -214,7 +214,7 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 }
 
 // pane returns a running pane by id.
-func (h *localHost) pane(id string) (*session.Pane, error) {
+func (h *localHost) pane(id string) (session.Handle, error) {
 	p := h.a.panes.Get(id)
 	if p == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane "+id)
@@ -225,7 +225,7 @@ func (h *localHost) pane(id string) (*session.Pane, error) {
 // waitPane waits for a pane as WaitParams say: until its command ends
 // (Exit), its status is one of Status, or it stops working. A pane that
 // has not started to work gets a moment to, as an agent just prompted.
-func waitPane(ctx context.Context, p *session.Pane, w proto.WaitParams) (proto.Pane, error) {
+func waitPane(ctx context.Context, p session.Handle, w proto.WaitParams) (proto.Pane, error) {
 	if w.TimeoutMS > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(w.TimeoutMS)*time.Millisecond)
@@ -688,13 +688,13 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 	if !agent.SessionIDRe.MatchString(p.Session) {
 		return nil, proto.Errorf(proto.CodeUsage, "bad session id")
 	}
-	shells := map[int]*session.Pane{}
-	a.panes.Each(func(pane *session.Pane) {
+	shells := map[int]session.Handle{}
+	a.panes.Each(func(pane session.Handle) {
 		if pid := pane.Info().PID; pid > 0 {
 			shells[pid] = pane
 		}
 	})
-	var found *session.Pane
+	var found session.Handle
 	for pid, n := p.PID, 0; pid > 1 && n < 64; pid, n = pty.ProcParent(pid), n+1 {
 		if pane := shells[pid]; pane != nil {
 			found = pane
@@ -706,8 +706,8 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 		// The hook ran away from its pane, as OpenCode's service runs it:
 		// the pane running that agent without a conversation yet, the one
 		// in the same directory first.
-		var cands []*session.Pane
-		a.panes.Each(func(pane *session.Pane) {
+		var cands []session.Handle
+		a.panes.Each(func(pane session.Handle) {
 			i := pane.Info()
 			if i.Agent == p.Agent && i.AgentSession == nil {
 				cands = append(cands, pane)

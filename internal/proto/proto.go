@@ -18,9 +18,11 @@ const Version = 1
 
 // Hello is a client's first line.
 type Hello struct {
-	Kind    string `json:"kind"` // "control"
+	Kind    string `json:"kind"` // "control", or "attach" (a pane's screen)
 	Version int    `json:"version"`
 	Client  string `json:"client,omitempty"`
+	// Pane is the pane an attach connection shows.
+	Pane string `json:"pane,omitempty"`
 }
 
 // Welcome is the server's answer to Hello.
@@ -30,6 +32,9 @@ type Welcome struct {
 	Started int64  `json:"started"`
 	App     string `json:"app,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Cols and Rows are an attached pane's size.
+	Cols int `json:"cols,omitempty"`
+	Rows int `json:"rows,omitempty"`
 }
 
 // Request is a call: a method and its params.

@@ -31,6 +31,13 @@ type Host interface {
 	Subscribe(fn func(proto.Message)) (cancel func())
 }
 
+// Attacher is a Host that streams a pane's screen to a connection of
+// kind "attach": it writes the welcome, then serves the connection until
+// it ends.
+type Attacher interface {
+	Attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welcome proto.Welcome)
+}
+
 // Server is a listening control socket.
 type Server struct {
 	ln      net.Listener
@@ -39,6 +46,10 @@ type Server struct {
 	app     string
 	started time.Time
 	wg      sync.WaitGroup
+
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
+	closed bool
 }
 
 // ErrRunning is Listen's error when another omaterm serves the socket.
@@ -60,7 +71,7 @@ func Listen(path string, host Host, app string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{ln: ln, path: path, host: host, app: app, started: time.Now()}
+	s := &Server{ln: ln, path: path, host: host, app: app, started: time.Now(), conns: map[net.Conn]struct{}{}}
 	s.wg.Add(1)
 	go s.accept()
 	return s, nil
@@ -69,10 +80,17 @@ func Listen(path string, host Host, app string) (*Server, error) {
 // Path is the socket's path.
 func (s *Server) Path() string { return s.path }
 
-// Close stops listening and removes the socket.
+// Close stops listening, removes the socket and ends the connections, so
+// their clients know.
 func (s *Server) Close() error {
 	err := s.ln.Close()
 	os.Remove(s.path)
+	s.mu.Lock()
+	s.closed = true
+	for c := range s.conns {
+		c.Close()
+	}
+	s.mu.Unlock()
 	return err
 }
 
@@ -122,6 +140,19 @@ func (c *conn) event(m proto.Message) {
 func (c *conn) close() { c.once.Do(func() { close(c.done); c.c.Close() }) }
 
 func (s *Server) serve(nc net.Conn) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		nc.Close()
+		return
+	}
+	s.conns[nc] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.conns, nc)
+		s.mu.Unlock()
+	}()
 	c := &conn{c: nc, out: make(chan proto.Message, 64), done: make(chan struct{})}
 	defer c.close()
 	r := bufio.NewReaderSize(nc, 64<<10)
@@ -139,6 +170,15 @@ func (s *Server) serve(nc net.Conn) {
 	welcome := proto.Welcome{Version: proto.Version, PID: os.Getpid(), Started: s.started.UnixMilli(), App: s.app}
 	if hello.Version != proto.Version {
 		welcome.Error = "omaterm speaks protocol " + itoa(proto.Version) + ", this command " + itoa(hello.Version) + ": update it"
+		enc.Encode(welcome)
+		return
+	}
+	if hello.Kind == "attach" {
+		if at, ok := s.host.(Attacher); ok {
+			at.Attach(nc, r, hello, welcome)
+			return
+		}
+		welcome.Error = "this server shows no panes"
 		enc.Encode(welcome)
 		return
 	}

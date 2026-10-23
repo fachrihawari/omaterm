@@ -129,3 +129,29 @@ func TestBackgroundExitViaRegistry(t *testing.T) {
 		t.Fatalf("tabs: %+v", a.tabs)
 	}
 }
+
+// The home folder, the project the app opens with none, keeps its
+// sessions across launches, though it is too broad to be added as one.
+func TestHomeProjectKeepsSessions(t *testing.T) {
+	cfg, home := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("HOME", home)
+	st := map[string]any{"version": 2, "activeProject": "phome01",
+		"projects": []map[string]any{{"id": "phome01", "name": "home", "dir": home}},
+		"sessions": []map[string]any{{"id": "shome01", "project": "phome01", "name": "dev",
+			"layout": map[string]any{"pane": "ahome01"}, "panes": []map[string]any{{"id": "ahome01", "dir": home}}}}}
+	data, _ := json.Marshal(st)
+	if err := os.MkdirAll(filepath.Join(cfg, "omaterm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "omaterm", "state.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp()
+	if len(a.projects) != 1 || a.projects[0].ID != "phome01" {
+		t.Fatalf("projects = %+v, want the saved home project", a.projects)
+	}
+	if len(a.tabs) != 1 || a.tabs[0].ID != "shome01" {
+		t.Fatalf("tabs = %+v, want the saved session", a.tabs)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"omaterm/internal/model"
+	"omaterm/internal/paths"
 	"omaterm/service"
 )
 
@@ -154,8 +155,10 @@ func (a *appState) loadState() int {
 		if info, err := os.Stat(abs); err != nil || !info.IsDir() {
 			continue
 		}
-		// Reject overly broad paths that would match all processes.
-		if service.IsWorkspaceTooBroad(abs) {
+		// Reject overly broad paths that would match all processes; the
+		// home folder stays, as the project the app opens with none, so
+		// its sessions come back.
+		if service.IsWorkspaceTooBroad(abs) && abs != paths.Home() {
 			continue
 		}
 		if p.ID == "" {

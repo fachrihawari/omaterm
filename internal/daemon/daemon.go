@@ -1,0 +1,581 @@
+// Package daemon is omaterm's session daemon: the process that owns the
+// panes' pseudo-terminals, so that shells and agents outlive the app. The
+// app attaches to it: it starts and closes panes through its socket, and
+// shows each pane through an attach connection that streams the pane's
+// screen (terminal.Mirror frames) and takes what is typed. Quitting the
+// app detaches it; opening it again attaches where it left off.
+//
+// Its design follows Kero's kerod (github.com/egoist/kero, MIT,
+// docs/third_party/kero-LICENSE): one terminal emulator per pane, here,
+// which keeps the screen and scrollback; clients mirror it.
+package daemon
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/egoist/mygo/plugins/terminal"
+	"github.com/egoist/mygo/ui"
+
+	"omaterm/internal/agent"
+	"omaterm/internal/ctl"
+	"omaterm/internal/paths"
+	"omaterm/internal/proto"
+	"omaterm/internal/session"
+)
+
+// Options are how the daemon runs.
+type Options struct {
+	// Serve runs it in the foreground for good, as a service does: it
+	// never exits for being idle.
+	Serve bool
+	// Socket and StateDir override where it listens and keeps histories
+	// (tests).
+	Socket   string
+	StateDir string
+	// IdleExit is how long it stays with no pane and no client: 30 s when
+	// zero.
+	IdleExit time.Duration
+	// Version is the build's, which the app compares with its own.
+	Version string
+}
+
+// Daemon is the running daemon.
+type Daemon struct {
+	opts  Options
+	reg   *session.Registry
+	srv   *ctl.Server
+	quit  chan struct{}
+	once  sync.Once
+	theme *terminal.Theme
+	lock  *os.File
+
+	mu      sync.Mutex
+	subs    map[int]func(proto.Message)
+	nextSub int
+	pending bool
+	clients int
+	idleAt  time.Time
+	// attached are each pane's attachments.
+	attached map[string]map[*attachment]struct{}
+}
+
+// Run runs the daemon until it is stopped, or idle for a while.
+func Run(opts Options) error {
+	d, err := Start(opts)
+	if err != nil {
+		return err
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	select {
+	case <-sigs:
+	case <-d.quit:
+	}
+	d.Stop()
+	return nil
+}
+
+// Start starts the daemon and returns it running.
+func Start(opts Options) (*Daemon, error) {
+	if opts.Socket == "" {
+		opts.Socket = paths.DaemonSocketPath()
+	}
+	if opts.StateDir == "" {
+		opts.StateDir = paths.StateDir()
+	}
+	if opts.IdleExit == 0 {
+		opts.IdleExit = 30 * time.Second
+	}
+	if err := os.MkdirAll(filepath.Join(opts.StateDir, "sessions"), 0o700); err != nil {
+		return nil, err
+	}
+	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
+		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now()}
+	d.reg.OnOutput = d.output
+	d.reg.OnExit = func(id string, code int) { d.changed() }
+	d.reg.OnStatus = func(session.Info, session.Status) { d.changed() }
+	d.reg.OnNotice = func(id, title, body string) {
+		d.broadcast(proto.Message{Event: "notice", Result: mustJSON(map[string]string{"pane": id, "title": title, "body": body})})
+	}
+	os.MkdirAll(filepath.Dir(opts.Socket), 0o700)
+	var err error
+	if d.lock, err = lock(opts.Socket + ".lock"); err != nil {
+		return nil, ctl.ErrRunning
+	}
+	srv, err := ctl.Listen(opts.Socket, d, opts.Version)
+	if err != nil {
+		d.lock.Close()
+		return nil, err
+	}
+	d.srv = srv
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-d.quit; cancel() }()
+	go d.reg.Run(ctx)
+	go d.loop(ctx)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-d.reg.Changed():
+				d.changed()
+			}
+		}
+	}()
+	log.Printf("omaterm daemon %s started, pid %d, %s", opts.Version, os.Getpid(), opts.Socket)
+	return d, nil
+}
+
+// Stop saves every pane's history, ends the panes and stops listening.
+func (d *Daemon) Stop() {
+	d.once.Do(func() {
+		d.saveHistories(true)
+		close(d.quit)
+		d.srv.Close()
+		d.reg.CloseAll()
+		d.lock.Close()
+	})
+}
+
+// Done is closed once the daemon stops.
+func (d *Daemon) Done() <-chan struct{} { return d.quit }
+
+// loop saves histories every 10 seconds, and ends the daemon once it has
+// had no pane and no client for a while, unless it serves.
+func (d *Daemon) loop(ctx context.Context) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	n := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			if n++; n%10 == 0 {
+				d.saveHistories(false)
+			}
+			d.mu.Lock()
+			idle := d.reg.Len() == 0 && d.clients == 0 && !d.opts.Serve
+			if !idle {
+				d.idleAt = now
+			}
+			idleFor := now.Sub(d.idleAt)
+			d.mu.Unlock()
+			if idle && idleFor > d.opts.IdleExit {
+				log.Printf("idle: exiting")
+				d.once.Do(func() { close(d.quit); d.srv.Close(); d.lock.Close() })
+				return
+			}
+		}
+	}
+}
+
+func (d *Daemon) historyPath(id string) string {
+	return filepath.Join(d.opts.StateDir, "sessions", id+".vt")
+}
+
+func (d *Daemon) saveHistories(force bool) {
+	d.reg.Each(func(p *session.Pane) {
+		if h := p.History(force); h != nil {
+			path := d.historyPath(p.ID())
+			tmp := path + ".tmp"
+			if os.WriteFile(tmp, h, 0o600) == nil {
+				os.Rename(tmp, path)
+			}
+		}
+	})
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+// --- the control connection ----------------------------------------------
+
+// StartParams start a pane: the session.StartOptions that travel.
+type StartParams struct {
+	ID, Session, Project, Dir string
+	Command                   []string
+	Exec                      bool
+	Env                       []string
+	Cols, Rows                int
+	History                   []byte
+}
+
+// Handle runs a method of the daemon's socket.
+func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	pane := func(id string) (*session.Pane, error) {
+		if p := d.reg.Get(id); p != nil {
+			return p, nil
+		}
+		return nil, proto.Errorf(proto.CodeNotFound, "no pane "+id)
+	}
+	switch method {
+	case "version":
+		return map[string]any{"app": d.opts.Version, "proto": proto.Version, "pid": os.Getpid()}, nil
+	case "panes":
+		return d.reg.Infos(), nil
+	case "pane.start":
+		var p StartParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		if pn := d.reg.Get(p.ID); pn != nil {
+			return pn.Info(), nil
+		}
+		d.mu.Lock()
+		th := d.theme
+		d.mu.Unlock()
+		pn, err := d.reg.Start(session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, Dir: p.Dir,
+			Command: p.Command, Exec: p.Exec, Env: p.Env, Cols: p.Cols, Rows: p.Rows, History: p.History,
+			Theme: th})
+		if err != nil {
+			return nil, err
+		}
+		d.changed()
+		return pn.Info(), nil
+	case "pane.close":
+		var p proto.IDParams
+		json.Unmarshal(raw, &p)
+		d.closeAttachments(p.ID)
+		d.reg.Remove(p.ID)
+		os.Remove(d.historyPath(p.ID))
+		d.changed()
+		return true, nil
+	case "send":
+		var p proto.SendParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		return true, pn.Write([]byte(p.Data))
+	case "read":
+		var p proto.ReadParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		return proto.ReadResult{Text: pn.Text(p.Scrollback, p.Lines)}, nil
+	case "notify":
+		var p proto.NotifyParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		pn.Flag(p.Title, p.Body)
+		return true, nil
+	case "pane.setAgentSession":
+		var p struct {
+			ID      string
+			Session *agent.Session
+		}
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		pn.SetAgentSession(p.Session)
+		return true, nil
+	case "pane.setTurn":
+		var p struct {
+			ID   string
+			Turn *session.Turn
+		}
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		pn.SetTurn(p.Turn)
+		return true, nil
+	case "viewed":
+		var p proto.IDParams
+		json.Unmarshal(raw, &p)
+		d.reg.SetViewed(p.ID)
+		return true, nil
+	case "shutdown":
+		go d.Stop()
+		return true, nil
+	}
+	return nil, proto.Errorf(proto.CodeUsage, "no method "+method)
+}
+
+// Subscribe adds a subscriber of the panes: an event "panes" with every
+// pane's Info as they change, and "notice" for programs' notifications.
+func (d *Daemon) Subscribe(fn func(proto.Message)) func() {
+	d.mu.Lock()
+	d.nextSub++
+	id := d.nextSub
+	d.subs[id] = fn
+	d.clients++
+	d.mu.Unlock()
+	d.changed()
+	return func() {
+		d.mu.Lock()
+		delete(d.subs, id)
+		d.clients--
+		d.mu.Unlock()
+	}
+}
+
+func (d *Daemon) broadcast(m proto.Message) {
+	d.mu.Lock()
+	subs := make([]func(proto.Message), 0, len(d.subs))
+	for _, fn := range d.subs {
+		subs = append(subs, fn)
+	}
+	d.mu.Unlock()
+	for _, fn := range subs {
+		fn(m)
+	}
+}
+
+// changed sends the panes to the subscribers, once a burst of changes
+// settles.
+func (d *Daemon) changed() {
+	d.mu.Lock()
+	if d.pending {
+		d.mu.Unlock()
+		return
+	}
+	d.pending = true
+	d.mu.Unlock()
+	time.AfterFunc(25*time.Millisecond, func() {
+		d.mu.Lock()
+		d.pending = false
+		d.mu.Unlock()
+		d.broadcast(proto.Message{Event: "panes", Result: mustJSON(d.reg.Infos())})
+	})
+}
+
+// --- attach connections ---------------------------------------------------
+
+// attachment is a client showing a pane: its frames go out through a
+// queue, so a slow client never holds the pane.
+type attachment struct {
+	conn   net.Conn
+	mirror *terminal.Mirror
+	out    chan []byte
+	done   chan struct{}
+	once   sync.Once
+	// framing tells that a frame is due shortly.
+	framing bool
+}
+
+func (at *attachment) send(kind byte, payload []byte) {
+	f := proto.AppendFrame(nil, kind, payload)
+	select {
+	case at.out <- f:
+	case <-at.done:
+	default:
+		at.finish() // too far behind: it attaches again, from a first frame
+	}
+}
+
+func (at *attachment) finish() { at.once.Do(func() { close(at.done) }) }
+
+// Attach serves an attach connection: the pane's screen as frames, and
+// what the client types, its size and its colors.
+func (d *Daemon) Attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welcome proto.Welcome) {
+	p := d.reg.Get(hello.Pane)
+	enc := json.NewEncoder(conn)
+	if p == nil {
+		welcome.Error = "no pane " + hello.Pane
+		enc.Encode(welcome)
+		return
+	}
+	m, err := p.Term().NewMirror()
+	if err != nil {
+		welcome.Error = err.Error()
+		enc.Encode(welcome)
+		return
+	}
+	at := &attachment{conn: conn, mirror: m, out: make(chan []byte, 8192), done: make(chan struct{})}
+	defer m.Close()
+	welcome.Cols, welcome.Rows = p.Term().Size()
+	if enc.Encode(welcome) != nil {
+		return
+	}
+	d.mu.Lock()
+	if d.attached[hello.Pane] == nil {
+		d.attached[hello.Pane] = map[*attachment]struct{}{}
+	}
+	d.attached[hello.Pane][at] = struct{}{}
+	d.clients++
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		delete(d.attached[hello.Pane], at)
+		d.clients--
+		d.mu.Unlock()
+		at.finish()
+	}()
+	first, _ := m.Frame()
+	at.send(proto.FrameOutput, first)
+	go func() {
+		defer conn.Close()
+		for {
+			select {
+			case f := <-at.out:
+				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				if _, err := conn.Write(f); err != nil {
+					at.finish()
+					return
+				}
+			case <-at.done:
+				// Flush what is queued, as a closing frame.
+				for {
+					select {
+					case f := <-at.out:
+						conn.Write(f)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+	for {
+		kind, payload, err := proto.ReadFrame(r)
+		if err != nil {
+			return
+		}
+		switch kind {
+		case proto.FrameInput:
+			p.Write(payload)
+		case proto.FrameResize:
+			if v, ok := proto.ParseUint16s(payload, 4); ok && v[0] > 0 && v[1] > 0 {
+				d.resize(hello.Pane, p, v[0], v[1], v[2], v[3])
+			}
+		case proto.FrameTheme:
+			if th, ok := ParseTheme(payload); ok {
+				d.mu.Lock()
+				d.theme = th
+				d.mu.Unlock()
+				d.reg.Each(func(pn *session.Pane) { pn.Term().UseTheme(th) })
+			}
+		}
+	}
+}
+
+// resize gives a pane the size its client fits: the client that resized
+// last wins. The clients are told where the screen took it, between the
+// frames of the old size and those of the new.
+func (d *Daemon) resize(id string, p *session.Pane, cols, rows, cw, ch int) {
+	if c, r := p.Term().Size(); c == cols && r == rows {
+		return
+	}
+	d.frame(id)
+	p.Term().ResizePixels(cols, rows, cw, ch)
+	d.mu.Lock()
+	for at := range d.attached[id] {
+		at.send(proto.FrameResized, proto.Uint16s(cols, rows))
+	}
+	d.mu.Unlock()
+	d.frame(id)
+}
+
+// output frames a pane's clients shortly after its program writes: the
+// terminal takes the output as the read returns, and a program's redraw
+// comes in pieces. A second look a moment later catches what came last.
+func (d *Daemon) output(id string) {
+	d.mu.Lock()
+	ats := d.attached[id]
+	due := false
+	for at := range ats {
+		if !at.framing {
+			at.framing, due = true, true
+		}
+	}
+	d.mu.Unlock()
+	if !due {
+		return
+	}
+	time.AfterFunc(8*time.Millisecond, func() {
+		d.mu.Lock()
+		for at := range d.attached[id] {
+			at.framing = false
+		}
+		d.mu.Unlock()
+		d.frame(id)
+		time.AfterFunc(50*time.Millisecond, func() { d.frame(id) })
+	})
+}
+
+// frame sends each client of a pane what brings its screen to the pane's.
+func (d *Daemon) frame(id string) {
+	d.mu.Lock()
+	ats := make([]*attachment, 0, len(d.attached[id]))
+	for at := range d.attached[id] {
+		ats = append(ats, at)
+	}
+	d.mu.Unlock()
+	for _, at := range ats {
+		f, due := at.mirror.Frame()
+		if len(f) > 0 {
+			at.send(proto.FrameOutput, f)
+		}
+		if due {
+			time.AfterFunc(50*time.Millisecond, func() { d.frame(id) })
+		}
+	}
+}
+
+func (d *Daemon) closeAttachments(id string) {
+	d.mu.Lock()
+	ats := d.attached[id]
+	delete(d.attached, id)
+	d.mu.Unlock()
+	for at := range ats {
+		at.send(proto.FrameClosed, nil)
+		at.finish()
+	}
+}
+
+// ThemePayload encodes a terminal's colors for FrameTheme.
+func ThemePayload(t *terminal.Theme) []byte {
+	b := make([]byte, 0, 4*19)
+	add := func(c ui.Color) { b = append(b, c.R, c.G, c.B, c.A) }
+	add(t.Foreground)
+	add(t.Background)
+	add(t.Cursor)
+	for _, c := range t.Palette {
+		add(c)
+	}
+	return b
+}
+
+// ParseTheme decodes a FrameTheme payload.
+func ParseTheme(b []byte) (*terminal.Theme, bool) {
+	if len(b) != 4*19 {
+		return nil, false
+	}
+	col := func(i int) ui.Color { return ui.Color{R: b[4*i], G: b[4*i+1], B: b[4*i+2], A: b[4*i+3]} }
+	t := &terminal.Theme{Foreground: col(0), Background: col(1), Cursor: col(2)}
+	for i := range t.Palette {
+		t.Palette[i] = col(3 + i)
+	}
+	return t, true
+}
+
+// ErrNotRunning is Stop's error when no daemon answers.
+var ErrNotRunning = errors.New("the session daemon is not running")
+
+var _ = fmt.Sprint

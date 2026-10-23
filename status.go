@@ -56,13 +56,11 @@ func (a *appState) trackViewed() {
 
 // hookPanes connects the registry's events to the app.
 func (a *appState) hookPanes() {
-	a.panes.OnExit = func(id string, code int) {
-		a.post(func() { a.paneExited(id) })
-	}
-	a.panes.OnStatus = a.onStatus
-	a.panes.OnNotice = func(id, title, body string) {
-		a.post(func() { a.programNotice(id, title, body) })
-	}
+	a.panes.SetHooks(session.Hooks{
+		OnExit:   func(id string, code int) { a.post(func() { a.paneExited(id) }) },
+		OnStatus: a.onStatus,
+		OnNotice: func(id, title, body string) { a.post(func() { a.programNotice(id, title, body) }) },
+	})
 }
 
 // syncStatus copies every pane's Info for the views to read, and acts on

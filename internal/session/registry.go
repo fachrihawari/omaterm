@@ -30,6 +30,16 @@ type Registry struct {
 	OnExit   func(id string, code int)
 	OnNotice func(id, title, body string)
 	OnStatus func(info Info, prev Status)
+	// OnOutput is told, on the goroutine reading a pane's program, that
+	// output came: a daemon frames its clients' screens then. It must
+	// return at once.
+	OnOutput func(id string)
+}
+
+func (r *Registry) output(id string) {
+	if fn := r.OnOutput; fn != nil {
+		fn(id)
+	}
 }
 
 // NewRegistry returns an empty registry.

@@ -246,7 +246,7 @@ type appState struct {
 	// whose shell could not start, so a frame does not retry them; status
 	// is a copy of every pane's Info as of the last sync (syncStatus),
 	// which views read without locks.
-	panes *session.Registry
+	panes session.Host
 	// ws holds the workspaces of projects not shown, by project ID;
 	// wsOwner is the project whose workspace a.tabs is. saved are the
 	// sessions state.json had for projects not yet shown, paneDirs the
@@ -272,8 +272,11 @@ type appState struct {
 	// queuedActions are commands `omaterm do` asked for, which the next
 	// frame runs.
 	queuedActions []string
-	host          *localHost
-	git           *gitWatch
+	// queuedToasts are messages for the next frame, from where there is
+	// no ui.Context.
+	queuedToasts []string
+	host         *localHost
+	git          *gitWatch
 
 	// The panes' layout: handles of keyed elements, a divider being
 	// dragged, the drop zone last shown, the drop preview's target and
@@ -373,7 +376,7 @@ func newApp() *appState {
 		commitMsg:        "",
 		graphLimit:       300,
 		editors:          map[string]*openFile{},
-		panes:            session.NewRegistry(),
+		panes:            session.NewLocalHost(),
 		paneFailed:       map[string]bool{},
 		git:              newGitWatch(),
 		arrived:          map[string]bool{},

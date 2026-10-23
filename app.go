@@ -27,6 +27,10 @@ func (a *appState) view(c *ui.Context) {
 		}
 	}
 	a.queuedActions = nil
+	for _, msg := range a.queuedToasts {
+		c.Toast(msg)
+	}
+	a.queuedToasts = nil
 
 	root := ui.Column(c).Fill()
 	a.wash(root)

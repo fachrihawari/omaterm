@@ -32,7 +32,7 @@ func TestTerminalTyping(t *testing.T) {
 	tr.Frame()
 
 	var term *terminal.Terminal
-	a.panes.Each(func(p *session.Pane) {
+	a.panes.Each(func(p session.Handle) {
 		if term == nil {
 			term = p.Term()
 		}

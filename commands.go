@@ -80,6 +80,14 @@ var commandRegistry = append([]Command{
 				toast(c, "Remote Control off")
 			}
 		}},
+	{ID: "daemon.restart", Title: "Restart Session Daemon", Category: "App",
+		Run: func(a *appState, c *ui.Context) {
+			if a.restartDaemon() {
+				toast(c, "Restarting the session daemon…")
+			} else {
+				toast(c, "Sessions run in the app: the session daemon is off")
+			}
+		}},
 	{ID: "theme.omarchy", Title: "Theme: Follow Omarchy", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeOmarchy) }},
 	{ID: "theme.dark", Title: "Theme: Dark", Category: "View",
@@ -316,7 +324,7 @@ func (a *appState) zoomFont(d int) {
 // applyFontSize gives the new size to every terminal and editor that is
 // open, not just the ones built from now on.
 func (a *appState) applyFontSize() {
-	a.panes.Each(func(p *session.Pane) {
+	a.panes.Each(func(p session.Handle) {
 		if t := p.Term(); t != nil {
 			t.SetFont(terminal.Font{Family: a.termFont, Size: a.fontSize})
 		}

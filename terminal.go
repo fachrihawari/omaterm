@@ -178,13 +178,13 @@ func (a *appState) term(id string) *terminal.Terminal {
 
 // startPane runs a pane's shell, running command first when set (or only
 // command, with exec), in dir.
-func (a *appState) startPane(id, sessionID, dir string, command []string, exec bool) (*session.Pane, error) {
+func (a *appState) startPane(id, sessionID, dir string, command []string, exec bool) (session.Handle, error) {
 	return a.startPaneWith(id, sessionID, dir, command, exec, nil)
 }
 
 // startPaneWith is startPane with the scrollback a restored pane shows
 // above its shell.
-func (a *appState) startPaneWith(id, sessionID, dir string, command []string, exec bool, history []byte) (*session.Pane, error) {
+func (a *appState) startPaneWith(id, sessionID, dir string, command []string, exec bool, history []byte) (session.Handle, error) {
 	env := []string{"PATH=" + os.Getenv("PATH") + string(os.PathListSeparator) + paths.BinDir()}
 	if a.ctl != nil {
 		env = append(env, "OMATERM_SOCKET="+a.ctl.Path())

@@ -12,6 +12,7 @@ import (
 	"omaterm/internal/cli"
 	"omaterm/internal/clilink"
 	"omaterm/internal/ctl"
+	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
 	"omaterm/internal/theme"
 )
@@ -65,6 +66,15 @@ func (a *appState) openFromArgs(args []string, wd string) {
 }
 
 func main() {
+	// The session daemon the app starts: no window, the panes' shells.
+	if len(os.Args) > 1 && os.Args[1] == "__daemon" {
+		err := daemon.Run(daemon.Options{Version: appVersion(), Serve: os.Getenv("OMATERM_SERVICE") != ""})
+		if err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
 	// omaterm <command> is the CLI: it drives the running app's sessions
 	// over the control socket, and never opens a window.
 	if len(os.Args) > 1 && cli.IsCommand(os.Args[1]) {
@@ -101,6 +111,7 @@ func main() {
 	mygo.App.WhenReady(func() {
 		a := newApp()
 		app = a
+		a.useDaemon()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "omaterm",
 			Width:           1440,

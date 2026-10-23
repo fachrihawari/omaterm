@@ -32,6 +32,9 @@ type Settings struct {
 	ControlSocket bool `json:"controlSocket"`
 	RemoteControl bool `json:"remoteControl"`
 
+	// Daemon runs the sessions' shells in a process of their own, so
+	// they go on when the window closes.
+	Daemon          bool `json:"daemon"`
 	RestoreSessions bool `json:"restoreSessions"`
 	ResumeAgents    bool `json:"resumeAgents"`
 	GitStatus       bool `json:"gitStatus"`
@@ -54,6 +57,7 @@ func defaultSettings() Settings {
 		FocusFollowsMouse: true,
 		Notify:            NotifySettings{Waiting: true, Done: true, Error: true},
 		ControlSocket:     true,
+		Daemon:            true,
 		RestoreSessions:   true,
 		ResumeAgents:      true,
 		GitStatus:         true,

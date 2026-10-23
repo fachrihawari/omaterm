@@ -276,6 +276,11 @@ func (c conn) ResizePixels(cols, rows, cellW, cellH int) error {
 
 // output takes the program's output, before the emulator does.
 func (p *Pane) output(b []byte) {
+	p.outputLocked(b)
+	p.reg.output(p.info.ID)
+}
+
+func (p *Pane) outputLocked(b []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {

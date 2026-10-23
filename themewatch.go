@@ -41,7 +41,7 @@ func themeSource(mode string) theme.Source {
 // thread only.
 func (a *appState) applyTheme(src theme.Source) {
 	setPalette(src)
-	a.panes.Each(func(p *session.Pane) {
+	a.panes.Each(func(p session.Handle) {
 		if t := p.Term(); t != nil {
 			t.SetTheme(termTheme, nil)
 			t.SetMinimumContrast(a.minimumContrast())
