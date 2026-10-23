@@ -14,6 +14,7 @@ func (a *appState) startPanes() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.panesStop = cancel
 	go a.panes.Run(ctx)
+	go a.git.run(ctx, func() { a.post(func() {}) })
 	go func() {
 		for {
 			select {
@@ -44,6 +45,13 @@ func (a *appState) syncStatus() {
 	prev := a.status
 	a.status = next
 	a.statusChanged(prev, next)
+	dirs := map[string]bool{}
+	for _, i := range next {
+		if d := i.WorkDir(); d != "" {
+			dirs[d] = dirs[d] || i.Status == session.Working
+		}
+	}
+	a.git.setDirs(dirs)
 	for id, n := range next {
 		if prev[id].Dir != n.Dir {
 			a.saveSoon()

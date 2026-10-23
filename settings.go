@@ -18,6 +18,8 @@ type Settings struct {
 	// Background is "wash" (a soft gradient behind the cards) or "plain".
 	Background   string `json:"background"`
 	DimUnfocused bool   `json:"dimUnfocused"`
+	// FocusFollowsMouse gives the keyboard to the pane the pointer enters.
+	FocusFollowsMouse bool `json:"focusFollowsMouse"`
 	// MinimumContrast is the terminals' minimum contrast ratio; 0 picks 1
 	// in dark themes and 3 in light ones.
 	MinimumContrast float32 `json:"minimumContrast"`
@@ -45,15 +47,16 @@ type NotifySettings struct {
 
 func defaultSettings() Settings {
 	return Settings{
-		Theme:           themeOmarchy,
-		Density:         "comfortable",
-		Background:      "wash",
-		DimUnfocused:    true,
-		Notify:          NotifySettings{Waiting: true, Done: true, Error: true},
-		ControlSocket:   true,
-		RestoreSessions: true,
-		ResumeAgents:    true,
-		GitStatus:       true,
+		Theme:             themeOmarchy,
+		Density:           "comfortable",
+		Background:        "wash",
+		DimUnfocused:      true,
+		FocusFollowsMouse: true,
+		Notify:            NotifySettings{Waiting: true, Done: true, Error: true},
+		ControlSocket:     true,
+		RestoreSessions:   true,
+		ResumeAgents:      true,
+		GitStatus:         true,
 	}
 }
 

@@ -8,112 +8,121 @@ import (
 // controls on the right.
 
 func (a *appState) tabBar(c *ui.Context) ui.Element {
-	return ui.Row(c).Height(42).AlignItems(ui.End).Background(pal.Wash).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
-		// Show-projects button, only while the sidebar is hidden.
+	left := float32(8)
+	if a.sidebarVisible {
+		left = 0
+	}
+	return ui.Row(c).Height(40).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, left).Gap(4).Children(func() {
+		// Show-sidebar button, only while the sidebar is hidden.
 		if !a.sidebarVisible {
-			if cmdButton(c, iconPanelLeft, 16, false).MarginStart(8).
-				Tooltip("Show Projects").Label("Show Projects").Clicked() {
+			if cmdButton(c, iconPanelLeft, 15, false).
+				Tooltip("Show Sidebar (" + keyLabels("view.toggleSidebar") + ")").Label("Show Sidebar").Clicked() {
 				a.sidebarVisible = true
 			}
 		}
-
-		ui.Row(c).Grow(1).AlignItems(ui.End).Padding(0, 4).Gap(4).ClipX().Children(func() {
+		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
 			for i := 0; i < len(a.tabs); i++ {
-				if i >= len(a.tabs) {
-					break
-				}
 				a.topTab(c, i)
 			}
-			if cmdButton(c, iconPlus, 16, false).Margin(0, 2).Clicked() {
+			plus := ui.ButtonBase(c.Key("plus")).Size(26, 26).Radius(13).Shrink(0).Center().
+				Tooltip("New Terminal (" + keyLabels("terminal.new") + ")")
+			if plus.Hovered() {
+				plus.Background(pal.Hover)
+			}
+			plus.Children(func() {
+				ui.Icon(c, iconPlus).Size(14, 14).TextColor(pal.TextMuted)
+			})
+			if plus.Clicked() {
 				a.newTerminalTab()
-				c.Toast("New terminal")
 			}
 		})
-
-		ui.Row(c).AlignItems(ui.Center).Gap(2).Padding(0, 8).Children(func() {
-			if cmdButton(c, iconKeyboard, 16, false).
+		ui.Row(c).AlignItems(ui.Center).Gap(2).Children(func() {
+			if cmdButton(c, iconKeyboard, 15, false).
 				Tooltip("Keyboard Shortcuts (" + keyLabels("help.keyboardShortcuts") + ")").
 				Label("Keyboard Shortcuts").Clicked() {
 				a.openOverlay(overlayShortcuts)
 			}
-			if cmdButton(c, iconSearch, 16, false).
+			if cmdButton(c, iconSearch, 15, false).
 				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
-			if cmdButton(c, iconPanelRight, 16, a.inspectorVisible).Clicked() {
+			if cmdButton(c, iconPanelRight, 15, a.inspectorVisible).
+				Tooltip("Toggle Inspector (" + keyLabels("view.toggleInspector") + ")").Clicked() {
 				a.inspectorVisible = !a.inspectorVisible
 			}
 		})
 	})
 }
 
+// topTab is a tab as a pill: a session with its status, or an editor,
+// diff or graph with its icon.
 func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	if i < 0 || i >= len(a.tabs) {
 		return ui.Box(c)
 	}
 	t := &a.tabs[i]
 	active := i == a.activeTab
-	// The mock's .top-tab: rounded top corners, a blue top edge while
-	// active, sitting flush with the content below.
-	e := ui.ButtonBase(c).Key(i).Height(36).Radius(6, 6, 0, 0).Padding(0, 12).Gap(6)
-	if active {
-		e = e.Background(pal.Raised).DrawOver(func(p *ui.Painter, r ui.Rect) {
-			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W, H: 1}, pal.Accent, 0)
-		})
-	} else if e.Hovered() {
-		e = e.Background(pal.Raised)
+	e := ui.ButtonBase(c.Key(i)).Height(26).Radius(13).Padding(0, 6, 0, 10).Gap(6).Shrink(0).AlignItems(ui.Center)
+	switch {
+	case active:
+		raised(e.Background(pal.Raised))
+	case e.Hovered():
+		e.Background(pal.Hover)
 	}
 	e.Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-			switch t.Kind {
-			case tabTerminal:
-				dot(c, t.Dot, 8)
-			case tabEditor:
-				if isImagePath(t.Path) {
-					ui.Icon(c, iconImage).Width(14).Height(14).TextColor(pal.Ok)
-				} else {
-					ui.Icon(c, iconFileCode).Width(14).Height(14).TextColor(pal.Syn.FileTS)
-				}
-			case tabDiff:
-				ui.Icon(c, iconGitCompare).Width(14).Height(14).TextColor(pal.Ok)
-			case tabGraph:
-				ui.Icon(c, iconGitGraph).Width(14).Height(14).TextColor(pal.ANSI[5])
+		switch t.Kind {
+		case tabTerminal:
+			info, _ := a.sessionInfo(*t)
+			if statusState(info) != iconNone {
+				a.statusIcon(c, info, 12)
+			} else {
+				ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process))).Size(13, 13).TextColor(pal.TextFaint)
 			}
-			labelCol := pal.TextSoft
-			if active {
-				labelCol = pal.TextStrong
+		case tabEditor:
+			if isImagePath(t.Path) {
+				ui.Icon(c, iconImage).Size(13, 13).TextColor(pal.Ok)
+			} else {
+				ui.Icon(c, iconFileCode).Size(13, 13).TextColor(pal.Syn.FileTS)
 			}
-			ui.Text(c, t.Label).FontSize(12).TextColor(labelCol).SingleLine().Shrink(0)
-			if t.Detail != "" {
-				ui.Spacer(c)
-				ui.Text(c, t.Detail).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
+		case tabDiff:
+			ui.Icon(c, iconGitCompare).Size(13, 13).TextColor(pal.Ok)
+		case tabGraph:
+			ui.Icon(c, iconGitGraph).Size(13, 13).TextColor(pal.ANSI[5])
+		}
+		label := t.Label
+		if t.Kind == tabTerminal {
+			info, _ := a.sessionInfo(*t)
+			label = a.sessionName(*t, info)
+		}
+		col := pal.TextMuted
+		if active {
+			col = pal.Text
+		}
+		ui.Text(c, label).FontSize(12).TextColor(col).SingleLine().Ellipsis("…").MaxWidth(180)
+		if t.Detail != "" {
+			ui.Text(c, t.Detail).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+		}
+		if t.Dirty {
+			ui.Text(c, "M").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
+		}
+		if t.Kind == tabEditor && t.Path != "" {
+			if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
+				ui.Text(c, "●").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
 			}
-			if t.Dirty {
-				ui.Text(c, "M").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
-			}
-			if t.Kind == tabEditor && t.Path != "" {
-				if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
-					ui.Text(c, "●").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
-				}
-			}
-			if len(a.tabs) > 1 {
-				ui.Spacer(c)
-				// The close button is always laid out, so tabs keep their
-				// width, but it only shows on the active or hovered tab.
-				showClose := active || e.Hovered()
-				opacity := float32(0)
-				if showClose {
-					opacity = 1
-				}
-				x := ui.ButtonBase(c).Padding(2).Radius(3).Shrink(0).
-					Opacity(opacity).Disabled(!showClose).Children(func() {
-					ui.Icon(c, iconX).Width(14).Height(14).TextColor(pal.TextMuted)
-				})
-				if x.Clicked() {
-					a.closeTab(i)
-				}
-			}
+		}
+		// The close button keeps its room, so pills keep their width, but
+		// shows only on the active or hovered pill.
+		show := len(a.tabs) > 1 && (active || e.Hovered())
+		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Opacity(b2f(show)).Disabled(!show)
+		if x.Hovered() {
+			x.Background(pal.Hover)
+		}
+		x.Children(func() {
+			ui.Icon(c, iconX).Size(12, 12).TextColor(pal.TextMuted)
 		})
+		if x.Clicked() {
+			a.closeTab(i)
+		}
 	})
 	if e.Clicked() {
 		a.activateTab(i)

@@ -53,8 +53,8 @@ func TestStatusBarCountsAndNoMockStats(t *testing.T) {
 	if tr.HasText("⌘O") {
 		t.Error("Linux still shows the macOS ⌘O chip")
 	}
-	if !tr.HasText("Ctrl+O") {
-		t.Error("Linux shortcut chip should read Ctrl+O")
+	if got := keyLabels("app.openProject"); got != "Ctrl+O" {
+		t.Errorf("Linux shortcut reads %q, want Ctrl+O", got)
 	}
 }
 
@@ -74,8 +74,8 @@ func TestStatusBarShowsProject(t *testing.T) {
 		t.Error("project name missing from the status bar with the sidebar hidden")
 	}
 	// The hidden-sidebar toggle must be reachable, not just implied.
-	if _, ok := tr.Find("Show Projects"); !ok {
-		t.Error("no show-projects control while the sidebar is hidden")
+	if _, ok := tr.Find("Show Sidebar"); !ok {
+		t.Error("no show-sidebar control while the sidebar is hidden")
 	}
 }
 

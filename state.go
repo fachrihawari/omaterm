@@ -38,8 +38,10 @@ type topTab struct {
 	Icon   int
 	Dirty  bool
 	Path   string // editor tabs: workspace-relative file path
-	// Split is the terminal pane tree (nil or single leaf = one pane).
-	Split *splitNode
+	// Split is the terminal pane tree (nil or single leaf = one pane);
+	// Zoomed is the pane shown alone, "" for all.
+	Split  *splitNode
+	Zoomed string
 }
 
 const (
@@ -240,12 +242,31 @@ type appState struct {
 	// wsOwner is the project whose workspace a.tabs is. saved are the
 	// sessions state.json had for projects not yet shown, paneDirs the
 	// directories their panes start in.
-	ws         map[string]*projectWS
-	wsOwner    string
-	saved      map[string][]model.Session
-	paneDirs   map[string]string
-	saveTimer  *time.Timer
-	panesStop  func()
+	ws        map[string]*projectWS
+	wsOwner   string
+	saved     map[string][]model.Session
+	paneDirs  map[string]string
+	saveTimer *time.Timer
+	panesStop func()
+	git       *gitWatch
+
+	// The panes' layout: handles of keyed elements, a divider being
+	// dragged, the drop zone last shown, the drop preview's target and
+	// since when, and panes just moved, which spring in.
+	handles    map[string]*ui.Handle
+	layoutDrag struct {
+		split string
+		ratio float64
+	}
+	lastZone     dropZone
+	previewKey   string
+	previewSince time.Time
+	arrived      map[string]bool
+
+	// renaming is the session being renamed in the sidebar, renameText
+	// its name as typed.
+	renaming   string
+	renameText string
 	paneFailed map[string]bool
 	status     map[string]session.Info
 
@@ -316,6 +337,8 @@ func newApp() *appState {
 		editors:          map[string]*openFile{},
 		panes:            session.NewRegistry(),
 		paneFailed:       map[string]bool{},
+		git:              newGitWatch(),
+		arrived:          map[string]bool{},
 		ws:               map[string]*projectWS{},
 		saved:            map[string][]model.Session{},
 		paneDirs:         map[string]string{},

@@ -19,18 +19,21 @@ func (a *appState) view(c *ui.Context) {
 	a.registerKeybindings(c)
 	a.overlayWindowKeys(c)
 
-	ui.Column(c).Fill().Background(pal.Wash).Children(func() {
-		if a.sidebarVisible {
-			ui.Split(c, &a.sidebarW, func() {
-				a.projectsSidebar(c)
-			}, func() {
-				a.mainColumn(c)
-			}).Grow(1)
-		} else {
-			ui.Column(c).Grow(1).Children(func() {
-				a.mainColumn(c)
-			})
+	root := ui.Column(c).Fill()
+	a.wash(root)
+	root.Children(func() {
+		if a.settings.Background != "plain" {
+			// A glow of the accent from the top right corner, as the light
+			// of the window comes from there.
+			ui.Box(c.Key("glow")).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().
+				LinearGradient(ui.LinearGradient{Angle: 225, Stops: []ui.GradientStop{
+					{Color: pal.WashGlow, At: 0}, {Color: pal.WashGlow.Alpha(0), At: 0.55},
+				}})
 		}
+		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+			a.sidebar(c)
+			a.mainColumn(c)
+		})
 		a.statusBar(c)
 	})
 
@@ -85,35 +88,55 @@ func (a *appState) view(c *ui.Context) {
 	a.renderOverlays(c)
 }
 
+// wash paints the window's backdrop: a soft gradient of the theme's
+// background, which the cards sit on, or the plain color.
+func (a *appState) wash(e ui.Element) {
+	if a.settings.Background == "plain" {
+		e.Background(pal.Wash)
+		return
+	}
+	e.LinearGradient(ui.LinearGradient{Angle: 180, Oklab: true, From: pal.Wash, To: pal.Wash.Mix(pal.Accent, 0.04)})
+}
+
 func (a *appState) mainColumn(c *ui.Context) {
-	ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+	gap := a.paneGap()
+	left := gap
+	if a.sidebarVisible {
+		left = 0
+	}
+	ui.Column(c).Grow(1).MinWidth(0).FillHeight().Children(func() {
 		a.tabBar(c)
-		if a.inspectorVisible {
-			ui.Row(c).Grow(1).MinWidth(0).FillHeight().Children(func() {
-				ui.Box(c).Grow(1).MinWidth(0).FillHeight().ClipX().Children(func() {
-					a.content(c)
-				})
-				ui.Box(c).Width(a.inspectorW).Shrink(0).FillHeight().Children(func() {
+		ui.Row(c).Grow(1).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Padding(0, gap, gap, left).Gap(gap).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+				a.content(c)
+			})
+			if a.inspectorVisible {
+				card := ui.Column(c).Width(a.inspectorW).Shrink(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
+				raised(card).Children(func() {
 					a.inspector(c)
 				})
-			})
-		} else {
-			a.content(c)
-		}
+			}
+		})
 	})
 }
 
 func (a *appState) content(c *ui.Context) {
-	switch a.activeView {
-	case tabEditor:
-		a.editorView(c)
-	case tabDiff:
-		a.diffView(c)
-	case tabGraph:
-		a.graphView(c)
-	default:
+	if a.activeView == tabTerminal {
 		a.terminalView(c)
+		return
 	}
+	// The editor, diff and graph views sit on a card as a pane does.
+	card := ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Radius(a.cardRadius()).Clip().Background(pal.Card)
+	raised(card).Children(func() {
+		switch a.activeView {
+		case tabEditor:
+			a.editorView(c)
+		case tabDiff:
+			a.diffView(c)
+		case tabGraph:
+			a.graphView(c)
+		}
+	})
 }
 
 // confirmDialog shows a bordered confirmation dialog using DialogBase (which

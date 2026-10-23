@@ -183,6 +183,7 @@ var keybindings = append([]keyBinding{
 	{"terminal.new", combo(ui.Cmd, ui.KeyT), scopeGlobal},
 	{"terminal.splitDown", combo(ui.Cmd|ui.Shift, ui.KeyD), scopeTerminal},
 	{"terminal.splitRight", combo(ui.Cmd|ui.Shift, ui.KeyR), scopeTerminal},
+	{"pane.zoom", combo(ui.Cmd|ui.Shift, ui.KeyEnter), scopeTerminal},
 
 	// Editor.
 	{"file.save", combo(ui.Cmd, ui.KeyS), scopeEditor},

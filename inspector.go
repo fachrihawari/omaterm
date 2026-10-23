@@ -14,7 +14,7 @@ import (
 // The right inspector: Info / Files / Git panels behind a tab strip.
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
-	return ui.Column(c).FillHeight().Background(pal.Sidebar).BorderWidth(0, 0, 0, 1).BorderColor(pal.Border).Children(func() {
+	return ui.Column(c).Fill().Children(func() {
 		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
 			a.inspectorTabButton(c, 1, iconFolder, "Files", 0)

@@ -14,7 +14,7 @@ import (
 // the mock's footer buttons.
 
 func (a *appState) statusBar(c *ui.Context) ui.Element {
-	return ui.Row(c).Height(24).AlignItems(ui.Center).Background(pal.Wash).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
+	return ui.Row(c).Height(24).Shrink(0).AlignItems(ui.Center).Padding(0, 4).Children(func() {
 		// Project and branch: the only identity left when the sidebar is
 		// hidden, so it stays visible and ellipsizes rather than pushing
 		// the counters out.

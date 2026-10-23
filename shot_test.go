@@ -15,9 +15,34 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/session"
 	"omaterm/internal/theme"
 	"omaterm/service"
 )
+
+// shotStatuses gives the shot's sessions every status a session row and
+// pane header show: an agent waiting, a split working, one done unseen.
+func shotStatuses(a *appState) {
+	since := nowFunc().Add(-2 * time.Minute).UnixMilli()
+	set := func(tab int, info session.Info) {
+		ids := a.tabs[tab].Split.termIDs()
+		info.ID, info.Session = ids[0], a.tabs[tab].ID
+		if info.Progress == 0 {
+			info.Progress = -1
+		}
+		info.Since = since
+		info.Dir = "/home/you/Projects/omaterm"
+		a.status[ids[0]] = info
+	}
+	a.splitPane(a.tabs[0].Split.termIDs()[0], splitVertical)
+	set(0, session.Info{Status: session.Waiting, Agent: "claude", Process: "claude", Kind: "permission", Unread: true})
+	b := a.tabs[0].Split.termIDs()[1]
+	a.status[b] = session.Info{ID: b, Session: a.tabs[0].ID, Status: session.Working, Process: "bun", Progress: -1,
+		Since: since, Dir: "/home/you/Projects/omaterm/web", Title: "vite"}
+	set(1, session.Info{Status: session.Idle, Unread: true, Process: "go", Message: "Tests passed"})
+	set(2, session.Info{Status: session.Working, Agent: "codex", Process: "codex", Progress: 40})
+	a.activePaneTermID = a.tabs[0].Split.termIDs()[0]
+}
 
 // shotTheme loads one of the Omarchy theme fixtures.
 func shotTheme(t *testing.T, name string) theme.Source {
@@ -64,6 +89,8 @@ func TestShots(t *testing.T) {
 	}{
 		{"terminal", nil, nil},
 		{"theme-light", func(a *appState) { a.applyTheme(shotTheme(t, "lupine")) }, nil},
+		{"sidebar-sessions", shotStatuses, nil},
+		{"sessions-light", func(a *appState) { a.applyTheme(shotTheme(t, "lupine")); shotStatuses(a) }, nil},
 		{"theme-tokyo", func(a *appState) { a.applyTheme(shotTheme(t, "tokyo-night")) }, nil},
 		{"theme-mono", func(a *appState) { a.applyTheme(shotTheme(t, "white")) }, nil},
 		{"editor", func(a *appState) { a.openEditor("app.go") },
