@@ -166,6 +166,7 @@ func (a *appState) closeTab(i int) {
 		for _, id := range t.Split.termIDs() {
 			a.panes.Remove(id)
 		}
+		a.saveSoon()
 	}
 	wasActive := a.activeTab == i
 	if i < a.activeTab {

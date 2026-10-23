@@ -44,6 +44,12 @@ func (a *appState) syncStatus() {
 	prev := a.status
 	a.status = next
 	a.statusChanged(prev, next)
+	for id, n := range next {
+		if prev[id].Dir != n.Dir {
+			a.saveSoon()
+			break
+		}
+	}
 }
 
 // statusChanged reacts to panes' changes: notifications (notify.go).

@@ -36,6 +36,8 @@ func main() {
 			if a.themeWatchStop != nil {
 				a.themeWatchStop()
 			}
+			a.saveState()
+			a.saveUIPrefs()
 			if a.panesStop != nil {
 				a.panesStop()
 			}

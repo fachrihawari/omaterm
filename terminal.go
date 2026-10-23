@@ -158,8 +158,12 @@ func (a *appState) term(id string) *terminal.Terminal {
 	if tab >= 0 {
 		sessionID = a.tabs[tab].ID
 	}
+	dir := a.paneDirs[id]
+	if dir == "" {
+		dir = a.workspace
+	}
 	p, err := a.panes.Start(session.StartOptions{
-		ID: id, Session: sessionID, Dir: a.workspace,
+		ID: id, Session: sessionID, Dir: dir,
 		Command: a.termCmd, Exec: len(a.termCmd) > 0,
 		Font:            terminal.Font{Size: a.fontSize},
 		Theme:           omaTermTheme(),
@@ -238,6 +242,7 @@ func (a *appState) splitPane(termID string, dir splitDir) string {
 	if n := a.activeSplit(); n != nil {
 		rebalance(n)
 	}
+	a.saveSoon()
 	for _, id := range a.activeSplit().termIDs() {
 		if id == newID {
 			return newID
@@ -284,6 +289,7 @@ func (a *appState) removePaneIn(tab int, termID string) {
 		a.activePaneTermID = ""
 	}
 	a.panes.Remove(termID)
+	a.saveSoon()
 	a.tabs[tab].Split = newRoot
 	if newRoot != nil {
 		rebalance(newRoot)
@@ -471,6 +477,7 @@ func (a *appState) newTerminalTabReal() {
 	})
 	a.activeTab = len(a.tabs) - 1
 	a.activeView = tabTerminal
+	a.saveSoon()
 	if len(a.tabs) > 0 && a.tabs[a.activeTab].Split != nil {
 		ids := a.tabs[a.activeTab].Split.termIDs()
 		if len(ids) > 0 {

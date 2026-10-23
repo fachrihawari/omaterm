@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/model"
 	"omaterm/internal/session"
 	"omaterm/service"
 )
@@ -235,7 +235,16 @@ type appState struct {
 	// whose shell could not start, so a frame does not retry them; status
 	// is a copy of every pane's Info as of the last sync (syncStatus),
 	// which views read without locks.
-	panes      *session.Registry
+	panes *session.Registry
+	// ws holds the workspaces of projects not shown, by project ID;
+	// wsOwner is the project whose workspace a.tabs is. saved are the
+	// sessions state.json had for projects not yet shown, paneDirs the
+	// directories their panes start in.
+	ws         map[string]*projectWS
+	wsOwner    string
+	saved      map[string][]model.Session
+	paneDirs   map[string]string
+	saveTimer  *time.Timer
 	panesStop  func()
 	paneFailed map[string]bool
 	status     map[string]session.Info
@@ -283,18 +292,21 @@ type fileNode struct {
 }
 
 type project struct {
-	Name   string
-	Path   string // absolute path; expanded from ~ at load
-	Branch string
-	Active bool
-	Tabs   []string
+	// ID names the project in state.json and to the CLI.
+	ID        string
+	Collapsed bool
+	Name      string
+	Path      string // absolute path; expanded from ~ at load
+	Branch    string
+	Active    bool
+	Tabs      []string
 }
 
 func newApp() *appState {
 	a := &appState{
 		sidebarVisible:   true,
 		inspectorVisible: true,
-		sidebarW:         210,
+		sidebarW:         240,
 		inspectorW:       330,
 		activePaneTermID: "",
 		searchSplit:      35,
@@ -304,6 +316,9 @@ func newApp() *appState {
 		editors:          map[string]*openFile{},
 		panes:            session.NewRegistry(),
 		paneFailed:       map[string]bool{},
+		ws:               map[string]*projectWS{},
+		saved:            map[string][]model.Session{},
+		paneDirs:         map[string]string{},
 		status:           map[string]session.Info{},
 		commitFiles:      map[string][]service.CommitFile{},
 		commitStats:      map[string][2]int{},
@@ -311,13 +326,13 @@ func newApp() *appState {
 		settings:         loadSettings(),
 	}
 	a.hookPanes()
+	a.loadUIPrefs()
 	a.themeMode = a.settings.Theme
 	a.applyTheme(themeSource(a.themeMode))
-	// Load saved projects.
-	if saved, active := loadSavedProjects(); len(saved) > 0 {
-		a.projects = saved
-		a.active = active
-		a.setProject(a.active)
+	// Load saved projects and their sessions.
+	if active := a.loadState(); len(a.projects) > 0 {
+		a.active = -1
+		a.setProject(active)
 	} else {
 		// No saved projects: use home directory as default.
 		home, _ := os.UserHomeDir()
@@ -329,12 +344,6 @@ func newApp() *appState {
 		a.setProject(0)
 	}
 	return a
-}
-
-// savedState is the on-disk project list.
-type savedState struct {
-	Projects []project `json:"projects"`
-	Active   int       `json:"active"`
 }
 
 func stateFilePath() string {
@@ -353,82 +362,6 @@ func legacyStateFilePath() string {
 		dir = os.ExpandEnv("$HOME/.config")
 	}
 	return filepath.Join(dir, "oterm", "state.json")
-}
-
-func loadSavedProjects() ([]project, int) {
-	data, err := os.ReadFile(stateFilePath())
-	if err != nil {
-		// The rename moved the file: read the old one, so the project list
-		// survives. The next save writes it to the new path.
-		if legacy, legacyErr := os.ReadFile(legacyStateFilePath()); legacyErr == nil {
-			data = legacy
-		} else {
-			return nil, 0
-		}
-	}
-	var st savedState
-	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, 0
-	}
-	// Validate paths exist.
-	var valid []project
-	for _, p := range st.Projects {
-		if p.Path == "" {
-			continue
-		}
-		abs, err := filepath.Abs(p.Path)
-		if err != nil {
-			continue
-		}
-		if info, err := os.Stat(abs); err != nil || !info.IsDir() {
-			continue
-		}
-		// Reject overly broad paths that would match all processes.
-		if service.IsWorkspaceTooBroad(abs) {
-			continue
-		}
-		p.Path = abs
-		if len(p.Tabs) == 0 {
-			p.Tabs = []string{"dev"}
-		}
-		valid = append(valid, p)
-	}
-	active := 0
-	if st.Active >= 0 && st.Active < len(valid) {
-		active = st.Active
-	}
-	return valid, active
-}
-
-func (a *appState) saveProjects() {
-	if a.win == nil {
-		return // don't persist in test mode
-	}
-	if len(a.projects) == 0 {
-		// Remove state file if no projects.
-		os.Remove(stateFilePath())
-		return
-	}
-	// Resolve all paths to absolute before saving.
-	projects := make([]project, len(a.projects))
-	copy(projects, a.projects)
-	for i := range projects {
-		if abs, err := filepath.Abs(projects[i].Path); err == nil {
-			projects[i].Path = abs
-		}
-	}
-	st := savedState{Projects: projects, Active: a.active}
-	data, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return
-	}
-	path := stateFilePath()
-	os.MkdirAll(filepath.Dir(path), 0o755)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return
-	}
-	os.Rename(tmp, path)
 }
 
 func (a *appState) project() *project {
@@ -458,30 +391,16 @@ func (a *appState) setProject(i int) {
 	if i < 0 || i >= len(a.projects) {
 		return
 	}
+	// The project shown keeps its sessions running: its tabs, panes and
+	// editors wait in a.ws until it shows again.
+	a.stashWorkspace()
 	a.active = i
 	p := &a.projects[i]
+	if p.ID == "" {
+		p.ID = newID()
+	}
 	a.workspace = p.Path
-
-	// Stop and clean up all terminal panes before switching.
-	a.panes.CloseAll()
-
-	a.tabs = nil
-	for _, name := range p.Tabs {
-		t := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen,
-			Split: &splitNode{TermID: randomTermID()}}
-		if name == "tests" {
-			t.Dot = dotYellow
-		}
-		a.tabs = append(a.tabs, t)
-	}
-	a.activeTab = 0
-	a.activeView = tabTerminal
-	if len(a.tabs) > 0 && a.tabs[0].Split != nil {
-		ids := a.tabs[0].Split.termIDs()
-		if len(ids) > 0 {
-			a.activePaneTermID = ids[0]
-		}
-	}
+	a.restoreWorkspace(p)
 	a.gitBusy = ""
 	a.gitMsg = ""
 	a.gitErr = false
@@ -499,14 +418,13 @@ func (a *appState) setProject(i int) {
 	a.commitFiles = map[string][]service.CommitFile{}
 	a.commitStats = map[string][2]int{}
 	a.fileIndex = nil
-	a.editors = map[string]*openFile{}
 	a.fileTree = nil
 	a.diffOld, a.diffNew, a.diffPatch = nil, nil, nil
 	a.diffDs, a.diffKey = nil, ""
 	a.closeOverlay()
 
 	a.loadProjectData()
-	a.saveProjects()
+	a.saveSoon()
 }
 
 // start begins the window's work once it exists: the loads of the saved
@@ -541,19 +459,25 @@ func (a *appState) switchProject(i int) {
 		return
 	}
 	a.setProject(i)
-	a.saveProjects()
 }
 
 func (a *appState) removeProject(i int) {
 	if i < 0 || i >= len(a.projects) {
 		return
 	}
-	// Stop terminal panes if removing the active project.
+	// Its sessions end with it; other projects' keep running.
+	removed := a.projects[i]
+	a.closeProjectPanes(removed.ID)
 	if i == a.active {
-		a.panes.CloseAll()
+		a.wsOwner = ""
 	}
-	name := a.projects[i].Name
+	delete(a.saved, removed.ID)
 	a.projects = append(a.projects[:i], a.projects[i+1:]...)
+	if i < a.active {
+		a.active--
+	} else if i == a.active {
+		a.active = -1
+	}
 	if len(a.projects) == 0 {
 		a.active = -1
 		a.workspace = ""
@@ -567,16 +491,16 @@ func (a *appState) removeProject(i int) {
 		a.processWarn = ""
 		a.stopProcessRefresh()
 	} else {
-		if a.active >= len(a.projects) {
-			a.active = len(a.projects) - 1
+		next := a.active
+		if next < 0 {
+			next = min(i, len(a.projects)-1)
+			a.active = -1
 		}
 		if a.active < 0 {
-			a.active = 0
+			a.setProject(next)
 		}
-		a.setProject(a.active)
 	}
-	a.saveProjects()
-	_ = name
+	a.saveSoon()
 }
 
 // refreshRepos discovers repos and loads their status, off the UI thread.

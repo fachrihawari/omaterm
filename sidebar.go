@@ -142,12 +142,12 @@ func (a *appState) openProjectDialog() {
 				}
 			}
 			a.projects = append(a.projects, project{
+				ID:   newID(),
 				Name: filepath.Base(dir),
 				Path: dir,
 				Tabs: []string{"dev"},
 			})
 			a.setProject(len(a.projects) - 1)
-			a.saveProjects()
 		})
 	}()
 }

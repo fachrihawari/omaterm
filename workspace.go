@@ -1,0 +1,249 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"time"
+
+	"omaterm/internal/model"
+	"omaterm/service"
+)
+
+// projectWS is a project's workspace while another project shows: its
+// tabs (and so its sessions, whose panes keep running), the tab and pane
+// it showed, and its open editors.
+type projectWS struct {
+	tabs       []topTab
+	activeTab  int
+	activeView topTabKind
+	activePane string
+	editors    map[string]*openFile
+}
+
+func init() { model.NewID = newID }
+
+// stashWorkspace keeps the shown project's workspace for its return.
+func (a *appState) stashWorkspace() {
+	if a.wsOwner == "" {
+		return
+	}
+	a.ws[a.wsOwner] = &projectWS{
+		tabs: a.tabs, activeTab: a.activeTab, activeView: a.activeView,
+		activePane: a.activePaneTermID, editors: a.editors,
+	}
+	a.wsOwner = ""
+}
+
+// restoreWorkspace shows p's workspace: the one it left, else its saved
+// sessions, else a session per tab name it starts with.
+func (a *appState) restoreWorkspace(p *project) {
+	a.wsOwner = p.ID
+	if w := a.ws[p.ID]; w != nil {
+		delete(a.ws, p.ID)
+		a.tabs, a.activeTab, a.activeView = w.tabs, w.activeTab, w.activeView
+		a.activePaneTermID, a.editors = w.activePane, w.editors
+		return
+	}
+	a.tabs = nil
+	a.editors = map[string]*openFile{}
+	if saved := a.saved[p.ID]; len(saved) > 0 {
+		delete(a.saved, p.ID)
+		for _, s := range saved {
+			split := fromLayout(s.Layout)
+			if split == nil {
+				continue
+			}
+			for _, pane := range s.Panes {
+				if pane.Dir != "" {
+					a.paneDirs[pane.ID] = pane.Dir
+				}
+			}
+			a.tabs = append(a.tabs, topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split})
+		}
+	}
+	if len(a.tabs) == 0 {
+		names := p.Tabs
+		if len(names) == 0 {
+			names = []string{"dev"}
+		}
+		for _, name := range names {
+			t := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen,
+				Split: &splitNode{TermID: randomTermID()}}
+			if name == "tests" {
+				t.Dot = dotYellow
+			}
+			a.tabs = append(a.tabs, t)
+		}
+	}
+	a.activeTab = 0
+	a.activeView = tabTerminal
+	a.activePaneTermID = ""
+	if len(a.tabs) > 0 && a.tabs[0].Split != nil {
+		if ids := a.tabs[0].Split.termIDs(); len(ids) > 0 {
+			a.activePaneTermID = ids[0]
+		}
+	}
+}
+
+// projectTabs returns a project's tabs, shown or not.
+func (a *appState) projectTabs(id string) []topTab {
+	if id == a.wsOwner {
+		return a.tabs
+	}
+	if w := a.ws[id]; w != nil {
+		return w.tabs
+	}
+	return nil
+}
+
+// closeProjectPanes ends the sessions of a project.
+func (a *appState) closeProjectPanes(id string) {
+	for _, t := range a.projectTabs(id) {
+		if t.Kind == tabTerminal && t.Split != nil {
+			for _, pid := range t.Split.termIDs() {
+				a.panes.Remove(pid)
+			}
+		}
+	}
+	delete(a.ws, id)
+}
+
+// loadState reads state.json: the projects, whose folders must still
+// exist, and their sessions, which start as the projects show. It returns
+// the index of the project to show.
+func (a *appState) loadState() int {
+	st, err := model.Load(stateFilePath())
+	if err != nil {
+		// The rename moved the file: read the old one, so the project list
+		// survives. The next save writes it to the new path.
+		if st, err = model.Load(legacyStateFilePath()); err != nil {
+			return 0
+		}
+	}
+	a.projects = nil
+	active := 0
+	for _, p := range st.Projects {
+		abs, err := filepath.Abs(p.Dir)
+		if p.Dir == "" || err != nil {
+			continue
+		}
+		if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+			continue
+		}
+		// Reject overly broad paths that would match all processes.
+		if service.IsWorkspaceTooBroad(abs) {
+			continue
+		}
+		if p.ID == "" {
+			p.ID = newID()
+		}
+		if p.ID == st.ActiveProject {
+			active = len(a.projects)
+		}
+		a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: abs, Collapsed: p.Collapsed})
+	}
+	for _, s := range st.Sessions {
+		a.saved[s.Project] = append(a.saved[s.Project], s)
+	}
+	return active
+}
+
+// state is what to save of the projects and sessions.
+func (a *appState) state() model.State {
+	st := model.State{}
+	if p := a.project(); p != nil {
+		st.ActiveProject = p.ID
+	}
+	for _, p := range a.projects {
+		abs, err := filepath.Abs(p.Path)
+		if err != nil {
+			abs = p.Path
+		}
+		st.Projects = append(st.Projects, model.Project{ID: p.ID, Name: p.Name, Dir: abs, Collapsed: p.Collapsed})
+		tabs := a.projectTabs(p.ID)
+		if tabs == nil {
+			// Never shown this run: its sessions as they were saved.
+			st.Sessions = append(st.Sessions, a.saved[p.ID]...)
+			continue
+		}
+		for _, t := range tabs {
+			if t.Kind != tabTerminal || t.Split == nil {
+				continue
+			}
+			s := model.Session{ID: t.ID, Project: p.ID, Name: t.Label, Layout: toLayout(t.Split)}
+			for _, id := range t.Split.termIDs() {
+				dir := a.paneDirs[id]
+				if info, ok := a.status[id]; ok && info.Dir != "" {
+					dir = info.Dir
+				}
+				if dir == "" {
+					dir = abs
+				}
+				s.Panes = append(s.Panes, model.Pane{ID: id, Dir: dir})
+			}
+			st.Sessions = append(st.Sessions, s)
+		}
+	}
+	return st
+}
+
+// saveSoon saves state.json shortly, once a burst of changes settles.
+// Tests, which have no window, never write.
+func (a *appState) saveSoon() {
+	if a.win == nil || a.saveTimer != nil {
+		return
+	}
+	a.saveTimer = time.AfterFunc(300*time.Millisecond, func() {
+		a.post(func() {
+			a.saveTimer = nil
+			a.saveState()
+		})
+	})
+}
+
+// saveState writes state.json now.
+func (a *appState) saveState() {
+	if a.win == nil {
+		return
+	}
+	if len(a.projects) == 0 {
+		os.Remove(stateFilePath())
+		return
+	}
+	model.Save(stateFilePath(), a.state())
+}
+
+// toLayout converts a split tree to the saved layout.
+func toLayout(n *splitNode) *model.Layout {
+	if n == nil {
+		return nil
+	}
+	if n.isLeaf() {
+		return &model.Layout{Pane: n.TermID}
+	}
+	r := n.Ratio
+	if r <= 0 {
+		r = 50
+	}
+	return &model.Layout{Row: n.Dir == splitVertical, Ratio: float64(r) / 100, A: toLayout(n.First), B: toLayout(n.Second)}
+}
+
+// fromLayout converts a saved layout to a split tree; nil for a broken
+// one.
+func fromLayout(l *model.Layout) *splitNode {
+	if l == nil {
+		return nil
+	}
+	if l.Pane != "" {
+		return &splitNode{TermID: l.Pane}
+	}
+	a, b := fromLayout(l.A), fromLayout(l.B)
+	if a == nil || b == nil {
+		return a
+	}
+	dir := splitHorizontal
+	if l.Row {
+		dir = splitVertical
+	}
+	return &splitNode{Dir: dir, Ratio: float32(l.Ratio * 100), First: a, Second: b}
+}

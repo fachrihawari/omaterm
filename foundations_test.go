@@ -14,7 +14,7 @@ func TestStartupKeepsSavedActiveProject(t *testing.T) {
 	cfg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfg)
 	one, two := t.TempDir(), t.TempDir()
-	st := savedState{Projects: []project{{Name: "one", Path: one}, {Name: "two", Path: two}}, Active: 1}
+	st := map[string]any{"projects": []map[string]any{{"Name": "one", "Path": one}, {"Name": "two", "Path": two}}, "active": 1}
 	data, _ := json.Marshal(st)
 	if err := os.MkdirAll(filepath.Join(cfg, "omaterm"), 0o755); err != nil {
 		t.Fatal(err)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"omaterm/internal/model"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,7 +25,7 @@ func TestLegacyStateIsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projects, active := loadSavedProjects()
+	projects, active := loadProjects()
 	if len(projects) != 1 {
 		t.Fatalf("read %d projects from the old location, want 1", len(projects))
 	}
@@ -44,8 +45,15 @@ func TestLegacyStateIsRead(t *testing.T) {
 	if err := os.WriteFile(current, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	projects, _ = loadSavedProjects()
+	projects, _ = loadProjects()
 	if len(projects) != 1 || projects[0].Name != "newer" {
 		t.Fatalf("projects = %+v, want the one from the new location", projects)
 	}
+}
+
+// loadProjects reads state.json as newApp does, without the rest of an app.
+func loadProjects() ([]project, int) {
+	a := &appState{saved: map[string][]model.Session{}}
+	active := a.loadState()
+	return a.projects, active
 }
