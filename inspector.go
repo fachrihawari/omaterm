@@ -144,6 +144,12 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 						ui.Box(c).Padding(20).Children(func() {
 							ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
 								ui.Icon(c, iconTerminal).Width(20).Height(20).TextColor(pal.TextFaint)
+								if a.processWarn != "" {
+									// The home folder: every process is in it.
+									ui.Text(c, "Not listed for this folder").FontSize(11).TextColor(pal.TextMuted)
+									ui.Text(c, "Open a project folder to see its processes").FontSize(10).TextColor(pal.TextFaint)
+									return
+								}
 								ui.Text(c, "No processes in this project").FontSize(11).TextColor(pal.TextMuted)
 								ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(pal.TextFaint)
 							})

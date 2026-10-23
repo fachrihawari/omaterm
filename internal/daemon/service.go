@@ -25,13 +25,17 @@ func UnitPath() string {
 // Unit is the systemd user unit running exe's daemon for good: it starts
 // with the user's session, and comes back if it ends.
 func Unit(exe string) string {
+	dev := ""
+	if paths.Name() != "omaterm" {
+		dev = "Environment=OMATERM_DEV=1\n"
+	}
 	return `[Unit]
 Description=omaterm session daemon (keeps terminal sessions running)
 
 [Service]
 ExecStart=` + unitQuote(exe) + ` daemon serve
 Environment=OMATERM_SERVICE=1
-Restart=always
+` + dev + `Restart=always
 KillMode=mixed
 
 [Install]

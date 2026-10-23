@@ -42,24 +42,32 @@ type Options struct {
 	Serve bool
 	// Socket and StateDir override where it listens and keeps histories
 	// (tests).
-	Socket   string
-	StateDir string
+	Socket    string
+	StateDir  string
+	StateFile string
 	// IdleExit is how long it stays with no pane and no client: 30 s when
 	// zero.
 	IdleExit time.Duration
 	// Version is the build's, which the app compares with its own.
 	Version string
+	// Restore starts the sessions of state.json at once, from their
+	// scrollback, as a service does at login: no app is there to.
+	Restore bool
 }
 
 // Daemon is the running daemon.
 type Daemon struct {
-	opts  Options
-	reg   *session.Registry
-	srv   *ctl.Server
-	quit  chan struct{}
-	once  sync.Once
-	theme *terminal.Theme
-	lock  *os.File
+	opts    Options
+	reg     *session.Registry
+	srv     *ctl.Server
+	quit    chan struct{}
+	once    sync.Once
+	theme   *terminal.Theme
+	lock    *os.File
+	started time.Time
+	// stateMu orders the changes to state.json the daemon makes while no
+	// app runs.
+	stateMu sync.Mutex
 
 	mu      sync.Mutex
 	subs    map[int]func(proto.Message)
@@ -69,6 +77,27 @@ type Daemon struct {
 	idleAt  time.Time
 	// attached are each pane's attachments.
 	attached map[string]map[*attachment]struct{}
+	// env is the app's display and session variables (env.update), which
+	// new panes take over the daemon's own: the daemon may have started
+	// in another session than the app's latest.
+	env map[string]string
+}
+
+func (d *Daemon) currentTheme() *terminal.Theme {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.theme
+}
+
+// envList is env as KEY=value.
+func (d *Daemon) envList() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []string
+	for k, v := range d.env {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 // Run runs the daemon until it is stopped, or idle for a while.
@@ -103,7 +132,8 @@ func Start(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
-		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now()}
+		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
+		started: time.Now(), env: map[string]string{}}
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(session.Info, session.Status) { d.changed() }
@@ -112,7 +142,14 @@ func Start(opts Options) (*Daemon, error) {
 	}
 	os.MkdirAll(filepath.Dir(opts.Socket), 0o700)
 	var err error
-	if d.lock, err = lock(opts.Socket + ".lock"); err != nil {
+	d.lock, err = lock(opts.Socket + ".lock")
+	// A successor (OMATERM_TAKEOVER=1) waits for the daemon it replaces
+	// to save its sessions and let go.
+	for deadline := time.Now().Add(15 * time.Second); err != nil && os.Getenv("OMATERM_TAKEOVER") == "1" && time.Now().Before(deadline); {
+		time.Sleep(100 * time.Millisecond)
+		d.lock, err = lock(opts.Socket + ".lock")
+	}
+	if err != nil {
 		return nil, ctl.ErrRunning
 	}
 	srv, err := ctl.Listen(opts.Socket, d, opts.Version)
@@ -125,6 +162,9 @@ func Start(opts Options) (*Daemon, error) {
 	go func() { <-d.quit; cancel() }()
 	go d.reg.Run(ctx)
 	go d.loop(ctx)
+	if opts.Restore {
+		d.restore()
+	}
 	go func() {
 		for {
 			select {
@@ -237,12 +277,9 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if pn := d.reg.Get(p.ID); pn != nil {
 			return pn.Info(), nil
 		}
-		d.mu.Lock()
-		th := d.theme
-		d.mu.Unlock()
 		pn, err := d.reg.Start(session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, Dir: p.Dir,
-			Command: p.Command, Exec: p.Exec, Env: p.Env, Cols: p.Cols, Rows: p.Rows, History: p.History,
-			Theme: th})
+			Command: p.Command, Exec: p.Exec, Env: append(d.envList(), p.Env...), Cols: p.Cols, Rows: p.Rows, History: p.History,
+			Theme: d.currentTheme()})
 		if err != nil {
 			return nil, err
 		}
@@ -251,6 +288,10 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 	case "pane.close":
 		var p proto.IDParams
 		json.Unmarshal(raw, &p)
+		if !d.appAttached() {
+			// The omaterm command's: the pane goes from its session too.
+			return d.closePane(p.ID)
+		}
 		d.closeAttachments(p.ID)
 		d.reg.Remove(p.ID)
 		os.Remove(d.historyPath(p.ID))
@@ -313,8 +354,29 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 	case "shutdown":
 		go d.Stop()
 		return true, nil
+	case "env.update":
+		var env map[string]string
+		json.Unmarshal(raw, &env)
+		d.mu.Lock()
+		for k, v := range env {
+			if envShared(k) {
+				d.env[k] = v
+			}
+		}
+		d.mu.Unlock()
+		return true, nil
+	case "clients":
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		c := proto.Clients{Apps: len(d.subs), Attached: map[string]int{}}
+		for id, ats := range d.attached {
+			if len(ats) > 0 {
+				c.Attached[id] = len(ats)
+			}
+		}
+		return c, nil
 	}
-	return nil, proto.Errorf(proto.CodeUsage, "no method "+method)
+	return d.handleOffline(ctx, method, raw)
 }
 
 // Subscribe adds a subscriber of the panes: an event "panes" with every

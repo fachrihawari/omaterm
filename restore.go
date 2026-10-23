@@ -9,7 +9,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"time"
 
 	"omaterm/internal/agent"
 	"omaterm/internal/paths"
@@ -51,14 +50,7 @@ func (a *appState) restoreOptions(id string) (history []byte, command []string) 
 	if !a.settings.RestoreSessions {
 		return nil, nil
 	}
-	path := historyPath(id)
-	if h, err := os.ReadFile(path); err == nil && len(h) > 0 {
-		when := time.Now()
-		if st, err := os.Stat(path); err == nil {
-			when = st.ModTime()
-		}
-		history = append(h, []byte("\x1b[2m── restored · session ended "+when.Format("Mon Jan 2 15:04")+" ──\x1b[0m\r\n")...)
-	}
+	history = session.RestoredHistory(historyPath(id))
 	if a.settings.ResumeAgents {
 		command = agent.ResumeCommand(a.paneAgents[id])
 	}

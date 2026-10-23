@@ -90,7 +90,9 @@ Report blocked only when you truly cannot go on without them.
 
 - Close what you started when it is done: ` + "`omaterm close <target>`" + `.
 - Never type into a pane you did not start unless the user asked.
-- Exit status 3 means no such target, 4 that omaterm is not running.
+- Exit status 3 means no such target, 4 that omaterm is not running, or
+  that its window is closed for what needs it (focus, browser, do); the
+  sessions keep running, and the rest works, while the window is closed.
 `
 
 func skillCmd(args []string) error {

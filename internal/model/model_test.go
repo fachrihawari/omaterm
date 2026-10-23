@@ -10,7 +10,7 @@ import (
 func TestMigrateV1(t *testing.T) {
 	n := 0
 	NewID = func() string { n++; return "id" + strconv.Itoa(n) }
-	defer func() { NewID = func() string { return "" } }()
+	defer func() { NewID = RandomID }()
 	path := filepath.Join(t.TempDir(), "state.json")
 	os.WriteFile(path, []byte(`{"projects":[{"Name":"a","Path":"/a","Tabs":["dev","tests"]},{"Name":"b","Path":"/b","Tabs":["dev"]}],"active":1}`), 0o644)
 	st, err := Load(path)

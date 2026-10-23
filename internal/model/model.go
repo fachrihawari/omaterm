@@ -8,6 +8,7 @@
 package model
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -98,9 +99,20 @@ type v1 struct {
 	Active int `json:"active"`
 }
 
-// NewID returns a short random id; set by the app (main.newID) so ids
-// come from one place.
-var NewID = func() string { return "" }
+// NewID returns a short random id for a project, session or pane: short
+// enough to type as a CLI target, from an alphabet without look-alikes.
+var NewID = RandomID
+
+// RandomID is NewID's default.
+func RandomID() string {
+	const alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+	var b [7]byte
+	rand.Read(b[:])
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b[:])
+}
 
 // Load reads a state file, migrating a version 1 one: each project gets an
 // id, and each of its tab names becomes a session with one pane.

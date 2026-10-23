@@ -30,7 +30,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "daemon", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "clients", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -69,7 +69,7 @@ func Run(args []string) int {
 		return 2
 	case errors.Is(err, errNotFound) || proto.CodeOf(err) == proto.CodeNotFound:
 		return 3
-	case errors.Is(err, errUnreachable) || errors.Is(err, client.ErrUnreachable):
+	case errors.Is(err, errUnreachable) || errors.Is(err, client.ErrUnreachable) || proto.CodeOf(err) == proto.CodeAppClosed:
 		return 4
 	}
 	return 1
@@ -123,6 +123,11 @@ func parse(args []string, valued, boolean map[string]string) (*flags, error) {
 
 func connect() (*client.Client, error) {
 	c, err := client.Connect()
+	if errors.Is(err, client.ErrUnreachable) {
+		// The window is closed: the session daemon, which runs the
+		// sessions, answers for them.
+		c, err = client.Dial(paths.DaemonSocketPath())
+	}
 	if err != nil {
 		if errors.Is(err, client.ErrUnreachable) {
 			return nil, fmt.Errorf("%w: omaterm is not running", errUnreachable)
@@ -160,6 +165,8 @@ func run(args []string) error {
 		return cliCmd(args)
 	case "daemon":
 		return daemonCmd(args)
+	case "clients":
+		return clientsCmd(args)
 	}
 
 	c, err := connect()
@@ -935,12 +942,17 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm skill setup|status|show|remove [--agent claude|codex|pi|opencode]
   omaterm cli install|uninstall|status
   omaterm daemon status|stop|restart|install-service|uninstall-service
+  omaterm clients [--json]               who the session daemon serves
   omaterm do <action>, omaterm actions
   omaterm version
 
 A target is a session or pane id (a prefix works) or a session's name; in
 an omaterm pane it defaults to the pane itself ($OMATERM_PANE).
 
+With the window closed, the session daemon answers for the sessions;
+focus, browser and do need the window.
+
 Exit status: 0 ok, 1 failed, 2 bad usage, 3 no such target, 4 omaterm
-not running; wait --exit and --wait exit with the command's status.
+not running (or the window is closed, for what needs it); wait --exit and
+--wait exit with the command's status.
 `

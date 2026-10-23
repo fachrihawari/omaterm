@@ -61,6 +61,9 @@ const (
 	CodeRemoteControl = "remote_control"
 	CodeBusy          = "busy"
 	CodeTimeout       = "timeout"
+	// CodeAppClosed is a call only the window can answer, made while it
+	// is closed: the session daemon answers the rest.
+	CodeAppClosed = "app_closed"
 )
 
 // Error is a call's error with a code.
@@ -251,4 +254,11 @@ type BrowserParams struct {
 type BrowserResult struct {
 	Text string `json:"text,omitempty"`
 	PNG  []byte `json:"png,omitempty"`
+}
+
+// Clients are who the session daemon serves: the apps following it, and
+// the clients showing each pane.
+type Clients struct {
+	Apps     int            `json:"apps"`
+	Attached map[string]int `json:"attached"`
 }

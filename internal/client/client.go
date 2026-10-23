@@ -35,6 +35,15 @@ func Connect() (*Client, error) {
 	return Dial(paths.SocketPath())
 }
 
+// RefusedError is a server's refusal of the hello: another protocol's,
+// as a session daemon of an older omaterm. Welcome tells its process.
+type RefusedError struct{ Welcome proto.Welcome }
+
+func (e *RefusedError) Error() string { return e.Welcome.Error }
+
+// helloVersion is the protocol the client speaks (tests change it).
+var helloVersion = proto.Version
+
 // Dial connects to the socket at path.
 func Dial(path string) (*Client, error) {
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
@@ -43,7 +52,7 @@ func Dial(path string) (*Client, error) {
 	}
 	c := &Client{conn: conn, enc: json.NewEncoder(conn), calls: map[int64]chan proto.Message{},
 		events: make(chan proto.Message, 64), closed: make(chan struct{})}
-	if err := c.enc.Encode(proto.Hello{Kind: "control", Version: proto.Version, Client: "omaterm"}); err != nil {
+	if err := c.enc.Encode(proto.Hello{Kind: "control", Version: helloVersion, Client: "omaterm"}); err != nil {
 		conn.Close()
 		return nil, ErrUnreachable
 	}
@@ -61,7 +70,7 @@ func Dial(path string) (*Client, error) {
 	}
 	if c.Welcome.Error != "" {
 		conn.Close()
-		return nil, errors.New(c.Welcome.Error)
+		return nil, &RefusedError{Welcome: c.Welcome}
 	}
 	go c.read(r)
 	return c, nil

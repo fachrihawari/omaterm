@@ -98,6 +98,7 @@ func (a *appState) view(c *ui.Context) {
 		}
 	}
 
+	a.daemonDialog(c)
 	a.renderOverlays(c)
 }
 
@@ -121,7 +122,11 @@ func (a *appState) mainColumn(c *ui.Context) {
 		a.tabBar(c)
 		ui.Row(c).Grow(1).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Padding(0, gap, gap, left).Gap(gap).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
-				a.content(c)
+				a.daemonBanner(c)
+				// No pane starts until the user chose what runs it.
+				if a.daemonRefusedOpen == nil {
+					a.content(c)
+				}
 			})
 			if a.inspectorVisible {
 				card := ui.Column(c).Width(a.inspectorW).Shrink(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)

@@ -68,7 +68,8 @@ func (a *appState) openFromArgs(args []string, wd string) {
 func main() {
 	// The session daemon the app starts: no window, the panes' shells.
 	if len(os.Args) > 1 && os.Args[1] == "__daemon" {
-		err := daemon.Run(daemon.Options{Version: appVersion(), Serve: os.Getenv("OMATERM_SERVICE") != ""})
+		err := daemon.Run(daemon.Options{Version: appVersion(),
+			Serve: os.Getenv("OMATERM_SERVICE") != "", Restore: os.Getenv("OMATERM_SERVICE") != ""})
 		if err != nil {
 			log.Print(err)
 			os.Exit(1)

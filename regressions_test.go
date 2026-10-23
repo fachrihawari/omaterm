@@ -499,3 +499,35 @@ func TestInfoCardLongBranch(t *testing.T) {
 		t.Errorf("branch label runs past the window: %.1f", branch.X+branch.W)
 	}
 }
+
+// While the app asks whether to restart a session daemon it cannot use,
+// no pane starts: answering decides what runs them.
+func TestRefusedDaemonHoldsPanes(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	open := true
+	a.daemonRefusedOpen, a.daemonRefusedPID = &open, -1
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if a.panes.Len() != 0 {
+		t.Fatalf("%d panes started behind the dialog", a.panes.Len())
+	}
+	a.daemonRefusedOpen = nil
+	tr.Frame()
+	if a.panes.Len() == 0 {
+		t.Fatal("no pane started once answered")
+	}
+}
+
+// The home folder lists no processes, and says so instead of loading for
+// good.
+func TestHomeProcessesLoad(t *testing.T) {
+	a := newApp()
+	a.win = nil
+	home, _ := os.UserHomeDir()
+	a.workspace = home
+	a.refreshProcesses()
+	if a.processes == nil || a.processWarn == "" {
+		t.Fatalf("processes %v, warn %q: want listed (empty) with a warning", a.processes, a.processWarn)
+	}
+}

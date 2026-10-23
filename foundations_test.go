@@ -155,3 +155,28 @@ func TestHomeProjectKeepsSessions(t *testing.T) {
 		t.Fatalf("tabs = %+v, want the saved session", a.tabs)
 	}
 }
+
+// The omaterm command sees the sessions of every project, the ones not
+// shown this run too.
+func TestStateListsUnshownProjects(t *testing.T) {
+	cfg, one, two := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	st := map[string]any{"version": 2, "activeProject": "pone001",
+		"projects": []map[string]any{{"id": "pone001", "name": "one", "dir": one}, {"id": "ptwo001", "name": "two", "dir": two}},
+		"sessions": []map[string]any{
+			{"id": "sone001", "project": "pone001", "layout": map[string]any{"pane": "aone001"}, "panes": []map[string]any{{"id": "aone001"}}},
+			{"id": "stwo001", "project": "ptwo001", "layout": map[string]any{"pane": "atwo001"}, "panes": []map[string]any{{"id": "atwo001"}}}}}
+	data, _ := json.Marshal(st)
+	os.MkdirAll(filepath.Join(cfg, "omaterm"), 0o755)
+	if err := os.WriteFile(filepath.Join(cfg, "omaterm", "state.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp()
+	got := map[string]bool{}
+	for _, s := range a.protoState(time.Now()).Sessions {
+		got[s.ID] = true
+	}
+	if !got["sone001"] || !got["stwo001"] {
+		t.Fatalf("sessions %v, want both projects'", got)
+	}
+}

@@ -21,8 +21,6 @@ type projectWS struct {
 	editors    map[string]*openFile
 }
 
-func init() { model.NewID = newID }
-
 // stashWorkspace keeps the shown project's workspace for its return.
 func (a *appState) stashWorkspace() {
 	if a.wsOwner == "" {
@@ -110,13 +108,22 @@ func (a *appState) workspaceTabs(p *project) *[]topTab {
 	return &w.tabs
 }
 
-// projectTabs returns a project's tabs, shown or not.
+// projectTabs returns a project's tabs, shown or not: a project not
+// shown this run gets its workspace from its saved sessions, so the
+// sidebar lists them; with none saved, it has none yet.
 func (a *appState) projectTabs(id string) []topTab {
 	if id == a.wsOwner {
 		return a.tabs
 	}
 	if w := a.ws[id]; w != nil {
 		return w.tabs
+	}
+	if len(a.saved[id]) > 0 {
+		for i := range a.projects {
+			if a.projects[i].ID == id {
+				return *a.workspaceTabs(&a.projects[i])
+			}
+		}
 	}
 	return nil
 }

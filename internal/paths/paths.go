@@ -37,6 +37,9 @@ func ConfigDir() string {
 	return filepath.Join(dir, Name())
 }
 
+// StateFile is state.json: the projects and their sessions.
+func StateFile() string { return filepath.Join(ConfigDir(), "state.json") }
+
 // StateDir holds what the app keeps but nobody edits: the omaterm command
 // panes run (bin/), pane histories (sessions/), logs.
 func StateDir() string {

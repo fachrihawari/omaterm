@@ -6,11 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"omaterm/internal/client"
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
+	"omaterm/internal/proto"
 )
 
 // daemonCmd looks after the session daemon, which runs the sessions'
@@ -54,7 +56,7 @@ func daemonCmd(args []string) error {
 		}
 		return daemon.StartProcess()
 	case "serve":
-		return daemon.Run(daemon.Options{Serve: true, Version: Version})
+		return daemon.Run(daemon.Options{Serve: true, Restore: true, Version: Version})
 	case "install-service":
 		return installService()
 	case "uninstall-service":
@@ -130,5 +132,40 @@ func installService() error {
 	}
 	fmt.Printf("installed %s\n", shortDir(path))
 	fmt.Println("sessions now survive logging out once lingering is on: loginctl enable-linger")
+	return nil
+}
+
+// clientsCmd tells who the session daemon serves: the app, if open, and
+// the clients showing each pane.
+func clientsCmd(args []string) error {
+	f, err := parse(args, nil, map[string]string{"json": "json"})
+	if err != nil {
+		return err
+	}
+	c, err := client.Dial(paths.DaemonSocketPath())
+	if err != nil {
+		return fmt.Errorf("%w: the session daemon is not running", errUnreachable)
+	}
+	defer c.Close()
+	var cl proto.Clients
+	if err := c.Call("clients", nil, &cl); err != nil {
+		return err
+	}
+	if f.set["json"] {
+		return printJSON(cl)
+	}
+	app := "closed"
+	if cl.Apps > 0 {
+		app = "open"
+	}
+	fmt.Printf("app: %s\n", app)
+	ids := make([]string, 0, len(cl.Attached))
+	for id := range cl.Attached {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		fmt.Printf("pane %s: %d shown\n", id, cl.Attached[id])
+	}
 	return nil
 }

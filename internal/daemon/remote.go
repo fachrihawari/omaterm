@@ -34,6 +34,9 @@ type Remote struct {
 	OnLost func(ids []string)
 	// Spawn starts a daemon when none answers: StartProcess.
 	Spawn func() error
+	// OnConnection tells that the connection to the daemon went
+	// (reconnecting) or came back.
+	OnConnection func(reconnecting bool)
 
 	mu      sync.Mutex
 	c       *client.Client
@@ -53,7 +56,7 @@ var _ session.Host = (*Remote)(nil)
 func Connect(start bool) (*Remote, error) {
 	socket := paths.DaemonSocketPath()
 	c, err := client.Dial(socket)
-	if err != nil && start {
+	if errors.Is(err, client.ErrUnreachable) && start {
 		if err = StartProcess(); err != nil {
 			return nil, err
 		}
@@ -80,7 +83,7 @@ func Dial(socket string) (*Remote, error) {
 
 func newRemote(c *client.Client, socket string) (*Remote, error) {
 	r := &Remote{socket: socket, infos: map[string]session.Info{}, changed: map[string]chan struct{}{},
-		handles: map[string]*remotePane{}, any: make(chan struct{}, 1), Spawn: StartProcess}
+		handles: map[string]*remotePane{}, any: make(chan struct{}, 1), Spawn: func() error { return startProcess(true) }}
 	if err := r.use(c); err != nil {
 		return nil, err
 	}
@@ -99,6 +102,15 @@ func (r *Remote) use(c *client.Client) error {
 		c.Close()
 		return err
 	}
+	// New panes see the display and session bus of the app's login
+	// session, which may be newer than the daemon's.
+	env := map[string]string{}
+	for _, k := range SharedEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			env[k] = v
+		}
+	}
+	c.Call("env.update", env, nil)
 	r.mu.Lock()
 	r.c, r.version = c, c.Welcome.App
 	r.mu.Unlock()
@@ -132,6 +144,10 @@ func (r *Remote) Restart() error {
 // reconnect connects to the daemon again once the connection ends,
 // starting one when none runs, for up to 10 seconds.
 func (r *Remote) reconnect() {
+	if r.OnConnection != nil {
+		r.OnConnection(true)
+		defer r.OnConnection(false)
+	}
 	var lost []string
 	r.mu.Lock()
 	for id := range r.infos {
@@ -178,6 +194,12 @@ func (r *Remote) reconnect() {
 // executable with __daemon, in a session of its own, so it outlives the
 // app.
 func StartProcess() error {
+	return startProcess(false)
+}
+
+// startProcess starts the daemon; a takeover waits for the one before to
+// let go of the lock.
+func startProcess(takeover bool) error {
 	if ServiceInstalled() && systemctl("start", ServiceName()) == nil {
 		return nil
 	}
@@ -207,6 +229,9 @@ func StartProcess() error {
 	}
 	defer logf.Close()
 	cmd := exec.Command(exe, "__daemon")
+	if takeover {
+		cmd.Env = append(os.Environ(), "OMATERM_TAKEOVER=1")
+	}
 	cmd.Dir = paths.Home()
 	cmd.Stdout, cmd.Stderr = logf, logf
 	detach(cmd)

@@ -14,6 +14,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
+	"omaterm/internal/paths"
 	"omaterm/internal/session"
 	"omaterm/service"
 )
@@ -275,8 +276,15 @@ type appState struct {
 	// queuedToasts are messages for the next frame, from where there is
 	// no ui.Context.
 	queuedToasts []string
-	host         *localHost
-	git          *gitWatch
+	// daemonStale is the version of the session daemon the sessions run
+	// in, when not this one's; daemonRefused* ask to restart a daemon of
+	// another protocol.
+	daemonStale        string
+	daemonReconnecting bool
+	daemonRefusedOpen  *bool
+	daemonRefusedPID   int
+	host               *localHost
+	git                *gitWatch
 
 	// The panes' layout: handles of keyed elements, a divider being
 	// dragged, the drop zone last shown, the drop preview's target and
@@ -417,13 +425,7 @@ func newApp() *appState {
 	return a
 }
 
-func stateFilePath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		dir = os.ExpandEnv("$HOME/.config")
-	}
-	return filepath.Join(dir, "omaterm", "state.json")
-}
+func stateFilePath() string { return paths.StateFile() }
 
 // legacyStateFilePath is where the app kept the project list while it was
 // called oterm. Renaming the app must not lose it.
@@ -624,11 +626,22 @@ func (a *appState) refreshActiveRepo() {
 }
 
 // refreshProcesses loads the project's processes and ports.
+// listProcesses lists a project's processes, never nil once listed: the
+// Info panel shows nil as still loading, and a folder too broad to list
+// (the home folder) lists none.
+func listProcesses(workspace string) ([]service.Process, error) {
+	procs, err := service.ListProjectProcesses(workspace)
+	if procs == nil {
+		procs = []service.Process{}
+	}
+	return procs, err
+}
+
 func (a *appState) refreshProcesses() {
 	workspace := a.workspace
 	// In test mode (no window) run synchronously to avoid goroutine races.
 	if a.win == nil {
-		procs, err := service.ListProjectProcesses(workspace)
+		procs, err := listProcesses(workspace)
 		ports, _ := service.ListProjectPorts(procs)
 		a.processes = procs
 		a.ports = ports
@@ -645,7 +658,7 @@ func (a *appState) refreshProcesses() {
 	}
 	win := a.win
 	a.processJob.Run(func(ctx context.Context) error {
-		procs, err := service.ListProjectProcesses(workspace)
+		procs, err := listProcesses(workspace)
 		ports, _ := service.ListProjectPorts(procs)
 		win.Update(func() {
 			a.processes = procs

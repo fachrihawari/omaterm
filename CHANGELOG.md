@@ -47,12 +47,16 @@ read, click, type into and screenshot it with `omaterm browser`.
 ### Sessions come back, and keep running
 
 Sessions now keep running when you close the window, and the next launch
-shows them as they went on. A daemon runs them; `omaterm daemon status`
-shows it, and `omaterm daemon install-service` keeps it running across
-logins as a systemd user service. If the daemon has to restart, for
-example after an update ("Restart Session Daemon" in the palette),
-sessions come back with their scrollback, and agents resume their
-conversation.
+shows them as they went on. A session daemon runs them, and answers the
+omaterm command while the window is closed: agents and scripts can still
+make, split, drive and wait on sessions, and the window shows what they
+did when it opens. `omaterm daemon status` shows the daemon, `omaterm
+clients` who it serves, and `omaterm daemon install-service` runs it as a
+systemd user service, which brings your sessions back when you log in
+(with `loginctl enable-linger`, they keep running while you are logged
+out). After an update, a banner offers to restart your sessions in the
+new version; they come back with their scrollback, and agents resume
+their conversation.
 
 ### What did that turn change?
 

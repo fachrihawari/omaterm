@@ -18,7 +18,6 @@ import (
 	"omaterm/internal/gitsnap"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
-	"omaterm/internal/pty"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"omaterm/service"
@@ -222,36 +221,14 @@ func (h *localHost) pane(id string) (session.Handle, error) {
 	return p, nil
 }
 
-// waitPane waits for a pane as WaitParams say: until its command ends
-// (Exit), its status is one of Status, or it stops working. A pane that
-// has not started to work gets a moment to, as an agent just prompted.
+// waitPane waits for a pane as WaitParams say (session.Await).
 func waitPane(ctx context.Context, p session.Handle, w proto.WaitParams) (proto.Pane, error) {
 	if w.TimeoutMS > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(w.TimeoutMS)*time.Millisecond)
 		defer cancel()
 	}
-	switch {
-	case w.Exit:
-		info, err := p.Wait(ctx, func(i session.Info) bool { return i.CommandExit != nil || i.Status == session.Exited })
-		return info, timeoutErr(err)
-	case len(w.Status) > 0:
-		info, err := p.Wait(ctx, func(i session.Info) bool {
-			for _, s := range w.Status {
-				if string(i.Status) == s {
-					return true
-				}
-			}
-			return false
-		})
-		return info, timeoutErr(err)
-	}
-	if info := p.Info(); info.Status != session.Working {
-		grace, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-		p.Wait(grace, func(i session.Info) bool { return i.Status == session.Working })
-		cancel()
-	}
-	info, err := p.Wait(ctx, func(i session.Info) bool { return i.Status != session.Working })
+	info, err := session.Await(ctx, p, w.Status, w.Exit)
 	return info, timeoutErr(err)
 }
 
@@ -494,16 +471,16 @@ func (a *appState) findSession(id string) (pi int, tabs *[]topTab, ti int, ok bo
 	return 0, nil, 0, false
 }
 
-// projectTabsPtr is a project's tabs to change, nil for a project not
-// shown this run (whose sessions wait in a.saved).
+// projectTabsPtr is a project's tabs to change, its saved sessions'
+// for a project not shown this run; nil for one with none.
 func (a *appState) projectTabsPtr(p *project) *[]topTab {
 	if p.ID == a.wsOwner {
 		return &a.tabs
 	}
-	if w := a.ws[p.ID]; w != nil {
-		return &w.tabs
+	if a.ws[p.ID] == nil && len(a.saved[p.ID]) == 0 {
+		return nil
 	}
-	return nil
+	return a.workspaceTabs(p)
 }
 
 // cliSplit puts a new pane beside one, and starts it.
@@ -688,38 +665,7 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 	if !agent.SessionIDRe.MatchString(p.Session) {
 		return nil, proto.Errorf(proto.CodeUsage, "bad session id")
 	}
-	shells := map[int]session.Handle{}
-	a.panes.Each(func(pane session.Handle) {
-		if pid := pane.Info().PID; pid > 0 {
-			shells[pid] = pane
-		}
-	})
-	var found session.Handle
-	for pid, n := p.PID, 0; pid > 1 && n < 64; pid, n = pty.ProcParent(pid), n+1 {
-		if pane := shells[pid]; pane != nil {
-			found = pane
-			break
-		}
-	}
-	away := false
-	if found == nil {
-		// The hook ran away from its pane, as OpenCode's service runs it:
-		// the pane running that agent without a conversation yet, the one
-		// in the same directory first.
-		var cands []session.Handle
-		a.panes.Each(func(pane session.Handle) {
-			i := pane.Info()
-			if i.Agent == p.Agent && i.AgentSession == nil {
-				cands = append(cands, pane)
-			}
-		})
-		for _, c := range cands {
-			if found == nil || p.Dir != "" && c.Info().WorkDir() == p.Dir {
-				found = c
-			}
-		}
-		away = found != nil
-	}
+	found, away := session.FindAgentPane(a.panes, p.PID, p.Agent, p.Dir)
 	if found == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 	}
@@ -780,37 +726,6 @@ func (h *localHost) handleGit(ctx context.Context, method string, raw json.RawMe
 	if err != nil {
 		return nil, err, true
 	}
-	info := pane.Info()
-	base := p.Base
-	if base == "" {
-		base = gitsnap.BaseHead
-	}
-	turn := ""
-	if info.Turn != nil {
-		turn = info.Turn.Tree
-	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	r, err := gitsnap.Open(ctx, info.WorkDir())
-	if err != nil {
-		return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.Pane+" is not in a git repository"), true
-	}
-	rev, _, err := r.Base(ctx, base, turn)
-	if err != nil {
-		return nil, err, true
-	}
-	if method == "git.changes" {
-		files, err := r.Changes(ctx, rev, "")
-		return files, err, true
-	}
-	paths := make([]string, 0, len(p.Paths))
-	for _, path := range p.Paths {
-		rel, err := filepath.Rel(r.Root, path)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return nil, proto.Errorf(proto.CodeUsage, path+" is outside the repository"), true
-		}
-		paths = append(paths, filepath.ToSlash(rel))
-	}
-	patch, err := r.Patch(ctx, rev, "", paths...)
-	return proto.ReadResult{Text: patch}, err, true
+	v, err := gitsnap.Answer(ctx, method, p, pane.Info())
+	return v, err, true
 }
