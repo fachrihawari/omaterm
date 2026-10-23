@@ -71,6 +71,7 @@ func (a *appState) syncStatus() {
 	prev := a.status
 	a.status = next
 	a.statusChanged(prev, next)
+	a.offerAgentSetup(next)
 	if a.host != nil {
 		a.host.changed()
 	}
@@ -87,8 +88,12 @@ func (a *appState) syncStatus() {
 			a.win.SetTitle(t)
 		}
 	}
+	// What a restart needs is saved as it changes, not only as the window
+	// closes, which a logout or a crash may skip: the folder, and the
+	// agent to resume and its conversation.
 	for id, n := range next {
-		if prev[id].Dir != n.Dir {
+		p := prev[id]
+		if p.Dir != n.Dir || p.Agent != n.Agent || (p.AgentSession == nil) != (n.AgentSession == nil) {
 			a.saveSoon()
 			break
 		}

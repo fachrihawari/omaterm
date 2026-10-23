@@ -281,6 +281,12 @@ type appState struct {
 	// another protocol.
 	daemonStale        string
 	daemonReconnecting bool
+	// agentSetupOffer is the agent seen without its hook, whose banner
+	// offers the agent integration; agentSetupAsked, that it was answered
+	// (ui.json). hookChecked caches whether each agent's hook is in.
+	agentSetupOffer string
+	agentSetupAsked bool
+	hookChecked     map[string]bool
 	// paneShown is when each pane was last shown: a daemon pane hidden
 	// long lets go of its terminal in the app (detachHidden).
 	paneShown         map[string]time.Time
@@ -390,6 +396,7 @@ func newApp() *appState {
 		panes:            session.NewLocalHost(),
 		paneFailed:       map[string]bool{},
 		paneShown:        map[string]time.Time{},
+		hookChecked:      map[string]bool{},
 		git:              newGitWatch(),
 		arrived:          map[string]bool{},
 		notified:         map[string]time.Time{},

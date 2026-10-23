@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater/native"
@@ -45,13 +46,20 @@ func (a *appState) startControl() {
 	a.ctl = s
 }
 
-// openFromArgs opens the folder an `omaterm <dir>` names as a project.
+// openFromArgs opens the folder an `omaterm <dir>` names as a project, or
+// shows the session `omaterm --session=<id>` names.
 func (a *appState) openFromArgs(args []string, wd string) {
 	if a.win != nil {
 		a.win.Show()
 		a.win.Focus()
 	}
 	if len(args) == 0 {
+		return
+	}
+	// --session=<id> shows a session: a notification of the session
+	// daemon's, clicked while the window was closed, opens the app so.
+	if id, ok := strings.CutPrefix(args[0], "--session="); ok {
+		a.showSession(id)
 		return
 	}
 	dir := args[0]

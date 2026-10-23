@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDetect(t *testing.T) {
 	cases := []struct {
@@ -40,12 +43,24 @@ func TestResumeCommand(t *testing.T) {
 	if got := ResumeCommand(&Session{"codex", "abc"}); got[1] != "resume" {
 		t.Errorf("codex: %q", got)
 	}
+	// No id, or one that is no id: the folder's last conversation, the id
+	// never reaching the command line.
 	for _, bad := range []string{"a;rm -rf ~", "$(x)", "", string(make([]byte, 129))} {
-		if ResumeCommand(&Session{"claude", bad}) != nil {
-			t.Errorf("accepted %q", bad)
+		if got := ResumeCommand(&Session{"claude", bad}); strings.Join(got, " ") != "claude --continue" {
+			t.Errorf("claude with %q: %q", bad, got)
 		}
 	}
-	if ResumeCommand(&Session{"aider", "abc"}) != nil || ResumeCommand(nil) != nil {
+	for agent, want := range map[string]string{
+		"codex": "codex resume --last", "opencode": "opencode --continue", "pi": "pi --continue",
+	} {
+		if got := ResumeCommand(&Session{Agent: agent}); strings.Join(got, " ") != want {
+			t.Errorf("%s without an id: %q, want %q", agent, got, want)
+		}
+	}
+	if got := ResumeCommand(&Session{"opencode", "ses_9"}); strings.Join(got, " ") != "opencode --session ses_9" {
+		t.Errorf("opencode: %q", got)
+	}
+	if ResumeCommand(&Session{"aider", "abc"}) != nil || ResumeCommand(&Session{Agent: "aider"}) != nil || ResumeCommand(nil) != nil {
 		t.Error("no resume for unknown agents")
 	}
 }

@@ -30,6 +30,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
+	"omaterm/internal/notice"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
@@ -50,6 +51,9 @@ type Options struct {
 	IdleExit time.Duration
 	// Version is the build's, which the app compares with its own.
 	Version string
+	// Notifier shows the desktop notifications the daemon sends while no
+	// app follows it: notify-send when nil.
+	Notifier Notifier
 	// Restore starts the sessions of state.json at once, from their
 	// scrollback, as a service does at login: no app is there to.
 	Restore bool
@@ -65,6 +69,7 @@ type Daemon struct {
 	theme   *terminal.Theme
 	lock    *os.File
 	started time.Time
+	limit   notice.Limiter
 	// stateMu orders the changes to state.json the daemon makes while no
 	// app runs.
 	stateMu sync.Mutex
@@ -140,9 +145,13 @@ func Start(opts Options) (*Daemon, error) {
 		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}}
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
-	d.reg.OnStatus = func(session.Info, session.Status) { d.changed() }
+	d.reg.OnStatus = func(info session.Info, prev session.Status) {
+		d.changed()
+		d.notifyStatus(info, prev)
+	}
 	d.reg.OnNotice = func(id, title, body string) {
 		d.broadcast(proto.Message{Event: "notice", Result: mustJSON(map[string]string{"pane": id, "title": title, "body": body})})
+		d.notifyProgram(id, title, body)
 	}
 	os.MkdirAll(filepath.Dir(opts.Socket), 0o700)
 	var err error

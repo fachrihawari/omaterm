@@ -6,35 +6,24 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"omaterm/internal/notice"
 	"omaterm/internal/session"
 )
 
-// noticeKind is why a session notifies.
-type noticeKind int
+// noticeKind is why a session notifies (internal/notice, which the
+// session daemon follows too while the window is closed).
+type noticeKind = notice.Kind
 
 const (
-	noticeNone noticeKind = iota
-	noticeWaiting
-	noticeFailed
-	noticeDone
+	noticeNone    = notice.None
+	noticeWaiting = notice.Waiting
+	noticeFailed  = notice.Failed
+	noticeDone    = notice.Done
 )
 
-// noticeFor tells whether a pane's change is worth a notification: it
-// started waiting for the user, failed, or finished work unseen, and the
-// user is not looking at it.
+// noticeFor tells whether a pane's change is worth a notification.
 func noticeFor(prev, next session.Info, here bool, prefs NotifySettings) noticeKind {
-	if here || prev.ID == "" {
-		return noticeNone
-	}
-	switch {
-	case next.Status == session.Waiting && prev.Status != session.Waiting && prefs.Waiting:
-		return noticeWaiting
-	case next.Status == session.Failed && prev.Status != session.Failed && prefs.Error:
-		return noticeFailed
-	case next.Status == session.Idle && prev.Status == session.Working && next.Unread && prefs.Done:
-		return noticeDone
-	}
-	return noticeNone
+	return notice.For(prev, next, here, notice.Prefs(prefs))
 }
 
 // maybeNotify notifies of a pane's change while the user looks elsewhere,
@@ -49,11 +38,7 @@ func (a *appState) maybeNotify(prev, next session.Info) {
 		return
 	}
 	a.notified[next.Session] = nowFunc()
-	body := next.Message
-	if body == "" {
-		body = map[noticeKind]string{noticeWaiting: "Needs your input", noticeFailed: "Failed", noticeDone: "Finished"}[kind]
-	}
-	a.notify(next.Session, a.sessionLabel(next.Session), body)
+	a.notify(next.Session, a.sessionLabel(next.Session), notice.Body(kind, next.Message))
 }
 
 // programNotice passes on a desktop notification a program sent (OSC 9,

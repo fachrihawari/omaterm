@@ -58,6 +58,16 @@ out). After an update, a banner offers to restart your sessions in the
 new version; they come back with their scrollback, and agents resume
 their conversation.
 
+### Agents pick up where they left off
+
+After a restart, a logout or a reboot, a pane that ran Claude Code, Codex,
+OpenCode or Pi starts it again in its own conversation. With the agent
+integration set up (`omaterm skill setup`, or Set Up in the banner that
+offers it the first time an agent runs), that is its exact conversation;
+without it, the last conversation of the pane's folder. And when an agent
+needs you while omaterm's window is closed, a desktop notification still
+tells you: Open shows its session.
+
 ### What did that turn change?
 
 The Changes tab (Ctrl+Shift+A) shows what an agent changed in its last

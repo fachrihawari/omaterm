@@ -116,6 +116,7 @@ func TestShots(t *testing.T) {
 		{"sidebar-sessions", shotStatuses, nil},
 		{"changes", shotChanges, nil},
 		{"daemon-banner", func(a *appState) { a.daemonStale = "0.7.0" }, nil},
+		{"agent-setup-banner", func(a *appState) { a.agentSetupOffer = "opencode" }, nil},
 		{"daemon-dialog", func(a *appState) { open := true; a.daemonRefusedOpen = &open }, nil},
 		{"sessions-light", func(a *appState) { a.applyTheme(shotTheme(t, "lupine")); shotStatuses(a) }, nil},
 		{"theme-tokyo", func(a *appState) { a.applyTheme(shotTheme(t, "tokyo-night")) }, nil},

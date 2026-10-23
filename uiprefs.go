@@ -16,6 +16,7 @@ type uiPrefs struct {
 	InspectorTab     *int    `json:"inspectorTab,omitempty"`
 	DiffSplit        *bool   `json:"diffSplit,omitempty"`
 	FontSize         float32 `json:"fontSize,omitempty"`
+	AgentSetupAsked  bool    `json:"agentSetupAsked,omitempty"`
 }
 
 func uiPrefsPath() string { return filepath.Join(filepath.Dir(stateFilePath()), "ui.json") }
@@ -51,6 +52,7 @@ func (a *appState) loadUIPrefs() {
 	if u.FontSize >= 8 && u.FontSize <= 32 {
 		a.fontSize = u.FontSize
 	}
+	a.agentSetupAsked = u.AgentSetupAsked
 }
 
 // saveUIPrefs writes ui.json, as the window closes.
@@ -62,6 +64,7 @@ func (a *appState) saveUIPrefs() {
 		SidebarVisible: &a.sidebarVisible, SidebarW: a.sidebarW,
 		InspectorVisible: &a.inspectorVisible, InspectorW: a.inspectorW,
 		InspectorTab: &a.inspectorTab, DiffSplit: &a.diffSplit, FontSize: a.fontSize,
+		AgentSetupAsked: a.agentSetupAsked,
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {

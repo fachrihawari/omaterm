@@ -126,18 +126,29 @@ type Session struct {
 var SessionIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // ResumeCommand is the command that resumes an agent's conversation, nil
-// for none.
+// for none. Without its id (the agent's hook never told it, or it is no
+// id), the agent continues the last conversation in the pane's folder,
+// which the command runs in.
 func ResumeCommand(s *Session) []string {
-	if s == nil || !SessionIDRe.MatchString(s.ID) {
+	if s == nil {
+		return nil
+	}
+	if SessionIDRe.MatchString(s.ID) {
+		switch s.Agent {
+		case "claude":
+			return []string{"claude", "--resume", s.ID}
+		case "codex":
+			return []string{"codex", "resume", s.ID}
+		case "pi", "opencode":
+			return []string{s.Agent, "--session", s.ID}
+		}
 		return nil
 	}
 	switch s.Agent {
-	case "claude":
-		return []string{"claude", "--resume", s.ID}
+	case "claude", "pi", "opencode":
+		return []string{s.Agent, "--continue"}
 	case "codex":
-		return []string{"codex", "resume", s.ID}
-	case "pi", "opencode":
-		return []string{s.Agent, "--session", s.ID}
+		return []string{"codex", "resume", "--last"}
 	}
 	return nil
 }

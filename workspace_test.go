@@ -2,9 +2,12 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"omaterm/internal/agent"
 	"omaterm/internal/model"
+	"omaterm/internal/session"
 )
 
 func twoProjectApp(t *testing.T) *appState {
@@ -110,4 +113,28 @@ func TestLayoutConversion(t *testing.T) {
 	if got := back.termIDs(); len(got) != 3 || got[2] != "c" {
 		t.Fatal(got)
 	}
+}
+
+// A pane running an agent whose hook never told its conversation saves
+// the agent, so a restart continues the folder's last conversation.
+func TestStateSavesAgentWithoutSession(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a := newApp()
+	a.win = nil
+	id := a.activeSplitLeaf()
+	a.status[id] = session.Info{ID: id, Agent: "opencode", Status: session.Idle}
+	for _, s := range a.state().Sessions {
+		for _, p := range s.Panes {
+			if p.ID == id {
+				if p.Agent == nil || p.Agent.Agent != "opencode" || p.Agent.ID != "" {
+					t.Fatalf("saved agent %+v, want opencode without an id", p.Agent)
+				}
+				if got := agent.ResumeCommand(p.Agent); strings.Join(got, " ") != "opencode --continue" {
+					t.Fatalf("resume %q", got)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("pane not saved")
 }

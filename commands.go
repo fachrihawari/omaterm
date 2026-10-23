@@ -61,15 +61,7 @@ var commandRegistry = append([]Command{
 			}
 		}},
 	{ID: "agents.setup", Title: "Set Up Agent Integration", Category: "App",
-		Run: func(a *appState, c *ui.Context) {
-			for _, k := range []string{"claude", "agents"} {
-				if err := cli.InstallSkill(k); err != nil {
-					toast(c, "Agent setup failed: "+err.Error())
-					return
-				}
-			}
-			toast(c, "Agents started in omaterm now know their session")
-		}},
+		Run: func(a *appState, c *ui.Context) { a.setupAgents(c, a.status[a.activeSplitLeaf()].Agent) }},
 	{ID: "remote.toggle", Title: "Toggle Remote Control", Category: "App",
 		Run: func(a *appState, c *ui.Context) {
 			a.settings.RemoteControl = !a.settings.RemoteControl

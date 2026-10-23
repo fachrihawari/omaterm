@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"omaterm/internal/agent"
 	"omaterm/internal/model"
 	"omaterm/internal/paths"
 	"omaterm/service"
@@ -218,9 +219,15 @@ func (a *appState) state() model.State {
 					continue
 				}
 				pane := model.Pane{ID: id, Dir: dir}
-				if info, ok := a.status[id]; ok && info.AgentSession != nil {
+				info, ok := a.status[id]
+				switch ag := a.paneAgents[id]; {
+				case ok && info.AgentSession != nil:
 					pane.Agent = info.AgentSession
-				} else if ag := a.paneAgents[id]; ag != nil && a.panes.Get(id) == nil {
+				case ok && info.Agent != "":
+					// An agent whose hook never told its conversation: a
+					// restart continues the last one of its folder.
+					pane.Agent = &agent.Session{Agent: info.Agent}
+				case ag != nil && a.panes.Get(id) == nil:
 					pane.Agent = ag
 				}
 				s.Panes = append(s.Panes, pane)

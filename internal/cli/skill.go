@@ -155,11 +155,7 @@ func skillCmd(args []string) error {
 		if sub == "setup" && !f.set["dry"] && len(hooks) > 0 {
 			fmt.Println("\nAgents started from now on in omaterm learn which session they're in.")
 			for _, h := range hooks {
-				if note := map[string]string{
-					"claude":   "Claude Code runs hooks only in folders you trust.",
-					"codex":    "Codex asks you to approve a new hook: run /hooks in it.",
-					"opencode": "OpenCode's background service loads plugins as it starts: run `opencode service restart` when no session is busy.",
-				}[h.name()]; note != "" {
+				if note := HookNotes[h.name()]; note != "" {
 					fmt.Println(note)
 				}
 			}
@@ -235,6 +231,30 @@ type SkillState struct {
 	Agent string // "claude", or "agents" (Codex, OpenCode, Pi…)
 	Dir   string
 	State string // "current", "outdated" (or partly installed) or "missing"
+}
+
+// HookNotes are what the user still has to do for an agent's new hook.
+var HookNotes = map[string]string{
+	"claude":   "Claude Code runs hooks only in folders you trust.",
+	"codex":    "Codex asks you to approve a new hook: run /hooks in it.",
+	"opencode": "OpenCode's background service loads plugins as it starts: run `opencode service restart` when no session is busy.",
+}
+
+// HookInstalled tells whether an agent's hook, which tells omaterm the
+// agent's conversation, is installed and current; true for an agent
+// omaterm has no hook for.
+func HookInstalled(agent string) bool {
+	switch agent {
+	case "claude", "codex", "pi", "opencode":
+	default:
+		return true
+	}
+	for _, h := range hooksFor(agent) {
+		if h.state() != "current" {
+			return false
+		}
+	}
+	return true
 }
 
 // SkillStates returns the state of omaterm's skill and hooks for each kind

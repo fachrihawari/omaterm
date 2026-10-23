@@ -67,7 +67,9 @@ func TestParse(t *testing.T) {
 }
 
 func TestExitCodes(t *testing.T) {
+	// Neither the app nor a session daemon answers: not the user's own.
 	t.Setenv("OMATERM_SOCKET", t.TempDir()+"/none.sock")
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	if code := Run([]string{"ls"}); code != 4 {
 		t.Errorf("unreachable: %d", code)
 	}

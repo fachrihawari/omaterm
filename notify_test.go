@@ -48,3 +48,16 @@ func TestJumpToAttention(t *testing.T) {
 		t.Errorf("title %q", got)
 	}
 }
+
+// omaterm --session=<id>, as a daemon's notification opens the app,
+// shows that session.
+func TestOpenSessionArg(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	want := newID()
+	a.tabs = append(a.tabs, topTab{ID: want, Kind: tabTerminal, Label: "two", Split: &splitNode{TermID: newID()}})
+	a.openFromArgs([]string{"--session=" + want}, "")
+	if got := a.viewedSession(); got != want {
+		t.Fatalf("viewed %q, want %q", got, want)
+	}
+}
