@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"omaterm/internal/notice"
 	"omaterm/internal/session"
@@ -98,7 +100,7 @@ func (d *Daemon) sessionLabel(sessionID string) string {
 }
 
 // notifySend shows the notification with notify-send, waiting for it to
-// be acted on: Open starts the app on the session. Without notify-send
+// be clicked: that starts the app on the session. Without notify-send
 // (not Linux) nothing shows.
 func (d *Daemon) notifySend(title, body, sessionID string) {
 	bin, err := exec.LookPath("notify-send")
@@ -106,10 +108,15 @@ func (d *Daemon) notifySend(title, body, sessionID string) {
 		return
 	}
 	go func() {
-		cmd := exec.Command(bin, "--app-name=omaterm", "--wait", "--action=open=Open", title, body)
+		// Clicking the notification invokes its "default" action, which
+		// notification servers without action buttons (Omarchy's) do
+		// too. The wait ends with the notification, or after a while.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bin, "--app-name=omaterm", "--wait", "--action=default=Open", title, body)
 		cmd.Env = append(os.Environ(), d.envList()...) // the app's display and bus
 		out, err := cmd.Output()
-		if err != nil || strings.TrimSpace(string(out)) != "open" {
+		if err != nil || strings.TrimSpace(string(out)) != "default" {
 			return
 		}
 		exe, err := os.Executable()
