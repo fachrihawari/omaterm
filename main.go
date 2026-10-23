@@ -29,7 +29,6 @@ func main() {
 			StateKey:        "main",
 			Content:         ui.View(a.view),
 		})
-		// Now that the window exists, kick the initial async loads.
 		a.win.OnClosed(func() {
 			a.stopSystemStats()
 			for _, t := range a.termPanes {
@@ -45,13 +44,7 @@ func main() {
 				a.refreshActiveRepo()
 			}
 		})
-		if len(a.projects) > 0 {
-			a.setProject(0)
-		}
-		a.startSystemStats()
-		if a.inspectorTab == 0 && a.inspectorVisible {
-			a.startProcessRefresh()
-		}
+		a.start()
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

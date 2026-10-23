@@ -230,6 +230,11 @@ type appState struct {
 	// Terminal panes (Ghostty VT via MyGo's plugin)
 	termPanes   map[string]*terminal.Terminal
 	termPanesMu sync.Mutex
+
+	// posted is work handed to the UI thread while there is no window, as
+	// in tests: view runs it at the start of the next frame (see post).
+	postedMu sync.Mutex
+	posted   []func()
 	// termCmd runs instead of the user's shell, for the screenshot suite:
 	// a live shell prints its prompt at an unpredictable moment.
 	termCmd []string
@@ -484,11 +489,31 @@ func (a *appState) setProject(i int) {
 	a.diffDs, a.diffKey = nil, ""
 	a.closeOverlay()
 
+	a.loadProjectData()
+	a.saveProjects()
+}
+
+// start begins the window's work once it exists: the loads of the saved
+// active project (newApp chose it, but had no window for the results to
+// reach), and the timers of the status bar and the Info panel.
+func (a *appState) start() {
+	if a.project() != nil {
+		a.loadProjectData()
+	}
+	a.startSystemStats()
+	if a.inspectorTab == 0 && a.inspectorVisible {
+		a.startProcessRefresh()
+	}
+}
+
+// loadProjectData starts the loads of the active project's repos, files
+// and processes. setProject calls it; so does start, once the window
+// exists, since loads begun before it had no window to report to.
+func (a *appState) loadProjectData() {
 	a.refreshRepos()
 	a.rebuildFileIndex()
 	a.rebuildFileTree()
 	a.refreshProcesses()
-	a.saveProjects()
 }
 
 // switchProject shows project i, as clicking it in the sidebar does, and

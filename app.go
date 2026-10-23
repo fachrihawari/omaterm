@@ -10,6 +10,7 @@ import (
 // status bar below, the window-level shortcuts, and modal overlays.
 
 func (a *appState) view(c *ui.Context) {
+	a.drainPosted()
 	c.SetTheme(omaTheme())
 
 	// Every window shortcut comes from the binding table in
@@ -182,4 +183,29 @@ func dangerButton(c *ui.Context, label string) ui.Element {
 		ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(ui.Hex("#20100f"))
 	})
 	return e
+}
+
+// post runs fn on the UI thread: through the window's update queue, or,
+// with no window (tests), at the start of the next frame. Goroutines that
+// change app state, as a terminal's exit or a background load, hand it
+// over this way instead of touching the state themselves.
+func (a *appState) post(fn func()) {
+	if a.win != nil {
+		a.win.Update(fn)
+		return
+	}
+	a.postedMu.Lock()
+	a.posted = append(a.posted, fn)
+	a.postedMu.Unlock()
+}
+
+// drainPosted runs what post queued while there was no window.
+func (a *appState) drainPosted() {
+	a.postedMu.Lock()
+	fns := a.posted
+	a.posted = nil
+	a.postedMu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
 }

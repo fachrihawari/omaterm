@@ -168,49 +168,23 @@ func (a *appState) term(id string) *terminal.Terminal {
 		OnTitle: func(title string) {},
 		OnExit: func(code int) {
 			// When the shell exits (e.g. Ctrl+D / "exit"), close the pane.
-			// Marshal to the main thread since OnExit runs on a terminal
-			// goroutine; in tests (no window) run directly.
-			doClose := func() {
+			// OnExit runs on a terminal goroutine: hop to the UI thread.
+			a.post(func() {
 				// Only act if the pane still exists (not already closed).
 				a.termPanesMu.Lock()
-				if _, ok := a.termPanes[id]; !ok {
-					a.termPanesMu.Unlock()
-					return
-				}
-				// Find the tab containing this terminal.
-				tabIndex := -1
-				isLeaf := false
-				for i, tab := range a.tabs {
-					if tab.Split == nil {
-						continue
-					}
-					for _, tid := range tab.Split.termIDs() {
-						if tid == id {
-							tabIndex = i
-							isLeaf = tab.Split.isLeaf()
-							break
-						}
-					}
-					if tabIndex >= 0 {
-						break
-					}
-				}
+				_, ok := a.termPanes[id]
 				a.termPanesMu.Unlock()
-				if tabIndex < 0 {
+				tab := a.tabOfPane(id)
+				if !ok || tab < 0 {
 					return
 				}
-				// Close the pane (or the tab if last pane).
-				if isLeaf {
-					a.closeTab(tabIndex)
+				// Close the pane, or the tab if it was its last pane.
+				if a.tabs[tab].Split.isLeaf() {
+					a.closeTab(tab)
 				} else {
-					a.removePane(id)
+					a.removePaneIn(tab, id)
 				}
-			}
-			if a.win == nil {
-				doClose()
-				return
-			}
-			a.win.Update(doClose)
+			})
 		},
 	})
 	if err != nil {
@@ -271,8 +245,32 @@ func (a *appState) splitPane(termID string, dir splitDir) string {
 	return ""
 }
 
+// tabOfPane returns the index of the tab whose split holds the pane, or -1.
+func (a *appState) tabOfPane(termID string) int {
+	for i, tab := range a.tabs {
+		if tab.Split == nil {
+			continue
+		}
+		for _, id := range tab.Split.termIDs() {
+			if id == termID {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// removePane closes the pane wherever it is, not only in the active tab: a
+// shell can exit in a tab the user is not looking at.
 func (a *appState) removePane(termID string) {
-	root := a.activeSplit()
+	a.removePaneIn(a.tabOfPane(termID), termID)
+}
+
+func (a *appState) removePaneIn(tab int, termID string) {
+	if tab < 0 || tab >= len(a.tabs) {
+		return
+	}
+	root := a.tabs[tab].Split
 	if root == nil {
 		return
 	}
@@ -280,6 +278,7 @@ func (a *appState) removePane(termID string) {
 	if !removed {
 		return
 	}
+	active := tab == a.activeTab
 	if a.activePaneTermID == termID {
 		a.activePaneTermID = ""
 	}
@@ -289,15 +288,12 @@ func (a *appState) removePane(termID string) {
 	}
 	delete(a.termPanes, termID)
 	a.termPanesMu.Unlock()
-	if newRoot == nil {
-		// tab should close; for now leave nil (closeTab handles cleanup)
-		a.setActiveSplit(nil)
-	} else {
-		a.setActiveSplit(newRoot)
+	a.tabs[tab].Split = newRoot
+	if newRoot != nil {
 		rebalance(newRoot)
 		// A pane closed under the keyboard: give it to the first one left,
 		// unless the caller picked another.
-		if a.activePaneTermID == "" {
+		if active && a.activePaneTermID == "" {
 			if ids := newRoot.termIDs(); len(ids) > 0 {
 				a.activePaneTermID = ids[0]
 			}
