@@ -164,6 +164,7 @@ func (a *appState) term(id string) *terminal.Terminal {
 	t, err := terminal.New(terminal.Options{
 		Command: cmd,
 		Dir:     a.workspace,
+		Font:    terminal.Font{Size: a.fontSize},
 		OnTitle: func(title string) {},
 		OnExit: func(code int) {
 			// When the shell exits (e.g. Ctrl+D / "exit"), close the pane.
@@ -299,7 +300,6 @@ func (a *appState) removePane(termID string) {
 		if a.activePaneTermID == "" {
 			if ids := newRoot.termIDs(); len(ids) > 0 {
 				a.activePaneTermID = ids[0]
-				a.paneFocus = ids[0]
 			}
 		}
 	}
@@ -437,14 +437,8 @@ func (a *appState) termPane(c *ui.Context, termID string) {
 		if hovered {
 			a.activePaneTermID = termID
 		}
-		// The pane with the keyboard is what lets the shell keep Ctrl+S
-		// and friends; FocusBind lets the app send the keyboard to the
-		// pane next to this one.
-		if box.FocusWithin() {
-			a.termFocus = true
-		}
 		box.Children(func() {
-			terminal.View(c, t).Fill().AutoFocus().FocusBind(&a.paneFocus, termID)
+			terminal.View(c, t).Fill().AutoFocus()
 		})
 		// Focus ring on the outer column (not clipped by box).
 		if hovered || a.activePaneTermID == termID {
@@ -488,7 +482,6 @@ func (a *appState) newTerminalTabReal() {
 		ids := a.tabs[a.activeTab].Split.termIDs()
 		if len(ids) > 0 {
 			a.activePaneTermID = ids[0]
-			a.paneFocus = ids[0]
 		}
 	}
 }

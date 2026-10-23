@@ -42,7 +42,7 @@ func (a *appState) openEditorAt(path string, line int) {
 				if lang := editor.LanguageFor(path); lang != nil {
 					buf.SetLanguage(lang)
 				}
-				doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme()}
+				doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme(), Font: ui.Font{Size: a.fontSize}}
 				doc.Preview = true
 			}
 			a.editors[path] = doc
@@ -60,7 +60,7 @@ func (a *appState) openEditorAt(path string, line int) {
 				buf.SetLanguage(lang)
 			}
 			preview := hasSuffix(path, ".md") || hasSuffix(path, ".mdx")
-			doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme()}
+			doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme(), Font: ui.Font{Size: a.fontSize}}
 			doc.Preview = preview
 			a.editors[path] = doc
 		}

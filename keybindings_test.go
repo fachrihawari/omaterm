@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
-
-	"oterm/service"
 )
 
 // The binding table must not point at commands that do not exist, and two
@@ -28,20 +26,16 @@ func TestKeybindingTableIsConsistent(t *testing.T) {
 	}
 }
 
-// A command may have several keys (Ctrl+Tab and Ctrl+PageDown), and the
-// palette must show them from the same table.
+// The palette shows a command's key from the same table the window uses.
 func TestKeyLabelsComeFromTheTable(t *testing.T) {
-	if got := keyPrimary("tab.next"); got != "Ctrl+Tab" {
-		t.Errorf("tab.next label = %q", got)
+	if got := keyPrimary("tab.select2"); got != "Alt+2" {
+		t.Errorf("tab.select2 label = %q", got)
 	}
-	if got := keyLabels("tab.next"); got != "Ctrl+Tab, Ctrl+PageDown" {
-		t.Errorf("tab.next labels = %q", got)
+	if got := keyPrimary("project.select3"); got != "Alt+Shift+3" {
+		t.Errorf("project.select3 label = %q", got)
 	}
 	if got := keyPrimary("terminal.splitRight"); got != "Ctrl+Shift+R" {
 		t.Errorf("terminal.splitRight label = %q", got)
-	}
-	if got := keyLabels("terminal.splitRight"); got != "Ctrl+Shift+R, Ctrl+Shift+5" {
-		t.Errorf("terminal.splitRight labels = %q", got)
 	}
 	if got := keyPrimary("git.refresh"); got != "" {
 		t.Errorf("unbound command label = %q, want empty", got)
@@ -91,7 +85,7 @@ func TestSaveShortcut(t *testing.T) {
 }
 
 // Ctrl+Tab and Ctrl+Shift+Tab walk the tab bar, wrapping at the ends.
-func TestTabShortcutsCycle(t *testing.T) {
+func TestTabShortcutsJump(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	tr := ui.NewTester(a.view, 1440, 900)
@@ -102,25 +96,56 @@ func TestTabShortcutsCycle(t *testing.T) {
 	if len(a.tabs) < 2 {
 		t.Fatalf("want at least two tabs, got %d", len(a.tabs))
 	}
-	first := a.activeTab
+	// Alt+1 and Alt+2 jump straight to the first and second tab.
+	tr.Key(ui.Alt, ui.Key1)
+	tr.Frame()
+	if a.activeTab != 0 {
+		t.Fatalf("Alt+1 went to tab %d, want 0", a.activeTab)
+	}
+	if a.activeView != a.tabs[0].Kind {
+		t.Errorf("Alt+1 showed view %v, want %v", a.activeView, a.tabs[0].Kind)
+	}
+	tr.Key(ui.Alt, ui.Key2)
+	tr.Frame()
+	if a.activeTab != 1 {
+		t.Fatalf("Alt+2 went to tab %d, want 1", a.activeTab)
+	}
+	// A tab that does not exist is not an error, just a no-op.
+	tr.Key(ui.Alt, ui.Key9)
+	tr.Frame()
+	if a.activeTab != 1 {
+		t.Fatalf("Alt+9 moved to tab %d", a.activeTab)
+	}
+}
 
-	tr.Key(ui.Cmd, ui.KeyTab)
+// Alt+Shift+N switches projects, and saves the choice for the next launch.
+func TestProjectShortcuts(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.projects = append(a.projects,
+		project{Name: "second", Path: t.TempDir(), Tabs: []string{"dev"}},
+		project{Name: "third", Path: t.TempDir(), Tabs: []string{"dev"}})
+	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	if a.activeTab == first {
-		t.Fatal("Ctrl+Tab did not change tabs")
-	}
-	tr.Key(ui.Cmd|ui.Shift, ui.KeyTab)
+
+	tr.Key(ui.Alt|ui.Shift, ui.Key2)
 	tr.Frame()
-	if a.activeTab != first {
-		t.Fatalf("Ctrl+Shift+Tab = %d, want %d", a.activeTab, first)
+	if a.active != 1 {
+		t.Fatalf("Alt+Shift+2 went to project %d, want 1", a.active)
 	}
-	// It wraps rather than sticking at the last tab.
-	for i := 0; i < len(a.tabs); i++ {
-		tr.Key(ui.Cmd, ui.KeyTab)
-		tr.Frame()
+	if got := a.workspace; got != a.projects[1].Path {
+		t.Errorf("workspace = %q, want %q", got, a.projects[1].Path)
 	}
-	if a.activeTab != first {
-		t.Fatalf("cycling through every tab ended at %d, want %d", a.activeTab, first)
+	tr.Key(ui.Alt|ui.Shift, ui.Key3)
+	tr.Frame()
+	if a.active != 2 {
+		t.Fatalf("Alt+Shift+3 went to project %d, want 2", a.active)
+	}
+	// A project that does not exist is a no-op.
+	tr.Key(ui.Alt|ui.Shift, ui.Key9)
+	tr.Frame()
+	if a.active != 2 {
+		t.Fatalf("Alt+Shift+9 moved to project %d", a.active)
 	}
 }
 
@@ -146,8 +171,8 @@ func TestInspectorShortcuts(t *testing.T) {
 	}
 }
 
-// Ctrl+` shows the terminal, F1 opens the palette, and both come from the
-// binding table.
+// Alt+N reaches the editor and diff tabs too, and Ctrl+Shift+P opens the
+// palette, all from the binding table.
 func TestViewAndPaletteShortcuts(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -155,28 +180,28 @@ func TestViewAndPaletteShortcuts(t *testing.T) {
 	tr.Frame()
 
 	a.openEditor("hello.txt")
+	a.focusDiffTab("hello.txt")
 	tr.Frame()
-	if a.activeView != tabEditor {
-		t.Fatal("editor view not active")
+	if a.activeView != tabDiff {
+		t.Fatal("diff view not active")
 	}
-	tr.Key(ui.Cmd, ui.KeyBackquote)
+	// The diff tab is last, the editor before it, the terminal first.
+	last := len(a.tabs) - 1
+	tr.Key(ui.Alt, ui.Key1)
 	tr.Frame()
 	if a.activeView != tabTerminal {
-		t.Fatal("Ctrl+` did not show the terminal")
+		t.Fatalf("Alt+1 showed %v, want the terminal", a.activeView)
 	}
-	// And Ctrl+` again returns to the editor, as the panel toggle does.
-	tr.Key(ui.Cmd, ui.KeyBackquote)
+	tr.Key(ui.Alt, tabDigits[last])
 	tr.Frame()
-	if a.activeView != tabEditor {
-		t.Fatalf("Ctrl+` again left the view at %v", a.activeView)
+	if a.activeView != tabDiff {
+		t.Fatalf("Alt+%d showed %v, want the diff", last+1, a.activeView)
 	}
-	tr.Key(ui.Cmd, ui.KeyBackquote)
-	tr.Frame()
 
-	tr.Key(0, ui.KeyF1)
+	tr.Key(ui.Cmd|ui.Shift, ui.KeyP)
 	tr.Frame()
 	if a.overlay != overlayCommandPalette {
-		t.Fatalf("F1 opened overlay %v", a.overlay)
+		t.Fatalf("Ctrl+Shift+P opened overlay %v", a.overlay)
 	}
 	tr.Key(0, ui.KeyEscape)
 	tr.Frame()
@@ -219,7 +244,7 @@ func TestKeyboardShortcutsOverlay(t *testing.T) {
 	}
 
 	// Search by key.
-	a.keyQuery = "ctrl+shift+5"
+	a.keyQuery = "ctrl+shift+r"
 	tr.Frame()
 	items = a.keymapItems()
 	if len(items) != 1 || items[0].ID != "terminal.splitRight" {
@@ -259,87 +284,6 @@ func TestKeyboardShortcutsOverlay(t *testing.T) {
 	}
 }
 
-// Alt+arrow moves the keyboard between split panes, as VS Code's terminal
-// pane navigation does.
-func TestPaneFocusShortcuts(t *testing.T) {
-	a := newTestApp(t)
-	defer stopTermPanes(a)
-	tr := ui.NewTester(a.view, 1440, 900)
-	tr.Frame()
-
-	tr.Key(ui.Cmd|ui.Shift, ui.KeyD)
-	tr.Frame()
-	sp := a.activeSplit()
-	if sp == nil || sp.isLeaf() {
-		t.Fatal("Ctrl+Shift+D did not split the terminal")
-	}
-	ids := sp.termIDs()
-	if len(ids) != 2 {
-		t.Fatalf("panes = %d", len(ids))
-	}
-	// The split gives the keyboard to the new pane, which is below.
-	if a.activePaneTermID != ids[1] || a.paneFocus != ids[1] {
-		t.Fatalf("new pane not focused: active=%q focus=%q panes=%v",
-			a.activePaneTermID, a.paneFocus, ids)
-	}
-
-	tr.Key(ui.Alt, ui.KeyUp)
-	tr.Frame()
-	if a.activePaneTermID != ids[0] || a.paneFocus != ids[0] {
-		t.Fatalf("Alt+Up did not move up: active=%q", a.activePaneTermID)
-	}
-	tr.Key(ui.Alt, ui.KeyDown)
-	tr.Frame()
-	if a.activePaneTermID != ids[1] {
-		t.Fatalf("Alt+Down did not move down: active=%q", a.activePaneTermID)
-	}
-	// There is nothing to the right of a top/bottom split.
-	tr.Key(ui.Alt, ui.KeyRight)
-	tr.Frame()
-	if a.activePaneTermID != ids[1] {
-		t.Fatal("Alt+Right moved to a pane that is not there")
-	}
-}
-
-// While a terminal pane has the keyboard, keys the shell needs stay with
-// the shell, as VS Code's terminal.integrated.commandsToSkipShell does.
-func TestTerminalKeepsShellKeys(t *testing.T) {
-	a := newTestApp(t)
-	defer stopTermPanes(a)
-	tr := ui.NewTester(a.view, 1440, 900)
-	tr.Frame()
-	if !a.terminalHasKeyboard() {
-		t.Fatal("the terminal pane should have the keyboard")
-	}
-
-	active := func(id string) bool {
-		for _, b := range bindingsFor(id) {
-			if a.keyActive(b) {
-				return true
-			}
-		}
-		return false
-	}
-	// The shell gets Ctrl+S and Ctrl+Q.
-	if active("file.save") || active("app.quit") {
-		t.Error("a key the shell needs is still taken by the app")
-	}
-	// Quick open and the palette still skip the shell, as in VS Code.
-	for _, id := range []string{"file.quickOpen", "app.commandPalette", "app.openProject", "view.toggleSidebar", "terminal.splitDown"} {
-		if !active(id) {
-			t.Errorf("%s should work from the terminal", id)
-		}
-	}
-
-	// Away from the terminal the same keys are the app's. The next frame
-	// clears the terminal's keyboard flag.
-	a.activeView = tabEditor
-	tr.Frame()
-	if !active("file.save") || !active("app.quit") {
-		t.Error("Ctrl+S/Ctrl+Q should be the app's outside the terminal")
-	}
-}
-
 // Ctrl+W still closes the active tab from the terminal, an oterm choice:
 // closing a tab is the app's job even while the shell has the keyboard.
 func TestCloseTabFromTerminal(t *testing.T) {
@@ -356,43 +300,95 @@ func TestCloseTabFromTerminal(t *testing.T) {
 	}
 }
 
-// Ctrl+Enter commits from the Git panel once it is open with a message and
-// staged files, as VS Code's Source Control commit key does.
-func TestCommitShortcut(t *testing.T) {
+// Ctrl+=, Ctrl+- and Ctrl+0 change the terminal's and the editor's text
+// size together, and stay within the range.
+func TestZoomShortcuts(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
-	r := a.activeRepoRef()
-	if r == nil {
-		t.Fatal("test app has no repo")
-	}
-	if err := service.Stage(r.Root, "hello.txt"); err != nil {
-		t.Fatal(err)
-	}
-	a.repos[0].Staged = []service.GitFile{{Path: "hello.txt", Status: "M", Staged: true}}
-	a.repos[0].Changes = nil
-	a.commitMsg = "commit from the keyboard"
-	a.inspectorVisible = true
-	a.showInspectorTab(2)
-
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	// Clicking the panel takes the keyboard from the terminal pane, as
-	// clicking the commit field does: Ctrl+Enter is the app's there, and
-	// the shell's while the terminal has it.
-	if err := tr.Click("Git"); err != nil {
-		t.Fatal(err)
-	}
+
+	a.openEditor("hello.txt")
 	tr.Frame()
-	if a.terminalHasKeyboard() {
-		t.Fatal("the terminal should not have the keyboard in the Git panel")
+	doc := a.activeEditor()
+	if doc == nil || doc.State == nil {
+		t.Fatal("editor did not open")
 	}
-	head := service.HeadSha(r.Root)
-	tr.Key(ui.Cmd, ui.KeyEnter)
+	if doc.State.Font.Size != 0 {
+		t.Fatalf("default editor size = %v, want 0 (the theme's)", doc.State.Font.Size)
+	}
+
+	tr.Key(ui.Cmd, ui.KeyEqual)
 	tr.Frame()
-	if got := service.HeadSha(r.Root); got == head {
-		t.Fatal("Ctrl+Enter did not commit")
+	if a.fontSize != defaultFontSize+1 {
+		t.Fatalf("after one step fontSize = %v", a.fontSize)
 	}
-	if a.commitMsg != "" {
-		t.Errorf("commit message not cleared: %q", a.commitMsg)
+	if doc.State.Font.Size != a.fontSize {
+		t.Errorf("editor size = %v, want %v", doc.State.Font.Size, a.fontSize)
+	}
+
+	tr.Key(ui.Cmd, ui.KeyMinus)
+	tr.Frame()
+	tr.Key(ui.Cmd, ui.KeyMinus)
+	tr.Frame()
+	if a.fontSize != defaultFontSize-1 {
+		t.Fatalf("after two steps down fontSize = %v", a.fontSize)
+	}
+	if doc.State.Font.Size != a.fontSize {
+		t.Errorf("editor size = %v, want %v", doc.State.Font.Size, a.fontSize)
+	}
+
+	// It stops at the ends of the range rather than shrinking to nothing.
+	for i := 0; i < 40; i++ {
+		tr.Key(ui.Cmd, ui.KeyMinus)
+		tr.Frame()
+	}
+	if a.fontSize != minFontSize {
+		t.Fatalf("fontSize = %v, want the floor %v", a.fontSize, minFontSize)
+	}
+	for i := 0; i < 60; i++ {
+		tr.Key(ui.Cmd, ui.KeyEqual)
+		tr.Frame()
+	}
+	if a.fontSize != maxFontSize {
+		t.Fatalf("fontSize = %v, want the ceiling %v", a.fontSize, maxFontSize)
+	}
+
+	tr.Key(ui.Cmd, ui.Key0)
+	tr.Frame()
+	if a.fontSize != 0 {
+		t.Fatalf("Ctrl+0 left fontSize = %v, want the default", a.fontSize)
+	}
+	if doc.State.Font.Size != 0 {
+		t.Errorf("editor size = %v after reset, want 0", doc.State.Font.Size)
+	}
+}
+
+// Ctrl+Shift+I, E and G show the three inspector panels.
+func TestInspectorPanelShortcuts(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.inspectorVisible = false
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	for _, tc := range []struct {
+		key  ui.Key
+		want int
+		name string
+	}{
+		{ui.KeyI, 0, "Info"},
+		{ui.KeyE, 1, "Files"},
+		{ui.KeyG, 2, "Git"},
+	} {
+		a.inspectorVisible = false
+		tr.Key(ui.Cmd|ui.Shift, tc.key)
+		tr.Frame()
+		if !a.inspectorVisible {
+			t.Errorf("Ctrl+Shift+%s did not show the inspector", tc.name)
+		}
+		if a.inspectorTab != tc.want {
+			t.Errorf("Ctrl+Shift+%s: tab = %d, want %d", tc.name, a.inspectorTab, tc.want)
+		}
 	}
 }

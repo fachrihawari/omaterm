@@ -458,6 +458,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				Layout: editor.DiffUnified,
 				Inline: editor.DiffInlineWord,
 				Theme:  omaEditorTheme(),
+				Font:   ui.Font{Size: a.fontSize},
 			}
 			if a.diffSplit {
 				ds.Layout = editor.DiffSplit

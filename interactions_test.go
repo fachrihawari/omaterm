@@ -146,27 +146,6 @@ func TestSidebarAndInspectorToggle(t *testing.T) {
 	}
 }
 
-func TestViewShortcuts(t *testing.T) {
-	a := newTestApp(t)
-	tr := ui.NewTester(a.view, 1440, 900)
-
-	tr.Key(ui.Cmd, ui.Key2)
-	tr.Frame()
-	if a.activeView != tabEditor {
-		t.Error("Cmd+2 did not show the editor")
-	}
-	tr.Key(ui.Cmd, ui.Key3)
-	tr.Frame()
-	if a.activeView != tabDiff {
-		t.Error("Cmd+3 did not show the diff")
-	}
-	tr.Key(ui.Cmd, ui.Key1)
-	tr.Frame()
-	if a.activeView != tabTerminal {
-		t.Error("Cmd+1 did not show the terminal")
-	}
-}
-
 func TestQuickOpenOverlay(t *testing.T) {
 	a := newTestApp(t)
 	a.fileIndex = []string{"hello.txt", "src/main.go", "src/util.go"}

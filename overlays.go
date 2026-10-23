@@ -624,7 +624,7 @@ func (a *appState) updateSearchPreview() {
 	}
 	text := strings.Join(lines, "\n")
 	if a.searchPreview == nil {
-		a.searchPreview = &editor.State{ReadOnly: true, Theme: omaEditorTheme()}
+		a.searchPreview = &editor.State{ReadOnly: true, Theme: omaEditorTheme(), Font: ui.Font{Size: a.fontSize}}
 	}
 	if a.searchPreview.Buffer == nil {
 		a.searchPreview.Buffer = editor.NewBuffer(text)
@@ -809,13 +809,23 @@ type keymapEntry struct {
 // keymapItems lists the commands that have keys, filtered by the query.
 // The query matches the title, the category, the scope and the keys, so
 // "ctrl+shift+d" and "split" both find the split commands.
+//
+// Commands of one family (Command.Group) fold into a single entry, whose
+// keys are the family's in order: Alt+1 … Alt+9 is one row, not nine.
 func (a *appState) keymapItems() []keymapEntry {
 	q := strings.ToLower(strings.TrimSpace(a.keyQuery))
 	out := make([]keymapEntry, 0, len(commandRegistry))
+	grouped := map[string]int{}
 	for _, cmd := range commandRegistry {
 		bs := bindingsFor(cmd.ID)
 		if len(bs) == 0 {
 			continue
+		}
+		if cmd.Group != "" {
+			if i, ok := grouped[cmd.Group]; ok {
+				out[i].Keys = append(out[i].Keys, bs...)
+				continue
+			}
 		}
 		if q != "" {
 			labels := make([]string, len(bs))
@@ -827,6 +837,10 @@ func (a *appState) keymapItems() []keymapEntry {
 			if !strings.Contains(hay, q) {
 				continue
 			}
+		}
+		if cmd.Group != "" {
+			grouped[cmd.Group] = len(out)
+			cmd.Title = cmd.Group
 		}
 		out = append(out, keymapEntry{Command: cmd, Keys: bs, Scope: bs[0].Scope})
 	}
@@ -965,6 +979,12 @@ func (a *appState) keymapRow(c *ui.Context, e keymapEntry, selected bool) {
 		ui.Text(c, e.Scope.String()).FontSize(9).TextColor(colMuted2).Width(78).
 			SingleLine().Shrink(0)
 		ui.Row(c).Width(220).Justify(ui.End).Gap(4).Children(func() {
+			// A family as long as the digits shows its range: Alt+1 … Alt+9
+			// reads faster than nine chips, and says the same thing.
+			if e.Group != "" && len(e.Keys) > 2 {
+				keyChip(c, e.Keys[0].Combo.Label()+" … "+e.Keys[len(e.Keys)-1].Combo.Label())
+				return
+			}
 			for _, b := range e.Keys {
 				keyChip(c, b.Combo.Label())
 			}

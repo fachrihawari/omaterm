@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 
 	"oterm/service"
@@ -14,13 +15,18 @@ type Command struct {
 	ID       string
 	Title    string
 	Category string
-	Enabled  func(a *appState) bool
-	Run      func(a *appState, c *ui.Context)
+	// Group names a family of commands that differ only by a number, as
+	// the tabs Alt+1 … Alt+9 go to. The Keyboard Shortcuts dialog shows
+	// the family as one row titled Group, with the keys side by side:
+	// one thing to remember, not nine.
+	Group   string
+	Enabled func(a *appState) bool
+	Run     func(a *appState, c *ui.Context)
 }
 
 // commandRegistry lists all commands. Commands whose Enabled returns false
 // are shown dimmed and do not run.
-var commandRegistry = []Command{
+var commandRegistry = append([]Command{
 	{ID: "file.quickOpen", Title: "Go to File…", Category: "File",
 		Run: func(a *appState, c *ui.Context) { a.openOverlay(overlayQuickOpen) }},
 	{ID: "app.commandPalette", Title: "Command Palette…", Category: "App",
@@ -34,18 +40,25 @@ var commandRegistry = []Command{
 	{ID: "app.quit", Title: "Quit oterm", Category: "App",
 		Run: func(a *appState, c *ui.Context) { mygo.App.Quit() }},
 
+	{ID: "app.zoomIn", Title: "Increase Font Size", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.zoomFont(1) }},
+	{ID: "app.zoomOut", Title: "Decrease Font Size", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.zoomFont(-1) }},
+	{ID: "app.zoomReset", Title: "Reset Font Size", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.zoomFont(0) }},
+
 	{ID: "view.toggleSidebar", Title: "Toggle Sidebar", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.sidebarVisible = !a.sidebarVisible }},
 	{ID: "view.toggleInspector", Title: "Toggle Inspector", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.inspectorVisible = !a.inspectorVisible }},
 	{ID: "view.terminal", Title: "Show Terminal", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.activateKind(tabTerminal) }},
-	{ID: "view.toggleTerminal", Title: "Toggle Terminal", Category: "View",
-		Run: func(a *appState, c *ui.Context) { a.toggleTerminal() }},
 	{ID: "view.editor", Title: "Show Editor", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.activateKind(tabEditor) }},
 	{ID: "view.diff", Title: "Show Diff", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.activateKind(tabDiff) }},
+	{ID: "view.info", Title: "Show Info", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.showInspectorTab(0) }},
 	{ID: "view.files", Title: "Show Files", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.showInspectorTab(1) }},
 	{ID: "view.git", Title: "Show Source Control", Category: "View",
@@ -93,18 +106,6 @@ var commandRegistry = []Command{
 	{ID: "terminal.closePane", Title: "Close Terminal Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.closeActivePane(c) }},
-	{ID: "terminal.focusLeft", Title: "Focus Pane Left", Category: "Terminal",
-		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
-		Run:     func(a *appState, c *ui.Context) { a.focusPane(paneLeft) }},
-	{ID: "terminal.focusRight", Title: "Focus Pane Right", Category: "Terminal",
-		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
-		Run:     func(a *appState, c *ui.Context) { a.focusPane(paneRight) }},
-	{ID: "terminal.focusUp", Title: "Focus Pane Up", Category: "Terminal",
-		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
-		Run:     func(a *appState, c *ui.Context) { a.focusPane(paneUp) }},
-	{ID: "terminal.focusDown", Title: "Focus Pane Down", Category: "Terminal",
-		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
-		Run:     func(a *appState, c *ui.Context) { a.focusPane(paneDown) }},
 
 	{ID: "git.refresh", Title: "Git: Refresh", Category: "Git",
 		Enabled: func(a *appState) bool { return a.activeRepoRef() != nil },
@@ -132,7 +133,7 @@ var commandRegistry = []Command{
 	{ID: "git.switchBranch", Title: "Git: Switch Branch…", Category: "Git",
 		Enabled: func(a *appState) bool { return a.activeRepoRef() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.openBranchOverlay() }},
-}
+}, digitCommands()...)
 
 // gitStageAll stages everything in the active repo.
 func (a *appState) gitStageAll(c *ui.Context) {
@@ -177,7 +178,6 @@ func (a *appState) splitActivePaneAt(c *ui.Context, termID string, dir splitDir)
 		return
 	}
 	a.activePaneTermID = id
-	a.paneFocus = id
 	if dir == splitHorizontal {
 		c.Toast("Split down")
 	} else {
@@ -203,7 +203,6 @@ func (a *appState) closeActivePane(c *ui.Context) {
 	a.removePane(leaf)
 	if ids := a.activeSplit().termIDs(); len(ids) > 0 {
 		a.activePaneTermID = ids[0]
-		a.paneFocus = ids[0]
 	}
 	c.Toast("Pane closed")
 }
@@ -217,17 +216,45 @@ func (a *appState) cycleTab(d int) {
 	a.activateTab((a.activeTab + d + n) % n)
 }
 
-// toggleTerminal shows the terminal from another view, and returns to that
-// view from the terminal, as VS Code's Ctrl+` shows and hides the panel.
-func (a *appState) toggleTerminal() {
-	if a.activeView == tabTerminal {
-		kind := a.prevView
-		if kind == tabTerminal {
-			kind = tabEditor
-		}
-		a.activateKind(kind)
-		return
+// fontSizeSteps is the range the zoom keys keep the text in, in DIPs. The
+// default is 13; 8 is small enough to fit a wide file, 32 large enough to
+// read from across a room.
+const (
+	minFontSize     = 8
+	maxFontSize     = 32
+	defaultFontSize = 13
+)
+
+// zoomFont changes the text size of the terminal and the editor together:
+// d is the steps, or 0 to go back to the default. One size for both is the
+// point: a split with a file beside a shell reads as one surface.
+func (a *appState) zoomFont(d int) {
+	size := a.fontSize
+	if size == 0 {
+		size = defaultFontSize
 	}
-	a.prevView = a.activeView
-	a.activateKind(tabTerminal)
+	if d == 0 {
+		a.fontSize = 0
+	} else {
+		size = min(max(size+float32(d), minFontSize), maxFontSize)
+		a.fontSize = size
+	}
+	a.applyFontSize()
+}
+
+// applyFontSize gives the new size to every terminal and editor that is
+// open, not just the ones built from now on.
+func (a *appState) applyFontSize() {
+	a.termPanesMu.Lock()
+	for _, t := range a.termPanes {
+		if t != nil {
+			t.SetFont(terminal.Font{Size: a.fontSize})
+		}
+	}
+	a.termPanesMu.Unlock()
+	for _, doc := range a.editors {
+		if doc.State != nil {
+			doc.State.Font = ui.Font{Size: a.fontSize}
+		}
+	}
 }

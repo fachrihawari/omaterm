@@ -14,15 +14,9 @@ func (a *appState) view(c *ui.Context) {
 
 	// Every window shortcut comes from the binding table in
 	// keybindings.go, which also feeds the command palette and the
-	// Keyboard Shortcuts overlay. The table is registered first: it reads
-	// whether the terminal had the keyboard in the last frame, so a key
-	// the shell needs (Ctrl+S, Ctrl+Q) is not taken from it.
+	// Keyboard Shortcuts overlay.
 	a.registerKeybindings(c)
 	a.overlayWindowKeys(c)
-
-	// The terminal view records again, while it builds below, whether a
-	// pane took the keyboard.
-	a.termFocus = false
 
 	ui.Column(c).Fill().Background(colBg).Children(func() {
 		if a.sidebarVisible {

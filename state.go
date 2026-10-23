@@ -103,8 +103,6 @@ type appState struct {
 	activeTab int
 
 	activeView topTabKind
-	// prevView is the view Ctrl+` returns to when the terminal is shown.
-	prevView topTabKind
 
 	sidebarVisible   bool
 	inspectorVisible bool
@@ -235,11 +233,9 @@ type appState struct {
 	// termCmd runs instead of the user's shell, for the screenshot suite:
 	// a live shell prints its prompt at an unpredictable moment.
 	termCmd []string
-	// termFocus says a pane had the keyboard in the last frame: the
-	// app's shortcuts use it to let the shell keep keys like Ctrl+S.
-	termFocus bool
-	// paneFocus is the pane that should have the keyboard (FocusBind).
-	paneFocus string
+	// fontSize is the terminal's and the editor's text size in DIPs; 0
+	// is the default 13.
+	fontSize float32
 
 	// Close tab confirmation
 	pendingCloseTab     int
@@ -447,7 +443,6 @@ func (a *appState) setProject(i int) {
 		ids := a.tabs[0].Split.termIDs()
 		if len(ids) > 0 {
 			a.activePaneTermID = ids[0]
-			a.paneFocus = ids[0]
 		}
 	}
 	a.gitBusy = ""
@@ -477,6 +472,16 @@ func (a *appState) setProject(i int) {
 	a.rebuildFileIndex()
 	a.rebuildFileTree()
 	a.refreshProcesses()
+	a.saveProjects()
+}
+
+// switchProject shows project i, as clicking it in the sidebar does, and
+// saves the choice so the next launch opens it.
+func (a *appState) switchProject(i int) {
+	if i < 0 || i >= len(a.projects) || i == a.active {
+		return
+	}
+	a.setProject(i)
 	a.saveProjects()
 }
 

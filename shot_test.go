@@ -270,13 +270,16 @@ func TestShots(t *testing.T) {
 		if repos := service.DiscoverRepos(a.workspace, 1); len(repos) > 0 {
 			a.repos = repos
 			a.activeRepo = 0
-			a.currentBranch = repos[0].Branch
+			// Fixed branch name: the checked-out branch differs between
+			// clones and while reviewing a feature branch.
+			a.currentBranch = "main"
 			if p := a.project(); p != nil {
-				p.Branch = repos[0].Branch
+				p.Branch = "main"
 			}
 			// Fixed status and HEAD: a clean or dirty working tree would
 			// otherwise change the Git badge and panel between runs.
 			r := &a.repos[0]
+			r.Branch = "main"
 			r.Head = "a1b2c3d"
 			r.Staged = []service.GitFile{
 				{Path: "main.go", Status: "M", Staged: true},

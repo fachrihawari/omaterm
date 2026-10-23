@@ -121,8 +121,7 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	return e
 }
 
-// activateTab makes tab i the active one and gives the keyboard to its
-// terminal pane, as selecting an editor tab focuses the editor.
+// activateTab makes tab i the active one and shows it.
 func (a *appState) activateTab(i int) {
 	if i < 0 || i >= len(a.tabs) {
 		return
@@ -133,7 +132,6 @@ func (a *appState) activateTab(i int) {
 	if t.Kind == tabTerminal && t.Split != nil {
 		if ids := t.Split.termIDs(); len(ids) > 0 {
 			a.activePaneTermID = ids[0]
-			a.paneFocus = ids[0]
 		}
 	}
 }
@@ -184,8 +182,8 @@ func (a *appState) closeTab(i int) {
 	}
 	if a.activeTab >= 0 {
 		if wasActive {
-			// The tab that took its place gets the keyboard, as clicking
-			// it would; a closed pane must not keep FocusBind waiting.
+			// The tab that took its place becomes the shown view, as
+			// clicking it would.
 			a.activateTab(a.activeTab)
 		} else {
 			a.activeView = a.tabs[a.activeTab].Kind
