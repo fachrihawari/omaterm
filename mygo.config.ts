@@ -5,7 +5,15 @@ import { defineConfig } from "mygo-cli";
 export default defineConfig({
   name: "oterm",
   identifier: "com.example.oterm",
-  version: "0.1.0",
+  version: "0.6.0",
   out: "build",
   macos: { minimumSystemVersion: "13.0" },
+  // Signed updates: apps read the manifests of the repository's latest
+  // release and install only what the key built into them signs. The
+  // secret key is never here; `mygo build` reads it from
+  // MYGO_UPDATER_PRIVATE_KEY, or from updates.privateKey.
+  updates: {
+    publicKey: "FaHunv4qiHNHes409Ko7lBU/Bc9Vqkha1W5t2Cg0br8=",
+    github: "fachrihawari/omaterm",
+  },
 });

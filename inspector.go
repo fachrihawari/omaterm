@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"oterm/service"
@@ -214,6 +215,45 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					}
 				})
 			})
+
+			a.updateSection(c)
+		})
+	})
+}
+
+// updateSection is the app's own way to check for updates: the menu item of
+// the updater plugin only exists in a menu bar, which a Linux window has
+// none of. It also says when this build cannot update itself, as a
+// development build cannot.
+func (a *appState) updateSection(c *ui.Context) {
+	ui.Column(c).Gap(8).Children(func() {
+		sectionLabel(c, "UPDATES")
+		ui.Row(c).Radius(8).Border(1, colBorder).Background(colCard).Padding(12).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(colMuted)
+			ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
+				label := "oterm"
+				if v := mygo.App.Version(); v != "" {
+					label += " " + v
+				}
+				txt(c, label, 11, colText2)
+				// A build that cannot update itself, such as a development
+				// build or one a package manager installed, says so here
+				// rather than only in the window after a click.
+				if updatesReady && !mygo.Updater.Enabled() {
+					ui.Text(c, "This build cannot update itself").FontSize(10).
+						TextColor(colMuted).SingleLine().Ellipsis("…")
+				}
+			})
+			b := ui.ButtonBase(c).Radius(6).Border(1, colBorder2).Padding(4, 10).Shrink(0)
+			if b.Hovered() {
+				b.Background(colHover)
+			}
+			b.Children(func() {
+				ui.Text(c, "Check").FontSize(10).TextColor(colText2)
+			})
+			if b.Clicked() {
+				a.checkForUpdates(c)
+			}
 		})
 	})
 }

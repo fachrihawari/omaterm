@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
+	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/ui"
 
 	"oterm/service"
@@ -39,6 +40,8 @@ var commandRegistry = append([]Command{
 		Run: func(a *appState, c *ui.Context) { a.openProjectDialog() }},
 	{ID: "app.quit", Title: "Quit oterm", Category: "App",
 		Run: func(a *appState, c *ui.Context) { mygo.App.Quit() }},
+	{ID: "app.checkUpdates", Title: "Check for Updates…", Category: "App",
+		Run: func(a *appState, c *ui.Context) { a.checkForUpdates(c) }},
 
 	{ID: "app.zoomIn", Title: "Increase Font Size", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.zoomFont(1) }},
@@ -257,4 +260,21 @@ func (a *appState) applyFontSize() {
 			doc.State.Font = ui.Font{Size: a.fontSize}
 		}
 	}
+}
+
+// updatesReady says the updater plugin is registered. main sets it; the
+// plugin's entry points panic when it is not, as in the tests, which build
+// the app state without main.
+var updatesReady bool
+
+// checkForUpdates opens the update window, as the menu item does: it shows
+// at once, and says when the app is up to date or the check failed. The
+// plugin's window is the one that draws it, so the app needs no UI of its
+// own for the check.
+func (a *appState) checkForUpdates(c *ui.Context) {
+	if !updatesReady {
+		c.Toast("Updates are not available in this build")
+		return
+	}
+	updater.CheckForUpdates()
 }

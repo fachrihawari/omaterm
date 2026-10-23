@@ -4,10 +4,19 @@ import (
 	"log"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater/native"
 	"github.com/egoist/mygo/ui"
 )
 
 func main() {
+	// Updates come from the signed manifests of the GitHub releases named in
+	// mygo.config.ts. The native window is the one for this app: oterm shows
+	// no web page, so it needs no webview to offer an update. The app's own
+	// Info panel and palette check from there; a menu bar would not exist on
+	// Linux, where oterm mostly runs.
+	mygo.Use(native.Plugin)
+	updatesReady = true
+
 	mygo.App.WhenReady(func() {
 		a := newApp()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
