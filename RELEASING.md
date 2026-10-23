@@ -30,11 +30,31 @@ keeps them as workflow artifacts, with no release and no updates.
 
 ## The signing key
 
-`mygo keygen` made the pair. The public key is in `mygo.json`; the
-secret one is in `~/.config/mygo/update-keys/mygo-update.key` and in the
-repository secret `MYGO_UPDATER_PRIVATE_KEY`. Keep it in both places: without
-it, installed apps cannot be updated, and anyone who has it can ship code to
-them.
+`mygo keygen` made the pair. The public key is in `mygo.json`; the secret one
+is in `~/.config/mygo/update-keys/mygo-update.key` and in the repository
+secret `MYGO_UPDATER_PRIVATE_KEY`.
+
+It is not a build credential you can rotate freely. Every published app has
+the public key built in and accepts only updates signed with its pair, so:
+
+- **Without it**, no release can reach installed users again. They would all
+  have to install a version carrying a new public key by hand.
+- **With it**, anyone can ship code to every user as a valid update.
+
+Keep a copy outside this machine as well: a password manager entry holding
+the 88-character key, or an encrypted note. The file on disk and the GitHub
+secret can both be lost in one accident — a dead disk, a lost laptop, a
+locked account — and neither is a backup of the other. Store the account's
+two-factor recovery codes somewhere else again.
+
+The key never goes in the repository: `.gitignore` covers `*.key`,
+`mygo-update.key` and `update-keys/`, and no commit has ever contained it.
+Nothing else needs it. `go build`, `go test` and `mygo dev` work without it;
+only `mygo build` signs an update, and CI reads it from the secret.
+
+If it is lost, there is no recovery. `mygo keygen -force` makes a new pair,
+`mygo.json` takes the new public key, and the next release ships it — but
+installed apps treat it as a stranger and need one manual install.
 
 ## macOS and Windows signing
 
