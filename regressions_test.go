@@ -13,20 +13,14 @@ import (
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/session"
 	"omaterm/service"
 )
 
 // stopTermPanes ends every shell a test started, so it does not outlive the
 // test binary.
 func stopTermPanes(a *appState) {
-	a.termPanesMu.Lock()
-	for id, tp := range a.termPanes {
-		delete(a.termPanes, id)
-		if tp != nil {
-			tp.Close()
-		}
-	}
-	a.termPanesMu.Unlock()
+	a.panes.CloseAll()
 }
 
 // The terminal could not be typed into: a project now opens with its first
@@ -38,10 +32,11 @@ func TestTerminalTyping(t *testing.T) {
 	tr.Frame()
 
 	var term *terminal.Terminal
-	for _, tp := range a.termPanes {
-		term = tp
-		break
-	}
+	a.panes.Each(func(p *session.Pane) {
+		if term == nil {
+			term = p.Term()
+		}
+	})
 	if term == nil {
 		t.Fatal("no terminal pane created")
 	}
@@ -192,7 +187,7 @@ func TestTerminalTabStartsSingle(t *testing.T) {
 	if sp := a.activeSplit(); sp == nil || !sp.isLeaf() {
 		t.Fatalf("new tab should be a single pane, got %+v", sp)
 	}
-	if len(a.termPanes) == 0 {
+	if a.panes.Len() == 0 {
 		t.Fatal("no pane started for the new tab")
 	}
 
@@ -251,22 +246,22 @@ func TestSplitTreeUpToFivePanes(t *testing.T) {
 	}
 	// Terminals are created lazily on render; frame to materialize them.
 	tr.Frame()
-	if len(a.termPanes) != 5 {
-		t.Fatalf("terminals = %d, want 5", len(a.termPanes))
+	if a.panes.Len() != 5 {
+		t.Fatalf("terminals = %d, want 5", a.panes.Len())
 	}
 
 	// Close a middle pane; survivors keep their terminals.
 	victim := a.activeSplit().termIDs()[2]
 	a.removePane(victim)
 	tr.Frame()
-	if _, ok := a.termPanes[victim]; ok {
+	if a.panes.Get(victim) != nil {
 		t.Fatal("closed pane's terminal was not removed")
 	}
 	if got := a.activeSplit().leafCount(); got != 4 {
 		t.Fatalf("leaf count after close = %d, want 4", got)
 	}
-	if len(a.termPanes) != 4 {
-		t.Fatalf("terminals after close = %d, want 4", len(a.termPanes))
+	if a.panes.Len() != 4 {
+		t.Fatalf("terminals after close = %d, want 4", a.panes.Len())
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/session"
 	"omaterm/service"
 )
 
@@ -255,13 +256,11 @@ func (a *appState) zoomFont(d int) {
 // applyFontSize gives the new size to every terminal and editor that is
 // open, not just the ones built from now on.
 func (a *appState) applyFontSize() {
-	a.termPanesMu.Lock()
-	for _, t := range a.termPanes {
-		if t != nil {
+	a.panes.Each(func(p *session.Pane) {
+		if t := p.Term(); t != nil {
 			t.SetFont(terminal.Font{Size: a.fontSize})
 		}
-	}
-	a.termPanesMu.Unlock()
+	})
 	for _, doc := range a.editors {
 		if doc.State != nil {
 			doc.State.Font = ui.Font{Size: a.fontSize}

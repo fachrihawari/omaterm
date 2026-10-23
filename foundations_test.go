@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The saved active project survives startup: start loads it, it does not
@@ -94,5 +95,37 @@ func TestPostRunsOnNextFrame(t *testing.T) {
 	a.drainPosted()
 	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// A shell that exits in a background tab closes its pane through the
+// registry's exit event, posted to the next frame.
+func TestBackgroundExitViaRegistry(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.termCmd = []string{"sh", "-c", "sleep 0.3"}
+	a.tabs = []topTab{
+		{ID: "s1", Kind: tabTerminal, Label: "bg", Split: &splitNode{TermID: "a"}},
+		{ID: "s2", Kind: tabTerminal, Label: "fg", Split: &splitNode{TermID: "c"}},
+	}
+	a.activeTab = 0
+	a.splitPane("a", splitVertical)
+	ids := a.tabs[0].Split.termIDs()
+	for _, id := range ids {
+		if a.term(id) == nil {
+			t.Fatal("pane did not start")
+		}
+	}
+	a.activeTab = 1
+	deadline := time.Now().Add(5 * time.Second)
+	for a.panes.Len() > 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		a.drainPosted()
+	}
+	if a.panes.Len() != 0 {
+		t.Fatalf("%d panes still running", a.panes.Len())
+	}
+	if len(a.tabs) != 1 || a.tabs[0].ID != "s2" {
+		t.Fatalf("tabs: %+v", a.tabs)
 	}
 }

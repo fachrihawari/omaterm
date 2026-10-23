@@ -1,11 +1,9 @@
 package main
 
 import (
+	"omaterm/internal/session"
 	"os"
-	"strconv"
 	"strings"
-	"sync/atomic"
-	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -149,55 +147,57 @@ func (a *appState) activeSplitLeaf() string {
 }
 
 func (a *appState) term(id string) *terminal.Terminal {
-	a.termPanesMu.Lock()
-	t, ok := a.termPanes[id]
-	a.termPanesMu.Unlock()
-	if ok && t != nil {
-		return t
+	if p := a.panes.Get(id); p != nil {
+		return p.Term()
 	}
-	cmd := a.termCmd
-	if len(cmd) == 0 {
-		if shell := os.Getenv("SHELL"); shell != "" {
-			cmd = []string{shell}
-		}
-	}
-	t, err := terminal.New(terminal.Options{
-		Command: cmd,
-		Dir:     a.workspace,
-		Font:    terminal.Font{Size: a.fontSize},
-		Theme:   omaTermTheme(),
-		OnTitle: func(title string) {},
-		OnExit: func(code int) {
-			// When the shell exits (e.g. Ctrl+D / "exit"), close the pane.
-			// OnExit runs on a terminal goroutine: hop to the UI thread.
-			a.post(func() {
-				// Only act if the pane still exists (not already closed).
-				a.termPanesMu.Lock()
-				_, ok := a.termPanes[id]
-				a.termPanesMu.Unlock()
-				tab := a.tabOfPane(id)
-				if !ok || tab < 0 {
-					return
-				}
-				// Close the pane, or the tab if it was its last pane.
-				if a.tabs[tab].Split.isLeaf() {
-					a.closeTab(tab)
-				} else {
-					a.removePaneIn(tab, id)
-				}
-			})
-		},
-	})
-	if err != nil {
-		a.termPanesMu.Lock()
-		a.termPanes[id] = nil
-		a.termPanesMu.Unlock()
+	if a.paneFailed[id] {
 		return nil
 	}
-	a.termPanesMu.Lock()
-	a.termPanes[id] = t
-	a.termPanesMu.Unlock()
-	return t
+	tab := a.tabOfPane(id)
+	sessionID := ""
+	if tab >= 0 {
+		sessionID = a.tabs[tab].ID
+	}
+	p, err := a.panes.Start(session.StartOptions{
+		ID: id, Session: sessionID, Dir: a.workspace,
+		Command: a.termCmd, Exec: len(a.termCmd) > 0,
+		Font:            terminal.Font{Size: a.fontSize},
+		Theme:           omaTermTheme(),
+		MinimumContrast: a.minimumContrast(),
+		Padding:         terminal.Padding{X: 10, Y: 6},
+	})
+	if err != nil {
+		a.paneFailed[id] = true
+		return nil
+	}
+	return p.Term()
+}
+
+// paneExited closes a pane whose shell exited: the pane, or its tab when
+// it was the tab's last. UI thread.
+func (a *appState) paneExited(id string) {
+	tab := a.tabOfPane(id)
+	if tab < 0 || a.panes.Get(id) == nil {
+		return
+	}
+	if a.tabs[tab].Split.isLeaf() {
+		a.closeTab(tab)
+	} else {
+		a.removePaneIn(tab, id)
+	}
+}
+
+// minimumContrast is the terminals' least contrast: the setting, else 1
+// in dark themes, where theme authors pick their colors with care, and 3
+// in light ones, whose bright colors often wash out.
+func (a *appState) minimumContrast() float32 {
+	if a.settings.MinimumContrast > 0 {
+		return a.settings.MinimumContrast
+	}
+	if pal.Dark {
+		return 1
+	}
+	return 3
 }
 
 // axisWeight is how many columns (or rows) a subtree takes along dir: a
@@ -283,12 +283,7 @@ func (a *appState) removePaneIn(tab int, termID string) {
 	if a.activePaneTermID == termID {
 		a.activePaneTermID = ""
 	}
-	a.termPanesMu.Lock()
-	if t, ok := a.termPanes[termID]; ok && t != nil {
-		t.Close()
-	}
-	delete(a.termPanes, termID)
-	a.termPanesMu.Unlock()
+	a.panes.Remove(termID)
 	a.tabs[tab].Split = newRoot
 	if newRoot != nil {
 		rebalance(newRoot)
@@ -467,6 +462,7 @@ func (a *appState) newTerminalTabReal() {
 		}
 	}
 	a.tabs = append(a.tabs, topTab{
+		ID:    newID(),
 		Kind:  tabTerminal,
 		Label: name,
 		Dot:   dotGreen,
@@ -483,10 +479,4 @@ func (a *appState) newTerminalTabReal() {
 	}
 }
 
-// termSeq makes every terminal ID unique: time.Now alone is too coarse,
-// so splits made in the same microsecond would share a pane.
-var termSeq atomic.Uint64
-
-func randomTermID() string {
-	return "term-" + time.Now().Format("20060102-150405.000000") + "-" + strconv.FormatUint(termSeq.Add(1), 10)
-}
+func randomTermID() string { return newID() }

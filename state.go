@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/session"
 	"omaterm/service"
 )
 
@@ -28,6 +28,9 @@ const (
 )
 
 type topTab struct {
+	// ID names a terminal tab, which is a session: its panes report it,
+	// and the CLI targets it.
+	ID     string
 	Kind   topTabKind
 	Label  string
 	Detail string
@@ -228,8 +231,14 @@ type appState struct {
 	gitGraphOpen     bool // GIT GRAPH section expanded
 
 	// Terminal panes (Ghostty VT via MyGo's plugin)
-	termPanes   map[string]*terminal.Terminal
-	termPanesMu sync.Mutex
+	// panes runs the terminal panes of every tab; paneFailed marks those
+	// whose shell could not start, so a frame does not retry them; status
+	// is a copy of every pane's Info as of the last sync (syncStatus),
+	// which views read without locks.
+	panes      *session.Registry
+	panesStop  func()
+	paneFailed map[string]bool
+	status     map[string]session.Info
 
 	// settings are the user's preferences (settings.json); themeMode is
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
@@ -293,12 +302,15 @@ func newApp() *appState {
 		commitMsg:        "",
 		graphLimit:       300,
 		editors:          map[string]*openFile{},
-		termPanes:        map[string]*terminal.Terminal{},
+		panes:            session.NewRegistry(),
+		paneFailed:       map[string]bool{},
+		status:           map[string]session.Info{},
 		commitFiles:      map[string][]service.CommitFile{},
 		commitStats:      map[string][2]int{},
 		projects:         []project{},
 		settings:         loadSettings(),
 	}
+	a.hookPanes()
 	a.themeMode = a.settings.Theme
 	a.applyTheme(themeSource(a.themeMode))
 	// Load saved projects.
@@ -451,18 +463,11 @@ func (a *appState) setProject(i int) {
 	a.workspace = p.Path
 
 	// Stop and clean up all terminal panes before switching.
-	a.termPanesMu.Lock()
-	for _, tp := range a.termPanes {
-		if tp != nil {
-			tp.Close()
-		}
-	}
-	a.termPanes = map[string]*terminal.Terminal{}
-	a.termPanesMu.Unlock()
+	a.panes.CloseAll()
 
 	a.tabs = nil
 	for _, name := range p.Tabs {
-		t := topTab{Kind: tabTerminal, Label: name, Dot: dotGreen,
+		t := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen,
 			Split: &splitNode{TermID: randomTermID()}}
 		if name == "tests" {
 			t.Dot = dotYellow
@@ -509,6 +514,7 @@ func (a *appState) setProject(i int) {
 // reach), and the timers of the status bar and the Info panel.
 func (a *appState) start() {
 	a.startThemeWatch()
+	a.startPanes()
 	if a.project() != nil {
 		a.loadProjectData()
 	}
@@ -544,14 +550,7 @@ func (a *appState) removeProject(i int) {
 	}
 	// Stop terminal panes if removing the active project.
 	if i == a.active {
-		a.termPanesMu.Lock()
-		for _, tp := range a.termPanes {
-			if tp != nil {
-				tp.Close()
-			}
-		}
-		a.termPanes = map[string]*terminal.Terminal{}
-		a.termPanesMu.Unlock()
+		a.panes.CloseAll()
 	}
 	name := a.projects[i].Name
 	a.projects = append(a.projects[:i], a.projects[i+1:]...)

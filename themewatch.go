@@ -9,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"omaterm/internal/session"
 	"omaterm/internal/theme"
 )
 
@@ -40,13 +41,12 @@ func themeSource(mode string) theme.Source {
 // thread only.
 func (a *appState) applyTheme(src theme.Source) {
 	setPalette(src)
-	a.termPanesMu.Lock()
-	for _, t := range a.termPanes {
-		if t != nil {
+	a.panes.Each(func(p *session.Pane) {
+		if t := p.Term(); t != nil {
 			t.SetTheme(termTheme, nil)
+			t.SetMinimumContrast(a.minimumContrast())
 		}
-	}
-	a.termPanesMu.Unlock()
+	})
 	for _, doc := range a.editors {
 		if doc.State != nil {
 			doc.State.Theme = editTheme

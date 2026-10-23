@@ -36,11 +36,10 @@ func main() {
 			if a.themeWatchStop != nil {
 				a.themeWatchStop()
 			}
-			for _, t := range a.termPanes {
-				if t != nil {
-					t.Close()
-				}
+			if a.panesStop != nil {
+				a.panesStop()
 			}
+			a.panes.CloseAll()
 		})
 		// Git status goes stale while the app is in the background; reload
 		// it when the window comes back instead of asking for a button.
