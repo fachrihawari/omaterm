@@ -1,0 +1,116 @@
+name: Release
+
+# Tag flow:
+#   1. bump `version` in mygo.config.ts and add its section to CHANGELOG.md
+#   2. commit, then push the tag v<version>
+#   3. this workflow creates a draft release and builds every platform into
+#      it, signed with the update key, so apps can update to it
+#   4. review the draft and publish it: that is when apps see the update
+#
+# A manual run is a dry run: it builds the Linux app and its installer as
+# workflow artifacts, with no release and no updates to upload to.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # the draft release, and the uploads to it
+
+jobs:
+  draft-release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that disagrees with the configuration would publish the build
+      # under another version, so nothing is built.
+      - name: Check the tag matches mygo.config.ts
+        run: |
+          want="v$(sed -n 's/^ *version: *"\(.*\)",$/\1/p' mygo.config.ts)"
+          if [[ "$GITHUB_REF_NAME" != "$want" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match $want in mygo.config.ts" >&2
+            exit 1
+          fi
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            notes="$(sed -n "/^## ${GITHUB_REF_NAME#v}/,\$p" CHANGELOG.md | tail -n +2)"
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "oterm ${GITHUB_REF_NAME#v}" \
+              --notes "${notes:-Release ${GITHUB_REF_NAME#v}}"
+          fi
+
+  build:
+    needs: draft-release
+    if: always() && (github.ref_type != 'tag' || needs.draft-release.result == 'success')
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing must not cancel the others; re-running the
+      # failed jobs uploads to the same draft.
+      fail-fast: false
+      matrix:
+        include:
+          # macOS needs its own runner: the .app, the disk image and the
+          # code signature are macOS's.
+          - { name: macOS, os: macos-latest, platform: darwin/universal }
+          # MyGo needs no cgo, so Linux runners make the Windows app too.
+          - { name: Windows, os: ubuntu-latest, platform: windows/amd64 }
+          - { name: Linux, os: ubuntu-latest, platform: linux/amd64 }
+          - { name: Linux ARM64, os: ubuntu-latest, platform: linux/arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install NSIS, for the Windows installer
+        if: matrix.name == 'Windows'
+        run: sudo apt-get update && sudo apt-get install --yes nsis
+
+      - name: Build
+        env:
+          # Signs each platform's update archive and manifest. Without it the
+          # build still runs, but produces nothing apps can update to.
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            go tool mygo build -platform "${{ matrix.platform }}" -upload
+          else
+            go tool mygo build -platform "${{ matrix.platform }}"
+          fi
+
+      - name: Upload the dry run's installers
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            build/*/*.dmg
+            build/*/*Setup*.exe
+            build/*/*.deb
+            build/*/*.tar.gz
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      # The draft waits for a person: publish it from the Releases page when
+      # the build looks right, since publishing is what offers the update to
+      # every installed app.
+      - name: Summarize the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "### Draft release: $GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' >> "$GITHUB_STEP_SUMMARY"
+          echo "Publish it from the Releases page to ship the update." >> "$GITHUB_STEP_SUMMARY"

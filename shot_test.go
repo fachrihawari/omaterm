@@ -32,6 +32,10 @@ func TestShots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The app's workspace, and the path the shots show, is a fixed one: the
+	// repo is cloned somewhere else in CI, and the path is part of the
+	// picture.
+	const shotWorkspace = "/home/you/Projects/oterm"
 	// Pin "now": relative labels in the graph would otherwise change as
 	// the suite runs at a different hour.
 	shotNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -183,10 +187,12 @@ func TestShots(t *testing.T) {
 				return nil
 			}},
 		{"branch", func(a *appState) {
-			if r := a.activeRepoRef(); r != nil {
-				a.currentBranch = r.Branch
-			}
+			// The picker reads the repo's real branches, which differ between
+			// clones; fix the list the shot shows.
 			a.openBranchOverlay()
+			a.branches = []string{"main", "feat/git-tab-improvements", "fix/overlay-anchoring"}
+			a.branchQuery = ""
+			a.branchSelected = 0
 		}, nil},
 		{"global-search", func(a *appState) {
 			a.openOverlay(overlayGlobalSearch)
@@ -265,11 +271,20 @@ func TestShots(t *testing.T) {
 		// which made the terminal goldens differ between runs.
 		a.termCmd = []string{"sleep", "120"}
 		a.setProject(0)
+		// The path the shots show is fixed, not the checkout's: the same
+		// goldens must render in CI, where the repo lives elsewhere. Only
+		// the label changes; a.workspace still reads this repo's files.
+		if p := a.project(); p != nil {
+			p.Path = shotWorkspace
+		}
 		// The tester has no window, so the async refreshers no-op; load
 		// repo data synchronously instead.
-		if repos := service.DiscoverRepos(a.workspace, 1); len(repos) > 0 {
+		if repos := service.DiscoverRepos(wd, 1); len(repos) > 0 {
 			a.repos = repos
 			a.activeRepo = 0
+			// The graph header shows the repo's directory name, which is the
+			// checkout's; pin it so the goldens hold in CI.
+			a.repos[0].Name = "oterm"
 			// Fixed branch name: the checked-out branch differs between
 			// clones and while reviewing a feature branch.
 			a.currentBranch = "main"

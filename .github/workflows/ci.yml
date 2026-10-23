@@ -1,0 +1,79 @@
+name: CI
+
+# Checks every push to dev and every pull request, so a broken build is
+# caught before it reaches a release. Releases are release.yml's.
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+# Kill superseded runs on the same ref: a force-push or a rapid second push
+# should not leave two full builds running.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [[ -n "$out" ]]; then
+            echo "gofmt needed on:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # The terminal plugin binds libghostty-vt, a plain shared library: under
+      # go test it downloads into the user's cache on first use, checking its
+      # SHA-256, so the runner needs no graphics stack for it.
+      - name: go test
+        run: go test ./... -count=1
+
+      - name: go build
+        run: go build ./...
+
+      # Native UI builds cross-compile without cgo.
+      - name: Cross-compile
+        run: |
+          for target in darwin/arm64 windows/amd64 linux/arm64; do
+            echo "== $target =="
+            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
+              go build -o /dev/null .
+          done
+
+  # The screenshots are goldens: a UI change that was not meant to move
+  # them fails here rather than in a review months later.
+  shots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Render the goldens
+        run: go test -run TestShots -count=1 ./...
+      - name: Fail when a golden changed
+        run: |
+          if ! git diff --quiet -- testdata; then
+            echo "testdata changed: regenerate the goldens and commit them." >&2
+            git diff --stat -- testdata >&2
+            exit 1
+          fi
