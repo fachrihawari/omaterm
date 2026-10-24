@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OmaTerm installer — fetches a prebuilt tarball from GitHub Releases and
+# omaterm installer — fetches a prebuilt tarball from GitHub Releases and
 # installs it. No AUR account, no toolchain, no root required.
 #
 # Quick start (latest release):
@@ -54,11 +54,11 @@ if [[ -n "$PREFIX" ]]; then
   [[ "$PREFIX" != / && "$PREFIX" != /usr ]] || { echo 'error: use ~/.local, --user, or a custom prefix' >&2; exit 1; }
 fi
 
-[[ "$(uname -s)" == Linux ]] || { echo 'error: OmaTerm requires Linux' >&2; exit 1; }
+[[ "$(uname -s)" == Linux ]] || { echo 'error: omaterm requires Linux' >&2; exit 1; }
 case "$(uname -m)" in
   x86_64 | amd64) TARGET=linux-amd64 ;;
   aarch64 | arm64) TARGET=linux-arm64 ;;
-  *) echo "error: OmaTerm is not made for $(uname -m)." >&2; exit 1 ;;
+  *) echo "error: omaterm is not made for $(uname -m)." >&2; exit 1 ;;
 esac
 
 for cmd in curl tar install; do
@@ -179,7 +179,7 @@ install_app_dir() {
   fi
 
   echo ""
-  echo "OmaTerm installed to $app_dir."
+  echo "omaterm installed to $app_dir."
   echo "Open it from the applications menu, or run $NAME (from ~/.local/bin)."
   echo "Run '$NAME skill setup' to let coding agents drive its sessions."
   echo "It updates itself from the project's releases."
@@ -255,7 +255,7 @@ install_prefix() {
   fi
 
   echo ""
-  echo "OmaTerm installed to $PREFIX."
+  echo "omaterm installed to $PREFIX."
   echo "Run: $bin/$NAME"
   echo "Note: an install in a prefix updates with this script, not itself."
 }

@@ -1,6 +1,6 @@
 # Third-party notices
 
-OmaTerm is MIT licensed (see LICENSE). It includes or is derived from the
+omaterm is MIT licensed (see LICENSE). It includes or is derived from the
 following works, under their own licenses.
 
 ## Kero
@@ -305,7 +305,7 @@ The program logos in icons/programs/, mostly through Kero. Released under CC0 1.
 
 https://github.com/egoist/mygo
 
-The application framework OmaTerm is built with.
+The application framework omaterm is built with.
 
 ```
 MIT License
@@ -335,7 +335,7 @@ SOFTWARE.
 
 https://github.com/ghostty-org/ghostty
 
-The terminal emulation library shipped with OmaTerm, through MyGo.
+The terminal emulation library shipped with omaterm, through MyGo.
 
 ```
 MIT License

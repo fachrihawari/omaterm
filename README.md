@@ -1,6 +1,6 @@
-<img src="site/assets/logo.svg" width="72" alt="OmaTerm logo">
+<img src="site/assets/logo.svg" width="72" alt="omaterm logo">
 
-# OmaTerm
+# omaterm
 
 **A terminal workspace for running coding agents side by side.** Projects,
 sessions and split panes in one native window, with the status of every
@@ -13,7 +13,7 @@ The name stands for **Oh My Terminal**.
 **[Download](https://github.com/fachrihawari/omaterm/releases/latest)** ·
 **[Changelog](CHANGELOG.md)**
 
-![OmaTerm with an agent waiting for permission beside a dev server](site/assets/hero.png)
+![omaterm with an agent waiting for permission beside a dev server](site/assets/hero.png)
 
 ## Install
 
@@ -79,15 +79,15 @@ file tree, and an editor with syntax highlighting and Markdown preview.
 
 ### Themes, dark and light
 
-OmaTerm has dark and light themes, which you pick from the command
+omaterm has dark and light themes, which you pick from the command
 palette. The window, terminals and editors share one palette, and its
 colors are checked for contrast so text stays readable. On
-[Omarchy](https://omarchy.org), OmaTerm uses the active Omarchy theme and
+[Omarchy](https://omarchy.org), omaterm uses the active Omarchy theme and
 follows when you switch, with no restart needed.
 
 | Tokyo Night (an Omarchy theme) | Lupine, light (an Omarchy theme) |
 | --- | --- |
-| ![OmaTerm in the Tokyo Night theme](site/assets/theme-tokyo.png) | ![OmaTerm in a light theme](site/assets/theme-light.png) |
+| ![omaterm in the Tokyo Night theme](site/assets/theme-tokyo.png) | ![omaterm in a light theme](site/assets/theme-light.png) |
 
 ### Browser panes
 
@@ -108,7 +108,7 @@ omaterm diff --turn                     # what the last agent turn changed
 ```
 
 `omaterm help` lists every command. `omaterm skill setup` teaches Claude
-Code, Codex, Pi and OpenCode to use it. It also lets OmaTerm tell which
+Code, Codex, Pi and OpenCode to use it. It also lets omaterm tell which
 conversation runs in which pane.
 
 ## Keyboard shortcuts
@@ -131,7 +131,7 @@ On macOS, use `Cmd` in place of `Ctrl`.
 
 ## Building from source
 
-OmaTerm is written in Go with [mygo](https://github.com/egoist/mygo).
+omaterm is written in Go with [mygo](https://github.com/egoist/mygo).
 
 ```sh
 go test ./...          # tests
@@ -151,10 +151,10 @@ cut.
 
 ## Credits
 
-OmaTerm builds on other people's work:
+omaterm builds on other people's work:
 
 - **[Kero](https://github.com/egoist/kero)** by EGOIST (MIT). Much of
-  OmaTerm is adapted from Kero:
+  omaterm is adapted from Kero:
   - the session engine: the control protocol, the PTY, OSC status and
     session code, and git turn snapshots
   - the `omaterm` command and its agent hooks, plugins and skill
@@ -171,6 +171,6 @@ OmaTerm builds on other people's work:
 - **[Simple Icons](https://simpleicons.org)** (CC0): the program logos,
   which are their owners' trademarks.
 
-Their license texts, and those of the Go libraries OmaTerm uses, are in
+Their license texts, and those of the Go libraries omaterm uses, are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The file ships with
 every release.

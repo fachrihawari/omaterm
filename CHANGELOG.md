@@ -25,7 +25,7 @@ one is written for the user: what changed, and why it matters.
 
 ### Your Omarchy theme, everywhere
 
-OmaTerm takes its colors from the active Omarchy theme: the window, the
+omaterm takes its colors from the active Omarchy theme: the window, the
 terminals and the editors. Switch themes and it follows within a moment,
 no restart needed. Light themes are first-class, and the theme's colors are
 checked for contrast, so text stays readable on any of them. Off Omarchy,
@@ -52,7 +52,7 @@ window title counts the sessions waiting on you.
 Agents and scripts can drive your sessions: `omaterm split --down -- go
 test ./...`, `omaterm wait <pane> --exit`, `omaterm read`, `omaterm send`
 and more; `omaterm help` lists them. `omaterm skill setup` teaches Claude
-Code, Codex, Pi and OpenCode to use it, and tells OmaTerm which
+Code, Codex, Pi and OpenCode to use it, and tells omaterm which
 conversation runs in which pane. "Install Command Line Tool" in the
 palette puts it on your PATH.
 
@@ -96,7 +96,7 @@ fail.
 
 ## 0.7.0
 
-### The app is OmaTerm
+### The app is omaterm
 
 The project is omaterm, so the app now says so everywhere: the window title,
 the menu entry, the configuration directory and the package names. Nothing

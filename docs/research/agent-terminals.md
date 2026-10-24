@@ -1,7 +1,7 @@
 # Agent-terminal landscape: Rex, Kero, Tern (research dossier, 2026-10-24)
 
 ## Context
-The user asked for information on three new agent-oriented terminals, to inform OmaTerm's direction. OmaTerm is a Go app on egoist/mygo v0.5.5 with a split-tree of in-process PTYs (`terminal.go`), a projects sidebar (`state.go`, `sidebar.go`) and per-project process scanning (`service/process.go`). This file only collects research. No code changes.
+The user asked for information on three new agent-oriented terminals, to inform omaterm's direction. omaterm is a Go app on egoist/mygo v0.5.5 with a split-tree of in-process PTYs (`terminal.go`), a projects sidebar (`state.go`, `sidebar.go`) and per-project process scanning (`service/process.go`). This file only collects research. No code changes.
 
 ---
 
@@ -182,12 +182,12 @@ Already covered in depth; key points:
 - mygo's updater does Ed25519-signed delta updates. The server build signs a message that binds version, OS and arch.
 - No telemetry in the app; the website uses Umami.
 
-### mygo (the framework OmaTerm also uses)
+### mygo (the framework omaterm also uses)
 - MIT, 2.7k stars, about 70 tags from v0.1.1 (09-27) to v0.6.3 (10-23).
 - Pure Go through purego: Metal, D3D11, GL (GtkGLArea), a CPU renderer, and WASM.
 - Has a native UI toolkit (85 docs pages: lists, editor, **diff viewer**, markdown, charts, …), a webview, an updater and plugins.
 - **Terminal plugin:** libghostty-vt loaded at run time.
-- **`Mirror` and `History` landed in v0.6.0** (PR #547, 10-20), along with OnCopy, OnClear, MinimumContrast and headless color answers. **OmaTerm's v0.5.5 has OnNotify and Conn/Feed/Text/Snapshot, but not Mirror or History.** Kero pins mygo at commit 2fde45a, which is effectively v0.6.3.
+- **`Mirror` and `History` landed in v0.6.0** (PR #547, 10-20), along with OnCopy, OnClear, MinimumContrast and headless color answers. **omaterm's v0.5.5 has OnNotify and Conn/Feed/Text/Snapshot, but not Mirror or History.** Kero pins mygo at commit 2fde45a, which is effectively v0.6.3.
 
 ### herdr (where Kero's detection rules come from)
 - herdrdev/herdr: a Rust agent multiplexer, Apache-2.0, 45.5k stars, YC with a $6M seed, at v0.9.5.
@@ -296,21 +296,21 @@ Already covered in depth; key points:
 
 ---
 
-## 4. Takeaways for OmaTerm
+## 4. Takeaways for omaterm
 1. **Status is a convergent feature.** All three tools have it, and OSC 7501 is becoming the standard: Claude Code and Codex already emit it. The cheapest high-value step is to scan OSC 7501, 133 and 9;4 plus the title spinner, optionally adding herdr's Apache-licensed screen rules. Then show working/waiting/done in the sidebar and tabs, with notifications.
 2. **Daemon persistence is expected now.** Kero is a reference implementation on the same framework, but it needs **mygo ≥ v0.6.0** for `Mirror` and `History`. Rex's other approach is to tee raw bytes to clients that each run their own emulator.
 3. **Agent hooks and resume** don't need a daemon. A SessionStart hook can record the agent's session ID so a restored pane runs `claude --resume <id>`.
-4. **Per-turn diffs** with a temporary `GIT_INDEX_FILE` plus `write-tree` are cheap and fit OmaTerm's existing `diff.go` and `graph.go`.
+4. **Per-turn diffs** with a temporary `GIT_INDEX_FILE` plus `write-tree` are cheap and fit omaterm's existing `diff.go` and `graph.go`.
 5. **Browser panes plus automation, as in Kero.**
    - **What:** a split pane showing an OS webview, with a toolbar (back, forward, reload, address bar, favicon), find, and the page restored on restart. A `browser` CLI lets agents drive it: `open`, `click`, `type` (`--enter`), `wait <selector|--text>`, `text`, `html`, `eval`, `screenshot`, `back`, `forward`, `reload`.
    - **How Kero does it:** injected JS waits for elements and dispatches real input events. Screenshots need the pane visible. Driving requires the app to be open plus a "Remote Control" setting. The agent skill teaches "`split --url localhost:3000`, then verify with `browser …`". Optional ad blocking converts EasyList into WebKit content rules.
-   - **OmaTerm today:** mygo v0.5.5 already has `Window.NewWebView` (placed through `ui.WebView`), page script evaluation and `WebView.CapturePage()` (PNG). Content-rule compilation for ad blocking needs newer mygo.
+   - **omaterm today:** mygo v0.5.5 already has `Window.NewWebView` (placed through `ui.WebView`), page script evaluation and `WebView.CapturePage()` (PNG). Content-rule compilation for ad blocking needs newer mygo.
    - **Prerequisite:** an app control socket and CLI (`omaterm browser …`). The agent CLI needs the same thing.
    - **Linux caveats:** WebKitGTK must be present. Native overlays (palette, menus) have to avoid the webview layer.
-   - **Why it matters:** agents can check the UI they build inside OmaTerm while the user watches. Rex has no browser; Tern's is closed and tied to omp.
+   - **Why it matters:** agents can check the UI they build inside omaterm while the user watches. Rex has no browser; Tern's is closed and tied to omp.
 5b. **UI polish, in the style of Rex, Kero and Tern.** The user likes all three looks.
-   - **OmaTerm today:** a flat dark "oma" palette (`theme.go`: `#0b0e12` background, hard borders `#252d38`), top tabs (`tabs.go`), a sidebar (`sidebar.go`), a status bar (`statusbar.go`), and panes in `terminal.go`.
-   - **What they share, and what OmaTerm could adopt:**
+   - **omaterm today:** a flat dark "oma" palette (`theme.go`: `#0b0e12` background, hard borders `#252d38`), top tabs (`tabs.go`), a sidebar (`sidebar.go`), a status bar (`statusbar.go`), and panes in `terminal.go`.
+   - **What they share, and what omaterm could adopt:**
 
      | Pattern | Description | Where it's from |
      |---|---|---|
@@ -330,4 +330,4 @@ Already covered in depth; key points:
    - **User decisions (2026-10-24):** wants **every** pattern in the table above. Look: **follow the active Omarchy theme** for colors, with the Rex/Kero/Tern structure on top. For now, only save the research; plan features later.
 6. **Agent CLI:** `split`, `send`, `read`, `wait` and `report` over a local socket. This underpins #5 and copies the names agent skills already expect.
 7. **TSP** is the boldest idea, and it has a ready Go SDK. But only omp emits it today, so it's a long-term bet.
-8. **Positioning:** Kero already covers Linux with MIT code on the same stack. Rex and Tern have no Linux desktop client. OmaTerm's opening is being Omarchy-native and opinionated.
+8. **Positioning:** Kero already covers Linux with MIT code on the same stack. Rex and Tern have no Linux desktop client. omaterm's opening is being Omarchy-native and opinionated.
