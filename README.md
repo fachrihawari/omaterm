@@ -3,8 +3,9 @@
 **A terminal workspace for running coding agents side by side.** Projects,
 sessions and split panes in one native window, with the status of every
 agent at a glance, what each one changed in its last turn, and a Git
-panel, editor and browser pane next to your shells. Made for
-[Omarchy](https://omarchy.org) first, and it follows your Omarchy theme.
+panel, editor and browser pane next to your shells.
+
+The name stands for **Oh My Terminal**.
 
 **[Website](https://fachrihawari.github.io/omaterm/)** ·
 **[Download](https://github.com/fachrihawari/omaterm/releases/latest)** ·
@@ -74,15 +75,15 @@ file tree, and an editor with syntax highlighting and Markdown preview.
 | **Commit graph** | **Editor** |
 | ![The commit graph with merges](site/assets/graph.png) | ![The editor with a Go file open](site/assets/editor.png) |
 
-### Your Omarchy theme, everywhere
+### Themes, dark and light
 
-OmaTerm takes its colors from the active Omarchy theme, and so do its
-terminals and editors. When you switch themes it follows, with no restart
-needed. Light themes are fully supported, and colors are checked for
-contrast. If you don't use Omarchy, pick Dark or Light from the command
-palette.
+OmaTerm has dark and light themes, which you pick from the command
+palette. The window, terminals and editors share one palette, and its
+colors are checked for contrast so text stays readable. On
+[Omarchy](https://omarchy.org), OmaTerm uses the active Omarchy theme and
+follows when you switch, with no restart needed.
 
-| Tokyo Night | Lupine (light) |
+| Tokyo Night (an Omarchy theme) | Lupine, light (an Omarchy theme) |
 | --- | --- |
 | ![OmaTerm in the Tokyo Night theme](site/assets/theme-tokyo.png) | ![OmaTerm in a light theme](site/assets/theme-light.png) |
 
@@ -141,6 +142,10 @@ To refresh the screenshots in this README and on the website, run
 `SITE_SHOTS=1 go test -run TestSiteShots .`. It renders them into
 `site/assets`. See [RELEASING.md](RELEASING.md) for how releases are
 cut.
+
+## License
+
+[MIT](LICENSE)
 
 ## Credits
 
