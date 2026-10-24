@@ -8,6 +8,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/model"
 	"omaterm/internal/paths"
+	"omaterm/internal/shellcmd"
 	"omaterm/service"
 )
 
@@ -76,7 +77,7 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 	if len(w.tabs) == 0 {
 		names := p.Tabs
 		if len(names) == 0 {
-			names = []string{"dev"}
+			names = []string{shellcmd.Name(shellcmd.Login())}
 		}
 		for _, name := range names {
 			t := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen,

@@ -8,6 +8,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/model"
 	"omaterm/internal/session"
+	"omaterm/internal/shellcmd"
 )
 
 func twoProjectApp(t *testing.T) *appState {
@@ -139,4 +140,16 @@ func TestStateSavesAgentWithoutSession(t *testing.T) {
 		}
 	}
 	t.Fatal("pane not saved")
+}
+
+// A project's first session is named as every new one is, after the
+// shell, so the pane's own title can replace it.
+func TestFirstSessionNamedAfterShell(t *testing.T) {
+	a := newApp()
+	a.win = nil
+	a.projects = []project{{Name: "test", Path: t.TempDir()}}
+	a.setProject(0)
+	if len(a.tabs) != 1 || a.tabs[0].Label != shellcmd.Name(shellcmd.Login()) || !autoLabel(a.tabs[0].Label) {
+		t.Fatalf("tabs %+v: want one named after the shell", a.tabs)
+	}
 }

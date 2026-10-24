@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestListProjectProcesses(t *testing.T) {
 	// Give it a moment to appear in /proc.
 	time.Sleep(100 * time.Millisecond)
 
-	procs, err := ListProjectProcesses(dir)
+	procs, err := ListProjectProcesses(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func TestListProjectProcesses(t *testing.T) {
 	cmd.Process.Kill()
 	cmd.Wait()
 	time.Sleep(100 * time.Millisecond)
-	procs2, err := ListProjectProcesses(dir)
+	procs2, err := ListProjectProcesses(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +64,7 @@ func TestListProjectPorts(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	procs, _ := ListProjectProcesses(dir)
+	procs, _ := ListProjectProcesses(dir, nil)
 	ports, err := ListProjectPorts(procs)
 	if err != nil {
 		t.Fatal(err)
@@ -85,4 +86,50 @@ func TestKillProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd.Wait()
+}
+
+// A project lists its panes' shells and what they start, wherever that
+// runs, and nothing from outside it.
+func TestListProjectProcessesRoots(t *testing.T) {
+	workspace, elsewhere := t.TempDir(), t.TempDir()
+	start := func() *exec.Cmd {
+		cmd := exec.Command("sleep", "30")
+		cmd.Dir = elsewhere
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+		return cmd
+	}
+	mine, other := start(), start()
+	time.Sleep(100 * time.Millisecond)
+
+	procs, err := ListProjectProcesses(workspace, []int{mine.Process.Pid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[int]bool{}
+	for _, p := range procs {
+		listed[p.Pid] = true
+	}
+	if !listed[mine.Process.Pid] || listed[other.Process.Pid] {
+		t.Fatalf("listed %v: want the root %d, not %d", procs, mine.Process.Pid, other.Process.Pid)
+	}
+}
+
+// omaterm's own processes are never listed, even inside the project:
+// killing the app or its daemon would end every session.
+func TestListProjectProcessesHidesOmaterm(t *testing.T) {
+	wd, _ := os.Getwd()
+	procs, _ := ListProjectProcesses(wd, []int{os.Getpid()})
+	for _, p := range procs {
+		if p.Pid == os.Getpid() {
+			t.Fatal("listed the app itself")
+		}
+	}
+	for comm, want := range map[string]bool{"omaterm": true, "omaterm-dev": true, "zsh": false} {
+		if got := ownProcess(1, comm); got != want {
+			t.Errorf("ownProcess(%q) = %v, want %v", comm, got, want)
+		}
+	}
 }

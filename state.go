@@ -639,19 +639,40 @@ func (a *appState) refreshActiveRepo() {
 // listProcesses lists a project's processes, never nil once listed: the
 // Info panel shows nil as still loading, and a folder too broad to list
 // (the home folder) lists none.
-func listProcesses(workspace string) ([]service.Process, error) {
-	procs, err := service.ListProjectProcesses(workspace)
+func listProcesses(workspace string, roots []int) ([]service.Process, error) {
+	procs, err := service.ListProjectProcesses(workspace, roots)
 	if procs == nil {
 		procs = []service.Process{}
 	}
 	return procs, err
 }
 
+// paneShells returns the PIDs of the shown project's pane shells.
+func (a *appState) paneShells() []int {
+	p := a.project()
+	if p == nil {
+		return nil
+	}
+	var pids []int
+	for _, t := range a.projectTabs(p.ID) {
+		if t.Kind != tabTerminal || t.Split == nil {
+			continue
+		}
+		for _, id := range t.Split.termIDs() {
+			if pid := a.status[id].PID; pid > 0 {
+				pids = append(pids, pid)
+			}
+		}
+	}
+	return pids
+}
+
 func (a *appState) refreshProcesses() {
 	workspace := a.workspace
+	roots := a.paneShells()
 	// In test mode (no window) run synchronously to avoid goroutine races.
 	if a.win == nil {
-		procs, err := listProcesses(workspace)
+		procs, err := listProcesses(workspace, roots)
 		ports, _ := service.ListProjectPorts(procs)
 		a.processes = procs
 		a.ports = ports
@@ -668,7 +689,7 @@ func (a *appState) refreshProcesses() {
 	}
 	win := a.win
 	a.processJob.Run(func(ctx context.Context) error {
-		procs, err := listProcesses(workspace)
+		procs, err := listProcesses(workspace, roots)
 		ports, _ := service.ListProjectPorts(procs)
 		win.Update(func() {
 			a.processes = procs

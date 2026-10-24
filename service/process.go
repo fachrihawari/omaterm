@@ -33,10 +33,11 @@ type Port struct {
 	Process string
 }
 
-// ListProjectProcesses returns processes whose CWD is under workspace, or
-// that are descendants of the omaterm process itself (terminal shells and
-// their children).
-func ListProjectProcesses(workspace string) ([]Process, error) {
+// ListProjectProcesses returns the project's processes: roots (the shells
+// of its panes) and their descendants, and those whose CWD is under
+// workspace. omaterm's own processes are never listed: killing one would
+// end every session.
+func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 	if runtime.GOOS != "linux" {
 		return nil, nil
 	}
@@ -70,13 +71,15 @@ func ListProjectProcesses(workspace string) ([]Process, error) {
 		}
 	}
 
-	// Build a set of project PIDs: descendants of the omaterm process itself.
-	// Terminal shells and their children are all descendants of omaterm.
+	// The project's panes and what they started, wherever it went.
 	pidSet := map[int]bool{}
-	for _, desc := range descendantsOf(os.Getpid()) {
-		pidSet[desc] = true
+	children := childrenMap()
+	for _, root := range roots {
+		pidSet[root] = true
+		for _, desc := range descendants(children, root) {
+			pidSet[desc] = true
+		}
 	}
-	pidSet[os.Getpid()] = true
 
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -137,6 +140,9 @@ func ListProjectProcesses(workspace string) ([]Process, error) {
 		if name == "" {
 			name = "?"
 		}
+		if ownProcess(pid, name) {
+			continue
+		}
 
 		// Read full command line (truncated).
 		cmdLine := ""
@@ -178,9 +184,14 @@ func ListProjectProcesses(workspace string) ([]Process, error) {
 	return procs, nil
 }
 
-// descendantsOf returns all descendant PIDs of the given PID.
-func descendantsOf(pid int) []int {
-	// Build a map of ppid -> children.
+// ownProcess reports whether a process is omaterm's own: the app, its
+// session daemon, or an omaterm command a pane runs.
+func ownProcess(pid int, comm string) bool {
+	return pid == os.Getpid() || strings.HasPrefix(comm, "omaterm")
+}
+
+// childrenMap maps each PID to its children's.
+func childrenMap() map[int][]int {
 	children := map[int][]int{}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -215,8 +226,11 @@ func descendantsOf(pid int) []int {
 		}
 		children[ppid] = append(children[ppid], childPid)
 	}
+	return children
+}
 
-	// BFS from pid.
+// descendants returns all descendant PIDs of pid.
+func descendants(children map[int][]int, pid int) []int {
 	var result []int
 	queue := []int{pid}
 	visited := map[int]bool{pid: true}
@@ -455,12 +469,6 @@ func resolvePortName(port int, fallback string) string {
 		return fields[0]
 	}
 	return fallback
-}
-
-// ListProjectProcesses signature changed: now accepts terminal PIDs.
-// TerminalPids returns the PIDs of shells spawned by omaterm.
-func TerminalPids() []int {
-	return nil // placeholder; populated by app state
 }
 
 // IsWorkspaceTooBroad reports whether the workspace path is so broad that

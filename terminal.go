@@ -3,8 +3,8 @@ package main
 import (
 	"omaterm/internal/paths"
 	"omaterm/internal/session"
+	"omaterm/internal/shellcmd"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
@@ -397,17 +397,10 @@ func (a *appState) killTermPaneByTermID(termID string) {
 
 // newTerminalTabReal adds a terminal tab with a single pane.
 func (a *appState) newTerminalTabReal() {
-	shell := os.Getenv("SHELL")
-	name := "Terminal"
-	if shell != "" {
-		if i := strings.LastIndex(shell, "/"); i >= 0 {
-			name = shell[i+1:]
-		}
-	}
 	a.tabs = append(a.tabs, topTab{
 		ID:    newID(),
 		Kind:  tabTerminal,
-		Label: name,
+		Label: shellcmd.Name(shellcmd.Login()),
 		Dot:   dotGreen,
 		Path:  randomTermID(),
 		Split: &splitNode{TermID: randomTermID()},

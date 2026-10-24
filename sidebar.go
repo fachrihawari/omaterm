@@ -471,7 +471,6 @@ func (a *appState) openProjectDialog() {
 				ID:   newID(),
 				Name: filepath.Base(dir),
 				Path: dir,
-				Tabs: []string{"dev"},
 			})
 			a.setProject(len(a.projects) - 1)
 		})
