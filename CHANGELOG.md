@@ -3,6 +3,22 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.8.2
+
+### A new icon, and a home page
+
+omaterm has a new icon: a prompt in a rounded frame, in the app's blue. It
+shows in your app launcher and window list after this update.
+
+omaterm also has a website, https://fachrihawari.github.io/omaterm/, with
+screenshots of what it does and the one-line installer.
+
+### Open source, with credit where it's due
+
+omaterm is MIT licensed. The app now ships its license and the notices of
+the work it builds on, such as Kero, Ghostty, MyGo, herdr and Lucide, in
+LICENSE and THIRD_PARTY_NOTICES.md beside the app.
+
 ## 0.8.1
 
 ### A cleaner, more readable window
