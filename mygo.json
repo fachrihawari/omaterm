@@ -1,7 +1,7 @@
 {
   "name": "omaterm",
   "identifier": "com.example.omaterm",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "out": "build",
   "macos": {
     "minimumSystemVersion": "13.0"

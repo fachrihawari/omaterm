@@ -3,7 +3,7 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
-## Unreleased
+## 0.8.0
 
 ### Your Omarchy theme, everywhere
 
