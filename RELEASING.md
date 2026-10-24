@@ -14,9 +14,12 @@ Releases are cut from a tag:
 2. Commit and push, then tag and push the tag:
 
    ```sh
-   git tag v0.7.0
+   git tag -a v0.7.0 -m "omaterm 0.7.0"
    git push origin dev --follow-tags
    ```
+
+   The tag must be annotated (`-a`): `--follow-tags` leaves a lightweight
+   tag behind.
 
 3. `release.yml` checks the tag against `mygo.json`, creates a draft
    release, and builds every platform into it: macOS, Windows, Linux and
