@@ -21,6 +21,10 @@ import (
 	"omaterm/service"
 )
 
+// shotWorkspace is the app's workspace path in the shots: the repo is
+// cloned somewhere else in CI, and the path is part of the picture.
+const shotWorkspace = "/home/you/Projects/omaterm"
+
 // shotStatuses gives the shot's sessions every status a session row and
 // pane header show: an agent waiting, a split working, one done unseen.
 func shotStatuses(a *appState) {
@@ -93,10 +97,6 @@ func TestShots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The app's workspace, and the path the shots show, is a fixed one: the
-	// repo is cloned somewhere else in CI, and the path is part of the
-	// picture.
-	const shotWorkspace = "/home/you/Projects/omaterm"
 	// Pin "now": relative labels in the graph would otherwise change as
 	// the suite runs at a different hour.
 	shotNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -336,57 +336,7 @@ func TestShots(t *testing.T) {
 		}},
 	}
 	for _, s := range shots {
-		a := newApp()
-		// Pin the workspace and project list: newApp() reads the user's
-		// saved state, which made the shots depend on what was open.
-		a.projects = []project{{Name: "omaterm", Path: wd, Tabs: []string{"dev", "api", "tests"}}}
-		a.active = 0
-		// A live shell would print its prompt whenever it got round to it,
-		// which made the terminal goldens differ between runs.
-		a.termCmd = []string{"sleep", "120"}
-		a.setProject(0)
-		// The path the shots show is fixed, not the checkout's: the same
-		// goldens must render in CI, where the repo lives elsewhere. Only
-		// the label changes; a.workspace still reads this repo's files.
-		if p := a.project(); p != nil {
-			p.Path = shotWorkspace
-		}
-		// The tester has no window, so the async refreshers no-op; load
-		// repo data synchronously instead.
-		if repos := service.DiscoverRepos(wd, 1); len(repos) > 0 {
-			a.repos = repos
-			a.activeRepo = 0
-			// The graph header shows the repo's directory name, which is the
-			// checkout's; pin it so the goldens hold in CI.
-			a.repos[0].Name = "omaterm"
-			// Fixed branch name: the checked-out branch differs between
-			// clones and while reviewing a feature branch.
-			a.currentBranch = "main"
-			if p := a.project(); p != nil {
-				p.Branch = "main"
-			}
-			// Fixed status and HEAD: a clean or dirty working tree would
-			// otherwise change the Git badge and panel between runs.
-			r := &a.repos[0]
-			r.Branch = "main"
-			r.Head = "a1b2c3d"
-			r.Staged = []service.GitFile{
-				{Path: "main.go", Status: "M", Staged: true},
-				{Path: "theme.go", Status: "M", Staged: true},
-			}
-			r.Changes = []service.GitFile{
-				{Path: "statusbar.go", Status: "M"},
-				{Path: ".agents/skills/screenshot/SKILL.md", Status: "M"},
-				{Path: "icons/alert-triangle.svg", Status: "A"},
-			}
-			r.Stashes = nil
-			r.Ahead, r.Behind = 0, 0
-		}
-		// Fixed process, port and machine-load values: real ones differ
-		// on every run.
-		a.processes = []service.Process{{Name: "omaterm", Pid: 1234, CPU: "2.5%", Mem: "64 MB"}}
-		a.ports = []service.Port{{Port: 8080, Name: "http", Open: true, Pid: 1234, Process: "omaterm"}}
-		a.sysStats = service.SystemStats{CPUPercent: 3, MemUsed: 1395864371, MemTotal: 17179869184, OK: true}
+		a := newShotApp(wd)
 		// The UI audit renders every scene again in other themes and
 		// densities, into a folder of its own: SHOT_THEME names a fixture
 		// of internal/theme/testdata, SHOT_DENSITY "compact".
@@ -427,6 +377,64 @@ func TestShots(t *testing.T) {
 		f.Close()
 		stopTermPanes(a)
 	}
+}
+
+// newShotApp builds the app every shot starts from: this repo as the
+// workspace, shown at a fixed path, with git, process and load data
+// pinned so the pictures hold between runs and machines.
+func newShotApp(wd string) *appState {
+	a := newApp()
+	// Pin the workspace and project list: newApp() reads the user's
+	// saved state, which made the shots depend on what was open.
+	a.projects = []project{{Name: "omaterm", Path: wd, Tabs: []string{"dev", "api", "tests"}}}
+	a.active = 0
+	// A live shell would print its prompt whenever it got round to it,
+	// which made the terminal goldens differ between runs.
+	a.termCmd = []string{"sleep", "120"}
+	a.setProject(0)
+	// The path the shots show is fixed, not the checkout's: the same
+	// goldens must render in CI, where the repo lives elsewhere. Only
+	// the label changes; a.workspace still reads this repo's files.
+	if p := a.project(); p != nil {
+		p.Path = shotWorkspace
+	}
+	// The tester has no window, so the async refreshers no-op; load
+	// repo data synchronously instead.
+	if repos := service.DiscoverRepos(wd, 1); len(repos) > 0 {
+		a.repos = repos
+		a.activeRepo = 0
+		// The graph header shows the repo's directory name, which is the
+		// checkout's; pin it so the goldens hold in CI.
+		a.repos[0].Name = "omaterm"
+		// Fixed branch name: the checked-out branch differs between
+		// clones and while reviewing a feature branch.
+		a.currentBranch = "main"
+		if p := a.project(); p != nil {
+			p.Branch = "main"
+		}
+		// Fixed status and HEAD: a clean or dirty working tree would
+		// otherwise change the Git badge and panel between runs.
+		r := &a.repos[0]
+		r.Branch = "main"
+		r.Head = "a1b2c3d"
+		r.Staged = []service.GitFile{
+			{Path: "main.go", Status: "M", Staged: true},
+			{Path: "theme.go", Status: "M", Staged: true},
+		}
+		r.Changes = []service.GitFile{
+			{Path: "statusbar.go", Status: "M"},
+			{Path: ".agents/skills/screenshot/SKILL.md", Status: "M"},
+			{Path: "icons/alert-triangle.svg", Status: "A"},
+		}
+		r.Stashes = nil
+		r.Ahead, r.Behind = 0, 0
+	}
+	// Fixed process, port and machine-load values: real ones differ
+	// on every run.
+	a.processes = []service.Process{{Name: "omaterm", Pid: 1234, CPU: "2.5%", Mem: "64 MB"}}
+	a.ports = []service.Port{{Port: 8080, Name: "http", Open: true, Pid: 1234, Process: "omaterm"}}
+	a.sysStats = service.SystemStats{CPUPercent: 3, MemUsed: 1395864371, MemTotal: 17179869184, OK: true}
+	return a
 }
 
 // errShot is a shot-check failure.
