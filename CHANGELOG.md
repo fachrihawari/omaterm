@@ -3,6 +3,24 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.8.1
+
+### A cleaner, more readable window
+
+- Panes have round corners all the way around again.
+- The highlighted row in the command palette, Go to File, the branch
+  picker, search and the shortcuts list is readable in every theme, with
+  the letters you typed in bold.
+- The palette puts first what you name: "setup" finds Set Up Agent
+  Integration, and a category ("setting", "git") lists its entries.
+- Buttons that can't act yet, such as Commit with nothing to commit,
+  stay legible instead of fading out.
+- Narrow panes keep their title readable: the status chip and buttons
+  make room instead of drawing over it. Banners stay short in a small
+  window.
+- The Git panel lines up its file rows, and names the repository in its
+  footer.
+
 ## 0.8.0
 
 ### Your Omarchy theme, everywhere
