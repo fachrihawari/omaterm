@@ -1,3 +1,5 @@
+<img src="site/assets/logo.svg" width="72" alt="OmaTerm logo">
+
 # OmaTerm
 
 **A terminal workspace for running coding agents side by side.** Projects,
