@@ -3,6 +3,29 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.8.3
+
+### No more "Data Access Blocked" on macOS
+
+On macOS, omaterm could set off a "Data Access Blocked" notice: with your
+home folder open as a project, it looked through ~/Library, where other
+apps keep their data. It no longer reads that folder.
+
+A first launch also opens no project now, rather than your home folder.
+Open the folder you work in, and omaterm starts there.
+
+### A process list for the project you're in
+
+The Info panel's process list showed processes from every project, and
+omaterm itself twice: one of those could be killed, and doing so ended
+every session. Each project now lists what its own sessions run, and what
+runs in its folder. omaterm's own processes no longer appear.
+
+### Sessions named after your shell
+
+A project's first session was called "dev". It now takes your shell's
+name, like any new session, so it shows what's running in it.
+
 ## 0.8.2
 
 ### A new icon, and a home page
