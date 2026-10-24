@@ -19,7 +19,6 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
 			a.inspectorTabButton(c, 1, iconFolder, "Files", 0)
 			a.inspectorTabButton(c, 2, iconGitBranch, "Git", a.gitCount())
-			a.inspectorTabButton(c, 3, iconGitCompare, "Changes", len(a.changes.files))
 			ui.Spacer(c)
 		})
 
@@ -28,8 +27,6 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 			a.filesPanel(c)
 		case 2:
 			a.gitPanel(c)
-		case 3:
-			a.changesPanel(c)
 		default:
 			a.infoPanel(c)
 		}
@@ -397,6 +394,18 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 		// Repo switcher when several repos were discovered.
 		if len(a.repos) > 1 {
 			a.repoSwitcher(c)
+		}
+
+		// While the focused pane's agent has a turn, a switch shows its
+		// changes alone.
+		if info, ok := a.changesPane(); ok && info.Turn != nil {
+			ui.Box(c).Padding(10, 10, 8, 10).Shrink(0).Children(func() {
+				a.turnSwitch(c)
+			})
+			if a.changes.lastTurn {
+				a.turnChanges(c, info)
+				return
+			}
 		}
 
 		r := a.activeRepoRef()

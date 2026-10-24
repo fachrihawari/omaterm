@@ -49,7 +49,7 @@ func shotStatuses(a *appState) {
 	a.activePaneTermID = a.tabs[0].Split.termIDs()[0]
 }
 
-// shotChanges shows the Changes tab with a pinned list: what a pane's
+// shotChanges shows the Git tab's Last turn with a pinned list: what a pane's
 // agent changed in its last turn.
 func shotChanges(a *appState) {
 	id := a.activeSplitLeaf()
@@ -57,10 +57,10 @@ func shotChanges(a *appState) {
 	dir := a.project().Path // the pinned path the shots show
 	a.status[id] = session.Info{ID: id, Session: a.tabs[0].ID, Agent: "claude", Process: "claude", Status: session.Idle,
 		Unread: true, Progress: -1, Dir: dir, Turn: &session.Turn{Tree: "4b825dc", Root: dir, At: at}}
-	a.inspectorVisible, a.inspectorTab = true, 3
+	a.inspectorVisible, a.inspectorTab = true, 2
 	cs := &a.changes
-	cs.base = gitsnap.BaseTurn
-	cs.key = id + "|" + cs.base + "|4b825dc"
+	cs.lastTurn = true
+	cs.key = id + "|4b825dc"
 	cs.stamp = service.GitStamp(service.RepoRoot(dir))
 	cs.loadedAt = nowFunc()
 	cs.pane, cs.root = id, dir

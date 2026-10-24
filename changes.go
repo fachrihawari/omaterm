@@ -1,10 +1,9 @@
 package main
 
-// The Changes panel: what a session's pane changed, against the start of
-// its agent's last turn (a snapshot taken as the agent began working),
-// HEAD, or where its branch left the default branch. Each file opens to
-// its diff, whose changes can be kept or reverted, one at a time. It
-// follows the focused pane.
+// The Git tab's Last turn view: what the focused pane's agent changed in
+// its last turn, against a snapshot taken as the agent began working.
+// Each file opens to its diff, whose changes can be kept or reverted, one
+// at a time. It follows the focused pane, into a worktree too.
 
 import (
 	"context"
@@ -21,18 +20,18 @@ import (
 	"omaterm/service"
 )
 
-// changeSet is the Changes panel's state.
+// changeSet is the Last turn view's state.
 type changeSet struct {
-	base string // gitsnap.BaseTurn, BaseHead or BaseBranch
+	// lastTurn is the Git tab's switch: the turn's changes, not all.
+	lastTurn bool
 
-	// What the list is of: the pane, its worktree, the base's revision
-	// and name, and its files.
+	// What the list is of: the pane, its worktree, the turn's revision,
+	// and its files.
 	pane string
 	root string
 	// notRepo tells a pane outside any git repository.
 	notRepo  bool
 	rev      string
-	baseName string
 	files    []gitsnap.File
 	err      string
 	loading  bool
@@ -66,26 +65,17 @@ func (a *appState) changesPane() (session.Info, bool) {
 	return info, true
 }
 
-// refreshChanges lists the files changed against the base, off the UI
-// thread, when what the list is of changed or it is due.
+// refreshChanges lists the files the turn changed, off the UI thread,
+// when what the list is of changed or it is due.
 func (a *appState) refreshChanges(force bool) {
 	cs := &a.changes
 	info, ok := a.changesPane()
-	if !ok {
+	if !ok || info.Turn == nil {
 		cs.files, cs.err, cs.pane = nil, "", ""
 		return
 	}
-	turn := ""
-	if info.Turn != nil {
-		turn = info.Turn.Tree
-	}
-	if cs.base == "" {
-		cs.base = gitsnap.BaseHead
-		if turn != "" {
-			cs.base = gitsnap.BaseTurn
-		}
-	}
-	key := info.ID + "|" + cs.base + "|" + turn
+	turn := info.Turn.Tree
+	key := info.ID + "|" + turn
 	stamp := service.GitStamp(firstNonEmpty(cs.root, service.RepoRoot(info.WorkDir())))
 	every := 30 * time.Second
 	if info.Status == session.Working {
@@ -98,16 +88,16 @@ func (a *appState) refreshChanges(force bool) {
 		cs.open = map[string]*changeFile{}
 	}
 	cs.key, cs.stamp, cs.loading, cs.loadedAt = key, stamp, true, nowFunc()
-	dir, base, pane := info.WorkDir(), cs.base, info.ID
+	dir, pane := info.WorkDir(), info.ID
 	cs.job.Run(func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		r, err := gitsnap.Open(ctx, dir)
 		notRepo := err != nil
-		var rev, name string
+		var rev string
 		var files []gitsnap.File
 		if err == nil {
-			if rev, name, err = r.Base(ctx, base, turn); err == nil {
+			if rev, _, err = r.Base(ctx, gitsnap.BaseTurn, turn); err == nil {
 				files, err = r.Changes(ctx, rev, "")
 			}
 		}
@@ -125,7 +115,7 @@ func (a *appState) refreshChanges(force bool) {
 				cs.err, cs.files = err.Error(), nil
 				return
 			}
-			cs.root, cs.rev, cs.baseName, cs.files = r.Root, rev, name, files
+			cs.root, cs.rev, cs.files = r.Root, rev, files
 			for path, f := range cs.open {
 				f.loading = false
 				a.loadChangeFile(path, f.file)
@@ -213,47 +203,53 @@ func (a *appState) revertHunk(c *ui.Context, cf *changeFile, i int) {
 	a.refreshChanges(true)
 }
 
-// changesPanel is the inspector's Changes tab.
-func (a *appState) changesPanel(c *ui.Context) {
+// turnSwitch is the Git tab's switch between all changes and the last
+// turn's, shown while the focused pane's agent has one.
+func (a *appState) turnSwitch(c *ui.Context) {
+	cs := &a.changes
+	ui.Row(c.Key("turn-seg")).Radius(8).Padding(2).Background(pal.Chip).Shrink(0).Children(func() {
+		for _, b := range []struct {
+			turn  bool
+			label string
+			tip   string
+		}{
+			{false, "All changes", "Everything not committed"},
+			{true, "Last turn", "What the agent changed in its last turn"},
+		} {
+			seg := ui.ButtonBase(c.Key(b.label)).Grow(1).Height(26).Radius(6).Center().Tooltip(b.tip)
+			col := pal.TextMuted
+			if cs.lastTurn == b.turn {
+				raised(seg.Background(pal.Raised))
+				col = pal.Text
+			}
+			seg.Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Text(c, b.label).FontSize(12).FontWeight(500).TextColor(col).SingleLine()
+					if b.turn && len(cs.files) > 0 {
+						countBadge(c, len(cs.files))
+					}
+				})
+			})
+			if seg.Clicked() && cs.lastTurn != b.turn {
+				cs.lastTurn = b.turn
+				if b.turn {
+					a.refreshChanges(true)
+				}
+			}
+		}
+	})
+}
+
+// turnChanges is the Last turn view: the files the turn changed, each
+// opening to its diff.
+func (a *appState) turnChanges(c *ui.Context, info session.Info) {
 	cs := &a.changes
 	if cs.open == nil {
 		cs.open = map[string]*changeFile{}
 	}
 	a.refreshChanges(false)
 	c.After(time.Second) // follow the files as they change
-	info, ok := a.changesPane()
-	ui.Column(c).Grow(1).MinHeight(0).Padding(10, 10, 0, 10).Gap(8).Children(func() {
-		// The bases, as a segmented control.
-		ui.Row(c.Key("seg")).Radius(8).Padding(2).Background(pal.Chip).Shrink(0).Children(func() {
-			for _, b := range []struct{ base, label, tip string }{
-				{gitsnap.BaseTurn, "Last Turn", "What the agent changed in its last turn"},
-				{gitsnap.BaseHead, "Uncommitted", "Changes since HEAD"},
-				{gitsnap.BaseBranch, "Branch", "Changes since the default branch"},
-			} {
-				enabled := b.base != gitsnap.BaseTurn || ok && info.Turn != nil
-				seg := ui.ButtonBase(c.Key(b.base)).Grow(1).Height(26).Radius(6).Center().Disabled(!enabled).Tooltip(b.tip)
-				col := pal.TextMuted
-				if !enabled {
-					// Disabled, it paints at half opacity: dim enough.
-					seg.Tooltip("No agent turn yet in this pane")
-				}
-				if cs.base == b.base {
-					raised(seg.Background(pal.Raised))
-					col = pal.Text
-				}
-				seg.Children(func() {
-					ui.Text(c, b.label).FontSize(12).FontWeight(500).TextColor(col).SingleLine()
-				})
-				if enabled && seg.Clicked() && cs.base != b.base {
-					cs.base = b.base
-					a.refreshChanges(true)
-				}
-			}
-		})
-		if !ok {
-			ui.Text(c, "Focus a terminal pane in a git repository to see its changes.").FontSize(12).TextColor(pal.TextMuted).Padding(8, 2)
-			return
-		}
+	ui.Column(c).Grow(1).MinHeight(0).Padding(0, 10).Gap(8).Children(func() {
 		// The summary: how much changed, since when.
 		added, removed := 0, 0
 		for _, f := range cs.files {
@@ -268,17 +264,7 @@ func (a *appState) changesPanel(c *ui.Context) {
 			if removed > 0 {
 				ui.Text(c, "−"+strconv.Itoa(removed)).FontSize(12).TextColor(pal.Bad).SingleLine()
 			}
-			since := "since HEAD"
-			switch cs.base {
-			case gitsnap.BaseTurn:
-				if info.Turn != nil {
-					since = "since turn " + ago(nowFunc().Sub(time.UnixMilli(info.Turn.At))) + " ago"
-				}
-			case gitsnap.BaseBranch:
-				if cs.baseName != "" && cs.baseName != "HEAD" {
-					since = "since " + cs.baseName
-				}
-			}
+			since := "since turn " + ago(nowFunc().Sub(time.UnixMilli(info.Turn.At))) + " ago"
 			ui.Text(c, "· "+since).FontSize(12).TextColor(pal.TextFaint).SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
 			ui.Spacer(c)
 			if cmdButton(c, iconRefresh, 13, false).Tooltip("Refresh").Clicked() {
@@ -366,7 +352,7 @@ func (a *appState) changeRow(c *ui.Context, f gitsnap.File) {
 		ui.Text(c, "Too large to show: omaterm diff prints it").FontSize(11.5).TextColor(pal.TextMuted).Padding(4, 8)
 	case cf.ds != nil:
 		ds := cf.ds
-		ds.HunkActions = cs.base == gitsnap.BaseTurn && !a.worktreeBusy(cs.root)
+		ds.HunkActions = !a.worktreeBusy(cs.root)
 		ds.RenderHunkActions = func(c *ui.Context, bar ui.Element, h *editor.DiffHunkActions) {
 			bar.Row().Gap(4).Children(func() {
 				keep := ui.ButtonBase(c.Key("keep")).Height(20).Padding(0, 8).Radius(5)

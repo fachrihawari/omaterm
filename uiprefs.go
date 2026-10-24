@@ -43,8 +43,11 @@ func (a *appState) loadUIPrefs() {
 	if u.InspectorW >= 240 && u.InspectorW <= 600 {
 		a.inspectorW = u.InspectorW
 	}
-	if u.InspectorTab != nil && *u.InspectorTab >= 0 && *u.InspectorTab <= 3 {
+	if u.InspectorTab != nil && *u.InspectorTab >= 0 && *u.InspectorTab <= 2 {
 		a.inspectorTab = *u.InspectorTab
+	} else if u.InspectorTab != nil && *u.InspectorTab == 3 {
+		// The Changes tab, now the Git tab's Last turn.
+		a.inspectorTab, a.changes.lastTurn = 2, true
 	}
 	if u.DiffSplit != nil {
 		a.diffSplit = *u.DiffSplit

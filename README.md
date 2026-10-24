@@ -41,11 +41,11 @@ away, you get a notification. Press `Ctrl+Shift+J` to jump to it.
 
 ### What did that turn change?
 
-The Changes tab (`Ctrl+Shift+A`) lists what an agent changed in its last
-turn, alongside your uncommitted and branch changes. You can keep or revert
-each hunk.
+In the Git tab, Last turn (`Ctrl+Shift+A`) lists what an agent changed in
+its last turn, apart from everything else you haven't committed. You can keep
+or revert each hunk.
 
-![The Changes tab listing the files an agent edited in its last turn](site/assets/changes.png)
+![The Git tab's Last turn, listing the files an agent edited in its last turn](site/assets/changes.png)
 
 ### Projects, sessions and split panes
 

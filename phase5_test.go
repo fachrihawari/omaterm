@@ -174,7 +174,7 @@ func changesFixture(t *testing.T, status session.Status) (*appState, *ui.Tester,
 	id := a.activeSplitLeaf()
 	info := session.Info{ID: id, Dir: dir, Agent: "claude", Status: status, Progress: -1,
 		Turn: &session.Turn{Tree: tree, Root: r.Root, At: time.Now().UnixMilli()}}
-	a.inspectorVisible, a.inspectorTab = true, 3
+	a.inspectorVisible, a.inspectorTab, a.changes.lastTurn = true, 2, true
 	a.termCmd = []string{"sh", "-c", "sleep 30"}
 	view := func(c *ui.Context) {
 		a.status[id] = info // the pane's own status would replace it
@@ -194,7 +194,7 @@ func frameUntil(t *testing.T, tr *ui.Tester, what string, ok func() bool) {
 	t.Fatalf("timed out: %s (texts %q)", what, tr.Texts())
 }
 
-// openTurnFile opens a.txt in the Changes panel, and returns it once its
+// openTurnFile opens a.txt in the Git tab's Last turn, and returns it once its
 // diff loaded.
 func openTurnFile(t *testing.T, a *appState, tr *ui.Tester) *changeFile {
 	t.Helper()
@@ -209,7 +209,7 @@ func openTurnFile(t *testing.T, a *appState, tr *ui.Tester) *changeFile {
 	return a.changes.open["a.txt"]
 }
 
-// Revert in the Changes panel puts the turn's hunk back on disk.
+// Revert in Last turn puts the turn's hunk back on disk.
 func TestChangesRevertHunk(t *testing.T) {
 	a, tr, path := changesFixture(t, session.Idle)
 	defer stopTermPanes(a)
@@ -249,4 +249,26 @@ func TestChangesNoRevertWhileWorking(t *testing.T) {
 	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "agent line") {
 		t.Fatalf("reverted while working: %q", b)
 	}
+}
+
+// The Git tab offers Last turn only while the focused pane's agent has a
+// turn; it starts on all changes, and the switch shows the turn's files.
+func TestGitTabLastTurnSwitch(t *testing.T) {
+	plain := newTestApp(t)
+	defer stopTermPanes(plain)
+	plain.inspectorVisible, plain.inspectorTab = true, 2
+	tr := ui.NewTester(plain.view, 1440, 900)
+	tr.Frame()
+	if tr.HasText("Last turn") {
+		t.Fatal("Last turn offered with no agent turn")
+	}
+
+	a, tr, _ := changesFixture(t, session.Idle)
+	defer stopTermPanes(a)
+	a.changes.lastTurn = false
+	frameUntil(t, tr, "the switch", func() bool { return tr.HasText("Last turn") })
+	if err := tr.Click("Last turn"); err != nil {
+		t.Fatal(err)
+	}
+	frameUntil(t, tr, "the turn's file", func() bool { return a.changes.lastTurn && tr.HasText("a.txt") })
 }
