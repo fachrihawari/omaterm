@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -21,6 +22,20 @@ func relPath(workspace, p string) string {
 		return p
 	}
 	return rel
+}
+
+// onMac is whether the home Library folder is off limits: reading the
+// other apps' containers in it makes macOS block omaterm. Tests set it.
+var onMac = runtime.GOOS == "darwin"
+
+// Protected reports whether path is a directory omaterm must not read:
+// on macOS, the home Library folder.
+func Protected(path string) bool {
+	if !onMac {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && home != "" && filepath.Clean(path) == filepath.Join(home, "Library")
 }
 
 // skipDirs are never descended into while indexing or discovering repos.
@@ -117,7 +132,7 @@ func IndexFiles(workspace string, maxFiles int) []string {
 			return nil
 		}
 		if d.IsDir() {
-			if indexSkipDirs[d.Name()] || (strings.HasPrefix(d.Name(), ".") && d.Name() != ".") {
+			if indexSkipDirs[d.Name()] || (strings.HasPrefix(d.Name(), ".") && d.Name() != ".") || Protected(path) {
 				return filepath.SkipDir
 			}
 			if ig != nil && ig.matches(rel+"/") {

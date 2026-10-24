@@ -180,3 +180,13 @@ func TestStateListsUnshownProjects(t *testing.T) {
 		t.Fatalf("sessions %v, want both projects'", got)
 	}
 }
+
+// A first launch opens no project: no home folder project to confuse,
+// and nothing of the home folder read.
+func TestFreshStartHasNoProject(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a := newApp()
+	if len(a.projects) != 0 || a.project() != nil || a.workspace != "" || a.activeTab != -1 {
+		t.Fatalf("projects %v, workspace %q, tab %d: want none", a.projects, a.workspace, a.activeTab)
+	}
+}

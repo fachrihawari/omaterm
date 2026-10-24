@@ -36,6 +36,8 @@ func TestDetachHiddenDaemonPanes(t *testing.T) {
 	a := newApp()
 	a.win = nil
 	a.panes = r
+	a.projects = []project{{Name: "test", Path: dir, Tabs: []string{"dev"}}}
+	a.setProject(0)
 	shownID := a.activeSplitLeaf()
 	for _, id := range []string{"hidden1", shownID} {
 		if _, err := r.Start(session.StartOptions{ID: id, Exec: true, Command: []string{"sh", "-c", "echo screen-" + id + "; exec cat"}, Cols: 80, Rows: 24}); err != nil {

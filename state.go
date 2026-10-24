@@ -419,19 +419,13 @@ func newApp() *appState {
 	a.loadUIPrefs()
 	a.themeMode = a.settings.Theme
 	a.applyTheme(themeSource(a.themeMode))
-	// Load saved projects and their sessions.
+	// Load saved projects and their sessions. With none saved, it starts
+	// empty, and the sidebar offers Open Project.
 	if active := a.loadState(); len(a.projects) > 0 {
 		a.active = -1
 		a.setProject(active)
 	} else {
-		// No saved projects: use home directory as default.
-		home, _ := os.UserHomeDir()
-		if home == "" {
-			home = "/"
-		}
-		a.projects = []project{{Name: filepath.Base(home), Path: home, Tabs: []string{"dev"}}}
-		a.active = 0
-		a.setProject(0)
+		a.clearWorkspace()
 	}
 	return a
 }
@@ -563,17 +557,7 @@ func (a *appState) removeProject(i int) {
 		a.active = -1
 	}
 	if len(a.projects) == 0 {
-		a.active = -1
-		a.workspace = ""
-		a.tabs = nil
-		a.activeTab = -1
-		a.activeView = tabTerminal
-		a.repos = nil
-		a.processes = nil
-		a.ports = nil
-		a.processErr = ""
-		a.processWarn = ""
-		a.stopProcessRefresh()
+		a.clearWorkspace()
 	} else {
 		next := a.active
 		if next < 0 {
@@ -585,6 +569,21 @@ func (a *appState) removeProject(i int) {
 		}
 	}
 	a.saveSoon()
+}
+
+// clearWorkspace shows no project, as when there are none.
+func (a *appState) clearWorkspace() {
+	a.active = -1
+	a.workspace = ""
+	a.tabs = nil
+	a.activeTab = -1
+	a.activeView = tabTerminal
+	a.repos = nil
+	a.processes = nil
+	a.ports = nil
+	a.processErr = ""
+	a.processWarn = ""
+	a.stopProcessRefresh()
 }
 
 // refreshRepos discovers repos and loads their status, off the UI thread.
@@ -799,6 +798,9 @@ func buildFileNode(parent, name string, isDir bool, depth int) *fileNode {
 		return nil
 	}
 	if isDir {
+		if service.Protected(filepath.Join(parent, name)) {
+			return nil
+		}
 		switch name {
 		case "node_modules", ".mygo", "build", "dist", ".cache":
 			return nil

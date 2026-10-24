@@ -121,6 +121,8 @@ func TestStateSavesAgentWithoutSession(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	a := newApp()
 	a.win = nil
+	a.projects = []project{{Name: "test", Path: t.TempDir(), Tabs: []string{"dev"}}}
+	a.setProject(0)
 	id := a.activeSplitLeaf()
 	a.status[id] = session.Info{ID: id, Agent: "opencode", Status: session.Idle}
 	for _, s := range a.state().Sessions {

@@ -65,8 +65,11 @@ func searchContentRG(ctx context.Context, root, query string) ([]Match, error) {
 	args := []string{
 		"--json", "--fixed-strings", "--ignore-case",
 		"--max-count", strconv.Itoa(MaxMatches),
-		"--", query,
 	}
+	if Protected(filepath.Join(root, "Library")) {
+		args = append(args, "--glob", "!/Library/")
+	}
+	args = append(args, "--", query)
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = root
 	stdout, err := cmd.StdoutPipe()
@@ -129,7 +132,7 @@ func searchContentGo(ctx context.Context, root, query string) ([]Match, error) {
 		default:
 		}
 		if d.IsDir() {
-			if indexSkipDirs[d.Name()] || (strings.HasPrefix(d.Name(), ".") && d.Name() != ".") {
+			if indexSkipDirs[d.Name()] || (strings.HasPrefix(d.Name(), ".") && d.Name() != ".") || Protected(path) {
 				return filepath.SkipDir
 			}
 			return nil

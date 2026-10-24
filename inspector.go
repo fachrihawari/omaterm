@@ -122,108 +122,110 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			})
 
-			// PROCESSES
-			ui.Column(c).Gap(8).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Children(func() {
-					sectionLabel(c, "PROCESSES")
-					ui.Spacer(c)
-					countBadge(c, len(a.processes))
-					if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
-						a.refreshProcesses()
-					}
-				})
-				if a.processErr != "" {
-					ui.Text(c, a.processErr).FontSize(10).TextColor(pal.Bad).Padding(4, 0)
-				}
-				ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
-					if a.processes == nil {
-						ui.Box(c).Padding(16).Children(func() {
-							ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
-						})
-					} else if len(a.processes) == 0 {
-						ui.Box(c).Padding(20).Children(func() {
-							ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
-								ui.Icon(c, iconTerminal).Width(20).Height(20).TextColor(pal.TextFaint)
-								if a.processWarn != "" {
-									// The home folder: every process is in it.
-									ui.Text(c, "Not listed for this folder").FontSize(11).TextColor(pal.TextMuted)
-									ui.Text(c, "Open a project folder to see its processes").FontSize(10).TextColor(pal.TextFaint)
-									return
-								}
-								ui.Text(c, "No processes in this project").FontSize(11).TextColor(pal.TextMuted)
-								ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(pal.TextFaint)
-							})
-						})
-					}
-					for i, p := range a.processes {
-						row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
-						if i > 0 {
-							row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
+			// PROCESSES and PORTS: with no project open there are none to list.
+			if a.project() != nil {
+				ui.Column(c).Gap(8).Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Children(func() {
+						sectionLabel(c, "PROCESSES")
+						ui.Spacer(c)
+						countBadge(c, len(a.processes))
+						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
+							a.refreshProcesses()
 						}
-						proc := p
-						row.Children(func() {
-							dot(c, dotGreen, 6)
-							txt(c, proc.Name, 11, pal.Text)
-							mutedTxt2(c, itoa(proc.Pid), 11)
-							ui.Spacer(c)
-							mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
-							if proc.Pid != 1 && proc.Pid != os.Getpid() {
-								if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
-									a.pendingKillPid = proc.Pid
-									a.pendingKillName = proc.Name
-									open := true
-									a.killConfirmOpen = &open
-								}
-							}
-						})
+					})
+					if a.processErr != "" {
+						ui.Text(c, a.processErr).FontSize(10).TextColor(pal.Bad).Padding(4, 0)
 					}
+					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+						if a.processes == nil {
+							ui.Box(c).Padding(16).Children(func() {
+								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
+							})
+						} else if len(a.processes) == 0 {
+							ui.Box(c).Padding(20).Children(func() {
+								ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+									ui.Icon(c, iconTerminal).Width(20).Height(20).TextColor(pal.TextFaint)
+									if a.processWarn != "" {
+										// The home folder: every process is in it.
+										ui.Text(c, "Not listed for this folder").FontSize(11).TextColor(pal.TextMuted)
+										ui.Text(c, "Open a project folder to see its processes").FontSize(10).TextColor(pal.TextFaint)
+										return
+									}
+									ui.Text(c, "No processes in this project").FontSize(11).TextColor(pal.TextMuted)
+									ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(pal.TextFaint)
+								})
+							})
+						}
+						for i, p := range a.processes {
+							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							if i > 0 {
+								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
+							}
+							proc := p
+							row.Children(func() {
+								dot(c, dotGreen, 6)
+								txt(c, proc.Name, 11, pal.Text)
+								mutedTxt2(c, itoa(proc.Pid), 11)
+								ui.Spacer(c)
+								mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
+								if proc.Pid != 1 && proc.Pid != os.Getpid() {
+									if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
+										a.pendingKillPid = proc.Pid
+										a.pendingKillName = proc.Name
+										open := true
+										a.killConfirmOpen = &open
+									}
+								}
+							})
+						}
+					})
 				})
-			})
 
-			// PORTS
-			ui.Column(c).Gap(8).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Children(func() {
-					sectionLabel(c, "PORTS")
-					ui.Spacer(c)
-					countBadge(c, len(a.ports))
-					if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
-						a.refreshProcesses()
-					}
-				})
-				ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
-					if a.processes == nil {
-						ui.Box(c).Padding(16).Children(func() {
-							ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
-						})
-					} else if len(a.ports) == 0 {
-						ui.Box(c).Padding(20).Children(func() {
-							ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
-								ui.Icon(c, iconGlobe).Width(20).Height(20).TextColor(pal.TextFaint)
-								ui.Text(c, "No listening ports").FontSize(11).TextColor(pal.TextMuted)
-								ui.Text(c, "Start a dev server to see its port here").FontSize(10).TextColor(pal.TextFaint)
-							})
-						})
-					}
-					for i, p := range a.ports {
-						row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
-						if i > 0 {
-							row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
+				// PORTS
+				ui.Column(c).Gap(8).Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Children(func() {
+						sectionLabel(c, "PORTS")
+						ui.Spacer(c)
+						countBadge(c, len(a.ports))
+						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
+							a.refreshProcesses()
 						}
-						port := p
-						row.Children(func() {
-							ui.Icon(c, iconGlobe).Width(14).Height(14).TextColor(pal.Accent)
-							txt(c, itoa(port.Port), 11, pal.Text)
-							mutedTxt2(c, port.Name, 11)
-							ui.Spacer(c)
-							if port.Open {
-								if cmdButton(c, iconExternalLink, iconBtn, false).Clicked() {
-									c.Toast("Open :" + itoa(port.Port))
-								}
+					})
+					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+						if a.processes == nil {
+							ui.Box(c).Padding(16).Children(func() {
+								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
+							})
+						} else if len(a.ports) == 0 {
+							ui.Box(c).Padding(20).Children(func() {
+								ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+									ui.Icon(c, iconGlobe).Width(20).Height(20).TextColor(pal.TextFaint)
+									ui.Text(c, "No listening ports").FontSize(11).TextColor(pal.TextMuted)
+									ui.Text(c, "Start a dev server to see its port here").FontSize(10).TextColor(pal.TextFaint)
+								})
+							})
+						}
+						for i, p := range a.ports {
+							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							if i > 0 {
+								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
 							}
-						})
-					}
+							port := p
+							row.Children(func() {
+								ui.Icon(c, iconGlobe).Width(14).Height(14).TextColor(pal.Accent)
+								txt(c, itoa(port.Port), 11, pal.Text)
+								mutedTxt2(c, port.Name, 11)
+								ui.Spacer(c)
+								if port.Open {
+									if cmdButton(c, iconExternalLink, iconBtn, false).Clicked() {
+										c.Toast("Open :" + itoa(port.Port))
+									}
+								}
+							})
+						}
+					})
 				})
-			})
+			}
 
 			a.updateSection(c)
 		})
