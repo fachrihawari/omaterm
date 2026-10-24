@@ -56,9 +56,17 @@ func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Elemen
 }
 
 // pill is the mock's .pill chip: muted small text on a dark fill.
-func pill(c *ui.Context, text string) ui.Element {
-	return ui.Row(c).Radius(9).Padding(1, 6).Background(pal.Chip).Shrink(0).Justify(ui.Center).Children(func() {
-		ui.Text(c, text).FontSize(9).TextColor(pal.TextMuted).SingleLine()
+func pill(c *ui.Context, text string) ui.Element { return pillOn(c, text, false) }
+
+// pillOn is pill on a list row: on the row the list shows chosen, a
+// translucent chip of the accent's text color.
+func pillOn(c *ui.Context, text string, selected bool) ui.Element {
+	bg, fg := pal.Chip, pal.TextMuted
+	if selected {
+		bg, fg = pal.AccentText.Alpha(0.2), pal.AccentText
+	}
+	return ui.Row(c).Radius(9).Padding(1, 6).Background(bg).Shrink(0).Justify(ui.Center).Children(func() {
+		ui.Text(c, text).FontSize(9).TextColor(fg).SingleLine()
 	})
 }
 
@@ -77,10 +85,36 @@ func pillShrink(c *ui.Context, text string) ui.Element {
 // keyChip is the key hint the palette and the shortcuts overlay show:
 // a small bordered chip, as VS Code's keybinding labels.
 func keyChip(c *ui.Context, label string) ui.Element {
+	return keyChipOn(c, label, false)
+}
+
+// keyChipOn is keyChip on a list row, outlined in the accent's text color
+// on the row the list shows chosen.
+func keyChipOn(c *ui.Context, label string, selected bool) ui.Element {
+	if selected {
+		return ui.Row(c).Radius(4).Border(1, pal.AccentText.Alpha(0.5)).
+			Padding(2, 6).Shrink(0).Children(func() {
+			ui.Text(c, label).FontSize(9).TextColor(pal.AccentText).SingleLine()
+		})
+	}
 	return ui.Row(c).Radius(4).Border(1, pal.KbdBorder).Background(pal.Kbd).
 		Padding(2, 6).Shrink(0).Children(func() {
 		ui.Text(c, label).FontSize(9).TextColor(pal.TextMuted).SingleLine()
 	})
+}
+
+// ink is the color of what a list row shows: on the row the list shows
+// chosen, which it fills with the accent, the accent's text color, dimmer
+// for what is secondary (faint). The row's own colors would not read on
+// the accent.
+func ink(selected bool, col ui.Color, faint bool) ui.Color {
+	switch {
+	case !selected:
+		return col
+	case faint:
+		return pal.AccentText.Alpha(0.75)
+	}
+	return pal.AccentText
 }
 
 // sectionLabel is the uppercase muted label above inspector sections.

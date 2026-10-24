@@ -362,20 +362,25 @@ func (a *appState) nodePath(target *fileNode) string {
 
 // fileBadge renders the little "TS"/"{ }" emblem or a file icon. Every
 // branch is 18 wide so badges line up across rows and panels.
-func fileBadge(c *ui.Context, name string) ui.Element {
+func fileBadge(c *ui.Context, name string) ui.Element { return fileBadgeOn(c, name, false) }
+
+// fileBadgeOn is fileBadge on a list row, in the accent's text color on
+// the row the list shows chosen.
+func fileBadgeOn(c *ui.Context, name string, selected bool) ui.Element {
+	col := func(cl ui.Color) ui.Color { return ink(selected, cl, false) }
 	switch {
 	case hasSuffix(name, ".tsx") || hasSuffix(name, ".ts"):
-		return ui.Text(c, "TS").FontSize(10).FontWeight(700).TextColor(pal.Syn.FileTS).Width(18)
+		return ui.Text(c, "TS").FontSize(10).FontWeight(700).TextColor(col(pal.Syn.FileTS)).Width(18)
 	case hasSuffix(name, ".go"):
-		return ui.Text(c, "GO").FontSize(10).FontWeight(700).TextColor(pal.ANSI[6]).Width(18)
+		return ui.Text(c, "GO").FontSize(10).FontWeight(700).TextColor(col(pal.ANSI[6])).Width(18)
 	case hasSuffix(name, ".json"):
-		return ui.Text(c, "{ }").FontSize(10).FontWeight(700).TextColor(pal.Syn.FileJSON).Width(18)
+		return ui.Text(c, "{ }").FontSize(10).FontWeight(700).TextColor(col(pal.Syn.FileJSON)).Width(18)
 	case hasSuffix(name, ".md"):
-		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(pal.Accent)
+		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(col(pal.Accent))
 	case isImagePath(name):
-		return ui.Icon(c, iconImage).Width(18).Height(18).TextColor(pal.Ok)
+		return ui.Icon(c, iconImage).Width(18).Height(18).TextColor(col(pal.Ok))
 	default:
-		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(pal.TextMuted)
+		return ui.Icon(c, iconFileText).Width(18).Height(18).TextColor(col(pal.TextMuted))
 	}
 }
 
@@ -440,17 +445,17 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				ui.Spacer(c)
 				remote := r.HasRemote
 				if b := cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch").Label("Fetch"); !remote {
-					b.Disabled(true).Opacity(0.45)
+					b.Disabled(true) // painted at half opacity
 				} else if b.Clicked() {
 					a.gitFetch(c)
 				}
 				if b := cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull").Label("Pull"); !remote {
-					b.Disabled(true).Opacity(0.45)
+					b.Disabled(true) // painted at half opacity
 				} else if b.Clicked() {
 					a.gitPull(c)
 				}
 				if b := cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push").Label("Push"); !remote {
-					b.Disabled(true).Opacity(0.45)
+					b.Disabled(true) // painted at half opacity
 				} else if b.Clicked() {
 					a.gitPush(c)
 				}
@@ -460,10 +465,14 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 			})
 			ui.Row(c).Gap(8).Children(func() {
 				commit := ui.PrimaryButton(c, "Commit").Grow(1).Height(32).FontSize(11)
-				if !a.commitReady() {
-					commit.Disabled(true).Opacity(0.55)
+				ready := a.commitReady()
+				if !ready {
+					// Muted, not faded out (a disabled element paints at half
+					// opacity, which left its label unreadable): it still
+					// says what it is for, and does nothing until ready.
+					commit.Background(pal.Chip).TextColor(pal.TextMuted).Cursor(ui.CursorDefault)
 				}
-				if commit.Clicked() {
+				if commit.Clicked() && ready {
 					a.gitCommit(c)
 				}
 				// Stashing lives in the STASHES section, where its message
@@ -507,7 +516,13 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 
 		// Footer.
 		ui.Row(c).Padding(12).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
-			ui.Text(c, r.RelPath).FontSize(10).TextColor(pal.TextMuted).SingleLine()
+			// Where the repository is in the project: its name when it is
+			// the project's own folder, which "." would only hint at.
+			where := r.RelPath
+			if where == "" || where == "." {
+				where = r.Name
+			}
+			ui.Text(c, where).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 			ui.Spacer(c)
 			ui.Text(c, "HEAD "+r.Head).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 		})
@@ -676,7 +691,11 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 		fileBadge(c, pathBase(f.Path))
 		ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
 			txt(c, pathBase(f.Path), 11, pal.Text)
-			txt(c, pathDir(f.Path), 9, pal.TextMuted)
+			// A file at the root has no folder line, which would lift its
+			// name above the badge and status beside it.
+			if dir := pathDir(f.Path); dir != "" {
+				txt(c, dir, 9, pal.TextMuted)
+			}
 		})
 		actions := ui.Row(c).Gap(2).Shrink(0)
 		if !hover {

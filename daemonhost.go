@@ -156,8 +156,10 @@ func (a *appState) daemonBanner(c *ui.Context) {
 	ui.Row(c.Key("daemon-banner")).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).
 		Radius(8).Background(pal.Raised).Border(1, pal.Border).Children(func() {
 		ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(pal.Accent)
-		ui.Text(c, "omaterm updated: your sessions still run in the previous build's session daemon ("+a.daemonStale+").").
-			FontSize(12).TextColor(pal.TextSoft).Grow(1).MinWidth(0)
+		msg := "omaterm updated: your sessions still run in the previous build's session daemon (" + a.daemonStale + ")."
+		// Two lines at most, in a narrow window; the tooltip has it all.
+		ui.Text(c, msg).Tooltip(msg).
+			FontSize(12).TextColor(pal.TextSoft).MaxLines(2).Ellipsis("…").Grow(1).MinWidth(0)
 		later := ui.ButtonBase(c).Padding(4, 10).Radius(6).Height(26).Children(func() {
 			ui.Text(c, "Later").FontSize(12).TextColor(pal.TextMuted)
 		})

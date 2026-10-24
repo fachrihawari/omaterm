@@ -326,7 +326,7 @@ func navButton(c *ui.Context, key string, svg *ui.SVG, label string, enabled boo
 	b := ui.ButtonBase(c.Key(key)).Size(26, 24).Radius(6).Center().TextColor(pal.TextMuted).Label(label).Tooltip(label).Disabled(!enabled).Shrink(0)
 	switch {
 	case !enabled:
-		b.TextColor(pal.TextFaint.Alpha(0.6))
+		// Disabled, it paints at half opacity: dim enough.
 	case b.Hovered():
 		b.Background(pal.Hover).TextColor(pal.Text)
 	}

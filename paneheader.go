@@ -27,6 +27,10 @@ func (a *appState) headerH() float32 {
 // and reports whether it is being dragged.
 func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal.Terminal, multi, focused, hovered bool) (dragging bool) {
 	info, _ := a.paneInfo(id)
+	// The card's width, as the last frame laid it out (0 before): a narrow
+	// pane's header gives up its chip and lets its title ellipsize.
+	w := a.handle("card-" + id).Bounds(c).W
+	narrow := w > 0 && w < 360
 	h := ui.Row(c.Key("hdr")).Height(a.headerH()).Shrink(0).AlignItems(ui.Center).Padding(0, 6, 0, 10).Gap(8)
 	if h.Pressed() && !focused {
 		a.focusPane(id)
@@ -53,7 +57,13 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 			}
 			title := paneTitle(info, t)
-			name := ui.Text(c, title).FontSize(12.5).FontWeight(600).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(0).MaxWidth(260)
+			name := ui.Text(c, title).FontSize(12.5).FontWeight(600).TextColor(pal.Text).SingleLine().Ellipsis("…").
+				Shrink(0).MaxWidth(260)
+			if narrow {
+				// Its whole title would draw over the chips and controls
+				// beside it: it ellipsizes too.
+				name.Shrink(1).MinWidth(min(36, float32(len(title))*7))
+			}
 			if multi && !focused && !dragging {
 				name.TextColor(pal.TextMuted)
 			}
@@ -65,7 +75,10 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 			a.gitChip(c, g.Branch, g.Added, g.Removed)
 		}
 		ui.Spacer(c)
-		a.statusChip(c, info)
+		if w == 0 || w >= 300 {
+			// Narrower, the status icon by the title tells the state.
+			a.statusChip(c, info)
+		}
 		a.paneControls(c, tab, id, (hovered || focused && multi) && !dragging, multi)
 	})
 	return dragging
@@ -227,17 +240,24 @@ func elapsed(d time.Duration) string {
 // paneControls are a pane's split, zoom and close buttons, which show on
 // hover, fading in; hidden, they give their room to the chips.
 func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, multi bool) {
-	if !show {
+	// A narrow pane keeps its title readable: it shows zoom and close
+	// only, and below that none (the keys and the palette still split,
+	// zoom and close it).
+	w := a.handle("card-" + id).Bounds(c).W
+	if !show || w > 0 && w < 170 {
 		return
 	}
+	splits := w == 0 || w >= 260
 	row := ui.Row(c.Key("ctl")).Gap(2).AlignItems(ui.Center).Shrink(0)
 	row.Opacity(row.Animate("show", 1, 120*time.Millisecond))
 	row.Children(func() {
-		if cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
-			a.splitActivePaneAt(c, id, splitVertical)
-		}
-		if cmdButton(c, iconRows2, 13, false).Tooltip("Split down (" + keyLabels("terminal.splitDown") + ")").Clicked() {
-			a.splitActivePaneAt(c, id, splitHorizontal)
+		if splits {
+			if cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
+				a.splitActivePaneAt(c, id, splitVertical)
+			}
+			if cmdButton(c, iconRows2, 13, false).Tooltip("Split down (" + keyLabels("terminal.splitDown") + ")").Clicked() {
+				a.splitActivePaneAt(c, id, splitHorizontal)
+			}
 		}
 		if multi || tab.Zoomed != "" {
 			zoomIcon, tip := iconMaximize, "Zoom pane"

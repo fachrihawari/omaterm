@@ -196,7 +196,11 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 				ui.Text(c, "The shell could not start").FontSize(12).TextColor(pal.Bad)
 			})
 		} else {
-			box := ui.Box(c.Key("term")).Grow(1).MinHeight(0).Clip()
+			// The innermost clip alone rounds its corners (the GPU cuts
+			// the outer ones square), so the terminal's box rounds the
+			// card's bottom corners itself.
+			r := a.cardRadius()
+			box := ui.Box(c.Key("term")).Grow(1).MinHeight(0).Radius(0, 0, r, r).Clip()
 			if box.Hovered() && !focused && a.settings.FocusFollowsMouse {
 				a.focusPane(id)
 			}

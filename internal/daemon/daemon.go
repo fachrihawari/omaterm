@@ -119,7 +119,8 @@ func Run(opts Options) error {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	select {
-	case <-sigs:
+	case sig := <-sigs:
+		log.Printf("stopping: %v", sig)
 	case <-d.quit:
 	}
 	d.Stop()
@@ -195,6 +196,7 @@ func Start(opts Options) (*Daemon, error) {
 // Stop saves every pane's history, ends the panes and stops listening.
 func (d *Daemon) Stop() {
 	d.once.Do(func() {
+		log.Printf("stopped, %d panes saved", d.reg.Len())
 		d.saveHistories(true)
 		close(d.quit)
 		d.srv.Close()
@@ -365,6 +367,8 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 		d.reg.SetViewed(p.ID)
 		return true, nil
 	case "shutdown":
+		// Who asked, should the user wonder why their sessions restarted.
+		log.Printf("stopping: shutdown asked")
 		go d.Stop()
 		return true, nil
 	case "env.update":

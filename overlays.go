@@ -234,19 +234,17 @@ func (a *appState) openQuickSelection(items []service.FuzzyMatch) {
 // on the left keeps the row from repeating the path.
 func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selected bool) {
 	e := ui.Row(c).Key(path).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-	if selected {
-		e.Background(pal.Hover)
-	} else if e.Hovered() {
+	if !selected && e.Hovered() { // the list fills the chosen row
 		e.Background(pal.Hover)
 	}
 	base := pathBase(path)
 	offset := len(path) - len(base)
 	e.Children(func() {
-		fileBadge(c, base)
-		a.highlightedSegment(c, base, offset, indices)
+		fileBadgeOn(c, base, selected)
+		a.highlightedSegment(c, base, offset, indices, selected)
 		if dir := pathDir(path); dir != "" {
 			ui.Spacer(c)
-			ui.Text(c, dir).FontSize(10).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+			ui.Text(c, dir).FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).SingleLine().Shrink(0)
 		}
 	})
 	if e.Clicked() {
@@ -256,8 +254,9 @@ func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selecte
 }
 
 // highlightedSegment renders text with the matched byte offsets (which
-// index the full path) in the accent color; offset is where text starts.
-func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, indices []int) {
+// index the full path) in the accent color, or in bold on the row the list
+// shows chosen; offset is where text starts.
+func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, indices []int, selected bool) {
 	in := map[int]bool{}
 	for _, i := range indices {
 		if i >= offset && i < offset+len(text) {
@@ -265,7 +264,7 @@ func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, in
 		}
 	}
 	if len(in) == 0 {
-		ui.Text(c, text).FontSize(12).TextColor(pal.TextSoft).SingleLine().Shrink(0)
+		ui.Text(c, text).FontSize(12).TextColor(ink(selected, pal.TextSoft, false)).SingleLine().Shrink(0)
 		return
 	}
 	var spans []ui.Span
@@ -275,11 +274,14 @@ func (a *appState) highlightedSegment(c *ui.Context, text string, offset int, in
 		if cur.Len() == 0 {
 			return
 		}
-		col := pal.TextSoft
-		if on {
-			col = pal.Accent
+		span := ui.Span{Text: cur.String(), Color: ink(selected, pal.TextSoft, false)}
+		switch {
+		case on && selected:
+			span.Weight = 700
+		case on:
+			span.Color = pal.Accent
 		}
-		spans = append(spans, ui.Span{Text: cur.String(), Color: col})
+		spans = append(spans, span)
 		cur.Reset()
 	}
 	for i := 0; i < len(text); i++ {
@@ -435,20 +437,18 @@ func (a *appState) checkoutBranch(c *ui.Context, items []service.FuzzyMatch) {
 func (a *appState) branchRow(c *ui.Context, name string, selected bool) {
 	cur := name == a.currentBranch
 	e := ui.Row(c).Key(name).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-	if selected {
-		e.Background(pal.Hover)
-	} else if e.Hovered() {
+	if !selected && e.Hovered() { // the list fills the chosen row
 		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		if cur {
-			ui.Icon(c, iconCheck).Width(14).Height(14).TextColor(pal.Ok)
+			ui.Icon(c, iconCheck).Width(14).Height(14).TextColor(ink(selected, pal.Ok, false))
 		} else {
 			ui.Box(c).Width(14)
 		}
-		ui.Text(c, name).FontSize(12).TextColor(pal.Text).SingleLine().Grow(1).MinWidth(0)
+		ui.Text(c, name).FontSize(12).TextColor(ink(selected, pal.Text, false)).SingleLine().Grow(1).MinWidth(0)
 		if cur {
-			pill(c, "current")
+			pillOn(c, "current", selected)
 		}
 	})
 	if e.Clicked() {
@@ -552,44 +552,66 @@ func (a *appState) paletteCommands() []paletteEntry {
 			pool = append(pool, paletteEntry{Command: cmd})
 		}
 	}
-	titles := make([]string, len(pool))
-	index := map[string][]int{}
-	for i, e := range pool {
-		titles[i] = e.Category + ": " + e.Title
-		index[titles[i]] = append(index[titles[i]], i)
-	}
-	matches := service.FuzzyFilter(titles, q, 200)
-	out := make([]paletteEntry, 0, len(matches))
-	used := map[int]bool{}
-	for _, m := range matches {
-		for _, i := range index[m.Value] {
-			if used[i] {
-				continue
-			}
-			used[i] = true
-			e := pool[i]
-			e.Score, e.Indices = m.Score, m.Indices
-			if e.Category == "Session" && len(q) <= 3 {
-				e.Score += 0.2
-			}
-			out = append(out, e)
+	// An entry matches by its title; by its category too ("setting",
+	// "git"), but below the titles that match, or "setup" would find
+	// "Setting: Dim Unfocused Panes" before "Set Up Agent Integration".
+	score := func(texts func(paletteEntry) string) map[int]service.FuzzyMatch {
+		list := make([]string, len(pool))
+		index := map[string][]int{}
+		for i, e := range pool {
+			list[i] = texts(e)
+			index[list[i]] = append(index[list[i]], i)
 		}
+		out := map[int]service.FuzzyMatch{}
+		for _, m := range service.FuzzyFilter(list, q, 0) {
+			for _, i := range index[m.Value] {
+				out[i] = m
+			}
+		}
+		return out
+	}
+	byTitle := score(func(e paletteEntry) string { return e.Title })
+	byAll := score(func(e paletteEntry) string { return e.Category + ": " + e.Title })
+	out := make([]paletteEntry, 0, len(byAll))
+	for i, e := range pool {
+		cat := strings.ToLower(e.Category)
+		switch t, a := byTitle[i], byAll[i]; {
+		case a.Value != "" && strings.HasPrefix(cat, strings.ToLower(q)):
+			e.Score = a.Score // "setting", "git": the query names the category
+		case t.Value != "":
+			e.Score, e.Indices = t.Score, t.Indices
+		case a.Value != "":
+			e.Score = a.Score / 2
+		default:
+			continue
+		}
+		if e.Category == "Session" && len(q) <= 3 {
+			e.Score += 0.2
+		}
+		out = append(out, e)
+	}
+	if len(out) > 200 {
+		slices.SortStableFunc(out, func(x, y paletteEntry) int { return cmpScore(x, y) })
+		out = out[:200]
 	}
 	if q == "" {
 		// Keep the pool's order: sessions, projects, settings, commands.
 		slices.SortStableFunc(out, func(x, y paletteEntry) int { return idx(pool, x.ID) - idx(pool, y.ID) })
 	} else {
-		slices.SortStableFunc(out, func(x, y paletteEntry) int {
-			switch {
-			case x.Score > y.Score:
-				return -1
-			case x.Score < y.Score:
-				return 1
-			}
-			return 0
-		})
+		slices.SortStableFunc(out, cmpScore)
 	}
 	return out
+}
+
+// cmpScore orders entries by their score, best first.
+func cmpScore(x, y paletteEntry) int {
+	switch {
+	case x.Score > y.Score:
+		return -1
+	case x.Score < y.Score:
+		return 1
+	}
+	return 0
 }
 
 func idx(pool []paletteEntry, id string) int {
@@ -689,9 +711,7 @@ func (a *appState) runPaletteSelection(c *ui.Context, cmds []paletteEntry) {
 func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 	enabled := e.Enabled == nil || e.Enabled(a)
 	row := ui.Row(c).Key(e.ID).FillWidth().Height(34).Padding(0, 10).Gap(10).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-	if selected {
-		row.Background(pal.Hover)
-	} else if row.Hovered() {
+	if !selected && row.Hovered() { // the list fills the chosen row
 		row.Background(pal.Hover)
 	}
 	row.Children(func() {
@@ -700,30 +720,30 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 			if statusState(*e.Info) != iconNone {
 				a.statusIcon(c, *e.Info, 14)
 			} else {
-				ui.Icon(c, programIcon(firstNonEmpty(e.Info.Agent, e.Info.Process))).Size(14, 14).TextColor(pal.TextFaint)
+				ui.Icon(c, programIcon(firstNonEmpty(e.Info.Agent, e.Info.Process))).Size(14, 14).TextColor(ink(selected, pal.TextFaint, true))
 			}
 		case e.Category == "Project":
-			ui.Icon(c, iconFolder).Size(14, 14).TextColor(pal.TextFaint)
+			ui.Icon(c, iconFolder).Size(14, 14).TextColor(ink(selected, pal.TextFaint, true))
 		default:
-			ui.Text(c, e.Category+":").FontSize(10).TextColor(pal.TextFaint).Width(64).SingleLine().Shrink(0)
+			ui.Text(c, e.Category+":").FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).Width(64).SingleLine().Shrink(0)
 		}
 		titleCol := pal.TextSoft
 		if !enabled {
 			titleCol = pal.TextFaint
 		}
-		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().
+		ui.Text(c, e.Title).FontSize(12).TextColor(ink(selected, titleCol, !enabled)).SingleLine().
 			Shrink(1).MinWidth(0).Ellipsis("…")
 		ui.Spacer(c)
 		if e.Setting {
 			if e.On {
-				ui.Icon(c, iconCheck).Size(14, 14).TextColor(pal.Accent)
+				ui.Icon(c, iconCheck).Size(14, 14).TextColor(ink(selected, pal.Accent, false))
 			}
 		} else if e.Info != nil {
 			if text, _, fg := statusWords(*e.Info, nowFunc()); text != "" {
-				ui.Text(c, text).FontSize(11.5).TextColor(fg).SingleLine().Shrink(0)
+				ui.Text(c, text).FontSize(11.5).TextColor(ink(selected, fg, false)).SingleLine().Shrink(0)
 			}
 		} else if keys := keyPrimary(e.ID); keys != "" {
-			keyChip(c, keys)
+			keyChipOn(c, keys, selected)
 		}
 	})
 	if row.Clicked() && enabled {
@@ -896,17 +916,15 @@ func (a *appState) searchResultsPane(c *ui.Context) bool {
 
 func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool) {
 	e := ui.Row(c).Key(m.Path+":"+itoa(m.Line)+":"+itoa(m.Start)).FillWidth().Padding(6, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-	if selected {
-		e.Background(pal.Hover)
-	} else if e.Hovered() {
+	if !selected && e.Hovered() { // the list fills the chosen row
 		e.Background(pal.Hover)
 	}
 	e.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				fileBadge(c, pathBase(m.Path))
-				ui.Text(c, m.Path).FontSize(11).TextColor(pal.TextSoft).SingleLine().Shrink(0)
-				ui.Text(c, ":"+itoa(m.Line)).FontSize(10).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+				fileBadgeOn(c, pathBase(m.Path), selected)
+				ui.Text(c, m.Path).FontSize(11).TextColor(ink(selected, pal.TextSoft, false)).SingleLine().Shrink(0)
+				ui.Text(c, ":"+itoa(m.Line)).FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).SingleLine().Shrink(0)
 			})
 			// Line text with the match highlighted.
 			ui.Row(c).ClipX().Children(func() {
@@ -918,10 +936,14 @@ func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool
 					match = m.Text[m.Start:m.End]
 					after = m.Text[m.End:]
 				}
+				hit := ui.Span{Text: match, Color: pal.Warn}
+				if selected {
+					hit = ui.Span{Text: match, Color: pal.AccentText, Weight: 700}
+				}
 				ui.RichText(c,
-					ui.Span{Text: before, Color: pal.TextMuted},
-					ui.Span{Text: match, Color: pal.Warn},
-					ui.Span{Text: after, Color: pal.TextMuted},
+					ui.Span{Text: before, Color: ink(selected, pal.TextMuted, true)},
+					hit,
+					ui.Span{Text: after, Color: ink(selected, pal.TextMuted, true)},
 				).Font(monoFont).FontSize(11).SingleLine()
 			})
 		})
@@ -1110,9 +1132,7 @@ func (a *appState) keymapRow(c *ui.Context, e keymapEntry, selected bool) {
 	enabled := e.Enabled == nil || e.Enabled(a)
 	row := ui.Row(c).Key(e.ID).FillWidth().Height(34).Padding(0, 10).Gap(10).
 		Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-	if selected {
-		row.Background(pal.Hover)
-	} else if row.Hovered() {
+	if !selected && row.Hovered() { // the list fills the chosen row
 		row.Background(pal.Hover)
 	}
 	row.Children(func() {
@@ -1120,21 +1140,21 @@ func (a *appState) keymapRow(c *ui.Context, e keymapEntry, selected bool) {
 		if !enabled {
 			titleCol = pal.TextFaint
 		}
-		ui.Text(c, e.Category+":").FontSize(10).TextColor(pal.TextFaint).Width(64).SingleLine().Shrink(0)
-		ui.Text(c, e.Title).FontSize(12).TextColor(titleCol).SingleLine().
+		ui.Text(c, e.Category+":").FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).Width(64).SingleLine().Shrink(0)
+		ui.Text(c, e.Title).FontSize(12).TextColor(ink(selected, titleCol, !enabled)).SingleLine().
 			Shrink(1).MinWidth(0).Ellipsis("…")
 		ui.Spacer(c)
-		ui.Text(c, e.Scope.String()).FontSize(9).TextColor(pal.TextFaint).Width(78).
+		ui.Text(c, e.Scope.String()).FontSize(9).TextColor(ink(selected, pal.TextFaint, true)).Width(78).
 			SingleLine().Shrink(0)
 		ui.Row(c).Width(220).Justify(ui.End).Gap(4).Children(func() {
 			// A family as long as the digits shows its range: Alt+1 … Alt+9
 			// reads faster than nine chips, and says the same thing.
 			if e.Group != "" && len(e.Keys) > 2 {
-				keyChip(c, e.Keys[0].Combo.Label()+" … "+e.Keys[len(e.Keys)-1].Combo.Label())
+				keyChipOn(c, e.Keys[0].Combo.Label()+" … "+e.Keys[len(e.Keys)-1].Combo.Label(), selected)
 				return
 			}
 			for _, b := range e.Keys {
-				keyChip(c, b.Combo.Label())
+				keyChipOn(c, b.Combo.Label(), selected)
 			}
 		})
 	})

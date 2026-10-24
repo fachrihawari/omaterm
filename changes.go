@@ -234,7 +234,7 @@ func (a *appState) changesPanel(c *ui.Context) {
 				seg := ui.ButtonBase(c.Key(b.base)).Grow(1).Height(26).Radius(6).Center().Disabled(!enabled).Tooltip(b.tip)
 				col := pal.TextMuted
 				if !enabled {
-					col = pal.TextFaint.Alpha(0.6)
+					// Disabled, it paints at half opacity: dim enough.
 					seg.Tooltip("No agent turn yet in this pane")
 				}
 				if cs.base == b.base {

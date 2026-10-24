@@ -242,6 +242,10 @@ func TestShots(t *testing.T) {
 			}
 			return nil
 		}},
+		{"palette-query", func(a *appState) {
+			a.openOverlay(overlayCommandPalette)
+			a.cmdQuery = "setup"
+		}, nil},
 		{"command-palette", func(a *appState) { a.openOverlay(overlayCommandPalette) },
 			func(a *appState) error {
 				if a.overlay != overlayCommandPalette {
@@ -383,6 +387,15 @@ func TestShots(t *testing.T) {
 		a.processes = []service.Process{{Name: "omaterm", Pid: 1234, CPU: "2.5%", Mem: "64 MB"}}
 		a.ports = []service.Port{{Port: 8080, Name: "http", Open: true, Pid: 1234, Process: "omaterm"}}
 		a.sysStats = service.SystemStats{CPUPercent: 3, MemUsed: 1395864371, MemTotal: 17179869184, OK: true}
+		// The UI audit renders every scene again in other themes and
+		// densities, into a folder of its own: SHOT_THEME names a fixture
+		// of internal/theme/testdata, SHOT_DENSITY "compact".
+		if th := os.Getenv("SHOT_THEME"); th != "" {
+			a.applyTheme(shotTheme(t, th))
+		}
+		if os.Getenv("SHOT_DENSITY") == "compact" {
+			a.settings.Density = "compact"
+		}
 		if s.setup != nil {
 			s.setup(a)
 		}
@@ -395,9 +408,16 @@ func TestShots(t *testing.T) {
 		if os.Getenv("SHOT_WIDE") != "" {
 			w, h = 2560, 1440 // the maximized case, where alignment shows
 		}
+		if os.Getenv("SHOT_SIZE") == "min" {
+			w, h = 900, 560 // the smallest window
+		}
 		tr := ui.NewTester(a.view, w, h)
-		os.MkdirAll("testdata", 0o755)
-		f, err := os.Create(filepath.Join("testdata", "shot-"+s.name+".png"))
+		dir := "testdata"
+		if d := os.Getenv("SHOT_DIR"); d != "" {
+			dir = d
+		}
+		os.MkdirAll(dir, 0o755)
+		f, err := os.Create(filepath.Join(dir, "shot-"+s.name+".png"))
 		if err != nil {
 			t.Fatal(err)
 		}
