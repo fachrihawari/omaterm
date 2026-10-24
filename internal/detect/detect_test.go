@@ -1,3 +1,6 @@
+// Ported from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
+// internal/detect/detect_test.go.
+
 package detect
 
 import (

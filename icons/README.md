@@ -1,6 +1,7 @@
 # Icons
 
-- `*.svg` at the top: [Lucide](https://lucide.dev) (ISC, © Lucide Contributors), as
+- `*.svg` at the top: [Lucide](https://lucide.dev) (ISC, © Lucide Icons and
+  Contributors; some derived from Feather, MIT, © Cole Bemis; see [LICENSE](LICENSE)), as
   [Iconify](https://iconify.design) serves them: `https://api.iconify.design/lucide/<name>.svg`.
 - `programs/si-*.svg`: [Simple Icons](https://simpleicons.org) (CC0), programs' logos, shown
   in pane headers and session rows; the brands are their owners' trademarks. Most came through

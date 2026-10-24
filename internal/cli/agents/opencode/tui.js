@@ -2,6 +2,8 @@
 // updates; `omaterm skill remove` removes it. Inside omaterm, it tells omaterm the
 // session this terminal shows, to resume it after omaterm's background
 // service restarts, and to tell its agent where it runs (index.js).
+//
+// Adapted from Kero (github.com/egoist/kero, MIT), internal/cli/agents/opencode/tui.js.
 import { execFile } from "node:child_process"
 
 const OMATERM = __OMATERM__

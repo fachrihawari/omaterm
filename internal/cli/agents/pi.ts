@@ -2,6 +2,8 @@
 // updates; `omaterm skill remove` removes it. Inside omaterm, it tells Pi which
 // session and pane it runs in, and tells omaterm Pi's session, to resume it
 // after omaterm's background service restarts. Outside omaterm it does nothing.
+//
+// Adapted from Kero (github.com/egoist/kero, MIT), internal/cli/agents/pi.ts.
 import { execFile } from "node:child_process";
 
 const OMATERM = __OMATERM__;

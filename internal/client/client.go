@@ -1,3 +1,6 @@
+// Partly adapted from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
+// internal/client/client.go.
+
 // Package client calls omaterm's control socket: the omaterm command's and
 // agents' hooks' way to the app.
 package client

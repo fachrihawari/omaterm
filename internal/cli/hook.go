@@ -1,3 +1,7 @@
+// Ported from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
+// internal/cli/hook.go, with the agent plugins in agents/ (pi.ts and
+// opencode/, including its package.json).
+
 package cli
 
 import (

@@ -1,3 +1,6 @@
+// Partly adapted from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
+// panes.go (the pane header).
+
 package main
 
 import (

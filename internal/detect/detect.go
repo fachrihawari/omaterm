@@ -6,7 +6,7 @@
 // prompt. A redraw shows the same screen, so it is no work, whatever made
 // it: a resize, a keystroke's echo, a clock.
 //
-// The rules are herdr's (github.com/ogulcancelik/herdr, Apache-2.0, see
+// The rules are herdr's (github.com/herdrdev/herdr, Apache-2.0, see
 // manifests/LICENSE), a manifest per agent, which this package reads as
 // herdr's engine does: of the rules that match, the one of the highest
 // priority wins; with none, the agent is idle.

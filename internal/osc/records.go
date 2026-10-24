@@ -1,3 +1,6 @@
+// Adapted from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
+// internal/daemon/osc.go.
+
 package osc
 
 import (

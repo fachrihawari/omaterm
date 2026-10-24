@@ -3,6 +3,8 @@
 // for every terminal: it tells the agent of a session that runs in a omaterm
 // pane which session and pane it runs in, as the pane's terminal plugin
 // (tui.js) told omaterm.
+//
+// Adapted from Kero (github.com/egoist/kero, MIT), internal/cli/agents/opencode/index.js.
 import { execFile } from "node:child_process"
 
 const OMATERM = __OMATERM__

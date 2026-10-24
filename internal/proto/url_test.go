@@ -1,3 +1,6 @@
+// Ported from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
+// internal/proto/url_test.go.
+
 package proto
 
 import "testing"

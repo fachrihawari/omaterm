@@ -1,3 +1,6 @@
+// Partly adapted from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
+// internal/proto/proto.go.
+
 // Package proto is what goes over omaterm's control socket: a hello and
 // its welcome, then requests and their answers, one JSON object a line,
 // and events to subscribers. The app serves it, the omaterm command and

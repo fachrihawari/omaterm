@@ -151,6 +151,26 @@ cut.
 
 ## Credits
 
-Pane layout, elevation and browser panes are adapted from
-[Kero](https://github.com/egoist/kero) by EGOIST (MIT,
-[license](docs/third_party/kero-LICENSE)).
+OmaTerm builds on other people's work:
+
+- **[Kero](https://github.com/egoist/kero)** by EGOIST (MIT). Much of
+  OmaTerm is adapted from Kero:
+  - the session engine: the control protocol, the PTY, OSC status and
+    session code, and git turn snapshots
+  - the `omaterm` command and its agent hooks, plugins and skill
+  - browser panes, pane layout and elevation
+
+  Each such source file names the Kero file it comes from.
+- **[herdr](https://github.com/herdrdev/herdr)** (Apache-2.0): the agent
+  detection rules, through Kero.
+- **[MyGo](https://github.com/egoist/mygo)** (MIT): the app framework.
+  **[Ghostty](https://github.com/ghostty-org/ghostty)**'s libghostty-vt
+  (MIT) does the terminal emulation.
+- **[Lucide](https://lucide.dev)** (ISC) and Feather (MIT): the
+  interface icons.
+- **[Simple Icons](https://simpleicons.org)** (CC0): the program logos,
+  which are their owners' trademarks.
+
+Their license texts, and those of the Go libraries OmaTerm uses, are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The file ships with
+every release.

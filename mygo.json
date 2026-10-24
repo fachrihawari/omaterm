@@ -3,6 +3,10 @@
   "identifier": "com.example.omaterm",
   "version": "0.8.1",
   "out": "build",
+  "resources": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "macos": {
     "minimumSystemVersion": "13.0"
   },
