@@ -61,8 +61,9 @@ jobs:
           - { name: macOS, os: macos-latest, platform: darwin/universal }
           # MyGo needs no cgo, so Linux runners make the Windows app too.
           - { name: Windows, os: ubuntu-latest, platform: windows/amd64 }
-          - { name: Linux, os: ubuntu-latest, platform: linux/amd64 }
-          - { name: Linux ARM64, os: ubuntu-latest, platform: linux/arm64 }
+          # Both Linux apps carry install.sh: one build uploads it once,
+          # where two jobs at once both upload it and one of them fails.
+          - { name: Linux, os: ubuntu-latest, platform: 'linux/amd64,linux/arm64' }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
