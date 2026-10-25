@@ -3,6 +3,60 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.0
+
+### A Settings window
+
+Press **Ctrl+,**, or click the gear at the right of the status bar, for a
+window with every setting in one place. Search finds any of them, and
+changes apply as you make them. `omaterm settings terminal` opens it on a
+page.
+
+Many settings had no place to change them but a file. They have one now,
+and there are new ones:
+
+- **Terminal:** the font (Omarchy's, or one you name), its size and line
+  height, ligatures, the cursor's shape and blink, copy on select, what a
+  right click does, whether programs may read the clipboard, the shell,
+  how much scrollback a pane keeps, and what a program's bell does.
+- **Editor:** the terminal's font, tab size, wrapping, line numbers, and
+  whether Markdown opens as a preview.
+- **Appearance:** a **System** theme follows your desktop's light or dark
+  mode. It's the default where there is no Omarchy theme to follow.
+- **Notifications:** with or without a sound, notifications from programs
+  themselves, and a button to send a test one.
+- **Agents:** each agent's integration, set up or removed in one click.
+- **Web Access:** your paired devices, when each was last seen, and
+  **Revoke** to sign one out. Pairing a device, the port and a public URL
+  are here too.
+- **Browser:** the search engine of the address bar (DuckDuckGo, Google,
+  Kagi, Brave or your own), and clearing the browser panes' data.
+- **About:** automatic updates, and where omaterm keeps its files.
+
+The palette's settings are still there, and agree with the window.
+
+### Ask before closing a running session
+
+Closing a session, or a pane, where an agent or a program still runs now
+asks first. Turn it off in Settings, General.
+
+### Zooming a terminal sizes everything
+
+Ctrl+= and Ctrl+- in a terminal, or Ctrl and the wheel, now change the
+text of every terminal and editor together, as they do elsewhere in the
+window, and the size is kept. Editors and diffs also take the terminals'
+font now.
+
+### Reduce Motion stops every animation
+
+Panes no longer spring or fade with Reduce Motion on.
+
+### Smoother scrolling in the browser on a phone
+
+In web access, a flick keeps scrolling and slows down, in a shell and in
+Claude Code alike. Suggestions and autocorrect of a phone's keyboard now
+type what they change, not the whole line again.
+
 ## 0.8.5
 
 ### Scroll Claude Code in the browser on a phone
