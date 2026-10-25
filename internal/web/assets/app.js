@@ -424,6 +424,28 @@ function showTerm(id) {
   shell.content.replaceChildren(h("div", { class: "term-view" }, header, h("div", { class: "term-wrap" }, host), note, keys));
   xt.open(host);
 
+  // xterm scrolls its own scrollback on a swipe, but not for a program
+  // that takes the mouse or the alternate screen, as Claude Code does;
+  // there a swipe turns into the wheel's lines, which xterm passes on.
+  let touchY = 0, touchPx = 0;
+  host.addEventListener("touchstart", (e) => { touchY = e.touches[0].clientY; touchPx = 0; }, { passive: true, capture: true });
+  host.addEventListener("touchmove", (e) => {
+    if (xt.modes.mouseTrackingMode === "none" && xt.buffer.active.type === "normal") return;
+    const t = e.touches[0];
+    touchPx += touchY - t.clientY;
+    touchY = t.clientY;
+    e.preventDefault();
+    e.stopPropagation();
+    const row = host.clientHeight / xt.rows;
+    while (Math.abs(touchPx) >= row) {
+      const dir = Math.sign(touchPx);
+      touchPx -= dir * row;
+      e.target.dispatchEvent(new WheelEvent("wheel", {
+        deltaY: dir, deltaMode: WheelEvent.DOM_DELTA_LINE, clientX: t.clientX, clientY: t.clientY, bubbles: true, cancelable: true,
+      }));
+    }
+  }, { passive: false, capture: true });
+
   let resizeTimer = 0;
   const observer = new ResizeObserver(() => {
     clearTimeout(resizeTimer);
