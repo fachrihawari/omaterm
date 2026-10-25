@@ -3,6 +3,44 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.8.4
+
+### Your sessions in a browser
+
+Turn on **Web Access** in the command palette, or run `omaterm web on`, and
+your sessions open in a browser: projects and sessions in a sidebar, which
+agents are working or need you, and any session as a live terminal you can
+type into. On a phone it shows one at a time, with a key bar for Esc, Ctrl
+and the arrows.
+
+omaterm serves it on your machine only. Reach it from your phone through
+`tailscale serve` or `cloudflared` (`omaterm web tunnel` shows how), or on
+your local network with **Web Access on Your Network** or
+`omaterm web on --network`. That one is plain HTTP, so use it on networks
+you trust.
+
+A browser sees nothing until you pair it: **Web Access: Pair a Device**
+shows a QR code, and `omaterm web pair` prints one in the terminal. Each
+code works once, for ten minutes. `omaterm web devices` lists paired
+browsers, and `omaterm web revoke` signs one out and closes what it has
+open.
+
+While a browser shows a session, the terminal takes the browser's size.
+The window gets its size back when the browser leaves.
+
+### Changes is now part of the Git tab
+
+The Changes tab repeated the Git tab's list of changed files. What only it
+had, the files an agent changed in its last turn, is now a switch on the
+Git tab: **All changes** or **Last turn**. Ctrl+Shift+A still opens it.
+
+### "Remote Control" is now "Let Agents Control the App"
+
+The setting lets agents run the app's commands and drive browser panes. It
+had nothing to do with reaching omaterm remotely, so it has a clearer name,
+and it's a setting in the palette like the others. If you had it on, it
+stays on.
+
 ## 0.8.3
 
 ### No more "Data Access Blocked" on macOS
