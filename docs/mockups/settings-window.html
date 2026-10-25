@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>omaterm Settings Mockup</title>
+<style>
+/* Same tokens as omaterm-ui.html: light = lupine, dark = tokyo-night.
+   --grp is new: the fill of a grouped box inside the content card. */
+:root, [data-theme="light"] {
+  --wash:#ededed; --wash2:#e9ebf1; --glow:rgba(50,100,235,.12);
+  --raised:#fdfdfd; --popover:#ffffff; --input:#ffffff; --grp:#f5f5f6;
+  --hover:rgba(33,33,33,.045); --rowsel:#ffffff; --chip:rgba(33,33,33,.05);
+  --border:rgba(33,33,33,.07); --border-strong:rgba(33,33,33,.12);
+  --edge-top:rgba(255,255,255,.9);
+  --shadow1:rgba(0,0,0,.07); --shadow2:rgba(0,0,0,.035); --shadow-float:rgba(0,0,0,.14);
+  --scrim:rgba(0,0,0,.12);
+  --text:#212121; --text-strong:#000; --text-soft:#3a3a3a; --muted:#6f6f6f; --faint:#8c8c8c;
+  --accent:#3264eb; --accent-text:#fff; --accent-soft:rgba(50,100,235,.10);
+  --ok:#1f8a4c; --warn:#b45f06; --bad:#d1293d;
+  --term-bg:#fafafa; --term-fg:#212121;
+}
+[data-theme="dark"] {
+  --wash:#12131b; --wash2:#151827; --glow:rgba(122,162,247,.16);
+  --raised:#232532; --popover:#232532; --input:#1f202c; --grp:#1d1e29;
+  --hover:rgba(169,177,214,.06); --rowsel:rgba(169,177,214,.10); --chip:rgba(169,177,214,.07);
+  --border:rgba(169,177,214,.08); --border-strong:rgba(169,177,214,.14);
+  --edge-top:rgba(192,202,245,.18);
+  --shadow1:rgba(0,0,0,.35); --shadow2:rgba(0,0,0,.20); --shadow-float:rgba(0,0,0,.45);
+  --scrim:rgba(0,0,0,.35);
+  --text:#a9b1d6; --text-strong:#c0caf5; --text-soft:#9aa1c3; --muted:#787f9f; --faint:#5f6584;
+  --accent:#7aa2f7; --accent-text:#11121a; --accent-soft:rgba(122,162,247,.12);
+  --ok:#9ece6a; --warn:#e0af68; --bad:#f7768e;
+  --term-bg:#1a1b26; --term-fg:#a9b1d6;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: #2b2d33; color: #e6e6e6; min-height: 100vh;
+  font: 13px/1.4 "Inter", "Noto Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace; }
+button { font: inherit; color: inherit; }
+
+/* ---------- demo chrome (outside the app) ---------- */
+.demo {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; position: sticky; top: 0; z-index: 50;
+  background: #1e1f24; border-bottom: 1px solid #34363e;
+}
+.demo h1 { font-size: 14px; margin: 0 12px 0 0; font-weight: 600; color: #fff; }
+.demo .grpb { display: flex; gap: 2px; background: #2a2c33; padding: 3px; border-radius: 9px; }
+.demo button { border: 0; background: transparent; color: #b8bcc8; font-size: 12.5px; padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+.demo button.on { background: #44475a; color: #fff; }
+.demo .note { color: #8d92a3; font-size: 12px; margin-left: auto; }
+.stage { padding: 28px 16px 48px; display: flex; justify-content: center; }
+
+/* ---------- window ---------- */
+.win {
+  width: 820px; height: 640px; max-width: 100%;
+  border-radius: 12px; overflow: hidden; position: relative;
+  display: flex; color: var(--text);
+  background:
+    radial-gradient(900px 500px at 100% 0%, var(--glow), transparent 55%),
+    linear-gradient(180deg, var(--wash), var(--wash2));
+  box-shadow: 0 30px 80px rgba(0,0,0,.45);
+}
+.raised {
+  background: var(--raised); border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 var(--edge-top), 0 1px 1px var(--shadow1), 0 2px 2px -1px var(--shadow1), 0 4px 6px -3px var(--shadow1);
+}
+[data-theme="light"] .raised { box-shadow: 0 1px 2px var(--shadow1), 0 1px 6px var(--shadow2); }
+.floating {
+  background: var(--popover); border: 1px solid var(--border-strong);
+  box-shadow: inset 0 1px 0 var(--edge-top), 0 16px 40px var(--shadow-float), 0 2px 6px var(--shadow1);
+}
+[data-ic] { display: inline-flex; flex: none; width: 14px; height: 14px; align-items: center; justify-content: center; }
+[data-ic] > svg { width: 100%; height: 100%; }
+
+/* ---------- sidebar: on the wash, rows like session rows ---------- */
+.side { width: 220px; flex: none; display: flex; flex-direction: column; padding: 0 6px 8px 8px; }
+.tb-room { height: 38px; flex: none; display: flex; align-items: center; padding-left: 6px; gap: 8px; }
+.lights { display: none; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.win[data-os="mac"] .lights { display: flex; }
+.search {
+  height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; margin: 0 2px 10px;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--input); color: var(--faint);
+}
+.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--text); font: inherit; font-size: 12.5px; }
+.search input::placeholder { color: var(--faint); }
+.nav { flex: 1; overflow: auto; }
+.nav-gap { height: 10px; }
+.nav-row {
+  height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 8px; margin-bottom: 1px;
+  border-radius: 8px; cursor: pointer; transition: background .11s; font-size: 13px; color: var(--text);
+}
+.nav-row [data-ic] { color: var(--faint); }
+.nav-row:hover { background: var(--hover); }
+.nav-row.sel { background: var(--rowsel); box-shadow: 0 0 0 .5px rgba(0,0,0,.06), 0 .5px 2px rgba(0,0,0,.05); }
+[data-theme="dark"] .nav-row.sel { box-shadow: inset 0 1px 0 var(--edge-top), 0 1px 1px var(--shadow1), 0 4px 6px -3px var(--shadow1); }
+.nav-row.sel [data-ic] { color: var(--text-soft); }
+.nav-hit { height: 26px; display: flex; align-items: center; padding: 0 8px 0 30px; border-radius: 7px; font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-hit:hover { background: var(--hover); color: var(--text); }
+.nav-none { padding: 6px 10px; color: var(--faint); font-size: 12px; }
+.side-foot { padding: 8px 6px 0; display: flex; }
+.side-foot a { font-size: 12px; color: var(--muted); text-decoration: none; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.side-foot a:hover { color: var(--text); }
+
+/* ---------- content: one card, like a pane ---------- */
+.content { flex: 1; min-width: 0; margin: 8px 8px 8px 2px; border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.toolbar { height: 44px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--border); }
+.toolbar h2 { margin: 0 0 0 6px; font-size: 13.5px; font-weight: 600; color: var(--text-strong); flex: 1; }
+.ib { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; color: var(--muted); cursor: pointer; border: 0; background: none; padding: 0; }
+.ib:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.ib:disabled { opacity: .35; cursor: default; }
+.ib [data-ic] { width: 15px; height: 15px; }
+.gtk-close { display: none; }
+.win[data-os="gnome"] .gtk-close { display: grid; }
+.scroll { flex: 1; overflow: auto; }
+.page { max-width: 560px; margin: 0 auto; padding: 16px 20px 28px; }
+
+.hero { display: flex; gap: 14px; align-items: flex-start; padding: 14px; border-radius: 8px; background: var(--grp); border: 1px solid var(--border); margin-bottom: 18px; }
+.hero .big { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex: none; }
+.hero .big [data-ic] { width: 20px; height: 20px; }
+.hero h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; color: var(--text-strong); }
+.hero p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.hero a { color: var(--accent); text-decoration: none; cursor: pointer; }
+
+.gh { font-size: 12.5px; font-weight: 600; color: var(--muted); margin: 18px 2px 6px; }
+.gh:first-child { margin-top: 0; }
+.group { border-radius: 8px; background: var(--grp); border: 1px solid var(--border); }
+.gf { font-size: 11.5px; color: var(--faint); margin: 6px 2px 0; }
+.row { min-height: 40px; display: flex; align-items: center; gap: 12px; padding: 8px 12px; position: relative; }
+.row + .row::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; height: 1px; background: var(--border); }
+.row .lab { flex: 1; min-width: 0; }
+.row .t { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.row .s { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.row.link { cursor: pointer; }
+.row.link:hover { background: var(--hover); }
+.row.link:first-child { border-radius: 8px 8px 0 0; } .row.link:last-child { border-radius: 0 0 8px 8px; } .row.link:only-child { border-radius: 8px; }
+.row .chevr { color: var(--faint); }
+.row.flash { animation: flash 1.4s ease-out; }
+@keyframes flash { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
+.pill { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--muted); font-weight: 500; white-space: nowrap; }
+.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pill.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.info-b { width: 18px; height: 18px; border-radius: 50%; border: 0; background: none; color: var(--faint); cursor: pointer; padding: 0; display: grid; place-items: center; }
+.info-b:hover { color: var(--accent); }
+
+/* controls */
+.sw { width: 30px; height: 18px; border-radius: 999px; background: var(--border-strong); position: relative; cursor: pointer; flex: none; border: 0; padding: 0; transition: background .15s; }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+.sw.on { background: var(--accent); }
+.sw.on::after { transform: translateX(12px); }
+.sw:disabled { opacity: .4; cursor: default; }
+.btn {
+  height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  background: var(--raised); color: var(--text); border: 1px solid var(--border-strong);
+  box-shadow: 0 .5px 1.5px rgba(0,0,0,.13);
+}
+[data-theme="dark"] .btn { box-shadow: inset 0 1px 0 var(--edge-top), 0 1px 1px var(--shadow1); }
+.btn:hover { background: color-mix(in srgb, var(--raised) 92%, var(--text)); }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 500; }
+.btn.danger { color: var(--bad); }
+.btn:disabled { opacity: .55; cursor: default; }
+.sel-b { display: inline-flex; align-items: center; gap: 6px; }
+select.popup {
+  appearance: none; height: 26px; padding: 0 26px 0 10px; border-radius: 6px; font: inherit; font-size: 12px; color: var(--text); cursor: pointer;
+  background: var(--raised) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='14' viewBox='0 0 10 14' fill='none' stroke='%23888' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M2 5l3-3 3 3M2 9l3 3 3-3'/%3E%3C/svg%3E") no-repeat right 8px center;
+  border: 1px solid var(--border-strong);
+}
+select.popup option { background: var(--popover); color: var(--text); }
+.seg { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: var(--chip); }
+.seg button { border: 0; background: none; font-size: 12px; padding: 3px 10px; border-radius: 5px; cursor: pointer; color: var(--muted); }
+.seg button.on { background: var(--raised); color: var(--text); box-shadow: 0 .5px 2px rgba(0,0,0,.15); }
+.range { display: flex; align-items: center; gap: 8px; }
+.range input { width: 140px; accent-color: var(--accent); }
+.range output { width: 54px; font-size: 12px; color: var(--muted); text-align: right; }
+.txt { height: 26px; width: 200px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--input); color: var(--text); font: inherit; font-size: 12px; outline: 0; }
+.txt:focus { border-color: var(--accent); }
+.mono-v { font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace; font-size: 12px; color: var(--text-soft); }
+
+/* theme tiles */
+.tiles { display: flex; gap: 12px; padding: 12px; }
+.tile { flex: 1; cursor: pointer; text-align: center; font-size: 12px; color: var(--muted); }
+.tile .pv { height: 64px; border-radius: 8px; border: 1px solid var(--border-strong); overflow: hidden; display: flex; margin-bottom: 6px; outline: 2px solid transparent; outline-offset: 2px; }
+.tile.on .pv { outline-color: var(--accent); }
+.tile.on { color: var(--text); font-weight: 500; }
+.pv .ps { width: 30%; } .pv .pc { flex: 1; margin: 6px; border-radius: 4px; }
+.pv.l .ps { background: #e9e9ea; } .pv.l .pc { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.pv.d .ps { background: #12131b; } .pv.d .pc { background: #232532; }
+.pv.o .ps { background: linear-gradient(#1e1e2e, #181825); } .pv.o .pc { background: linear-gradient(135deg, #313244, #45475a); }
+.pv.s { position: relative; } .pv.s .half { position: absolute; inset: 0; display: flex; }
+.pv.s .half.r { clip-path: polygon(50% 0, 100% 0, 100% 100%, 50% 100%); }
+
+/* terminal preview */
+.tprev { margin: 0 12px 12px; border-radius: 6px; padding: 10px 12px; background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--border); font-size: 13px; line-height: 1.35; white-space: pre; overflow: hidden; }
+.tprev .p { color: var(--accent); } .tprev .g { color: var(--ok); }
+.cur { display: inline-block; width: .6em; height: 1.15em; vertical-align: text-bottom; background: var(--term-fg); }
+.cur.bar { width: 2px; } .cur.under { height: 2px; vertical-align: baseline; }
+.cur.blink { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* checklist + kbd */
+.ck { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; flex: none; }
+.ck.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.ck.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.ck [data-ic] { width: 11px; height: 11px; }
+kbd { font: 11px "JetBrains Mono", ui-monospace, monospace; padding: 1px 6px; border-radius: 4px; background: var(--chip); border: 1px solid var(--border); color: var(--text-soft); }
+.qr { width: 120px; height: 120px; margin: 4px auto 10px; display: grid; grid-template-columns: repeat(21, 1fr); background: #fff; padding: 6px; border-radius: 6px; }
+.qr i { display: block; } .qr i.b { background: #111; }
+.banner { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; margin-bottom: 14px; background: var(--accent-soft); color: var(--text); font-size: 12.5px; }
+.banner span { flex: 1; }
+.acts-row { margin-top: 12px; }
+.acts-row .row { padding: 0; min-height: 0; justify-content: flex-end; }
+.acts-row .row .lab { flex: none; }
+.restore { margin-top: 22px; display: flex; justify-content: flex-end; }
+.restore button { border: 0; background: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+.restore button:hover { color: var(--text); }
+
+/* sheet */
+.scrim { position: absolute; inset: 0; background: var(--scrim); display: none; align-items: flex-start; justify-content: center; padding-top: 70px; z-index: 5; }
+.scrim.on { display: flex; }
+.sheet { width: 400px; max-width: calc(100% - 32px); border-radius: 10px; padding: 18px; }
+.sheet h3 { margin: 0 0 6px; font-size: 14px; color: var(--text-strong); }
+.sheet p { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
+.sheet ul { margin: 0 0 12px; padding-left: 18px; font-size: 12.5px; color: var(--text); }
+.sheet li { margin-bottom: 6px; } .sheet li small { display: block; color: var(--faint); }
+.sheet .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 700px) {
+  .side { width: 64px; padding: 0 4px 8px; }
+  .search, .nav-row span:not([data-ic]), .nav-hit, .side-foot { display: none; }
+  .nav-row { justify-content: center; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="demo">
+  <h1>omaterm Settings: mockup</h1>
+  <div class="grpb" id="d-theme"><button data-v="dark" class="on">Dark</button><button data-v="light">Light</button></div>
+  <div class="grpb" id="d-os"><button data-v="hypr" class="on">Hyprland</button><button data-v="gnome">GNOME</button><button data-v="mac">macOS</button></div>
+  <span class="note">Clickable: pages, switches, search, Dev URLs → Set Up…, Web Access → Revoke, Agents → Claude Code</span>
+</div>
+<div class="stage">
+  <div class="win" id="win" data-os="hypr">
+    <aside class="side">
+      <div class="tb-room"><div class="lights"><i></i><i></i><i></i></div></div>
+      <label class="search"><span data-ic="search"></span><input id="q" placeholder="Search settings" autocomplete="off"></label>
+      <nav class="nav" id="nav"></nav>
+      <div class="side-foot"><a id="openfile"><span data-ic="file"></span>Open settings file</a></div>
+    </aside>
+    <main class="content raised">
+      <div class="toolbar">
+        <button class="ib" id="back" title="Back"><span data-ic="left"></span></button>
+        <button class="ib" id="fwd" title="Forward"><span data-ic="right"></span></button>
+        <h2 id="title"></h2>
+        <button class="ib gtk-close" title="Close"><span data-ic="x"></span></button>
+      </div>
+      <div class="scroll" id="scroll"><div class="page" id="page"></div></div>
+      <div class="scrim" id="scrim"><div class="sheet floating" id="sheet"></div></div>
+    </main>
+  </div>
+</div>
+
+<script>
+const S = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const IC = {
+  settings: S('<path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.8v-.5a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>'),
+  palette: S('<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c1 0 1.7-.8 1.7-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.7 1.7-1.7H16a6 6 0 0 0 6-6c0-4.4-4.5-8.2-10-8.2z"/>'),
+  term: S('<path d="M4 17l6-5-6-5M12 19h8"/>'),
+  code: S('<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>'),
+  bell: S('<path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>'),
+  bot: S('<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>'),
+  phone: S('<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M12 18h.01"/>'),
+  lock: S('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/><rect x="14" y="14" width="8" height="7" rx="1" fill="var(--raised)"/><path d="M16 14v-1.5a2 2 0 0 1 4 0V14"/>'),
+  globe: S('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
+  kbd: S('<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),
+  info: S('<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>'),
+  search: S('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>'),
+  left: S('<path d="M15 18l-6-6 6-6"/>'), right: S('<path d="M9 18l6-6-6-6"/>'),
+  x: S('<path d="M6 6l12 12M18 6L6 18"/>'), check: S('<path d="M20 6L9 17l-5-5"/>'),
+  file: S('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+  folder: S('<path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/>'),
+};
+const ic = (n) => `<span data-ic="${n}">${IC[n] || ''}</span>`;
+const paintIcons = (root) => root.querySelectorAll('[data-ic]').forEach((e) => { if (!e.innerHTML) e.innerHTML = IC[e.dataset.ic] || ''; });
+
+// ---------- state ----------
+const st = {
+  daemon: true, loginStart: true, restore: true, resume: true, snapshot: true, confirmClose: true, links: 'pane', cli: true,
+  theme: 'omarchy', density: 'Comfortable', bg: 'Wash', dim: true, motion: false, load: true,
+  fontMode: 'follow', font: 'JetBrainsMono Nerd Font', size: 13, lh: 1.2, lig: true, cursor: 'Block', blink: true, contrast: 0,
+  copySel: false, rclick: 'Menu', clip: 'Never', scroll: '10 MB', bell: 'Notify', shell: '',
+  edFont: true, tab: 'Language', wrap: false, nums: true, md: true, diff: 'Split',
+  nWait: true, nDone: true, nErr: true, sound: 'Ping', progNotif: true, longCmd: false,
+  agentCtl: false, sock: true,
+  web: true, net: false, devices: [{ id: 'd1', name: 'iPhone', seen: '2 min ago', exp: 'Nov 24' }, { id: 'd2', name: 'Firefox on ThinkPad', seen: 'yesterday', exp: 'Nov 19' }],
+  dev: 'off', search: 'DuckDuckGo', ads: false,
+  autoCheck: true, autoInstall: false,
+  restartNeeded: false,
+};
+const hooks = { claude: true, codex: true, pi: false, opencode: false };
+
+// ---------- pages ----------
+// A row: {k: kind, t: title, s: sub, ...}. Kinds: sw, sel, seg, btn, link, html.
+const sw = (key, t, s, extra = {}) => ({ k: 'sw', key, t, s, ...extra });
+const sel = (key, t, opts, s, extra = {}) => ({ k: 'sel', key, t, opts, s, ...extra });
+const seg = (key, t, opts, s) => ({ k: 'seg', key, t, opts, s });
+
+const PAGES = [
+  { id: 'general', title: 'General', icon: 'settings', groups: () => [
+    { rows: [
+      sw('daemon', 'Keep sessions running when the window closes', 'Shells and agents run in the session daemon.', { restart: true }),
+      sw('loginStart', 'Start the session daemon at login', 'A systemd user service, so sessions are back before you open omaterm.'),
+    ], foot: 'Changing the daemon applies after you restart it.' },
+    { head: 'Sessions', rows: [
+      sw('restore', 'Restore sessions at launch'),
+      sw('resume', 'Resume agents in their own conversation', 'Needs the agent integration (Agents page).', { dis: () => !st.restore }),
+      sw('snapshot', 'Snapshot each agent turn', 'What “Last turn” in the Git tab compares against.'),
+      sw('confirmClose', 'Ask before closing a session that is still running', 'An agent, a dev server or any program other than the shell.'),
+    ] },
+    { head: 'Links and tools', rows: [
+      sel('links', 'Open links from terminals in', [['pane', 'A browser pane'], ['system', 'Your browser']]),
+      { k: 'html', t: 'Command-line tool', s: '<span class="mono-v">~/.local/bin/omaterm</span>', html: () => st.cli ? '<span class="pill ok">Installed</span> <button class="btn" data-act="cli">Remove</button>' : '<button class="btn primary" data-act="cli">Install</button>' },
+      { k: 'html', t: 'Saved scrollback', s: '12 sessions, 38 MB', html: () => '<button class="btn" data-act="clearsb">Clear…</button>' },
+    ] },
+  ] },
+  { id: 'appearance', title: 'Appearance', icon: 'palette', groups: () => [
+    { head: 'Theme', rows: [{ k: 'tiles' }], foot: 'Omarchy follows your Omarchy theme as it changes. System follows light or dark mode.' },
+    { head: 'Window', rows: [
+      seg('density', 'Density', ['Comfortable', 'Compact']),
+      seg('bg', 'Background', ['Wash', 'Plain'], 'Wash is the soft gradient behind the cards.'),
+      sw('dim', 'Dim unfocused panes'),
+      sw('motion', 'Reduce motion', 'No springs, fades or pulsing status dots.'),
+      sw('load', 'Show CPU and memory in the status bar'),
+    ] },
+  ] },
+  { id: 'terminal', title: 'Terminal', icon: 'term', groups: () => [
+    { rows: [{ k: 'tprev' }] },
+    { head: 'Text', rows: [
+      sel('fontMode', 'Font', [['follow', 'Follow Omarchy (JetBrainsMono Nerd Font)'], ['custom', 'Custom…']]),
+      ...(st.fontMode === 'custom' ? [{ k: 'html', t: 'Font family', html: () => `<input class="txt mono" value="${st.font}" data-txt="font">` }] : []),
+      { k: 'range', key: 'size', t: 'Size', min: 8, max: 32, step: 1, fmt: (v) => v + ' pt', s: 'Ctrl+= and Ctrl+− change it too.' },
+      { k: 'range', key: 'lh', t: 'Line height', min: 1, max: 1.6, step: .05, fmt: (v) => (+v).toFixed(2) },
+      sw('lig', 'Ligatures', 'Joins characters such as -> and != in fonts that have them.'),
+      { k: 'range', key: 'contrast', t: 'Minimum contrast', min: 0, max: 7, step: .5, fmt: (v) => +v === 0 ? 'Auto' : (+v).toFixed(1) + ':1', s: 'Lifts text a program colors too faintly. Auto is 1 in dark themes, 3 in light.' },
+    ] },
+    { head: 'Cursor', rows: [
+      seg('cursor', 'Style', ['Block', 'Bar', 'Underline']),
+      sw('blink', 'Blink'),
+    ] },
+    { head: 'Mouse and clipboard', rows: [
+      sw('copySel', 'Copy on select'),
+      sel('rclick', 'Right click', [['Menu', 'Shows a menu'], ['Paste', 'Pastes']]),
+      sel('clip', 'Programs may read the clipboard', [['Never', 'Never'], ['Ask', 'Ask each time']], 'Through OSC 52, as tmux and Neovim do.'),
+    ] },
+    { head: 'Shell and history', rows: [
+      { k: 'html', t: 'Shell', s: 'Empty uses your login shell (/usr/bin/zsh).', html: () => `<input class="txt mono" placeholder="/usr/bin/zsh" value="${st.shell}" data-txt="shell">` },
+      sel('scroll', 'Scrollback', [['2 MB', '2 MB'], ['10 MB', '10 MB'], ['50 MB', '50 MB'], ['100 MB', '100 MB']], 'Per pane, kept by the session daemon.'),
+      sel('bell', 'Bell', [['Off', 'Off'], ['Visual', 'Flash the pane'], ['Notify', 'Notify when you look away']]),
+    ] },
+  ] },
+  { id: 'editor', title: 'Editor', icon: 'code', groups: () => [
+    { rows: [
+      sw('edFont', 'Use the terminal font'),
+      sel('tab', 'Tab size', [['Language', 'From the language'], ['2', '2'], ['4', '4'], ['8', '8']]),
+      sw('wrap', 'Wrap long lines'),
+      sw('nums', 'Line numbers'),
+      sw('md', 'Open Markdown as a preview'),
+    ] },
+    { head: 'Diffs', rows: [seg('diff', 'Layout', ['Split', 'Unified'])] },
+  ] },
+  { id: 'notifications', title: 'Notifications', icon: 'bell', groups: () => [
+    { head: 'Notify me when a session', rows: [
+      sw('nWait', 'Needs you', 'An agent asks for permission or input.'),
+      sw('nDone', 'Finishes'),
+      sw('nErr', 'Fails'),
+    ], foot: 'Only while you look away: never for the session in front of you.' },
+    { rows: [
+      sel('sound', 'Sound', [['None', 'None'], ['Ping', 'Ping'], ['Glass', 'Glass'], ['Pop', 'Pop']]),
+      sw('progNotif', 'Show notifications from programs', 'Programs that send their own (OSC 9 and 777).'),
+      sw('longCmd', 'When a command runs longer than 10 seconds', 'In panes without an agent.'),
+      { k: 'html', t: 'Try it', html: () => '<button class="btn" data-act="testnotif">Send Test Notification</button>' },
+    ] },
+  ] },
+  { id: 'agents', title: 'Agents', icon: 'bot', hero: { t: 'Agents', p: 'omaterm shows what each agent is doing and resumes its conversation after a restart. A small hook tells it, and a skill teaches the agent the omaterm command.' }, groups: () => [
+    { head: 'Integration', rows: [
+      { k: 'link', t: 'Claude Code', s: hooks.claude ? 'Hook and skill installed' : 'Not set up', to: 'agent-claude', pill: hooks.claude },
+      { k: 'link', t: 'Codex', s: hooks.codex ? 'Hook and skill installed' : 'Not set up', to: 'agent-claude', pill: hooks.codex },
+      { k: 'link', t: 'Pi', s: hooks.pi ? 'Hook installed' : 'Not set up', to: 'agent-claude', pill: hooks.pi },
+      { k: 'link', t: 'OpenCode', s: hooks.opencode ? 'Plugin installed' : 'Not set up', to: 'agent-claude', pill: hooks.opencode },
+    ], foot: 'omaterm also recognizes Gemini, Amp, Aider, Goose, Cursor Agent, Copilot and 7 more by their process, without a hook.' },
+    { head: 'Control', rows: [
+      sw('agentCtl', 'Let agents control the app', 'The omaterm command may run the app’s commands and drive browser panes, not only sessions.'),
+      sw('sock', 'Allow the omaterm command', 'Turning this off leaves agents without omaterm.', { restart: true }),
+    ] },
+  ] },
+  { id: 'agent-claude', parent: 'agents', title: 'Claude Code', icon: 'bot', groups: () => [
+    { rows: [
+      { k: 'html', t: 'Status hook', s: '<span class="mono-v">~/.claude/settings.json</span>', html: () => hooks.claude ? '<span class="pill ok">Installed</span>' : '<span class="pill">Not installed</span>' },
+      { k: 'html', t: 'Skill', s: '<span class="mono-v">~/.claude/skills/omaterm</span>', html: () => hooks.claude ? '<span class="pill ok">Installed</span>' : '<span class="pill">Not installed</span>' },
+    ], foot: 'Sessions started before setup pick it up after they restart.' },
+    { bare: true, rows: [{ k: 'html', t: '', html: () => hooks.claude ? '<button class="btn danger" data-act="hook">Remove Integration</button>' : '<button class="btn primary" data-act="hook">Set Up</button>' }] },
+  ] },
+  { id: 'web', title: 'Web Access', icon: 'phone', hero: { t: 'Web Access', p: 'Use your sessions from a phone or another computer, in a browser. Only devices you pair can open it.' }, groups: () => [
+    { rows: [
+      sw('web', 'Web access'),
+      sw('net', 'On your network', 'Listens on all addresses, not only this computer.', { dis: () => !st.web }),
+      { k: 'html', t: 'Link', s: '', html: () => st.web ? `<span class="mono-v">${st.net ? 'http://192.168.1.20:7370' : 'http://localhost:7370'}</span> <button class="btn" data-act="copy">Copy</button>` : '<span class="pill">Off</span>' },
+    ], foot: () => st.net ? '⚠ Plain HTTP on your network. Use Tailscale or a tunnel to reach it from elsewhere.' : 'Reach it from elsewhere with Tailscale or a tunnel.' },
+    { head: 'Paired devices', rows: [
+      ...st.devices.map((d) => ({ k: 'html', t: d.name, s: `Last seen ${d.seen} · signed in until ${d.exp}`, html: () => `<button class="btn" data-act="revoke" data-id="${d.id}">Revoke</button>` })),
+      ...(st.devices.length ? [] : [{ k: 'html', t: '<span style="color:var(--faint)">No devices yet</span>', html: () => '' }]),
+      { k: 'link', t: 'Pair a Device…', to: 'pair' },
+    ] },
+    { head: 'Advanced', rows: [
+      { k: 'html', t: 'Port', html: () => '<input class="txt mono" style="width:80px" value="7370">' },
+      { k: 'html', t: 'Public URL', s: 'A Tailscale or tunnel address, used for the link and QR code.', html: () => '<input class="txt mono" placeholder="https://…">' },
+    ] },
+  ] },
+  { id: 'pair', parent: 'web', title: 'Pair a Device', icon: 'phone', groups: () => [
+    { rows: [{ k: 'qr' }], foot: 'Scan with the phone’s camera, or open the link and type the code. It works once, for 10 minutes.' },
+  ] },
+  { id: 'devurls', title: 'Dev URLs', icon: 'lock', hero: { t: 'Dev URLs', p: 'Open dev servers at https://myapp.localhost instead of localhost:5173. Each worktree gets its own name, so parallel agents never fight over a port.' }, groups: () => devGroups() },
+  { id: 'browser', title: 'Browser', icon: 'globe', groups: () => [
+    { rows: [
+      sel('search', 'Search with', [['DuckDuckGo', 'DuckDuckGo'], ['Google', 'Google'], ['Kagi', 'Kagi'], ['Brave', 'Brave Search'], ['Custom', 'Custom…']]),
+      sw('ads', 'Block ads and trackers'),
+      { k: 'html', t: 'Browsing data', s: 'Cookies, storage and cache of every browser pane.', html: () => '<button class="btn" data-act="cleardata">Clear…</button>' },
+    ] },
+  ] },
+  { id: 'keyboard', title: 'Keyboard', icon: 'kbd', groups: () => [
+    { rows: [
+      ...[['Settings', 'Ctrl ,'], ['Command palette', 'Ctrl Shift P'], ['Quick open', 'Ctrl P'], ['New terminal', 'Ctrl T'], ['Split right', 'Ctrl Shift R'], ['Session that needs you', 'Ctrl Shift J'], ['Toggle sidebar', 'Ctrl B']]
+        .map(([t, k]) => ({ k: 'html', t, html: () => k.split(' ').map((x) => `<kbd>${x}</kbd>`).join(' ') })),
+      { k: 'link', t: 'All Keyboard Shortcuts', to: 'keyboard' },
+    ], foot: 'Shortcuts can’t be changed yet.' },
+  ] },
+  { id: 'about', title: 'About', icon: 'info', groups: () => [
+    { rows: [{ k: 'html', t: '<b style="color:var(--text-strong)">omaterm 0.8.5</b>', s: 'Checked for updates today at 09:12 · up to date', html: () => '<button class="btn" data-act="update">Check for Updates</button>' }] },
+    { rows: [sw('autoCheck', 'Check for updates automatically'), sw('autoInstall', 'Download and install updates automatically', '', { dis: () => !st.autoCheck })] },
+    { head: 'Files', rows: [
+      ...[['Settings', '~/.config/omaterm/settings.json'], ['Sessions and layout', '~/.config/omaterm/state.json'], ['Web access', '~/.config/omaterm/web.json'], ['Saved scrollback', '~/.local/state/omaterm/sessions']]
+        .map(([t, p]) => ({ k: 'html', t, s: `<span class="mono-v">${p}</span>`, html: () => '<button class="btn">Reveal</button>' })),
+    ] },
+    { rows: [{ k: 'link', t: 'Website' }, { k: 'link', t: 'What’s New' }, { k: 'link', t: 'Report an Issue' }, { k: 'link', t: 'Credits' }] },
+  ] },
+];
+const NAV = [['general', 'appearance', 'terminal', 'editor', 'notifications'], ['agents', 'web', 'devurls', 'browser', 'keyboard'], ['about']];
+const byId = Object.fromEntries(PAGES.map((p) => [p.id, p]));
+const RESTORE = { general: 1, appearance: 1, terminal: 1, editor: 1, notifications: 1, browser: 1 };
+
+function devGroups() {
+  const done = st.dev === 'on';
+  const item = (ok, t, s) => ({ k: 'html', t, s, ck: ok, html: () => '' });
+  const g = [
+    { head: 'Setup', rows: [
+      item(done, 'Proxy on port 443', done ? 'Running in the session daemon' : 'Needs permission to use port 443'),
+      item(done, 'Certificate trusted by the system', done ? 'omaterm Local CA · valid until Oct 2028' : 'Not installed'),
+      item(done, 'Certificate trusted by Chrome and Firefox', done ? '2 profiles' : 'Not installed'),
+      item(true, 'Names under .localhost resolve', 'systemd-resolved'),
+    ], foot: done ? '' : 'Setting up asks for your password once.' },
+    { bare: true, rows: [{ k: 'html', t: '', html: () => done ? '<button class="btn danger" data-act="devremove">Remove…</button>' : st.dev === 'busy' ? '<button class="btn primary" disabled><span class="spin"></span>Waiting for your password…</button>' : '<button class="btn primary" data-act="devsetup">Set Up…</button>', infoAct: 'devinfo' }] },
+  ];
+  if (done) g.push({ head: 'Routes', rows: [
+    { k: 'html', t: '<span class="mono-v" style="color:var(--text)">https://omaterm-site.localhost</span>', s: 'site › vite · port 4123', html: () => '<button class="btn">Open</button> <button class="btn">Copy</button>' },
+    { k: 'html', t: '<span class="mono-v" style="color:var(--text)">https://fix-ui.omaterm-site.localhost</span>', s: 'worktree fix-ui › vite · port 4187', html: () => '<button class="btn">Open</button> <button class="btn">Copy</button>' },
+    { k: 'html', t: '<span class="mono-v" style="color:var(--text)">https://api.localhost</span>', s: 'api › go run . · port 4310', html: () => '<button class="btn">Open</button> <button class="btn">Copy</button>' },
+  ], foot: 'Sessions started with --url, and processes in omaterm.yml with url:, show up here.' });
+  return g;
+}
+
+// ---------- rendering ----------
+const $ = (s) => document.querySelector(s);
+let hist = ['general'], pos = 0, flashT = '';
+
+function control(r) {
+  if (r.k === 'sw') { const d = r.dis && r.dis(); return `<button class="sw ${st[r.key] ? 'on' : ''}" data-sw="${r.key}" ${d ? 'disabled' : ''} aria-pressed="${!!st[r.key]}"></button>`; }
+  if (r.k === 'sel') return `<select class="popup" data-sel="${r.key}">${r.opts.map(([v, l]) => `<option value="${v}" ${st[r.key] == v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  if (r.k === 'seg') return `<div class="seg">${r.opts.map((o) => `<button data-seg="${r.key}" data-v="${o}" class="${st[r.key] === o ? 'on' : ''}">${o}</button>`).join('')}</div>`;
+  if (r.k === 'range') return `<div class="range"><input type="range" min="${r.min}" max="${r.max}" step="${r.step}" value="${st[r.key]}" data-range="${r.key}"><output>${r.fmt(st[r.key])}</output></div>`;
+  if (r.k === 'link') return (r.pill !== undefined ? (r.pill ? '<span class="pill ok">On</span>' : '<span class="pill">Off</span>') : '') + `<span class="chevr">${ic('right')}</span>`;
+  if (r.k === 'html') return r.html();
+  return '';
+}
+function rowHTML(r) {
+  if (r.k === 'tiles') {
+    const t = (id, name, cls) => `<div class="tile ${st.theme === id ? 'on' : ''}" data-theme-tile="${id}"><div class="pv ${cls}">${cls === 's' ? '<div class="half pv l"><div class="ps"></div><div class="pc"></div></div><div class="half r pv d"><div class="ps"></div><div class="pc"></div></div>' : '<div class="ps"></div><div class="pc"></div>'}</div>${name}</div>`;
+    return `<div class="tiles">${t('omarchy', 'Omarchy', 'o')}${t('system', 'System', 's')}${t('dark', 'Dark', 'd')}${t('light', 'Light', 'l')}</div>`;
+  }
+  if (r.k === 'tprev') {
+    const c = { Block: '', Bar: 'bar', Underline: 'under' }[st.cursor];
+    const lig = (s) => st.lig ? s.replace('->', '→').replace('!=', '≠') : s;
+    return `<div class="tprev mono" style="font-size:${st.size}px;line-height:${st.lh}"><span class="p">~/Projects/omaterm</span> <span class="g">❯</span> go test ./...\n<span class="g">ok</span>  omaterm/internal/web  0.412s\n${lig('if err != nil { return } // a -> b')}\n<span class="p">~/Projects/omaterm</span> <span class="g">❯</span> <span class="cur ${c} ${st.blink ? 'blink' : ''}"></span></div>`;
+  }
+  if (r.k === 'qr') {
+    let cells = ''; let seed = 7;
+    for (let y = 0; y < 21; y++) for (let x = 0; x < 21; x++) {
+      const fin = (a, b) => x >= a && x < a + 7 && y >= b && y < b + 7;
+      let on;
+      if (fin(0, 0) || fin(14, 0) || fin(0, 14)) { const fx = x % 14 < 7 ? x % 14 : x - 14, fy = y % 14 < 7 ? y % 14 : y - 14; on = fx === 0 || fx === 6 || fy === 0 || fy === 6 || (fx >= 2 && fx <= 4 && fy >= 2 && fy <= 4); }
+      else { seed = (seed * 9301 + 49297) % 233280; on = seed / 233280 > .52; }
+      cells += `<i class="${on ? 'b' : ''}"></i>`;
+    }
+    return `<div style="padding:14px;text-align:center"><div class="qr">${cells}</div><div class="mono-v" style="font-size:20px;letter-spacing:.12em;color:var(--text-strong)">K7Q-M2X</div><div class="mono-v" style="margin-top:4px">http://192.168.1.20:7370</div></div>`;
+  }
+  const label = r.t ? `<div class="t">${r.ck !== undefined ? `<span class="ck ${r.ck ? 'ok' : 'bad'}">${ic(r.ck ? 'check' : 'x')}</span>` : ''}${r.t}${r.restart ? '<span class="pill">Applies after restart</span>' : ''}</div>` : '';
+  const sub = r.s ? `<div class="s" ${r.ck !== undefined ? 'style="margin-left:24px"' : ''}>${r.s}</div>` : '';
+  const info = r.infoAct ? `<button class="info-b" data-act="${r.infoAct}" title="What does setup change?">${ic('info')}</button>` : '';
+  const flash = flashT && r.t === flashT ? ' flash' : '';
+  return `<div class="row${r.k === 'link' ? ' link' : ''}${flash}" ${r.to ? `data-to="${r.to}"` : ''}><div class="lab">${label}${sub}</div>${info}${control(r)}</div>`;
+}
+function render() {
+  const id = hist[pos], p = byId[id];
+  $('#title').textContent = p.title;
+  $('#back').disabled = pos === 0; $('#fwd').disabled = pos === hist.length - 1;
+  let h = '';
+  if (st.restartNeeded) h += `<div class="banner">${ic('info')}<span>Restart the session daemon to apply your changes. Sessions keep running.</span><button class="btn primary" data-act="restart">Restart Now</button></div>`;
+  if (p.hero) h += `<div class="hero"><div class="big">${ic(p.icon)}</div><div><h3>${p.hero.t}</h3><p>${p.hero.p} <a>Learn more…</a></p></div></div>`;
+  for (const g of p.groups()) {
+    if (g.head) h += `<div class="gh">${g.head}</div>`;
+    h += g.bare ? `<div class="acts-row">${g.rows.map(rowHTML).join('')}</div>` : `<div class="group">${g.rows.map(rowHTML).join('')}</div>`;
+    const f = typeof g.foot === 'function' ? g.foot() : g.foot;
+    if (f) h += `<div class="gf">${f}</div>`;
+  }
+  if (RESTORE[id]) h += `<div class="restore"><button data-act="defaults">Restore Defaults</button></div>`;
+  $('#page').innerHTML = h;
+  paintIcons($('#page'));
+  renderNav();
+}
+function renderNav() {
+  const q = $('#q').value.trim().toLowerCase();
+  const cur = byId[hist[pos]], top = cur.parent || cur.id;
+  let h = '';
+  NAV.forEach((grp, gi) => {
+    let any = false;
+    for (const id of grp) {
+      const p = byId[id];
+      let hits = [];
+      if (q) {
+        const rows = [p, ...PAGES.filter((x) => x.parent === id)].flatMap((pp) => pp.groups().flatMap((g) => g.rows.map((r) => ({ r, page: pp.id }))));
+        hits = rows.filter(({ r }) => r.t && !/[<]/.test(r.t) && (r.t + ' ' + (r.s || '')).toLowerCase().includes(q));
+        if (!p.title.toLowerCase().includes(q) && !hits.length) continue;
+      }
+      any = true;
+      h += `<div class="nav-row ${top === id && !q ? 'sel' : ''}" data-go="${id}">${ic(p.icon)}<span>${p.title}</span></div>`;
+      h += hits.slice(0, 4).map(({ r, page }) => `<div class="nav-hit" data-go="${page}" data-flash="${r.t.replace(/"/g, '&quot;')}">${r.t}</div>`).join('');
+    }
+    if (any && gi < NAV.length - 1) h += '<div class="nav-gap"></div>';
+  });
+  if (!h) h = '<div class="nav-none">No settings match.</div>';
+  $('#nav').innerHTML = h;
+  paintIcons($('#nav'));
+}
+function go(id, flash) {
+  if (hist[pos] !== id) { hist = hist.slice(0, pos + 1); hist.push(id); pos++; }
+  flashT = flash || '';
+  render();
+  $('#scroll').scrollTop = 0;
+  if (flash) { const el = document.querySelector('.row.flash'); el && el.scrollIntoView({ block: 'center' }); setTimeout(() => { flashT = ''; }, 1500); }
+}
+
+// ---------- sheets ----------
+function sheet(html) { $('#sheet').innerHTML = html; paintIcons($('#sheet')); $('#scrim').classList.add('on'); }
+function closeSheet() { $('#scrim').classList.remove('on'); }
+const SETUP_LIST = `<ul>
+  <li>Let programs use ports 443–1023<small>/etc/sysctl.d/50-omaterm.conf · any program on this computer can then listen on these ports, not only omaterm.</small></li>
+  <li>Trust the omaterm Local CA<small>Added to the system’s certificates. Its key never leaves ~/.config/omaterm.</small></li>
+  <li>Trust it in Chrome and Firefox<small>Their certificate stores in your home folder. No password needed.</small></li>
+</ul>`;
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-sw],[data-seg],[data-go],[data-to],[data-act],[data-theme-tile],#back,#fwd,#scrim');
+  if (!t) return;
+  if (t.id === 'scrim') { if (e.target === t) closeSheet(); return; }
+  if (t.id === 'back') { if (pos > 0) { pos--; render(); } return; }
+  if (t.id === 'fwd') { if (pos < hist.length - 1) { pos++; render(); } return; }
+  if (t.dataset.sw) { if (t.disabled) return; const k = t.dataset.sw; st[k] = !st[k]; const r = byId[hist[pos]].groups().flatMap((g) => g.rows).find((x) => x.key === k); if (r && r.restart) st.restartNeeded = true; render(); return; }
+  if (t.dataset.seg) { st[t.dataset.seg] = t.dataset.v; render(); return; }
+  if (t.dataset.themeTile) { st.theme = t.dataset.themeTile; const dark = st.theme === 'light' ? 'light' : st.theme === 'system' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : 'dark'; setTheme(dark); render(); return; }
+  if (t.dataset.go) { $('#q').value && t.dataset.flash ? go(t.dataset.go, t.dataset.flash) : go(t.dataset.go); return; }
+  if (t.dataset.to) { go(t.dataset.to); return; }
+  const a = t.dataset.act;
+  if (a === 'restart') { st.restartNeeded = false; render(); }
+  else if (a === 'cli') { st.cli = !st.cli; render(); }
+  else if (a === 'hook') { hooks.claude = !hooks.claude; render(); }
+  else if (a === 'defaults') sheet(`<h3>Restore the defaults of ${byId[hist[pos]].title}?</h3><p>Every setting on this page goes back to how omaterm ships.</p><div class="acts"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="close">Restore</button></div>`);
+  else if (a === 'revoke') { const d = st.devices.find((x) => x.id === t.dataset.id); sheet(`<h3>Revoke ${d.name}?</h3><p>It is signed out at once, and any session it has open closes within a few seconds. Pair it again to use it.</p><div class="acts"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="dorevoke" data-id="${d.id}">Revoke</button></div>`); }
+  else if (a === 'dorevoke') { st.devices = st.devices.filter((x) => x.id !== t.dataset.id); closeSheet(); render(); }
+  else if (a === 'devsetup' || a === 'devinfo') sheet(`<h3>${a === 'devinfo' ? 'What setup changes' : 'Set up Dev URLs'}</h3><p>omaterm will make these changes. ${a === 'devinfo' ? 'Remove undoes all of them.' : 'Your system asks for your password once.'}</p>${SETUP_LIST}<div class="acts">${a === 'devinfo' ? '<button class="btn primary" data-act="close">Done</button>' : '<button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="devgo">Continue</button>'}</div>`);
+  else if (a === 'devgo') { closeSheet(); st.dev = 'busy'; render(); setTimeout(() => { st.dev = 'on'; render(); }, 1600); }
+  else if (a === 'devremove') sheet(`<h3>Remove Dev URLs?</h3><p>omaterm stops the proxy, removes its certificate from the system, Chrome and Firefox, and puts port access back as it was. Asks for your password.</p><div class="acts"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="devrm">Remove</button></div>`);
+  else if (a === 'devrm') { st.dev = 'off'; closeSheet(); render(); }
+  else if (a === 'clearsb') sheet(`<h3>Clear saved scrollback?</h3><p>Sessions restored later start with an empty screen. Running sessions keep what they show.</p><div class="acts"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="close">Clear</button></div>`);
+  else if (a === 'cleardata') sheet(`<h3>Clear browsing data?</h3><p>Signs you out of sites in browser panes and clears their cache.</p><div class="acts"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="close">Clear</button></div>`);
+  else if (a === 'testnotif') { t.textContent = 'Sent ✓'; setTimeout(() => (t.textContent = 'Send Test Notification'), 1500); }
+  else if (a === 'copy') { t.textContent = 'Copied'; setTimeout(() => (t.textContent = 'Copy'), 1200); }
+  else if (a === 'update') { t.innerHTML = '<span class="spin"></span>Checking…'; setTimeout(() => (t.textContent = 'Up to Date'), 1200); }
+  else if (a === 'close') closeSheet();
+});
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.dataset.sel) { st[t.dataset.sel] = t.value; render(); }
+});
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t.dataset.range) { st[t.dataset.range] = +t.value; const r = byId[hist[pos]].groups().flatMap((g) => g.rows).find((x) => x.key === t.dataset.range); t.nextElementSibling.textContent = r.fmt(t.value); const pv = document.querySelector('.tprev'); if (pv) { pv.style.fontSize = st.size + 'px'; pv.style.lineHeight = st.lh; } }
+  if (t.dataset.txt) st[t.dataset.txt] = t.value;
+  if (t.id === 'q') renderNav();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { if ($('#scrim').classList.contains('on')) closeSheet(); else if ($('#q').value) { $('#q').value = ''; renderNav(); } }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); $('#q').focus(); }
+  if (e.key === 'Enter' && document.activeElement === $('#q')) { const f = document.querySelector('.nav-hit, .nav-row'); f && f.click(); }
+});
+$('#openfile').onclick = () => { $('#openfile').lastChild.textContent = 'Opened in the editor'; setTimeout(() => ($('#openfile').lastChild.textContent = 'Open settings file'), 1400); };
+
+// demo bar
+function setTheme(v) { document.documentElement.dataset.theme = v; document.querySelectorAll('#d-theme button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
+document.querySelectorAll('#d-theme button').forEach((b) => (b.onclick = () => setTheme(b.dataset.v)));
+document.querySelectorAll('#d-os button').forEach((b) => (b.onclick = () => { $('#win').dataset.os = b.dataset.v; document.querySelectorAll('#d-os button').forEach((x) => x.classList.toggle('on', x === b)); }));
+
+setTheme('dark');
+paintIcons(document);
+const start = location.hash.slice(1);
+if (byId[start]) hist = [start];
+render();
+</script>
+</body>
+</html>
