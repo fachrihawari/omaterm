@@ -3,9 +3,7 @@ package daemon
 import (
 	"errors"
 	"log"
-	"net"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"omaterm/internal/client"
@@ -13,6 +11,7 @@ import (
 	"omaterm/internal/web"
 )
 
+// webStore is web access's store, beside state.json.
 func (d *Daemon) webStore() *web.Store {
 	return web.OpenStore(web.StorePath(filepath.Dir(d.stateFile())))
 }
@@ -25,10 +24,10 @@ func (d *Daemon) reloadWeb() (web.Status, error) {
 	if err != nil {
 		return web.Status{Error: err.Error()}, err
 	}
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.ListenPort()))
+	addr := cfg.ListenAddr()
 	d.webMu.Lock()
 	defer d.webMu.Unlock()
-	if d.web != nil && (!cfg.Enabled || d.web.Addr() != addr) {
+	if d.web != nil && (!cfg.Enabled || d.webAddr != addr) {
 		d.web.Close()
 		d.web = nil
 		log.Printf("web access: stopped")
@@ -41,10 +40,17 @@ func (d *Daemon) reloadWeb() (web.Status, error) {
 		if err != nil {
 			return web.Status{Addr: addr, Error: err.Error()}, err
 		}
-		d.web = s
+		d.web, d.webAddr = s, addr
 		log.Printf("web access: http://%s", addr)
 	}
-	return web.Status{On: true, Addr: d.web.Addr()}, nil
+	return web.Status{On: true, Addr: d.webAddr}, nil
+}
+
+// webServing tells whether web access serves.
+func (d *Daemon) webServing() bool {
+	d.webMu.Lock()
+	defer d.webMu.Unlock()
+	return d.web != nil
 }
 
 func (d *Daemon) stopWeb() {

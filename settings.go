@@ -28,7 +28,8 @@ type Settings struct {
 	Notify NotifySettings `json:"notify"`
 
 	// ControlSocket lets the omaterm command reach the app; RemoteControl
-	// lets it drive the window and browser panes, not only sessions.
+	// ("Let Agents Control the App") lets it run the app's commands and
+	// drive browser panes, not only sessions.
 	ControlSocket bool `json:"controlSocket"`
 	RemoteControl bool `json:"remoteControl"`
 

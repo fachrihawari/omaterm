@@ -1,7 +1,8 @@
 // Package web serves omaterm's sessions to a browser: their list, with
 // each agent's status, and their panes as live terminals. It listens on
-// the loopback only; a tunnel the user runs (tailscale serve, cloudflared)
-// carries it further, and a device must be paired before it sees anything.
+// the loopback unless told to listen on the network; a tunnel the user
+// runs (tailscale serve, cloudflared) carries it further, and a device
+// must be paired before it sees anything.
 package web
 
 import (
@@ -11,8 +12,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,11 +59,32 @@ type code struct {
 // the app writes its settings whole.
 type Config struct {
 	Enabled bool `json:"enabled"`
-	// Port is the loopback port served; 0 is DefaultPort.
+	// Host is the address listened on: empty for the loopback, which only
+	// this machine and its tunnels reach, or 0.0.0.0 for the network.
+	Host string `json:"host,omitempty"`
+	// Port is the port served; 0 is DefaultPort.
 	Port int `json:"port,omitempty"`
 	// URL is where devices reach it through a tunnel, for pairing links;
 	// empty asks Tailscale, else gives the loopback address.
 	URL string `json:"url,omitempty"`
+}
+
+// ListenAddr is the address to serve.
+func (c Config) ListenAddr() string {
+	host := c.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(c.ListenPort()))
+}
+
+// OnNetwork tells a config that listens beyond the loopback.
+func (c Config) OnNetwork() bool {
+	if c.Host == "" || c.Host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(c.Host)
+	return ip == nil || !ip.IsLoopback()
 }
 
 // ListenPort is the port to serve.

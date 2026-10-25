@@ -1,7 +1,8 @@
-// omaterm web access: the sessions, and a pane as a live terminal. The
-// pane's frames are the attach socket's: a kind byte, a big-endian
-// uint32 length, the payload ('o' output, 'z' resized, 'c' closed; the
-// page sends 'i' input and 'r' resize).
+// omaterm web access: the sessions in a sidebar, and a pane as a live
+// terminal beside them, or alone on a narrow screen. The pane's frames are
+// the attach socket's: a kind byte, a big-endian uint32 length, the
+// payload ('o' output, 'z' resized, 'c' closed; the page sends 'i' input
+// and 'r' resize).
 
 const app = document.getElementById("app");
 const enc = new TextEncoder();
@@ -17,8 +18,10 @@ const THEME = {
 let state = null;       // the last state: projects and sessions
 let events = null;      // its WebSocket
 let eventsRetry = 500;
-let view = null;        // "pair", "list" or "term"
-let term = null;        // the open terminal's teardown and refresh
+let offline = false;
+let paired = false;     // the shell shows, not the pair page
+let term = null;        // the open terminal: its pane id, refresh and teardown
+let shell = null;       // the shell's parts: sidebar list, content, footer
 
 // h makes an element. Text is always set as text: names and messages
 // come from programs.
@@ -52,7 +55,8 @@ async function api(path, body) {
 // --- pairing --------------------------------------------------------------
 
 function showPair(message = "") {
-  view = "pair";
+  paired = false;
+  shell = null;
   closeTerm();
   if (events) { events.onclose = null; events.close(); events = null; }
   document.title = "omaterm";
@@ -100,34 +104,41 @@ function connectEvents() {
   ws.onopen = () => { eventsRetry = 500; };
   ws.onmessage = (e) => {
     state = JSON.parse(e.data);
+    offline = false;
     render();
   };
   ws.onclose = (e) => {
     if (events !== ws) return;
     events = null;
     if (e.code === 4401) { showPair("This browser was signed out."); return; }
-    render(true);
+    offline = true;
+    render();
     setTimeout(async () => {
       // Signed out meanwhile? api() shows the pair page.
-      try { state = await api("/api/state"); connectEvents(); render(); } catch { if (view !== "pair") connectEventsLater(); }
+      try { state = await api("/api/state"); offline = false; connectEvents(); render(); } catch { if (paired) connectEventsLater(); }
     }, eventsRetry);
     eventsRetry = Math.min(eventsRetry * 2, 8000);
   };
 }
 
 function connectEventsLater() {
-  setTimeout(() => { if (!events && view !== "pair") connectEvents(); }, eventsRetry);
+  setTimeout(() => { if (!events && paired) connectEvents(); }, eventsRetry);
 }
 
 function wsURL(path) {
   return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + path;
 }
 
-function render(offline = false) {
-  const waiting = state ? state.sessions.filter((s) => s.lead && s.lead.status === "waiting").length : 0;
+function waitingCount() {
+  return state ? state.sessions.filter((s) => s.lead && s.lead.status === "waiting").length : 0;
+}
+
+function render() {
+  if (!paired || !shell) return;
+  const waiting = waitingCount();
   document.title = waiting ? `(${waiting}) omaterm` : "omaterm";
-  if (view === "list") renderList(offline);
-  if (view === "term" && term) term.refresh();
+  renderSidebar();
+  if (term) term.refresh();
 }
 
 // paneByID finds a pane and its session.
@@ -138,10 +149,12 @@ function paneByID(id) {
   return null;
 }
 
+// label names a pane by what runs in it; a shell's title is mostly its
+// prompt's user, host and folder, which say little here.
 function label(p) {
   if (p.url) return p.title || p.url;
   if (p.agent) return AGENTS[p.agent] || p.agent;
-  return p.process || p.title || p.shell || "Terminal";
+  return p.process || p.shell || "Terminal";
 }
 
 // status reads a pane's status for people: its class and words.
@@ -164,86 +177,111 @@ function ago(ms) {
   return `${Math.floor(s / 86400)}d`;
 }
 
-// --- session list -----------------------------------------------------------
-
-function showList() {
-  view = "list";
-  closeTerm();
-  render();
+// terminals are a session's panes that are terminals, not pages.
+function terminals(s) {
+  return (s.panes ?? []).filter((p) => !p.url);
 }
 
-function renderList(offline) {
-  const waiting = state ? state.sessions.filter((s) => s.lead && s.lead.status === "waiting").length : 0;
-  const header = h("header", { class: "bar" },
-    h("img", { class: "logo", src: "icon.svg", alt: "" }),
-    h("h1", {}, "omaterm"),
-    waiting ? h("span", { class: "chip waiting" }, `${waiting} waiting`) : null,
-    h("button", {
-      class: "icon-btn", title: "Sign out this browser",
-      onclick: async () => { if (confirm("Sign out this browser?")) { await api("/api/logout", {}); showPair(); } },
-    }, "Sign out"),
+// --- the shell: sidebar and content ------------------------------------------
+
+function showShell() {
+  const list = h("nav", { class: "side-list", "aria-label": "Sessions" });
+  const foot = h("div", { class: "side-foot" });
+  const waiting = h("span", { class: "chip waiting", hidden: true });
+  const content = h("main", { class: "content" });
+  const sidebar = h("aside", { class: "sidebar" },
+    h("header", { class: "side-head" },
+      h("img", { class: "logo", src: "icon.svg", alt: "" }),
+      h("h1", {}, "omaterm"),
+      waiting,
+    ),
+    list,
+    foot,
   );
-  const body = h("main", { class: "list" });
-  if (!state) {
-    body.append(h("p", { class: "empty" }, "Loading…"));
-  } else if (!state.projects.length) {
-    body.append(h("p", { class: "empty" }, "No projects yet. Open a folder in omaterm to start."));
-  }
+  const root = h("div", { class: "shell" }, sidebar, content);
+  app.replaceChildren(root);
+  shell = { root, list, foot, waiting, content };
+}
+
+function renderSidebar() {
+  const { list, foot, waiting } = shell;
+  const n = waitingCount();
+  waiting.hidden = !n;
+  waiting.textContent = `${n} waiting`;
+  const open = term?.id;
+  const items = [];
+  if (!state) items.push(h("p", { class: "empty" }, "Loading…"));
+  else if (!state.projects.length) items.push(h("p", { class: "empty" }, "No projects yet. Open a folder in omaterm to start."));
   for (const proj of state?.projects ?? []) {
-    const sessions = state.sessions.filter((s) => s.project === proj.id);
-    body.append(h("section", { class: "project" },
+    const sessions = state.sessions.filter((s) => s.project === proj.id && terminals(s).length);
+    items.push(h("section", { class: "project" },
       h("div", { class: "project-head" },
         h("h2", { title: proj.dir }, proj.name),
-        h("button", { class: "new", onclick: () => newSession(proj.id) }, "+ New session"),
+        h("button", { class: "new", title: `New session in ${proj.name}`, "aria-label": `New session in ${proj.name}`, onclick: () => newSession(proj.id) }, "+"),
       ),
-      sessions.length ? sessions.map((s) => sessionCard(s, proj)) : h("p", { class: "empty" }, "No sessions."),
+      sessions.length ? sessions.map((s) => sessionRow(s, proj, open)) : h("p", { class: "none" }, "No sessions"),
     ));
   }
-  app.replaceChildren(...[header, offline && h("div", { class: "offline" }, "Reconnecting…"), body].filter(Boolean));
+  list.replaceChildren(...items);
+  foot.replaceChildren(...[
+    offline && h("span", { class: "offline" }, "Reconnecting…"),
+    h("button", {
+      class: "link", title: "Sign out this browser",
+      onclick: async () => { if (confirm("Sign out this browser?")) { await api("/api/logout", {}); showPair(); } },
+    }, "Sign out"),
+  ].filter(Boolean));
 }
 
 // where is a pane's folder, as seen from its project's.
 function where(dir, proj) {
-  if (!dir) return "";
-  if (dir === proj.dir) return "";
+  if (!dir || dir === proj.dir) return "";
   if (dir.startsWith(proj.dir + "/")) return dir.slice(proj.dir.length + 1);
   return dir.split("/").slice(-2).join("/");
 }
 
-function sessionCard(s, proj) {
-  const lead = s.lead && s.lead.id ? s.lead : s.panes[0];
-  if (!lead) return null;
+function sessionRow(s, proj, open) {
+  const panes = terminals(s);
+  const lead = s.lead && s.lead.id && !s.lead.url ? s.lead : panes[0];
   const st = status(lead);
   const sub = lead.status === "waiting" && lead.message ? lead.message : [label(lead), where(lead.dir, proj)].filter(Boolean).join(" · ");
-  const panes = (s.panes ?? []).filter((p) => !p.url);
-  return h("div", {
-    class: "session", role: "button", tabindex: "0",
-    onclick: () => openPane(lead.id),
-    onkeydown: (e) => { if (e.key === "Enter") openPane(lead.id); },
-  },
-    h("div", { class: "top" },
+  const here = panes.some((p) => p.id === open);
+  return h("div", { class: "session-group" },
+    h("a", {
+      class: "session" + (here ? " current" : ""), href: "#/pane/" + encodeURIComponent(here ? open : lead.id),
+      "aria-current": here ? "page" : false,
+    },
       h("span", { class: `dot ${st.cls}` }),
-      h("span", { class: "name" }, s.name || label(lead)),
-      lead.unread ? h("span", { class: "unread", title: "Unread" }) : null,
-      h("span", { class: `status ${st.cls}` }, st.text + (lead.since ? ` · ${ago(lead.since)}` : "")),
+      h("span", { class: "body" },
+        h("span", { class: "top" },
+          h("span", { class: "name" }, s.name || label(lead)),
+          lead.unread ? h("span", { class: "unread", title: "Unread" }) : null,
+          h("span", { class: `status ${st.cls}` }, st.text + (lead.since ? ` · ${ago(lead.since)}` : "")),
+        ),
+        sub ? h("span", { class: "sub" }, sub) : null,
+      ),
     ),
-    h("div", { class: "sub" }, sub),
     panes.length > 1 ? h("div", { class: "panes" }, panes.map((p) =>
-      h("button", { onclick: (e) => { e.stopPropagation(); openPane(p.id); } }, label(p)))) : null,
+      h("a", { class: p.id === open ? "current" : "", href: "#/pane/" + encodeURIComponent(p.id) },
+        h("span", { class: `dot ${status(p).cls}` }), label(p)))) : null,
   );
 }
 
 async function newSession(project) {
   try {
     const made = await api("/api/sessions", { project });
-    openPane(made.pane);
+    location.hash = "#/pane/" + encodeURIComponent(made.pane);
   } catch (err) {
     if (err.message !== "not paired") alert(err.message);
   }
 }
 
-function openPane(id) {
-  location.hash = "#/pane/" + encodeURIComponent(id);
+function showEmpty() {
+  closeTerm();
+  shell.root.dataset.view = "list";
+  shell.content.replaceChildren(h("div", { class: "pick" },
+    h("img", { src: "icon.svg", alt: "" }),
+    h("p", {}, "Pick a session to open its terminal."),
+  ));
 }
 
 // --- terminal ---------------------------------------------------------------
@@ -267,54 +305,43 @@ function closeTerm() {
   if (term) { term.close(); term = null; }
 }
 
+const touch = matchMedia("(pointer: coarse)").matches;
+
+// showTerm opens a pane in the content, sized to fill it: the pane takes
+// this screen's size while it shows here, and the window's back after.
 function showTerm(id) {
-  view = "term";
+  if (term?.id === id) return;
   closeTerm();
-  const found = paneByID(id);
-  const title = h("h1", {}, found ? (found.session.name || label(found.pane)) : "Terminal");
+  shell.root.dataset.view = "term";
+  const title = h("h1", {}, "Terminal");
   const chip = h("span", { class: "chip" });
-  const fitBtn = h("button", { class: "icon-btn", "aria-pressed": "false", title: "Size the pane to this screen" }, "Fit");
-  const wrap = h("div", { class: "term-wrap" });
+  const tabs = h("div", { class: "tabs" });
+  const host = h("div", { class: "term-host" });
   const note = h("div", { class: "term-note", hidden: true });
   let ctrl = false;
   const ctrlBtn = h("button", { "aria-pressed": "false" }, "Ctrl");
-  const compose = h("input", { placeholder: "Type a line…", enterkeyhint: "send", autocomplete: "off", autocapitalize: "off", spellcheck: "false" });
 
   const xt = new Terminal({
-    cols: 80, rows: 24, fontFamily: getComputedStyle(document.body).getPropertyValue("--mono"), fontSize: 13,
+    fontFamily: getComputedStyle(document.body).getPropertyValue("--mono"), fontSize: touch ? 12 : 13,
     theme: THEME, scrollback: 10000, cursorBlink: true, macOptionIsMeta: true, allowProposedApi: false,
   });
   const fit = new FitAddon.FitAddon();
   xt.loadAddon(fit);
 
-  let ws = null, size = { cols: 80, rows: 24 }, fitting = false, closed = false, retry = 500, gone = false;
+  let ws = null, closed = false, retry = 500, gone = false, sized = false;
 
   const send = (bytes) => { if (ws && ws.readyState === 1) ws.send(frame("i", bytes)); };
   const sendText = (s) => send(enc.encode(s));
   const setNote = (text) => { note.hidden = !text; note.textContent = text || ""; };
 
-  // Following the pane's size, the font shrinks until its width fits the
-  // screen; past the smallest, the terminal scrolls sideways.
-  const scaleToWidth = () => {
-    if (fitting) return;
-    for (let i = 0; i < 3; i++) {
-      const dims = fit.proposeDimensions();
-      if (!dims || !dims.cols) return;
-      const want = xt.options.fontSize * dims.cols / size.cols;
-      const next = Math.max(7, Math.min(14, Math.floor(want * 2) / 2));
-      if (next === xt.options.fontSize) return;
-      xt.options.fontSize = next;
-    }
-  };
-
-  // Fitting sizes the pane itself to this screen, for every client: the
-  // one that resizes last wins.
-  const fitToScreen = () => {
-    xt.options.fontSize = matchMedia("(pointer: fine)").matches ? 13 : 12;
+  // fill sizes the terminal, and the pane, to the room it has.
+  const fill = () => {
     const dims = fit.proposeDimensions();
-    if (!dims || !ws || ws.readyState !== 1) return;
-    const fs = xt.options.fontSize;
-    ws.send(frame("r", uint16s(dims.cols, dims.rows, fs * 0.6, fs * 1.2)));
+    if (!dims || !dims.cols || !dims.rows) return;
+    if (dims.cols !== xt.cols || dims.rows !== xt.rows) xt.resize(dims.cols, dims.rows);
+    if (!ws || ws.readyState !== 1) return;
+    const cell = xt._core?._renderService?.dimensions?.css?.cell;
+    ws.send(frame("r", uint16s(dims.cols, dims.rows, cell?.width ?? 0, cell?.height ?? 0)));
   };
 
   const connect = () => {
@@ -325,34 +352,33 @@ function showTerm(id) {
     sock.onmessage = (e) => {
       if (typeof e.data === "string") {
         const w = JSON.parse(e.data);
-        size = { cols: w.cols, rows: w.rows };
         xt.reset();
         xt.resize(w.cols, w.rows);
         welcomed = true;
+        sized = false;
         retry = 500;
         setNote("");
-        if (fitting) fitToScreen(); else scaleToWidth();
         return;
       }
       const b = new Uint8Array(e.data);
       const kind = String.fromCharCode(b[0]);
       const payload = b.subarray(5);
-      if (kind === "o") xt.write(payload);
+      // The first frame shows the pane at its size; then it takes ours.
+      if (kind === "o") xt.write(payload, sized ? undefined : () => { if (!sized) { sized = true; fill(); } });
       else if (kind === "z") {
         const dv = new DataView(payload.buffer, payload.byteOffset);
-        size = { cols: dv.getUint16(0), rows: dv.getUint16(2) };
-        xt.resize(size.cols, size.rows);
-        if (!fitting) scaleToWidth();
+        const cols = dv.getUint16(0), rows = dv.getUint16(2);
+        if (cols !== xt.cols || rows !== xt.rows) xt.resize(cols, rows);
       } else if (kind === "c") {
         gone = true;
-        setNote("This pane has closed.");
+        setNote("This session has ended.");
       }
     };
     sock.onclose = (e) => {
       if (ws !== sock || closed) return;
       ws = null;
       if (e.code === 4401) { showPair("This browser was signed out."); return; }
-      if (e.code === 4404 || gone) { setNote("This pane has closed."); return; }
+      if (e.code === 4404 || gone) { setNote(gone ? "This session has ended." : "This session is gone."); return; }
       setNote(welcomed ? "Reconnecting…" : "Connecting…");
       setTimeout(async () => {
         if (closed) return;
@@ -375,81 +401,75 @@ function showTerm(id) {
   xt.onBinary((d) => send(Uint8Array.from(d, (c) => c.charCodeAt(0) & 0xff)));
 
   const arrow = (k) => () => sendText((xt.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + k);
-  const key = (text, fn) => h("button", { onclick: (e) => { e.preventDefault(); fn(); xt.focus(); } }, text);
+  const key = (text, fn, aria) => h("button", { "aria-label": aria, onclick: (e) => { e.preventDefault(); fn(); xt.focus(); } }, text);
   ctrlBtn.addEventListener("click", (e) => {
     e.preventDefault();
     ctrl = !ctrl;
     ctrlBtn.setAttribute("aria-pressed", String(ctrl));
     xt.focus();
   });
-  const keys = h("div", { class: "keys" },
+  const keys = touch ? h("div", { class: "keys" },
     key("Esc", () => sendText("\x1b")), key("Tab", () => sendText("\t")), ctrlBtn,
-    key("^C", () => sendText("\x03")),
-    key("↑", arrow("A")), key("↓", arrow("B")), key("←", arrow("D")), key("→", arrow("C")),
-    key("⏎", () => sendText("\r")),
-  );
-  const sendLine = () => {
-    const text = compose.value;
-    compose.value = "";
-    if (text) sendText(xt.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text);
-    setTimeout(() => sendText("\r"), text ? 60 : 0);
-  };
-  const composeBar = h("form", { class: "compose", onsubmit: (e) => { e.preventDefault(); sendLine(); } },
-    compose, h("button", { type: "submit" }, "Send"));
+    key("^C", () => sendText("\x03"), "Control C"),
+    key("↑", arrow("A"), "Up"), key("↓", arrow("B"), "Down"), key("←", arrow("D"), "Left"), key("→", arrow("C"), "Right"),
+    key("⏎", () => sendText("\r"), "Enter"),
+  ) : null;
 
-  fitBtn.addEventListener("click", () => {
-    fitting = !fitting;
-    fitBtn.setAttribute("aria-pressed", String(fitting));
-    if (fitting) fitToScreen(); else scaleToWidth();
-  });
-
-  const header = h("header", { class: "bar" },
-    h("button", { class: "icon-btn", title: "Back", onclick: () => history.length > 1 ? history.back() : (location.hash = "") }, "←"),
-    title, chip, fitBtn,
+  const header = h("header", { class: "term-head" },
+    h("a", { class: "back", href: "#", "aria-label": "Sessions" }, "←"),
+    h("div", { class: "titles" }, h("div", { class: "title-row" }, title, chip), tabs),
   );
-  app.replaceChildren(h("div", { class: "term-view" }, header, wrap, note, keys, composeBar));
-  xt.open(wrap);
+  shell.content.replaceChildren(h("div", { class: "term-view" }, header, h("div", { class: "term-wrap" }, host), note, keys));
+  xt.open(host);
 
   let resizeTimer = 0;
-  const onResize = () => {
+  const observer = new ResizeObserver(() => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => (fitting ? fitToScreen() : scaleToWidth()), 150);
-  };
+    resizeTimer = setTimeout(fill, 120);
+  });
+  observer.observe(host);
   const onVisible = () => { if (document.visibilityState === "visible" && !ws && !closed && !gone) connect(); };
-  addEventListener("resize", onResize);
   document.addEventListener("visibilitychange", onVisible);
 
   const refresh = () => {
     const f = paneByID(id);
     if (!f) return;
+    const panes = terminals(f.session);
     title.textContent = f.session.name || label(f.pane);
     const st = status(f.pane);
-    chip.className = `chip ${st.cls === "waiting" ? "waiting" : ""}`;
+    chip.className = `chip ${st.cls}`;
     chip.textContent = st.text;
+    tabs.hidden = panes.length < 2;
+    tabs.replaceChildren(...(panes.length < 2 ? [] : panes.map((p) =>
+      h("a", { class: p.id === id ? "current" : "", href: "#/pane/" + encodeURIComponent(p.id) }, label(p)))));
+    document.title = (waitingCount() ? `(${waitingCount()}) ` : "") + title.textContent + " · omaterm";
   };
-  refresh();
-  connect();
-  xt.focus();
 
   term = {
+    id,
     refresh,
     close() {
       closed = true;
-      removeEventListener("resize", onResize);
+      observer.disconnect();
+      clearTimeout(resizeTimer);
       document.removeEventListener("visibilitychange", onVisible);
       if (ws) { ws.onclose = null; ws.close(); }
       xt.dispose();
     },
   };
+  refresh();
+  renderSidebar();
+  connect();
+  if (!touch) xt.focus();
 }
 
 // --- routes -----------------------------------------------------------------
 
 function route() {
-  if (view === "pair") return;
+  if (!paired) return;
   const m = location.hash.match(/^#\/pane\/(.+)$/);
   if (m) showTerm(decodeURIComponent(m[1]));
-  else showList();
+  else { showEmpty(); renderSidebar(); }
 }
 
 async function start() {
@@ -459,10 +479,12 @@ async function start() {
     if (err.message !== "not paired") app.replaceChildren(h("p", { class: "empty" }, "omaterm did not answer: " + err.message));
     return;
   }
-  view = "list";
-  if (!events) connectEvents();
+  paired = true;
   if (location.hash.startsWith("#code=")) history.replaceState(null, "", location.pathname);
+  showShell();
+  if (!events) connectEvents();
   route();
+  render();
 }
 
 addEventListener("hashchange", route);

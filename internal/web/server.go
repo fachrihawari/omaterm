@@ -64,15 +64,9 @@ const closeSignedOut = 4401
 // pairLimit is how many pairing attempts a minute are heard.
 const pairLimit = 10
 
-// Listen serves on addr, which must be on the loopback.
+// Listen serves on addr: the loopback, unless the config says the
+// network.
 func Listen(addr string, d Daemon, store *Store) (*Server, error) {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-		return nil, errors.New("web: " + addr + " is not on the loopback; a tunnel carries it further")
-	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -196,7 +190,7 @@ func secure(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		if (r.Method != http.MethodGet || r.Header.Get("Upgrade") != "") && !sameOrigin(r) {
+		if (r.Method != http.MethodGet && r.Method != http.MethodHead || r.Header.Get("Upgrade") != "") && !sameOrigin(r) {
 			http.Error(w, "cross-site request refused", http.StatusForbidden)
 			return
 		}

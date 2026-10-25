@@ -156,14 +156,23 @@ func (a *appState) term(id string) *terminal.Terminal {
 	if a.paneFailed[id] {
 		return nil
 	}
-	tab := a.tabOfPane(id)
 	sessionID := ""
-	if tab >= 0 {
+	if tab := a.tabOfPane(id); tab >= 0 {
 		sessionID = a.tabs[tab].ID
 	}
+	p, err := a.startRestored(id, sessionID, a.workspace)
+	if err != nil {
+		return nil
+	}
+	return p.Term()
+}
+
+// startRestored starts a pane not running yet: in its folder, else in
+// fallback, with the last run's scrollback and agent when it is restored.
+func (a *appState) startRestored(id, sessionID, fallback string) (session.Handle, error) {
 	dir := a.paneDirs[id]
 	if dir == "" {
-		dir = a.workspace
+		dir = fallback
 	}
 	command, exec := a.termCmd, len(a.termCmd) > 0
 	history, resume := a.restoreOptions(id)
@@ -173,9 +182,8 @@ func (a *appState) term(id string) *terminal.Terminal {
 	p, err := a.startPaneWith(id, sessionID, dir, command, exec, history)
 	if err != nil {
 		a.paneFailed[id] = true
-		return nil
 	}
-	return p.Term()
+	return p, err
 }
 
 // startPane runs a pane's shell, running command first when set (or only

@@ -20,11 +20,13 @@ import (
 	"github.com/coder/websocket"
 
 	"omaterm/internal/daemon"
+	"omaterm/internal/model"
 	"omaterm/internal/proto"
 	"omaterm/internal/web"
 )
 
 type fixture struct {
+	dir   string
 	d     *daemon.Daemon
 	base  string // http://127.0.0.1:port
 	store *web.Store
@@ -53,7 +55,7 @@ func newFixture(t *testing.T) *fixture {
 	if _, err := d.Handle(context.Background(), "pane.start", params); err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{d: d, base: fmt.Sprintf("http://127.0.0.1:%d", port), store: store}
+	return &fixture{dir: dir, d: d, base: fmt.Sprintf("http://127.0.0.1:%d", port), store: store}
 }
 
 // client is a browser: a cookie jar, and the Origin its pages send.
@@ -286,5 +288,27 @@ func TestWebOffEndsTerminal(t *testing.T) {
 	}
 	if code := readUntilClosed(t, term, 5*time.Second); code != websocket.StatusGoingAway {
 		t.Fatalf("closed with %v", code)
+	}
+}
+
+// A saved session the window has not shown since it opened does not run;
+// opening it in the page starts it.
+func TestWebWakesPane(t *testing.T) {
+	f := newFixture(t)
+	st := model.State{Version: model.Version, Projects: []model.Project{{ID: "p1", Name: "x", Dir: f.dir}},
+		Sessions: []model.Session{{ID: "s1", Project: "p1", Layout: &model.Layout{Pane: "a1"},
+			Panes: []model.Pane{{ID: "a1", Dir: f.dir}}}}}
+	if err := model.Save(filepath.Join(f.dir, "state.json"), st); err != nil {
+		t.Fatal(err)
+	}
+	c := f.paired(t)
+	ws := f.dial(t, c, "/api/panes/a1/attach")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if typ, _, err := ws.Read(ctx); err != nil || typ != websocket.MessageText {
+		t.Fatalf("welcome: %v %v", typ, err)
+	}
+	if typ, msg, err := ws.Read(ctx); err != nil || typ != websocket.MessageBinary || msg[0] != proto.FrameOutput {
+		t.Fatalf("first frame: %v %v", typ, err)
 	}
 }

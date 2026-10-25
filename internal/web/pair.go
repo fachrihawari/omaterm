@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -13,7 +14,8 @@ import (
 
 // BaseURL is where devices reach web access: the configured URL, else
 // this machine's Tailscale name when tailscale serve forwards to the
-// port, else the loopback address, which only this machine can open.
+// port, else its address on the network when it listens there, else the
+// loopback address, which only this machine can open.
 func BaseURL(cfg Config) string {
 	if cfg.URL != "" {
 		return strings.TrimRight(cfg.URL, "/")
@@ -21,7 +23,27 @@ func BaseURL(cfg Config) string {
 	if u := tailscaleURL(cfg.ListenPort()); u != "" {
 		return u
 	}
+	if cfg.OnNetwork() {
+		if ip := networkIP(cfg.Host); ip != "" {
+			return "http://" + net.JoinHostPort(ip, strconv.Itoa(cfg.ListenPort()))
+		}
+	}
 	return "http://127.0.0.1:" + strconv.Itoa(cfg.ListenPort())
+}
+
+// networkIP is the address other devices reach this machine at: host
+// itself when it names one, else the one the default route leaves from.
+func networkIP(host string) string {
+	if ip := net.ParseIP(host); ip != nil && !ip.IsUnspecified() {
+		return ip.String()
+	}
+	// Connecting UDP sends nothing; it only picks the route.
+	c, err := net.Dial("udp4", "192.0.2.1:9")
+	if err != nil {
+		return ""
+	}
+	defer c.Close()
+	return c.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
 // tailscaleURL is https://<this machine's tailnet name> when tailscale

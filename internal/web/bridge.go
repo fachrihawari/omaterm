@@ -25,6 +25,12 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	defer s.track(c, r)()
 	c.SetReadLimit(1 << 20) // a pasted block
+	// A pane the window has not shown since it opened is not running yet.
+	params, _ := json.Marshal(map[string]string{"id": r.PathValue("id")})
+	if _, err := s.d.Handle(r.Context(), "pane.wake", params); err != nil {
+		c.Close(4404, "no such pane")
+		return
+	}
 	conn := s.d.AttachPipe(r.PathValue("id"))
 	defer conn.Close()
 	br := bufio.NewReader(conn)

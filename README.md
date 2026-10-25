@@ -67,18 +67,24 @@ back when you log in.
 
 ### From your phone
 
-Web access shows your sessions in a browser: which agents are working or
-need you, and any pane as a live terminal you can type into, with a key bar
-for Esc, Ctrl and the arrows. Turn it on with **Web Access** in the command
-palette, or `omaterm web on`.
+Web access shows your sessions in a browser: your projects and sessions in
+a sidebar, which agents are working or need you, and any pane as a live
+terminal you can type into, with a key bar for Esc, Ctrl and the arrows on a
+phone. Turn it on with **Web Access** in the command palette, or
+`omaterm web on`. While a browser shows a pane, the pane takes the browser's
+size; the window gets its size back when the browser leaves.
 
-omaterm serves it on `127.0.0.1:7370` only. To reach it from your phone,
-carry it with a tunnel you already trust:
+omaterm serves it on `127.0.0.1:7370`. To reach it from your phone, carry it
+with a tunnel you already trust:
 
 ```sh
 tailscale serve --bg 7370                      # your tailnet only
 cloudflared tunnel --url http://127.0.0.1:7370 # a public https URL
 ```
+
+Or serve it on your local network with **Web Access on Your Network**, or
+`omaterm web on --network` (`--local` goes back). That is plain HTTP, so
+use it only on networks you trust.
 
 A browser sees nothing until you pair it: **Web Access: Pair a Device**
 shows a QR code, and `omaterm web pair` prints one in the terminal. Each code
@@ -112,7 +118,7 @@ follows when you switch, with no restart needed.
 ### Browser panes
 
 Press `Ctrl+Shift+O` to open a web page next to your terminals, or run
-`omaterm split --url localhost:5173`. With Remote Control on, agents can
+`omaterm split --url localhost:5173`. With "Let Agents Control the App" on (a palette setting), agents can
 read, click, type into and screenshot the page with `omaterm browser`.
 
 ### The `omaterm` command

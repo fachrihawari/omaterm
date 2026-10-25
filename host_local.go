@@ -115,6 +115,12 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 			return nil, err
 		}
 		return h.onUI(func() (any, error) { return true, a.cliRename(p) })
+	case "pane.wake":
+		p, err := decode[proto.IDParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		return h.onUI(func() (any, error) { return true, a.wakePane(p.ID) })
 	case "focus", "select":
 		p, err := decode[proto.IDParams](raw)
 		if err != nil {
@@ -192,7 +198,7 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 			return nil, err
 		}
 		if !a.settings.RemoteControl {
-			return nil, proto.Errorf(proto.CodeRemoteControl, "Remote Control is off: turn it on in the palette (Toggle Remote Control)")
+			return nil, proto.Errorf(proto.CodeRemoteControl, "Agents can't control the app: turn on “Let Agents Control the App” in the palette")
 		}
 		if !remoteAction(p.Action) {
 			return nil, proto.Errorf(proto.CodeNotFound, "no action "+p.Action+": omaterm actions lists them")
@@ -453,6 +459,24 @@ func (a *appState) findPane(id string) (pi int, tabs *[]topTab, ti int, ok bool)
 		}
 	}
 	return 0, nil, 0, false
+}
+
+// wakePane starts a pane of any project that the window has not shown
+// since it opened, as web access asks before showing it. UI thread.
+func (a *appState) wakePane(id string) error {
+	pi, tabs, ti, ok := a.findPane(id)
+	if !ok {
+		return proto.Errorf(proto.CodeNotFound, "no pane "+id)
+	}
+	if a.isBrowser(id) {
+		return proto.Errorf(proto.CodeNotFound, "pane "+id+" is a browser, not a terminal")
+	}
+	if a.panes.Get(id) != nil {
+		return nil
+	}
+	delete(a.paneFailed, id)
+	_, err := a.startRestored(id, (*tabs)[ti].ID, a.projects[pi].Path)
+	return err
 }
 
 // findSession finds the project and tab of a session.

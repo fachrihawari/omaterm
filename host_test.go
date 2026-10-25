@@ -98,7 +98,7 @@ func TestControlSocket(t *testing.T) {
 		t.Fatal("send to no pane")
 	}
 	if proto.CodeOf(c.Call("do", proto.DoParams{Action: "view.toggleSidebar"}, nil)) != proto.CodeRemoteControl {
-		t.Fatal("do without Remote Control")
+		t.Fatal("do without the agents' leave")
 	}
 }
 
@@ -132,5 +132,30 @@ func TestAgentSessionByPID(t *testing.T) {
 	}
 	if _, err := a.agentSession(proto.AgentSessionParams{PID: pid, Agent: "claude", Session: "bad;id"}); err == nil {
 		t.Fatal("accepted a bad id")
+	}
+}
+
+// Web access wakes a pane the window has not shown since it opened, which
+// does not run yet.
+func TestWakePane(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	id := newID()
+	a.tabs = append(a.tabs, topTab{ID: newID(), Kind: tabTerminal, Label: "unshown", Split: &splitNode{TermID: id}})
+	if a.panes.Get(id) != nil {
+		t.Fatal("runs before it is woken")
+	}
+	if err := a.wakePane(id); err != nil {
+		t.Fatal(err)
+	}
+	p := a.panes.Get(id)
+	if p == nil {
+		t.Fatal("did not start")
+	}
+	if err := a.wakePane(id); err != nil || a.panes.Get(id) != p {
+		t.Fatalf("waking a running pane: %v", err)
+	}
+	if proto.CodeOf(a.wakePane("nope")) != proto.CodeNotFound {
+		t.Fatal("woke a pane that is none")
 	}
 }

@@ -359,9 +359,11 @@ type appState struct {
 	pendingKillName string
 	killConfirmOpen *bool
 
-	// webOn tells web access is on; webPair is the pairing dialog's
-	// content while webPairOpen shows it.
+	// webOn tells web access is on, webNetwork that it listens on the
+	// network; webPair is the pairing dialog's content while webPairOpen
+	// shows it.
 	webOn       bool
+	webNetwork  bool
 	webPair     *webPairing
 	webPairOpen *bool
 }
@@ -422,7 +424,7 @@ func newApp() *appState {
 	}
 	a.hookPanes()
 	if cfg, err := webStore().Config(); err == nil {
-		a.webOn = cfg.Enabled
+		a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
 	}
 	a.termFont = termFontFamily()
 	a.loadUIPrefs()

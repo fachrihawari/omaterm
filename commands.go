@@ -62,16 +62,6 @@ var commandRegistry = append([]Command{
 		}},
 	{ID: "agents.setup", Title: "Set Up Agent Integration", Category: "App",
 		Run: func(a *appState, c *ui.Context) { a.setupAgents(c, a.status[a.activeSplitLeaf()].Agent) }},
-	{ID: "remote.toggle", Title: "Toggle Remote Control", Category: "App",
-		Run: func(a *appState, c *ui.Context) {
-			a.settings.RemoteControl = !a.settings.RemoteControl
-			a.saveSettings()
-			if a.settings.RemoteControl {
-				toast(c, "Remote Control on: agents can drive the window and browser panes")
-			} else {
-				toast(c, "Remote Control off")
-			}
-		}},
 	{ID: "web.pair", Title: "Web Access: Pair a Device…", Category: "App",
 		Run: func(a *appState, c *ui.Context) { a.pairDevice(c) }},
 	{ID: "daemon.restart", Title: "Restart Session Daemon", Category: "App",

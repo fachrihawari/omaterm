@@ -17,7 +17,7 @@ func TestPageScriptEscapes(t *testing.T) {
 	}
 }
 
-// Driving a page asks the user's leave: Remote Control.
+// Driving a page asks the user's leave: Let Agents Control the App.
 func TestBrowseNeedsRemoteControl(t *testing.T) {
 	a := newApp()
 	a.win = nil

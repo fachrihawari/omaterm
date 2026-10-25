@@ -946,8 +946,8 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm cli install|uninstall|status
   omaterm daemon status|stop|restart|install-service|uninstall-service
   omaterm clients [--json]               who the session daemon serves
-  omaterm web on|off|status|pair|devices|revoke|tunnel
-                                         sessions in a browser, for a tunnel to carry
+  omaterm web on [--network]|off|status|pair|devices|revoke|tunnel
+                                         sessions in a browser, through a tunnel or the network
   omaterm do <action>, omaterm actions
   omaterm version
 

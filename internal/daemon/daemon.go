@@ -96,8 +96,9 @@ type Daemon struct {
 	watchers  map[int]func()
 	nextWatch int
 
-	webMu sync.Mutex
-	web   *web.Server
+	webMu   sync.Mutex
+	web     *web.Server
+	webAddr string // the address asked of web
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -234,8 +235,10 @@ func (d *Daemon) loop(ctx context.Context) {
 			if n++; n%10 == 0 {
 				d.saveHistories(false)
 			}
+			// Web access keeps it: a browser may come for the sessions.
+			serving := d.webServing()
 			d.mu.Lock()
-			idle := d.reg.Len() == 0 && d.clients == 0 && !d.opts.Serve
+			idle := d.reg.Len() == 0 && d.clients == 0 && !d.opts.Serve && !serving
 			if !idle {
 				d.idleAt = now
 			}
@@ -505,8 +508,8 @@ func (d *Daemon) AttachPipe(pane string) net.Conn {
 	ours, theirs := net.Pipe()
 	go func() {
 		defer ours.Close()
-		d.Attach(ours, bufio.NewReader(ours), proto.Hello{Kind: "attach", Version: proto.Version, Pane: pane},
-			proto.Welcome{Version: proto.Version, PID: os.Getpid(), Started: d.started.UnixMilli(), App: d.opts.Version})
+		d.attach(ours, bufio.NewReader(ours), proto.Hello{Kind: "attach", Version: proto.Version, Pane: pane},
+			proto.Welcome{Version: proto.Version, PID: os.Getpid(), Started: d.started.UnixMilli(), App: d.opts.Version}, true)
 	}()
 	return theirs
 }
@@ -523,6 +526,11 @@ type attachment struct {
 	once   sync.Once
 	// framing tells that a frame is due shortly.
 	framing bool
+	// web tells a web page's attachment; size is the last size the
+	// attachment asked for, and sized when (guarded by Daemon.mu).
+	web   bool
+	size  []int
+	sized time.Time
 }
 
 func (at *attachment) send(kind byte, payload []byte) {
@@ -540,6 +548,10 @@ func (at *attachment) finish() { at.once.Do(func() { close(at.done) }) }
 // Attach serves an attach connection: the pane's screen as frames, and
 // what the client types, its size and its colors.
 func (d *Daemon) Attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welcome proto.Welcome) {
+	d.attach(conn, r, hello, welcome, false)
+}
+
+func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welcome proto.Welcome, web bool) {
 	p := d.reg.Get(hello.Pane)
 	enc := json.NewEncoder(conn)
 	if p == nil {
@@ -553,7 +565,7 @@ func (d *Daemon) Attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 		enc.Encode(welcome)
 		return
 	}
-	at := &attachment{conn: conn, mirror: m, out: make(chan []byte, 8192), done: make(chan struct{})}
+	at := &attachment{conn: conn, mirror: m, out: make(chan []byte, 8192), done: make(chan struct{}), web: web}
 	defer m.Close()
 	welcome.Cols, welcome.Rows = p.Term().Size()
 	if enc.Encode(welcome) != nil {
@@ -570,8 +582,12 @@ func (d *Daemon) Attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 		d.mu.Lock()
 		delete(d.attached[hello.Pane], at)
 		d.clients--
+		back := d.appSize(hello.Pane, at)
 		d.mu.Unlock()
 		at.finish()
+		if back != nil {
+			d.resize(hello.Pane, p, back[0], back[1], back[2], back[3])
+		}
 	}()
 	first, _ := m.Frame()
 	at.send(proto.FrameOutput, first)
@@ -608,6 +624,9 @@ func (d *Daemon) Attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 			p.Write(payload)
 		case proto.FrameResize:
 			if v, ok := proto.ParseUint16s(payload, 4); ok && v[0] > 0 && v[1] > 0 {
+				d.mu.Lock()
+				at.size, at.sized = v, time.Now()
+				d.mu.Unlock()
 				d.resize(hello.Pane, p, v[0], v[1], v[2], v[3])
 			}
 		case proto.FrameTheme:
@@ -619,6 +638,27 @@ func (d *Daemon) Attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 			}
 		}
 	}
+}
+
+// appSize is the size a pane goes back to as a web page that sized it,
+// gone, leaves it: the size the app's window last asked for, unless
+// another page sized it since. The app asks again only when its view
+// changes size, so without it the window would keep the page's size.
+// d.mu is held.
+func (d *Daemon) appSize(pane string, gone *attachment) []int {
+	if !gone.web || gone.size == nil {
+		return nil
+	}
+	var last *attachment
+	for at := range d.attached[pane] {
+		if at.size != nil && (last == nil || at.sized.After(last.sized)) {
+			last = at
+		}
+	}
+	if last == nil || last.web {
+		return nil
+	}
+	return last.size
 }
 
 // resize gives a pane the size its client fits: the client that resized

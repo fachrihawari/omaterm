@@ -70,7 +70,7 @@ you built: open it with omaterm split --url, then
 
 With no target, omaterm browser drives your session's browser pane; name
 one (omaterm browser <target> text) when there are several. It needs the
-app open and Remote Control on (the palette's "Toggle Remote Control").
+app open and the palette setting "Let Agents Control the App" on.
 
 ## See what you changed
 

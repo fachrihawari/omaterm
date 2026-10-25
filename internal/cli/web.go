@@ -23,7 +23,8 @@ func webCmd(args []string) error {
 	store := web.OpenStore(web.StorePath(paths.ConfigDir()))
 	switch sub {
 	case "on":
-		f, err := parse(args, map[string]string{"port": "port", "p": "port", "url": "url"}, nil)
+		f, err := parse(args, map[string]string{"port": "port", "p": "port", "url": "url", "host": "host"},
+			map[string]string{"network": "network", "local": "local"})
 		if err != nil {
 			return err
 		}
@@ -38,6 +39,14 @@ func webCmd(args []string) error {
 			if port != 0 {
 				c.Port = port
 			}
+			switch {
+			case f.set["network"]:
+				c.Host = "0.0.0.0"
+			case f.set["local"]:
+				c.Host = ""
+			case f.vals["host"] != "":
+				c.Host = f.vals["host"]
+			}
 			if u, ok := f.vals["url"]; ok {
 				c.URL = u
 			}
@@ -49,12 +58,15 @@ func webCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("web access on: http://%s\n", st.Addr)
+		fmt.Printf("web access on: %s (listening on %s)\n", web.BaseURL(cfg), st.Addr)
+		if cfg.OnNetwork() {
+			fmt.Println(networkWarning)
+		}
 		if devices, _ := store.Devices(); len(devices) == 0 {
 			fmt.Println("pair a browser: omaterm web pair")
 		}
-		if cfg.URL == "" {
-			fmt.Println("reach it from other devices: omaterm web tunnel")
+		if cfg.URL == "" && !cfg.OnNetwork() {
+			fmt.Println("reach it from other devices: omaterm web tunnel, or omaterm web on --network")
 		}
 		return nil
 	case "off":
@@ -82,7 +94,10 @@ func webCmd(args []string) error {
 		case err != nil:
 			fmt.Printf("web access on, but not serving: %v\n", err)
 		default:
-			fmt.Printf("web access on: http://%s\n", st.Addr)
+			fmt.Printf("web access on, listening on %s\n", st.Addr)
+		}
+		if cfg.OnNetwork() {
+			fmt.Println(networkWarning)
 		}
 		fmt.Printf("devices reach it at %s\n", web.BaseURL(cfg))
 		devices, _ := store.Devices()
@@ -137,7 +152,7 @@ func webCmd(args []string) error {
 	case "tunnel":
 		cfg, _ := store.Config()
 		port := cfg.ListenPort()
-		fmt.Printf(`omaterm serves web access on 127.0.0.1:%d only. Carry it with one of:
+		fmt.Printf(`omaterm serves web access on 127.0.0.1:%d. Carry it with one of:
 
   Tailscale, to your own devices on your tailnet:
     tailscale serve --bg %d
@@ -148,11 +163,18 @@ func webCmd(args []string) error {
     cloudflared tunnel --url http://127.0.0.1:%d
   then: omaterm web on --url https://<the URL it prints>
 
+  Or, without a tunnel, to devices on the same network (plain HTTP):
+    omaterm web on --network
+
 `, port, port, port)
 		return nil
 	}
-	return usageErr("omaterm web on|off|status|pair|devices|revoke|tunnel")
+	return usageErr("omaterm web on [--network|--local|--host addr] [--port N] [--url U]|off|status|pair|devices|revoke|tunnel")
 }
+
+// networkWarning goes with web access on the network, which is plain HTTP.
+const networkWarning = "on your network, over plain HTTP: only paired browsers get in, but anyone on the network\n" +
+	"can watch the traffic. Use it on networks you trust (omaterm web on --local to stop)"
 
 func plural(n int, one, many string) string {
 	if n == 1 {

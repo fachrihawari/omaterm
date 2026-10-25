@@ -43,18 +43,38 @@ func (a *appState) setWeb(c *ui.Context, on bool) bool {
 		toast(c, "Web access needs the session daemon, which is off")
 		return false
 	}
-	cfg, err := webStore().SetConfig(func(cfg *web.Config) { cfg.Enabled = on })
+	return a.changeWeb(c, func(cfg *web.Config) { cfg.Enabled = on })
+}
+
+// setWebNetwork has web access listen on the network, or only on the
+// loopback, turning it on.
+func (a *appState) setWebNetwork(c *ui.Context, on bool) bool {
+	if !a.webAvailable() {
+		toast(c, "Web access needs the session daemon, which is off")
+		return false
+	}
+	return a.changeWeb(c, func(cfg *web.Config) {
+		cfg.Enabled = true
+		cfg.Host = map[bool]string{true: "0.0.0.0"}[on]
+	})
+}
+
+// changeWeb changes web access's config, and has the daemon follow.
+func (a *appState) changeWeb(c *ui.Context, change func(*web.Config)) bool {
+	cfg, err := webStore().SetConfig(change)
 	if err != nil {
 		toast(c, "Could not save: "+err.Error())
 		return false
 	}
-	a.webOn = cfg.Enabled
+	a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
 	st, err := daemon.ReloadWeb(false)
 	switch {
-	case err != nil && on:
+	case err != nil && cfg.Enabled:
 		toast(c, "Web access could not start: "+err.Error())
 		return false
-	case on:
+	case cfg.OnNetwork():
+		toast(c, "Web access on your network, over plain HTTP: use it on networks you trust")
+	case cfg.Enabled:
 		toast(c, "Web access on: http://"+st.Addr)
 	default:
 		toast(c, "Web access off")
@@ -142,7 +162,7 @@ func (a *appState) webPairDialog(c *ui.Context) {
 			})
 			note := "Works once, until " + p.expires.Format("15:04") + "."
 			if p.local {
-				note += " Only this computer can open it: run omaterm web tunnel to reach it from your phone."
+				note += " Only this computer can open it: turn on Web Access on Your Network, or run omaterm web tunnel."
 			}
 			ui.Text(c, note).FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
 		}

@@ -72,7 +72,7 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 	if d.appAttached() {
 		switch method {
 		case "state", "create", "split", "close", "restart", "rename", "focus", "select", "wait",
-			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions":
+			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions", "pane.wake":
 			return d.forward(ctx, method, raw)
 		}
 	}
@@ -105,6 +105,26 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			st.Sessions = append(st.Sessions[:i], st.Sessions[i+1:]...)
 			return true, nil
 		})
+	case "pane.wake":
+		// Web access shows any pane: one of state.json not running yet
+		// starts, as at a restore.
+		var p proto.IDParams
+		json.Unmarshal(raw, &p)
+		if d.reg.Get(p.ID) != nil {
+			return true, nil
+		}
+		d.stateMu.Lock()
+		st := d.loadState()
+		d.stateMu.Unlock()
+		s, pn := findPane(&st, p.ID)
+		if pn == nil {
+			return nil, proto.Errorf(proto.CodeNotFound, "no pane "+p.ID)
+		}
+		if pn.URL != "" {
+			return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.ID+" is a browser, not a terminal")
+		}
+		_, resume := d.restorePrefs()
+		return true, d.restorePane(s.ID, *pn, resume)
 	case "restart":
 		var p proto.IDParams
 		json.Unmarshal(raw, &p)
@@ -513,17 +533,10 @@ func envShared(k string) bool {
 // restore starts the panes of state.json that do not run, each from its
 // scrollback, its agent resuming its conversation, as the settings say.
 func (d *Daemon) restore() {
-	prefs := struct {
-		RestoreSessions *bool `json:"restoreSessions"`
-		ResumeAgents    *bool `json:"resumeAgents"`
-	}{}
-	if b, err := os.ReadFile(filepath.Join(filepath.Dir(d.stateFile()), "settings.json")); err == nil {
-		json.Unmarshal(b, &prefs)
-	}
-	if prefs.RestoreSessions != nil && !*prefs.RestoreSessions {
+	restore, resume := d.restorePrefs()
+	if !restore {
 		return
 	}
-	resume := prefs.ResumeAgents == nil || *prefs.ResumeAgents
 	d.stateMu.Lock()
 	st := d.loadState()
 	d.stateMu.Unlock()
@@ -533,11 +546,7 @@ func (d *Daemon) restore() {
 			if pn.URL != "" || d.reg.Get(pn.ID) != nil {
 				continue
 			}
-			var command []string
-			if resume {
-				command = agent.ResumeCommand(pn.Agent)
-			}
-			if d.startPaneWith(s.ID, pn.ID, pn.Dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID))) == nil {
+			if d.restorePane(s.ID, pn, resume) == nil {
 				n++
 			}
 		}
@@ -545,6 +554,29 @@ func (d *Daemon) restore() {
 	if n > 0 {
 		log.Printf("restored %d panes", n)
 	}
+}
+
+// restorePrefs reads the settings a restore follows: whether to restore
+// sessions at all, and to resume their agents.
+func (d *Daemon) restorePrefs() (restore, resume bool) {
+	prefs := struct {
+		RestoreSessions *bool `json:"restoreSessions"`
+		ResumeAgents    *bool `json:"resumeAgents"`
+	}{}
+	if b, err := os.ReadFile(filepath.Join(filepath.Dir(d.stateFile()), "settings.json")); err == nil {
+		json.Unmarshal(b, &prefs)
+	}
+	return prefs.RestoreSessions == nil || *prefs.RestoreSessions, prefs.ResumeAgents == nil || *prefs.ResumeAgents
+}
+
+// restorePane starts a pane of state.json from its scrollback, its agent
+// resuming its conversation when resume.
+func (d *Daemon) restorePane(sessionID string, pn model.Pane, resume bool) error {
+	var command []string
+	if resume {
+		command = agent.ResumeCommand(pn.Agent)
+	}
+	return d.startPaneWith(sessionID, pn.ID, pn.Dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID)))
 }
 
 // ForwardedCall is a call of the omaterm command the daemon passes to the

@@ -23,13 +23,13 @@ import (
 const browseTimeout = 10 * time.Second
 
 // browse does what omaterm browser asks of a browser pane's page, and
-// answers: what waits on the page waits off the UI thread. It is a remote
-// control of the app, and takes the user's leave as omaterm do does.
+// answers: what waits on the page waits off the UI thread. It controls the
+// app, and takes the user's leave as omaterm do does.
 // UI thread.
 func (a *appState) browse(r proto.BrowserParams, answer func(*proto.BrowserResult, error)) {
 	fail := func(format string, args ...any) { answer(nil, fmt.Errorf(format, args...)) }
 	if !a.settings.RemoteControl {
-		answer(nil, proto.Errorf(proto.CodeRemoteControl, "Remote Control is off: turn it on in the palette (Toggle Remote Control)"))
+		answer(nil, proto.Errorf(proto.CodeRemoteControl, "Agents can't control the app: turn on “Let Agents Control the App” in the palette"))
 		return
 	}
 	if _, _, _, ok := a.findPane(r.ID); !ok {
