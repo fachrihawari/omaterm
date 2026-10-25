@@ -157,7 +157,8 @@ function label(p) {
   return p.process || p.shell || "Terminal";
 }
 
-// status reads a pane's status for people: its class and words.
+// status reads a pane's status for people, as the window's icons do: its
+// class and words. Finished is done until seen, then done faintly.
 function status(p) {
   switch (p.status) {
     case "working": return { cls: "working", text: "Working" };
@@ -165,7 +166,9 @@ function status(p) {
     case "error": return { cls: "error", text: "Failed" };
     case "exited": return { cls: "", text: "Exited" };
   }
-  if (p.agent) return { cls: "done", text: "Ready" };
+  if (p.unread) return { cls: "done", text: "Done" };
+  if (p.message) return { cls: "seen", text: "Done" };
+  if (p.agent) return { cls: "", text: "Ready" };
   return { cls: "", text: p.process ? "Running" : "Idle" };
 }
 
@@ -243,7 +246,7 @@ function sessionRow(s, proj, open) {
   const panes = terminals(s);
   const lead = s.lead && s.lead.id && !s.lead.url ? s.lead : panes[0];
   const st = status(lead);
-  const sub = lead.status === "waiting" && lead.message ? lead.message : [label(lead), where(lead.dir, proj)].filter(Boolean).join(" · ");
+  const sub = lead.message || [label(lead), where(lead.dir, proj)].filter(Boolean).join(" · ");
   const here = panes.some((p) => p.id === open);
   return h("div", { class: "session-group" },
     h("a", {
@@ -254,7 +257,6 @@ function sessionRow(s, proj, open) {
       h("span", { class: "body" },
         h("span", { class: "top" },
           h("span", { class: "name" }, s.name || label(lead)),
-          lead.unread ? h("span", { class: "unread", title: "Unread" }) : null,
           h("span", { class: `status ${st.cls}` }, st.text + (lead.since ? ` · ${ago(lead.since)}` : "")),
         ),
         sub ? h("span", { class: "sub" }, sub) : null,

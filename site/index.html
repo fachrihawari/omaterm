@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>omaterm</title>
-<meta name="description" content="Oh My Terminal: a terminal workspace for running coding agents side by side. Projects, sessions and split panes, with each agent's status, what it changed, and Git next to your shells.">
+<meta name="description" content="Oh My Terminal: a terminal workspace for running coding agents side by side. A tour of what it does: agent status, sessions and splits, Last turn, Git, an editor, browser panes, sessions that keep running, and your sessions on your phone.">
 <meta property="og:title" content="omaterm">
 <meta property="og:description" content="Oh My Terminal: a terminal workspace for running coding agents side by side.">
 <meta property="og:image" content="https://fachrihawari.github.io/omaterm/assets/hero.png">
@@ -21,6 +21,7 @@
   :root {
     --bg: #0d1117;
     --surface: #161b22;
+    --raised: #1c2128;
     --line: #30363d;
     --text: #e6edf3;
     --muted: #8b949e;
@@ -33,19 +34,27 @@
     --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
   body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
     font: 16px/1.6 var(--sans);
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
   a { color: inherit; }
   img { display: block; max-width: 100%; height: auto; }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
 
   /* Nav */
-  nav { border-bottom: 1px solid var(--line); }
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
   nav .wrap { display: flex; align-items: center; gap: 24px; height: 56px; }
   .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 700 16px var(--mono); }
   .brand img { width: 24px; height: 24px; }
@@ -69,7 +78,7 @@
     padding: 8px 8px 8px 16px; border: 1px solid var(--line); border-radius: 8px;
     background: var(--surface); font: 14px/1.4 var(--mono);
   }
-  .install code { flex: 1; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .install code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
   .install code::before { content: "$ "; color: var(--ok); }
   .btn {
     flex: none; display: inline-flex; align-items: center; height: 36px; padding: 0 14px;
@@ -88,37 +97,71 @@
     box-shadow: 0 16px 40px rgba(1, 4, 9, 0.5);
   }
   .hero .shot { margin-top: 48px; }
-
   .agents { margin: 24px 0 0; font: 14px var(--mono); color: var(--dim); }
   .agents span { color: var(--muted); }
 
+  /* The tour's index: a card per feature. */
+  .tour { padding: 96px 0 0; }
+  .tour-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 24px; }
+  .card {
+    display: flex; flex-direction: column; gap: 6px; padding: 16px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+    text-decoration: none; transition: border-color 0.15s, transform 0.15s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .n { font: 500 12px var(--mono); color: var(--dim); }
+  .card b { font-size: 15px; font-weight: 600; }
+  .card span { color: var(--muted); font-size: 14px; line-height: 1.45; }
+
   /* Sections */
-  section { padding: 88px 0 0; }
+  section { padding: 104px 0 0; }
   .label { font: 500 13px var(--mono); color: var(--accent); margin: 0 0 10px; }
   .label::before { content: "# "; color: var(--dim); }
-  h2 { font-size: clamp(24px, 3vw, 32px); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 12px; }
+  h2 { font-size: clamp(24px, 3vw, 34px); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 12px; }
   section p { color: var(--muted); margin: 0 0 12px; }
+  section p a { color: var(--text); }
   .feature { display: grid; grid-template-columns: 4fr 7fr; gap: 48px; align-items: center; }
   .feature.flip { grid-template-columns: 7fr 4fr; }
   .feature.flip > :first-child { order: 2; }
+  .intro { max-width: 760px; }
+  .feature > *, .web-grid > *, .devices > * { min-width: 0; }
   kbd, code.k {
     font: 500 13px var(--mono); padding: 1px 6px; border-radius: 4px;
     border: 1px solid var(--line); background: var(--surface); color: var(--text);
+    white-space: nowrap;
   }
-  .feature ul { margin: 4px 0 0; padding: 0; list-style: none; }
-  .feature li { color: var(--muted); margin: 6px 0; padding-left: 20px; position: relative; }
-  .feature li::before { content: "-"; position: absolute; left: 4px; color: var(--dim); font-family: var(--mono); }
+
+  /* "How to" lists: what to press or type. */
+  .how { margin: 18px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+  .how li {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; align-items: baseline;
+    padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 15px;
+  }
+  .how li > :last-child { justify-self: end; text-align: right; }
+  .how code.k { white-space: normal; overflow-wrap: anywhere; }
+  .note { font-size: 14px; color: var(--dim) !important; margin-top: 14px !important; }
 
   .status { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 16px; font: 13px var(--mono); color: var(--muted); }
   .status span { display: inline-flex; align-items: center; gap: 8px; }
   .status i { width: 8px; height: 8px; border-radius: 50%; }
 
   .gallery { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-top: 28px; }
+  .gallery.three { grid-template-columns: repeat(3, 1fr); }
   .gallery figure { margin: 0; }
   .gallery figcaption { margin-top: 10px; color: var(--muted); font-size: 14px; }
 
+  /* Web access: the desktop page beside two phones. */
+  .devices { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: end; margin-top: 32px; }
+  .phones { display: flex; gap: 16px; }
+  .phone {
+    width: 190px; border: 6px solid #2a3038; border-radius: 26px; overflow: hidden; background: var(--bg);
+    box-shadow: 0 16px 40px rgba(1, 4, 9, 0.5);
+  }
+  .web-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 48px; margin-top: 40px; align-items: start; }
+
   dl.more {
-    display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 48px; margin: 40px 0 0;
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 48px; margin: 28px 0 0;
     border-top: 1px solid var(--line);
   }
   dl.more div { padding: 18px 0; border-bottom: 1px solid var(--line); }
@@ -132,7 +175,7 @@
   pre.cli .c { color: var(--dim); }
   pre.cli .p { color: var(--ok); }
 
-  .end { padding: 104px 0 80px; }
+  .end { padding: 120px 0 80px; }
   .end h2 { margin-bottom: 8px; }
   .end p { color: var(--muted); margin: 0; }
 
@@ -141,17 +184,31 @@
   footer a { color: var(--muted); text-decoration: none; }
   footer a:hover { color: var(--text); }
 
+  @media (max-width: 1000px) {
+    .cards { grid-template-columns: repeat(3, 1fr); }
+    .devices { grid-template-columns: 1fr; }
+    .phones { justify-content: center; }
+  }
   @media (max-width: 900px) {
     .feature, .feature.flip { grid-template-columns: 1fr; gap: 24px; }
     .feature.flip > :first-child { order: 0; }
+    .web-grid { grid-template-columns: 1fr; gap: 32px; }
+    .gallery.three { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 640px) {
     .wrap { padding: 0 16px; }
     nav .links .hide-sm { display: none; }
     .hero { padding-top: 48px; }
-    .gallery, dl.more { grid-template-columns: 1fr; }
-    section { padding-top: 64px; }
+    .cards { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .card { padding: 12px; }
+    .card span { display: none; }
+    .gallery, .gallery.three, dl.more { grid-template-columns: 1fr; }
+    section { padding-top: 72px; }
+    .tour { padding-top: 72px; }
     .install { font-size: 12.5px; }
+    .phone { width: calc(50vw - 32px); border-width: 4px; border-radius: 20px; }
+    .how li { grid-template-columns: 1fr; }
+    .how li > :last-child { justify-self: start; text-align: left; }
   }
 </style>
 </head>
@@ -161,8 +218,8 @@
   <div class="wrap">
     <a class="brand" href="#"><img src="assets/logo.svg" alt="">omaterm</a>
     <div class="links">
-      <a class="hide-sm" href="#features">features</a>
-      <a class="hide-sm" href="#cli">cli</a>
+      <a href="#tour">tour</a>
+      <a class="hide-sm" href="#install">install</a>
       <a href="https://github.com/fachrihawari/omaterm">github</a>
     </div>
   </div>
@@ -172,80 +229,242 @@
   <div class="wrap">
     <p class="tag"><b>Oh My Terminal</b> · <a id="release" href="https://github.com/fachrihawari/omaterm/releases/latest">latest release</a></p>
     <h1>A terminal workspace for running coding agents side by side.</h1>
-    <p class="lede">Projects, sessions and split panes in one native window. See which agent needs you, what each turn changed, and keep Git, an editor and a browser next to your shells.</p>
-    <div class="install" id="install">
+    <p class="lede">Projects, sessions and split panes in one native window. See which agent needs you, what each turn changed, and keep Git, an editor and a browser next to your shells. Check on it all from your phone.</p>
+    <div class="install">
       <code>curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh</code>
       <button class="btn primary" type="button" data-copy="curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh">Copy</button>
     </div>
     <div class="links-row">
       <span>Linux · macOS · Windows</span>
+      <a href="#tour">Take the tour</a>
       <a href="https://github.com/fachrihawari/omaterm/releases/latest">All downloads</a>
-      <a href="https://github.com/fachrihawari/omaterm">Source on GitHub</a>
     </div>
     <div class="shot"><img src="assets/hero.png" width="2880" height="1800" alt="omaterm: an agent waiting for permission in one pane, a dev server in another, sessions with their status in the sidebar"></div>
     <p class="agents">Knows when these are working, waiting or done: <span>Claude Code · Codex · Gemini · OpenCode · Pi</span></p>
   </div>
 </header>
 
-<main id="features">
-  <section>
+<div class="tour" id="tour">
+  <div class="wrap">
+    <div class="tour-head">
+      <div>
+        <p class="label">tour</p>
+        <h2>Everything omaterm does</h2>
+      </div>
+      <p style="color: var(--muted); margin: 0; font-size: 15px">Shortcuts say <kbd>Ctrl</kbd>; on macOS it&rsquo;s <kbd>Cmd</kbd>.</p>
+    </div>
+    <div class="cards">
+      <a class="card" href="#status"><span class="n">01</span><b>Agent status</b><span>See which agent is working, needs you or is done.</span></a>
+      <a class="card" href="#sessions"><span class="n">02</span><b>Sessions and splits</b><span>Projects, sessions and panes, all from the keyboard.</span></a>
+      <a class="card" href="#last-turn"><span class="n">03</span><b>Last turn</b><span>Exactly what an agent changed in its last turn.</span></a>
+      <a class="card" href="#git"><span class="n">04</span><b>Git and diffs</b><span>Stage, commit, push, and a graph of every branch.</span></a>
+      <a class="card" href="#editor"><span class="n">05</span><b>Files and editor</b><span>Go to a file, search the project, edit it.</span></a>
+      <a class="card" href="#info"><span class="n">06</span><b>Processes and ports</b><span>What your sessions run, and the ports they open.</span></a>
+      <a class="card" href="#browser"><span class="n">07</span><b>Browser panes</b><span>Your dev server, next to your shells.</span></a>
+      <a class="card" href="#daemon"><span class="n">08</span><b>Sessions keep running</b><span>Close the window; agents carry on.</span></a>
+      <a class="card" href="#web"><span class="n">09</span><b>From your phone</b><span>Your sessions in a browser, live.</span></a>
+      <a class="card" href="#themes"><span class="n">10</span><b>Themes</b><span>Dark and light, and Omarchy&rsquo;s.</span></a>
+      <a class="card" href="#cli"><span class="n">11</span><b>Agents drive it</b><span>The <code>omaterm</code> command, for agents and scripts.</span></a>
+      <a class="card" href="#more"><span class="n">12</span><b>And more</b><span>Updates, the palette, shortcuts.</span></a>
+    </div>
+  </div>
+</div>
+
+<main>
+  <section id="status">
     <div class="wrap feature">
       <div>
-        <p class="label">status</p>
+        <p class="label">01 · agent status</p>
         <h2>See which agent needs you</h2>
-        <p>Every session shows whether it is working, needs you, failed or is done. When an agent asks for permission while you are looking elsewhere, you get a notification. Press <kbd>Ctrl+Shift+J</kbd> to jump straight to it.</p>
+        <p>Every session shows whether it is working, needs you, failed or is done, in the sidebar, on its tab and on each pane. When an agent asks for permission while you look elsewhere, you get a notification.</p>
         <div class="status">
           <span><i style="background: var(--warn)"></i>needs you</span>
           <span><i style="background: var(--accent)"></i>working</span>
           <span><i style="background: var(--ok)"></i>done</span>
           <span><i style="background: var(--err)"></i>failed</span>
         </div>
-      </div>
-      <div class="shot"><img src="assets/split.png" width="2880" height="1800" loading="lazy" alt="Three split panes: an agent, a dev server and a test run"></div>
-    </div>
-  </section>
-
-  <section>
-    <div class="wrap feature flip">
-      <div>
-        <p class="label">changes</p>
-        <h2>What did that turn change?</h2>
-        <p>In the Git tab, Last turn lists what an agent changed in its last turn, apart from everything else you haven&rsquo;t committed. You can keep or revert each hunk.</p>
-        <p>From a script or another agent, <code class="k">omaterm diff --turn</code> prints the same diff.</p>
-      </div>
-      <div class="shot"><img src="assets/changes.png" width="2880" height="1800" loading="lazy" alt="The Git tab&rsquo;s Last turn, listing three files an agent edited in its last turn"></div>
-    </div>
-  </section>
-
-  <section>
-    <div class="wrap feature">
-      <div>
-        <p class="label">sessions</p>
-        <h2>Close the window. Your sessions keep running.</h2>
-        <p>A session daemon keeps your shells and agents running after you close the window, and shows them as they are when you open it again.</p>
-        <ul>
-          <li>After a reboot, Claude Code, Codex, OpenCode and Pi resume the same conversation</li>
-          <li>Run the daemon as a systemd user service so your sessions come back when you log in</li>
-          <li>Switching projects keeps the other project's shells running</li>
+        <ul class="how">
+          <li><span>Jump to the agent that needs you</span><kbd>Ctrl+Shift+J</kbd></li>
+          <li><span>Next or previous session</span><span><kbd>Alt+↓</kbd> <kbd>Alt+↑</kbd></span></li>
+          <li><span>Teach your agents to report their status</span><code class="k">omaterm skill setup</code></li>
         </ul>
       </div>
-      <div class="shot"><img src="assets/git.png" width="2880" height="1800" loading="lazy" alt="A shell running tests next to the Git panel"></div>
+      <div class="shot"><img src="assets/split.png" width="2880" height="1800" loading="lazy" alt="Three split panes: an agent waiting for permission, a dev server and a test run"></div>
     </div>
   </section>
 
-  <section>
-    <div class="wrap">
-      <p class="label">web access</p>
-      <h2>Check on your agents from your phone</h2>
-      <p style="max-width: 720px">Turn on web access and your sessions open in a browser: which agents are working or need you, and any pane as a live terminal you can type into. omaterm serves it on your machine; carry it with <code class="k">tailscale serve</code> or <code class="k">cloudflared</code>, or serve it on your local network. A browser sees nothing until you pair it by scanning a QR code, and you can sign any device out.</p>
+  <section id="sessions">
+    <div class="wrap feature flip">
+      <div>
+        <p class="label">02 · sessions and splits</p>
+        <h2>Projects, sessions and split panes</h2>
+        <p>A project is a folder you work in. Each one has its own sessions, and each session holds split panes: an agent, a dev server and your shell, side by side. Switching projects keeps the other project&rsquo;s shells running.</p>
+        <ul class="how">
+          <li><span>Open a project</span><kbd>Ctrl+O</kbd></li>
+          <li><span>New session</span><kbd>Ctrl+T</kbd></li>
+          <li><span>Split right or down</span><span><kbd>Ctrl+Shift+R</kbd> <kbd>Ctrl+Shift+D</kbd></span></li>
+          <li><span>Zoom the pane you&rsquo;re in</span><kbd>Ctrl+Shift+Enter</kbd></li>
+          <li><span>Go to session or project 1&ndash;9</span><span><kbd>Alt+1</kbd> <kbd>Alt+Shift+1</kbd></span></li>
+          <li><span>Every session, command and setting</span><kbd>Ctrl+Shift+P</kbd></li>
+        </ul>
+        <p class="note">Drag a pane&rsquo;s header onto another pane to move it, and drag the dividers to resize.</p>
+      </div>
+      <div class="shot"><img src="assets/palette.png" width="2880" height="1800" loading="lazy" alt="The command palette listing sessions, commands and settings"></div>
     </div>
   </section>
 
-  <section>
+  <section id="last-turn">
+    <div class="wrap feature">
+      <div>
+        <p class="label">03 · last turn</p>
+        <h2>What did that turn change?</h2>
+        <p>In the Git tab, <b>Last turn</b> lists only what the agent changed in its last turn, apart from everything else you haven&rsquo;t committed. Open a file to see its diff, then keep or revert each hunk.</p>
+        <ul class="how">
+          <li><span>Open Last turn</span><kbd>Ctrl+Shift+A</kbd></li>
+          <li><span>The same diff, from a script or another agent</span><code class="k">omaterm diff --turn</code></li>
+        </ul>
+        <p class="note">omaterm takes a snapshot when a turn starts. No branch or commit is made.</p>
+      </div>
+      <div class="shot"><img src="assets/changes.png" width="2880" height="1800" loading="lazy" alt="The Git tab on Last turn, listing three files an agent edited in its last turn"></div>
+    </div>
+  </section>
+
+  <section id="git">
     <div class="wrap">
-      <p class="label">themes</p>
-      <h2>Themes, dark and light</h2>
-      <p style="max-width: 720px">Pick a dark or light theme from the command palette. The window, the terminals and the editors share one palette, and its colors are checked for contrast so text stays readable. On <a href="https://omarchy.org">Omarchy</a>, omaterm uses the active Omarchy theme and follows when you switch, with no restart needed.</p>
+      <div class="intro">
+        <p class="label">04 · git and diffs</p>
+        <h2>Git, without leaving the window</h2>
+        <p>Stage, commit, amend, stash, fetch, pull and push from the Git tab, across every repository in the project. Diffs open side by side or inline, images included, and the graph shows every branch.</p>
+      </div>
+      <div class="gallery three">
+        <figure><div class="shot"><img src="assets/git.png" width="2880" height="1800" loading="lazy" alt="The Git tab with staged changes beside a shell"></div><figcaption>The Git tab: <kbd>Ctrl+Shift+G</kbd></figcaption></figure>
+        <figure><div class="shot"><img src="assets/diff.png" width="2880" height="1800" loading="lazy" alt="A side-by-side diff"></div><figcaption>Side-by-side and inline diffs</figcaption></figure>
+        <figure><div class="shot"><img src="assets/graph.png" width="2880" height="1800" loading="lazy" alt="The commit graph with merges"></div><figcaption>A commit graph with every branch</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="editor">
+    <div class="wrap feature flip">
+      <div>
+        <p class="label">05 · files and editor</p>
+        <h2>Find a file, read it, fix it</h2>
+        <p>The Files tab browses the project. Open any file in the editor, with syntax highlighting and a Markdown preview, for the quick fix an agent didn&rsquo;t need to make.</p>
+        <ul class="how">
+          <li><span>Go to a file</span><kbd>Ctrl+P</kbd></li>
+          <li><span>Search the whole project</span><kbd>Ctrl+Shift+F</kbd></li>
+          <li><span>The Files tab</span><kbd>Ctrl+Shift+E</kbd></li>
+          <li><span>Save</span><kbd>Ctrl+S</kbd></li>
+        </ul>
+      </div>
+      <div class="shot"><img src="assets/editor.png" width="2880" height="1800" loading="lazy" alt="The editor with a Go file open"></div>
+    </div>
+  </section>
+
+  <section id="info">
+    <div class="wrap feature">
+      <div>
+        <p class="label">06 · processes and ports</p>
+        <h2>What&rsquo;s running, and where</h2>
+        <p>The Info tab lists what your project&rsquo;s sessions run, with CPU and memory, and the ports they listen on. Stop a runaway process, or open a port in the browser, in one click.</p>
+        <ul class="how">
+          <li><span>The Info tab</span><kbd>Ctrl+Shift+I</kbd></li>
+          <li><span>Show or hide the side panel</span><kbd>Ctrl+Shift+B</kbd></li>
+        </ul>
+      </div>
+      <div class="shot"><img src="assets/info.png" width="2880" height="1800" loading="lazy" alt="The Info tab listing claude, bun and codex processes and port 5173"></div>
+    </div>
+  </section>
+
+  <section id="browser">
+    <div class="wrap feature flip">
+      <div>
+        <p class="label">07 · browser panes</p>
+        <h2>Your app, next to the code that makes it</h2>
+        <p>Open a web page as a pane, beside your shells: your dev server reloads where you can see it. Agents can read it, click, type and take screenshots to check their own work.</p>
+        <ul class="how">
+          <li><span>Open a browser pane</span><kbd>Ctrl+Shift+O</kbd></li>
+          <li><span>From a script or an agent</span><code class="k">omaterm split --url localhost:5173</code></li>
+          <li><span>Let agents drive the page</span><span>Setting: <b>Let Agents Control the App</b></span></li>
+        </ul>
+      </div>
+<pre class="cli"><span class="c"># open the app beside the agent</span>
+<span class="p">$</span> omaterm split --url localhost:5173
+<span class="c"># read it, click, type, wait</span>
+<span class="p">$</span> omaterm browser text
+<span class="p">$</span> omaterm browser click "button.save"
+<span class="p">$</span> omaterm browser wait ".toast"
+<span class="c"># see what the user sees</span>
+<span class="p">$</span> omaterm browser screenshot -o page.png</pre>
+    </div>
+  </section>
+
+  <section id="daemon">
+    <div class="wrap feature">
+      <div>
+        <p class="label">08 · sessions keep running</p>
+        <h2>Close the window. Your agents carry on.</h2>
+        <p>A session daemon runs your shells and agents, not the window. Close omaterm and they keep going; open it again and every pane is as you left it, scrollback included.</p>
+        <ul class="how">
+          <li><span>Bring sessions back at login</span><code class="k">omaterm daemon install-service</code></li>
+          <li><span>See what it runs</span><code class="k">omaterm daemon status</code></li>
+        </ul>
+        <p class="note">After a reboot, Claude Code, Codex, OpenCode and Pi resume the same conversation.</p>
+      </div>
+<pre class="cli"><span class="p">$</span> omaterm daemon status
+running omaterm 0.8.4, pid 4096, 6 panes
+<span class="p">$</span> omaterm ls
+SESSION  PANE     NAME          STATUS   PROGRAM
+b8yvch4  jjybiza  omaterm/dev   waiting  claude
+kppgfhu  armc768  omaterm/web   working  bun
+5arwznq  ke45bsv  api/tests     idle     -</pre>
+    </div>
+  </section>
+
+  <section id="web">
+    <div class="wrap">
+      <div class="intro">
+        <p class="label">09 · from your phone</p>
+        <h2>Your sessions, in any browser</h2>
+        <p>Turn on web access and your sessions open in a browser: projects and sessions beside a live terminal on a computer, one at a time on a phone, with keys for Esc, Ctrl and the arrows. Answer the agent that needs you from the couch.</p>
+      </div>
+      <div class="devices">
+        <div class="shot"><img src="assets/web-desktop.png" width="2880" height="1800" loading="lazy" alt="Web access in a desktop browser: sessions in a sidebar, an agent asking to allow an edit"></div>
+        <div class="phones">
+          <div class="phone"><img src="assets/web-phone-list.png" width="1170" height="2532" loading="lazy" alt="Web access on a phone: the sessions, one needing you"></div>
+          <div class="phone"><img src="assets/web-phone.png" width="1170" height="2532" loading="lazy" alt="Web access on a phone: a session&rsquo;s terminal with a key bar"></div>
+        </div>
+      </div>
+      <div class="web-grid">
+        <div>
+          <h3 style="margin: 0 0 8px; font-size: 18px">Pair a phone in a scan</h3>
+          <p>A browser sees nothing until you pair it. <b>Web Access: Pair a Device</b> in the palette shows a QR code; scan it and that browser is signed in. Each code works once, for ten minutes, and you can sign any device out.</p>
+          <ul class="how">
+            <li><span>Turn it on</span><span>Setting: <b>Web Access</b>, or <code class="k">omaterm web on</code></span></li>
+            <li><span>Pair a device</span><code class="k">omaterm web pair</code></li>
+            <li><span>Paired devices, and signing one out</span><span><code class="k">omaterm web devices</code> <code class="k">omaterm web revoke</code></span></li>
+          </ul>
+          <h3 style="margin: 28px 0 8px; font-size: 18px">Reach it from anywhere</h3>
+          <p>omaterm serves it on your machine only. Carry it with a tunnel you trust, or serve it on your home network:</p>
+<pre class="cli"><span class="c"># your own devices, on your tailnet</span>
+<span class="p">$</span> tailscale serve --bg 7370
+<span class="c"># a public https URL</span>
+<span class="p">$</span> cloudflared tunnel --url http://127.0.0.1:7370
+<span class="c"># devices on the same Wi-Fi (plain HTTP)</span>
+<span class="p">$</span> omaterm web on --network</pre>
+        </div>
+        <div class="shot"><img src="assets/pair.png" width="2880" height="1800" loading="lazy" alt="The Pair a Device dialog with a QR code and a one-time code"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="themes">
+    <div class="wrap">
+      <div class="intro">
+        <p class="label">10 · themes</p>
+        <h2>Themes, dark and light</h2>
+        <p>Pick a dark or light theme from the command palette. The window, the terminals and the editors share one palette, and its colors are checked for contrast so text stays readable. On <a href="https://omarchy.org">Omarchy</a>, omaterm uses the active Omarchy theme and follows when you switch, with no restart needed.</p>
+      </div>
       <div class="gallery">
         <figure><div class="shot"><img src="assets/theme-tokyo.png" width="2880" height="1800" loading="lazy" alt="omaterm in the Tokyo Night theme"></div><figcaption>Tokyo Night, an Omarchy theme</figcaption></figure>
         <figure><div class="shot"><img src="assets/theme-light.png" width="2880" height="1800" loading="lazy" alt="omaterm in a light theme"></div><figcaption>Lupine, a light Omarchy theme</figcaption></figure>
@@ -253,48 +472,45 @@
     </div>
   </section>
 
-  <section>
-    <div class="wrap">
-      <p class="label">workspace</p>
-      <h2>Git, diffs and an editor in the same window</h2>
-      <div class="gallery">
-        <figure><div class="shot"><img src="assets/diff.png" width="2880" height="1800" loading="lazy" alt="A side-by-side diff"></div><figcaption>Side-by-side and inline diffs, including images</figcaption></figure>
-        <figure><div class="shot"><img src="assets/graph.png" width="2880" height="1800" loading="lazy" alt="The commit graph with merges"></div><figcaption>A commit graph with every branch</figcaption></figure>
-        <figure><div class="shot"><img src="assets/editor.png" width="2880" height="1800" loading="lazy" alt="The editor with a Go file open"></div><figcaption>An editor with syntax highlighting and Markdown preview</figcaption></figure>
-        <figure><div class="shot"><img src="assets/palette.png" width="2880" height="1800" loading="lazy" alt="The command palette"></div><figcaption>Every session, command and setting from <kbd>Ctrl+Shift+P</kbd></figcaption></figure>
-      </div>
-      <dl class="more">
-        <div><dt>Split panes</dt><dd>Split right or down, resize by the dividers, zoom one pane, and drag a header onto another pane to move it.</dd></div>
-        <div><dt>Browser panes</dt><dd>Open your dev server next to your shells. Agents can read the page, click, type and take screenshots.</dd></div>
-        <div><dt>Git panel</dt><dd>Stage, commit, amend, stash, fetch, pull and push, across every repository in the project.</dd></div>
-        <div><dt>Go to file and search</dt><dd>Find a file with <kbd>Ctrl+P</kbd> and search the whole project with <kbd>Ctrl+Shift+F</kbd>.</dd></div>
-        <div><dt>Updates itself</dt><dd>Signed updates arrive inside the app, with release notes written for you.</dd></div>
-        <div><dt>Native</dt><dd>A native app written in Go. It runs on Linux first, and also on macOS and Windows.</dd></div>
-      </dl>
-    </div>
-  </section>
-
   <section id="cli">
     <div class="wrap feature flip">
       <div>
-        <p class="label">cli</p>
-        <h2>Agents can drive it too</h2>
-        <p>The <code class="k">omaterm</code> command lets agents and scripts open panes, run commands, wait for them and read the screen. It works even while the window is closed.</p>
-        <p><code class="k">omaterm skill setup</code> teaches Claude Code, Codex, Pi and OpenCode to use it.</p>
+        <p class="label">11 · agents drive it</p>
+        <h2>Agents can use it too</h2>
+        <p>The <code class="k">omaterm</code> command lets agents and scripts open panes, run commands, wait for them, read the screen and report their status. It works even while the window is closed.</p>
+        <ul class="how">
+          <li><span>Teach Claude Code, Codex, Pi and OpenCode to use it</span><code class="k">omaterm skill setup</code></li>
+          <li><span>Every command</span><code class="k">omaterm help</code></li>
+        </ul>
       </div>
 <pre class="cli"><span class="c"># run the tests in a new pane below</span>
 <span class="p">$</span> pane=$(omaterm split --down -- go test ./...)
 <span class="c"># wait for them, then read what they printed</span>
 <span class="p">$</span> omaterm wait "$pane" --exit || omaterm read "$pane" -n 80
-<span class="c"># open the app you just built beside it</span>
-<span class="p">$</span> omaterm split --url localhost:5173
-<span class="c"># what did my last turn change?</span>
-<span class="p">$</span> omaterm diff --turn</pre>
+<span class="c"># start another agent in a session of its own</span>
+<span class="p">$</span> omaterm new -n review -- codex
+<span class="c"># tell the user you need them</span>
+<span class="p">$</span> omaterm report blocked "Which database?"</pre>
+    </div>
+  </section>
+
+  <section id="more">
+    <div class="wrap">
+      <p class="label">12 · and more</p>
+      <h2>The rest of the kit</h2>
+      <dl class="more">
+        <div><dt>Updates itself</dt><dd>Signed updates arrive inside the app, with release notes written for you.</dd></div>
+        <div><dt>Every shortcut</dt><dd><kbd>Ctrl+Shift+/</kbd> lists them all.</dd></div>
+        <div><dt>Notifications</dt><dd>Choose which ones you get: needs you, finished, failed. Each is a setting in the palette.</dd></div>
+        <div><dt>Zoom</dt><dd><kbd>Ctrl+=</kbd> and <kbd>Ctrl+-</kbd> scale the whole window; <kbd>Ctrl+0</kbd> resets it.</dd></div>
+        <div><dt>Native</dt><dd>A native app written in Go. It runs on Linux first, and on macOS and Windows too.</dd></div>
+        <div><dt>Open source</dt><dd>MIT licensed, on <a href="https://github.com/fachrihawari/omaterm">GitHub</a>.</dd></div>
+      </dl>
     </div>
   </section>
 </main>
 
-<div class="end">
+<div class="end" id="install">
   <div class="wrap">
     <h2>Install omaterm</h2>
     <p>Free and open source under the MIT license. It keeps itself up to date.</p>
@@ -303,8 +519,11 @@
       <button class="btn primary" type="button" data-copy="curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh">Copy</button>
     </div>
     <div class="links-row">
-      <a href="https://github.com/fachrihawari/omaterm/releases/latest">All downloads</a>
-      <a href="https://github.com/fachrihawari/omaterm/blob/dev/CHANGELOG.md">Changelog</a>
+      <span>Or download for</span>
+      <a href="https://github.com/fachrihawari/omaterm/releases/latest">Linux (.deb, .tar.gz)</a>
+      <a href="https://github.com/fachrihawari/omaterm/releases/latest">macOS (.dmg)</a>
+      <a href="https://github.com/fachrihawari/omaterm/releases/latest">Windows (.exe)</a>
+      <a href="https://github.com/fachrihawari/omaterm/blob/dev/CHANGELOG.md">What&rsquo;s new</a>
     </div>
   </div>
 </div>

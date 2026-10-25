@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/session"
+	"omaterm/internal/web"
 	"omaterm/service"
 )
 
@@ -123,8 +126,23 @@ func TestSiteShots(t *testing.T) {
 			a.changes.root = wd
 			a.changes.stamp = service.GitStamp(wd)
 		}, []string{siteAgentDone}},
-		{"split", func(a *appState) { split3(a); a.inspectorVisible = false },
-			[]string{siteAgentWaiting, siteDevServer, siteTests}},
+		{"split", func(a *appState) {
+			shotStatuses(a) // the other sessions' statuses
+			split3(a)
+			a.inspectorVisible = false
+			ids := a.tabs[a.activeTab].Split.termIDs()
+			since := nowFunc().Add(-2 * time.Minute).UnixMilli()
+			for i, info := range []session.Info{
+				{Status: session.Waiting, Agent: "claude", Process: "claude", Kind: "permission", Unread: true},
+				{Status: session.Working, Process: "bun", Title: "vite", Progress: -1},
+				{Status: session.Idle, Process: "go", Message: "Tests passed", Unread: true, Progress: -1},
+			} {
+				info.ID, info.Session, info.Since = ids[i], a.tabs[a.activeTab].ID, since
+				info.Dir = "/home/you/Projects/omaterm"
+				a.status[ids[i]] = info
+			}
+			a.activePaneTermID = ids[0]
+		}, []string{siteAgentWaiting, siteDevServer, siteTests}},
 		{"git", func(a *appState) { a.inspectorTab = 2 }, []string{siteShell}},
 		{"theme-tokyo", func(a *appState) { a.applyTheme(shotTheme(t, "tokyo-night")); shotStatuses(a) },
 			[]string{siteAgentWaiting, siteDevServer}},
@@ -146,6 +164,29 @@ func TestSiteShots(t *testing.T) {
 			a.graphLoaded = true
 		}, nil},
 		{"palette", func(a *appState) { a.openOverlay(overlayCommandPalette) }, []string{siteShell}},
+		{"info", func(a *appState) {
+			shotStatuses(a)
+			a.inspectorVisible, a.inspectorTab = true, 0
+			// What the sessions run, not the goldens' stand-in.
+			a.processes = []service.Process{
+				{Name: "claude", Pid: 48211, CPU: "1.2%", Mem: "212 MB"},
+				{Name: "bun", Pid: 48305, CPU: "0.8%", Mem: "96 MB"},
+				{Name: "codex", Pid: 48390, CPU: "3.1%", Mem: "148 MB"},
+			}
+			a.ports = []service.Port{{Port: 5173, Name: "http", Open: true, Pid: 48305, Process: "bun"}}
+		}, []string{siteAgentWaiting, siteDevServer}},
+		{"pair", func(a *appState) {
+			shotStatuses(a)
+			link := "https://box.tailnet.ts.net/#code=K7QM-4XWD"
+			rows, err := web.QR(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			open := true
+			a.webOn, a.webPairOpen = true, &open
+			a.webPair = &webPairing{ready: true, link: link, code: "K7QM-4XWD", qr: rows,
+				expires: nowFunc().Add(10 * time.Minute)}
+		}, []string{siteAgentWaiting, siteDevServer}},
 	}
 	dir := filepath.Join("site", "assets")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

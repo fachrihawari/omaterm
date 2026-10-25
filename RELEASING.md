@@ -11,6 +11,10 @@ Releases are cut from a tag:
 1. Bump `version` in `mygo.json` and add that version's section to
    `CHANGELOG.md`. The section becomes the release notes the update window
    shows, so write it for the user.
+   When the UI changed, refresh the website's pictures too:
+   `SITE_SHOTS=1 go test -run TestSiteShots .` renders the app's, and
+   `node scripts/site-web-shots.mjs` the web access page's (it needs
+   Chromium). Both write to `site/assets/`.
 2. Commit and push, then tag and push the tag:
 
    ```sh
