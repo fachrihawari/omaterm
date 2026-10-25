@@ -197,6 +197,18 @@ omaterm builds on other people's work:
 - **[Simple Icons](https://simpleicons.org)** (CC0): the program logos,
   which are their owners' trademarks.
 
+omaterm also learned from projects it shares no code with:
+
+- **[Rex](https://superlogical.com)** by Superlogical: card panes, pane
+  headers and status at a glance, and OSC 7501, the Program Status
+  Protocol omaterm reads agents' status with.
+- **[Tern](https://stencil.so/tern)** by Stencil: how an agent terminal
+  should look and feel.
+- **[OpenCode](https://opencode.ai)**: its web mode gave omaterm the idea
+  of web access.
+- **[Omarchy](https://omarchy.org)**: the desktop omaterm was first made
+  for, and the themes it follows.
+
 Their license texts, and those of the Go libraries omaterm uses, are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The file ships with
 every release.

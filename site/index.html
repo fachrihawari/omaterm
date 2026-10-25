@@ -168,6 +168,19 @@
   dl.more dt { font: 700 15px var(--mono); margin-bottom: 4px; }
   dl.more dd { margin: 0; color: var(--muted); font-size: 15px; }
 
+  /* Credits: what omaterm is built on, and what it learned from. */
+  .thanks-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; margin-top: 32px; }
+  .thanks-grid h3 { margin: 0 0 4px; font: 600 13px var(--mono); color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+  .credits { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  .credits a {
+    display: block; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--surface); text-decoration: none; transition: border-color 0.15s;
+  }
+  .credits a:hover { border-color: var(--accent); }
+  .credits b { font-size: 15px; }
+  .credits b small { font: 400 13px var(--sans); color: var(--dim); margin-left: 6px; }
+  .credits span { display: block; margin-top: 4px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+
   pre.cli {
     margin: 0; padding: 18px 20px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--surface); overflow-x: auto; font: 14px/1.8 var(--mono);
@@ -192,7 +205,7 @@
   @media (max-width: 900px) {
     .feature, .feature.flip { grid-template-columns: 1fr; gap: 24px; }
     .feature.flip > :first-child { order: 0; }
-    .web-grid { grid-template-columns: 1fr; gap: 32px; }
+    .web-grid, .thanks-grid { grid-template-columns: 1fr; gap: 32px; }
     .gallery.three { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 640px) {
@@ -508,6 +521,36 @@ kppgfhu  armc768  omaterm/web   working  bun
       </dl>
     </div>
   </section>
+  <section id="thanks">
+    <div class="wrap">
+      <div class="intro">
+        <p class="label">thanks</p>
+        <h2>Standing on the shoulders of</h2>
+        <p>omaterm wouldn&rsquo;t exist without these projects. Some lent their code, others their ideas. Go and see them.</p>
+      </div>
+      <div class="thanks-grid">
+        <div>
+          <h3>Built on</h3>
+          <ul class="credits">
+            <li><a href="https://kero.sh"><b>Kero<small>by EGOIST</small></b><span>The agent terminal omaterm learned the most from. Its session engine, the <code>omaterm</code> command, agent hooks and skill, and browser panes are adapted from Kero&rsquo;s MIT code.</span></a></li>
+            <li><a href="https://github.com/ghostty-org/ghostty"><b>Ghostty<small>by Mitchell Hashimoto and contributors</small></b><span>libghostty-vt does the terminal emulation in every pane.</span></a></li>
+            <li><a href="https://github.com/egoist/mygo"><b>MyGo<small>by EGOIST</small></b><span>The Go framework the native window is drawn with.</span></a></li>
+            <li><a href="https://github.com/herdrdev/herdr"><b>herdr</b><span>Its rules for telling what each coding agent is doing, through Kero.</span></a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>Inspired by</h3>
+          <ul class="credits">
+            <li><a href="https://superlogical.com"><b>Rex<small>by Superlogical</small></b><span>Card panes, per-pane headers and status at a glance, and OSC 7501, the Program Status Protocol omaterm reads agents&rsquo; status with.</span></a></li>
+            <li><a href="https://stencil.so/tern"><b>Tern<small>by Stencil</small></b><span>Ideas for how an agent terminal should look and feel.</span></a></li>
+            <li><a href="https://opencode.ai"><b>OpenCode</b><span>Its web mode, which gave omaterm the idea of answering your agents from a phone.</span></a></li>
+            <li><a href="https://omarchy.org"><b>Omarchy<small>by DHH</small></b><span>The desktop omaterm was first made for, and the themes it follows.</span></a></li>
+          </ul>
+        </div>
+      </div>
+      <p class="note">Their licenses, and those of every library omaterm uses, are in <a href="https://github.com/fachrihawari/omaterm/blob/dev/THIRD_PARTY_NOTICES.md">THIRD_PARTY_NOTICES.md</a>, which ships with every release.</p>
+    </div>
+  </section>
 </main>
 
 <div class="end" id="install">
@@ -531,7 +574,7 @@ kppgfhu  armc768  omaterm/web   working  bun
 <footer>
   <div class="wrap">
     <span>omaterm · Oh My Terminal · <a href="https://github.com/fachrihawari/omaterm/blob/dev/LICENSE">MIT license</a></span>
-    <span><a href="https://github.com/fachrihawari/omaterm">github</a> · <a href="https://github.com/fachrihawari/omaterm/releases">releases</a> · <a href="https://github.com/fachrihawari/omaterm/issues">issues</a></span>
+    <span><a href="#thanks">credits</a> · <a href="https://github.com/fachrihawari/omaterm">github</a> · <a href="https://github.com/fachrihawari/omaterm/releases">releases</a> · <a href="https://github.com/fachrihawari/omaterm/issues">issues</a></span>
   </div>
 </footer>
 
