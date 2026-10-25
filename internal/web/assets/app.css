@@ -178,7 +178,7 @@ a { color: inherit; text-decoration: none; }
 }
 .tabs a.current { color: var(--text); border-color: var(--accent); }
 
-.term-wrap { flex: 1; min-height: 0; position: relative; background: var(--bg); }
+.term-wrap { flex: 1; min-height: 0; position: relative; overflow: hidden; background: var(--bg); }
 .term-host { position: absolute; inset: 6px 4px 4px 10px; }
 .term-host .xterm { height: 100%; }
 .term-host .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }

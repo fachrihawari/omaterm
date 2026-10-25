@@ -309,6 +309,161 @@ function closeTerm() {
 
 const touch = matchMedia("(pointer: coarse)").matches;
 
+// touchScroll scrolls with a finger, and a flick carries on, slowing. A
+// shell's scrollback is xterm's, which gives at its ends. A program that
+// takes the mouse or the alternate screen, as Claude Code does, scrolls
+// itself: the finger turns into its wheel, which xterm passes on.
+function touchScroll(xt, host) {
+  const screen = host.querySelector(".xterm-screen");
+  const row = () => screen.clientHeight / xt.rows || 16;
+  const own = () => xt.modes.mouseTrackingMode === "none" && xt.buffer.active.type === "normal";
+  let x = 0, y = 0, samples = [], part = 0, owed = 0, pulled = 0, v = 0, glideAt = 0, wheelAt = 0, frame = 0;
+
+  // A wheel turn is a line, but Claude Code takes turns closer than about
+  // 30ms for two: turns go 45ms apart, or a frame apart, as two lines, when
+  // a flick runs ahead.
+  const wheel = () => {
+    screen.dispatchEvent(new WheelEvent("wheel", {
+      deltaY: Math.sign(owed), deltaMode: WheelEvent.DOM_DELTA_LINE, clientX: x, clientY: y, bubbles: true, cancelable: true,
+    }));
+  };
+
+  // stretch shows how far a shell's scrollback is pulled past its end.
+  const stretch = (ease) => {
+    const max = row() * 4, d = Math.abs(pulled) * 0.5;
+    const off = Math.sign(pulled) * max * (1 - 1 / (d / max + 1));
+    screen.style.transition = ease ? "transform 0.3s cubic-bezier(0.2, 0.8, 0.3, 1)" : "none";
+    screen.style.transform = off ? `translateY(${-off}px)` : "";
+  };
+  const springBack = () => { pulled = 0; stretch(true); };
+
+  // move scrolls by px, positive toward the end; it tells whether it
+  // scrolled, not stopped at an end.
+  const move = (px) => {
+    if (!own()) {
+      part += px / row();
+      const n = Math.trunc(part);
+      part -= n;
+      owed = Math.max(-60, Math.min(60, owed + n));
+      return true;
+    }
+    const buf = xt.buffer.active;
+    if (pulled) {
+      const p = pulled + px;
+      if (Math.sign(p) === Math.sign(pulled)) { pulled = p; stretch(false); return true; }
+      pulled = 0;
+      stretch(false);
+      px = p;
+    }
+    if ((px < 0 && buf.viewportY === 0) || (px > 0 && buf.viewportY >= buf.baseY)) {
+      pulled += px;
+      stretch(false);
+      return false;
+    }
+    part += px / row();
+    const n = Math.trunc(part);
+    part -= n;
+    if (n) xt.scrollLines(n);
+    return true;
+  };
+
+  const tick = (now) => {
+    frame = 0;
+    if (!host.isConnected) return;
+    if (v) {
+      const dt = Math.min(now - glideAt, 50);
+      glideAt = now;
+      if (!move(v * dt)) {
+        // A flick into an end bounces off it.
+        pulled = Math.sign(v) * Math.min(Math.abs(v) * 60, row() * 6);
+        v = 0;
+        stretch(false);
+        requestAnimationFrame(springBack);
+      } else {
+        v *= Math.pow(0.996, dt);
+        if (Math.abs(v) < 0.02) v = 0;
+      }
+    }
+    if (Math.abs(owed) >= 1) {
+      const paced = xt.modes.mouseTrackingMode !== "none";
+      if (!paced) { wheel(); owed -= Math.sign(owed); }
+      else if (Math.abs(owed) >= 4 && now - wheelAt >= 15) { wheel(); owed -= 2 * Math.sign(owed); wheelAt = now; }
+      else if (now - wheelAt >= 45) { wheel(); owed -= Math.sign(owed); wheelAt = now; }
+    }
+    if (v || Math.abs(owed) >= 1) frame = requestAnimationFrame(tick);
+  };
+  const run = () => { if (!frame) frame = requestAnimationFrame(tick); };
+
+  host.addEventListener("touchstart", (e) => {
+    const t = e.touches[0];
+    x = t.clientX; y = t.clientY;
+    samples = [{ t: e.timeStamp, y }];
+    v = 0;
+    part = 0;
+    if (pulled) { pulled = 0; stretch(false); }
+  }, { passive: true, capture: true });
+
+  host.addEventListener("touchmove", (e) => {
+    const t = e.touches[0];
+    e.preventDefault();
+    e.stopPropagation();
+    const dy = y - t.clientY;
+    x = t.clientX; y = t.clientY;
+    samples.push({ t: e.timeStamp, y });
+    while (samples.length > 2 && e.timeStamp - samples[0].t > 100) samples.shift();
+    move(dy);
+    run();
+  }, { passive: false, capture: true });
+
+  const end = (e) => {
+    if (pulled) { springBack(); return; }
+    const first = samples[0], last = samples[samples.length - 1];
+    if (!first || e.timeStamp - last.t > 60 || last.t - first.t < 10) return;
+    v = (first.y - last.y) / (last.t - first.t);
+    if (Math.abs(v) < 0.2) { v = 0; return; }
+    glideAt = performance.now();
+    run();
+  };
+  host.addEventListener("touchend", end, { capture: true });
+  host.addEventListener("touchcancel", end, { capture: true });
+}
+
+// phoneKeyboard reads a phone's keyboard in xterm's place. xterm reads it
+// from its textarea, and when a suggestion or autocorrect rewrites a word
+// there it sends the whole textarea again. Here each change is sent as
+// what it took away, in backspaces, and what it put in.
+function phoneKeyboard(xt, host) {
+  const ta = xt.textarea;
+  let last = "", before = null;
+  const ours = (e) => e.target === ta;
+  host.addEventListener("keydown", (e) => {
+    if (!ours(e)) return;
+    last = ta.value;
+    // 229 is the keyboard composing: xterm would read the textarea itself.
+    if (e.keyCode === 229) e.stopPropagation();
+  }, true);
+  for (const type of ["compositionstart", "compositionupdate", "compositionend"]) {
+    host.addEventListener(type, (e) => { if (ours(e)) e.stopPropagation(); }, true);
+  }
+  host.addEventListener("beforeinput", (e) => { if (ours(e)) before = ta.value; }, true);
+  host.addEventListener("input", (e) => {
+    if (!ours(e)) return;
+    e.stopPropagation();
+    const was = before ?? last, now = ta.value;
+    before = null;
+    last = now;
+    // A paste is xterm's: its paste event sends it.
+    if (e.inputType === "insertFromPaste" || e.inputType === "insertFromDrop") return;
+    let i = 0;
+    while (i < was.length && i < now.length && was[i] === now[i]) i++;
+    if (i > 0 && /[\ud800-\udbff]/.test(was[i - 1])) i--;
+    const out = "\x7f".repeat([...was.slice(i)].length) + now.slice(i).replace(/\n/g, "\r");
+    if (out) xt.input(out);
+    // A line sent, or a long one, starts the textarea over.
+    if (now.includes("\n") || (now.length > 200 && now.endsWith(" "))) { ta.value = ""; last = ""; }
+  }, true);
+}
+
 // showTerm opens a pane in the content, sized to fill it: the pane takes
 // this screen's size while it shows here, and the window's back after.
 function showTerm(id) {
@@ -424,27 +579,10 @@ function showTerm(id) {
   shell.content.replaceChildren(h("div", { class: "term-view" }, header, h("div", { class: "term-wrap" }, host), note, keys));
   xt.open(host);
 
-  // xterm scrolls its own scrollback on a swipe, but not for a program
-  // that takes the mouse or the alternate screen, as Claude Code does;
-  // there a swipe turns into the wheel's lines, which xterm passes on.
-  let touchY = 0, touchPx = 0;
-  host.addEventListener("touchstart", (e) => { touchY = e.touches[0].clientY; touchPx = 0; }, { passive: true, capture: true });
-  host.addEventListener("touchmove", (e) => {
-    if (xt.modes.mouseTrackingMode === "none" && xt.buffer.active.type === "normal") return;
-    const t = e.touches[0];
-    touchPx += touchY - t.clientY;
-    touchY = t.clientY;
-    e.preventDefault();
-    e.stopPropagation();
-    const row = host.clientHeight / xt.rows;
-    while (Math.abs(touchPx) >= row) {
-      const dir = Math.sign(touchPx);
-      touchPx -= dir * row;
-      e.target.dispatchEvent(new WheelEvent("wheel", {
-        deltaY: dir, deltaMode: WheelEvent.DOM_DELTA_LINE, clientX: t.clientX, clientY: t.clientY, bubbles: true, cancelable: true,
-      }));
-    }
-  }, { passive: false, capture: true });
+  if (touch) {
+    touchScroll(xt, host);
+    phoneKeyboard(xt, host);
+  }
 
   let resizeTimer = 0;
   const observer = new ResizeObserver(() => {
