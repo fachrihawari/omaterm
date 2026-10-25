@@ -204,6 +204,9 @@ omaterm also learned from projects it shares no code with:
   Protocol omaterm reads agents' status with.
 - **[Tern](https://stencil.so/tern)** by Stencil: how an agent terminal
   should look and feel.
+- **[Solo](https://soloterm.com)** by Aaron Francis: coding agents
+  running side by side with the project's own processes, its dev server
+  and logs, in one workspace.
 - **[OpenCode](https://opencode.ai)**: its web mode gave omaterm the idea
   of web access.
 - **[Omarchy](https://omarchy.org)**: the desktop omaterm was first made
