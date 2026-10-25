@@ -50,6 +50,15 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 
 		ui.Spacer(c)
 
+		if a.webOn {
+			if statusSegment(c, func() {
+				ui.Icon(c, iconGlobe).Width(12).Height(12).TextColor(pal.Accent)
+				ui.Text(c, "Web").FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
+			}).Tooltip("Web access is on: pair a device").Clicked() {
+				a.pairDevice(c)
+			}
+		}
+
 		// Real load when the sampler has run; hidden otherwise so tests
 		// and non-Linux systems show no invented numbers.
 		if a.sysStats.OK {

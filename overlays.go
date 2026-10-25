@@ -528,6 +528,9 @@ func (a *appState) paletteSources() []paletteEntry {
 	toggle("notify-waiting", "Notify When a Session Needs You", st.Notify.Waiting, func(s *Settings) { s.Notify.Waiting = !s.Notify.Waiting })
 	toggle("notify-done", "Notify When a Session Finishes", st.Notify.Done, func(s *Settings) { s.Notify.Done = !s.Notify.Done })
 	toggle("notify-error", "Notify When a Session Fails", st.Notify.Error, func(s *Settings) { s.Notify.Error = !s.Notify.Error })
+	// Web access lives in web.json, which the omaterm command changes too.
+	out = append(out, paletteEntry{Setting: true, On: a.webOn, Command: Command{ID: "setting:web", Category: "Setting", Title: "Web Access",
+		Run: func(a *appState, c *ui.Context) { a.setWeb(c, !a.webOn) }}})
 	return out
 }
 

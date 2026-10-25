@@ -83,6 +83,8 @@ func (a *appState) view(c *ui.Context) {
 		}
 	}
 
+	a.webPairDialog(c)
+
 	// Remove-project confirmation dialog.
 	if a.removeProjectConfirmOpen != nil {
 		result := a.confirmDialog(c, a.removeProjectConfirmOpen,

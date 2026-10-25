@@ -30,7 +30,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "daemon", "clients", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "clients", "web", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -168,6 +168,8 @@ func run(args []string) error {
 		return daemonCmd(args)
 	case "clients":
 		return clientsCmd(args)
+	case "web":
+		return webCmd(args)
 	}
 
 	c, err := connect()
@@ -944,6 +946,8 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm cli install|uninstall|status
   omaterm daemon status|stop|restart|install-service|uninstall-service
   omaterm clients [--json]               who the session daemon serves
+  omaterm web on|off|status|pair|devices|revoke|tunnel
+                                         sessions in a browser, for a tunnel to carry
   omaterm do <action>, omaterm actions
   omaterm version
 

@@ -19,6 +19,10 @@ var (
 	editTheme = theme.EditorTheme(pal)
 )
 
+// qrDark and qrLight paint QR codes: black on white in every theme, which
+// every camera reads.
+var qrDark, qrLight = ui.RGB(0, 0, 0), ui.RGB(255, 255, 255)
+
 // setPalette makes src the app's theme. UI thread only.
 func setPalette(src theme.Source) {
 	themeSrc = src

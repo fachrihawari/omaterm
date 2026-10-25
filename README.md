@@ -65,6 +65,26 @@ panes resume the same conversation. `omaterm daemon install-service` runs
 the session daemon as a systemd user service, so your sessions also come
 back when you log in.
 
+### From your phone
+
+Web access shows your sessions in a browser: which agents are working or
+need you, and any pane as a live terminal you can type into, with a key bar
+for Esc, Ctrl and the arrows. Turn it on with **Web Access** in the command
+palette, or `omaterm web on`.
+
+omaterm serves it on `127.0.0.1:7370` only. To reach it from your phone,
+carry it with a tunnel you already trust:
+
+```sh
+tailscale serve --bg 7370                      # your tailnet only
+cloudflared tunnel --url http://127.0.0.1:7370 # a public https URL
+```
+
+A browser sees nothing until you pair it: **Web Access: Pair a Device**
+shows a QR code, and `omaterm web pair` prints one in the terminal. Each code
+works once, for ten minutes. `omaterm web devices` lists paired browsers and
+`omaterm web revoke` signs them out.
+
 ### Git, diffs and an editor in the same window
 
 The Git panel lets you stage, commit, stash, fetch, pull and push. There is

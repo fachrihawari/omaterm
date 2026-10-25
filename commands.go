@@ -72,6 +72,8 @@ var commandRegistry = append([]Command{
 				toast(c, "Remote Control off")
 			}
 		}},
+	{ID: "web.pair", Title: "Web Access: Pair a Device…", Category: "App",
+		Run: func(a *appState, c *ui.Context) { a.pairDevice(c) }},
 	{ID: "daemon.restart", Title: "Restart Session Daemon", Category: "App",
 		Run: func(a *appState, c *ui.Context) {
 			if a.restartDaemon() {

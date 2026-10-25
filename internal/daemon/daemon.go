@@ -34,6 +34,7 @@ import (
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/web"
 )
 
 // Options are how the daemon runs.
@@ -90,6 +91,13 @@ type Daemon struct {
 	// waiting for its answer.
 	calls    map[int64]chan proto.Message
 	nextCall int64
+	// watchers are told the panes changed: the web server's pages, which
+	// unlike subscribers are no app.
+	watchers  map[int]func()
+	nextWatch int
+
+	webMu sync.Mutex
+	web   *web.Server
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -143,7 +151,7 @@ func Start(opts Options) (*Daemon, error) {
 	}
 	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
-		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}}
+		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){}}
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(info session.Info, prev session.Status) {
@@ -189,6 +197,9 @@ func Start(opts Options) (*Daemon, error) {
 			}
 		}
 	}()
+	if _, err := d.reloadWeb(); err != nil {
+		log.Printf("web access: %v", err)
+	}
 	log.Printf("omaterm daemon %s started, pid %d, %s", opts.Version, os.Getpid(), opts.Socket)
 	return d, nil
 }
@@ -199,6 +210,7 @@ func (d *Daemon) Stop() {
 		log.Printf("stopped, %d panes saved", d.reg.Len())
 		d.saveHistories(true)
 		close(d.quit)
+		d.stopWeb()
 		d.srv.Close()
 		d.reg.CloseAll()
 		d.lock.Close()
@@ -231,7 +243,7 @@ func (d *Daemon) loop(ctx context.Context) {
 			d.mu.Unlock()
 			if idle && idleFor > d.opts.IdleExit {
 				log.Printf("idle: exiting")
-				d.once.Do(func() { close(d.quit); d.srv.Close(); d.lock.Close() })
+				d.once.Do(func() { close(d.quit); d.stopWeb(); d.srv.Close(); d.lock.Close() })
 				return
 			}
 		}
@@ -393,6 +405,8 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 			ch <- m
 		}
 		return true, nil
+	case "web.reload":
+		return d.reloadWeb()
 	case "clients":
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -458,7 +472,43 @@ func (d *Daemon) changed() {
 		d.pending = false
 		d.mu.Unlock()
 		d.broadcast(proto.Message{Event: "panes", Result: mustJSON(d.reg.Infos())})
+		d.mu.Lock()
+		watchers := make([]func(), 0, len(d.watchers))
+		for _, fn := range d.watchers {
+			watchers = append(watchers, fn)
+		}
+		d.mu.Unlock()
+		for _, fn := range watchers {
+			fn()
+		}
 	})
+}
+
+// Watch calls fn as the panes change, until stopped. A watcher, unlike a
+// subscriber, is no app: notifications and calls go on as without one.
+func (d *Daemon) Watch(fn func()) func() {
+	d.mu.Lock()
+	d.nextWatch++
+	id := d.nextWatch
+	d.watchers[id] = fn
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		delete(d.watchers, id)
+		d.mu.Unlock()
+	}
+}
+
+// AttachPipe attaches to a pane in process: the connection carries what
+// an attach socket would, the welcome line and then frames.
+func (d *Daemon) AttachPipe(pane string) net.Conn {
+	ours, theirs := net.Pipe()
+	go func() {
+		defer ours.Close()
+		d.Attach(ours, bufio.NewReader(ours), proto.Hello{Kind: "attach", Version: proto.Version, Pane: pane},
+			proto.Welcome{Version: proto.Version, PID: os.Getpid(), Started: d.started.UnixMilli(), App: d.opts.Version})
+	}()
+	return theirs
 }
 
 // --- attach connections ---------------------------------------------------
