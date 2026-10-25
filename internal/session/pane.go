@@ -55,6 +55,7 @@ type Pane struct {
 	looked   bool
 	idleFrom time.Time
 	cwdAt    time.Time
+	lastBell time.Time
 	rows     int
 	closed   bool
 	dirty    bool // output since History was last taken
@@ -79,6 +80,19 @@ type StartOptions struct {
 	Theme           *terminal.Theme
 	MinimumContrast float32
 	Padding         terminal.Padding
+	// The terminal's behavior, as the app's settings have it (see
+	// terminal.Options): what has no setter takes effect as a terminal
+	// is made.
+	Cursor        terminal.CursorStyle
+	NoBlink       bool
+	CopyOnSelect  terminal.CopyOnSelect
+	RightClick    terminal.RightClickAction
+	ClipboardRead terminal.ClipboardAccess
+	Scrollback    int
+	OpenLink      func(link string) bool
+	OnZoom        func(z terminal.Zoom) bool
+	// Shell is the shell to run; the login shell when empty.
+	Shell string
 	// History is shown above the shell, as a restored pane's scrollback.
 	History []byte
 }
@@ -340,6 +354,20 @@ func (p *Pane) exited() {
 	p.changedLocked()
 	p.mu.Unlock()
 	p.reg.paneExited(p.info.ID, code)
+}
+
+// onBell counts a program's bell, which the app answers as the settings
+// say; bells closer than half a second count once.
+func (p *Pane) onBell() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if now.Sub(p.lastBell) < 500*time.Millisecond {
+		return
+	}
+	p.lastBell = now
+	p.info.Bells++
+	p.changedLocked()
 }
 
 func (p *Pane) onTitle(title string) {
@@ -722,6 +750,9 @@ func commandLine(o StartOptions) (path string, args []string, shell string) {
 	if o.Exec && len(o.Command) > 0 {
 		return lookPath(o.Command[0]), o.Command, ""
 	}
-	shell = shellcmd.Login()
+	shell = o.Shell
+	if shell == "" {
+		shell = shellcmd.Login()
+	}
 	return shell, shellcmd.Args(shell, o.Command), shell
 }

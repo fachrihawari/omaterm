@@ -62,6 +62,11 @@ func (a *appState) openFromArgs(args []string, wd string) {
 		a.showSession(id)
 		return
 	}
+	// --settings=<page> opens the Settings window: omaterm settings.
+	if page, ok := strings.CutPrefix(args[0], "--settings="); ok {
+		a.openSettings(page)
+		return
+	}
 	dir := args[0]
 	if !filepath.IsAbs(dir) && wd != "" {
 		dir = filepath.Join(wd, dir)
@@ -118,6 +123,7 @@ func main() {
 	})
 
 	mygo.App.WhenReady(func() {
+		systemDark = mygo.Theme.IsDark
 		a := newApp()
 		app = a
 		a.useDaemon()
@@ -153,6 +159,13 @@ func main() {
 			a.recheckTheme()
 			if a.inspectorVisible && a.inspectorTab == 2 {
 				a.refreshActiveRepo()
+			}
+		})
+		// Following the desktop: its switches between light and dark.
+		mygo.Theme.OnUpdated(func() {
+			if a.themeMode == themeSystem {
+				a.applyTheme(themeSource(themeSystem))
+				a.invalidateWindows()
 			}
 		})
 		a.start()

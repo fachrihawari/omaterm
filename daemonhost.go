@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/client"
@@ -42,14 +41,7 @@ func (a *appState) useDaemon() {
 		log.Printf("session daemon: %v; panes run in the app", err)
 		return
 	}
-	r.TermOptions = func() session.StartOptions {
-		return session.StartOptions{
-			Font:            terminal.Font{Family: a.termFont, Size: a.fontSize},
-			Theme:           omaTermTheme(),
-			MinimumContrast: a.minimumContrast(),
-			Padding:         terminal.Padding{X: 10, Y: 6},
-		}
-	}
+	r.TermOptions = a.termStartOptions
 	// Panes a stopped daemon took with it start again from their saved
 	// scrollback, as after a restart.
 	r.OnLost = func(ids []string) {

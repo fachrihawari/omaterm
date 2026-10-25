@@ -75,6 +75,9 @@ type Info struct {
 	Progress int          `json:"progress"` // -1 when none
 	Records  []osc.Record `json:"records,omitempty"`
 
+	// Bells counts the program's bells (BEL).
+	Bells int `json:"bells,omitempty"`
+
 	ExitCode *int `json:"exitCode,omitempty"`
 	// CommandExit is the exit status of the command the pane started
 	// with, once it ended (OSC 133;D).

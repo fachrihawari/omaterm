@@ -104,6 +104,33 @@ func (a *appState) syncStatus() {
 func (a *appState) statusChanged(prev, next map[string]session.Info) {
 	for id, n := range next {
 		a.maybeNotify(prev[id], n)
+		if p, ok := prev[id]; ok && n.Bells > p.Bells {
+			a.ring(n)
+		}
+	}
+}
+
+// ring answers a program's bell as the settings say: the pane flashes,
+// or a notification comes while its session is out of view.
+func (a *appState) ring(info session.Info) {
+	switch a.settings.Terminal.Bell {
+	case "visual":
+		if a.bells == nil {
+			a.bells = map[string]time.Time{}
+		}
+		a.bells[info.ID] = nowFunc()
+		if a.win != nil {
+			a.win.Invalidate()
+		}
+	case "notify":
+		if a.win != nil && a.win.IsFocused() && a.viewedSession() == info.Session {
+			return
+		}
+		if t, ok := a.notified[info.Session]; ok && nowFunc().Sub(t) < 5*time.Second {
+			return
+		}
+		a.notified[info.Session] = nowFunc()
+		a.notify(info.Session, a.sessionLabel(info.Session), "The bell rang")
 	}
 }
 

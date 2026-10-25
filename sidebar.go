@@ -204,7 +204,7 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 	case row.Hovered():
 		bg = pal.Hover
 	}
-	row.Background(row.AnimateColor("bg", bg, ui.Animation{Duration: 110 * time.Millisecond}))
+	row.Background(a.animColor(row, "bg", bg, 110*time.Millisecond))
 	if selected {
 		chosen(row)
 	}
@@ -256,7 +256,7 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 		}
 		if m.Item("Close Session").Chosen() {
 			a.focusSession(pi, t.ID)
-			a.closeTab(a.activeTab)
+			a.closeTabAsking(a.activeTab)
 		}
 	})
 }

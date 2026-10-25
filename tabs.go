@@ -2,6 +2,9 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
+
+	"omaterm/internal/agent"
+	"omaterm/internal/session"
 )
 
 // The top tab bar with terminal/editor/diff tabs and the window-level
@@ -121,7 +124,7 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			ui.Icon(c, iconX).Size(12, 12).TextColor(pal.TextMuted)
 		})
 		if x.Clicked() {
-			a.closeTab(i)
+			a.closeTabAsking(i)
 		}
 	})
 	if e.Clicked() {
@@ -197,7 +200,7 @@ func (a *appState) closeTab(i int) {
 }
 
 // closeActiveTab closes the active tab, asking for confirmation when an
-// editor has unsaved changes.
+// editor has unsaved changes or a session still runs a program.
 func (a *appState) closeActiveTab(c *ui.Context) {
 	if a.activeTab < 0 || a.activeTab >= len(a.tabs) {
 		return
@@ -211,7 +214,67 @@ func (a *appState) closeActiveTab(c *ui.Context) {
 			return
 		}
 	}
-	a.closeTab(a.activeTab)
+	a.closeTabAsking(a.activeTab)
+}
+
+// closeTabAsking closes a tab, first asking when it is a session that
+// still runs a program other than its shell and the settings say to ask.
+func (a *appState) closeTabAsking(i int) {
+	if i < 0 || i >= len(a.tabs) {
+		return
+	}
+	t := a.tabs[i]
+	if t.Kind != tabTerminal || t.Split == nil {
+		a.closeTab(i)
+		return
+	}
+	id := t.ID
+	a.confirmCloseRunning(t.Split.termIDs(), "Close Session", func() {
+		for j, tab := range a.tabs {
+			if tab.ID == id {
+				a.closeTab(j)
+				return
+			}
+		}
+	})
+}
+
+// closeAsk is a close waiting for the user to confirm it.
+type closeAsk struct {
+	open        bool
+	title, text string
+	run         func()
+}
+
+// confirmCloseRunning runs close at once, or, when one of the panes still
+// runs a program and the settings say to ask, once the user confirms.
+func (a *appState) confirmCloseRunning(panes []string, title string, close func()) {
+	if a.settings.ConfirmClose {
+		if what := a.runningProgram(panes); what != "" {
+			a.closeAsk = &closeAsk{open: true, title: title,
+				text: what + " is still running. Closing ends it.", run: close}
+			return
+		}
+	}
+	close()
+}
+
+// runningProgram names what one of the panes runs besides its shell, ""
+// when none does.
+func (a *appState) runningProgram(panes []string) string {
+	for _, id := range panes {
+		info, ok := a.status[id]
+		if !ok || info.Status == session.Exited {
+			continue
+		}
+		if info.Agent != "" {
+			return agent.DisplayName(info.Agent)
+		}
+		if info.Process != "" {
+			return info.Process
+		}
+	}
+	return ""
 }
 
 // newTerminalTab creates a tab backed by a real terminal pane.

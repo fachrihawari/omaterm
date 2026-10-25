@@ -78,7 +78,10 @@ func (r *Registry) Start(o StartOptions) (*Pane, error) {
 	opts := terminal.Options{
 		Font: o.Font, Theme: o.Theme, MinimumContrast: o.MinimumContrast,
 		Padding: o.Padding, PaddingColor: terminal.PaddingExtend,
-		OnTitle: p.onTitle, OnNotify: p.onNotify,
+		Cursor: o.Cursor, NoBlink: o.NoBlink, CopyOnSelect: o.CopyOnSelect,
+		RightClick: o.RightClick, ClipboardRead: o.ClipboardRead, Scrollback: o.Scrollback,
+		OpenLink: o.OpenLink, OnZoom: o.OnZoom,
+		OnTitle: p.onTitle, OnNotify: p.onNotify, OnBell: p.onBell,
 	}
 	if errors.Is(err, pty.ErrUnsupported) {
 		// No pseudo-terminal of our own (Windows): the terminal runs the

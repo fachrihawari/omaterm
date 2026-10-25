@@ -274,9 +274,9 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 		}
 		if cmdButton(c, iconX, 13, false).Tooltip("Close pane").Clicked() {
 			if multi {
-				a.removePane(id)
+				a.confirmCloseRunning([]string{id}, "Close Pane", func() { a.removePane(id) })
 			} else {
-				a.closeTab(a.activeTab)
+				a.closeTabAsking(a.activeTab)
 			}
 		}
 	})

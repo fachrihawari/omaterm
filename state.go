@@ -15,6 +15,7 @@ import (
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
 	"omaterm/internal/paths"
+	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/service"
 )
@@ -331,7 +332,12 @@ type appState struct {
 	// settings are the user's preferences (settings.json); themeMode is
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
 	// last loaded, themeWatchStop ends the theme watch.
-	settings       Settings
+	settings     Settings
+	settingsUI   settingsUI
+	settingsPage string
+	settingsWin  *mygo.Window
+	// termMade is termBehavior as the open terminals were made.
+	termMade       termBehavior
 	themeMode      string
 	themeStamp     time.Time
 	themeWatchStop func()
@@ -350,6 +356,10 @@ type appState struct {
 	// Close tab confirmation
 	pendingCloseTab     int
 	closeTabConfirmOpen *bool
+	// closeAsk is a session or pane to close once the user confirms.
+	closeAsk *closeAsk
+	// bells is when each pane's bell last rang, which its card flashes.
+	bells map[string]time.Time
 
 	pendingRemoveProjectIdx  int
 	pendingRemoveProjectName string
@@ -426,7 +436,10 @@ func newApp() *appState {
 	if cfg, err := webStore().Config(); err == nil {
 		a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
 	}
-	a.termFont = termFontFamily()
+	a.fontSize, a.diffSplit = a.settings.Terminal.FontSize, a.settings.Editor.DiffSplit
+	a.termMade = a.termBehavior()
+	proto.SetSearchEngine(a.settings.SearchEngine)
+	a.termFont = a.terminalFontFamily()
 	a.loadUIPrefs()
 	a.themeMode = a.settings.Theme
 	a.applyTheme(themeSource(a.themeMode))

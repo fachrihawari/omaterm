@@ -522,6 +522,9 @@ func (p *remotePane) Term() *terminal.Terminal {
 		Conn: s, ResizeByConn: true,
 		Font: o.Font, Theme: o.Theme, MinimumContrast: o.MinimumContrast,
 		Padding: o.Padding, PaddingColor: terminal.PaddingExtend,
+		Cursor: o.Cursor, NoBlink: o.NoBlink, CopyOnSelect: o.CopyOnSelect,
+		RightClick: o.RightClick, ClipboardRead: o.ClipboardRead, Scrollback: o.Scrollback,
+		OpenLink: o.OpenLink, OnZoom: o.OnZoom,
 	})
 	if err != nil {
 		s.Close()

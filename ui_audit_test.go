@@ -232,10 +232,11 @@ func TestAuditPaletteRanking(t *testing.T) {
 			t.Errorf("%q: first %s, want %s", q, first, want)
 		}
 	}
-	// A category alone still finds its entries.
+	// A category alone still finds its entries, after the command that
+	// opens the Settings window, which its title names.
 	a.cmdQuery = "setting"
-	if got := a.paletteCommands(); len(got) == 0 || !got[0].Setting {
-		t.Errorf(`"setting" finds no setting first`)
+	if got := a.paletteCommands(); len(got) < 2 || got[0].ID != "app.settings" || !got[1].Setting {
+		t.Errorf(`"setting" finds no Settings… then a setting first`)
 	}
 }
 

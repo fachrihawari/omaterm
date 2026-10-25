@@ -278,7 +278,7 @@
       <a class="card" href="#web"><span class="n">09</span><b>From your phone</b><span>Your sessions in a browser, live.</span></a>
       <a class="card" href="#themes"><span class="n">10</span><b>Themes</b><span>Dark and light, and Omarchy&rsquo;s.</span></a>
       <a class="card" href="#cli"><span class="n">11</span><b>Agents drive it</b><span>The <code>omaterm</code> command, for agents and scripts.</span></a>
-      <a class="card" href="#more"><span class="n">12</span><b>And more</b><span>Updates, the palette, shortcuts.</span></a>
+      <a class="card" href="#settings"><span class="n">12</span><b>Settings</b><span>Every preference in one window.</span></a>
     </div>
   </div>
 </div>
@@ -476,7 +476,7 @@ kppgfhu  armc768  omaterm/web   working  bun
       <div class="intro">
         <p class="label">10 · themes</p>
         <h2>Themes, dark and light</h2>
-        <p>Pick a dark or light theme from the command palette. The window, the terminals and the editors share one palette, and its colors are checked for contrast so text stays readable. On <a href="https://omarchy.org">Omarchy</a>, omaterm uses the active Omarchy theme and follows when you switch, with no restart needed.</p>
+        <p>Pick a dark or light theme, or follow your desktop&rsquo;s, in Settings or the command palette. The window, the terminals and the editors share one palette, and its colors are checked for contrast so text stays readable. On <a href="https://omarchy.org">Omarchy</a>, omaterm uses the active Omarchy theme and follows when you switch, with no restart needed.</p>
       </div>
       <div class="gallery">
         <figure><div class="shot"><img src="assets/theme-tokyo.png" width="2880" height="1800" loading="lazy" alt="omaterm in the Tokyo Night theme"></div><figcaption>Tokyo Night, an Omarchy theme</figcaption></figure>
@@ -507,14 +507,29 @@ kppgfhu  armc768  omaterm/web   working  bun
     </div>
   </section>
 
+  <section id="settings">
+    <div class="wrap feature">
+      <div>
+        <p class="label">12 · settings</p>
+        <h2>Every preference, in one window</h2>
+        <p>Settings has a page for each part of omaterm: the theme, the terminal&rsquo;s font, cursor and clipboard, the editor, notifications, the agents&rsquo; integration, web access and its paired devices, the browser&rsquo;s search engine and updates. Search finds any setting, and changes apply as you make them.</p>
+        <ul class="how">
+          <li><span>Open Settings</span><kbd>Ctrl+,</kbd></li>
+          <li><span>Or from a terminal, on a page</span><code class="k">omaterm settings terminal</code></li>
+        </ul>
+      </div>
+      <div class="shot"><img src="assets/settings.png" width="1640" height="1280" loading="lazy" alt="The Settings window on its Terminal page: a preview of the terminal, then its font, size, line height, ligatures and cursor"></div>
+    </div>
+  </section>
+
   <section id="more">
     <div class="wrap">
-      <p class="label">12 · and more</p>
+      <p class="label">and more</p>
       <h2>The rest of the kit</h2>
       <dl class="more">
         <div><dt>Updates itself</dt><dd>Signed updates arrive inside the app, with release notes written for you.</dd></div>
         <div><dt>Every shortcut</dt><dd><kbd>Ctrl+Shift+/</kbd> lists them all.</dd></div>
-        <div><dt>Notifications</dt><dd>Choose which ones you get: needs you, finished, failed. Each is a setting in the palette.</dd></div>
+        <div><dt>Notifications</dt><dd>Choose which ones you get: needs you, finished, failed, with or without a sound. Each is a setting.</dd></div>
         <div><dt>Zoom</dt><dd><kbd>Ctrl+=</kbd> and <kbd>Ctrl+-</kbd> scale the whole window; <kbd>Ctrl+0</kbd> resets it.</dd></div>
         <div><dt>Native</dt><dd>A native app written in Go. It runs on Linux first, and on macOS and Windows too.</dd></div>
         <div><dt>Open source</dt><dd>MIT licensed, on <a href="https://github.com/fachrihawari/omaterm">GitHub</a>.</dd></div>

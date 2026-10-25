@@ -167,6 +167,7 @@ var keybindings = append([]keyBinding{
 	{"search.global", combo(ui.Cmd|ui.Shift, ui.KeyF), scopeGlobal},
 	{"app.openProject", combo(ui.Cmd, ui.KeyO), scopeGlobal},
 	{"help.keyboardShortcuts", combo(ui.Cmd|ui.Shift, ui.KeySlash), scopeGlobal},
+	{"app.settings", combo(ui.Cmd, ui.KeyComma), scopeGlobal},
 
 	// Zoom, of the terminal and the editor alike.
 	{"app.zoomIn", combo(ui.Cmd, ui.KeyEqual), scopeGlobal},

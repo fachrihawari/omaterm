@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/ui"
 
@@ -44,6 +43,8 @@ var commandRegistry = append([]Command{
 		Run: func(a *appState, c *ui.Context) { mygo.App.Quit() }},
 	{ID: "app.checkUpdates", Title: "Check for Updates…", Category: "App",
 		Run: func(a *appState, c *ui.Context) { a.checkForUpdates(c) }},
+	{ID: "app.settings", Title: "Settings…", Category: "App",
+		Run: func(a *appState, c *ui.Context) { a.openSettings("") }},
 
 	{ID: "app.zoomIn", Title: "Increase Font Size", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.zoomFont(1) }},
@@ -305,18 +306,33 @@ func (a *appState) zoomFont(d int) {
 	a.applyFontSize()
 }
 
-// applyFontSize gives the new size to every terminal and editor that is
-// open, not just the ones built from now on.
+// applyFontSize gives the new font to every terminal and editor that is
+// open, not just the ones built from now on, and keeps it.
 func (a *appState) applyFontSize() {
+	a.applyTextSettings()
+	a.saveSettings()
+}
+
+// applyTextSettings gives the settings' font and editor options to every
+// terminal and editor that is open.
+func (a *appState) applyTextSettings() {
+	a.termFont = a.terminalFontFamily()
+	font := a.termFontSpec()
 	a.panes.Each(func(p session.Handle) {
 		if t := p.TermIfOpen(); t != nil {
-			t.SetFont(terminal.Font{Family: a.termFont, Size: a.fontSize})
+			t.SetFont(font)
 		}
 	})
 	for _, doc := range a.editors {
 		if doc.State != nil {
-			doc.State.Font = ui.Font{Size: a.fontSize}
+			a.styleEditor(doc.State)
 		}
+	}
+	if a.searchPreview != nil {
+		a.searchPreview.Font = a.editorFont(a.fontSize)
+	}
+	if a.diffDs != nil {
+		a.diffDs.Font = a.editorFont(a.fontSize)
 	}
 }
 

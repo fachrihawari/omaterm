@@ -14,9 +14,12 @@ type uiPrefs struct {
 	InspectorVisible *bool   `json:"inspectorVisible,omitempty"`
 	InspectorW       float32 `json:"inspectorW,omitempty"`
 	InspectorTab     *int    `json:"inspectorTab,omitempty"`
-	DiffSplit        *bool   `json:"diffSplit,omitempty"`
-	FontSize         float32 `json:"fontSize,omitempty"`
 	AgentSetupAsked  bool    `json:"agentSetupAsked,omitempty"`
+	// SettingsPage is the Settings window's page, where it opens again.
+	SettingsPage string `json:"settingsPage,omitempty"`
+	// DiffSplit and FontSize are read once, to move them to settings.json.
+	DiffSplit *bool   `json:"diffSplit,omitempty"`
+	FontSize  float32 `json:"fontSize,omitempty"`
 }
 
 func uiPrefsPath() string { return filepath.Join(filepath.Dir(stateFilePath()), "ui.json") }
@@ -49,13 +52,20 @@ func (a *appState) loadUIPrefs() {
 		// The Changes tab, now the Git tab's Last turn.
 		a.inspectorTab, a.changes.lastTurn = 2, true
 	}
-	if u.DiffSplit != nil {
-		a.diffSplit = *u.DiffSplit
-	}
-	if u.FontSize >= 8 && u.FontSize <= 32 {
-		a.fontSize = u.FontSize
+	// The text size and the diff layout were kept here before they were
+	// settings: settings.json takes them once, while it has none.
+	if !settingsFileHas("terminal") {
+		if u.DiffSplit != nil {
+			a.diffSplit = *u.DiffSplit
+			a.settings.Editor.DiffSplit = a.diffSplit
+		}
+		if u.FontSize >= 8 && u.FontSize <= 32 {
+			a.fontSize = u.FontSize
+			a.settings.Terminal.FontSize = a.fontSize
+		}
 	}
 	a.agentSetupAsked = u.AgentSetupAsked
+	a.settingsPage = u.SettingsPage
 }
 
 // saveUIPrefs writes ui.json, as the window closes.
@@ -66,8 +76,9 @@ func (a *appState) saveUIPrefs() {
 	u := uiPrefs{
 		SidebarVisible: &a.sidebarVisible, SidebarW: a.sidebarW,
 		InspectorVisible: &a.inspectorVisible, InspectorW: a.inspectorW,
-		InspectorTab: &a.inspectorTab, DiffSplit: &a.diffSplit, FontSize: a.fontSize,
+		InspectorTab:    &a.inspectorTab,
 		AgentSetupAsked: a.agentSetupAsked,
+		SettingsPage:    a.settingsPage,
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {

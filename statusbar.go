@@ -61,7 +61,7 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 
 		// Real load when the sampler has run; hidden otherwise so tests
 		// and non-Linux systems show no invented numbers.
-		if a.sysStats.OK {
+		if a.sysStats.OK && a.settings.ShowSystemLoad {
 			if a.sysStats.CPUPercent >= 0 {
 				statusSegment(c, func() {
 					ui.Text(c, "CPU "+strconv.Itoa(int(math.Round(a.sysStats.CPUPercent)))+"%").
@@ -75,6 +75,11 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 						Tooltip(service.FormatBytes(a.sysStats.MemUsed) + " of " + service.FormatBytes(a.sysStats.MemTotal) + " used")
 				})
 			}
+		}
+		if statusSegment(c, func() {
+			ui.Icon(c, iconSettings).Width(12).Height(12).TextColor(pal.TextMuted)
+		}).Tooltip("Settings (" + keyLabels("app.settings") + ")").Clicked() {
+			a.openSettings("")
 		}
 	})
 }

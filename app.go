@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/service"
@@ -49,6 +51,17 @@ func (a *appState) view(c *ui.Context) {
 		})
 		a.statusBar(c)
 	})
+
+	// Closing a session or pane that still runs a program.
+	if ask := a.closeAsk; ask != nil {
+		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, "Cancel", "Close")
+		if result != -1 || !ask.open {
+			a.closeAsk = nil
+			if result == 1 {
+				ask.run()
+			}
+		}
+	}
 
 	// Close-tab confirmation dialog.
 	if a.closeTabConfirmOpen != nil {
@@ -106,6 +119,24 @@ func (a *appState) view(c *ui.Context) {
 
 // wash paints the window's backdrop: a soft gradient of the theme's
 // background, which the cards sit on, or the plain color.
+// animColor animates e's color to target, or, with Reduce Motion on,
+// gives it at once.
+func (a *appState) animColor(e ui.Element, key string, target ui.Color, d time.Duration) ui.Color {
+	if a.settings.ReduceMotion {
+		return target
+	}
+	return e.AnimateColor(key, target, ui.Animation{Duration: d})
+}
+
+// animate animates a value of e to target, or, with Reduce Motion on,
+// gives it at once.
+func (a *appState) animate(e ui.Element, key string, target float32, d time.Duration) float32 {
+	if a.settings.ReduceMotion {
+		return target
+	}
+	return e.Animate(key, target, d)
+}
+
 func (a *appState) wash(e ui.Element) {
 	if a.settings.Background == "plain" {
 		e.Background(pal.Wash)

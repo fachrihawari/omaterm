@@ -316,7 +316,7 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 	sid, pid := model.NewID(), model.NewID()
 	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
 	if p.URL != "" {
-		pane.URL = proto.BrowserURL(p.URL) // the app loads it once open
+		pane.URL = d.browserURL(p.URL) // the app loads it once open
 	} else if err := d.startPane(sid, pid, dir, p.Command, p.Env); err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func (d *Daemon) split(st *model.State, p proto.CreateParams) (any, error) {
 	targetID, pid := target.ID, model.NewID()
 	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
 	if p.URL != "" {
-		pane.URL = proto.BrowserURL(p.URL)
+		pane.URL = d.browserURL(p.URL)
 	} else if err := d.startPane(s.ID, pid, dir, p.Command, p.Env); err != nil {
 		return nil, err
 	}
@@ -443,8 +443,10 @@ func (d *Daemon) startPane(sessionID, id, dir string, command, env []string) err
 
 // startPaneWith is startPane with the scrollback a restored pane shows.
 func (d *Daemon) startPaneWith(sessionID, id, dir string, command, env []string, history []byte) error {
-	_, err := d.reg.Start(session.StartOptions{ID: id, Session: sessionID, Dir: dir, Command: command,
-		Env: append(d.paneEnv(), env...), Cols: 120, Rows: 40, Theme: d.currentTheme(), History: history})
+	o := session.StartOptions{ID: id, Session: sessionID, Dir: dir, Command: command,
+		Env: append(d.paneEnv(), env...), Cols: 120, Rows: 40, Theme: d.currentTheme(), History: history}
+	d.termPrefs().apply(&o)
+	_, err := d.reg.Start(o)
 	d.changed()
 	return err
 }

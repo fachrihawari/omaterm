@@ -42,7 +42,7 @@ func (a *appState) openEditorAt(path string, line int) {
 				if lang := editor.LanguageFor(path); lang != nil {
 					buf.SetLanguage(lang)
 				}
-				doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme(), Font: ui.Font{Size: a.fontSize}}
+				doc.State = a.newEditorState(buf)
 				doc.Preview = true
 			}
 			a.editors[path] = doc
@@ -59,8 +59,8 @@ func (a *appState) openEditorAt(path string, line int) {
 			if lang := editor.LanguageFor(path); lang != nil {
 				buf.SetLanguage(lang)
 			}
-			preview := hasSuffix(path, ".md") || hasSuffix(path, ".mdx")
-			doc.State = &editor.State{Buffer: buf, Theme: omaEditorTheme(), Font: ui.Font{Size: a.fontSize}}
+			preview := (hasSuffix(path, ".md") || hasSuffix(path, ".mdx")) && a.settings.Editor.MarkdownPreview
+			doc.State = a.newEditorState(buf)
 			doc.Preview = preview
 			a.editors[path] = doc
 		}
@@ -341,4 +341,24 @@ func imageDiffSide(c *ui.Context, side imageSide, missingLabel string) {
 			}
 		})
 	})
+}
+
+// newEditorState is a file editor over buf, as the settings have it.
+func (a *appState) newEditorState(buf *editor.Buffer) *editor.State {
+	st := &editor.State{Buffer: buf, Theme: omaEditorTheme()}
+	a.styleEditor(st)
+	return st
+}
+
+// styleEditor gives an editor the settings' font, tab size, wrapping and
+// line numbers.
+func (a *appState) styleEditor(st *editor.State) {
+	e := a.settings.Editor
+	st.Font = a.editorFont(a.fontSize)
+	st.TabSize = e.TabSize
+	st.SoftWrap = e.Wrap
+	st.LineNumbers = editor.LineNumbersOn
+	if !e.LineNumbers {
+		st.LineNumbers = editor.LineNumbersOff
+	}
 }

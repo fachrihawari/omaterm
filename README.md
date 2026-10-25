@@ -70,8 +70,8 @@ back when you log in.
 Web access shows your sessions in a browser: your projects and sessions in
 a sidebar, which agents are working or need you, and any pane as a live
 terminal you can type into, with a key bar for Esc, Ctrl and the arrows on a
-phone. Turn it on with **Web Access** in the command palette, or
-`omaterm web on`. While a browser shows a pane, the pane takes the browser's
+phone. Turn it on in Settings, with **Web Access** in the command palette,
+or `omaterm web on`. While a browser shows a pane, the pane takes the browser's
 size; the window gets its size back when the browser leaves.
 
 omaterm serves it on `127.0.0.1:7370`. To reach it from your phone, carry it
@@ -86,10 +86,10 @@ Or serve it on your local network with **Web Access on Your Network**, or
 `omaterm web on --network` (`--local` goes back). That is plain HTTP, so
 use it only on networks you trust.
 
-A browser sees nothing until you pair it: **Web Access: Pair a Device**
+A browser sees nothing until you pair it: **Pair a Device** in Settings
 shows a QR code, and `omaterm web pair` prints one in the terminal. Each code
-works once, for ten minutes. `omaterm web devices` lists paired browsers and
-`omaterm web revoke` signs them out.
+works once, for ten minutes. Settings lists the paired browsers, and signs
+one out with Revoke; so do `omaterm web devices` and `omaterm web revoke`.
 
 ### Git, diffs and an editor in the same window
 
@@ -105,8 +105,8 @@ file tree, and an editor with syntax highlighting and Markdown preview.
 
 ### Themes, dark and light
 
-omaterm has dark and light themes, which you pick from the command
-palette. The window, terminals and editors share one palette, and its
+omaterm has dark and light themes, or follows your desktop's, which you
+pick in Settings or the command palette. The window, terminals and editors share one palette, and its
 colors are checked for contrast so text stays readable. On
 [Omarchy](https://omarchy.org), omaterm uses the active Omarchy theme and
 follows when you switch, with no restart needed.
@@ -114,6 +114,18 @@ follows when you switch, with no restart needed.
 | Tokyo Night (an Omarchy theme) | Lupine, light (an Omarchy theme) |
 | --- | --- |
 | ![omaterm in the Tokyo Night theme](site/assets/theme-tokyo.png) | ![omaterm in a light theme](site/assets/theme-light.png) |
+
+### Settings
+
+Press `Ctrl+,`, or click the gear in the status bar, for the Settings
+window: a page for the theme, the terminal (font, line height, cursor,
+copy on select, clipboard, scrollback, bell), the editor, notifications,
+the agents' integration, web access and its paired devices, the browser's
+search engine, and updates. Search finds any setting, and changes apply as
+you make them. `omaterm settings terminal` opens it on a page. The settings
+live in `~/.config/omaterm/settings.json`.
+
+![The Settings window on its Terminal page](site/assets/settings.png)
 
 ### Browser panes
 
@@ -142,6 +154,7 @@ conversation runs in which pane.
 | Action | Keys |
 | --- | --- |
 | Command palette | `Ctrl+Shift+P` |
+| Settings | `Ctrl+,` |
 | Go to file | `Ctrl+P` |
 | Search in project | `Ctrl+Shift+F` |
 | New terminal | `Ctrl+T` |

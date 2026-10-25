@@ -21,6 +21,10 @@ const (
 	themeLight   = "light"
 )
 
+// systemDark tells whether the desktop is dark. main sets it once the app
+// runs; until then, as in tests, it is.
+var systemDark = func() bool { return true }
+
 // themeSource is the theme a mode shows: Omarchy's active theme, falling
 // back to the built-in dark one when Omarchy has none (another desktop).
 func themeSource(mode string) theme.Source {
@@ -28,6 +32,11 @@ func themeSource(mode string) theme.Source {
 	case themeDark:
 		return theme.BuiltinDark()
 	case themeLight:
+		return theme.BuiltinLight()
+	case themeSystem:
+		if systemDark() {
+			return theme.BuiltinDark()
+		}
 		return theme.BuiltinLight()
 	}
 	if src, err := theme.LoadOmarchy(); err == nil {
@@ -61,11 +70,19 @@ func (a *appState) applyTheme(src theme.Source) {
 	a.themeStamp = themeNameStamp()
 }
 
-// setThemeMode switches between following Omarchy and a built-in theme.
+// setThemeMode switches between following Omarchy, following the
+// desktop, and a built-in theme.
 func (a *appState) setThemeMode(mode string) {
 	a.themeMode = mode
 	a.applyTheme(themeSource(mode))
 	a.saveSettings()
+	a.invalidateWindows()
+}
+
+// hasOmarchy tells whether Omarchy keeps a theme here to follow.
+func hasOmarchy() bool {
+	st, err := os.Stat(theme.Dir())
+	return err == nil && st.IsDir()
 }
 
 // themeNameStamp is the mtime of Omarchy's theme.name, which every theme

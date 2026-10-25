@@ -87,10 +87,15 @@ func (a *appState) pairDevice(c *ui.Context) {
 	if !a.webOn && !a.setWeb(c, true) {
 		return
 	}
-	p := &webPairing{}
-	a.webPair = p
+	a.webPair = a.startPairing()
 	open := true
 	a.webPairOpen = &open
+}
+
+// startPairing makes a pairing code, its link and QR code, in the
+// background.
+func (a *appState) startPairing() *webPairing {
+	p := &webPairing{}
 	go func() {
 		store := webStore()
 		cfg, err := store.Config()
@@ -104,6 +109,7 @@ func (a *appState) pairDevice(c *ui.Context) {
 		rows, qerr := web.QR(link)
 		a.post(func() {
 			p.ready = true
+			defer a.invalidateWindows()
 			if err != nil || qerr != nil {
 				p.err = firstErr(err, qerr).Error()
 				return
@@ -112,6 +118,7 @@ func (a *appState) pairDevice(c *ui.Context) {
 			p.local = strings.HasPrefix(base, "http://127.0.0.1")
 		})
 	}()
+	return p
 }
 
 func firstErr(errs ...error) error {

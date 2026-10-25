@@ -209,4 +209,21 @@ func TestSiteShots(t *testing.T) {
 		f.Close()
 		stopTermPanes(a)
 	}
+
+	// The Settings window, on its Terminal page.
+	a := newShotApp(wd)
+	a.openSettings("terminal")
+	tr := ui.NewTester(a.settingsView, settingsWidth, settingsHeight)
+	tr.SetScale(2)
+	tr.Frame()
+	tr.Frame()
+	f, err := os.Create(filepath.Join(dir, "settings.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, tr.Image()); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	stopTermPanes(a)
 }

@@ -7,7 +7,42 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 )
+
+// SearchEngines are the address bar's search engines by name: a URL with
+// %s where the words go.
+var SearchEngines = map[string]string{
+	"duckduckgo": "https://duckduckgo.com/?q=%s",
+	"google":     "https://www.google.com/search?q=%s",
+	"kagi":       "https://kagi.com/search?q=%s",
+	"brave":      "https://search.brave.com/search?q=%s",
+}
+
+var searchURL atomic.Value // string: a URL with %s
+
+// SetSearchEngine makes BrowserURL search with an engine of
+// SearchEngines, or a URL of the user's with %s; anything else searches
+// with DuckDuckGo.
+func SetSearchEngine(engine string) {
+	u, ok := SearchEngines[engine]
+	if !ok && strings.Contains(engine, "%s") && hasScheme(engine) {
+		u, ok = engine, true
+	}
+	if !ok {
+		u = SearchEngines["duckduckgo"]
+	}
+	searchURL.Store(u)
+}
+
+// searchFor is the search engine's URL for the words.
+func searchFor(text string) string {
+	u, _ := searchURL.Load().(string)
+	if u == "" {
+		u = SearchEngines["duckduckgo"]
+	}
+	return strings.Replace(u, "%s", url.QueryEscape(text), 1)
+}
 
 // BlankURL is the page of a browser pane that has been told none.
 const BlankURL = "about:blank"
@@ -24,7 +59,7 @@ func BrowserURL(text string) string {
 	if u, ok := address(text); ok {
 		return u
 	}
-	return "https://duckduckgo.com/?q=" + url.QueryEscape(text)
+	return searchFor(text)
 }
 
 // IsAddress reports whether text is a URL or a host, as BrowserURL goes to,

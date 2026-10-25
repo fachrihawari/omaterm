@@ -7,9 +7,12 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
+	"omaterm/internal/daemon"
+	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/service"
 )
@@ -515,20 +518,21 @@ func (a *appState) paletteSources() []paletteEntry {
 		out = append(out, paletteEntry{Setting: true, On: on, Command: Command{ID: "setting:" + id, Category: "Setting", Title: title,
 			Run: func(a *appState, c *ui.Context) { set(&a.settings); a.applySettings() }}})
 	}
+	// The switches the Settings window shows, by the palette's names.
+	for _, d := range settingDefs {
+		if d.PaletteTitle == "" || d.On == nil {
+			continue
+		}
+		d := d
+		toggle(d.ID, d.PaletteTitle, d.On(&a.settings), func(s *Settings) { d.Set(s, !d.On(s)) })
+	}
 	st := a.settings
-	toggle("dim", "Dim Unfocused Panes", st.DimUnfocused, func(s *Settings) { s.DimUnfocused = !s.DimUnfocused })
 	toggle("compact", "Compact Density", st.Density == "compact", func(s *Settings) {
 		s.Density = map[bool]string{true: "comfortable", false: "compact"}[s.Density == "compact"]
 	})
 	toggle("wash", "Wash Background", st.Background != "plain", func(s *Settings) {
 		s.Background = map[bool]string{true: "plain", false: "wash"}[s.Background != "plain"]
 	})
-	toggle("focusmouse", "Focus Follows Mouse", st.FocusFollowsMouse, func(s *Settings) { s.FocusFollowsMouse = !s.FocusFollowsMouse })
-	toggle("motion", "Reduce Motion", st.ReduceMotion, func(s *Settings) { s.ReduceMotion = !s.ReduceMotion })
-	toggle("notify-waiting", "Notify When a Session Needs You", st.Notify.Waiting, func(s *Settings) { s.Notify.Waiting = !s.Notify.Waiting })
-	toggle("notify-done", "Notify When a Session Finishes", st.Notify.Done, func(s *Settings) { s.Notify.Done = !s.Notify.Done })
-	toggle("notify-error", "Notify When a Session Fails", st.Notify.Error, func(s *Settings) { s.Notify.Error = !s.Notify.Error })
-	toggle("agentcontrol", "Let Agents Control the App", st.RemoteControl, func(s *Settings) { s.RemoteControl = !s.RemoteControl })
 	// Web access lives in web.json, which the omaterm command changes too.
 	out = append(out, paletteEntry{Setting: true, On: a.webOn, Command: Command{ID: "setting:web", Category: "Setting", Title: "Web Access",
 		Run: func(a *appState, c *ui.Context) { a.setWeb(c, !a.webOn) }}})
@@ -630,13 +634,47 @@ func idx(pool []paletteEntry, id string) int {
 }
 
 // applySettings takes the changed settings into effect and keeps them.
+// What a terminal can change it changes at once; the rest takes effect
+// as a terminal is made, which a session daemon's panes are again, as
+// they are shown.
 func (a *appState) applySettings() {
+	proto.SetSearchEngine(a.settings.SearchEngine)
+	a.applyTextSettings()
+	copySel := terminal.CopyOnSelectNone
+	if a.settings.Terminal.CopyOnSelect {
+		copySel = terminal.CopyOnSelectClipboard
+	}
 	a.panes.Each(func(p session.Handle) {
 		if t := p.TermIfOpen(); t != nil {
 			t.SetMinimumContrast(a.minimumContrast())
+			t.SetCopyOnSelect(copySel)
 		}
 	})
+	if b := a.termBehavior(); b != a.termMade {
+		a.termMade = b
+		if r, ok := a.panes.(*daemon.Remote); ok {
+			r.Each(func(p session.Handle) {
+				if p.TermIfOpen() != nil {
+					r.Detach(p.ID())
+				}
+			})
+		}
+	}
 	a.saveSettings()
+	a.invalidateWindows()
+}
+
+// termBehavior is what of the terminal settings takes effect only as a
+// terminal is made.
+type termBehavior struct {
+	cursor, rightClick, clipboard string
+	blink                         bool
+	scrollback                    int
+}
+
+func (a *appState) termBehavior() termBehavior {
+	t := a.settings.Terminal
+	return termBehavior{t.Cursor, t.RightClick, t.ClipboardRead, t.CursorBlink, t.ScrollbackMB}
 }
 
 func (a *appState) commandPaletteBody(c *ui.Context) {
@@ -798,7 +836,7 @@ func (a *appState) updateSearchPreview() {
 	}
 	text := strings.Join(lines, "\n")
 	if a.searchPreview == nil {
-		a.searchPreview = &editor.State{ReadOnly: true, Theme: omaEditorTheme(), Font: ui.Font{Size: a.fontSize}}
+		a.searchPreview = &editor.State{ReadOnly: true, Theme: omaEditorTheme(), Font: a.editorFont(a.fontSize)}
 	}
 	if a.searchPreview.Buffer == nil {
 		a.searchPreview.Buffer = editor.NewBuffer(text)

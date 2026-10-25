@@ -5,6 +5,7 @@ import (
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
@@ -201,15 +202,64 @@ func (a *appState) startPaneWith(id, sessionID, dir string, command []string, ex
 	if a.ctl != nil {
 		env = append(env, "OMATERM_SOCKET="+a.ctl.Path())
 	}
-	return a.panes.Start(session.StartOptions{
-		ID: id, Session: sessionID, Dir: dir,
-		Command: command, Exec: exec, Env: env,
-		Font:            terminal.Font{Family: a.termFont, Size: a.fontSize},
+	o := a.termStartOptions()
+	o.ID, o.Session, o.Dir = id, sessionID, dir
+	o.Command, o.Exec, o.Env, o.History = command, exec, env, history
+	return a.panes.Start(o)
+}
+
+// termStartOptions are a terminal's look and behavior as the settings
+// have them, for the panes the app runs and the terminals that show the
+// session daemon's.
+func (a *appState) termStartOptions() session.StartOptions {
+	t := a.settings.Terminal
+	o := session.StartOptions{
+		Font:            a.termFontSpec(),
 		Theme:           omaTermTheme(),
 		MinimumContrast: a.minimumContrast(),
 		Padding:         terminal.Padding{X: 10, Y: 6},
-		History:         history,
-	})
+		NoBlink:         !t.CursorBlink,
+		Scrollback:      t.ScrollbackMB << 20,
+		Shell:           strings.TrimSpace(t.Shell),
+		OpenLink:        a.openTermLink,
+		OnZoom: func(z terminal.Zoom) bool {
+			if z.Reset {
+				a.zoomFont(0)
+			} else {
+				a.zoomFont(z.Steps)
+			}
+			return true
+		},
+	}
+	switch t.Cursor {
+	case "bar":
+		o.Cursor = terminal.CursorBar
+	case "underline":
+		o.Cursor = terminal.CursorUnderline
+	}
+	if t.CopyOnSelect {
+		o.CopyOnSelect = terminal.CopyOnSelectClipboard
+	}
+	if t.RightClick == "paste" {
+		o.RightClick = terminal.RightClickPaste
+	}
+	if t.ClipboardRead == "ask" {
+		o.ClipboardRead = terminal.ClipboardAsk
+	}
+	return o
+}
+
+// openTermLink opens a web link clicked in a terminal in a browser pane
+// beside it, when the settings say so; the system opens the rest.
+func (a *appState) openTermLink(link string) bool {
+	if a.settings.OpenLinks != "pane" || !(strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://")) {
+		return false
+	}
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+		return false
+	}
+	a.openBrowser(link)
+	return true
 }
 
 // paneExited closes a pane whose shell exited: the pane, or its tab when

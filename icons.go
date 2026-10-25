@@ -138,6 +138,27 @@ var iconSquareTerminalSVG []byte
 //go:embed icons/check.svg
 var iconCheckSVG []byte
 
+//go:embed icons/settings.svg
+var iconSettingsSVG []byte
+
+//go:embed icons/palette.svg
+var iconPaletteSVG []byte
+
+//go:embed icons/code.svg
+var iconCodeSVG []byte
+
+//go:embed icons/bot.svg
+var iconBotSVG []byte
+
+//go:embed icons/smartphone.svg
+var iconSmartphoneSVG []byte
+
+//go:embed icons/chevrons-up-down.svg
+var iconChevronsUpDownSVG []byte
+
+//go:embed icons/file-cog.svg
+var iconFileCogSVG []byte
+
 var (
 	iconAlert          = ui.MustParseSVG(iconAlertSVG)
 	iconChevronDown    = ui.MustParseSVG(iconChevronDownSVG)
@@ -183,4 +204,11 @@ var (
 	iconDownload       = ui.MustParseSVG(iconDownloadSVG)
 	iconSquareTerminal = ui.MustParseSVG(iconSquareTerminalSVG)
 	iconCheck          = ui.MustParseSVG(iconCheckSVG)
+	iconSettings       = ui.MustParseSVG(iconSettingsSVG)
+	iconPalette        = ui.MustParseSVG(iconPaletteSVG)
+	iconCode           = ui.MustParseSVG(iconCodeSVG)
+	iconBot            = ui.MustParseSVG(iconBotSVG)
+	iconSmartphone     = ui.MustParseSVG(iconSmartphoneSVG)
+	iconChevronsUpDown = ui.MustParseSVG(iconChevronsUpDownSVG)
+	iconFileCog        = ui.MustParseSVG(iconFileCogSVG)
 )

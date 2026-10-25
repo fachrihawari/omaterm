@@ -23,7 +23,7 @@ const (
 
 // noticeFor tells whether a pane's change is worth a notification.
 func noticeFor(prev, next session.Info, here bool, prefs NotifySettings) noticeKind {
-	return notice.For(prev, next, here, notice.Prefs(prefs))
+	return notice.For(prev, next, here, notice.Prefs{Waiting: prefs.Waiting, Done: prefs.Done, Error: prefs.Error})
 }
 
 // maybeNotify notifies of a pane's change while the user looks elsewhere,
@@ -45,7 +45,7 @@ func (a *appState) maybeNotify(prev, next session.Info) {
 // 777), unless its session is in view.
 func (a *appState) programNotice(id, title, body string) {
 	info, ok := a.paneInfo(id)
-	if !ok || a.win == nil || a.win.IsFocused() && a.viewedSession() == info.Session {
+	if !ok || !a.settings.Notify.Programs || a.win == nil || a.win.IsFocused() && a.viewedSession() == info.Session {
 		return
 	}
 	if title == "" {
@@ -60,7 +60,8 @@ func (a *appState) notify(sessionID, title, body string) {
 	if a.win == nil || !mygo.NotificationsSupported() {
 		return
 	}
-	n := mygo.NewNotification(mygo.NotificationOptions{ID: "omaterm-" + sessionID, Title: title, Body: body})
+	n := mygo.NewNotification(mygo.NotificationOptions{ID: "omaterm-" + sessionID, Title: title, Body: body,
+		Silent: !a.settings.Notify.Sound})
 	n.OnClick(func() {
 		a.post(func() { a.showSession(sessionID) })
 	})

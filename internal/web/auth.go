@@ -27,10 +27,13 @@ const (
 	codeTTL  = 10 * time.Minute
 	maxCodes = 3
 	// deviceTTL is how long a paired device stays signed in unused.
-	deviceTTL = 30 * 24 * time.Hour
+	deviceTTL = DeviceTTL
 	// seenEvery is how often a device's last use is written down.
 	seenEvery = time.Hour
 )
+
+// DeviceTTL is how long a paired device stays signed in unused.
+const DeviceTTL = 30 * 24 * time.Hour
 
 // crockford is the alphabet of pairing codes: no I, L, O or U to misread.
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

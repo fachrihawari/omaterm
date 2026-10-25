@@ -163,7 +163,7 @@ func (a *appState) loadChangeFile(path string, f gitsnap.File) {
 			cf.ds = &editor.DiffState{
 				Old: editor.NewBuffer(t.Old), New: editor.NewBuffer(t.New),
 				Layout: editor.DiffUnified, Inline: editor.DiffInlineWord,
-				FitContent: true, Theme: omaEditorTheme(), Font: ui.Font{Size: a.fontSize - 1},
+				FitContent: true, Theme: omaEditorTheme(), Font: a.editorFont(a.fontSize - 1),
 			}
 			if t.Large {
 				cf.ds = nil

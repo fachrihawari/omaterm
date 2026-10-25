@@ -307,9 +307,11 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if pn := d.reg.Get(p.ID); pn != nil {
 			return pn.Info(), nil
 		}
-		pn, err := d.reg.Start(session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, Dir: p.Dir,
+		o := session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, Dir: p.Dir,
 			Command: p.Command, Exec: p.Exec, Env: append(d.envList(), p.Env...), Cols: p.Cols, Rows: p.Rows, History: p.History,
-			Theme: d.currentTheme()})
+			Theme: d.currentTheme()}
+		d.termPrefs().apply(&o)
+		pn, err := d.reg.Start(o)
 		if err != nil {
 			return nil, err
 		}
