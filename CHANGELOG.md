@@ -3,6 +3,14 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.8.5
+
+### Scroll Claude Code in the browser on a phone
+
+In web access on a phone, swiping over Claude Code, or any program that
+draws its own screen, did nothing; only a plain shell scrolled. A swipe
+now scrolls it, as a mouse wheel does on a computer.
+
 ## 0.8.4
 
 ### Your sessions in a browser
