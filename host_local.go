@@ -425,7 +425,8 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	}
 	tabs := a.workspaceTabs(proj)
 	paneID := newID()
-	tab := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen, Split: &splitNode{TermID: paneID}}
+	tab := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen, Split: &splitNode{TermID: paneID},
+		Created: nowFunc().UnixMilli()}
 	*tabs = append(*tabs, tab)
 	dir := p.Dir
 	if dir == "" {

@@ -454,13 +454,15 @@ func (a *appState) killTermPaneByTermID(termID string) {
 
 // newTerminalTabReal adds a terminal tab with a single pane.
 func (a *appState) newTerminalTabReal() {
+	a.rememberFocus()
 	a.tabs = append(a.tabs, topTab{
-		ID:    newID(),
-		Kind:  tabTerminal,
-		Label: shellcmd.Name(shellcmd.Login()),
-		Dot:   dotGreen,
-		Path:  randomTermID(),
-		Split: &splitNode{TermID: randomTermID()},
+		ID:      newID(),
+		Kind:    tabTerminal,
+		Label:   shellcmd.Name(shellcmd.Login()),
+		Dot:     dotGreen,
+		Path:    randomTermID(),
+		Split:   &splitNode{TermID: randomTermID()},
+		Created: nowFunc().UnixMilli(),
 	})
 	a.activeTab = len(a.tabs) - 1
 	a.activeView = tabTerminal

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"omaterm/internal/agent"
 	"omaterm/internal/session"
 )
 
@@ -71,6 +72,7 @@ func (a *appState) syncStatus() {
 	prev := a.status
 	a.status = next
 	a.statusChanged(prev, next)
+	a.keepAgents(next)
 	a.offerAgentSetup(next)
 	if a.host != nil {
 		a.host.changed()
@@ -96,6 +98,25 @@ func (a *appState) syncStatus() {
 		if p.Dir != n.Dir || p.Agent != n.Agent || (p.AgentSession == nil) != (n.AgentSession == nil) {
 			a.saveSoon()
 			break
+		}
+	}
+}
+
+// keepAgents keeps, apart from the status, which agent each running pane
+// runs and its conversation: a session daemon that restarts takes the
+// panes' status with it, and they start again from what is kept here.
+func (a *appState) keepAgents(infos map[string]session.Info) {
+	for id, i := range infos {
+		switch {
+		case i.AgentSession != nil:
+			a.paneAgents[id] = i.AgentSession
+		case i.Agent != "":
+			if ag := a.paneAgents[id]; ag == nil || ag.Agent != i.Agent {
+				a.paneAgents[id] = &agent.Session{Agent: i.Agent}
+			}
+		case !a.restoring[id] && i.Process == "":
+			// Back at its shell's prompt: the agent quit.
+			delete(a.paneAgents, id)
 		}
 	}
 }

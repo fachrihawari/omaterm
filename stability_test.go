@@ -7,8 +7,10 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/agent"
 	"omaterm/internal/crash"
 	"omaterm/internal/model"
+	"omaterm/internal/session"
 )
 
 // Regression tests of the stability work (0.9.2 on): each names the bug
@@ -137,5 +139,90 @@ func TestMissingProjectFolderKept(t *testing.T) {
 	tr.Frame()
 	if !tr.HasText("folder missing") {
 		t.Fatal("the sidebar doesn't show the missing project")
+	}
+}
+
+// A session's focused pane, zoom and agent-given name, and the session a
+// project showed, come back after a restart; 0.9.1 saved none of them, so
+// the window always opened on the first pane of the first session.
+func TestSessionLayoutSurvivesRestart(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	for i := 0; i < 2; i++ {
+		a.newTerminalTab()
+	}
+	second := a.activeTab
+	tab := &a.tabs[second]
+	first := tab.Split.TermID
+	tab.Split = &splitNode{Dir: splitVertical, Ratio: 50, First: &splitNode{TermID: first}, Second: &splitNode{TermID: "zzpane"}}
+	tab.Zoomed = "zzpane"
+	tab.AgentNamed = true
+	a.activePaneTermID = "zzpane"
+	sessionID := tab.ID
+
+	path := stateFilePath()
+	if err := model.Save(path, a.state()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(path) })
+
+	b := newApp()
+	defer stopTermPanes(b)
+	pi := -1
+	for i, p := range b.projects {
+		if p.Path == a.projects[0].Path {
+			pi = i
+		}
+	}
+	if pi < 0 {
+		t.Fatal("the project didn't come back")
+	}
+	b.switchProject(pi)
+	got := b.tabs[b.activeTab]
+	if got.ID != sessionID {
+		t.Fatalf("shows session %s, want %s", got.ID, sessionID)
+	}
+	if b.activePaneTermID != "zzpane" || got.Zoomed != "zzpane" || !got.AgentNamed {
+		t.Fatalf("focus %q, zoomed %q, agentNamed %v", b.activePaneTermID, got.Zoomed, got.AgentNamed)
+	}
+}
+
+// A name the user gives a session sticks: an agent's next conversation
+// renamed it back to the shell's when an agent had named it first.
+func TestUserRenameBeatsAgentName(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.tabs[0].AgentNamed = true
+	a.renameSession(0, a.tabs[0].ID, "mine")
+	if a.tabs[0].AgentNamed || a.tabs[0].Label != "mine" {
+		t.Fatalf("label %q, agentNamed %v", a.tabs[0].Label, a.tabs[0].AgentNamed)
+	}
+}
+
+// The agent a pane runs, and its conversation, outlive the pane's status:
+// a session daemon that restarted took the status with it, and the pane
+// came back as a bare shell.
+func TestAgentKeptWhenStatusIsLost(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	id := a.tabs[0].Split.termIDs()[0]
+	conv := &agent.Session{Agent: "claude", ID: "conv-1"}
+	a.keepAgents(map[string]session.Info{id: {ID: id, Agent: "claude", AgentSession: conv, Process: "claude"}})
+	delete(a.status, id) // the daemon went away with it
+	var saved *agent.Session
+	for _, s := range a.state().Sessions {
+		for _, p := range s.Panes {
+			if p.ID == id {
+				saved = p.Agent
+			}
+		}
+	}
+	if saved == nil || saved.ID != "conv-1" {
+		t.Fatalf("saved agent = %+v, want conversation conv-1", saved)
+	}
+	// Back at the prompt, the agent quit: nothing to resume.
+	a.keepAgents(map[string]session.Info{id: {ID: id}})
+	if a.paneAgents[id] != nil {
+		t.Fatal("an agent that quit is still kept")
 	}
 }

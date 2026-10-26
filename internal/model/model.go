@@ -38,6 +38,8 @@ type Project struct {
 	Name      string `json:"name"`
 	Dir       string `json:"dir"`
 	Collapsed bool   `json:"collapsed,omitempty"`
+	// ActiveSession is the session it showed last.
+	ActiveSession string `json:"activeSession,omitempty"`
 }
 
 // Session is a terminal tab of a project.

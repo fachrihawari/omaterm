@@ -388,7 +388,9 @@ func (a *appState) renameSession(pi int, tabID, name string) {
 	tabs := a.projectTabs(a.projects[pi].ID)
 	for i := range tabs {
 		if tabs[i].ID == tabID {
-			tabs[i].Label = name
+			// The user's name: an agent's next conversation must not
+			// rename it back.
+			tabs[i].Label, tabs[i].AgentNamed = name, false
 		}
 	}
 	a.saveSoon()

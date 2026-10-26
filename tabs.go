@@ -138,13 +138,28 @@ func (a *appState) activateTab(i int) {
 	if i < 0 || i >= len(a.tabs) {
 		return
 	}
+	a.rememberFocus()
 	t := a.tabs[i]
 	a.activeTab = i
 	a.activeView = t.Kind
 	if t.Kind == tabTerminal && t.Split != nil {
-		if ids := t.Split.termIDs(); len(ids) > 0 {
+		if t.Focus != "" && t.Split.contains(t.Focus) {
+			a.activePaneTermID = t.Focus
+		} else if ids := t.Split.termIDs(); len(ids) > 0 {
 			a.activePaneTermID = ids[0]
 		}
+	}
+}
+
+// rememberFocus keeps, in the active tab, the pane that has the keyboard,
+// for its return and the next launch.
+func (a *appState) rememberFocus() {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) {
+		return
+	}
+	t := &a.tabs[a.activeTab]
+	if t.Split != nil && a.activePaneTermID != "" && t.Split.contains(a.activePaneTermID) {
+		t.Focus = a.activePaneTermID
 	}
 }
 

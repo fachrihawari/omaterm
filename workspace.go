@@ -91,7 +91,18 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 					a.paneURLs[pane.ID], a.paneTitles[pane.ID] = pane.URL, pane.Title
 				}
 			}
-			w.tabs = append(w.tabs, topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split})
+			t := topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split,
+				AgentNamed: s.AgentNamed, Created: s.Created}
+			if split.contains(s.Focus) {
+				t.Focus = s.Focus
+			}
+			if split.contains(s.Zoomed) {
+				t.Zoomed = s.Zoomed
+			}
+			if s.ID == p.ActiveSession {
+				w.activeTab = len(w.tabs)
+			}
+			w.tabs = append(w.tabs, t)
 		}
 	}
 	if len(w.tabs) == 0 {
@@ -108,8 +119,14 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 			w.tabs = append(w.tabs, t)
 		}
 	}
-	if len(w.tabs) > 0 && w.tabs[0].Split != nil {
-		if ids := w.tabs[0].Split.termIDs(); len(ids) > 0 {
+	if w.activeTab >= len(w.tabs) {
+		w.activeTab = 0
+	}
+	if len(w.tabs) > 0 && w.tabs[w.activeTab].Split != nil {
+		t := w.tabs[w.activeTab]
+		if t.Focus != "" {
+			w.activePane = t.Focus
+		} else if ids := t.Split.termIDs(); len(ids) > 0 {
 			w.activePane = ids[0]
 		}
 	}
@@ -206,7 +223,8 @@ func (a *appState) loadState() int {
 		if p.ID == st.ActiveProject {
 			active = len(a.projects)
 		}
-		a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: abs, Collapsed: p.Collapsed})
+		a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: abs, Collapsed: p.Collapsed,
+			ActiveSession: p.ActiveSession})
 	}
 	for _, s := range st.Sessions {
 		a.saved[s.Project] = append(a.saved[s.Project], s)
@@ -230,18 +248,34 @@ func (a *appState) state() model.State {
 		if err != nil {
 			abs = p.Path
 		}
-		st.Projects = append(st.Projects, model.Project{ID: p.ID, Name: p.Name, Dir: abs, Collapsed: p.Collapsed})
+		mp := model.Project{ID: p.ID, Name: p.Name, Dir: abs, Collapsed: p.Collapsed, ActiveSession: p.ActiveSession}
 		tabs := a.projectTabs(p.ID)
 		if tabs == nil {
 			// Never shown this run: its sessions as they were saved.
+			st.Projects = append(st.Projects, mp)
 			st.Sessions = append(st.Sessions, a.saved[p.ID]...)
 			continue
 		}
-		for _, t := range tabs {
+		// The tab it shows and the pane with the keyboard, as kept for it.
+		activeTab, activePane := -1, ""
+		if p.ID == a.wsOwner {
+			activeTab, activePane = a.activeTab, a.activePaneTermID
+		} else if w := a.ws[p.ID]; w != nil {
+			activeTab, activePane = w.activeTab, w.activePane
+		}
+		for i, t := range tabs {
 			if t.Kind != tabTerminal || t.Split == nil {
 				continue
 			}
-			s := model.Session{ID: t.ID, Project: p.ID, Name: t.Label, Layout: toLayout(t.Split)}
+			focus := t.Focus
+			if i == activeTab {
+				mp.ActiveSession = t.ID
+				if t.Split.contains(activePane) {
+					focus = activePane
+				}
+			}
+			s := model.Session{ID: t.ID, Project: p.ID, Name: t.Label, Layout: toLayout(t.Split),
+				AgentNamed: t.AgentNamed, Created: t.Created, Focus: focus, Zoomed: t.Zoomed}
 			for _, id := range t.Split.termIDs() {
 				dir := a.paneDirs[id]
 				if info, ok := a.status[id]; ok && info.Dir != "" {
@@ -270,6 +304,7 @@ func (a *appState) state() model.State {
 			}
 			st.Sessions = append(st.Sessions, s)
 		}
+		st.Projects = append(st.Projects, mp)
 	}
 	return st
 }

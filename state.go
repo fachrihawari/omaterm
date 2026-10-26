@@ -49,6 +49,10 @@ type topTab struct {
 	Zoomed string
 	// AgentNamed tells a name an agent gave the session.
 	AgentNamed bool
+	// Focus is the pane that had the keyboard when the tab was left;
+	// Created when the session was made (unix ms).
+	Focus   string
+	Created int64
 }
 
 const (
@@ -405,6 +409,8 @@ type project struct {
 	Branch    string
 	Active    bool
 	Tabs      []string
+	// ActiveSession is the session to show first, as saved.
+	ActiveSession string
 }
 
 func newApp() *appState {
