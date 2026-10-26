@@ -865,6 +865,12 @@ func (at *attachment) sendFrame() (due bool) {
 			at.finish()
 		}
 	}()
+	// Still sending the last ones (a slow phone on a tunnel): make none
+	// now. The next frame brings the screen up to date anyway, where
+	// queuing one per redraw held up to thousands of full screens.
+	if len(at.out) > 2 {
+		return true
+	}
 	f, due := at.mirror.Frame()
 	if len(f) > 0 {
 		at.send(proto.FrameOutput, f)

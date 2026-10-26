@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,5 +75,29 @@ func TestIdleExitWaitsForCalls(t *testing.T) {
 	}
 	if _, err := d.Handle(context.Background(), "panes", nil); err == nil {
 		t.Error("a call to a daemon that left was taken")
+	}
+}
+
+// A client still sending its last frames gets no new one queued: a slow
+// client watching a program that redraws held a full screen per redraw.
+func TestSlowClientNoPileUp(t *testing.T) {
+	d, _ := startDaemon(t, time.Minute)
+	p, err := d.reg.Start(session.StartOptions{ID: "p1", Session: "s1", Exec: true,
+		Command: []string{"/bin/sh", "-c", "sleep 30"}, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := p.Term().NewMirror()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	at := &attachment{mirror: m, out: make(chan []byte, 8192), done: make(chan struct{})}
+	for i := 0; i < 50; i++ {
+		p.Term().Feed([]byte("\x1b[2J\x1b[Hframe " + strings.Repeat("x", i) + "\r\n"))
+		at.sendFrame()
+	}
+	if n := len(at.out); n > 3 {
+		t.Errorf("%d frames queued for a client that read none", n)
 	}
 }
