@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"omaterm/internal/peer"
 	"omaterm/internal/proto"
 )
 
@@ -106,7 +107,7 @@ func (s *Server) accept() {
 		}
 		// The socket is its user's: anyone else's process, root's included,
 		// is refused.
-		if p := peerUID(conn); p >= 0 && p != uid {
+		if p := peer.UID(conn); p >= 0 && p != uid {
 			log.Printf("ctl: refused a connection of uid %d", p)
 			conn.Close()
 			continue

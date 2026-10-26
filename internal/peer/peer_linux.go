@@ -1,16 +1,17 @@
 // Ported from Kero (github.com/egoist/kero, MIT, docs/third_party/kero-LICENSE),
 // internal/daemon/peer_linux.go.
 
-package ctl
+// Package peer tells who is at the other end of a Unix socket.
+package peer
 
 import (
 	"net"
 	"syscall"
 )
 
-// peerUID returns the user of the process at the other end of a Unix
+// UID returns the user of the process at the other end of a Unix
 // socket (SO_PEERCRED), or -1.
-func peerUID(c net.Conn) int {
+func UID(c net.Conn) int {
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
 		return -1

@@ -13,10 +13,12 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"omaterm/internal/paths"
+	"omaterm/internal/peer"
 	"omaterm/internal/proto"
 )
 
@@ -59,6 +61,12 @@ func Dial(path string) (*Client, error) {
 			return nil, fmt.Errorf("%w: its socket %s can't be opened: permission denied", ErrUnreachable, path)
 		}
 		return nil, ErrUnreachable
+	}
+	// Another user's socket where this user's was looked for (one made
+	// first in a shared /tmp): what is typed and sent must not reach it.
+	if uid := peer.UID(conn); uid >= 0 && uid != os.Getuid() {
+		conn.Close()
+		return nil, fmt.Errorf("%w: its socket %s belongs to another user", ErrUnreachable, path)
 	}
 	c := &Client{conn: conn, enc: json.NewEncoder(conn), calls: map[int64]chan proto.Message{},
 		events: make(chan proto.Message, 64), closed: make(chan struct{})}

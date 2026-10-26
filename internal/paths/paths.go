@@ -67,14 +67,14 @@ func DaemonSocketPath() string {
 	if len(p) > 100 {
 		h := fnv.New32a()
 		h.Write([]byte(RuntimeDir()))
-		p = filepath.Join(os.TempDir(), Name()+"d-"+strconv.Itoa(os.Getuid())+"-"+strconv.FormatUint(uint64(h.Sum32()), 36)+".sock")
+		p = filepath.Join(privateTempDir(), Name()+"d-"+strconv.FormatUint(uint64(h.Sum32()), 36)+".sock")
 	}
 	return p
 }
 
 // SocketPath is the control socket: $OMATERM_SOCKET, else the runtime
-// directory's. A path too long for a Unix socket goes to /tmp, named for
-// its directory.
+// directory's. A path too long for a Unix socket goes to a folder of
+// this user's in /tmp, named for its directory.
 func SocketPath() string {
 	if p := os.Getenv("OMATERM_SOCKET"); p != "" {
 		return p
@@ -83,7 +83,7 @@ func SocketPath() string {
 	if len(p) > 100 {
 		h := fnv.New32a()
 		h.Write([]byte(RuntimeDir()))
-		p = filepath.Join(os.TempDir(), Name()+"-"+strconv.Itoa(os.Getuid())+"-"+strconv.FormatUint(uint64(h.Sum32()), 36)+".sock")
+		p = filepath.Join(privateTempDir(), Name()+"-"+strconv.FormatUint(uint64(h.Sum32()), 36)+".sock")
 	}
 	return p
 }
