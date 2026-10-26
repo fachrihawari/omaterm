@@ -332,3 +332,22 @@ func TestSettingsSearchEnterOpensSetting(t *testing.T) {
 		t.Fatalf("page %q, lit %q", a.settingsCurrent(), a.settingsUI.flash)
 	}
 }
+
+// "Open settings file" lines up with the pages above it: its icon and
+// label sat 2 and 4px left of theirs.
+func TestSettingsFooterAligned(t *testing.T) {
+	_, tr := newSettingsTester(t, "general")
+	foot, ok := tr.Find("Open settings file")
+	if !ok {
+		t.Fatal("no footer")
+	}
+	nav, ok := tr.Find("Appearance")
+	if !ok {
+		t.Fatal("no Appearance page")
+	}
+	// The row, as its label names it; its text starts after its padding,
+	// icon and gap.
+	if want := nav.X + 8 + 14 + 8; foot.X != want {
+		t.Errorf("footer text at x=%.0f, the pages' at x=%.0f", foot.X, want)
+	}
+}

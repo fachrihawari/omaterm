@@ -347,7 +347,8 @@ func (a *appState) settingsSidebar(c *ui.Context) {
 			})
 		})
 
-		foot := ui.ButtonBase(c.Key("open-file")).Margin(8, 0, 0, 6).Gap(6).AlignItems(ui.Center).Shrink(0).AlignSelf(ui.Start)
+		// On the nav rows' icon and label columns.
+		foot := ui.ButtonBase(c.Key("open-file")).Margin(8, 0, 0, 8).Gap(8).AlignItems(ui.Center).Shrink(0).AlignSelf(ui.Start)
 		col := pal.TextMuted
 		if foot.Hovered() {
 			col = pal.Text
