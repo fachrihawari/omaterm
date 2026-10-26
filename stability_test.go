@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -977,5 +979,34 @@ func TestCloseWhatIsShown(t *testing.T) {
 	a.removePane(second)
 	if !a.refocusPane || a.activePaneTermID == "" {
 		t.Error("the pane left isn't given the keyboard")
+	}
+}
+
+// A picture claiming more pixels than make sense isn't decoded (a small
+// file asked for gigabytes), and a file too large for the editor isn't
+// read into it: each shows why.
+func TestSizeLimits(t *testing.T) {
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:], 40000)
+	binary.BigEndian.PutUint32(ihdr[4:], 40000)
+	ihdr[8], ihdr[9] = 8, 6 // 8-bit RGBA
+	chunk := append([]byte("IHDR"), ihdr...)
+	png := []byte("\x89PNG\r\n\x1a\n")
+	png = binary.BigEndian.AppendUint32(png, 13)
+	png = append(png, chunk...)
+	png = binary.BigEndian.AppendUint32(png, crc32.ChecksumIEEE(chunk))
+	side := decodeImage("huge.png", png)
+	if !side.TooBig || side.Pic != nil {
+		t.Errorf("a 40000×40000 picture: %+v", side)
+	}
+
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	f, _ := os.Create(filepath.Join(a.workspace, "big.log"))
+	f.Truncate(maxEditorSize + 1)
+	f.Close()
+	a.openEditor("big.log")
+	if doc := a.editors["big.log"]; doc == nil || !doc.TooLarge || doc.State != nil {
+		t.Errorf("a file over the editor's limit was read into it: %+v", doc)
 	}
 }

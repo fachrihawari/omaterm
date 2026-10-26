@@ -112,8 +112,10 @@ type openFile struct {
 	State   *editor.State
 	Preview bool // markdown preview mode (default true for .md)
 	Binary  bool // not text: show a placeholder instead of the editor
-	Size    int64
-	Image   *imageSide // a picture: shown in the image viewer
+	// TooLarge is a file over maxEditorSize, not read: a placeholder too.
+	TooLarge bool
+	Size     int64
+	Image    *imageSide // a picture: shown in the image viewer
 	// Disk is the hash of the file as last read or written: a save checks
 	// it, so changes made on disk meanwhile (an agent's) aren't
 	// overwritten unasked. checked is when the file was last looked at.

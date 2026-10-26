@@ -39,7 +39,8 @@ func (r Repo) Snapshot(ctx context.Context) (string, error) {
 		}
 	}
 	env := []string{"GIT_INDEX_FILE=" + index}
-	if _, err := run(ctx, r.Root, env, "add", "--all", "--", "."); err != nil {
+	args := append([]string{"add", "--all", "--", "."}, r.hugeUntracked(ctx)...)
+	if _, err := run(ctx, r.Root, env, args...); err != nil {
 		return "", err
 	}
 	out, err := run(ctx, r.Root, env, "write-tree")
@@ -47,6 +48,30 @@ func (r Repo) Snapshot(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// maxSnapshotFile is the largest untracked file a snapshot takes: each
+// turn wrote a growing log or dataset into the repo's objects again,
+// there until git's gc, two weeks on.
+const maxSnapshotFile = 50 << 20
+
+// hugeUntracked are pathspecs leaving out the untracked files over
+// maxSnapshotFile.
+func (r Repo) hugeUntracked(ctx context.Context) []string {
+	out, err := run(ctx, r.Root, nil, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil
+	}
+	var skip []string
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel == "" {
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(r.Root, rel)); err == nil && st.Size() > maxSnapshotFile {
+			skip = append(skip, ":(exclude,literal)"+rel)
+		}
+	}
+	return skip
 }
 
 // Bases a diff compares the working tree with.

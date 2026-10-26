@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"path/filepath"
 	"strings"
 
@@ -19,7 +24,12 @@ type imageSide struct {
 	Size    int64
 	Vector  bool // a vector can scale up cleanly, a bitmap cannot
 	Missing bool // the file does not exist in this version
+	TooBig  bool // more pixels than maxPixels: not decoded
 }
+
+// maxPixels is the most pixels a picture is decoded with: a small file
+// that claims 30000×30000 asked for gigabytes, and the app was killed.
+const maxPixels = 64 << 20
 
 // imageExts are the formats DecodeBitmap and ParseSVG can read.
 var imageExts = map[string]bool{
@@ -62,6 +72,10 @@ func decodeImage(path string, data []byte) imageSide {
 			side.Pic, side.W, side.H = svg, w, h
 			side.Vector = true
 		}
+		return side
+	}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil && cfg.Width*cfg.Height > maxPixels {
+		side.W, side.H, side.TooBig = float32(cfg.Width), float32(cfg.Height), true
 		return side
 	}
 	if bmp, err := ui.DecodeBitmap(data); err == nil {

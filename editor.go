@@ -27,6 +27,11 @@ func (a *appState) openEditor(path string) {
 func (a *appState) openEditorAt(path string, line int) {
 	if _, ok := a.editors[path]; !ok {
 		abs := filepath.Join(a.workspace, path)
+		if st, err := os.Stat(abs); err == nil && st.Size() > maxEditorSize && !isImagePath(path) {
+			a.editors[path] = &openFile{Path: path, Binary: true, TooLarge: true, Size: st.Size()}
+			a.focusEditorTab(path)
+			return
+		}
 		data, err := os.ReadFile(abs)
 		if err != nil {
 			// Deleted since it was listed, or unreadable: say so, rather
@@ -131,7 +136,11 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
 				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(pal.TextFaint)
 				ui.Text(c, pathBase(doc.Path)).FontSize(13).TextColor(pal.TextSoft)
-				ui.Text(c, "Binary file · "+service.FormatBytes(uint64(doc.Size))+" · preview not available").
+				what := "Binary file · " + service.FormatBytes(uint64(doc.Size)) + " · preview not available"
+				if doc.TooLarge {
+					what = service.FormatBytes(uint64(doc.Size)) + " · too large to open here: use an editor of your own"
+				}
+				ui.Text(c, what).
 					FontSize(11).TextColor(pal.TextMuted)
 			})
 		})
@@ -244,6 +253,18 @@ func (a *appState) writeEditor(doc *openFile, c *ui.Context) {
 	a.refreshActiveRepo()
 }
 
+// pictureTrouble says why a picture isn't shown.
+func pictureTrouble(img *imageSide) string {
+	if img != nil && img.TooBig {
+		return "Too large to show: " + itoa(int(img.W)) + "×" + itoa(int(img.H)) + " pixels"
+	}
+	return "Could not decode this picture"
+}
+
+// maxEditorSize is the largest file the editor opens: larger, it held the
+// whole of it as text, a log of gigabytes the app's memory.
+const maxEditorSize = 32 << 20
+
 // errText is an error as the user reads it: "no such file" rather than
 // the path it names again.
 func errText(err error) string {
@@ -329,7 +350,7 @@ func (a *appState) imageView(c *ui.Context, doc *openFile) ui.Element {
 			if img.Pic == nil {
 				ui.Column(c).Fill().Center().Gap(6).Children(func() {
 					ui.Icon(c, iconImage).Width(28).Height(28).TextColor(pal.TextFaint)
-					ui.Text(c, "Could not decode this picture").FontSize(12).TextColor(pal.TextSoft)
+					ui.Text(c, pictureTrouble(img)).FontSize(12).TextColor(pal.TextSoft)
 					ui.Text(c, pathBase(doc.Path)).FontSize(10).TextColor(pal.TextMuted)
 				})
 				return
@@ -403,7 +424,7 @@ func imageDiffSide(c *ui.Context, side imageSide, missingLabel string) {
 			case side.Pic == nil:
 				ui.Column(c).Fill().Center().Gap(6).Children(func() {
 					ui.Icon(c, iconImage).Width(24).Height(24).TextColor(pal.TextFaint)
-					ui.Text(c, "Could not decode this picture").FontSize(11).TextColor(pal.TextMuted)
+					ui.Text(c, pictureTrouble(&side)).FontSize(11).TextColor(pal.TextMuted)
 				})
 			default:
 				fit := ui.ScaleDown

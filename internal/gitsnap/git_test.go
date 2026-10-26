@@ -208,3 +208,27 @@ func TestLocal(t *testing.T) {
 		t.Error("FileText read outside the worktree")
 	}
 }
+
+// A turn's snapshot leaves out untracked files too large to keep: each
+// turn wrote a growing log or dataset into the repo's objects again.
+func TestSnapshotSkipsHuge(t *testing.T) {
+	r := repo(t, map[string]string{"a.txt": "a\n"})
+	write(t, filepath.Join(r.Root, "small.txt"), "small\n")
+	f, err := os.Create(filepath.Join(r.Root, "huge.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Truncate(maxSnapshotFile + 1)
+	f.Close()
+	tree, err := r.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := gitIn(t, r.Root, "ls-tree", "--name-only", tree)
+	if !strings.Contains(files, "small.txt") {
+		t.Errorf("the snapshot lacks an untracked file: %s", files)
+	}
+	if strings.Contains(files, "huge.bin") {
+		t.Errorf("the snapshot took a file of %d bytes", maxSnapshotFile+1)
+	}
+}

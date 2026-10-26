@@ -40,6 +40,11 @@ func ReadFrame(r io.Reader) (kind byte, payload []byte, err error) {
 	if n > maxFrame {
 		return 0, nil, errors.New("proto: frame too large")
 	}
+	// From a message in hand, as a web page's: no more than it holds. A
+	// 5-byte message claiming 16 MB had that much made each time.
+	if m, ok := r.(interface{ Len() int }); ok && uint64(m.Len()) < uint64(n) {
+		return 0, nil, io.ErrUnexpectedEOF
+	}
 	payload = make([]byte, n)
 	if _, err = io.ReadFull(r, payload); err != nil {
 		return 0, nil, err
