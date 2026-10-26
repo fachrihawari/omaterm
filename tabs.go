@@ -23,10 +23,26 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 				a.sidebarVisible = true
 			}
 		}
-		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(4).ClipX().Children(func() {
-			for i := 0; i < len(a.tabs); i++ {
-				a.topTab(c, i)
-			}
+		// The tabs scroll sideways when they don't fit, the shown one kept
+		// in view; "+" stays outside, always there. Clipped, tabs past the
+		// edge and "+" were out of reach.
+		ui.ScrollHorizontal(c.Key("tabs")).Shrink(1).MinWidth(0).Height(40).Children(func() {
+			ui.Row(c).Height(40).AlignItems(ui.Center).Gap(4).Children(func() {
+				for i := 0; i < len(a.tabs); i++ {
+					e := a.topTab(c, i)
+					if i == a.activeTab && a.activeTab != a.tabInView {
+						e.ScrollIntoView()
+						a.tabInView = a.activeTab
+					}
+				}
+			})
+		})
+		if a.closingTab > 0 {
+			i := a.closingTab - 1
+			a.closingTab = 0
+			a.closeTabAsking(i)
+		}
+		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Children(func() {
 			plus := ui.ButtonBase(c.Key("plus")).Size(26, 26).Radius(13).Shrink(0).Center().
 				Tooltip("New Terminal (" + keyLabels("terminal.new") + ")")
 			if plus.Hovered() {
@@ -124,7 +140,7 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			ui.Icon(c, iconX).Size(12, 12).TextColor(pal.TextMuted)
 		})
 		if x.Clicked() {
-			a.closeTabAsking(i)
+			a.closingTab = i + 1 // after the row is built: closed in it, the next tab was skipped
 		}
 	})
 	if e.Clicked() {
@@ -189,7 +205,7 @@ func (a *appState) closeTab(i int) {
 	if t.Kind == tabEditor && t.Path != "" {
 		delete(a.editors, t.Path)
 	}
-	if t.Kind == tabTerminal && t.Split != nil {
+	if t.Split != nil { // any tab a split ever got, so its shells end
 		for _, id := range t.Split.termIDs() {
 			a.closePaneRuntime(id)
 		}

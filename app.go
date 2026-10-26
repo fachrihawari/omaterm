@@ -180,9 +180,17 @@ func (a *appState) mainColumn(c *ui.Context) {
 				a.crashBanner(c)
 				a.daemonBanner(c)
 				a.agentSetupBanner(c)
-				// No pane starts until the user chose what runs it.
+				// No pane starts until the user chose what runs it: a card
+				// says so behind the dialog, where the panes were a hole.
 				if a.daemonRefusedOpen == nil {
 					a.content(c)
+				} else {
+					card := ui.Column(c.Key("waiting")).Grow(1).MinHeight(0).Radius(a.cardRadius()).Background(pal.Card).
+						AlignItems(ui.Center).Justify(ui.Center).Gap(8)
+					raised(card).Children(func() {
+						ui.Icon(c, iconTerminal).Size(22, 22).TextColor(pal.TextFaint)
+						ui.Text(c, "Your sessions wait for the session daemon").FontSize(12.5).TextColor(pal.TextMuted)
+					})
 				}
 			})
 			if a.inspectorVisible {

@@ -258,12 +258,18 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 		ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 		if a.renaming == t.ID {
 			in := ui.TextInputBase(c.Key("rename"), &a.renameText).FontSize(13).Grow(1).MinWidth(0).AutoFocus()
-			if in.Submitted() {
+			focused := in.Focused()
+			// Enter, or a click away within the window, takes the name;
+			// Escape, or nothing typed, leaves it. A click away dropped
+			// what was typed.
+			switch {
+			case c.Shortcut(0, ui.KeyEscape):
+				a.renaming, a.renameFocused = "", false
+			case in.Submitted(), a.renameFocused && !focused && (a.win == nil || a.win.IsFocused()):
 				a.renameSession(pi, t.ID, a.renameText)
-				a.renaming = ""
-			}
-			if c.Shortcut(0, ui.KeyEscape) {
-				a.renaming = ""
+				a.renaming, a.renameFocused = "", false
+			case focused:
+				a.renameFocused = true
 			}
 			return
 		}
@@ -411,10 +417,19 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 			a.openOverlay(overlayCommandPalette)
 		}
 		ui.Spacer(c)
+		// The chips that fit, most urgent first: the footer once ran past
+		// the sidebar, cutting the last one. A chip is about 34 px and 7 a
+		// digit; the three buttons and the padding take about 124.
+		room := a.sidebarWidth() - 124
 		chip := func(key string, n int, st session.Info, attention bool, next func() bool) {
 			if n == 0 {
 				return
 			}
+			need := float32(34 + 7*len(strconv.Itoa(n)) + 4)
+			if need > room {
+				return
+			}
+			room -= need
 			e := ui.Row(c.Key(key)).Height(24).Radius(12).Padding(0, 8, 0, 6).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 			fg, bg := pal.TextMuted, pal.Chip
 			if attention {

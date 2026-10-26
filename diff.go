@@ -13,7 +13,7 @@ import (
 // The diff view: a real editor.DiffView comparing two buffers, with the
 // mock's toolbar of stage/discard/split/inline actions.
 
-// openWorkingDiff shows INDEX ↔ WORKING TREE for path.
+// openWorkingDiff shows the index → working tree diff for path.
 func (a *appState) openWorkingDiff(path string, staged bool) {
 	r := a.activeRepoRef()
 	if r == nil {
@@ -34,9 +34,9 @@ func (a *appState) openWorkingDiff(path string, staged bool) {
 			newData, _ = os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(path)))
 		}
 		a.diffSrc = diffSource{Kind: map[bool]diffSourceKind{true: diffStaged, false: diffWorking}[staged], Path: path, Repo: r.Root}
-		scope := "Working Tree · INDEX ↔ WORKING TREE"
+		scope := "Index → Working Tree"
 		if staged {
-			scope = "Staged · HEAD ↔ INDEX"
+			scope = "Staged: HEAD → Index"
 		}
 		a.diffTitle = path + " · " + scope
 		a.setDiffImageData(path, oldData, newData)
@@ -47,7 +47,7 @@ func (a *appState) openWorkingDiff(path string, staged bool) {
 	if staged {
 		oldSrc, _ = service.HeadVersion(r.Root, path)
 		newSrc, _ = service.IndexVersion(r.Root, path)
-		scope = "Staged · HEAD ↔ INDEX"
+		scope = "Staged: HEAD → Index"
 	} else {
 		oldSrc, _ = service.IndexVersion(r.Root, path)
 		if oldSrc == "" {
@@ -57,7 +57,7 @@ func (a *appState) openWorkingDiff(path string, staged bool) {
 		if err == nil {
 			newSrc = data
 		}
-		scope = "Working Tree · INDEX ↔ WORKING TREE"
+		scope = "Index → Working Tree"
 	}
 	a.diffSrc = diffSource{Kind: map[bool]diffSourceKind{true: diffStaged, false: diffWorking}[staged], Path: path, Repo: r.Root}
 	a.diffTitle = path + " · " + scope
@@ -449,7 +449,11 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 					}
 				}
 
-				ui.Box(c).Width(1).Height(16).Background(pal.Border).Margin(0, 4)
+				// A divider before the layout switch, which a picture or
+				// binary diff doesn't have: it stood alone there.
+				if !a.diffImage && !a.diffBinary {
+					ui.Box(c).Width(1).Height(16).Background(pal.Border).Margin(0, 4)
+				}
 			}
 
 			// Split/Inline choose between two text layouts; a picture or

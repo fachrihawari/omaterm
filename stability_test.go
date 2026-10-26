@@ -385,3 +385,43 @@ func TestDialogBeatsOverlays(t *testing.T) {
 		t.Fatal("an overlay opened over the dialog")
 	}
 }
+
+// The terminal view asked for while a file's tab is shown shows a session;
+// it added a split to the file's tab, starting a shell nothing closed.
+func TestTerminalViewNeverSplitsAFileTab(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.openEditor("hello.txt")
+	file := a.activeTab
+	a.activeView = tabTerminal
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if a.tabs[file].Split != nil {
+		t.Fatal("the file's tab got a terminal")
+	}
+	if a.tabs[a.activeTab].Kind != tabTerminal {
+		t.Fatal("the terminal view doesn't show a session")
+	}
+}
+
+// A session rename is taken when the field loses the keyboard to a click
+// in the window, as with Enter; it was dropped.
+func TestRenameSavedOnClickAway(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	a.renaming, a.renameText = a.tabs[0].ID, "renamed"
+	tr.Frame()
+	tr.Frame()
+	if !a.renameFocused {
+		t.Fatal("the rename field never took the keyboard")
+	}
+	if err := tr.Click("Projects"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.tabs[0].Label != "renamed" || a.renaming != "" {
+		t.Fatalf("label %q, still renaming %q", a.tabs[0].Label, a.renaming)
+	}
+}

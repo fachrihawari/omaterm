@@ -140,7 +140,7 @@ func TestShots(t *testing.T) {
 			a.setDiffImageData("assets/logo.png",
 				shotPicture(560, 360, 0),
 				shotPicture(560, 360, 1))
-			a.diffTitle = "assets/logo.png · Working Tree · INDEX ↔ WORKING TREE"
+			a.diffTitle = "assets/logo.png · Index → Working Tree"
 			a.focusDiffTab("assets/logo.png")
 		}, func(a *appState) error {
 			if !a.diffImage || a.diffImgOld.Pic == nil || a.diffImgNew.Pic == nil {
@@ -157,7 +157,7 @@ func TestShots(t *testing.T) {
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hi \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"world\"))\n}\n",
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hello \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"omaterm\"))\n}\n",
 				"main.go")
-			a.diffTitle = "main.go · Working Tree · INDEX ↔ WORKING TREE"
+			a.diffTitle = "main.go · Index → Working Tree"
 			a.diffSrc = diffSource{Kind: diffWorking, Path: "main.go"}
 			a.focusDiffTab("main.go")
 		}, func(a *appState) error {
@@ -171,7 +171,7 @@ func TestShots(t *testing.T) {
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hi \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"world\"))\n}\n",
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hello \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"omaterm\"))\n}\n",
 				"main.go")
-			a.diffTitle = "main.go · Working Tree · INDEX ↔ WORKING TREE"
+			a.diffTitle = "main.go · Index → Working Tree"
 			a.diffSrc = diffSource{Kind: diffWorking, Path: "main.go"}
 			a.diffSplit = false
 			a.focusDiffTab("main.go")
@@ -275,19 +275,19 @@ func TestShots(t *testing.T) {
 			// tree, which changes with every edit and would churn the
 			// golden.
 			a.searchResults = []service.Match{
-				{Path: "app.go", Line: 12, Text: "func (a *appState) view(c *ui.Context) {", Start: 12, End: 20},
-				{Path: "inspector.go", Line: 15, Text: "func (a *appState) inspector(c *ui.Context) ui.Element {", Start: 12, End: 20},
-				{Path: "statusbar.go", Line: 16, Text: "func (a *appState) statusBar(c *ui.Context) ui.Element {", Start: 12, End: 20},
-				{Path: "tabs.go", Line: 10, Text: "func (a *appState) tabBar(c *ui.Context) ui.Element {", Start: 12, End: 20},
-				{Path: "graph.go", Line: 171, Text: "func (a *appState) graphView(c *ui.Context) ui.Element {", Start: 12, End: 20},
+				{Path: "app.go", Line: 12, Text: "func (a *appState) view(c *ui.Context) {", Start: 9, End: 17},
+				{Path: "inspector.go", Line: 15, Text: "func (a *appState) inspector(c *ui.Context) ui.Element {", Start: 9, End: 17},
+				{Path: "statusbar.go", Line: 16, Text: "func (a *appState) statusBar(c *ui.Context) ui.Element {", Start: 9, End: 17},
+				{Path: "tabs.go", Line: 10, Text: "func (a *appState) tabBar(c *ui.Context) ui.Element {", Start: 9, End: 17},
+				{Path: "graph.go", Line: 171, Text: "func (a *appState) graphView(c *ui.Context) ui.Element {", Start: 9, End: 17},
 			}
 			a.searchSelected = 0
 			st := &editor.State{ReadOnly: true, Theme: omaEditorTheme()}
 			st.Buffer = editor.NewBuffer("package main\n\nfunc (a *appState) view(c *ui.Context) {\n\tc.SetTheme(omaTheme())\n}\n")
 			st.Buffer.SetLanguage(editor.LanguageFor("app.go"))
 			st.GoTo(editor.Pos{Line: 2, Col: 0})
-			start := st.Buffer.Offset(editor.Pos{Line: 2, Col: 12})
-			end := st.Buffer.Offset(editor.Pos{Line: 2, Col: 20})
+			start := st.Buffer.Offset(editor.Pos{Line: 2, Col: 9})
+			end := st.Buffer.Offset(editor.Pos{Line: 2, Col: 17})
 			st.Select(start, end)
 			a.searchPreview = st
 		}, func(a *appState) error {
@@ -325,7 +325,7 @@ func TestShots(t *testing.T) {
 		}},
 		{"binary-diff", func(a *appState) {
 			a.setDiffBinary("assets/models.bin", 78*1024)
-			a.diffTitle = "assets/models.bin · Working Tree · INDEX ↔ WORKING TREE"
+			a.diffTitle = "assets/models.bin · Index → Working Tree"
 			a.diffSrc = diffSource{Kind: diffWorking, Path: "assets/models.bin"}
 			a.focusDiffTab("assets/models.bin")
 		}, func(a *appState) error {

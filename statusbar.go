@@ -39,14 +39,21 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(160).Tooltip(branch)
 			}
 		})
-		statusSegment(c, func() {
+		// Both open the Info tab, which lists them.
+		if statusSegment(c, func() {
 			ui.Text(c, "●").FontSize(8).TextColor(pal.Ok)
 			ui.Text(c, plural(len(a.processes), "process")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
-		})
-		statusSegment(c, func() {
+		}).Tooltip("Show processes (" + keyLabels("view.info") + ")").Clicked() {
+			a.inspectorVisible = true
+			a.showInspectorTab(0)
+		}
+		if statusSegment(c, func() {
 			ui.Icon(c, iconRadio).Width(12).Height(12).TextColor(pal.TextMuted)
 			ui.Text(c, plural(len(a.ports), "port")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
-		})
+		}).Tooltip("Show ports (" + keyLabels("view.info") + ")").Clicked() {
+			a.inspectorVisible = true
+			a.showInspectorTab(0)
+		}
 
 		ui.Spacer(c)
 

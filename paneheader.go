@@ -61,7 +61,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 			}
 			title := paneTitle(info, t)
 			name := ui.Text(c, title).FontSize(12.5).FontWeight(600).TextColor(pal.Text).SingleLine().Ellipsis("…").
-				Shrink(0).MaxWidth(260)
+				Shrink(0.5).MinWidth(min(90, float32(len(title))*7)).MaxWidth(260)
 			if narrow {
 				// Its whole title would draw over the chips and controls
 				// beside it: it ellipsizes too.
@@ -152,7 +152,7 @@ func firstNonEmpty(s ...string) string {
 // gitChip is a pane's branch and the lines changed under it.
 func (a *appState) gitChip(c *ui.Context, branch string, added, removed int) {
 	chip := ui.Row(c.Key("git")).Height(20).Radius(6).Padding(0, 7).Gap(5).AlignItems(ui.Center).
-		Background(pal.Chip).Shrink(0).MaxWidth(220)
+		Background(pal.Chip).Shrink(2).MinWidth(64).MaxWidth(220)
 	chip.Children(func() {
 		ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint)
 		ui.Text(c, branch).FontSize(11.5).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
@@ -176,7 +176,10 @@ func (a *appState) statusChip(c *ui.Context, i session.Info) {
 	if text == "" {
 		return
 	}
-	ui.Row(c.Key("status")).Height(20).Radius(6).Padding(0, 7).AlignItems(ui.Center).Background(bg).Shrink(0).MaxWidth(280).
+	// The chips give way before the controls: a long message once pushed
+	// Zoom and Close off the card.
+	ui.Row(c.Key("status")).Height(20).Radius(6).Padding(0, 7).AlignItems(ui.Center).Background(bg).
+		Shrink(1).MinWidth(72).MaxWidth(280).
 		Children(func() {
 			ui.Text(c, text).FontSize(11.5).FontWeight(500).TextColor(fg).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 		})

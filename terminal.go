@@ -119,7 +119,7 @@ func (a *appState) activeSplit() *splitNode {
 }
 
 func (a *appState) setActiveSplit(n *splitNode) {
-	if a.activeTab >= 0 && a.activeTab < len(a.tabs) {
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabTerminal {
 		a.tabs[a.activeTab].Split = n
 	}
 }
@@ -392,14 +392,30 @@ func (a *appState) removePaneIn(tab int, termID string) {
 // ---------------------------------------------------------------------------
 
 func (a *appState) terminalView(c *ui.Context) ui.Element {
-	if len(a.tabs) == 0 {
+	// The terminal view shows a session tab. Asked for while an editor or
+	// a diff is the tab (as after discarding a diff's changes), it shows
+	// the first session; a split was once added to that tab, starting a
+	// shell that nothing closed.
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+		for i, t := range a.tabs {
+			if t.Kind == tabTerminal {
+				a.activateTab(i)
+				break
+			}
+		}
+	}
+	if len(a.tabs) == 0 || a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
 		return ui.Column(c).Fill().Background(pal.Card).Center().Gap(12).Children(func() {
 			ui.Box(c).Width(48).Height(48).Radius(12).Border(1, pal.BorderStrong).Background(pal.Raised).Children(func() {
 				ui.Column(c).Fill().Center().Children(func() {
 					ui.Icon(c, iconTerminal).Width(24).Height(24).TextColor(pal.Accent)
 				})
 			})
-			ui.Text(c, "No tabs open").FontSize(16).TextColor(pal.Text).Bold()
+			what := "No tabs open"
+			if len(a.tabs) > 0 {
+				what = "No terminal open"
+			}
+			ui.Text(c, what).FontSize(16).TextColor(pal.Text).Bold()
 			ui.Text(c, "Open a project or create a terminal to get started").FontSize(12).TextColor(pal.TextMuted)
 			ui.Row(c).Gap(8).Margin(8, 0, 0, 0).Children(func() {
 				b := ui.ButtonBase(c).Radius(6).Border(1, pal.BorderStrong).Padding(8, 16).Background(pal.Raised)

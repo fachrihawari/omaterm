@@ -333,8 +333,10 @@ type appState struct {
 
 	renaming   string
 	renameText string
-	paneFailed map[string]bool
-	status     map[string]session.Info
+	// renameFocused tells the rename field had the keyboard.
+	renameFocused bool
+	paneFailed    map[string]bool
+	status        map[string]session.Info
 
 	// settings are the user's preferences (settings.json); themeMode is
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
@@ -365,6 +367,9 @@ type appState struct {
 	// file: tabs may move while it asks.
 	pendingClosePath    string
 	closeTabConfirmOpen *bool
+	// tabInView is the tab the tab bar last scrolled into view;
+	// closingTab, one past the index of a tab whose ✕ was clicked.
+	tabInView, closingTab int
 	// closeAsk is a session or pane to close once the user confirms.
 	closeAsk *closeAsk
 	// bells is when each pane's bell last rang, which its card flashes.

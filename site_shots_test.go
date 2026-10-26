@@ -154,7 +154,7 @@ func TestSiteShots(t *testing.T) {
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hi \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"world\"))\n}\n",
 				"package main\n\nfunc greet(name string) string {\n\treturn \"hello \" + name\n}\n\nfunc main() {\n\tprintln(greet(\"omaterm\"))\n}\n",
 				"main.go")
-			a.diffTitle = "main.go · Working Tree · INDEX ↔ WORKING TREE"
+			a.diffTitle = "main.go · Index → Working Tree"
 			a.diffSrc = diffSource{Kind: diffWorking, Path: "main.go"}
 			a.focusDiffTab("main.go")
 		}, nil},

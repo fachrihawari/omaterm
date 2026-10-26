@@ -65,7 +65,7 @@ func (a *appState) renderOverlays(c *ui.Context) {
 	case overlayCommandPalette:
 		a.dialog(c, 680, 560, func() { a.commandPaletteBody(c) })
 	case overlayGlobalSearch:
-		a.dialog(c, 1100, 700, func() { a.globalSearchBody(c) })
+		a.dialogSized(c, 1100, 700, true, func() { a.globalSearchBody(c) })
 	case overlayBranch:
 		a.dialog(c, 520, 480, func() { a.branchBody(c) })
 	case overlayShortcuts:
@@ -90,6 +90,13 @@ const dialogMinSide = 24
 // ui.Modal would wrap the content in the theme's own padding and
 // background, which read as a dark frame around it.
 func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
+	a.dialogSized(c, w, h, false, body)
+}
+
+// dialogSized is dialog, as tall as h when fixed: a panel whose body
+// fills it (the project search's results and preview) rather than one
+// that sizes to its content, which collapsed to a few rows.
+func (a *appState) dialogSized(c *ui.Context, w, h float32, fixed bool, body func()) {
 	open := true
 	winW, winH := c.Size()
 	top := winH * dialogTopFraction
@@ -106,11 +113,16 @@ func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
 		// DialogBase centers the panel along the backdrop's main axis.
 		// Starting the column at its top and offsetting the panel keeps
 		// the horizontal centering, and puts the panel at a fixed share of
-		// the window height whatever its own height is.
-		backdrop.Justify(ui.Start)
+		// the window height whatever its own height is. The window dims
+		// under it, as under the other dialogs: undimmed, a wide picker
+		// ran into the inspector beside it.
+		backdrop.Justify(ui.Start).Background(pal.Scrim)
 		panel.Top(top).Background(pal.Popover).Radius(10).Border(1, pal.BorderStrong).
 			Width(w).MaxHeight(h).Clip().
 			Shadow(0, 12, 40, 0, pal.FloatShadow)
+		if fixed {
+			panel.Height(h)
+		}
 		body()
 	})
 	if !open {
