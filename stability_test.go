@@ -889,3 +889,32 @@ func TestSettingsSaveKeepsFileEdits(t *testing.T) {
 		t.Errorf("the app's change wasn't written: %s", data)
 	}
 }
+
+// Each diff tab shows its own diff, named for its file: all were "Diff",
+// and every one showed the diff opened last.
+func TestDiffTabsOwnTheirDiff(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	root := a.workspace
+	os.WriteFile(filepath.Join(root, "second.txt"), []byte("new\n"), 0o644)
+	gitInRepo := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Run()
+	}
+	gitInRepo("add", "second.txt")
+	gitInRepo("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "second")
+	os.WriteFile(filepath.Join(root, "second.txt"), []byte("new\nchanged\n"), 0o644)
+	a.applyRepos(root, service.DiscoverRepos(root, 1))
+
+	a.openWorkingDiff("hello.txt", false)
+	first := a.activeTab
+	a.openWorkingDiff("second.txt", false)
+	if a.tabs[first].Label != "hello.txt" || a.tabs[a.activeTab].Label != "second.txt" {
+		t.Errorf("diff tabs named %q and %q", a.tabs[first].Label, a.tabs[a.activeTab].Label)
+	}
+	a.activateTab(first)
+	if a.diffSrc.Path != "hello.txt" {
+		t.Errorf("the first diff tab shows %q", a.diffSrc.Path)
+	}
+}

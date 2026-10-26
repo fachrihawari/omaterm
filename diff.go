@@ -348,9 +348,13 @@ func (a *appState) setDiffBuffers(oldSrc, newSrc, path string) {
 }
 
 // focusDiffTab activates a diff tab, creating it if needed.
+// focusDiffTab shows the diff tab of what a.diffSrc compares, made if need
+// be. Each tab keeps its own source, and is named for its file: all
+// were "Diff", and showed whichever diff was opened last.
 func (a *appState) focusDiffTab(key string) {
+	src := a.diffSrc
 	for i, t := range a.tabs {
-		if t.Kind == tabDiff && t.Path == key {
+		if t.Kind == tabDiff && t.Diff != nil && sameDiff(*t.Diff, src) {
 			a.activeTab = i
 			a.activeView = tabDiff
 			return
@@ -358,12 +362,57 @@ func (a *appState) focusDiffTab(key string) {
 	}
 	a.tabs = append(a.tabs, topTab{
 		Kind:  tabDiff,
-		Label: "Diff",
+		Label: diffTabLabel(src, key),
 		Icon:  fileIconDiff,
 		Path:  key,
+		Diff:  &src,
 	})
 	a.activeTab = len(a.tabs) - 1
 	a.activeView = tabDiff
+}
+
+// sameDiff tells whether two sources compare the same things.
+func sameDiff(x, y diffSource) bool {
+	return x.Kind == y.Kind && x.Path == y.Path && x.Repo == y.Repo && x.Stash == y.Stash && x.Commit == y.Commit
+}
+
+// diffTabLabel names a diff tab: its file, its stash or its commit.
+func diffTabLabel(src diffSource, key string) string {
+	switch src.Kind {
+	case diffStash:
+		return "stash@{" + itoa(src.Stash) + "}"
+	case diffCommit:
+		if src.Path != "" {
+			return pathBase(src.Path)
+		}
+		return shortHash(src.Commit)
+	}
+	if src.Path != "" {
+		return pathBase(src.Path)
+	}
+	if key != "" {
+		return pathBase(key)
+	}
+	return "Diff"
+}
+
+// showDiffTab makes the diff view show what tab t compares, when it shows
+// something else: the tabs share one view.
+func (a *appState) showDiffTab(t topTab) {
+	// Once per tab and source: an opener that fails (the file gone) would
+	// run git again on every frame.
+	if t.Diff == nil || sameDiff(*t.Diff, a.diffSrc) || a.diffTried == t.Diff && a.diffTriedFor == a.workspace {
+		return
+	}
+	a.diffTried, a.diffTriedFor = t.Diff, a.workspace
+	switch src := *t.Diff; src.Kind {
+	case diffWorking, diffStaged:
+		a.openWorkingDiff(src.Path, src.Kind == diffStaged)
+	case diffStash:
+		a.openStashDiff(src.Stash)
+	case diffCommit:
+		a.openCommitFileDiff(src.Commit, src.Path)
+	}
 }
 
 // diffViewKey identifies the content + layout a persisted DiffState shows.
@@ -388,6 +437,11 @@ func (a *appState) diffViewKey() string {
 }
 
 func (a *appState) diffView(c *ui.Context) ui.Element {
+	// The tab's own diff, once its repo is known (after a project switch
+	// the repos load in the background).
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.activeRepoRef() != nil {
+		a.showDiffTab(a.tabs[a.activeTab])
+	}
 	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
 		// Toolbar.
 		a.viewHeader(c, func() {

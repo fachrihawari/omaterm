@@ -58,6 +58,8 @@ type topTab struct {
 	// Created when the session was made (unix ms).
 	Focus   string
 	Created int64
+	// Diff is what a diff tab compares.
+	Diff *diffSource
 }
 
 const (
@@ -386,6 +388,10 @@ type appState struct {
 	// quitAsk is the dialog asking to quit with editors unsaved; quitWant
 	// what to do once the user agrees ("quit" or "relaunch"), and
 	// quitAnyway lets that quit through.
+	// diffTried is the diff tab's source showDiffTab last tried to show,
+	// in the workspace diffTriedFor.
+	diffTried    *diffSource
+	diffTriedFor string
 	// overwriteAsk asks to save over a file changed on disk since it
 	// was opened; overwriteDoc is that file's editor.
 	overwriteAsk *bool
@@ -604,6 +610,9 @@ func (a *appState) setProject(i int) {
 	a.fileTree = nil
 	a.diffOld, a.diffNew, a.diffPatch = nil, nil, nil
 	a.diffDs, a.diffKey = nil, ""
+	// Nor the last project's diff: its header's Stage and Discard acted
+	// on that project's file, in its repo.
+	a.diffSrc, a.diffTitle, a.diffImage, a.diffBinary = diffSource{}, "", false, false
 	a.closeOverlay()
 
 	a.loadProjectData()
