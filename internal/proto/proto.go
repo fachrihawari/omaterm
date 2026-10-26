@@ -67,6 +67,8 @@ const (
 	// CodeAppClosed is a call only the window can answer, made while it
 	// is closed: the session daemon answers the rest.
 	CodeAppClosed = "app_closed"
+	// CodeInternal is a call that failed inside omaterm: a bug, logged.
+	CodeInternal = "internal"
 )
 
 // Error is a call's error with a code.

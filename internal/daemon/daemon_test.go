@@ -184,3 +184,22 @@ func TestRestartTellsLostPanes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A size a client asks for is bounded: a paired web page asking for
+// 65535×65535 cells took the daemon's memory, and every session with it.
+func TestResizeBounded(t *testing.T) {
+	d, socket := startDaemon(t, time.Minute)
+	r, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Start(session.StartOptions{ID: "big", Session: "s1", Command: []string{"sh", "-c", "exec cat"},
+		Exec: true, Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	p := d.reg.Get("big")
+	d.resize("big", p, 65535, 65535, 65535, 65535)
+	if c, rows := p.Term().Size(); c > maxCols || rows > maxRows {
+		t.Fatalf("size %dx%d, want at most %dx%d", c, rows, maxCols, maxRows)
+	}
+}

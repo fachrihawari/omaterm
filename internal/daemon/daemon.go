@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -526,8 +527,10 @@ type attachment struct {
 	out    chan []byte
 	done   chan struct{}
 	once   sync.Once
-	// framing tells that a frame is due shortly.
+	// framing tells that a frame is due shortly; frameMu keeps frames
+	// made and queued in order.
 	framing bool
+	frameMu sync.Mutex
 	// web tells a web page's attachment; size is the last size the
 	// attachment asked for, and sized when (guarded by Daemon.mu).
 	web   bool
@@ -591,8 +594,7 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 			d.resize(hello.Pane, p, back[0], back[1], back[2], back[3])
 		}
 	}()
-	first, _ := m.Frame()
-	at.send(proto.FrameOutput, first)
+	at.sendFrame()
 	go func() {
 		defer conn.Close()
 		for {
@@ -666,7 +668,14 @@ func (d *Daemon) appSize(pane string, gone *attachment) []int {
 // resize gives a pane the size its client fits: the client that resized
 // last wins. The clients are told where the screen took it, between the
 // frames of the old size and those of the new.
+// maxCols and maxRows bound a size a client asks for: a web page is a
+// paired device, and a screen of 65535² cells would take the daemon's
+// memory, and every session with it.
+const maxCols, maxRows = 1000, 500
+
 func (d *Daemon) resize(id string, p *session.Pane, cols, rows, cw, ch int) {
+	cols, rows = min(max(cols, 1), maxCols), min(max(rows, 1), maxRows)
+	cw, ch = min(cw, 200), min(ch, 200)
 	if c, r := p.Term().Size(); c == cols && r == rows {
 		return
 	}
@@ -716,14 +725,32 @@ func (d *Daemon) frame(id string) {
 	}
 	d.mu.Unlock()
 	for _, at := range ats {
-		f, due := at.mirror.Frame()
-		if len(f) > 0 {
-			at.send(proto.FrameOutput, f)
-		}
-		if due {
+		if at.sendFrame() {
 			time.AfterFunc(50*time.Millisecond, func() { d.frame(id) })
 		}
 	}
+}
+
+// sendFrame sends the client what brings its screen to the pane's, and
+// reports whether another frame is due. Frames build on the one before,
+// so one is made and queued at a time: two timers framing at once sent
+// them out of order, garbling the client's screen. A bug in framing ends
+// this client, not the daemon.
+func (at *attachment) sendFrame() (due bool) {
+	at.frameMu.Lock()
+	defer at.frameMu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("framing a pane panicked: %v\n%s", r, debug.Stack())
+			due = false
+			at.finish()
+		}
+	}()
+	f, due := at.mirror.Frame()
+	if len(f) > 0 {
+		at.send(proto.FrameOutput, f)
+	}
+	return due
 }
 
 func (d *Daemon) closeAttachments(id string) {

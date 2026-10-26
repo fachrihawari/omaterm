@@ -12,10 +12,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -140,6 +142,13 @@ func (c *conn) event(m proto.Message) {
 func (c *conn) close() { c.once.Do(func() { close(c.done); c.c.Close() }) }
 
 func (s *Server) serve(nc net.Conn) {
+	// A bug in a connection ends that connection, not the process, which
+	// may be the session daemon running every session.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ctl: a connection panicked: %v\n%s", r, debug.Stack())
+		}
+	}()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -224,8 +233,15 @@ func (s *Server) serve(nc net.Conn) {
 			continue
 		}
 		go func(req proto.Request) {
-			res, err := s.host.Handle(ctx, req.Method, req.Params)
 			m := proto.Message{ID: req.ID}
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("ctl: %s panicked: %v\n%s", req.Method, r, debug.Stack())
+					m.Result, m.Error, m.Code = nil, fmt.Sprintf("omaterm failed on %s: %v", req.Method, r), proto.CodeInternal
+					c.send(m)
+				}
+			}()
+			res, err := s.host.Handle(ctx, req.Method, req.Params)
 			if err != nil {
 				m.Error, m.Code = err.Error(), proto.CodeOf(err)
 			} else if b, err := json.Marshal(res); err == nil {

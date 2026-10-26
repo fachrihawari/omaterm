@@ -29,6 +29,9 @@ func (h *fakeHost) Handle(ctx context.Context, method string, raw json.RawMessag
 		return "slow", nil
 	case "fail":
 		return nil, proto.Errorf(proto.CodeNotFound, "nope")
+	case "panic":
+		var m map[string]int
+		m["boom"] = 1 // a bug: a nil map
 	}
 	return nil, proto.Errorf(proto.CodeUsage, "no method "+method)
 }
@@ -121,5 +124,23 @@ func TestSubscribe(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no event")
+	}
+}
+
+// A call that panics is answered with an error, and the server, which may
+// be the session daemon running every session, goes on.
+func TestPanicInCall(t *testing.T) {
+	s, _ := serve(t)
+	c, err := client.Dial(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("panic", nil, nil); proto.CodeOf(err) != proto.CodeInternal {
+		t.Fatalf("panic: %v, want an internal error", err)
+	}
+	var out map[string]any
+	if err := c.Call("echo", map[string]any{"a": 1.0}, &out); err != nil || out["a"] != 1.0 {
+		t.Fatalf("echo after the panic: %v %v", out, err)
 	}
 }
