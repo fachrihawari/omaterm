@@ -7,7 +7,6 @@ package main
 // that ran are not run again, unasked.
 
 import (
-	"os"
 	"path/filepath"
 
 	"omaterm/internal/agent"
@@ -43,12 +42,7 @@ func (a *appState) writeHistory(id string, h []byte) {
 	if a.panes.Get(id) == nil {
 		return
 	}
-	path := historyPath(id)
-	os.MkdirAll(filepath.Dir(path), 0o700)
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, h, 0o600) == nil {
-		os.Rename(tmp, path)
-	}
+	session.SaveHistory(historyPath(id), h)
 }
 
 // restoreOptions are what a pane coming back from the last run starts

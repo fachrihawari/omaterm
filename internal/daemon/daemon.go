@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -75,6 +76,9 @@ type Daemon struct {
 	// stateMu orders the changes to state.json the daemon makes while no
 	// app runs.
 	stateMu sync.Mutex
+	// historyMu orders a pane's close against the writing of its
+	// scrollback, which reads it off the loop goroutine.
+	historyMu sync.Mutex
 
 	mu      sync.Mutex
 	subs    map[int]func(proto.Message)
@@ -189,6 +193,7 @@ func Start(opts Options) (*Daemon, error) {
 	if opts.Restore {
 		d.restore()
 	}
+	go d.sweepHistories()
 	go func() {
 		for {
 			select {
@@ -274,13 +279,63 @@ func (d *Daemon) historyPath(id string) string {
 func (d *Daemon) saveHistories(force bool) {
 	d.reg.Each(func(p *session.Pane) {
 		if h := p.History(force); h != nil {
-			path := d.historyPath(p.ID())
-			tmp := path + ".tmp"
-			if os.WriteFile(tmp, h, 0o600) == nil {
-				os.Rename(tmp, path)
-			}
+			d.writeHistory(p.ID(), h)
 		}
 	})
+}
+
+// writeHistory writes a pane's scrollback, unless the pane closed while
+// it was read: written then, it stayed on disk after the close removed it.
+func (d *Daemon) writeHistory(id string, h []byte) {
+	d.historyMu.Lock()
+	defer d.historyMu.Unlock()
+	if d.reg.Get(id) != nil {
+		session.SaveHistory(d.historyPath(id), h)
+	}
+}
+
+// removePane ends a pane and removes its scrollback, in turn with
+// saveHistories.
+func (d *Daemon) removePane(id string) {
+	d.historyMu.Lock()
+	d.reg.Remove(id)
+	os.Remove(d.historyPath(id))
+	d.historyMu.Unlock()
+}
+
+// sweepHistories removes, at start, the scrollback of panes no session
+// holds any more (closed while no app or daemon ran, or by an older
+// version), once it is a day old: it stayed on disk for good.
+func (d *Daemon) sweepHistories() {
+	d.stateMu.Lock()
+	st := d.loadState()
+	d.stateMu.Unlock()
+	known := map[string]bool{}
+	for _, s := range st.Sessions {
+		for _, p := range s.Panes {
+			known[p.ID] = true
+		}
+	}
+	dir := filepath.Join(d.opts.StateDir, "sessions")
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".vt")
+		if !ok {
+			// A write a crash left half done.
+			if strings.HasSuffix(e.Name(), ".tmp") {
+				if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > 24*time.Hour {
+					os.Remove(filepath.Join(dir, e.Name()))
+				}
+			}
+			continue
+		}
+		if known[id] || d.reg.Get(id) != nil {
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > 24*time.Hour {
+			os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func mustJSON(v any) json.RawMessage {
@@ -344,8 +399,7 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return d.closePane(p.ID)
 		}
 		d.closeAttachments(p.ID)
-		d.reg.Remove(p.ID)
-		os.Remove(d.historyPath(p.ID))
+		d.removePane(p.ID)
 		d.changed()
 		return true, nil
 	case "send":

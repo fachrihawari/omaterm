@@ -478,8 +478,7 @@ func (d *Daemon) paneEnv() []string {
 // endPane ends a pane's shell and forgets its scrollback.
 func (d *Daemon) endPane(id string) {
 	d.closeAttachments(id)
-	d.reg.Remove(id)
-	os.Remove(d.historyPath(id))
+	d.removePane(id)
 	d.changed()
 }
 

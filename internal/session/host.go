@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
@@ -149,6 +150,30 @@ func FindAgentPane(h Host, pid int, agentName, dir string) (found Handle, away b
 
 // RestoredHistory is a pane's saved scrollback, at path, under a dim line
 // saying when its session ended; nil when none was saved.
+// SaveHistory writes a pane's scrollback to path, through a file of a
+// name of its own beside it: the app and a daemon writing one pane's
+// history at once shared one ".tmp" name, and mixed their writes.
+func SaveHistory(path string, h []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(h)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
+}
+
 func RestoredHistory(path string) []byte {
 	h, err := os.ReadFile(path)
 	if err != nil || len(h) == 0 {
