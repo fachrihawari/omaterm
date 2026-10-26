@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/service"
 )
 
 // Regression tests of the stability work (0.9.2 on): each names the bug
@@ -502,4 +504,30 @@ func TestNoHistoryAfterClose(t *testing.T) {
 	if _, err := os.Stat(historyPath(id)); err == nil {
 		t.Error("scrollback written after its pane closed")
 	}
+}
+
+// A project's repos or files that arrive after another project is shown,
+// or after the last one was removed, are dropped: the Git panel showed
+// the last project's changes and wrote its branch into the new project,
+// and with no project left the app crashed.
+func TestStaleProjectResultsDropped(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	shown := a.workspace
+	a.applyRepos("/elsewhere", []service.Repo{{Root: "/elsewhere", Name: "other", Branch: "other-branch"}})
+	if len(a.repos) > 0 && a.repos[0].Root == "/elsewhere" {
+		t.Error("another project's repos shown")
+	}
+	if p := a.project(); p != nil && strings.HasPrefix(p.Branch, "other-branch") {
+		t.Error("another project's branch written into this one")
+	}
+	a.applyFileIndex("/elsewhere", []string{"stale.go"})
+	if slices.Contains(a.fileIndex, "stale.go") {
+		t.Error("another project's files in quick open")
+	}
+
+	// The last project removed while its repos load.
+	repos := service.DiscoverRepos(shown, 1)
+	a.active = -1
+	a.applyRepos(a.workspace, repos)
 }

@@ -143,10 +143,14 @@ func (a *appState) refreshGraph() {
 	win := a.win
 	a.graphJob.Run(func(ctx context.Context) error {
 		commits, err := service.Log(root, limit)
-		if err != nil {
+		if err != nil || ctx.Err() != nil {
 			return err
 		}
 		win.Update(func() {
+			// Another repo shown meanwhile: this history is not its.
+			if r := a.activeRepoRef(); r == nil || r.Root != root {
+				return
+			}
 			a.commits = commits
 			a.graphLoaded = true
 		})

@@ -88,8 +88,8 @@ func (a *appState) refreshChanges(force bool) {
 	}
 	cs.key, cs.stamp, cs.loading, cs.loadedAt = key, stamp, true, nowFunc()
 	dir, pane := info.WorkDir(), info.ID
-	cs.job.Run(func(ctx context.Context) error {
-		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	cs.job.Run(func(job context.Context) error {
+		ctx, cancel := context.WithTimeout(job, 20*time.Second)
 		defer cancel()
 		r, err := gitsnap.Open(ctx, dir)
 		notRepo := err != nil
@@ -99,6 +99,11 @@ func (a *appState) refreshChanges(force bool) {
 			if rev, _, err = r.Base(ctx, gitsnap.BaseTurn, turn); err == nil {
 				files, err = r.Changes(ctx, rev, "")
 			}
+		}
+		if job.Err() != nil {
+			// A newer run took over: what this one failed with is its
+			// cancelling ("not in a git repository", "signal: killed").
+			return nil
 		}
 		a.post(func() {
 			if cs.key != key {

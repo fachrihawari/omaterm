@@ -665,24 +665,33 @@ func (a *appState) refreshRepos() {
 	win := a.win
 	a.repoJob.Run(func(ctx context.Context) error {
 		repos := service.DiscoverRepos(workspace, 1)
-		if win != nil {
-			r := repos
-			win.Update(func() {
-				a.repos = r
-				if a.activeRepo >= len(a.repos) {
-					a.activeRepo = 0
-				}
-				if r := a.activeRepoRef(); r != nil {
-					p := a.project()
-					p.Branch = r.Branch
-					if r.Ahead > 0 || r.Behind > 0 {
-						p.Branch += branchDelta(r.Ahead, r.Behind)
-					}
-				}
-			})
+		if win != nil && ctx.Err() == nil {
+			win.Update(func() { a.applyRepos(workspace, repos) })
 		}
 		return nil
 	}, nil)
+}
+
+// applyRepos shows the repos found in workspace, unless another project
+// is shown meanwhile, or none (the last one removed): they are not its.
+// Applied anyway, the Git panel listed the last project's changes, and
+// its branch was written into the new one; with no project, it crashed.
+func (a *appState) applyRepos(workspace string, repos []service.Repo) {
+	if a.workspace != workspace {
+		return
+	}
+	a.repos = repos
+	if a.activeRepo >= len(a.repos) {
+		a.activeRepo = 0
+	}
+	r, p := a.activeRepoRef(), a.project()
+	if r == nil || p == nil {
+		return
+	}
+	p.Branch = r.Branch
+	if r.Ahead > 0 || r.Behind > 0 {
+		p.Branch += branchDelta(r.Ahead, r.Behind)
+	}
 }
 
 // refreshActiveRepo reloads status of the active repo only.
@@ -694,12 +703,16 @@ func (a *appState) refreshActiveRepo() {
 	root := r.Root
 	win := a.win
 	idx := a.activeRepo
+	workspace := a.workspace
 	a.repoJob.Run(func(ctx context.Context) error {
-		fresh, err := service.RepoStatus(root, a.workspace)
-		if err != nil {
+		fresh, err := service.RepoStatus(root, workspace)
+		if err != nil || ctx.Err() != nil {
 			return err
 		}
 		win.Update(func() {
+			if a.workspace != workspace {
+				return
+			}
 			if idx < len(a.repos) && a.repos[idx].Root == root {
 				a.repos[idx] = *fresh
 			}
@@ -764,7 +777,13 @@ func (a *appState) refreshProcesses() {
 	a.processJob.Run(func(ctx context.Context) error {
 		procs, err := listProcesses(workspace, roots)
 		ports, _ := service.ListProjectPorts(procs)
+		if ctx.Err() != nil {
+			return nil
+		}
 		win.Update(func() {
+			if a.workspace != workspace {
+				return // another project's processes
+			}
 			a.processes = procs
 			a.ports = ports
 			if err != nil {
@@ -866,9 +885,21 @@ func (a *appState) rebuildFileIndex() {
 	}
 	a.indexJob.Run(func(ctx context.Context) error {
 		files := service.IndexFiles(workspace, 200000)
-		win.Update(func() { a.fileIndex = files })
+		if ctx.Err() != nil {
+			return nil
+		}
+		win.Update(func() { a.applyFileIndex(workspace, files) })
 		return nil
 	}, nil)
+}
+
+// applyFileIndex keeps the files of workspace for quick open, unless
+// another project is shown meanwhile: its paths resolved under the new
+// project's folder, and opening one did nothing.
+func (a *appState) applyFileIndex(workspace string, files []string) {
+	if a.workspace == workspace {
+		a.fileIndex = files
+	}
 }
 
 func branchDelta(ahead, behind int) string {
