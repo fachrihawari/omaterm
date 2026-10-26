@@ -783,18 +783,9 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 		row.Background(pal.Hover)
 	}
 	row.Children(func() {
-		switch {
-		case e.Info != nil:
-			if statusState(*e.Info) != iconNone {
-				a.statusIcon(c, *e.Info, 14)
-			} else {
-				ui.Icon(c, programIcon(firstNonEmpty(e.Info.Agent, e.Info.Process))).Size(14, 14).TextColor(ink(selected, pal.TextFaint, true))
-			}
-		case e.Category == "Project":
-			ui.Icon(c, iconFolder).Size(14, 14).TextColor(ink(selected, pal.TextFaint, true))
-		default:
-			ui.Text(c, e.Category+":").FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).Width(64).SingleLine().Shrink(0)
-		}
+		// Every row names its kind in one column, so the titles of
+		// sessions, projects, commands and settings start at one edge.
+		ui.Text(c, e.Category+":").FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).Width(64).SingleLine().Shrink(0)
 		titleCol := pal.TextSoft
 		if !enabled {
 			titleCol = pal.TextFaint
@@ -808,6 +799,9 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 			}
 		} else if e.Info != nil {
 			if text, _, fg := statusWords(*e.Info, nowFunc()); text != "" {
+				if statusState(*e.Info) != iconNone {
+					a.statusIcon(c, *e.Info, 12)
+				}
 				ui.Text(c, text).FontSize(11.5).TextColor(ink(selected, fg, false)).SingleLine().Shrink(0)
 			}
 		} else if keys := keyPrimary(e.ID); keys != "" {

@@ -655,3 +655,33 @@ func TestGraphColumnsAligned(t *testing.T) {
 		}
 	}
 }
+
+// The palette's titles start at one edge whatever their kind: a session's
+// started left of a setting's, under the label column the others had.
+func TestPaletteTitlesAligned(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.openOverlay(overlayCommandPalette)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("Session:") {
+		t.Error("session rows have no category label")
+	}
+	var xs []float32
+	for _, e := range a.paletteCommands() {
+		if e.Category != "Session" && e.Category != "Setting" {
+			continue
+		}
+		if r, ok := tr.Find(e.Title); ok {
+			xs = append(xs, r.X)
+		}
+	}
+	if len(xs) < 2 {
+		t.Fatalf("found %d session and setting titles", len(xs))
+	}
+	for _, x := range xs[1:] {
+		if x != xs[0] {
+			t.Fatalf("titles at x=%v: want one column", xs)
+		}
+	}
+}
