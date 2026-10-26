@@ -1038,14 +1038,13 @@ func (a *appState) settingsSheetView(c *ui.Context) {
 	}
 	open := true
 	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
-		backdrop.Background(pal.Scrim).Justify(ui.Start)
-		floating(panel.Top(70).Width(400).Padding(18).Gap(6).Radius(10).Background(pal.Popover))
-		ui.Text(c, sh.title).FontSize(14).FontWeight(600).TextColor(pal.TextStrong).Wrap()
+		dialogFrame(c, backdrop, panel)
+		dialogTitle(c, sh.title, sh.danger)
 		if sh.text != "" {
-			ui.Text(c, sh.text).FontSize(12.5).TextColor(pal.TextMuted).Wrap().Margin(0, 0, 4, 0)
+			ui.Text(c, sh.text).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
 		}
 		for _, it := range sh.items {
-			ui.Row(c).Gap(8).Margin(0, 0, 4, 4).Children(func() {
+			ui.Row(c).Gap(8).Margin(0, 0, 0, 4).Children(func() {
 				ui.Text(c, "•").FontSize(12.5).TextColor(pal.TextMuted)
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 					ui.Text(c, it[0]).FontSize(12.5).TextColor(pal.Text).Wrap()
@@ -1057,15 +1056,15 @@ func (a *appState) settingsSheetView(c *ui.Context) {
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			if sh.run == nil {
-				if settingsButton(c, "Done", true, false, false) {
+				if dialogButton(c, "Done", true, false) {
 					open = false
 				}
 				return
 			}
-			if settingsButton(c, "Cancel", false, false, false) {
+			if dialogButton(c, "Cancel", false, false) {
 				open = false
 			}
-			if settingsButton(c, sh.confirm, true, sh.danger, false) {
+			if dialogButton(c, sh.confirm, true, sh.danger) {
 				open = false
 				sh.run(c)
 			}

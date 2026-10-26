@@ -222,48 +222,89 @@ func (a *appState) content(c *ui.Context) {
 	})
 }
 
-// confirmDialog shows a bordered confirmation dialog using DialogBase (which
-// has an explicit border, unlike ui.AlertDialog). danger paints the
-// confirming button red, for actions that destroy something. Returns the
-// chosen button index, or ui.AlertDismissed when dismissed.
+// The app's dialogs, in either window, share one look: dialogWidth wide, a
+// fifth of the way down the window over a dimmed one, a 600-weight title,
+// dialogButtonHeight buttons, red for the one that destroys something.
+const (
+	dialogWidth        = 420
+	dialogButtonHeight = 30
+)
+
+// dialogFrame styles a DialogBase's backdrop and panel.
+func dialogFrame(c *ui.Context, backdrop, panel ui.Element) {
+	winW, winH := c.Size()
+	w := float32(dialogWidth)
+	if avail := winW - 2*dialogMinSide; avail > 0 && w > avail {
+		w = avail
+	}
+	// DialogBase centers the panel; starting the column at its top and
+	// offsetting the panel puts it where the pickers are.
+	backdrop.Justify(ui.Start).Background(pal.Scrim)
+	floating(panel.Top(winH * dialogTopFraction).Width(w).Padding(18).Gap(10).
+		Radius(10).Background(pal.Popover))
+}
+
+// dialogTitle is a dialog's title, with a warning sign for danger.
+func dialogTitle(c *ui.Context, title string, danger bool) {
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		if danger {
+			ui.Icon(c, iconAlert).Width(16).Height(16).TextColor(pal.Bad)
+		}
+		ui.Text(c, title).FontSize(14).FontWeight(600).TextColor(pal.TextStrong).Wrap()
+	})
+}
+
+// dialogButton is a dialog's button: primary filled with the accent, red
+// with danger, else bordered. It reports a click.
+func dialogButton(c *ui.Context, label string, primary, danger bool) bool {
+	b := ui.ButtonBase(c.Key("dlg-"+label)).Height(dialogButtonHeight).Padding(0, 14).Radius(6).
+		AlignItems(ui.Center).Shrink(0).Label(label)
+	fg, weight := pal.Text, 500
+	switch {
+	case primary && danger:
+		b.Background(pal.Bad)
+		if b.Hovered() {
+			b.Background(pal.Bad.Alpha(0.85))
+		}
+		fg, weight = pal.OnBad, 600
+	case primary:
+		b.Background(pal.Accent)
+		if b.Hovered() {
+			b.Background(pal.AccentHover)
+		}
+		fg, weight = pal.AccentText, 600
+	default:
+		bg := pal.Raised
+		if b.Hovered() {
+			bg = pal.Raised.Mix(pal.Text, 0.08)
+		}
+		face(b, bg).Border(1, pal.BorderStrong)
+	}
+	b.Children(func() {
+		ui.Text(c, label).FontSize(12).FontWeight(weight).TextColor(fg).SingleLine()
+	})
+	return b.Clicked()
+}
+
+// confirmDialog asks to confirm with a dialog: the last of buttons
+// confirms, red when danger, for actions that destroy something. Returns
+// the chosen button index, or ui.AlertDismissed when dismissed.
 func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message string, danger bool, buttons ...string) int {
 	if !*open {
 		return -1
 	}
 	result := -1
 	ui.DialogBase(c, open, func(backdrop, panel ui.Element) {
-		backdrop.Background(pal.Scrim)
-		panel.Background(pal.Popover).Radius(10).Border(1, pal.BorderStrong).
-			Width(420).MaxHeight(300).Padding(16).Gap(12).
-			Shadow(0, 10, 30, 0, pal.FloatShadow)
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			if danger {
-				ui.Icon(c, iconAlert).Width(16).Height(16).TextColor(pal.Bad)
-			}
-			ui.Text(c, title).FontSize(14).Bold().TextColor(pal.Text)
-		})
+		dialogFrame(c, backdrop, panel)
+		dialogTitle(c, title, danger)
 		if message != "" {
-			ui.Text(c, message).FontSize(12).TextColor(pal.TextMuted)
+			ui.Text(c, message).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
 		}
-		ui.Row(c).Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
+		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			for i, label := range buttons {
-				if i == len(buttons)-1 {
-					var btn ui.Element
-					if danger {
-						btn = dangerButton(c, label)
-					} else {
-						btn = ui.PrimaryButton(c, label).Height(32).FontSize(12)
-					}
-					if btn.Clicked() {
-						result = i
-					}
-				} else {
-					btn := ui.ButtonBase(c).Padding(6, 14).Radius(6).Border(1, pal.BorderStrong).Height(32).Children(func() {
-						ui.Text(c, label).FontSize(12).TextColor(pal.TextSoft)
-					})
-					if btn.Clicked() {
-						result = i
-					}
+				last := i == len(buttons)-1
+				if dialogButton(c, label, last, last && danger) {
+					result = i
 				}
 			}
 		})
@@ -276,19 +317,6 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 		return ui.AlertDismissed
 	}
 	return -1
-}
-
-// dangerButton is a filled red button for destructive confirmations. The
-// theme's red is light, so its label is dark for contrast.
-func dangerButton(c *ui.Context, label string) ui.Element {
-	e := ui.ButtonBase(c).Height(32).Padding(6, 14).Radius(6).Background(pal.Bad).Shrink(0)
-	if e.Hovered() {
-		e.Background(pal.Bad.Alpha(0.85))
-	}
-	e.Children(func() {
-		ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(pal.OnBad)
-	})
-	return e
 }
 
 // post runs fn on the UI thread: through the window's update queue, or,

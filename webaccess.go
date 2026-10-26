@@ -155,43 +155,46 @@ func (a *appState) webPairDialog(c *ui.Context) {
 	}
 	p := a.webPair
 	ui.DialogBase(c, a.webPairOpen, func(backdrop, panel ui.Element) {
-		backdrop.Background(pal.Scrim)
-		panel.Background(pal.Popover).Radius(10).Border(1, pal.BorderStrong).
-			Width(380).Padding(18).Gap(12).AlignItems(ui.Center).
-			Shadow(0, 10, 30, 0, pal.FloatShadow)
-		ui.Text(c, "Pair a Device").FontSize(14).Bold().TextColor(pal.Text)
-		switch {
-		case !p.ready:
-			ui.Text(c, "Making a code…").FontSize(12).TextColor(pal.TextMuted).Padding(40, 0)
-		case p.err != "":
-			ui.Text(c, p.err).FontSize(12).TextColor(pal.Bad)
-		default:
-			qrView(c, p.qr, 4)
-			ui.Text(c, "Scan with the device's camera, or open the link and enter the code.").
-				FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
-			ui.Text(c, p.code).FontSize(22).FontWeight(700).Font(monoFont).TextColor(pal.Text)
-			ui.Row(c).Gap(8).AlignItems(ui.Center).FillWidth().Children(func() {
-				ui.Text(c, p.link).FontSize(11).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).Grow(1).Tooltip(p.link)
-				copyBtn := ui.ButtonBase(c).Padding(4, 10).Radius(6).Border(1, pal.BorderStrong).Shrink(0).Children(func() {
-					ui.Text(c, "Copy").FontSize(11).TextColor(pal.TextSoft)
-				})
-				if copyBtn.Clicked() {
-					mygo.Clipboard.WriteText(p.link)
-					c.Toast("Copied the link")
-				}
-			})
-			note := "Works once, until " + p.expires.Format("15:04") + "."
-			if p.local {
-				note += " Only this computer can open it: turn on Web Access on Your Network, or run omaterm web tunnel."
-			}
-			ui.Text(c, note).FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
-		}
-		ui.Row(c).Gap(8).Justify(ui.End).FillWidth().Children(func() {
-			if ui.PrimaryButton(c, "Done").Height(32).FontSize(12).Clicked() {
+		dialogFrame(c, backdrop, panel)
+		dialogTitle(c, "Pair a Device", false)
+		// The code and what goes with it centered under the title.
+		ui.Column(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() { a.webPairBody(c, p) })
+		ui.Row(c).Gap(8).Justify(ui.End).FillWidth().Margin(8, 0, 0, 0).Children(func() {
+			if dialogButton(c, "Done", true, false) {
 				*a.webPairOpen = false
 			}
 		})
 	})
+}
+
+// webPairBody is the Pair dialog's code: its QR, the code and the link.
+func (a *appState) webPairBody(c *ui.Context, p *webPairing) {
+	switch {
+	case !p.ready:
+		ui.Text(c, "Making a code…").FontSize(12).TextColor(pal.TextMuted).Padding(40, 0)
+	case p.err != "":
+		ui.Text(c, p.err).FontSize(12).TextColor(pal.Bad)
+	default:
+		qrView(c, p.qr, 4)
+		ui.Text(c, "Scan with the device's camera, or open the link and enter the code.").
+			FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
+		ui.Text(c, p.code).FontSize(22).FontWeight(700).Font(monoFont).TextColor(pal.Text)
+		ui.Row(c).Gap(8).AlignItems(ui.Center).FillWidth().Children(func() {
+			ui.Text(c, p.link).FontSize(11).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).Grow(1).Tooltip(p.link)
+			copyBtn := ui.ButtonBase(c).Padding(4, 10).Radius(6).Border(1, pal.BorderStrong).Shrink(0).Children(func() {
+				ui.Text(c, "Copy").FontSize(11).TextColor(pal.TextSoft)
+			})
+			if copyBtn.Clicked() {
+				mygo.Clipboard.WriteText(p.link)
+				c.Toast("Copied the link")
+			}
+		})
+		note := "Works once, until " + p.expires.Format("15:04") + "."
+		if p.local {
+			note += " Only this computer can open it: turn on Web Access on Your Network, or run omaterm web tunnel."
+		}
+		ui.Text(c, note).FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
+	}
 }
 
 // qrView draws a QR code as modules of cell points, dark on white.

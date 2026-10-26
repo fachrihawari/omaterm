@@ -554,3 +554,46 @@ func TestDialogHangsFromTop(t *testing.T) {
 		}
 	}
 }
+
+// The main window's confirms and Settings' sheets are one dialog: as
+// wide, as far down their window, with buttons as tall.
+func TestOneDialogStyle(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	open := true
+	a.killConfirmOpen = &open
+	a.pendingKillPid = 999999
+	a.pendingKillName = "probe"
+	const w, h = 1440, 900
+	main := ui.NewTester(a.view, w, h)
+	main.Frame()
+
+	s, sheet := newSettingsTester(t, "web")
+	s.settingsUI.sheet = &settingsSheet{title: "Revoke probe?", confirm: "Revoke", danger: true, run: func(*ui.Context) {}}
+	sheet.Frame()
+
+	for _, d := range []struct {
+		name          string
+		tr            *ui.Tester
+		title, button string
+		winH          float32
+	}{
+		{"confirm", main, "Kill Process", "Kill", h},
+		{"sheet", sheet, "Revoke probe?", "Revoke", settingsHeight},
+	} {
+		title, ok := d.tr.Find(d.title)
+		if !ok {
+			t.Fatalf("%s: no title %q", d.name, d.title)
+		}
+		if want := d.winH*dialogTopFraction + 18; title.Y < want-2 || title.Y > want+4 {
+			t.Errorf("%s: title at y=%.0f, want a fifth of the way down (%.0f)", d.name, title.Y, want)
+		}
+		button, ok := d.tr.Find(d.button)
+		if !ok {
+			t.Fatalf("%s: no button %q", d.name, d.button)
+		}
+		if button.H != dialogButtonHeight {
+			t.Errorf("%s: button %.0f tall, want %d", d.name, button.H, dialogButtonHeight)
+		}
+	}
+}
