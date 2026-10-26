@@ -268,8 +268,11 @@ func (r *Remote) events(c *client.Client) {
 			}
 		case "notice":
 			var n struct{ Pane, Title, Body string }
-			if json.Unmarshal(m.Result, &n) == nil && r.hooks.OnNotice != nil {
-				go r.hooks.OnNotice(n.Pane, n.Title, n.Body)
+			r.mu.Lock()
+			onNotice := r.hooks.OnNotice
+			r.mu.Unlock()
+			if json.Unmarshal(m.Result, &n) == nil && onNotice != nil {
+				go onNotice(n.Pane, n.Title, n.Body)
 			}
 		}
 	}
@@ -541,10 +544,7 @@ func (p *remotePane) Term() *terminal.Terminal {
 		s.Close()
 		return nil
 	}
-	if s.cols > 0 && s.rows > 0 {
-		t.Resize(s.cols, s.rows)
-	}
-	s.term = t
+	s.setTerm(t)
 	p.term, p.stream = t, s
 	return t
 }
@@ -623,12 +623,27 @@ func (p *remotePane) SetTurn(t *session.Turn) {
 // pane's frames, and writes what is typed, the size the view fits, and
 // its colors.
 type stream struct {
-	conn       net.Conn
-	r          *bufio.Reader
-	wmu        sync.Mutex
-	pending    []byte
+	conn    net.Conn
+	r       *bufio.Reader
+	wmu     sync.Mutex
+	pending []byte
+	// cols and rows are the pane's size as attached, or as the daemon
+	// last resized it before the terminal was set; term is the app's
+	// terminal, set once made (tmu guards them: the terminal's reader
+	// runs Read as soon as it is made).
+	tmu        sync.Mutex
 	cols, rows int
 	term       *terminal.Terminal
+}
+
+// setTerm gives the stream its terminal, sized as the daemon last said.
+func (s *stream) setTerm(t *terminal.Terminal) {
+	s.tmu.Lock()
+	defer s.tmu.Unlock()
+	s.term = t
+	if s.cols > 0 && s.rows > 0 {
+		t.Resize(s.cols, s.rows)
+	}
 }
 
 func attach(socket, pane string) (*stream, error) {
@@ -674,8 +689,13 @@ func (s *stream) Read(b []byte) (int, error) {
 		case proto.FrameOutput:
 			s.pending = payload
 		case proto.FrameResized:
-			if v, ok := proto.ParseUint16s(payload, 2); ok && s.term != nil {
-				s.term.Resize(v[0], v[1])
+			if v, ok := proto.ParseUint16s(payload, 2); ok {
+				s.tmu.Lock()
+				s.cols, s.rows = v[0], v[1]
+				if s.term != nil {
+					s.term.Resize(v[0], v[1])
+				}
+				s.tmu.Unlock()
 			}
 		case proto.FrameClosed:
 			return 0, io.EOF

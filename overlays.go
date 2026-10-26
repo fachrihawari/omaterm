@@ -638,6 +638,7 @@ func idx(pool []paletteEntry, id string) int {
 // as a terminal is made, which a session daemon's panes are again, as
 // they are shown.
 func (a *appState) applySettings() {
+	a.shareSettings()
 	proto.SetSearchEngine(a.settings.SearchEngine)
 	a.applyTextSettings()
 	copySel := terminal.CopyOnSelectNone
@@ -662,6 +663,12 @@ func (a *appState) applySettings() {
 	}
 	a.saveSettings()
 	a.invalidateWindows()
+}
+
+// shareSettings copies the settings goroutines read into atomics.
+func (a *appState) shareSettings() {
+	a.remoteControl.Store(a.settings.RemoteControl)
+	a.gitSnapshots.Store(a.settings.GitStatus)
 }
 
 // termBehavior is what of the terminal settings takes effect only as a

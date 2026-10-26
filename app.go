@@ -267,8 +267,9 @@ func dangerButton(c *ui.Context, label string) ui.Element {
 // change app state, as a terminal's exit or a background load, hand it
 // over this way instead of touching the state themselves.
 func (a *appState) post(fn func()) {
-	if a.win != nil {
-		a.win.Update(fn)
+	// postWin, not a.win: goroutines post before and while main sets it.
+	if w := a.postWin.Load(); w != nil {
+		w.Update(fn)
 		return
 	}
 	a.postedMu.Lock()

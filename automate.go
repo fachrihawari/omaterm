@@ -29,7 +29,7 @@ const browseTimeout = 10 * time.Second
 func (a *appState) browse(r proto.BrowserParams, answer func(*proto.BrowserResult, error)) {
 	fail := func(format string, args ...any) { answer(nil, fmt.Errorf(format, args...)) }
 	if !a.settings.RemoteControl {
-		answer(nil, proto.Errorf(proto.CodeRemoteControl, "Agents can't control the app: turn on “Let Agents Control the App” in the palette"))
+		answer(nil, proto.Errorf(proto.CodeRemoteControl, "Agents can't control the app: turn on “Let Agents Control the App” in Settings › Agents"))
 		return
 	}
 	if _, _, _, ok := a.findPane(r.ID); !ok {

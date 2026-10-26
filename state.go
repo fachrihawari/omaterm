@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -372,6 +373,12 @@ type appState struct {
 	stateLoadFailed string
 	// unavailable are projects whose folder is missing, kept as saved.
 	unavailable []model.Project
+	// remoteControl and gitSnapshots are those settings for goroutines
+	// (the control socket's, the panes' hooks), which must not read
+	// a.settings as the UI thread changes it.
+	remoteControl, gitSnapshots atomic.Bool
+	// postWin is a.win for post, set once the window is made.
+	postWin atomic.Pointer[mygo.Window]
 
 	pendingRemoveProjectIdx  int
 	pendingRemoveProjectName string
@@ -452,6 +459,7 @@ func newApp() *appState {
 	}
 	a.fontSize, a.diffSplit = a.settings.Terminal.FontSize, a.settings.Editor.DiffSplit
 	a.termMade = a.termBehavior()
+	a.shareSettings()
 	proto.SetSearchEngine(a.settings.SearchEngine)
 	a.termFont = a.terminalFontFamily()
 	a.loadUIPrefs()

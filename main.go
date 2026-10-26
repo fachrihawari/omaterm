@@ -144,6 +144,7 @@ func main() {
 			StateKey:        "main",
 			Content:         ui.View(a.view),
 		})
+		a.postWin.Store(a.win)
 		a.win.OnClosed(func() {
 			a.stopSystemStats()
 			if a.themeWatchStop != nil {

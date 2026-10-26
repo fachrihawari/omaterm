@@ -197,8 +197,8 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		if err != nil {
 			return nil, err
 		}
-		if !a.settings.RemoteControl {
-			return nil, proto.Errorf(proto.CodeRemoteControl, "Agents can't control the app: turn on “Let Agents Control the App” in the palette")
+		if !a.remoteControl.Load() {
+			return nil, proto.Errorf(proto.CodeRemoteControl, "Agents can't control the app: turn on “Let Agents Control the App” in Settings › Agents")
 		}
 		if !remoteAction(p.Action) {
 			return nil, proto.Errorf(proto.CodeNotFound, "no action "+p.Action+": omaterm actions lists them")

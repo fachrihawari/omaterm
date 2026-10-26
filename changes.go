@@ -392,7 +392,7 @@ func (a *appState) onStatus(info session.Info, prev session.Status) {
 	if info.Agent == "" || info.Status != session.Working || prev == session.Waiting || prev == session.Working {
 		return
 	}
-	if !a.settings.GitStatus {
+	if !a.gitSnapshots.Load() {
 		return
 	}
 	dir := info.WorkDir()
