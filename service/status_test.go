@@ -8,13 +8,19 @@ import (
 	"testing"
 )
 
-func gitIn(t *testing.T, dir string, args ...string) {
-	t.Helper()
+// gitCmdIn is git in dir, with a name and an email to commit with: a
+// runner has none.
+func gitCmdIn(dir string, args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	return cmd
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := gitCmdIn(dir, args...).CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
@@ -34,9 +40,7 @@ func TestStatusNames(t *testing.T) {
 	gitIn(t, dir, "switch", "-q", "main")
 	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("main\n"), 0o644)
 	gitIn(t, dir, "commit", "-q", "-am", "main")
-	cmd := exec.Command("git", "merge", "other")
-	cmd.Dir = dir
-	cmd.Run() // conflicts, as wanted
+	gitCmdIn(dir, "merge", "other").Run() // conflicts, as wanted
 
 	os.WriteFile(filepath.Join(dir, "a b.txt"), nil, 0o644)
 	os.WriteFile(filepath.Join(dir, "café.txt"), nil, 0o644)
