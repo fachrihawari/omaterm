@@ -189,22 +189,27 @@ func (a *appState) startRestored(id, sessionID, fallback string) (session.Handle
 
 // startPane runs a pane's shell, running command first when set (or only
 // command, with exec), in dir.
-func (a *appState) startPane(id, sessionID, dir string, command []string, exec bool) (session.Handle, error) {
-	return a.startPaneWith(id, sessionID, dir, command, exec, nil)
+func (a *appState) startPane(id, sessionID, dir string, command []string, exec bool, env ...string) (session.Handle, error) {
+	return a.startPaneWith(id, sessionID, dir, command, exec, nil, env...)
 }
 
 // startPaneWith is startPane with the scrollback a restored pane shows
 // above its shell.
-func (a *appState) startPaneWith(id, sessionID, dir string, command []string, exec bool, history []byte) (session.Handle, error) {
+func (a *appState) startPaneWith(id, sessionID, dir string, command []string, exec bool, history []byte, extra ...string) (session.Handle, error) {
 	// The omaterm command comes first: another program of that name on
 	// the PATH must not answer for it in a pane.
 	env := []string{"PATH=" + paths.BinDir() + string(os.PathListSeparator) + os.Getenv("PATH")}
 	if a.ctl != nil {
 		env = append(env, "OMATERM_SOCKET="+a.ctl.Path())
 	}
+	// What the caller adds (omaterm new --env), after: it may set PATH.
+	env = append(env, extra...)
 	o := a.termStartOptions()
 	o.ID, o.Session, o.Dir = id, sessionID, dir
 	o.Command, o.Exec, o.Env, o.History = command, exec, env, history
+	if pi, _, _, ok := a.findSession(sessionID); ok {
+		o.Project = a.projects[pi].ID
+	}
 	return a.panes.Start(o)
 }
 

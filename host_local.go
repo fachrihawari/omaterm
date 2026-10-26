@@ -435,7 +435,7 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	a.paneDirs[paneID] = dir
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
-	} else if _, err := a.startPane(paneID, tab.ID, dir, p.Command, false); err != nil {
+	} else if _, err := a.startPane(paneID, tab.ID, dir, p.Command, false, p.Env...); err != nil {
 		a.paneFailed[paneID] = true
 		return nil, err
 	}
@@ -552,7 +552,7 @@ func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 	a.paneDirs[paneID] = workDir
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
-	} else if _, err := a.startPane(paneID, tab.ID, workDir, p.Command, false); err != nil {
+	} else if _, err := a.startPane(paneID, tab.ID, workDir, p.Command, false, p.Env...); err != nil {
 		a.paneFailed[paneID] = true
 		return nil, err
 	}
@@ -653,13 +653,19 @@ func (a *appState) cliRestart(id string) error {
 	if !ok {
 		return proto.Errorf(proto.CodeNotFound, "no pane "+id)
 	}
-	dir := a.status[id].Dir
+	if a.isBrowser(id) {
+		return proto.Errorf(proto.CodeNotFound, "pane "+id+" is a browser, not a terminal")
+	}
+	info := a.status[id]
+	dir := info.Dir
 	if dir == "" {
 		dir = a.paneDirs[id]
 	}
 	a.panes.Remove(id)
 	delete(a.paneFailed, id)
-	_, err := a.startPane(id, (*tabs)[ti].ID, dir, nil, false)
+	// The command it started with runs again: a dev server restarts as
+	// itself, not as a bare shell.
+	_, err := a.startPane(id, (*tabs)[ti].ID, dir, info.Command, false)
 	return err
 }
 

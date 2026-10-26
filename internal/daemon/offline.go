@@ -141,8 +141,13 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			if pn.URL != "" {
 				return nil, errAppClosed("reload a page")
 			}
+			// The command it started with runs again, as the app does.
+			var command []string
+			if p := d.reg.Get(pn.ID); p != nil {
+				command = p.Info().Command
+			}
 			d.endPane(pn.ID)
-			return true, d.startPane(s.ID, pn.ID, pn.Dir, nil, nil)
+			return true, d.startPane(s.ID, pn.ID, pn.Dir, command, nil)
 		})
 	case "rename":
 		var p proto.RenameParams

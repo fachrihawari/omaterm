@@ -268,3 +268,24 @@ func TestForwardedCallFailsWhenAppLeaves(t *testing.T) {
 		t.Fatal("the call still waits for the app that left")
 	}
 }
+
+// With the window closed, restart runs the pane's command again; it
+// started a bare shell.
+func TestOfflineRestartKeepsCommand(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	cmd := []string{"sh", "-c", "echo again; sleep 30"}
+	made := call[proto.Created](t, c, "create", proto.CreateParams{Name: "dev", Dir: proj, Command: cmd})
+	call[bool](t, c, "restart", proto.IDParams{ID: made.Pane})
+	p := d.reg.Get(made.Pane)
+	if p == nil {
+		t.Fatal("no pane after the restart")
+	}
+	if got := p.Info().Command; strings.Join(got, " ") != strings.Join(cmd, " ") {
+		t.Fatalf("restarted with %q, want %q", got, cmd)
+	}
+}

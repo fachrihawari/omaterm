@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/crash"
 	"omaterm/internal/model"
+	"omaterm/internal/proto"
 	"omaterm/internal/session"
 )
 
@@ -423,5 +425,43 @@ func TestRenameSavedOnClickAway(t *testing.T) {
 	tr.Frame()
 	if a.tabs[0].Label != "renamed" || a.renaming != "" {
 		t.Fatalf("label %q, still renaming %q", a.tabs[0].Label, a.renaming)
+	}
+}
+
+// omaterm restart runs a pane's command again, with the environment and
+// project it was made with; it started a bare shell, and the app dropped
+// --env and the project.
+func TestRestartKeepsCommandAndEnv(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	cmd := []string{"sh", "-c", "echo got-$OMATERM_TEST_ENV; sleep 30"}
+	made, err := a.cliCreate(proto.CreateParams{Name: "dev", Dir: a.projects[0].Path, Command: cmd, Env: []string{"OMATERM_TEST_ENV=yes"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane := made.(proto.Created).Pane
+	h := a.panes.Get(pane)
+	if h == nil {
+		t.Fatal("no pane")
+	}
+	if got := h.Info().Project; got != a.projects[0].ID {
+		t.Errorf("project %q, want %q", got, a.projects[0].ID)
+	}
+	waitText := func(want string) {
+		t.Helper()
+		for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+			if strings.Contains(a.panes.Get(pane).Text(false, 0), want) {
+				return
+			}
+		}
+		t.Fatalf("the pane never showed %q:\n%s", want, a.panes.Get(pane).Text(false, 0))
+	}
+	waitText("got-yes")
+	a.status[pane] = h.Info()
+	if err := a.cliRestart(pane); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.panes.Get(pane).Info().Command; strings.Join(got, " ") != strings.Join(cmd, " ") {
+		t.Fatalf("restarted with %q, want %q", got, cmd)
 	}
 }
