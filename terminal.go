@@ -5,6 +5,7 @@ import (
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -274,8 +275,17 @@ func (a *appState) paneExited(id string) {
 	if a.panes.Get(id) == nil {
 		return
 	}
-	if _, _, _, ok := a.findPane(id); !ok {
+	pi, tabs, ti, ok := a.findPane(id)
+	if !ok {
 		return
+	}
+	// A shell that ended on its own with an error (killed, out of memory)
+	// says so before its session goes; one the user exited goes quietly.
+	if h := a.panes.Get(id); h != nil {
+		if info := h.Info(); info.ExitCode != nil && *info.ExitCode != 0 {
+			name := a.sessionName((*tabs)[ti], info)
+			a.queuedToasts = append(a.queuedToasts, "“"+name+"” in "+a.projects[pi].Name+" closed: its shell ended (code "+strconv.Itoa(*info.ExitCode)+")")
+		}
 	}
 	a.cliClosePane(id)
 }

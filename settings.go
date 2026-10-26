@@ -311,7 +311,7 @@ var settingDefs = func() []settingDef {
 			func(s *Settings) *bool { return &s.Notify.Waiting }), "Notify When a Session Needs You", false, "notify waiting blocked"),
 		sw(boolDef("notify-done", "notifications", "Finishes", "",
 			func(s *Settings) *bool { return &s.Notify.Done }), "Notify When a Session Finishes", false, "notify done"),
-		sw(boolDef("notify-error", "notifications", "Fails", "",
+		sw(boolDef("notify-error", "notifications", "Fails", "An agent reports a failure, or the program a session started exits with an error.",
 			func(s *Settings) *bool { return &s.Notify.Error }), "Notify When a Session Fails", false, "notify error"),
 		sw(boolDef("notify-sound", "notifications", "Play a sound", "The desktop’s notification sound.",
 			func(s *Settings) *bool { return &s.Notify.Sound }), "", false, "silent"),

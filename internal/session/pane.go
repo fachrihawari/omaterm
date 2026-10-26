@@ -495,6 +495,13 @@ func (p *Pane) handleOSC(body []byte) []byte {
 		code, _, _ := strings.Cut(strings.TrimPrefix(string(body[5:]), ";"), ";")
 		n, _ := strconv.Atoi(code)
 		p.info.CommandExit = &n
+		// The command it started with failed (a dev server crashed): the
+		// pane says so, which notifies as a failure does. Stopped with
+		// Ctrl+C (130) or a SIGTERM (143), it didn't fail.
+		if n != 0 && n != 130 && n != 143 && len(p.info.Command) > 0 && p.info.Agent == "" {
+			p.info.Message = filepath.Base(p.info.Command[0]) + " exited (code " + strconv.Itoa(n) + ")"
+			p.setStatus(Failed)
+		}
 		p.changedLocked()
 	}
 	return nil
