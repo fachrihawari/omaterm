@@ -973,8 +973,34 @@ func (a *appState) rebuildFileTree() {
 	if p != nil {
 		rootName = p.Name
 	}
+	// Folders open as they were.
+	open := map[string]bool{}
+	var walk func(n *fileNode)
+	walk = func(n *fileNode) {
+		if n.Dir {
+			open[n.Path] = n.Open
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	if a.fileTree != nil {
+		walk(a.fileTree)
+	}
 	root := &fileNode{Name: rootName, Dir: true, Open: true}
 	a.fileTree = root
+	defer func() {
+		var apply func(n *fileNode)
+		apply = func(n *fileNode) {
+			if o, ok := open[n.Path]; ok && n.Dir && n.Path != "" {
+				n.Open = o
+			}
+			for _, c := range n.Children {
+				apply(c)
+			}
+		}
+		apply(root)
+	}()
 	if a.workspace == "" {
 		return
 	}

@@ -71,6 +71,11 @@ func (a *appState) showInspectorTab(idx int) {
 	} else {
 		a.stopProcessRefresh()
 	}
+	// The files as they are now: one an agent made was missing until a
+	// restart.
+	if idx == 1 && wasTab != 1 {
+		a.rebuildFileTree()
+	}
 	// Entering the Git tab re-reads status, so switching to it never
 	// shows a stale tree from before the user left.
 	if idx == 2 && wasTab != 2 {

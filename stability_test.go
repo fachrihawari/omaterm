@@ -918,3 +918,39 @@ func TestDiffTabsOwnTheirDiff(t *testing.T) {
 		t.Errorf("the first diff tab shows %q", a.diffSrc.Path)
 	}
 }
+
+// The file tree is read again as the Files tab shows, keeping its folders
+// open as they were: a file an agent made was missing until a restart.
+// Opening a file that is gone says so, rather than nothing happening.
+func TestFilesFollowDisk(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	root := a.workspace
+	os.Mkdir(filepath.Join(root, "dir"), 0o755)
+	os.WriteFile(filepath.Join(root, "dir", "a.txt"), nil, 0o644)
+	a.rebuildFileTree()
+	for _, n := range a.fileTree.Children {
+		if n.Name == "dir" {
+			n.Open = false // closed by the user
+		}
+	}
+	os.WriteFile(filepath.Join(root, "made-by-agent.txt"), nil, 0o644)
+	a.inspectorTab = 0
+	a.showInspectorTab(1)
+	var names []string
+	for _, n := range a.fileTree.Children {
+		names = append(names, n.Name)
+		if n.Name == "dir" && n.Open {
+			t.Error("a folder the user closed opened again")
+		}
+	}
+	if !slices.Contains(names, "made-by-agent.txt") {
+		t.Errorf("the new file isn't listed: %v", names)
+	}
+
+	before := len(a.queuedToasts)
+	a.openEditor("gone.txt")
+	if len(a.queuedToasts) == before {
+		t.Error("opening a file that is gone said nothing")
+	}
+}

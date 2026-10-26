@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -28,6 +29,9 @@ func (a *appState) openEditorAt(path string, line int) {
 		abs := filepath.Join(a.workspace, path)
 		data, err := os.ReadFile(abs)
 		if err != nil {
+			// Deleted since it was listed, or unreadable: say so, rather
+			// than nothing happening.
+			a.toast(nil, "Can't open "+path+": "+errText(err))
 			return
 		}
 		doc := &openFile{Path: path, Disk: sha256.Sum256(data), checked: time.Now()}
@@ -238,6 +242,16 @@ func (a *appState) writeEditor(doc *openFile, c *ui.Context) {
 	doc.Disk = sha256.Sum256(text)
 	c.Toast("Saved " + doc.Path)
 	a.refreshActiveRepo()
+}
+
+// errText is an error as the user reads it: "no such file" rather than
+// the path it names again.
+func errText(err error) string {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
 }
 
 // writeFileAtomic replaces path's contents through a file beside it, so a

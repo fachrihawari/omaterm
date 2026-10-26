@@ -31,9 +31,9 @@ func (a *appState) openOverlay(k overlayKind) {
 	case overlayQuickOpen:
 		a.quickQuery = ""
 		a.quickSelected = 0
-		if a.fileIndex == nil {
-			a.rebuildFileIndex()
-		}
+		// Anew each time: files an agent made since were missing, and
+		// deleted ones listed. The last list shows until it is in.
+		a.rebuildFileIndex()
 	case overlayCommandPalette:
 		a.cmdQuery = ""
 		a.cmdSelected = 0
@@ -156,12 +156,25 @@ func (a *appState) quickOpenItems() []service.FuzzyMatch {
 			}
 		}
 		if len(recents) > 0 {
-			out := make([]service.FuzzyMatch, 0, len(recents))
-			for _, r := range recents {
-				out = append(out, service.FuzzyMatch{Value: r, Score: 1e9})
+			// Each once: a recent file was listed twice, and one deleted
+			// since was offered.
+			listed := make(map[string]bool, len(items))
+			for _, it := range items {
+				listed[it] = true
 			}
-			rest := service.FuzzyFilter(items, "", 200)
-			out = append(out, rest...)
+			out := make([]service.FuzzyMatch, 0, len(recents))
+			seen := map[string]bool{}
+			for _, r := range recents {
+				if (listed[r] || items == nil) && !seen[r] {
+					seen[r] = true
+					out = append(out, service.FuzzyMatch{Value: r, Score: 1e9})
+				}
+			}
+			for _, m := range service.FuzzyFilter(items, "", 200) {
+				if !seen[m.Value] {
+					out = append(out, m)
+				}
+			}
 			return out
 		}
 	}

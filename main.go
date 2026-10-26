@@ -172,6 +172,9 @@ func main() {
 		a.win.OnFocus(func() {
 			a.recheckTheme()
 			a.checkDisk(a.activeEditor()) // changed while away
+			if a.inspectorVisible && a.inspectorTab == 1 {
+				a.rebuildFileTree()
+			}
 			if a.inspectorVisible && a.inspectorTab == 2 {
 				a.refreshActiveRepo()
 			}
