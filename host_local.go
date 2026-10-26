@@ -290,10 +290,14 @@ func (h *localHost) changed() {
 }
 
 // remoteAction tells the commands `omaterm do` may run: not the ones that
-// quit, or touch files or projects.
+// quit, or touch files or projects; nor those that end every session
+// (daemon.restart), write outside omaterm (agents.setup into the agents'
+// settings, cli.install onto the PATH), or let a device in (web.pair). An
+// agent, or a prompt injected into one, could run them unasked.
 func remoteAction(id string) bool {
 	switch {
-	case id == "app.quit", id == "app.openProject", strings.HasPrefix(id, "git."), id == "file.save":
+	case id == "app.quit", id == "app.openProject", strings.HasPrefix(id, "git."), id == "file.save",
+		id == "daemon.restart", id == "agents.setup", id == "cli.install", id == "web.pair":
 		return false
 	}
 	for _, c := range commandRegistry {

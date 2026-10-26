@@ -705,3 +705,17 @@ func TestRunWithoutDaemonNoResume(t *testing.T) {
 		t.Error("no banner says the sessions also run elsewhere")
 	}
 }
+
+// `omaterm do` runs nothing that ends every session, writes outside
+// omaterm or lets a device in: an agent with remote control ran
+// daemon.restart, ending every session.
+func TestRemoteActionsSafe(t *testing.T) {
+	for _, id := range []string{"daemon.restart", "agents.setup", "cli.install", "web.pair", "app.quit", "git.commit"} {
+		if remoteAction(id) {
+			t.Errorf("omaterm do may run %s", id)
+		}
+	}
+	if !remoteAction("terminal.new") {
+		t.Error("omaterm do may not open a terminal")
+	}
+}
