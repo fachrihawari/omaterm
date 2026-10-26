@@ -181,3 +181,25 @@ func TestAgentPlugins(t *testing.T) {
 		t.Fatal("Pi's extensions directory went with omaterm's extension")
 	}
 }
+
+// Writing an agent's settings through a link writes its target: the link
+// a dotfiles manager keeps became a plain file it no longer tracked.
+func TestWriteThroughLink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "dotfiles", "settings.json")
+	os.MkdirAll(filepath.Dir(target), 0o755)
+	os.WriteFile(target, []byte("{}"), 0o644)
+	link := filepath.Join(dir, "settings.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(link, []byte(`{"hooks": {}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the link was replaced by a file")
+	}
+	if data, _ := os.ReadFile(target); string(data) != `{"hooks": {}}` {
+		t.Errorf("the target holds %q", data)
+	}
+}

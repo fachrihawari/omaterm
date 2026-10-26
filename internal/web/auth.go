@@ -106,11 +106,24 @@ type authFile struct {
 
 // Store keeps web access's config, the pairing codes and the paired
 // devices in web.json. The omaterm command, the app and the daemon all
-// change it, so each call reads it afresh.
+// change it, so each call reads it afresh, holding its lock.
 type Store struct {
 	path string
 	mu   sync.Mutex
 	now  func() time.Time
+}
+
+// lock orders a change of the store against the others: this process's
+// with its mutex, the app's, the daemon's and the omaterm command's with
+// a lock on a file beside it. Each read it, changed it and wrote it back,
+// so one could write back a device another had just revoked.
+func (s *Store) lock() (unlock func()) {
+	s.mu.Lock()
+	release := fileLock(s.path + ".lock")
+	return func() {
+		release()
+		s.mu.Unlock()
+	}
 }
 
 // OpenStore returns the store kept at path.
@@ -184,16 +197,14 @@ func (s *Store) prune(f *authFile) {
 
 // Config reads the config.
 func (s *Store) Config() (Config, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	f, err := s.load()
 	return f.Config, err
 }
 
 // SetConfig changes the config.
 func (s *Store) SetConfig(change func(*Config)) (Config, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	f, err := s.load()
 	if err != nil {
 		return Config{}, err
@@ -205,8 +216,7 @@ func (s *Store) SetConfig(change func(*Config)) (Config, error) {
 // NewCode makes a pairing code, written XXXX-XXXX, and says when it
 // stops working.
 func (s *Store) NewCode() (string, time.Time, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	f, err := s.load()
 	if err != nil {
 		return "", time.Time{}, err
@@ -241,8 +251,7 @@ func normalize(c string) string {
 // Pair spends a code and signs a device in: it returns the cookie's
 // value, which only the browser keeps.
 func (s *Store) Pair(typed, name string) (string, Device, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	f, err := s.load()
 	if err != nil {
 		return "", Device{}, err
@@ -282,8 +291,7 @@ func (s *Store) Check(cookie string) (Device, bool) {
 	if !ok || id == "" || secret == "" {
 		return Device{}, false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	f, err := s.load()
 	if err != nil {
 		return Device{}, false
@@ -306,8 +314,7 @@ func (s *Store) Check(cookie string) (Device, bool) {
 
 // Devices lists the paired devices.
 func (s *Store) Devices() ([]Device, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	f, err := s.load()
 	if err != nil {
 		return nil, err
@@ -319,8 +326,7 @@ func (s *Store) Devices() ([]Device, error) {
 // Revoke signs a device out, or every device for "all". It reports
 // whether any was.
 func (s *Store) Revoke(id string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	f, err := s.load()
 	if err != nil {
 		return false, err

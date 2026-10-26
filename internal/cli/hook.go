@@ -561,6 +561,11 @@ func marshal(v any) json.RawMessage {
 
 // writeFileAtomic replaces a file whole, keeping its mode.
 func writeFileAtomic(path string, b []byte) error {
+	// Through a link to its target: renamed over, a dotfiles manager's
+	// link (stow, home-manager) became a plain file it no longer tracked.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	mode := os.FileMode(0o644)
 	if st, err := os.Stat(path); err == nil {
 		mode = st.Mode().Perm()

@@ -120,3 +120,27 @@ func TestRevoke(t *testing.T) {
 		t.Fatal("revoke all left a code working")
 	}
 }
+
+// Two stores of one file (the app's and the daemon's, say) take turns: a
+// device one revoked was written back by the other's read-modify-write.
+func TestStoresTakeTurns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "web.json")
+	a, b := OpenStore(path), OpenStore(path)
+	unlock := a.lock()
+	done := make(chan struct{})
+	go func() {
+		b.Revoke("all")
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("another store changed the file while one held it")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the other store never got its turn")
+	}
+}
