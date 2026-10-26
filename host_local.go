@@ -221,7 +221,7 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 
 // pane returns a running pane by id.
 func (h *localHost) pane(id string) (session.Handle, error) {
-	p := h.a.panes.Get(id)
+	p := h.a.offPanes().Get(id)
 	if p == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane "+id)
 	}
@@ -723,7 +723,7 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 	if !agent.SessionIDRe.MatchString(p.Session) {
 		return nil, proto.Errorf(proto.CodeUsage, "bad session id")
 	}
-	found, away := session.FindAgentPane(a.panes, p.PID, p.Agent, p.Dir)
+	found, away := session.FindAgentPane(a.offPanes(), p.PID, p.Agent, p.Dir)
 	if found == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 	}

@@ -39,6 +39,7 @@ func (a *appState) startControl() {
 		return
 	}
 	a.host = newLocalHost(a)
+	a.hostReady.Store(a.host)
 	s, err := ctl.Listen(paths.SocketPath(), a.host, appVersion())
 	if err != nil {
 		log.Printf("control socket: %v", err)

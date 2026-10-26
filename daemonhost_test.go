@@ -35,7 +35,7 @@ func TestDetachHiddenDaemonPanes(t *testing.T) {
 
 	a := newApp()
 	a.win = nil
-	a.panes = r
+	a.setPanes(r)
 	a.projects = []project{{Name: "test", Path: dir, Tabs: []string{"dev"}}}
 	a.setProject(0)
 	shownID := a.activeSplitLeaf()

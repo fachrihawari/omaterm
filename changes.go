@@ -421,7 +421,7 @@ func (a *appState) onStatus(info session.Info, prev session.Status) {
 		if err != nil {
 			return
 		}
-		if p := a.panes.Get(info.ID); p != nil {
+		if p := a.offPanes().Get(info.ID); p != nil {
 			p.SetTurn(&session.Turn{Tree: tree, Root: r.Root, At: at.UnixMilli()})
 		}
 	}()

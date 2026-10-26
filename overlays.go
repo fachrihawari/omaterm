@@ -686,6 +686,7 @@ func (a *appState) applySettings() {
 func (a *appState) shareSettings() {
 	a.remoteControl.Store(a.settings.RemoteControl)
 	a.gitSnapshots.Store(a.settings.GitStatus)
+	a.controlSocket.Store(a.settings.ControlSocket)
 }
 
 // termBehavior is what of the terminal settings takes effect only as a
@@ -817,18 +818,24 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 // --- Global search ---
 
 func (a *appState) runSearch() {
-	query := a.searchQuery
-	if query == "" || a.workspace == "" || a.win == nil {
+	query, workspace := a.searchQuery, a.workspace
+	if query == "" || workspace == "" || a.win == nil {
+		// A search still running would land after the box was cleared,
+		// and Enter opened one of its results.
+		a.searchJob.Cancel()
 		a.searchResults = nil
 		return
 	}
 	win := a.win
 	a.searchJob.Run(func(ctx context.Context) error {
-		matches, err := service.SearchContent(ctx, a.workspace, query)
-		if err != nil {
+		matches, err := service.SearchContent(ctx, workspace, query)
+		if err != nil || ctx.Err() != nil {
 			return err
 		}
 		win.Update(func() {
+			if a.searchQuery != query || a.workspace != workspace {
+				return // asked for something else meanwhile
+			}
 			a.searchResults = matches
 			if a.searchSelected >= len(matches) {
 				a.searchSelected = 0

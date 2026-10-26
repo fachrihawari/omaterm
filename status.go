@@ -51,11 +51,23 @@ func (a *appState) startPanes() {
 // over ("Restart Sessions").
 func (a *appState) setPanes(h session.Host) {
 	a.panes = h
+	a.panesRef.Store(&hostRef{h})
 	a.lastViewed = "\x00" // the new host is told the session on screen
 	if a.panesStop != nil {
 		a.panesStop()
 		a.startPanes()
 	}
+}
+
+// hostRef holds a host for panesRef.
+type hostRef struct{ session.Host }
+
+// offPanes is a.panes for goroutines.
+func (a *appState) offPanes() session.Host {
+	if r := a.panesRef.Load(); r != nil {
+		return r.Host
+	}
+	return a.panes
 }
 
 // trackViewed tells the panes which session the user looks at: the one

@@ -719,3 +719,22 @@ func TestRemoteActionsSafe(t *testing.T) {
 		t.Error("omaterm do may not open a terminal")
 	}
 }
+
+// Goroutines read the pane host while the UI thread swaps it (a session
+// daemon taking over): run under -race, a plain field read raced.
+func TestHostSwapNoRace(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			a.offPanes().Get("none")
+			a.writeHistory("none", nil)
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		a.setPanes(session.NewLocalHost())
+	}
+	<-done
+}

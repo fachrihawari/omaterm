@@ -24,7 +24,7 @@ func (a *appState) saveHistories(force bool) {
 	if a.win == nil {
 		return
 	}
-	a.panes.Each(func(p session.Handle) {
+	a.offPanes().Each(func(p session.Handle) {
 		h := p.History(force)
 		if h == nil {
 			return
@@ -39,7 +39,7 @@ func (a *appState) saveHistories(force bool) {
 func (a *appState) writeHistory(id string, h []byte) {
 	a.historyMu.Lock()
 	defer a.historyMu.Unlock()
-	if a.panes.Get(id) == nil {
+	if a.offPanes().Get(id) == nil {
 		return
 	}
 	session.SaveHistory(historyPath(id), h)

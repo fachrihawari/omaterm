@@ -63,14 +63,15 @@ func (a *appState) useDaemon() {
 	// The omaterm command's calls that reach the daemon while the window
 	// is open come here, unless the control socket is off.
 	r.OnCall = func(method string, params json.RawMessage) (any, error) {
-		if !a.settings.ControlSocket || a.host == nil {
+		host := a.hostReady.Load()
+		if !a.controlSocket.Load() || host == nil {
 			return nil, proto.Errorf(proto.CodeAppClosed, "omaterm's control socket is off (Settings: controlSocket)")
 		}
 		// No longer than the daemon waits for the answer: past that, a
 		// wait went on here for ever, its caller long gone.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute+time.Second)
 		defer cancel()
-		return a.host.Handle(ctx, method, params)
+		return host.Handle(ctx, method, params)
 	}
 	r.OnConnection = func(reconnecting bool) {
 		a.post(func() {

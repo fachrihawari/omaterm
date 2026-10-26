@@ -268,6 +268,9 @@ type appState struct {
 	// is a copy of every pane's Info as of the last sync (syncStatus),
 	// which views read without locks.
 	panes session.Host
+	// panesRef is panes for goroutines (offPanes): setPanes swaps panes on
+	// the UI thread, and a goroutine reading the field meanwhile raced it.
+	panesRef atomic.Pointer[hostRef]
 	// ws holds the workspaces of projects not shown, by project ID;
 	// wsOwner is the project whose workspace a.tabs is. saved are the
 	// sessions state.json had for projects not yet shown, paneDirs the
@@ -406,7 +409,11 @@ type appState struct {
 	// remoteControl and gitSnapshots are those settings for goroutines
 	// (the control socket's, the panes' hooks), which must not read
 	// a.settings as the UI thread changes it.
-	remoteControl, gitSnapshots atomic.Bool
+	remoteControl, gitSnapshots, controlSocket atomic.Bool
+	// hostRef is host for the daemon's forwarded calls, which arrive on
+	// a goroutine, as soon as the daemon is in use: before startControl
+	// sets host.
+	hostReady atomic.Pointer[localHost]
 	// serviceConflict tells that the daemon is off but its systemd
 	// service would start it: agents aren't resumed until it is settled.
 	serviceConflict bool
@@ -502,6 +509,7 @@ func newApp() *appState {
 	a.loadUIPrefs()
 	a.themeMode = a.settings.Theme
 	a.applyTheme(themeSource(a.themeMode))
+	a.panesRef.Store(&hostRef{a.panes})
 	// Load saved projects and their sessions. With none saved, it starts
 	// empty, and the sidebar offers Open Project.
 	if active := a.loadState(); len(a.projects) > 0 {
