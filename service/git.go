@@ -130,6 +130,23 @@ func HeadSha(root string) string {
 	return s
 }
 
+// Ignored returns what git ignores under dir, as slash paths relative to
+// it; a folder ignored whole is one entry, not its files. Outside a repo,
+// or without git, it is nil.
+func Ignored(dir string) map[string]bool {
+	out, err := gitOut(dir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return nil
+	}
+	ignored := map[string]bool{}
+	for _, p := range strings.Split(out, "\x00") {
+		if p = strings.TrimSuffix(p, "/"); p != "" {
+			ignored[p] = true
+		}
+	}
+	return ignored
+}
+
 // AheadBehind returns commits ahead/behind the upstream.
 func AheadBehind(root string) (ahead, behind int) {
 	out, err := gitCmd(root, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")

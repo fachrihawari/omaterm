@@ -473,6 +473,11 @@ type fileNode struct {
 	Status   string
 	Children []*fileNode
 	Action   string
+	// Muted is what git ignores, shown dimmed as VS Code does.
+	Muted bool
+	// Loaded tells a folder's children were read: a muted one's are read
+	// as it opens, since it may be node_modules.
+	Loaded bool
 }
 
 type project struct {
@@ -999,6 +1004,9 @@ func (a *appState) rebuildFileTree() {
 			if o, ok := open[n.Path]; ok && n.Dir && n.Path != "" {
 				n.Open = o
 			}
+			if n.Open && !n.Loaded {
+				loadFileNode(n)
+			}
 			for _, c := range n.Children {
 				apply(c)
 			}
@@ -1008,16 +1016,9 @@ func (a *appState) rebuildFileTree() {
 	if a.workspace == "" {
 		return
 	}
-	entries, err := os.ReadDir(a.workspace)
-	if err != nil {
-		return
-	}
-	for _, e := range foldersFirst(entries) {
-		n := buildFileNode(a.workspace, e.Name(), e.IsDir(), 0)
-		if n != nil {
-			root.Children = append(root.Children, n)
-		}
-	}
+	root.Path = a.workspace
+	root.Loaded = true
+	fileScan{root: a.workspace, ignored: service.Ignored(a.workspace)}.children(root, -1)
 }
 
 // foldersFirst orders a folder's entries as file managers do: its
@@ -1035,36 +1036,52 @@ func foldersFirst(entries []os.DirEntry) []os.DirEntry {
 	return entries
 }
 
-func buildFileNode(parent, name string, isDir bool, depth int) *fileNode {
+// fileScan reads the workspace for the file tree.
+type fileScan struct {
+	root    string
+	ignored map[string]bool // what git ignores, as slash paths under root
+}
+
+func (s fileScan) node(parent, name string, isDir bool, depth int, muted bool) *fileNode {
 	if depth > 3 {
 		return nil
 	}
-	// Skip hidden files/dirs (e.g. .DS_Store, .bashrc).
-	if len(name) > 0 && name[0] == '.' {
+	path := filepath.Join(parent, name)
+	if isDir && (name == ".git" || service.Protected(path)) {
 		return nil
 	}
-	if isDir {
-		if service.Protected(filepath.Join(parent, name)) {
-			return nil
-		}
-		switch name {
-		case "node_modules", ".mygo", "build", "dist", ".cache":
-			return nil
-		}
+	if !muted {
+		rel, _ := filepath.Rel(s.root, path)
+		muted = name == "node_modules" || s.ignored[filepath.ToSlash(rel)]
 	}
-	n := &fileNode{Name: name, Path: filepath.Join(parent, name), Dir: isDir, Open: depth < 1}
+	n := &fileNode{Name: name, Path: path, Dir: isDir, Open: depth < 1 && !muted, Muted: muted}
 	if !isDir {
 		n.Action = "editor"
 		return n
 	}
-	entries, err := os.ReadDir(filepath.Join(parent, name))
+	if !muted {
+		n.Loaded = true
+		s.children(n, depth)
+	}
+	return n
+}
+
+// children reads a folder's entries into it, its folders first.
+func (s fileScan) children(n *fileNode, depth int) {
+	entries, err := os.ReadDir(n.Path)
 	if err != nil {
-		return n
+		return
 	}
 	for _, e := range foldersFirst(entries) {
-		if ch := buildFileNode(filepath.Join(parent, name), e.Name(), e.IsDir(), depth+1); ch != nil {
+		if ch := s.node(n.Path, e.Name(), e.IsDir(), depth+1, n.Muted); ch != nil {
 			n.Children = append(n.Children, ch)
 		}
 	}
-	return n
+}
+
+// loadFileNode reads a muted folder's children as it opens, one level:
+// its own folders wait for theirs.
+func loadFileNode(n *fileNode) {
+	n.Loaded = true
+	fileScan{}.children(n, 0)
 }

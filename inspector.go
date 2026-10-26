@@ -298,7 +298,11 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 		e.Background(pal.Hover)
 	}
 	e.Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4).Children(func() {
+		row := ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4)
+		if n.Muted {
+			row.Opacity(0.5)
+		}
+		row.Children(func() {
 			// Disclosure column: always present, so folder and file
 			// badges line up on one grid at every depth.
 			if n.Dir {
@@ -329,6 +333,9 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	if e.Clicked() {
 		if n.Dir {
 			n.Open = !n.Open
+			if n.Open && !n.Loaded {
+				loadFileNode(n)
+			}
 		} else {
 			a.openEditor(a.nodePath(n))
 		}

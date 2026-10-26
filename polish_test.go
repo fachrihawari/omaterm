@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -776,6 +777,67 @@ func TestFoldersFirst(t *testing.T) {
 		t.Errorf("in b, %v: want z before x.txt", b.Children)
 	}
 
+}
+
+// Dotfiles are listed, and what git ignores too, muted, as VS Code does;
+// .git is not, and a muted folder is read only as it opens.
+func TestFilesShowIgnoredMuted(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	write := func(root, rel string) {
+		p := filepath.Join(root, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("x\n"), 0o644)
+	}
+	tree := func(root string) map[string]*fileNode {
+		a := newApp()
+		a.workspace = root
+		a.rebuildFileTree()
+		nodes := map[string]*fileNode{}
+		for _, n := range a.fileTree.Children {
+			nodes[n.Name] = n
+		}
+		return nodes
+	}
+	for _, repo := range []bool{true, false} {
+		root := t.TempDir()
+		if repo {
+			if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+				t.Fatalf("git init: %v %s", err, out)
+			}
+		}
+		for _, rel := range []string{".gitignore", ".env", "out/x", "a.log", "main.go", "src/b.go", "node_modules/p/index.js"} {
+			write(root, rel)
+		}
+		os.WriteFile(filepath.Join(root, ".gitignore"), []byte("out/\n*.log\n.env\n"), 0o644)
+		nodes := tree(root)
+		if _, ok := nodes[".git"]; ok {
+			t.Errorf("repo %v: .git is listed", repo)
+		}
+		muted := map[string]bool{".gitignore": false, ".env": repo, "node_modules": true, "out": repo, "a.log": repo, "main.go": false, "src": false}
+		for name, want := range muted {
+			n := nodes[name]
+			if n == nil {
+				t.Errorf("repo %v: %s isn't listed", repo, name)
+				continue
+			}
+			if n.Muted != want {
+				t.Errorf("repo %v: %s muted %v, want %v", repo, name, n.Muted, want)
+			}
+		}
+		nm := nodes["node_modules"]
+		if nm == nil {
+			continue
+		}
+		if nm.Open || nm.Loaded || len(nm.Children) != 0 {
+			t.Errorf("repo %v: node_modules was read before it opened", repo)
+		}
+		loadFileNode(nm)
+		if len(nm.Children) != 1 || !nm.Children[0].Muted || nm.Children[0].Loaded {
+			t.Errorf("repo %v: opened node_modules has %v, want p, muted and unread", repo, nm.Children)
+		}
+	}
 }
 
 // A markdown preview has no caret, so no "Ln, Col"; its source does.
