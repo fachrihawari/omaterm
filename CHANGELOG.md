@@ -3,6 +3,20 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.1
+
+### Closing Settings no longer closes omaterm
+
+Closing the Settings window with its close button, Escape or Ctrl+W
+crashed omaterm, taking the main window with it. It now closes only
+Settings.
+
+### Settings sits with the sidebar's buttons
+
+The gear moved from the right end of the status bar, where it was easy
+to miss, to the bottom of the sidebar, before Open Project and the
+command palette.
+
 ## 0.9.0
 
 ### A Settings window
