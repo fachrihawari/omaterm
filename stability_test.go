@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -225,4 +227,35 @@ func TestAgentKeptWhenStatusIsLost(t *testing.T) {
 	if a.paneAgents[id] != nil {
 		t.Fatal("an agent that quit is still kept")
 	}
+}
+
+// When another host takes over the panes (a session daemon, after
+// "Restart Sessions"), it is the one run and followed: the old host's
+// goroutines went on, and the status froze for the rest of the run.
+func TestStatusFollowsNewHost(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.startPanes()
+	defer func() { a.panesStop() }()
+	h := &runSpy{Host: session.NewLocalHost(), ran: make(chan struct{}, 1)}
+	a.setPanes(h)
+	select {
+	case <-h.ran:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the new host is never run, nor its changes followed")
+	}
+}
+
+// runSpy is a host that tells when it is run.
+type runSpy struct {
+	session.Host
+	ran chan struct{}
+}
+
+func (h *runSpy) Run(ctx context.Context) {
+	select {
+	case h.ran <- struct{}{}:
+	default:
+	}
+	h.Host.Run(ctx)
 }

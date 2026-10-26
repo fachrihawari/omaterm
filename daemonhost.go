@@ -66,7 +66,7 @@ func (a *appState) useDaemon() {
 	r.OnConnection = func(reconnecting bool) {
 		a.post(func() { a.daemonReconnecting = reconnecting })
 	}
-	a.panes = r
+	a.setPanes(r)
 	a.hookPanes()
 
 	a.pruneUnknownPanes(r)

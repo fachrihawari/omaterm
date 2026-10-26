@@ -14,7 +14,10 @@ import (
 func (a *appState) startPanes() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.panesStop = cancel
-	go a.panes.Run(ctx)
+	// The host these goroutines follow: one that replaces it (a session
+	// daemon taking over) gets goroutines of its own (setPanes).
+	panes := a.panes
+	go panes.Run(ctx)
 	go a.git.run(ctx, func() { a.post(func() {}) })
 	go func() {
 		t := time.NewTicker(10 * time.Second)
@@ -34,12 +37,24 @@ func (a *appState) startPanes() {
 			select {
 			case <-ctx.Done():
 				return
-			case <-a.panes.Changed():
+			case <-panes.Changed():
 				time.Sleep(25 * time.Millisecond)
 				a.post(a.syncStatus)
 			}
 		}
 	}()
+}
+
+// setPanes makes h the panes' host. When the old one's changes were
+// followed, h's are followed instead: still waiting on the old host,
+// the status froze for the rest of the run after a session daemon took
+// over ("Restart Sessions").
+func (a *appState) setPanes(h session.Host) {
+	a.panes = h
+	if a.panesStop != nil {
+		a.panesStop()
+		a.startPanes()
+	}
 }
 
 // trackViewed tells the panes which session the user looks at: the one
