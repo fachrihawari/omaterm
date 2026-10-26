@@ -793,3 +793,60 @@ func TestGitSaysWhyAndFollowsBranch(t *testing.T) {
 		t.Errorf("the Git panel shows branch %q after a switch to feature", a.currentBranch)
 	}
 }
+
+// While the app reconnects to the session daemon, the daemon writes the
+// sessions file itself: a session made then (from the phone, or the
+// omaterm command) survives the app's next save, and one the app closed
+// meanwhile doesn't come back.
+func TestReconnectSavesMerge(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	t.Cleanup(func() { os.Remove(stateFilePath()) })
+	a.writeState()
+	closing := a.tabs[0].ID
+	a.newTerminalTab()
+	a.writeState()
+
+	a.daemonReconnecting = true
+	st, err := model.Load(stateFilePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Sessions = append(st.Sessions, model.Session{ID: "phone", Project: a.projects[0].ID, Name: "from the phone",
+		Layout: &model.Layout{Pane: "phone-p"}, Panes: []model.Pane{{ID: "phone-p", Dir: a.projects[0].Path}}})
+	model.Save(stateFilePath(), st)
+	a.closeTab(0) // closed here meanwhile
+	a.writeState()
+	if st, _ := model.Load(stateFilePath()); !slices.ContainsFunc(st.Sessions, func(s model.Session) bool { return s.ID == "phone" }) {
+		t.Fatal("the app saved over the session the daemon made")
+	}
+
+	a.daemonReconnecting = false
+	a.adoptSavedSessions()
+	if a.saveDeferred {
+		a.saveDeferred = false
+		a.writeState()
+	}
+	st, _ = model.Load(stateFilePath())
+	ids := map[string]bool{}
+	for _, s := range st.Sessions {
+		ids[s.ID] = true
+	}
+	if !ids["phone"] {
+		t.Error("the daemon's session was dropped once reconnected")
+	}
+	if ids[closing] {
+		t.Error("the session closed during the reconnect came back")
+	}
+}
+
+// While the sessions file can't be read nothing is saved, so no project
+// is added: its sessions were ended as unknown at the next launch.
+func TestNoProjectWhileStateUnreadable(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.stateLoadFailed = "/somewhere/state.json.bad"
+	if i := a.addProject(t.TempDir(), ""); i >= 0 {
+		t.Error("a project was added while nothing can be saved")
+	}
+}

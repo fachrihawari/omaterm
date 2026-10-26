@@ -81,6 +81,10 @@ func (a *appState) useDaemon() {
 			// sessions (web access, the omaterm command) in state.json.
 			if back {
 				a.adoptSavedSessions()
+				if a.saveDeferred {
+					a.saveDeferred = false
+					a.saveState()
+				}
 			}
 		})
 	}

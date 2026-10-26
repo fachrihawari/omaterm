@@ -201,6 +201,9 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		}
 		return h.onUI(func() (any, error) {
 			i := a.addProject(p.Dir, p.Name)
+			if i < 0 {
+				return nil, proto.Errorf(proto.CodeUsage, errStateUnreadable.Error())
+			}
 			pr := a.projects[i]
 			return proto.Project{ID: pr.ID, Name: pr.Name, Dir: pr.Path}, nil
 		})
@@ -417,12 +420,18 @@ func within(dir, root string) bool {
 }
 
 // addProject adds a folder as a project, unless it is one; it returns its
-// index.
+// index, -1 when projects can't be added: while the sessions file can't be
+// read, nothing is saved, and the sessions of a project added then were
+// ended as unknown at the next launch.
 func (a *appState) addProject(dir, name string) int {
 	for i, p := range a.projects {
 		if p.Path == dir {
 			return i
 		}
+	}
+	if a.stateLoadFailed != "" {
+		a.toast(nil, errStateUnreadable.Error())
+		return -1
 	}
 	if name == "" {
 		name = filepath.Base(dir)
@@ -431,6 +440,10 @@ func (a *appState) addProject(dir, name string) int {
 	a.saveSoon()
 	return len(a.projects) - 1
 }
+
+// errStateUnreadable is why no project can be added while the sessions
+// file can't be read.
+var errStateUnreadable = errors.New("omaterm can't save sessions while its sessions file can't be read: fix it, or remove it, and restart omaterm")
 
 // cliCreate makes a session, and starts its pane at once: its command
 // runs whether its project shows or not.

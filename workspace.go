@@ -160,8 +160,8 @@ func (a *appState) adoptSavedSessions() {
 	}
 	adopted := false
 	for _, s := range st.Sessions {
-		if known[s.ID] {
-			continue
+		if known[s.ID] || a.savedIDs[s.ID] {
+			continue // here, or closed here since the last save
 		}
 		pi := -1
 		for i := range a.projects {
@@ -171,8 +171,8 @@ func (a *appState) adoptSavedSessions() {
 		}
 		if pi < 0 {
 			for _, p := range st.Projects {
-				if p.ID != s.Project {
-					continue
+				if p.ID != s.Project || a.savedIDs[p.ID] {
+					continue // removed here since the last save
 				}
 				if info, err := os.Stat(p.Dir); err == nil && info.IsDir() {
 					a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: p.Dir})
@@ -319,7 +319,21 @@ func (a *appState) loadState() int {
 	for _, s := range st.Sessions {
 		a.saved[s.Project] = append(a.saved[s.Project], s)
 	}
+	a.rememberSaved(st)
 	return active
+}
+
+// rememberSaved keeps which sessions and projects the file holds as the
+// app last read or wrote it: one of them the file still has but the app
+// no longer does was closed here, not made by the daemon meanwhile.
+func (a *appState) rememberSaved(st model.State) {
+	a.savedIDs = map[string]bool{}
+	for _, s := range st.Sessions {
+		a.savedIDs[s.ID] = true
+	}
+	for _, p := range st.Projects {
+		a.savedIDs[p.ID] = true
+	}
 }
 
 // state is what to save of the projects and sessions.
@@ -418,11 +432,37 @@ func (a *appState) saveState() {
 	if a.win == nil || a.stateLoadFailed != "" {
 		return
 	}
+	a.writeState()
+}
+
+// writeState saves state.json. While the app reconnects to the session
+// daemon, the daemon writes the file itself, for sessions the omaterm
+// command or web access make: the save waits for the reconnect, which
+// takes them first (OnConnection). Saving over the file, the app dropped
+// them. Closing the window, it takes them now.
+func (a *appState) writeState() {
+	if a.daemonReconnecting {
+		if !a.windowClosing {
+			a.saveDeferred = true
+			return
+		}
+		a.adoptSavedSessions()
+	}
 	if len(a.projects) == 0 && len(a.unavailable) == 0 {
 		os.Remove(stateFilePath())
+		a.rememberSaved(model.State{})
 		return
 	}
-	model.Save(stateFilePath(), a.state())
+	st := a.state()
+	if err := model.Save(stateFilePath(), st); err != nil {
+		if !a.saveFailed {
+			a.toast(nil, "Could not save your sessions: "+err.Error())
+		}
+		a.saveFailed = true
+		return
+	}
+	a.saveFailed = false
+	a.rememberSaved(st)
 }
 
 // toLayout converts a split tree to the saved layout.

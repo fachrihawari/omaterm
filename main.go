@@ -151,6 +151,7 @@ func main() {
 		a.postWin.Store(a.win)
 		a.win.OnClose(a.beforeClose)
 		a.win.OnClosed(func() {
+			a.windowClosing = true
 			a.stopSystemStats()
 			if a.themeWatchStop != nil {
 				a.themeWatchStop()

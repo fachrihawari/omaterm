@@ -521,6 +521,10 @@ func (a *appState) jumpTo(st ...iconState) bool {
 // openProjectDialog shows a native folder picker and adds the chosen folder
 // as a project, or switches to it when already listed.
 func (a *appState) openProjectDialog() {
+	if a.stateLoadFailed != "" {
+		a.toast(nil, errStateUnreadable.Error())
+		return
+	}
 	go func() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 			Parent:    a.win,

@@ -417,6 +417,14 @@ type appState struct {
 	// serviceConflict tells that the daemon is off but its systemd
 	// service would start it: agents aren't resumed until it is settled.
 	serviceConflict bool
+	// savedIDs are the sessions and projects state.json held as last read
+	// or written (rememberSaved); saveDeferred tells that a save waits for
+	// the daemon's reconnect, windowClosing that the window is closing,
+	// and saveFailed that the last save failed, which was told.
+	savedIDs      map[string]bool
+	saveDeferred  bool
+	windowClosing bool
+	saveFailed    bool
 	// daemonIgnored tells that the user runs without a session daemon of
 	// another version, which still runs its sessions: agents aren't
 	// resumed here, which would run each conversation twice.
