@@ -1,9 +1,11 @@
 package model
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -49,5 +51,18 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if got := out.Sessions[0].Layout.Panes(); len(got) != 2 || got[1] != "y" {
 		t.Fatalf("panes %v", got)
+	}
+}
+
+// A sessions file a newer omaterm wrote is not written over: what only
+// the newer one keeps was lost.
+func TestSaveKeepsNewerFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	os.WriteFile(path, []byte(`{"version": 99, "sessions": []}`), 0o600)
+	if err := Save(path, State{}); !errors.Is(err, ErrNewer) {
+		t.Fatalf("save over a newer file: %v", err)
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"version": 99`) {
+		t.Errorf("the newer file was written over: %s", data)
 	}
 }

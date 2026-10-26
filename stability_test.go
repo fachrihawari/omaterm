@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -848,5 +849,43 @@ func TestNoProjectWhileStateUnreadable(t *testing.T) {
 	a.stateLoadFailed = "/somewhere/state.json.bad"
 	if i := a.addProject(t.TempDir(), ""); i >= 0 {
 		t.Error("a project was added while nothing can be saved")
+	}
+}
+
+// Saving settings writes only what the app changed: an edit made in the
+// file while omaterm ran, and keys this version doesn't know, stay; a
+// value of the wrong type passes over that key alone, where it reset
+// every setting.
+func TestSettingsSaveKeepsFileEdits(t *testing.T) {
+	path := settingsFilePath()
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	t.Cleanup(func() { os.Remove(path); settingsWrongKey = "" })
+	os.WriteFile(path, []byte(`{"density": "compact", "confirmClose": "yes", "futureKey": 7}`), 0o600)
+	s := loadSettings()
+	if s.Density != "compact" {
+		t.Errorf("one wrong value reset the others: density %q", s.Density)
+	}
+	if settingsWrongKey == "" {
+		t.Error("the wrong value isn't told")
+	}
+
+	// Edited by hand meanwhile.
+	os.WriteFile(path, []byte(`{"density": "compact", "confirmClose": false, "futureKey": 7, "background": "plain"}`), 0o600)
+	now := s
+	now.ReduceMotion = !s.ReduceMotion // what the app changed
+	data, err := mergeSettings(path, settingsBase, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	json.Unmarshal(data, &got)
+	if got["background"] != "plain" || got["confirmClose"] != false {
+		t.Errorf("the edit made in the file was lost: %s", data)
+	}
+	if got["futureKey"] != float64(7) {
+		t.Errorf("an unknown key was dropped: %s", data)
+	}
+	if got["reduceMotion"] != now.ReduceMotion {
+		t.Errorf("the app's change wasn't written: %s", data)
 	}
 }

@@ -159,8 +159,21 @@ func Load(path string) (State, error) {
 	return st, nil
 }
 
+// ErrNewer is Save's error for a file a newer omaterm wrote, in a form
+// this one doesn't know: written over, what only the newer one keeps was
+// lost.
+var ErrNewer = errors.New("the sessions file is from a newer omaterm")
+
 // Save writes a state file atomically, readable by its owner only.
 func Save(path string, st State) error {
+	if data, err := os.ReadFile(path); err == nil {
+		var probe struct {
+			Version int `json:"version"`
+		}
+		if json.Unmarshal(data, &probe) == nil && probe.Version > Version {
+			return ErrNewer
+		}
+	}
 	st.Version = Version
 	st.Saved = time.Now().UnixMilli()
 	data, err := json.MarshalIndent(st, "", "  ")

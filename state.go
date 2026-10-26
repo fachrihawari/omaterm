@@ -424,11 +424,13 @@ type appState struct {
 	// and saveFailed that the last save failed, which was told.
 	// programLimit holds back programs' own notifications to one every 5
 	// seconds a session.
-	programLimit  notice.Limiter
-	savedIDs      map[string]bool
-	saveDeferred  bool
-	windowClosing bool
-	saveFailed    bool
+	programLimit notice.Limiter
+	// settingsSaveFailed tells that saving settings failed, which was told.
+	settingsSaveFailed bool
+	savedIDs           map[string]bool
+	saveDeferred       bool
+	windowClosing      bool
+	saveFailed         bool
 	// daemonIgnored tells that the user runs without a session daemon of
 	// another version, which still runs its sessions: agents aren't
 	// resumed here, which would run each conversation twice.
@@ -620,6 +622,9 @@ func (a *appState) start() {
 	}
 	if settingsBroken != "" {
 		a.queuedToasts = append(a.queuedToasts, "Your settings file couldn't be read, so the defaults are in use. Its copy: "+cli.ShortPath(settingsBroken))
+	}
+	if settingsWrongKey != "" {
+		a.queuedToasts = append(a.queuedToasts, "Your settings file gives \""+settingsWrongKey+"\" a value it can't use: its default is in use")
 	}
 	a.startThemeWatch()
 	a.startPanes()

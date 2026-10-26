@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
 )
 
@@ -155,20 +157,33 @@ func settingsFilePath() string {
 }
 
 // settingsBroken is the copy of a settings.json that couldn't be read,
-// kept before the defaults are saved over it.
-var settingsBroken string
+// kept before the defaults are saved over it; settingsWrongKey a key the
+// file gave a value of the wrong type, which was passed over.
+var settingsBroken, settingsWrongKey string
+
+// settingsBase are the settings as the app last read or wrote them: a
+// save writes into the file only what changed since, so what was edited
+// in the file meanwhile (by hand, or by another omaterm) stays, as do
+// keys this version doesn't know.
+var settingsBase Settings
 
 // loadSettings reads settings.json over the defaults; a missing or broken
 // file gives the defaults. A broken one, as a slip in an editor leaves it,
-// is copied aside first.
+// is copied aside first. A value of the wrong type passes over that key
+// alone: it reset every setting.
 func loadSettings() Settings {
 	s := defaultSettings()
 	if data, err := os.ReadFile(settingsFilePath()); err == nil {
 		if err := json.Unmarshal(data, &s); err != nil {
-			s = defaultSettings()
-			bad := settingsFilePath() + ".bad-" + time.Now().Format("20060102-150405")
-			if os.WriteFile(bad, data, 0o600) == nil {
-				settingsBroken = bad
+			var wrong *json.UnmarshalTypeError
+			if errors.As(err, &wrong) {
+				settingsWrongKey = wrong.Field
+			} else {
+				s = defaultSettings()
+				bad := settingsFilePath() + ".bad-" + time.Now().Format("20060102-150405")
+				if os.WriteFile(bad, data, 0o600) == nil {
+					settingsBroken = bad
+				}
 			}
 		}
 	}
@@ -177,7 +192,16 @@ func loadSettings() Settings {
 	default:
 		s.Theme = defaultTheme()
 	}
+	settingsBase = copySettings(s)
 	return s
+}
+
+// copySettings is a copy of s that shares nothing with it.
+func copySettings(s Settings) Settings {
+	var c Settings
+	data, _ := json.Marshal(s)
+	json.Unmarshal(data, &c)
+	return c
 }
 
 // settingsFileHas tells whether settings.json has the key at its top.
@@ -191,8 +215,8 @@ func settingsFileHas(key string) bool {
 	return ok
 }
 
-// saveSettings writes settings.json atomically. Tests, which have no
-// window, never write.
+// saveSettings writes what changed of the settings into settings.json,
+// atomically. Tests, which have no window, never write.
 func (a *appState) saveSettings() {
 	if a.win == nil {
 		return
@@ -200,10 +224,16 @@ func (a *appState) saveSettings() {
 	a.settings.Theme = a.themeMode
 	a.settings.Terminal.FontSize = a.fontSize
 	a.settings.Editor.DiffSplit = a.diffSplit
-	data, err := json.MarshalIndent(a.settings, "", "  ")
+	data, err := mergeSettings(settingsFilePath(), settingsBase, a.settings)
 	if err != nil {
+		// Unreadable now, as mid-edit: written over, the edit was lost.
+		if !a.settingsSaveFailed {
+			a.toast(nil, "Your settings file can't be read, so changes aren't saved: "+err.Error())
+		}
+		a.settingsSaveFailed = true
 		return
 	}
+	a.settingsSaveFailed = false
 	path := settingsFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
@@ -212,7 +242,53 @@ func (a *appState) saveSettings() {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return
 	}
-	os.Rename(tmp, path)
+	if os.Rename(tmp, path) == nil {
+		settingsBase = copySettings(a.settings)
+	}
+}
+
+// mergeSettings is settings.json as it is on disk, with what changed from
+// base to now written into it. A file that can't be read is an error,
+// unless it is the broken one a copy was kept of at launch.
+func mergeSettings(path string, base, now Settings) ([]byte, error) {
+	disk := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &disk); err != nil {
+			if settingsBroken == "" {
+				return nil, err
+			}
+			disk = map[string]any{} // the broken one, copied aside
+		}
+	}
+	mergeChanged(disk, settingsMap(base), settingsMap(now))
+	return json.MarshalIndent(disk, "", "  ")
+}
+
+// settingsMap is s as JSON objects.
+func settingsMap(s Settings) map[string]any {
+	var m map[string]any
+	data, _ := json.Marshal(s)
+	json.Unmarshal(data, &m)
+	return m
+}
+
+// mergeChanged writes into disk each value of now that differs from base,
+// key by key down nested objects.
+func mergeChanged(disk, base, now map[string]any) {
+	for k, nv := range now {
+		bv := base[k]
+		if reflect.DeepEqual(bv, nv) {
+			continue
+		}
+		nm, ok1 := nv.(map[string]any)
+		bm, ok2 := bv.(map[string]any)
+		dm, ok3 := disk[k].(map[string]any)
+		if ok1 && ok2 && ok3 {
+			mergeChanged(dm, bm, nm)
+			continue
+		}
+		disk[k] = nv
+	}
 }
 
 // settingDef is a setting the Settings window and the command palette
