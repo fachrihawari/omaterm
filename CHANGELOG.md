@@ -3,6 +3,36 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.4
+
+Polish: omaterm looks like one app from corner to corner.
+
+- **One dialog style.** Confirmations in the main window, sheets in
+  Settings and the Pair dialog share one width, place, title and button
+  size, with red for the button that destroys something.
+- **One header for every view.** An editor, a picture, a diff and the
+  Git graph have a terminal pane's header: as tall, with its title, so
+  switching tabs no longer moves the content.
+- **Changed files read alike** in the Git tab, Changes and a commit's
+  files: the file's icon, its name with its folder beside it, and its
+  status letter at the end, in rows of one height.
+- **The Git graph's columns line up** in every row, wherever a branch
+  opens.
+- **The command palette's titles start at one edge;** sessions and
+  projects name their kind as commands and settings do.
+- **Banners are built alike:** the agent setup offer shows a bot, and
+  putting something off reads "Not Now" everywhere.
+- **Long branch names use the room there is** in the status bar and the
+  Info tab before they're cut.
+- **Light themes:** pane cards have a hairline edge, and the focused
+  pane of a split shows its ring.
+- **Smaller things:** folders come first in the file tree; the Git
+  graph shows no dash before its count is known; the branch picker's
+  "current" badge is legible on the chosen row; a markdown preview
+  doesn't show a caret position; the phone key bar's keys have room
+  around their labels; Settings' "Open settings file" lines up with the
+  pages above it.
+
 ## 0.9.3
 
 A steadier main window, and fewer surprises.
