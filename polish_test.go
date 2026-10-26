@@ -710,3 +710,16 @@ func TestFileRowsAlike(t *testing.T) {
 		t.Errorf("status letter at x=%.0f, before the name at x=%.0f: want it at the end, as the Git tab has it", letter.X, name.X)
 	}
 }
+
+// Banners say "Not Now" for later, and the agent setup one shows the bot,
+// not the refresh arrows of the daemon's.
+func TestBannersAlike(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.daemonStale = "0.7.0"
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if tr.HasText("Later") || !tr.HasText("Not Now") {
+		t.Errorf("the daemon banner's button: %v", tr.Texts())
+	}
+}

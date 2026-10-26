@@ -40,25 +40,17 @@ func (a *appState) agentSetupBanner(c *ui.Context) {
 		return
 	}
 	name := agent.DisplayName(a.agentSetupOffer)
-	ui.Row(c.Key("agent-setup-banner")).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).
-		Radius(8).Background(pal.Raised).Border(1, pal.Border).Children(func() {
-		ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(pal.Accent)
-		msg := "Resume " + name + " in its own conversation after a restart: set up the agent integration."
-		// Two lines at most, in a narrow window; the tooltip has it all.
-		ui.Text(c, msg).Tooltip(msg).
-			FontSize(12).TextColor(pal.TextSoft).MaxLines(2).Ellipsis("…").Grow(1).MinWidth(0)
-		later := ui.ButtonBase(c).Padding(4, 10).Radius(6).Height(26).Children(func() {
-			ui.Text(c, "Not Now").FontSize(12).TextColor(pal.TextMuted)
+	a.banner(c, "agent-setup-banner", iconBot, pal.Accent, false,
+		"Resume "+name+" in its own conversation after a restart: set up the agent integration.", func() {
+			if bannerButton(c, "Not Now", false) {
+				a.answerAgentSetup()
+			}
+			if bannerButton(c, "Set Up", true) {
+				offered := a.agentSetupOffer
+				a.answerAgentSetup()
+				a.setupAgents(c, offered)
+			}
 		})
-		if later.Clicked() {
-			a.answerAgentSetup()
-		}
-		if ui.PrimaryButton(c, "Set Up").Height(26).FontSize(12).Clicked() {
-			offered := a.agentSetupOffer
-			a.answerAgentSetup()
-			a.setupAgents(c, offered)
-		}
-	})
 }
 
 // answerAgentSetup keeps that the offer was answered, at once: a logout
