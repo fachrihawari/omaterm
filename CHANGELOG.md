@@ -3,6 +3,16 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.8
+
+### Files
+
+- **The Files tab shows every file, and dims what git ignores**, as
+  VS Code does. Dotfiles such as `.github` and `.env` were missing, and
+  ignored files such as build output looked like source. `.git` stays
+  hidden, and an ignored folder such as `node_modules` is read only as
+  you open it.
+
 ## 0.9.7
 
 Things that worked, but not quite right.
