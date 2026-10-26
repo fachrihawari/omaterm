@@ -3,6 +3,55 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.6
+
+No more hangs, and what you see stays true.
+
+### Nothing hangs
+
+- **Global search returns** when it finds more than it shows. A broad
+  search used to show nothing at all.
+- **`omaterm wait` ends when its session closes**, rather than waiting
+  for ever.
+- **Committing no longer freezes the window** while the repo's
+  pre-commit hooks run, and neither do checkout, the branch list or
+  turning web access on and off.
+- **Reconnecting to the session daemon keeps trying until it connects.**
+  After 10 seconds it gave up, said it was connected, and left every
+  pane blank.
+
+### What you see stays true
+
+- **Sessions made from your phone or the `omaterm` command while the
+  app was reconnecting are kept**, and a session you closed meanwhile
+  stays closed.
+- **A session you close always ends**, even when the session daemon was
+  slow or away. Its programs used to run on unseen.
+- **The session on screen stays read** after the daemon reconnects.
+- **The branch shown follows the repo** after a `git switch` in a
+  terminal.
+- **Git says why it failed:** a hook's verdict, a missing `user.email`,
+  rather than "exit status 1".
+- **Edits you make in `settings.json` while omaterm runs are kept.** A
+  zoom or a theme change wrote over them. A wrong value now passes over
+  that one setting, rather than resetting them all.
+- **A command answered "busy" never runs later.** An agent that tried
+  again made a second session.
+
+### Steadier underneath
+
+- **A program printing notifications in a loop** shows one every 5
+  seconds, not thousands.
+- **A slow phone on web access** no longer makes the session daemon
+  hold hundreds of megabytes of screens.
+- **The session daemon doesn't quit while a command is under way.**
+- **Paired devices stay revoked**, however many omaterm processes change
+  web access at once.
+- **Setting up the agent integration keeps a symlinked settings file**
+  a dotfiles manager tracks.
+- **Sockets that don't fit their folder** go in a folder only you can
+  open, not the shared `/tmp`.
+
 ## 0.9.5
 
 Nothing lost, and no crashes: a second look at what could go wrong.
