@@ -392,3 +392,24 @@ func TestInspectorPanelShortcuts(t *testing.T) {
 		}
 	}
 }
+
+// Alt+Up and Down are the editor's in an editor (move lines), and switch
+// sessions elsewhere: they switched sessions in the editor too.
+func TestAltArrowsEditorsOwn(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	var next keyBinding
+	for _, b := range keybindings {
+		if b.Command == "session.next" {
+			next = b
+		}
+	}
+	a.activeView = tabTerminal
+	if !a.keyActive(next) {
+		t.Error("Alt+Down doesn't switch sessions from a terminal")
+	}
+	a.activeView = tabEditor
+	if a.keyActive(next) {
+		t.Error("Alt+Down switches sessions in the editor")
+	}
+}

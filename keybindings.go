@@ -136,6 +136,9 @@ const (
 	// scopeBrowser bindings work while a browser pane has the keyboard;
 	// they take keys a terminal would otherwise get (Ctrl+L, Ctrl+R).
 	scopeBrowser
+	// scopeNotEditor bindings work but in an editor, whose own keys they
+	// are there (Alt+Up and Down move lines).
+	scopeNotEditor
 )
 
 // String names the scope as the shortcuts overlay shows it.
@@ -204,8 +207,8 @@ var keybindings = append([]keyBinding{
 	// Sessions: the one that needs you, and the next and previous in the
 	// sidebar's order.
 	{"session.attention", combo(ui.Cmd|ui.Shift, ui.KeyJ), scopeGlobal},
-	{"session.next", combo(ui.Alt, ui.KeyDown), scopeGlobal},
-	{"session.prev", combo(ui.Alt, ui.KeyUp), scopeGlobal},
+	{"session.next", combo(ui.Alt, ui.KeyDown), scopeNotEditor},
+	{"session.prev", combo(ui.Alt, ui.KeyUp), scopeNotEditor},
 
 	// Editor.
 	{"file.save", combo(ui.Cmd, ui.KeyS), scopeEditor},
@@ -306,6 +309,8 @@ func (a *appState) keyActive(b keyBinding) bool {
 		return a.activeView == tabEditor
 	case scopeBrowser:
 		return a.focusedWeb() != nil
+	case scopeNotEditor:
+		return a.activeView != tabEditor
 	}
 	return true
 }
@@ -365,6 +370,10 @@ func checkKeybindings() []string {
 func scopesOverlap(a, b keyScope) bool {
 	if a == b || a == scopeGlobal || b == scopeGlobal {
 		return true
+	}
+	// Everywhere but the editor.
+	if a == scopeNotEditor || b == scopeNotEditor {
+		return a != scopeEditor && b != scopeEditor
 	}
 	// A browser pane is in the terminal view: their keys compete.
 	if a == scopeBrowser || b == scopeBrowser {
