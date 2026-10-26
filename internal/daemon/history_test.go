@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,5 +48,31 @@ func TestSweepHistories(t *testing.T) {
 		if got := err == nil; got != want {
 			t.Errorf("%s kept=%v, want %v", name, got, want)
 		}
+	}
+}
+
+// A call being handled keeps the daemon from its idle exit, and once it
+// is exiting, calls are turned away: an omaterm new arriving then had its
+// session saved and its shell started, then killed with the daemon.
+func TestIdleExitWaitsForCalls(t *testing.T) {
+	d, _ := startDaemon(t, time.Second)
+	d.mu.Lock()
+	d.inFlight++ // a call under way
+	d.mu.Unlock()
+	select {
+	case <-d.Done():
+		t.Fatal("the daemon left with a call under way")
+	case <-time.After(2500 * time.Millisecond):
+	}
+	d.mu.Lock()
+	d.inFlight--
+	d.mu.Unlock()
+	select {
+	case <-d.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle daemon didn't leave")
+	}
+	if _, err := d.Handle(context.Background(), "panes", nil); err == nil {
+		t.Error("a call to a daemon that left was taken")
 	}
 }

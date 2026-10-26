@@ -85,7 +85,11 @@ type Daemon struct {
 	nextSub int
 	pending bool
 	clients int
-	idleAt  time.Time
+	// inFlight are control calls being handled; exiting is set as the
+	// daemon leaves for being idle, after which calls are turned away.
+	inFlight int
+	exiting  bool
+	idleAt   time.Time
 	// attached are each pane's attachments.
 	attached map[string]map[*attachment]struct{}
 	// env is the app's display and session variables (env.update), which
@@ -257,13 +261,15 @@ func (d *Daemon) loop(ctx context.Context) {
 			// Web access keeps it: a browser may come for the sessions.
 			serving := d.webServing()
 			d.mu.Lock()
-			idle := d.reg.Len() == 0 && d.clients == 0 && !d.opts.Serve && !serving
+			idle := d.reg.Len() == 0 && d.clients == 0 && d.inFlight == 0 && !d.opts.Serve && !serving
 			if !idle {
 				d.idleAt = now
 			}
 			idleFor := now.Sub(d.idleAt)
+			exit := idle && idleFor > d.opts.IdleExit
+			d.exiting = exit // from here, calls are turned away
 			d.mu.Unlock()
-			if idle && idleFor > d.opts.IdleExit {
+			if exit {
 				log.Printf("idle: exiting")
 				d.once.Do(func() { close(d.quit); d.stopWeb(); d.srv.Close(); d.lock.Close() })
 				return
@@ -357,6 +363,25 @@ type StartParams struct {
 
 // Handle runs a method of the daemon's socket.
 func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	// A call in flight keeps the daemon from its idle exit: an omaterm
+	// new arriving as it exited had its session saved and its shell
+	// started, then killed with the daemon.
+	d.mu.Lock()
+	if d.exiting {
+		d.mu.Unlock()
+		return nil, proto.Errorf(proto.CodeBusy, "the session daemon is exiting: try again")
+	}
+	d.inFlight++
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		d.inFlight--
+		d.mu.Unlock()
+	}()
+	return d.handle(ctx, method, raw)
+}
+
+func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	pane := func(id string) (*session.Pane, error) {
 		if p := d.reg.Get(id); p != nil {
 			return p, nil
