@@ -668,10 +668,9 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 	e.Children(func() {
 		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
 		txt(c, "GIT GRAPH", 10, pal.TextMuted).LetterSpacing(1.0)
+		// No count until the history is in: a dash read as a broken badge.
 		if a.graphLoaded {
 			countBadge(c, len(a.commits))
-		} else {
-			countBadgeText(c, "—")
 		}
 		ui.Spacer(c)
 		if cmdButton(c, iconOpenInNew, iconBtn, false).Tooltip("Open in pane").Clicked() {

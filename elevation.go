@@ -21,6 +21,18 @@ func raised(e ui.Element) ui.Element {
 	return e.Shadow(0, 1, 2, 0, pal.CardShadow).Shadow(0, 1, 6, 0, pal.CardShadow2)
 }
 
+// cardEdge lifts a pane's card: raised, and in a light theme edged with a
+// hairline as the dark one is with its lit edge. Without it a light card
+// sat a pixel higher than a dark one and a focused pane's ring, a border
+// color, had no border to color.
+func cardEdge(e ui.Element) ui.Element {
+	raised(e)
+	if !pal.Dark {
+		e.Border(1, black.Alpha(0.08))
+	}
+	return e
+}
+
 // chosen lifts the chosen row of a list a hair: an even ring and a faint
 // shadow close under it; in the dark, as raised.
 func chosen(e ui.Element) ui.Element {

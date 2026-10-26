@@ -187,7 +187,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 				} else {
 					card := ui.Column(c.Key("waiting")).Grow(1).MinHeight(0).Radius(a.cardRadius()).Background(pal.Card).
 						AlignItems(ui.Center).Justify(ui.Center).Gap(8)
-					raised(card).Children(func() {
+					cardEdge(card).Children(func() {
 						ui.Icon(c, iconTerminal).Size(22, 22).TextColor(pal.TextFaint)
 						ui.Text(c, "Your sessions wait for the session daemon").FontSize(12.5).TextColor(pal.TextMuted)
 					})
@@ -195,7 +195,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 			})
 			if a.inspectorVisible {
 				card := ui.Column(c).Width(a.inspectorW).Shrink(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
-				raised(card).Children(func() {
+				cardEdge(card).Children(func() {
 					a.inspector(c)
 				})
 			}
@@ -210,7 +210,7 @@ func (a *appState) content(c *ui.Context) {
 	}
 	// The editor, diff and graph views sit on a card as a pane does.
 	card := ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Radius(a.cardRadius()).Clip().Background(pal.Card)
-	raised(card).Children(func() {
+	cardEdge(card).Children(func() {
 		switch a.activeView {
 		case tabEditor:
 			a.editorView(c)

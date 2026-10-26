@@ -200,7 +200,7 @@ func TestAuditSelectedRowsRead(t *testing.T) {
 			a.branchQuery = ""
 			a.branchSelected = 0
 			a.currentBranch = "feature/audit"
-			return []readable{{"feature/audit", 4.5}, {"current", 3}}
+			return []readable{{"feature/audit", 4.5}, {"current", 4.5}}
 		},
 	}
 	for _, theme := range auditThemes {

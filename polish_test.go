@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/theme"
 	"omaterm/service"
 )
 
@@ -749,5 +750,83 @@ func TestLongBranchUsesRoom(t *testing.T) {
 	tr.Frame()
 	if r, ok := tr.Find(long); !ok || r.W <= 160 {
 		t.Errorf("the status bar's branch is %.0f wide, with room for more", r.W)
+	}
+}
+
+// The file tree lists a folder's folders before its files, as file
+// managers do; the Git graph's section shows no dash for a count it
+// doesn't know yet.
+func TestFoldersFirstAndNoDash(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), nil, 0o644)
+	os.Mkdir(filepath.Join(dir, "b"), 0o755)
+	os.WriteFile(filepath.Join(dir, "b", "x.txt"), nil, 0o644)
+	os.Mkdir(filepath.Join(dir, "b", "z"), 0o755)
+	os.Mkdir(filepath.Join(dir, "c"), 0o755)
+	a := newApp()
+	a.workspace = dir
+	a.rebuildFileTree()
+	var names []string
+	for _, n := range a.fileTree.Children {
+		names = append(names, n.Name)
+	}
+	if got := strings.Join(names, " "); got != "b c a.txt" {
+		t.Errorf("top level %q, want the folders first: b c a.txt", got)
+	}
+	if b := a.fileTree.Children[0]; len(b.Children) != 2 || b.Children[0].Name != "z" {
+		t.Errorf("in b, %v: want z before x.txt", b.Children)
+	}
+
+	g := newTestApp(t)
+	defer stopTermPanes(g)
+	g.inspectorVisible, g.inspectorTab, g.graphLoaded = true, 2, false
+	tr := ui.NewTester(g.view, 1440, 900)
+	tr.Frame()
+	if tr.HasText("—") {
+		t.Error("the Git graph's count shows a dash before it is known")
+	}
+}
+
+// A markdown preview has no caret, so no "Ln, Col"; its source does.
+func TestPreviewHasNoCaretPosition(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	os.WriteFile(filepath.Join(a.projects[0].Path, "notes.md"), []byte("# Notes\n"), 0o644)
+	a.settings.Editor.MarkdownPreview = true
+	a.openEditor("notes.md")
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if tr.HasText("Ln 1, Col 1") {
+		t.Error("the preview shows a caret position")
+	}
+	a.editors["notes.md"].Preview = false
+	tr.Frame()
+	if !tr.HasText("Ln 1, Col 1") {
+		t.Error("the source shows no caret position")
+	}
+}
+
+// A pane's header sits at one height in light and dark themes, and a
+// light card has an edge: it sat a pixel higher, with no ring to color.
+func TestLightCardEdge(t *testing.T) {
+	defer setPalette(theme.BuiltinDark())
+	title := func(dark bool) float32 {
+		a := newTestApp(t)
+		defer stopTermPanes(a)
+		if dark {
+			setPalette(theme.BuiltinDark())
+		} else {
+			setPalette(theme.BuiltinLight())
+		}
+		tr := ui.NewTester(a.view, 1440, 900)
+		tr.Frame()
+		r, ok := tr.Find("Terminal")
+		if !ok {
+			t.Fatal("no pane title")
+		}
+		return r.Y
+	}
+	if d, l := title(true), title(false); d != l {
+		t.Errorf("pane title at y=%.0f dark, %.0f light", d, l)
 	}
 }

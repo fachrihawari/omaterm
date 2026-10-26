@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -896,12 +898,27 @@ func (a *appState) rebuildFileTree() {
 	if err != nil {
 		return
 	}
-	for _, e := range entries {
+	for _, e := range foldersFirst(entries) {
 		n := buildFileNode(a.workspace, e.Name(), e.IsDir(), 0)
 		if n != nil {
 			root.Children = append(root.Children, n)
 		}
 	}
+}
+
+// foldersFirst orders a folder's entries as file managers do: its
+// folders, then its files, each by name.
+func foldersFirst(entries []os.DirEntry) []os.DirEntry {
+	slices.SortStableFunc(entries, func(x, y os.DirEntry) int {
+		if x.IsDir() != y.IsDir() {
+			if x.IsDir() {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(x.Name(), y.Name())
+	})
+	return entries
 }
 
 func buildFileNode(parent, name string, isDir bool, depth int) *fileNode {
@@ -930,7 +947,7 @@ func buildFileNode(parent, name string, isDir bool, depth int) *fileNode {
 	if err != nil {
 		return n
 	}
-	for _, e := range entries {
+	for _, e := range foldersFirst(entries) {
 		if ch := buildFileNode(filepath.Join(parent, name), e.Name(), e.IsDir(), depth+1); ch != nil {
 			n.Children = append(n.Children, ch)
 		}

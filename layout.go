@@ -157,7 +157,7 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 	card := ui.Column(c.Key("pane-" + id)).Grow(1).Basis(0).MinWidth(0).MinHeight(0).
 		Radius(a.cardRadius()).Clip().Bind(a.handle("card-" + id))
 	card.Background(a.animColor(card, "bg", pal.Card, 140*time.Millisecond))
-	raised(card)
+	cardEdge(card)
 	if multi && focused {
 		card.BorderColor(a.animColor(card, "ring", pal.Accent.Alpha(0.55), 140*time.Millisecond))
 	}

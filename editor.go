@@ -186,8 +186,12 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 
 		// Status line.
 		ui.Row(c).Height(26).AlignItems(ui.Center).Padding(0, 12).Gap(16).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Children(func() {
-			pos := doc.State.CursorPos()
-			ui.Text(c, "Ln "+itoa(pos.Line+1)+", Col "+itoa(pos.Col+1)).FontSize(10).TextColor(pal.TextMuted)
+			// The preview has no caret: a position would name a line
+			// nobody can see.
+			if !doc.Preview {
+				pos := doc.State.CursorPos()
+				ui.Text(c, "Ln "+itoa(pos.Line+1)+", Col "+itoa(pos.Col+1)).FontSize(10).TextColor(pal.TextMuted)
+			}
 			ui.Text(c, "UTF-8").FontSize(10).TextColor(pal.TextMuted)
 			ui.Spacer(c)
 			if doc.State.Buffer.Modified() {

@@ -63,7 +63,10 @@ func pill(c *ui.Context, text string) ui.Element { return pillOn(c, text, false)
 func pillOn(c *ui.Context, text string, selected bool) ui.Element {
 	bg, fg := pal.Chip, pal.TextMuted
 	if selected {
-		bg, fg = pal.AccentText.Alpha(0.2), pal.AccentText
+		// Inverted: the accent's text color as the chip, the accent as its
+		// text, as readable as the row's title. A tint of the text color
+		// left 9px type under 4.5:1 in light themes.
+		bg, fg = pal.AccentText, pal.Accent
 	}
 	return ui.Row(c).Radius(9).Padding(1, 6).Background(bg).Shrink(0).Justify(ui.Center).Children(func() {
 		ui.Text(c, text).FontSize(9).TextColor(fg).SingleLine()
