@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -120,8 +119,8 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 	}
 	if doc.Binary {
 		return ui.Column(c).Fill().Background(pal.Code).Children(func() {
-			ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
-				ui.Text(c, doc.Path).FontSize(10).TextColor(pal.TextSoft).SingleLine().Shrink(0)
+			a.viewHeader(c, func() {
+				headerTitle(c, iconFileCode, pal.TextFaint, pathBase(doc.Path), pathDir(doc.Path))
 			})
 			ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
 				ui.Icon(c, iconFileCode).Width(28).Height(28).TextColor(pal.TextFaint)
@@ -134,18 +133,8 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 
 	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
 		// Breadcrumb + actions.
-		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
-			parts := strings.Split(doc.Path, string(filepath.Separator))
-			for i, part := range parts {
-				if i > 0 {
-					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(pal.TextFaint)
-				}
-				col := pal.TextMuted
-				if i == len(parts)-1 {
-					col = pal.TextSoft
-				}
-				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
-			}
+		a.viewHeader(c, func() {
+			headerTitle(c, iconFileCode, pal.Syn.FileTS, pathBase(doc.Path), pathDir(doc.Path))
 			ui.Spacer(c)
 			if doc.Image != nil {
 				// An SVG opened in the viewer can flip to its source.
@@ -232,18 +221,8 @@ func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
 func (a *appState) imageView(c *ui.Context, doc *openFile) ui.Element {
 	img := doc.Image
 	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
-		ui.Row(c).Height(34).AlignItems(ui.Center).Padding(0, 12).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
-			parts := strings.Split(doc.Path, string(filepath.Separator))
-			for i, part := range parts {
-				if i > 0 {
-					ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(pal.TextFaint)
-				}
-				col := pal.TextMuted
-				if i == len(parts)-1 {
-					col = pal.TextSoft
-				}
-				ui.Text(c, part).FontSize(10).TextColor(col).SingleLine().Shrink(0)
-			}
+		a.viewHeader(c, func() {
+			headerTitle(c, iconImage, pal.Ok, pathBase(doc.Path), pathDir(doc.Path))
 			ui.Spacer(c)
 			if doc.State != nil {
 				if cmdButton(c, iconFileCode, iconBtn, false).Tooltip("Source").Clicked() {

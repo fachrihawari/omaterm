@@ -597,3 +597,37 @@ func TestOneDialogStyle(t *testing.T) {
 		}
 	}
 }
+
+// An editor, a diff and the graph have one header: as tall, their titles
+// at one height, so switching tabs doesn't shift the content.
+func TestOneViewHeader(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	root := a.projects[0].Path
+	os.MkdirAll(filepath.Join(root, "sub"), 0o755)
+	os.WriteFile(filepath.Join(root, "sub", "x.txt"), []byte("x\n"), 0o644)
+	tr := ui.NewTester(a.view, 1440, 900)
+	at := func(text string) float32 {
+		t.Helper()
+		tr.Frame()
+		r, ok := tr.Find(text)
+		if !ok {
+			t.Fatalf("no %q in the header", text)
+		}
+		return r.Y + r.H/2
+	}
+	a.openEditor(filepath.Join("sub", "x.txt"))
+	editor := at("sub")
+	a.openWorkingDiff("hello.txt", false)
+	diff := at("Index → Working Tree")
+	a.graphLoaded = true
+	a.openGraphTab()
+	r := a.activeRepoRef()
+	if r == nil {
+		t.Fatal("no repo")
+	}
+	graph := at(r.Name + " · " + r.Branch)
+	if editor != diff || diff != graph {
+		t.Errorf("header titles at y=%.1f (editor), %.1f (diff), %.1f (graph): want one height", editor, diff, graph)
+	}
+}

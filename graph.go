@@ -173,12 +173,12 @@ func (a *appState) openGraphTab() {
 // graphView is the full-pane graph with a commit list.
 func (a *appState) graphView(c *ui.Context) ui.Element {
 	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
-		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(pal.Sidebar).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
-			ui.Icon(c, iconGitGraph).Width(16).Height(16).TextColor(pal.ANSI[5])
-			ui.Text(c, "Git Graph").FontSize(12)
+		a.viewHeader(c, func() {
+			detail := ""
 			if r := a.activeRepoRef(); r != nil {
-				ui.Text(c, r.Name+" · "+r.Branch).FontSize(10).TextColor(pal.TextMuted)
+				detail = r.Name + " · " + r.Branch
 			}
+			headerTitle(c, iconGitGraph, pal.ANSI[5], "Git Graph", detail)
 			ui.Spacer(c)
 			if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Reload history").Clicked() {
 				a.refreshGraph()

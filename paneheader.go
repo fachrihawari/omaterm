@@ -25,6 +25,27 @@ func (a *appState) headerH() float32 {
 	return 30
 }
 
+// viewHeader is the header of a view a tab shows whole (an editor, a
+// picture, a diff, the graph): as tall as a pane's, with its title
+// styled alike, so moving between tabs doesn't shift the content.
+func (a *appState) viewHeader(c *ui.Context, children func()) {
+	ui.Row(c.Key("view-hdr")).Height(a.headerH()).Shrink(0).AlignItems(ui.Center).
+		Padding(0, 6, 0, 10).Gap(8).Children(children)
+}
+
+// headerTitle is a header's icon and title, and a faint detail after it
+// (a folder, a scope), as a pane's header shows them.
+func headerTitle(c *ui.Context, icon *ui.SVG, iconColor ui.Color, title, detail string) {
+	ui.Row(c).Gap(7).AlignItems(ui.Center).Shrink(1).MinWidth(0).Children(func() {
+		ui.Icon(c, icon).Size(14, 14).TextColor(iconColor)
+		ui.Text(c, title).FontSize(12.5).FontWeight(600).TextColor(pal.Text).SingleLine().Ellipsis("…").
+			Shrink(0.5).MinWidth(min(90, float32(len(title))*7)).Tooltip(title)
+		if detail != "" {
+			ui.Text(c, detail).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+		}
+	})
+}
+
 // paneHeader builds a pane's header — its status or program, title and
 // directory, git and status chips, and the controls that show on hover —
 // and reports whether it is being dragged.

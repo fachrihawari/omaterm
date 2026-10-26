@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
@@ -389,10 +390,9 @@ func (a *appState) diffViewKey() string {
 func (a *appState) diffView(c *ui.Context) ui.Element {
 	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
 		// Toolbar.
-		ui.Row(c).Height(40).AlignItems(ui.Center).Padding(0, 12).Gap(8).Background(pal.Sidebar).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
-			ui.Icon(c, iconGitCompare).Width(16).Height(16).TextColor(pal.Ok)
-			ui.Text(c, a.diffTitle).FontSize(12).SingleLine().Shrink(1).MinWidth(0).
-				Ellipsis("…").Tooltip(a.diffTitle)
+		a.viewHeader(c, func() {
+			title, scope, _ := strings.Cut(a.diffTitle, " · ")
+			headerTitle(c, iconGitCompare, pal.Ok, title, scope)
 
 			// Per-file line stats, next to the title they belong to.
 			if !a.diffBinary && (a.diffAdd > 0 || a.diffDel > 0) {
