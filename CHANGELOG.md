@@ -3,6 +3,44 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.7
+
+Things that worked, but not quite right.
+
+### Git
+
+- **Every file name works in the Git panel.** A name with a space or an
+  accent couldn't be staged or discarded, and git's warnings showed as
+  files.
+- **Merge conflicts show as conflicts**, marked "!", with Mark Resolved.
+  They looked untracked, and Discard did nothing to them.
+- **Each diff tab shows its own diff**, named for its file. All of them
+  were "Diff", and showed whichever diff was opened last.
+
+### Files and the editor
+
+- **Quick open and the Files tab show the files as they are now.** A
+  file an agent made didn't appear until a restart. Opening a file that
+  is gone says so.
+- **Alt+Up and Alt+Down move lines in the editor**, rather than
+  switching sessions.
+- **A very large file or picture shows a note** rather than filling
+  memory: a log of gigabytes, or a picture claiming 30000×30000 pixels,
+  could get the app killed.
+
+### Smaller things
+
+- **Closing a pane leaves the keyboard in the one next to it**, and
+  Ctrl+W with "No file open" on screen no longer closes a session.
+- **Settings' text fields behave:** Escape closes the window again
+  after a field disappears, the web port doesn't refill while you clear
+  it, and a half-typed shell isn't used.
+- **The Info tab's open button for a port opens its page.** The
+  editor's two buttons that did nothing are gone, and the Keyboard page
+  shows Alt+1 to Alt+9 rather than the first two.
+- **Cyrillic text no longer confuses session status**, and a theme's
+  palette is read right when it repeats a color.
+
 ## 0.9.6
 
 No more hangs, and what you see stays true.
