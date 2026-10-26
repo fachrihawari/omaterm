@@ -13,6 +13,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/cli"
 	"omaterm/internal/client"
 	"omaterm/internal/crash"
 	"omaterm/internal/daemon"
@@ -68,8 +69,20 @@ func (a *appState) useDaemon() {
 	a.panes = r
 	a.hookPanes()
 
-	// Panes no session holds (their session was closed while the app
-	// could not tell the daemon) end.
+	a.pruneUnknownPanes(r)
+	// Another build, even of this version: its sessions run older code.
+	if r.Version() != daemon.Build(appVersion()) {
+		a.daemonStale = daemon.VersionOf(r.Version())
+	}
+}
+
+// pruneUnknownPanes ends the daemon's panes no session holds: their
+// session was closed while the app could not tell the daemon. Unless the
+// sessions file couldn't be read, when no pane is known: they all stay.
+func (a *appState) pruneUnknownPanes(r *daemon.Remote) {
+	if a.stateLoadFailed != "" {
+		return
+	}
 	known := map[string]bool{}
 	for _, s := range a.state().Sessions {
 		for _, p := range s.Panes {
@@ -80,10 +93,6 @@ func (a *appState) useDaemon() {
 		if !known[id] {
 			r.Remove(id)
 		}
-	}
-	// Another build, even of this version: its sessions run older code.
-	if r.Version() != daemon.Build(appVersion()) {
-		a.daemonStale = daemon.VersionOf(r.Version())
 	}
 }
 
@@ -196,6 +205,25 @@ func (a *appState) crashBanner(c *ui.Context) {
 				}
 			}
 			a.dismissCrashes()
+		}
+	})
+}
+
+// stateBanner tells that state.json couldn't be read: omaterm runs with
+// no projects and leaves the file, and every running session, alone.
+func (a *appState) stateBanner(c *ui.Context) {
+	if a.stateLoadFailed == "" {
+		return
+	}
+	ui.Row(c.Key("state-banner")).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).
+		Radius(8).Background(pal.Bad.Alpha(0.10)).Border(1, pal.Bad.Alpha(0.35)).Children(func() {
+		ui.Icon(c, iconAlert).Width(14).Height(14).TextColor(pal.Bad)
+		msg := "omaterm couldn't read its sessions file, so it shows none and changes nothing: your sessions keep running. A copy is at " +
+			cli.ShortPath(a.stateLoadFailed) + "."
+		ui.Text(c, msg).Tooltip(msg).
+			FontSize(12).TextColor(pal.TextSoft).MaxLines(2).Ellipsis("…").Grow(1).MinWidth(0)
+		if ui.PrimaryButton(c, "Show File").Height(26).FontSize(12).Clicked() && a.win != nil {
+			mygo.Shell.ShowItemInFolder(a.stateLoadFailed)
 		}
 	})
 }

@@ -363,6 +363,11 @@ type appState struct {
 	bells map[string]time.Time
 	// crashes are the crash reports of past runs the user hasn't seen.
 	crashes []crash.Report
+	// stateLoadFailed is the copy of a state.json that couldn't be read:
+	// while it is set, nothing is saved over the file and no pane ends.
+	stateLoadFailed string
+	// unavailable are projects whose folder is missing, kept as saved.
+	unavailable []model.Project
 
 	pendingRemoveProjectIdx  int
 	pendingRemoveProjectName string

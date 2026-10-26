@@ -55,6 +55,11 @@ func (d *Daemon) saveState(st model.State) error {
 func (d *Daemon) change(fn func(st *model.State) (any, error)) (any, error) {
 	d.stateMu.Lock()
 	defer d.stateMu.Unlock()
+	// A file that is there but can't be read is never written over: it
+	// holds every session.
+	if _, err := model.Load(d.stateFile()); model.Unreadable(err) {
+		return nil, proto.Errorf(proto.CodeUsage, "omaterm's sessions file can't be read ("+err.Error()+"): open omaterm to see")
+	}
 	st := d.loadState()
 	v, err := fn(&st)
 	if err != nil {

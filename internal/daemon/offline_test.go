@@ -217,3 +217,24 @@ func TestForwardsToApp(t *testing.T) {
 		t.Fatalf("refused call: %v", err)
 	}
 }
+
+// A state.json that is there but can't be read is never written over:
+// it holds every session. 0.9.1 replaced it with an empty one.
+func TestBrokenStateLeftAlone(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	broken := []byte(`{"version": 2, "projects": [`)
+	if err := os.WriteFile(d.stateFile(), broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Call("create", proto.CreateParams{Name: "work", Dir: proj}, nil); err == nil {
+		t.Fatal("create went ahead on a broken state.json")
+	}
+	if got, _ := os.ReadFile(d.stateFile()); string(got) != string(broken) {
+		t.Fatalf("state.json was written over: %s", got)
+	}
+}

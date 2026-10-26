@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -167,11 +168,46 @@ func Save(path string, st State) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// A temporary file of its own, so that the app and the session daemon
+	// never write the same one, synced before it replaces the file, so a
+	// crash leaves the old state or the new, never half of one.
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o600)
+	}
+	if err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// Unreadable tells a state file that is there but can't be read, as one
+// a crash or an editor left broken, from one that isn't there.
+func Unreadable(err error) bool {
+	return err != nil && !errors.Is(err, fs.ErrNotExist)
+}
+
+// Backup copies a state file that can't be read beside it, named for the
+// time, and returns the copy's path.
+func Backup(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	bad := path + ".bad-" + time.Now().Format("20060102-150405")
+	return bad, os.WriteFile(bad, data, 0o600)
 }
 
 // ErrNoState is Load's error for a missing file.

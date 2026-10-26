@@ -47,6 +47,9 @@ func (a *appState) sidebar(c *ui.Context) {
 					for i := range a.projects {
 						a.projectGroup(c, i)
 					}
+					for i := range a.unavailable {
+						a.unavailableProject(c, i)
+					}
 				})
 			})
 			a.sidebarFooter(c)
@@ -91,6 +94,49 @@ func (a *appState) sidebarEmpty(c *ui.Context) {
 			a.openProjectDialog()
 		}
 	})
+}
+
+// unavailableProject is a project whose folder is missing: its sessions
+// are kept, and shown when the folder is back, at the next launch.
+func (a *appState) unavailableProject(c *ui.Context, i int) {
+	p := a.unavailable[i]
+	n := len(a.saved[p.ID])
+	tip := "Folder missing: " + p.Dir + ". Its " + plural(n, "session") + " are kept and come back with it."
+	h := ui.Row(c.Key("missing-"+p.ID)).Height(28).Padding(0, 6).Gap(6).AlignItems(ui.Center).Radius(7).
+		Margin(6, 0, 0, 0).Tooltip(tip)
+	if h.Hovered() {
+		h.Background(pal.Hover)
+	}
+	h.Children(func() {
+		ui.Icon(c, iconFolder).Size(12, 12).TextColor(pal.TextFaint)
+		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+		ui.Text(c, "folder missing").FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+	})
+	h.ContextMenu(func(m *ui.Menu) {
+		if m.Item("Remove Project").Chosen() {
+			a.removeUnavailable(p.ID)
+		}
+	})
+}
+
+// removeUnavailable forgets a project whose folder is missing, and ends
+// its sessions.
+func (a *appState) removeUnavailable(id string) {
+	for _, s := range a.saved[id] {
+		for _, p := range s.Panes {
+			if a.panes.Get(p.ID) != nil {
+				a.panes.Remove(p.ID)
+			}
+		}
+	}
+	delete(a.saved, id)
+	for i, p := range a.unavailable {
+		if p.ID == id {
+			a.unavailable = append(a.unavailable[:i], a.unavailable[i+1:]...)
+			break
+		}
+	}
+	a.saveSoon()
 }
 
 // projectGroup is a project's header and, unless it is collapsed, its

@@ -1,15 +1,14 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"time"
 
 	"omaterm/internal/agent"
 	"omaterm/internal/model"
-	"omaterm/internal/paths"
 	"omaterm/internal/shellcmd"
-	"omaterm/service"
 )
 
 // projectWS is a project's workspace while another project shows: its
@@ -168,6 +167,18 @@ func (a *appState) closeProjectPanes(id string) {
 // the index of the project to show.
 func (a *appState) loadState() int {
 	st, err := model.Load(stateFilePath())
+	if model.Unreadable(err) {
+		// Broken, as a crash mid-write or an editor can leave it: it holds
+		// every session, so keep a copy, and never write over it or end
+		// the sessions this run doesn't know.
+		bad, berr := model.Backup(stateFilePath())
+		if berr != nil {
+			bad = stateFilePath()
+		}
+		a.stateLoadFailed = bad
+		log.Printf("state.json can't be read (%v): kept as %s, and left alone", err, bad)
+		return 0
+	}
 	if err != nil {
 		// The rename moved the file: read the old one, so the project list
 		// survives. The next save writes it to the new path.
@@ -183,12 +194,10 @@ func (a *appState) loadState() int {
 			continue
 		}
 		if info, err := os.Stat(abs); err != nil || !info.IsDir() {
-			continue
-		}
-		// Reject overly broad paths that would match all processes; the
-		// home folder stays, as the project the app opens with none, so
-		// its sessions come back.
-		if service.IsWorkspaceTooBroad(abs) && abs != paths.Home() {
+			// Its folder is gone for now (an unplugged drive, a rename):
+			// keep it and its sessions, whose panes go on running.
+			p.Dir = abs
+			a.unavailable = append(a.unavailable, p)
 			continue
 		}
 		if p.ID == "" {
@@ -210,6 +219,11 @@ func (a *appState) state() model.State {
 	st := model.State{}
 	if p := a.project(); p != nil {
 		st.ActiveProject = p.ID
+	}
+	// Projects whose folder is missing, as they were saved.
+	for _, p := range a.unavailable {
+		st.Projects = append(st.Projects, p)
+		st.Sessions = append(st.Sessions, a.saved[p.ID]...)
 	}
 	for _, p := range a.projects {
 		abs, err := filepath.Abs(p.Path)
@@ -276,10 +290,10 @@ func (a *appState) saveSoon() {
 
 // saveState writes state.json now.
 func (a *appState) saveState() {
-	if a.win == nil {
+	if a.win == nil || a.stateLoadFailed != "" {
 		return
 	}
-	if len(a.projects) == 0 {
+	if len(a.projects) == 0 && len(a.unavailable) == 0 {
 		os.Remove(stateFilePath())
 		return
 	}

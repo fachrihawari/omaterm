@@ -1,11 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/crash"
+	"omaterm/internal/model"
 )
 
 // Regression tests of the stability work (0.9.2 on): each names the bug
@@ -74,5 +77,65 @@ func TestPaneExitInHiddenProject(t *testing.T) {
 	a.paneExited(id)
 	if _, _, _, ok := a.findPane(id); ok {
 		t.Fatal("the exited pane's session is still there")
+	}
+}
+
+// A state.json that can't be read is kept, copied, and never written over
+// or used to end panes; 0.9.1 started empty, ended every daemon pane, and
+// removed the file as the window closed.
+func TestBrokenStateKept(t *testing.T) {
+	path := stateFilePath()
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	broken := []byte(`{"version": 2, "projects": [`)
+	if err := os.WriteFile(path, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		os.Remove(path)
+		bad, _ := filepath.Glob(path + ".bad-*")
+		for _, f := range bad {
+			os.Remove(f)
+		}
+	})
+	a := newApp()
+	defer stopTermPanes(a)
+	if a.stateLoadFailed == "" {
+		t.Fatal("the broken file went unnoticed")
+	}
+	if b, err := os.ReadFile(a.stateLoadFailed); err != nil || string(b) != string(broken) {
+		t.Fatalf("no copy of the broken file: %v", err)
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("Show File") {
+		t.Fatal("no banner about the broken file")
+	}
+}
+
+// A project whose folder is missing at launch keeps its sessions; 0.9.1
+// dropped it, and its sessions, at the next save.
+func TestMissingProjectFolderKept(t *testing.T) {
+	path := stateFilePath()
+	gone := filepath.Join(t.TempDir(), "unplugged")
+	st := model.State{Projects: []model.Project{{ID: "pgone", Name: "gone", Dir: gone}},
+		Sessions: []model.Session{{ID: "sgone", Project: "pgone", Name: "agent",
+			Layout: &model.Layout{Pane: "xgone"}, Panes: []model.Pane{{ID: "xgone", Dir: gone}}}}}
+	if err := model.Save(path, st); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(path) })
+	a := newApp()
+	defer stopTermPanes(a)
+	if len(a.unavailable) != 1 || a.unavailable[0].ID != "pgone" {
+		t.Fatalf("unavailable = %+v", a.unavailable)
+	}
+	saved := a.state()
+	if len(saved.Projects) != 1 || len(saved.Sessions) != 1 || saved.Sessions[0].ID != "sgone" {
+		t.Fatalf("the save drops the missing project: %+v", saved)
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("folder missing") {
+		t.Fatal("the sidebar doesn't show the missing project")
 	}
 }
