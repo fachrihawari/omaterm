@@ -19,6 +19,7 @@ import (
 	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
+	"omaterm/internal/notice"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
@@ -421,6 +422,9 @@ type appState struct {
 	// or written (rememberSaved); saveDeferred tells that a save waits for
 	// the daemon's reconnect, windowClosing that the window is closing,
 	// and saveFailed that the last save failed, which was told.
+	// programLimit holds back programs' own notifications to one every 5
+	// seconds a session.
+	programLimit  notice.Limiter
 	savedIDs      map[string]bool
 	saveDeferred  bool
 	windowClosing bool

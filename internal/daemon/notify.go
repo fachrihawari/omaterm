@@ -57,6 +57,12 @@ func (d *Daemon) notifyProgram(paneID, title, body string) {
 		return
 	}
 	sid := p.Info().Session
+	// One every 5 seconds a session at most: a program printing the
+	// sequence in a loop (or a file of them shown) started thousands of
+	// notify-send processes, each waiting up to half an hour.
+	if !d.limit.Allow("program:" + sid) {
+		return
+	}
 	if title == "" {
 		title = d.sessionLabel(sid)
 	}
@@ -178,7 +184,9 @@ func (d *Daemon) notifySend(title, body, sessionID string) {
 		if !d.notifyPrefs().Sound {
 			args = append(args, "--hint=boolean:suppress-sound:true")
 		}
-		cmd := exec.CommandContext(ctx, bin, append(args, title, body)...)
+		// "--": a program's title or body starting with "-" was read as
+		// an option of notify-send's.
+		cmd := exec.CommandContext(ctx, bin, append(args, "--", title, body)...)
 		cmd.Env = append(os.Environ(), d.envList()...) // the app's display and bus
 		out, err := cmd.Output()
 		if err != nil || strings.TrimSpace(string(out)) != "default" {

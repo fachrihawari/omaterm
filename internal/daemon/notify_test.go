@@ -108,3 +108,27 @@ func TestAppLeavingUnviews(t *testing.T) {
 		t.Fatal("no notification for the session the app showed last")
 	}
 }
+
+// A program printing its notification sequence in a loop shows one, not
+// one each: thousands of notify-send processes waited half an hour each.
+func TestProgramNotificationsLimited(t *testing.T) {
+	d, _, ch := notifyDaemon(t)
+	script := `for i in 1 2 3 4 5 6 7 8 9 10; do printf '\033]9;again\007'; done; sleep 30`
+	if _, err := d.reg.Start(session.StartOptions{ID: "a1", Session: "s1", Exec: true,
+		Command: []string{"sh", "-c", script}, Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for deadline := time.After(2 * time.Second); ; {
+		select {
+		case <-ch:
+			n++
+			continue
+		case <-deadline:
+		}
+		break
+	}
+	if n != 1 {
+		t.Errorf("%d notifications shown, want 1", n)
+	}
+}

@@ -48,6 +48,10 @@ func (a *appState) programNotice(id, title, body string) {
 	if !ok || !a.settings.Notify.Programs || a.win == nil || a.win.IsFocused() && a.viewedSession() == info.Session {
 		return
 	}
+	// One every 5 seconds a session at most, as the daemon does.
+	if !a.programLimit.Allow(info.Session) {
+		return
+	}
 	if title == "" {
 		title = a.sessionLabel(info.Session)
 	}
