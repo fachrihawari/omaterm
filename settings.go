@@ -51,7 +51,6 @@ type Settings struct {
 	// browser pane) or "system" (the default browser).
 	OpenLinks string `json:"openLinks"`
 
-	BrowserBlockAds bool `json:"browserBlockAds"`
 	// SearchEngine is what the browser's address bar searches with: a
 	// name of searchEngines, or a URL with %s for the words.
 	SearchEngine string `json:"searchEngine"`

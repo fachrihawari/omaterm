@@ -173,9 +173,6 @@ func TestSettingsRestoreDefaults(t *testing.T) {
 func TestSettingsCoverAll(t *testing.T) {
 	noUI := map[string]bool{
 		"Theme": true, // the tiles
-		// Fields of their own pages' controls, which settingDefs name by
-		// other IDs.
-		"BrowserBlockAds": true, // no filter list yet
 	}
 	shown := map[string]bool{}
 	for _, d := range settingDefs {
