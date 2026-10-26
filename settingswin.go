@@ -42,7 +42,9 @@ type settingsUI struct {
 	dataAt time.Time
 	// focused is which text fields had the keyboard last frame, and
 	// original what each had as it took it.
-	focused  map[string]bool
+	focused map[string]bool
+	// built are the fields drawn this frame.
+	built    map[string]bool
 	original map[string]string
 	// closing counts the closes asked and the openings since, so that an
 	// opening calls off a close still to run.
@@ -228,6 +230,14 @@ func (a *appState) settingsView(c *ui.Context) {
 	if u.focused == nil {
 		u.focused, u.original = map[string]bool{}, map[string]string{}
 	}
+	// A field not drawn last frame (its page left, its row gone) has no
+	// keyboard: still counted, Escape stopped closing the window.
+	for k := range u.focused {
+		if !u.built[k] {
+			delete(u.focused, k)
+		}
+	}
+	u.built = map[string]bool{}
 	if len(u.stack) == 0 {
 		u.stack = []string{"general"}
 	}
@@ -922,6 +932,9 @@ func (a *appState) settingsTextField(c *ui.Context, key string, value *string, p
 			in.Font(monoFont)
 		}
 		u := &a.settingsUI
+		if u.built != nil {
+			u.built[key] = true
+		}
 		focused := in.Focused()
 		if focused {
 			f.Border(1, pal.Accent)

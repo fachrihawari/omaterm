@@ -365,3 +365,29 @@ func TestServiceSwitchAsks(t *testing.T) {
 		t.Fatal("no red sheet asks first")
 	}
 }
+
+// The Settings fields: Escape closes the window once a focused field is
+// gone (it kept reverting a field no longer there); the Shell field keeps
+// its draft out of the setting until taken.
+func TestSettingsFieldsBehave(t *testing.T) {
+	a, tr := newSettingsTester(t, "terminal")
+	a.settingsUI.focused["fontFamily"] = true // focused, then its row went
+	tr.Frame()
+	tr.Frame()
+	if a.settingsFieldFocused() {
+		t.Error("a field no longer drawn still has the keyboard")
+	}
+
+	before := a.settings.Terminal.Shell
+	tr = ui.NewTester(a.settingsView, settingsWidth, 1600) // the field in view
+	tr.Frame()
+	if err := tr.Click("shell"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	a.settingsUI.data.shell = "/bin/fi" // half typed
+	tr.Frame()
+	if a.settings.Terminal.Shell != before {
+		t.Errorf("a half-typed shell is the setting: %q", a.settings.Terminal.Shell)
+	}
+}

@@ -89,7 +89,9 @@ type settingsData struct {
 	// customFont and customSearch are fields as typed; searchCustom
 	// tells that Custom… was picked for the search engine.
 	customFont, customSearch string
-	searchCustom             bool
+	// shell is the Shell field as typed.
+	shell        string
+	searchCustom bool
 	// omarchy is Omarchy's theme, for its tile.
 	omarchy *theme.Source
 }
@@ -117,7 +119,9 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	store := webStore()
 	d.devices, _ = store.Devices()
 	if cfg, err := store.Config(); err == nil {
-		if d.web != cfg || d.port == "" {
+		// Not while the port is typed: cleared to type a new one, it
+		// came back within two seconds.
+		if d.web != cfg || d.port == "" && !a.settingsUI.focused["webPort"] {
 			d.port = strconv.Itoa(cfg.ListenPort())
 			d.url = cfg.URL
 		}
@@ -474,8 +478,13 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 			login += " (" + sh + ")"
 		}
 		a.settingsRow(c, "Shell", settingsRowOpts{id: "shell", sub: "Empty uses " + login + "."}, func() {
-			if a.settingsTextField(c, "shell", &t.Shell, os.Getenv("SHELL"), 200, true) {
-				t.Shell = strings.TrimSpace(t.Shell)
+			// Typed into a draft: edited in place, a half-typed shell was
+			// what Ctrl+T started, and what any other change saved.
+			if !a.settingsUI.focused["shell"] {
+				d.shell = t.Shell
+			}
+			if a.settingsTextField(c, "shell", &d.shell, os.Getenv("SHELL"), 200, true) {
+				t.Shell = strings.TrimSpace(d.shell)
 				a.applySettings()
 			}
 		})
