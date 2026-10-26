@@ -21,14 +21,23 @@ func (a *appState) view(c *ui.Context) {
 	// Keyboard Shortcuts overlay.
 	a.registerKeybindings(c)
 	a.overlayWindowKeys(c)
-	for _, id := range a.queuedActions {
-		for _, cmd := range commandRegistry {
-			if cmd.ID == id && (cmd.Enabled == nil || cmd.Enabled(a)) {
-				cmd.Run(a, c)
+	// A dialog answers first: an overlay under it goes, and the omaterm
+	// command's actions wait for it, as the window's keys do. Run over a
+	// dialog, the palette covered it, two scrims deep.
+	if a.modalOpen() {
+		if a.overlay != overlayNone {
+			a.closeOverlay()
+		}
+	} else {
+		for _, id := range a.queuedActions {
+			for _, cmd := range commandRegistry {
+				if cmd.ID == id && (cmd.Enabled == nil || cmd.Enabled(a)) {
+					cmd.Run(a, c)
+				}
 			}
 		}
+		a.queuedActions = nil
 	}
-	a.queuedActions = nil
 	for _, msg := range a.queuedToasts {
 		c.Toast(msg)
 	}
@@ -71,7 +80,7 @@ func (a *appState) view(c *ui.Context) {
 			true, "Cancel", "Close")
 		if result != -1 {
 			if result == 1 {
-				a.closeTab(a.pendingCloseTab)
+				a.closePendingEditor()
 			}
 			a.closeTabConfirmOpen = nil
 		}
@@ -106,7 +115,12 @@ func (a *appState) view(c *ui.Context) {
 			true, "Cancel", "Remove")
 		if result != -1 {
 			if result == 1 {
-				a.removeProject(a.pendingRemoveProjectIdx)
+				for i, p := range a.projects {
+					if p.ID == a.pendingRemoveProjectID {
+						a.removeProject(i)
+						break
+					}
+				}
 				c.Toast("Removed " + a.pendingRemoveProjectName)
 			}
 			a.removeProjectConfirmOpen = nil
@@ -119,6 +133,12 @@ func (a *appState) view(c *ui.Context) {
 
 // wash paints the window's backdrop: a soft gradient of the theme's
 // background, which the cards sit on, or the plain color.
+// modalOpen tells whether a dialog of the window waits for an answer.
+func (a *appState) modalOpen() bool {
+	return a.closeTabConfirmOpen != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
+		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil
+}
+
 // animColor animates e's color to target, or, with Reduce Motion on,
 // gives it at once.
 func (a *appState) animColor(e ui.Element, key string, target ui.Color, d time.Duration) ui.Color {

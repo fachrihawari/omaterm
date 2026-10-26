@@ -21,6 +21,11 @@ import (
 // telescope-style global search (Ctrl+Shift+F), all built on ui.Modal.
 
 func (a *appState) openOverlay(k overlayKind) {
+	if a.modalOpen() {
+		return // a dialog waits for its answer first
+	}
+	// What the one open did goes with it: a project search still running.
+	a.closeOverlay()
 	a.overlay = k
 	switch k {
 	case overlayQuickOpen:

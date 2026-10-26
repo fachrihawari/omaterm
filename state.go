@@ -361,7 +361,9 @@ type appState struct {
 	fontSize float32
 
 	// Close tab confirmation
-	pendingCloseTab     int
+	// pendingClosePath is the editor tab the confirmation closes, by its
+	// file: tabs may move while it asks.
+	pendingClosePath    string
 	closeTabConfirmOpen *bool
 	// closeAsk is a session or pane to close once the user confirms.
 	closeAsk *closeAsk
@@ -384,7 +386,7 @@ type appState struct {
 	// postWin is a.win for post, set once the window is made.
 	postWin atomic.Pointer[mygo.Window]
 
-	pendingRemoveProjectIdx  int
+	pendingRemoveProjectID   string
 	pendingRemoveProjectName string
 	removeProjectConfirmOpen *bool
 

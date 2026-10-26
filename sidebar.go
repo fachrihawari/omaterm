@@ -200,7 +200,7 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.saveSoon()
 		}
 		if m.Item("Remove Project…").Chosen() {
-			a.pendingRemoveProjectIdx = i
+			a.pendingRemoveProjectID = p.ID
 			a.pendingRemoveProjectName = p.Name
 			open := true
 			a.removeProjectConfirmOpen = &open

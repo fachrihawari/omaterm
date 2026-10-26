@@ -339,3 +339,49 @@ func TestServiceConflictBanner(t *testing.T) {
 		t.Fatal("no banner")
 	}
 }
+
+// The unsaved-changes dialog closes the file it asked about, though tabs
+// moved while it asked; it closed whatever took that tab's place.
+func TestCloseConfirmFollowsItsTab(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.openEditor("hello.txt")
+	a.editors["hello.txt"].State.Buffer.Set("changed\n")
+	a.closeActiveTab(nil)
+	if a.closeTabConfirmOpen == nil {
+		t.Fatal("no confirmation for an unsaved file")
+	}
+	// A session is made before it while the dialog asks.
+	a.tabs = append([]topTab{{ID: "new", Kind: tabTerminal, Label: "new", Split: &splitNode{TermID: "newpane"}}}, a.tabs...)
+	a.closePendingEditor()
+	for _, tab := range a.tabs {
+		if tab.Path == "hello.txt" {
+			t.Fatal("the file's tab is still open")
+		}
+	}
+	if a.tabs[0].ID != "new" {
+		t.Fatal("another tab was closed")
+	}
+}
+
+// A dialog answers first: the palette under it closes, and the omaterm
+// command's actions wait. They covered it, two scrims deep.
+func TestDialogBeatsOverlays(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.openOverlay(overlayCommandPalette)
+	a.closeAsk = &closeAsk{open: true, title: "Close Session", text: "claude is still running.", run: func() {}}
+	a.queuedActions = append(a.queuedActions, "app.commandPalette")
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if a.overlay != overlayNone {
+		t.Fatal("the palette stayed over the dialog")
+	}
+	if len(a.queuedActions) != 1 {
+		t.Fatal("a queued action ran over the dialog")
+	}
+	a.openOverlay(overlayQuickOpen)
+	if a.overlay != overlayNone {
+		t.Fatal("an overlay opened over the dialog")
+	}
+}

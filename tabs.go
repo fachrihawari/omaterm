@@ -224,12 +224,24 @@ func (a *appState) closeActiveTab(c *ui.Context) {
 	if t.Kind == tabEditor && t.Path != "" {
 		if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
 			open := true
-			a.pendingCloseTab = a.activeTab
+			a.pendingClosePath = t.Path
 			a.closeTabConfirmOpen = &open
 			return
 		}
 	}
 	a.closeTabAsking(a.activeTab)
+}
+
+// closePendingEditor closes the editor tab the unsaved-changes dialog
+// asked about, wherever it is now: tabs may have moved meanwhile, and the
+// index it had once closed another, possibly a running session.
+func (a *appState) closePendingEditor() {
+	for i, t := range a.tabs {
+		if t.Kind == tabEditor && t.Path == a.pendingClosePath {
+			a.closeTab(i)
+			return
+		}
+	}
 }
 
 // closeTabAsking closes a tab, first asking when it is a session that
