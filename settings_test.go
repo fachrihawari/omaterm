@@ -233,3 +233,33 @@ func TestSettingsKeyboardFilters(t *testing.T) {
 		t.Fatal("an overlay opened in the main window")
 	}
 }
+
+// A field takes its text with Enter; Escape puts back what it had, and
+// doesn't close the window.
+func TestSettingsFieldEnterAndEscape(t *testing.T) {
+	a, tr := newSettingsTester(t, "terminal")
+	defer stopTermPanes(a)
+	tr.SetSize(settingsWidth, 1600)
+	tr.Frame()
+	if err := tr.Click("shell"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	tr.Type("/bin/nope")
+	tr.Frame()
+	tr.Key(0, ui.KeyEscape)
+	tr.Frame()
+	if a.settings.Terminal.Shell != "" {
+		t.Fatalf("Escape kept %q", a.settings.Terminal.Shell)
+	}
+	if err := tr.Click("shell"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	tr.Type("/bin/zsh")
+	tr.Key(0, ui.KeyEnter)
+	tr.Frame()
+	if a.settings.Terminal.Shell != "/bin/zsh" {
+		t.Fatalf("Enter gave %q", a.settings.Terminal.Shell)
+	}
+}

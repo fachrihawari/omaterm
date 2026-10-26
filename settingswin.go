@@ -40,13 +40,17 @@ type settingsUI struct {
 	// read again every few seconds while the window shows.
 	data   settingsData
 	dataAt time.Time
-	// focused is which text fields had the keyboard last frame.
-	focused map[string]bool
+	// focused is which text fields had the keyboard last frame, and
+	// original what each had as it took it.
+	focused  map[string]bool
+	original map[string]string
 	// closing counts the closes asked and the openings since, so that an
 	// opening calls off a close still to run.
 	closing int
 	// keyQuery filters the Keyboard page.
 	keyQuery string
+	// escaped tells the focused field that Escape was pressed.
+	escaped bool
 }
 
 // settingsSheet is a confirmation: a title, what it explains, and its
@@ -116,7 +120,22 @@ func (a *appState) openSettings(page string) {
 		BackgroundColor: theme.Hex(pal.Wash),
 		Content:         ui.View(a.settingsView),
 	})
-	a.settingsWin.OnClosed(func() { a.settingsWin = nil })
+	a.settingsWin.OnClosed(func() {
+		a.settingsWin = nil
+		a.forgetSettingsEdits()
+	})
+}
+
+// forgetSettingsEdits drops what the closed window had open: a sheet,
+// and fields typed into but not taken, which the next opening would
+// otherwise take as it starts.
+func (a *appState) forgetSettingsEdits() {
+	u := &a.settingsUI
+	u.sheet = nil
+	u.focused, u.original = map[string]bool{}, map[string]string{}
+	d := &u.data
+	d.port, d.url, d.customFont, d.customSearch = "", "", "", ""
+	u.dataAt = time.Time{}
 }
 
 // closeSettings closes the Settings window.
@@ -191,7 +210,7 @@ func (a *appState) settingsView(c *ui.Context) {
 	c.SetTheme(omaTheme())
 	u := &a.settingsUI
 	if u.focused == nil {
-		u.focused = map[string]bool{}
+		u.focused, u.original = map[string]bool{}, map[string]string{}
 	}
 	if len(u.stack) == 0 {
 		u.stack = []string{"general"}
@@ -219,9 +238,13 @@ func (a *appState) settingsView(c *ui.Context) {
 func (a *appState) settingsKeys(c *ui.Context) {
 	u := &a.settingsUI
 	if c.Shortcut(0, ui.KeyEscape) {
-		if u.query != "" {
+		switch {
+		case u.query != "":
 			u.query = ""
-		} else {
+		case a.settingsFieldFocused():
+			// The field puts its text back (settingsTextField).
+			u.escaped = true
+		default:
 			a.closeSettings()
 		}
 	}
@@ -841,17 +864,49 @@ func (a *appState) settingsTextField(c *ui.Context, key string, value *string, p
 		if mono {
 			in.Font(monoFont)
 		}
+		u := &a.settingsUI
 		focused := in.Focused()
 		if focused {
 			f.Border(1, pal.Accent)
+			if !u.focused[key] {
+				u.original[key] = *value // what Escape goes back to
+			}
 		}
-		// A field takes its value with Enter, or as the keyboard leaves it.
-		if in.Submitted() || (a.settingsUI.focused[key] && !focused) {
+		// Escape puts back what the field had: an edit given up.
+		if u.escaped && (focused || u.focused[key]) {
+			*value = u.original[key]
+			u.escaped, u.focused[key] = false, false
+			return
+		}
+		// A field takes its value with Enter, or as the keyboard moves to
+		// another control of the window; not as the window loses the
+		// keyboard (another app, the main window), with an edit half done.
+		if !a.settingsWindowFocused() {
+			return
+		}
+		if in.Submitted() || (u.focused[key] && !focused) {
 			done = true
 		}
-		a.settingsUI.focused[key] = focused
+		u.focused[key] = focused
 	})
 	return done
+}
+
+// settingsFieldFocused tells whether a field of a page has the keyboard.
+func (a *appState) settingsFieldFocused() bool {
+	for _, f := range a.settingsUI.focused {
+		if f {
+			return true
+		}
+	}
+	return false
+}
+
+// settingsWindowFocused tells whether the Settings window has the
+// keyboard; a window-less test is taken to.
+func (a *appState) settingsWindowFocused() bool {
+	w := a.settingsWin
+	return w == nil || w.IsDestroyed() || w.IsFocused()
 }
 
 // settingsActions is a row of buttons under a group, at its right.
