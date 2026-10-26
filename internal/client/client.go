@@ -157,6 +157,13 @@ func (c *Client) CallContext(ctx context.Context, method string, params, out any
 	c.calls[id] = ch
 	err := c.enc.Encode(proto.Request{ID: id, Method: method, Params: raw})
 	c.mu.Unlock()
+	// Its place goes with it: given up on, a call's channel stayed, one
+	// for each timeout, for as long as the connection.
+	defer func() {
+		c.mu.Lock()
+		delete(c.calls, id)
+		c.mu.Unlock()
+	}()
 	if err != nil {
 		return ErrUnreachable
 	}

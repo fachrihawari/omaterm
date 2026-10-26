@@ -313,7 +313,11 @@ func (a *appState) browserBar(c *ui.Context, tab *topTab, id string, e *webEntry
 		dragging = a.addressBar(c, tab, id, e, multi)
 		if e.url != proto.BlankURL {
 			navButton(c, "external", iconExternalLink, "Open in Default Browser", true, func() {
-				exec.Command("xdg-open", e.url).Start()
+				// Waited for, as it hands over and exits: each click left
+				// a zombie process.
+				if cmd := exec.Command("xdg-open", e.url); cmd.Start() == nil {
+					go cmd.Wait()
+				}
 			})
 		}
 		a.paneControls(c, tab, id, (hovered || focused && multi) && !dragging, multi)

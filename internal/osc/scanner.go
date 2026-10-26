@@ -15,6 +15,10 @@ import "bytes"
 type Scanner struct {
 	state int // 0 text, 1 after ESC, 2 in an OSC we keep, 3 in one we skip, 4 ESC in an OSC
 	buf   []byte
+	// prev is the byte before, across reads: after a byte of 0x80 or
+	// more, 0x9d and 0x9c continue a UTF-8 character ("Н" is D0 9D),
+	// and are no C1 controls.
+	prev byte
 }
 
 // MaxLen is the longest sequence kept, OSC 7501's limit.
@@ -24,11 +28,13 @@ const MaxLen = 4096
 // between "ESC ]" and the terminator), and reset at each RIS (ESC c).
 func (o *Scanner) Scan(p []byte, fn func(body []byte), reset func()) {
 	for _, b := range p {
+		c1 := o.prev < 0x80 // a byte 0x80-0x9f here is a C1 control
+		o.prev = b
 		switch o.state {
 		case 0:
 			if b == 0x1b {
 				o.state = 1
-			} else if b == 0x9d { // C1 OSC, in 8-bit output
+			} else if b == 0x9d && c1 { // C1 OSC, in 8-bit output
 				o.begin()
 			}
 		case 1:
@@ -41,10 +47,10 @@ func (o *Scanner) Scan(p []byte, fn func(body []byte), reset func()) {
 				}
 			}
 		case 2, 3:
-			switch b {
-			case 0x07, 0x9c:
+			switch {
+			case b == 0x07, b == 0x9c && c1:
 				o.end(fn)
-			case 0x1b:
+			case b == 0x1b:
 				o.state = 4
 			default:
 				if o.state == 2 {

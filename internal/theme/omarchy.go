@@ -128,7 +128,7 @@ func ghosttyPalette(path string) ([16]ui.Color, bool) {
 	if err != nil {
 		return pal, false
 	}
-	n := 0
+	var set [16]bool // each slot once, however many lines name it
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), "=")
@@ -148,7 +148,12 @@ func ghosttyPalette(path string) ([16]ui.Color, bool) {
 			continue
 		}
 		pal[i] = c
-		n++
+		set[i] = true
 	}
-	return pal, n == 16
+	for _, ok := range set {
+		if !ok {
+			return pal, false
+		}
+	}
+	return pal, true
 }

@@ -1,8 +1,10 @@
 package theme
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -164,5 +166,27 @@ func TestEditorTheme(t *testing.T) {
 	et := EditorTheme(p)
 	if et.Background != p.Code || et.Added != p.Ok {
 		t.Error("editor theme does not follow the palette")
+	}
+}
+
+// A palette counts its slots, not its lines: all 16 with one given twice
+// was refused, and 0-7 each given twice was taken with 8-15 black.
+func TestGhosttyPaletteSlots(t *testing.T) {
+	dir := t.TempDir()
+	write := func(lines []string) string {
+		path := filepath.Join(dir, "ghostty.conf")
+		os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+		return path
+	}
+	var all []string
+	for i := 0; i < 16; i++ {
+		all = append(all, fmt.Sprintf("palette = %d=#%02x0000", i, i*10))
+	}
+	if _, ok := ghosttyPalette(write(append(all, "palette = 3=#ffffff"))); !ok {
+		t.Error("16 slots with one given again: refused")
+	}
+	half := append(append([]string{}, all[:8]...), all[:8]...)
+	if _, ok := ghosttyPalette(write(half)); ok {
+		t.Error("8 slots given twice: taken as 16")
 	}
 }

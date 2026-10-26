@@ -149,8 +149,8 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 		if data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline")); err == nil {
 			cmdLine = strings.ReplaceAll(string(data), "\x00", " ")
 			cmdLine = strings.TrimSpace(cmdLine)
-			if len(cmdLine) > 60 {
-				cmdLine = cmdLine[:57] + "..."
+			if r := []rune(cmdLine); len(r) > 60 {
+				cmdLine = string(r[:57]) + "..." // whole characters: cut by bytes, one broke
 			}
 		}
 

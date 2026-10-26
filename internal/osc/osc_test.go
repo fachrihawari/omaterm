@@ -126,3 +126,16 @@ func TestRecords(t *testing.T) {
 		t.Error("dismiss")
 	}
 }
+
+// A UTF-8 character with the byte of a C1 OSC in it ("Н" is D0 9D) starts
+// no sequence: the scanner then missed a reset, and swallowed what came
+// until a BEL.
+func TestScannerUTF8(t *testing.T) {
+	in := "Нет\x1bc\x1b]133;A\x07"
+	for _, one := range []bool{false, true} {
+		bodies, resets := scanAll(t, in, one)
+		if resets != 1 || len(bodies) != 1 || bodies[0] != "133;A" {
+			t.Errorf("byte-at-a-time=%v: %q, %d resets", one, bodies, resets)
+		}
+	}
+}
