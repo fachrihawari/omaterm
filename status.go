@@ -51,6 +51,7 @@ func (a *appState) startPanes() {
 // over ("Restart Sessions").
 func (a *appState) setPanes(h session.Host) {
 	a.panes = h
+	a.lastViewed = "\x00" // the new host is told the session on screen
 	if a.panesStop != nil {
 		a.panesStop()
 		a.startPanes()

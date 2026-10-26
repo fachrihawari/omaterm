@@ -57,3 +57,32 @@ func TestReconnectKeepsTrying(t *testing.T) {
 		t.Errorf("connected, a call fails: %v", err)
 	}
 }
+
+// After a reconnect, the daemon is told again which session the user
+// looks at: a new one knew of none, so the session on screen got unread
+// marks.
+func TestViewedAfterReconnect(t *testing.T) {
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "d.sock")
+	start := func() *Daemon {
+		d, err := Start(Options{Socket: socket, StateDir: dir, IdleExit: time.Minute, Version: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	first := start()
+	r, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.Spawn, r.quickly = nil, 300*time.Millisecond
+	r.SetViewed("s1")
+	waitFor(t, "the first daemon told", func() bool { return first.reg.Viewed() == "s1" })
+	first.Stop()
+	os.Remove(socket)
+	second := start()
+	defer second.Stop()
+	waitFor(t, "the new daemon told", func() bool { return second.reg.Viewed() == "s1" })
+}

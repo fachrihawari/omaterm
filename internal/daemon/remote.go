@@ -28,6 +28,10 @@ type Remote struct {
 	socket string
 	// quickly is how long a reconnect tries every 100ms (10s when 0).
 	quickly time.Duration
+	// viewed is the session the user looks at, sentViewed the last the
+	// daemon was told, and sendingViewed whether a goroutine is telling it.
+	viewed, sentViewed string
+	sendingViewed      bool
 	// TermOptions gives what a pane's terminal in the app looks like: its
 	// font, theme and padding.
 	TermOptions func() session.StartOptions
@@ -118,9 +122,15 @@ func (r *Remote) use(c *client.Client) error {
 	c.Call("env.update", env, nil)
 	r.mu.Lock()
 	r.c, r.version = c, c.Welcome.App
+	// A new daemon, or one the app left, knows of no session viewed: the
+	// one on screen got unread marks until the user switched away and
+	// back.
+	r.sentViewed = "\x00"
+	viewed := r.viewed
 	r.mu.Unlock()
 	r.update(infos)
 	go r.events(c)
+	r.SetViewed(viewed)
 	return nil
 }
 
@@ -454,8 +464,44 @@ func (r *Remote) Close() {
 	r.client().Close()
 }
 
+// SetViewed tells the daemon the session the user looks at. One goroutine
+// at a time sends the latest, so they arrive in order and none waits on
+// a daemon that stopped answering: a goroutine each could deliver an
+// older session last, and leaked on a stuck daemon.
 func (r *Remote) SetViewed(id string) {
-	go r.client().Call("viewed", proto.IDParams{ID: id}, nil)
+	r.mu.Lock()
+	r.viewed = id
+	busy := r.sendingViewed
+	r.sendingViewed = true
+	r.mu.Unlock()
+	if !busy {
+		go r.sendViewed()
+	}
+}
+
+func (r *Remote) sendViewed() {
+	for {
+		r.mu.Lock()
+		id, c := r.viewed, r.c
+		if id == r.sentViewed || r.closed {
+			r.sendingViewed = false
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), uiCallTimeout)
+		err := c.CallContext(ctx, "viewed", proto.IDParams{ID: id}, nil)
+		cancel()
+		r.mu.Lock()
+		if err != nil {
+			// A reconnect sends it again.
+			r.sendingViewed = false
+			r.mu.Unlock()
+			return
+		}
+		r.sentViewed = id
+		r.mu.Unlock()
+	}
 }
 
 func (r *Remote) Changed() <-chan struct{} { return r.any }

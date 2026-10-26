@@ -232,6 +232,13 @@ func (r *Registry) SetViewed(sessionID string) {
 	}
 }
 
+// Viewed is the session the user looks at, "" for none.
+func (r *Registry) Viewed() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.viewed
+}
+
 func (r *Registry) isViewed(sessionID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
