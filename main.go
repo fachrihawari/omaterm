@@ -120,6 +120,9 @@ func main() {
 	// of the ones past runs left.
 	crashes := crash.Unseen(paths.StateDir())
 	crash.Watch(paths.StateDir(), "app", appVersion())
+	// The daemon removes them too, and says so in its log; without it,
+	// they would stay.
+	paths.RemoveLegacy(paths.StateDir())
 	var app *appState
 	mygo.App.OnSecondInstance(func(args []string, wd string) {
 		if app == nil || app.win == nil {

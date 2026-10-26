@@ -203,6 +203,9 @@ func Start(opts Options) (*Daemon, error) {
 		log.Printf("web access: %v", err)
 	}
 	log.Printf("omaterm daemon %s started, pid %d, %s", opts.Version, os.Getpid(), opts.Socket)
+	for _, path := range paths.RemoveLegacy(opts.StateDir) {
+		log.Printf("removed %s, left by the first omaterm", path)
+	}
 	return d, nil
 }
 
