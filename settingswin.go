@@ -45,6 +45,8 @@ type settingsUI struct {
 	// closing counts the closes asked and the openings since, so that an
 	// opening calls off a close still to run.
 	closing int
+	// keyQuery filters the Keyboard page.
+	keyQuery string
 }
 
 // settingsSheet is a confirmation: a title, what it explains, and its

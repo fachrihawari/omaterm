@@ -1033,8 +1033,12 @@ type keymapEntry struct {
 //
 // Commands of one family (Command.Group) fold into a single entry, whose
 // keys are the family's in order: Alt+1 … Alt+9 is one row, not nine.
-func (a *appState) keymapItems() []keymapEntry {
-	q := strings.ToLower(strings.TrimSpace(a.keyQuery))
+func (a *appState) keymapItems() []keymapEntry { return keymapFilter(a.keyQuery) }
+
+// keymapFilter is keymapItems for a query of its own, as the Settings
+// window's Keyboard page has.
+func keymapFilter(query string) []keymapEntry {
+	q := strings.ToLower(strings.TrimSpace(query))
 	out := make([]keymapEntry, 0, len(commandRegistry))
 	grouped := map[string]int{}
 	for _, cmd := range commandRegistry {

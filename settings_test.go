@@ -215,3 +215,21 @@ func TestSettingsCoverAll(t *testing.T) {
 	}
 	walk("", reflect.TypeOf(Settings{}))
 }
+
+// The Keyboard page filters its own list; it opened the shortcuts dialog
+// in the main window, which the Settings window covers.
+func TestSettingsKeyboardFilters(t *testing.T) {
+	a, tr := newSettingsTester(t, "keyboard")
+	defer stopTermPanes(a)
+	if tr.HasText("All Keyboard Shortcuts") {
+		t.Fatal("the page still sends the user to a dialog behind the window")
+	}
+	a.settingsUI.keyQuery = "split"
+	tr.Frame()
+	if !tr.HasText("Split Terminal Right") || tr.HasText("Quick Open") {
+		t.Fatalf("filtering \"split\" shows %v", tr.Texts())
+	}
+	if a.overlay != overlayNone {
+		t.Fatal("an overlay opened in the main window")
+	}
+}

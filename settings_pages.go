@@ -926,29 +926,45 @@ func (a *appState) settingsBrowser(c *ui.Context) {
 
 // --- Keyboard ---
 
+// settingsKeyboard lists every shortcut, filtered and grouped as the
+// Keyboard Shortcuts dialog does. It shows them here rather than opening
+// that dialog: the main window is under the Settings window.
 func (a *appState) settingsKeyboard(c *ui.Context) {
-	a.settingsGroup(c, "keys", "", "Shortcuts can’t be changed yet.", func() {
-		for _, e := range a.keymapItems() {
-			e := e
-			a.settingsRow(c, e.Title, settingsRowOpts{id: "key-" + e.ID}, func() {
-				for i, b := range e.Keys {
-					if i > 1 {
-						break
+	u := &a.settingsUI
+	ui.Row(c.Key("key-filter")).FillWidth().Height(30).Padding(0, 10).Gap(8).AlignItems(ui.Center).Radius(6).
+		Border(1, pal.Border).Background(pal.Input).Children(func() {
+		ui.Icon(c, iconSearch).Size(14, 14).TextColor(pal.TextFaint)
+		ui.TextInputBase(c, &u.keyQuery).Placeholder("Filter by name or keys, as “split” or “ctrl+shift”").
+			FontSize(12.5).Grow(1).MinWidth(0).Label("Filter shortcuts")
+	})
+	u.blocks++
+	items := keymapFilter(u.keyQuery)
+	if len(items) == 0 {
+		ui.Text(c, "No shortcut matches.").FontSize(12).TextColor(pal.TextFaint).Margin(18, 2, 0, 2)
+	}
+	for start := 0; start < len(items); {
+		cat := items[start].Category
+		end := start
+		for end < len(items) && items[end].Category == cat {
+			end++
+		}
+		group := items[start:end]
+		a.settingsGroup(c, "keys-"+cat, cat, "", func() {
+			for _, e := range group {
+				e := e
+				a.settingsRow(c, e.Title, settingsRowOpts{id: "key-" + e.ID}, func() {
+					for i, b := range e.Keys {
+						if i > 1 {
+							break
+						}
+						keyChip(c, b.Combo.Label())
 					}
-					keyChip(c, b.Combo.Label())
-				}
-			})
-		}
-	})
-	settingsActions(c, func() {
-		if settingsButton(c, "All Keyboard Shortcuts", false, false, false) {
-			a.openOverlay(overlayShortcuts)
-			if a.win != nil {
-				a.win.Focus()
-				a.win.Invalidate()
+				})
 			}
-		}
-	})
+		})
+		start = end
+	}
+	ui.Text(c, "Shortcuts can’t be changed yet.").FontSize(11.5).TextColor(pal.TextFaint).Margin(12, 2, 0, 2)
 }
 
 // --- About ---
