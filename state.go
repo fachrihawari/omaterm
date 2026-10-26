@@ -114,6 +114,7 @@ type openFile struct {
 type appState struct {
 	win          *mygo.Window
 	processTimer *time.Timer
+	processGen   int // counts stops: a tick that fired before one ends there
 
 	projects  []project
 	active    int
@@ -137,6 +138,7 @@ type appState struct {
 	sysStats   service.SystemStats
 	sysSampler service.SystemSampler
 	sysTimer   *time.Timer
+	sysGen     int // counts stops, as processGen
 
 	commitMsg string
 
@@ -790,16 +792,27 @@ func (a *appState) startSystemStats() {
 // way in: the CPU delta is between consecutive samples, and a second sample
 // right after the first would measure no elapsed time.
 func (a *appState) scheduleSystemStats() {
+	gen := a.sysGen
 	a.sysTimer = time.AfterFunc(3*time.Second, func() {
-		a.win.Update(func() {
-			a.sysStats = a.sysSampler.Sample()
-			a.scheduleSystemStats()
-		})
+		a.win.Update(func() { a.sysTick(gen) })
 	})
+}
+
+// sysTick samples and schedules the next tick, unless the stats were
+// stopped after the timer fired but before this ran: they stay stopped,
+// not sampling on after the window closed. It says whether it went on.
+func (a *appState) sysTick(gen int) bool {
+	if a.sysGen != gen {
+		return false
+	}
+	a.sysStats = a.sysSampler.Sample()
+	a.scheduleSystemStats()
+	return true
 }
 
 // stopSystemStats halts the periodic machine-load sampling.
 func (a *appState) stopSystemStats() {
+	a.sysGen++
 	if a.sysTimer != nil {
 		a.sysTimer.Stop()
 		a.sysTimer = nil
@@ -814,13 +827,25 @@ func (a *appState) startProcessRefresh() {
 	if a.win == nil {
 		return // no timer in test mode
 	}
+	gen := a.processGen
 	a.processTimer = time.AfterFunc(5*time.Second, func() {
-		a.win.Update(func() { a.startProcessRefresh() })
+		a.win.Update(func() { a.processTick(gen) })
 	})
+}
+
+// processTick refreshes again, unless the refresh was stopped meanwhile
+// (the Info tab hidden): it stays stopped. It says whether it went on.
+func (a *appState) processTick(gen int) bool {
+	if a.processGen != gen {
+		return false
+	}
+	a.startProcessRefresh()
+	return true
 }
 
 // stopProcessRefresh halts the periodic refresh.
 func (a *appState) stopProcessRefresh() {
+	a.processGen++
 	if a.processTimer != nil {
 		a.processTimer.Stop()
 		a.processTimer = nil

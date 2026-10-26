@@ -465,3 +465,20 @@ func TestRestartKeepsCommandAndEnv(t *testing.T) {
 		t.Fatalf("restarted with %q, want %q", got, cmd)
 	}
 }
+
+// A timer that fired just before its refresh was stopped must not start
+// it again: the Info tab's process list refreshed on after it was hidden,
+// the system stats after the window closed.
+func TestStoppedTimersStayStopped(t *testing.T) {
+	a := newTestApp(t)
+	gen := a.processGen
+	a.stopProcessRefresh()
+	if a.processTick(gen) {
+		t.Error("process refresh restarted after it was stopped")
+	}
+	gen = a.sysGen
+	a.stopSystemStats()
+	if a.sysTick(gen) {
+		t.Error("system stats restarted after they were stopped")
+	}
+}
