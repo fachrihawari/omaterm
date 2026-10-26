@@ -383,6 +383,59 @@ func (a *App) Shot(name string) {
 	}
 }
 
+// Sway runs a sway command, such as one that focuses a window.
+func (a *App) Sway(command string) {
+	a.t.Helper()
+	cmd := exec.Command("swaymsg", "-s", w.swaysock, command)
+	cmd.Env = a.env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		a.t.Fatalf("swaymsg %s: %v %s", command, err, out)
+	}
+}
+
+// WindowShot is a PNG of the window of the title, as it shows now.
+func (a *App) WindowShot(title string) []byte {
+	a.t.Helper()
+	cmd := exec.Command("swaymsg", "-s", w.swaysock, "-t", "get_tree", "-r")
+	cmd.Env = a.env
+	out, err := cmd.Output()
+	if err != nil {
+		a.t.Fatalf("swaymsg: %v", err)
+	}
+	type node struct {
+		Name     string `json:"name"`
+		Rect     struct{ X, Y, Width, Height int }
+		Nodes    []node `json:"nodes"`
+		Floating []node `json:"floating_nodes"`
+	}
+	var find func(n node) *node
+	find = func(n node) *node {
+		if n.Name == title && n.Rect.Width > 0 {
+			return &n
+		}
+		for _, k := range append(n.Nodes, n.Floating...) {
+			if f := find(k); f != nil {
+				return f
+			}
+		}
+		return nil
+	}
+	var tree node
+	json.Unmarshal(out, &tree)
+	n := find(tree)
+	if n == nil {
+		a.t.Fatalf("no window %q to shoot", title)
+	}
+	r := n.Rect
+	cmd = exec.Command("grim", "-g", fmt.Sprintf("%d,%d %dx%d", r.X, r.Y, r.Width, r.Height), "-")
+	cmd.Env = a.env
+	png, err := cmd.Output()
+	if err != nil {
+		a.t.Fatalf("grim: %v", err)
+	}
+	return png
+}
+
 // Relaunch quits the app and starts it again on the same folders.
 func (a *App) Relaunch(args ...string) {
 	a.t.Helper()

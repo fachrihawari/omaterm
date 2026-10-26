@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -68,6 +69,28 @@ func TestZoomAndTheme(t *testing.T) {
 	a.MustCLI("do", "theme.dark")
 	time.Sleep(500 * time.Millisecond)
 	a.Shot("zoomed")
+	a.Alive()
+}
+
+// Zooming in a terminal of the main window (its own Ctrl+=) shows the new
+// size in Settings at once: it stayed old there until something else
+// redrew that window.
+func TestZoomRedrawsSettings(t *testing.T) {
+	a := Start(t, Options{})
+	a.MustCLI("new", "-n", "zoom")
+	a.MustCLI("settings", "terminal")
+	a.WaitWindow("omaterm Settings", true)
+	a.Sway(`[title="^omaterm$"] focus`)
+	a.WaitFocus("omaterm")
+	time.Sleep(time.Second)
+	before := a.WindowShot("omaterm Settings")
+	a.Key("-M", "ctrl", "=", "-m", "ctrl")
+	time.Sleep(time.Second)
+	after := a.WindowShot("omaterm Settings")
+	if bytes.Equal(before, after) {
+		a.Shot("stale")
+		t.Fatal("Settings still shows the old font size")
+	}
 	a.Alive()
 }
 
