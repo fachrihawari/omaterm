@@ -3,8 +3,10 @@ package session
 import (
 	"context"
 	"errors"
+	"log"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -20,6 +22,9 @@ type Registry struct {
 	panes  map[string]*Pane
 	order  []string
 	viewed string // the session the user looks at, "" for none
+	// starting holds the ids of panes being started: a second start of
+	// one, as a restore racing the app's start, is refused, not run twice.
+	starting map[string]bool
 
 	changedCh chan struct{}
 
@@ -44,7 +49,7 @@ func (r *Registry) output(id string) {
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{panes: map[string]*Pane{}, changedCh: make(chan struct{}, 1)}
+	return &Registry{panes: map[string]*Pane{}, starting: map[string]bool{}, changedCh: make(chan struct{}, 1)}
 }
 
 // ErrExists is Start's error for an id that is taken.
@@ -53,11 +58,29 @@ var ErrExists = errors.New("session: pane exists")
 // Start runs a pane.
 func (r *Registry) Start(o StartOptions) (*Pane, error) {
 	r.mu.Lock()
-	if _, ok := r.panes[o.ID]; ok {
+	if _, ok := r.panes[o.ID]; ok || r.starting[o.ID] {
 		r.mu.Unlock()
 		return nil, ErrExists
 	}
+	r.starting[o.ID] = true
 	r.mu.Unlock()
+	p, err := r.start(o)
+	r.mu.Lock()
+	delete(r.starting, o.ID)
+	if err == nil {
+		r.panes[o.ID] = p
+		r.order = append(r.order, o.ID)
+	}
+	r.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	r.changed()
+	return p, nil
+}
+
+// start runs a pane, with its id reserved.
+func (r *Registry) start(o StartOptions) (*Pane, error) {
 	if o.Cols <= 0 || o.Rows <= 0 {
 		o.Cols, o.Rows = 120, 36
 	}
@@ -112,11 +135,6 @@ func (r *Registry) Start(o StartOptions) (*Pane, error) {
 	}
 	t.Resize(o.Cols, o.Rows)
 	p.term = t
-	r.mu.Lock()
-	r.panes[o.ID] = p
-	r.order = append(r.order, o.ID)
-	r.mu.Unlock()
-	r.changed()
 	return p, nil
 }
 
@@ -146,7 +164,9 @@ func (r *Registry) list() []*Pane {
 	defer r.mu.Unlock()
 	out := make([]*Pane, 0, len(r.order))
 	for _, id := range r.order {
-		out = append(out, r.panes[id])
+		if p := r.panes[id]; p != nil {
+			out = append(out, p)
+		}
 	}
 	return out
 }
@@ -246,8 +266,19 @@ func (r *Registry) Run(ctx context.Context) {
 // and screen.
 func (r *Registry) Tick(now time.Time) {
 	for _, p := range r.list() {
-		p.tick(now)
+		r.tickOne(p, now)
 	}
+}
+
+// tickOne ticks a pane. A bug there costs that pane its tick, not the
+// process: in the session daemon, that would end every session.
+func (r *Registry) tickOne(p *Pane, now time.Time) {
+	defer func() {
+		if e := recover(); e != nil {
+			log.Printf("ticking pane %s panicked: %v\n%s", p.ID(), e, debug.Stack())
+		}
+	}()
+	p.tick(now)
 }
 
 func (r *Registry) paneExited(id string, code int) {

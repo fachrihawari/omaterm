@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -129,7 +130,10 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.ID+" is a browser, not a terminal")
 		}
 		_, resume := d.restorePrefs()
-		return true, d.restorePane(s.ID, *pn, resume)
+		if err := d.restorePane(s.ID, *pn, resume); err != nil && !errors.Is(err, session.ErrExists) {
+			return nil, err // a wake racing another, or a restore, found it starting: it runs
+		}
+		return true, nil
 	case "restart":
 		var p proto.IDParams
 		json.Unmarshal(raw, &p)

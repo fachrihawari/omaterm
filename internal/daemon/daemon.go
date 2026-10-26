@@ -209,6 +209,16 @@ func Start(opts Options) (*Daemon, error) {
 	return d, nil
 }
 
+// waitStarted waits for the pane another call is starting.
+func (d *Daemon) waitStarted(id string) (*session.Pane, error) {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if pn := d.reg.Get(id); pn != nil {
+			return pn, nil
+		}
+	}
+	return nil, proto.Errorf(proto.CodeNotFound, "pane "+id+" did not start")
+}
+
 // Stop saves every pane's history, ends the panes and stops listening.
 func (d *Daemon) Stop() {
 	d.once.Do(func() {
@@ -316,6 +326,11 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 			Theme: d.currentTheme()}
 		d.termPrefs().apply(&o)
 		pn, err := d.reg.Start(o)
+		if errors.Is(err, session.ErrExists) {
+			// Being started meanwhile, as by a restore at login: it is
+			// that pane, once it runs.
+			pn, err = d.waitStarted(p.ID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -529,6 +544,13 @@ func (d *Daemon) AttachPipe(pane string) net.Conn {
 	ours, theirs := net.Pipe()
 	go func() {
 		defer ours.Close()
+		// A bug in a web client's attachment ends it, not the daemon and
+		// every session in it, as on the socket.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("web attach panicked: %v\n%s", r, debug.Stack())
+			}
+		}()
 		d.attach(ours, bufio.NewReader(ours), proto.Hello{Kind: "attach", Version: proto.Version, Pane: pane},
 			proto.Welcome{Version: proto.Version, PID: os.Getpid(), Started: d.started.UnixMilli(), App: d.opts.Version}, true)
 	}()
