@@ -631,3 +631,27 @@ func TestOneViewHeader(t *testing.T) {
 		t.Errorf("header titles at y=%.1f (editor), %.1f (diff), %.1f (graph): want one height", editor, diff, graph)
 	}
 }
+
+// The graph's hashes line up in every row, wherever a branch opens: they
+// moved right in the rows with more lanes.
+func TestGraphColumnsAligned(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.commits = shotMergeCommits()
+	a.graphLoaded = true
+	a.openGraphTab()
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	var x0 float32
+	for i, cm := range a.commits {
+		r, ok := tr.Find(cm.Short)
+		if !ok {
+			t.Fatalf("no row for %s", cm.Short)
+		}
+		if i == 0 {
+			x0 = r.X
+		} else if r.X != x0 {
+			t.Errorf("%s at x=%.0f, %s at x=%.0f: want one column", cm.Short, r.X, a.commits[0].Short, x0)
+		}
+	}
+}

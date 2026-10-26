@@ -197,10 +197,11 @@ func (a *appState) graphView(c *ui.Context) ui.Element {
 		}
 
 		lanes := computeLanes(a.commits)
+		gutter := graphGutter(lanes)
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Padding(6, 0).Children(func() {
 				for i := range a.commits {
-					a.graphRow(c, &a.commits[i], lanes[i])
+					a.graphRow(c, &a.commits[i], lanes[i], gutter)
 				}
 			})
 		})
@@ -215,20 +216,21 @@ func (a *appState) graphCompactView(c *ui.Context) ui.Element {
 		})
 	}
 	lanes := computeLanes(a.commits)
+	gutter := graphGutter(lanes)
 	return ui.Column(c).Children(func() {
 		for i := range a.commits {
-			a.graphRowCompact(c, &a.commits[i], lanes[i])
+			a.graphRowCompact(c, &a.commits[i], lanes[i], gutter)
 		}
 	})
 }
 
-func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) ui.Element {
+func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane, gutter int) ui.Element {
 	e := ui.Row(c).Key(cm.Hash).FillWidth().Height(graphRowH).AlignItems(ui.Center).Gap(10).Cursor(ui.CursorPointer).Padding(0, 12)
 	if e.Hovered() {
 		e.Background(pal.Hover)
 	}
 	e.Children(func() {
-		a.graphCanvas(c, lane, graphRowH)
+		a.graphCanvas(c, lane, gutter, graphRowH)
 		ui.Text(c, cm.Short).Font(monoFont).FontSize(11).TextColor(pal.TextFaint).Width(58).SingleLine().Shrink(0)
 		ui.Text(c, cm.Subject).FontSize(12).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
 		for _, ref := range cm.Refs {
@@ -251,14 +253,14 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane) u
 	return e
 }
 
-func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graphLane) ui.Element {
+func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graphLane, gutter int) ui.Element {
 	expanded := a.expandedCommit == cm.Hash
 	e := ui.Row(c).Key(cm.Hash).FillWidth().Height(26).AlignItems(ui.Center).Gap(8).Cursor(ui.CursorPointer).Padding(0, 10)
 	if e.Hovered() {
 		e.Background(pal.Hover)
 	}
 	e.Children(func() {
-		a.graphCanvas(c, lane, 26)
+		a.graphCanvas(c, lane, gutter, 26)
 		ui.Text(c, cm.Subject).FontSize(11).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
 		ui.Text(c, relativeTime(cm.Time)).FontSize(9).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 	})
@@ -353,11 +355,19 @@ func truncTxtPath(s string, max int) string {
 }
 
 // graphCanvas draws the lanes of one row.
-func (a *appState) graphCanvas(c *ui.Context, lane graphLane, rowH float32) ui.Element {
-	w := float32(lane.MaxLane+1) * laneWidth
-	if w < laneWidth {
-		w = laneWidth
+// graphGutter is the lanes the graph's column is wide: the most any row
+// has, so the hashes and subjects after it line up in every row, not
+// shifting right where a branch opens.
+func graphGutter(lanes []graphLane) int {
+	n := 1
+	for _, l := range lanes {
+		n = max(n, l.MaxLane+1)
 	}
+	return n
+}
+
+func (a *appState) graphCanvas(c *ui.Context, lane graphLane, gutter int, rowH float32) ui.Element {
+	w := float32(max(gutter, 1)) * laneWidth
 	return ui.Box(c).Width(w).Height(rowH).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
 		laneX := func(l int) float32 { return r.X + float32(l)*laneWidth + laneWidth/2 }
 		midY := r.Y + r.H/2
