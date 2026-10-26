@@ -13,6 +13,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/cli"
 	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
@@ -555,6 +556,15 @@ func (a *appState) setProject(i int) {
 // active project (newApp chose it, but had no window for the results to
 // reach), and the timers of the status bar and the Info panel.
 func (a *appState) start() {
+	// What ui.json kept before it was a setting (the text size, the diff
+	// layout) is moved to settings.json now, not when a setting next
+	// changes: ui.json no longer keeps it.
+	if !settingsFileHas("terminal") {
+		a.saveSettings()
+	}
+	if settingsBroken != "" {
+		a.queuedToasts = append(a.queuedToasts, "Your settings file couldn't be read, so the defaults are in use. Its copy: "+cli.ShortPath(settingsBroken))
+	}
 	a.startThemeWatch()
 	a.startPanes()
 	if a.project() != nil {

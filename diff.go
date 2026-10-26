@@ -468,6 +468,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				}
 				if split.Clicked() {
 					a.diffSplit = true
+					a.saveSettings()
 				}
 
 				inline := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
@@ -483,6 +484,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				}
 				if inline.Clicked() {
 					a.diffSplit = false
+					a.saveSettings()
 				}
 			}
 		})

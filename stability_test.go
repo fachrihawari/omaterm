@@ -259,3 +259,45 @@ func (h *runSpy) Run(ctx context.Context) {
 	}
 	h.Host.Run(ctx)
 }
+
+// 0.8 kept the text size and the diff layout in ui.json; moving them into
+// the settings must keep them. 0.9.0 dropped them when no setting changed
+// in the first run.
+func TestUIPrefsMigrate(t *testing.T) {
+	os.MkdirAll(filepath.Dir(uiPrefsPath()), 0o755)
+	if err := os.WriteFile(uiPrefsPath(), []byte(`{"fontSize": 15, "diffSplit": false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(uiPrefsPath()) })
+	a := newApp()
+	defer stopTermPanes(a)
+	if a.fontSize != 15 || a.settings.Terminal.FontSize != 15 {
+		t.Fatalf("font size %v / %v, want 15", a.fontSize, a.settings.Terminal.FontSize)
+	}
+	if a.diffSplit || a.settings.Editor.DiffSplit {
+		t.Fatal("the unified diff layout was lost")
+	}
+}
+
+// A settings.json that can't be read is copied aside before the defaults
+// replace it.
+func TestBrokenSettingsKept(t *testing.T) {
+	os.MkdirAll(filepath.Dir(settingsFilePath()), 0o755)
+	if err := os.WriteFile(settingsFilePath(), []byte(`{"theme": "dark",`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		os.Remove(settingsFilePath())
+		if settingsBroken != "" {
+			os.Remove(settingsBroken)
+			settingsBroken = ""
+		}
+	})
+	s := loadSettings()
+	if s.Theme != defaultSettings().Theme {
+		t.Fatalf("theme %q, want the default", s.Theme)
+	}
+	if b, err := os.ReadFile(settingsBroken); err != nil || string(b) != `{"theme": "dark",` {
+		t.Fatalf("no copy of the broken settings: %v", err)
+	}
+}

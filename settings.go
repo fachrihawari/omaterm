@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Settings are the user's preferences, in settings.json beside state.json.
@@ -154,12 +155,23 @@ func settingsFilePath() string {
 	return filepath.Join(filepath.Dir(stateFilePath()), "settings.json")
 }
 
+// settingsBroken is the copy of a settings.json that couldn't be read,
+// kept before the defaults are saved over it.
+var settingsBroken string
+
 // loadSettings reads settings.json over the defaults; a missing or broken
-// file gives the defaults.
+// file gives the defaults. A broken one, as a slip in an editor leaves it,
+// is copied aside first.
 func loadSettings() Settings {
 	s := defaultSettings()
 	if data, err := os.ReadFile(settingsFilePath()); err == nil {
-		json.Unmarshal(data, &s)
+		if err := json.Unmarshal(data, &s); err != nil {
+			s = defaultSettings()
+			bad := settingsFilePath() + ".bad-" + time.Now().Format("20060102-150405")
+			if os.WriteFile(bad, data, 0o600) == nil {
+				settingsBroken = bad
+			}
+		}
 	}
 	switch s.Theme {
 	case themeOmarchy, themeSystem, themeDark, themeLight:
