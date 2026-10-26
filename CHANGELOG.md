@@ -3,6 +3,51 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.3
+
+A steadier main window, and fewer surprises.
+
+### Dialogs and windows
+
+- **A confirm dialog acts on what it asked about.** A session closed or
+  a tab moved from the command line while "Close this tab?" was open
+  could make it close a different one, possibly a running session.
+- **Dialogs come first.** The command palette or a picker no longer
+  opens over a dialog waiting for your answer, and a dialog that opens
+  closes the picker that was up.
+- **Pickers dim what is behind them,** and global search keeps its full
+  height while it has few results.
+- **Narrow panes keep Close and Zoom** in reach; the git and status chips
+  shrink first.
+- **Tabs that don't fit scroll** with the shown one kept in view, and
+  "+" stays put. They used to be cut off with "+" out of reach.
+- **The sidebar footer fits a narrow sidebar.**
+- **No stray shell inside a diff or an editor tab.** One was started
+  there, out of sight, and kept running.
+- **The status bar's process and port items open the Info tab.**
+- **A session rename is kept when you click away,** as Enter keeps it.
+- **The diff header reads plainly:** "Index → Working Tree" or
+  "Staged: HEAD → Index".
+
+### Sessions
+
+- **Restarting a session runs its command again,** rather than leaving
+  a bare shell: a dev server comes back as a dev server.
+- **A program that fails says so:** its session shows as failed with
+  "<command> exited (code N)", and a shell that dies on its own tells you
+  before its session goes.
+- **The omaterm command says why it can't reach omaterm** (permission,
+  or the app not answering) rather than only that it couldn't.
+- **A closed session's scrollback is gone from disk for good.** A save
+  running just as it closed could write it back.
+- **The Info tab stops refreshing when you leave it.**
+
+### Housekeeping
+
+- **Files left by the first omaterm are removed:** its old workspace
+  files and its shell histories. Your `config.toml` is left alone.
+- **The unused "block ads" setting is gone.**
+
 ## 0.9.2
 
 This release is about your sessions being safe, and omaterm staying up.

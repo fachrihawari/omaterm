@@ -1,7 +1,7 @@
 {
   "name": "omaterm",
   "identifier": "com.example.omaterm",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "out": "build",
   "resources": [
     "LICENSE",
