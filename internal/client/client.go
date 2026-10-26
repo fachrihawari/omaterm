@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"net"
 	"sync"
 	"time"
@@ -51,6 +53,11 @@ var helloVersion = proto.Version
 func Dial(path string) (*Client, error) {
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
+		// Not there, or no one listening: not running. Anything else is
+		// worth saying, as a socket this user may not open.
+		if errors.Is(err, fs.ErrPermission) {
+			return nil, fmt.Errorf("%w: its socket %s can't be opened: permission denied", ErrUnreachable, path)
+		}
 		return nil, ErrUnreachable
 	}
 	c := &Client{conn: conn, enc: json.NewEncoder(conn), calls: map[int64]chan proto.Message{},
@@ -64,7 +71,9 @@ func Dial(path string) (*Client, error) {
 	line, err := proto.ReadLine(r, 64<<10)
 	if err != nil {
 		conn.Close()
-		return nil, ErrUnreachable
+		// It took the connection but said nothing in 5 seconds: it runs,
+		// and is stuck.
+		return nil, fmt.Errorf("%w: it doesn't answer (%s)", ErrUnreachable, path)
 	}
 	conn.SetReadDeadline(time.Time{})
 	if err := json.Unmarshal(line, &c.Welcome); err != nil {

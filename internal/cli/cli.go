@@ -131,6 +131,9 @@ func connect() (*client.Client, error) {
 	}
 	if err != nil {
 		if errors.Is(err, client.ErrUnreachable) {
+			if err != client.ErrUnreachable {
+				return nil, fmt.Errorf("%w: %v", errUnreachable, err) // why it can't be reached
+			}
 			return nil, fmt.Errorf("%w: omaterm is not running", errUnreachable)
 		}
 		return nil, err
