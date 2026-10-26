@@ -399,6 +399,11 @@ func (a *appState) removePaneIn(tab int, termID string) {
 				a.activePaneTermID = ids[0]
 			}
 		}
+		if active {
+			// Typing went nowhere until a click: the pane left gets the
+			// keyboard as it is drawn.
+			a.refocusPane = true
+		}
 	}
 }
 

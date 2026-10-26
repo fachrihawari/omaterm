@@ -388,6 +388,9 @@ type appState struct {
 	// quitAsk is the dialog asking to quit with editors unsaved; quitWant
 	// what to do once the user agrees ("quit" or "relaunch"), and
 	// quitAnyway lets that quit through.
+	// refocusPane gives the keyboard to the active pane as it is drawn,
+	// after the one that had it closed.
+	refocusPane bool
 	// diffTried is the diff tab's source showDiffTab last tried to show,
 	// in the workspace diffTriedFor.
 	diffTried    *diffSource

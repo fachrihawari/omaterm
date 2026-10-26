@@ -245,6 +245,11 @@ func (a *appState) closeActiveTab(c *ui.Context) {
 	if a.activeTab < 0 || a.activeTab >= len(a.tabs) {
 		return
 	}
+	// The view shows no tab of its kind ("No file open"): the tab behind
+	// it, a session, is not what the user sees to close.
+	if a.tabs[a.activeTab].Kind != a.activeView {
+		return
+	}
 	a.closeTabAsking(a.activeTab)
 }
 

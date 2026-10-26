@@ -954,3 +954,28 @@ func TestFilesFollowDisk(t *testing.T) {
 		t.Error("opening a file that is gone said nothing")
 	}
 }
+
+// Ctrl+W with "No file open" on screen closes nothing: it closed the
+// session hidden behind it. Closing the pane that had the keyboard gives
+// it to the pane left.
+func TestCloseWhatIsShown(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	n := len(a.tabs)
+	a.activateKind(tabEditor) // no editor open: the view says so
+	tr := ui.NewTester(func(c *ui.Context) { a.closeActiveTab(c) }, 400, 300)
+	tr.Frame()
+	if len(a.tabs) != n {
+		t.Fatal("Ctrl+W closed the session behind the empty editor view")
+	}
+
+	a.activateKind(tabTerminal)
+	first := a.activeSplitLeaf()
+	second := a.splitPane(first, splitVertical)
+	a.splitPane(second, splitHorizontal)
+	a.activePaneTermID = second
+	a.removePane(second)
+	if !a.refocusPane || a.activePaneTermID == "" {
+		t.Error("the pane left isn't given the keyboard")
+	}
+}

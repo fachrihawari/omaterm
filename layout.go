@@ -224,6 +224,12 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 				v := terminal.View(c, t).Fill().Bind(a.handle("term-" + id))
 				if focused {
 					v.AutoFocus()
+					// AutoFocus is for a view that appears: one that was
+					// there already takes the keyboard from a pane closed.
+					if a.refocusPane {
+						a.refocusPane = false
+						a.handle("term-" + id).Focus()
+					}
 				}
 			})
 		}
