@@ -143,15 +143,6 @@ func txt(c *ui.Context, s string, size float32, col ui.Color) ui.Element {
 	return ui.Text(c, s).FontSize(size).TextColor(col).SingleLine().Shrink(0)
 }
 
-// truncTxt truncates s to at most max chars, adding …, then renders it
-// like txt. Use where the mock truncates with CSS text-overflow.
-func truncTxt(c *ui.Context, s string, size float32, col ui.Color, max int) ui.Element {
-	if len(s) > max && max > 1 {
-		s = s[:max-1] + "…"
-	}
-	return txt(c, s, size, col)
-}
-
 // mutedTxt2 is txt in the mock's muted color.
 func mutedTxt2(c *ui.Context, s string, size float32) ui.Element {
 	return txt(c, s, size, pal.TextMuted)

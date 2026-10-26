@@ -1012,11 +1012,16 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 			for _, e := range group {
 				e := e
 				a.settingsRow(c, e.Title, settingsRowOpts{id: "key-" + e.ID}, func() {
-					for i, b := range e.Keys {
-						if i > 1 {
-							break
+					// A run of keys (Alt+1 to Alt+9) as its ends: cut at
+					// two, it read as if those were all.
+					if n := len(e.Keys); n > 2 {
+						keyChip(c, e.Keys[0].Combo.Label())
+						ui.Text(c, "to").FontSize(11).TextColor(pal.TextFaint)
+						keyChip(c, e.Keys[n-1].Combo.Label())
+					} else {
+						for _, b := range e.Keys {
+							keyChip(c, b.Combo.Label())
 						}
-						keyChip(c, b.Combo.Label())
 					}
 				})
 			}

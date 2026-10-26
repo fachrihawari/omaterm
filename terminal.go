@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 )
@@ -268,6 +269,19 @@ func (a *appState) openTermLink(link string) bool {
 	return true
 }
 
+// openURL opens a page where links open: a browser pane, or the default
+// browser, as the settings say.
+func (a *appState) openURL(url string) {
+	if a.settings.OpenLinks == "pane" {
+		a.activateKind(tabTerminal)
+		a.openBrowser(url)
+		return
+	}
+	if a.win != nil {
+		mygo.Shell.OpenExternal(url)
+	}
+}
+
 // paneExited closes a pane whose shell exited: the pane, or its session
 // when it was the session's last, in whichever project it is, not only
 // the one shown. UI thread.
@@ -481,12 +495,6 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 // ---------------------------------------------------------------------------
 // Toolbar actions
 // ---------------------------------------------------------------------------
-
-func (a *appState) killTermPaneByTermID(termID string) {
-	a.removePane(termID)
-	// If only one pane left, collapse (already handled by removePane setting
-	// Split to nil when empty; but single leaf remains for 1 pane).
-}
 
 // newTerminalTabReal adds a terminal tab with a single pane.
 func (a *appState) newTerminalTabReal() {

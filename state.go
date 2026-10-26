@@ -245,8 +245,7 @@ type appState struct {
 	branchList     ui.ListState
 
 	// Git stash
-	stashMsg              string
-	stashIncludeUntracked bool
+	stashMsg string
 
 	// Git branch switching
 	branches      []string

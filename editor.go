@@ -182,8 +182,6 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				Tooltip("Save (" + keyLabels("file.save") + ")"); save.Clicked() {
 				a.saveEditor(doc, c)
 			}
-			cmdButton(c, iconSplit, iconBtn, false)
-			cmdButton(c, iconMore, iconBtn, false)
 		})
 
 		// The real editor, or markdown preview.

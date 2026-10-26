@@ -18,9 +18,6 @@ var iconChevronRightSVG []byte
 //go:embed icons/columns-2.svg
 var iconColumns2SVG []byte
 
-//go:embed icons/ellipsis.svg
-var iconEllipsisSVG []byte
-
 //go:embed icons/external-link.svg
 var iconExternalLinkSVG []byte
 
@@ -48,9 +45,6 @@ var iconFolderOpenSVG []byte
 //go:embed icons/folder-plus.svg
 var iconFolderPlusSVG []byte
 
-//go:embed icons/folder-search.svg
-var iconFolderSearchSVG []byte
-
 //go:embed icons/git-branch.svg
 var iconGitBranchSVG []byte
 
@@ -65,9 +59,6 @@ var iconInfoSVG []byte
 
 //go:embed icons/minus.svg
 var iconMinusSVG []byte
-
-//go:embed icons/more-horizontal.svg
-var iconMoreSVG []byte
 
 //go:embed icons/open-in-new.svg
 var iconOpenInNewSVG []byte
@@ -98,9 +89,6 @@ var iconRows2SVG []byte
 
 //go:embed icons/search.svg
 var iconSearchSVG []byte
-
-//go:embed icons/split-square-vertical.svg
-var iconSplitSVG []byte
 
 //go:embed icons/terminal.svg
 var iconTerminalSVG []byte
@@ -164,7 +152,6 @@ var (
 	iconChevronDown    = ui.MustParseSVG(iconChevronDownSVG)
 	iconChevronRight   = ui.MustParseSVG(iconChevronRightSVG)
 	iconColumns2       = ui.MustParseSVG(iconColumns2SVG)
-	iconEllipsis       = ui.MustParseSVG(iconEllipsisSVG)
 	iconExternalLink   = ui.MustParseSVG(iconExternalLinkSVG)
 	iconFileCode       = ui.MustParseSVG(iconFileCodeSVG)
 	iconFileText       = ui.MustParseSVG(iconFileTextSVG)
@@ -174,13 +161,11 @@ var (
 	iconFolderGit      = ui.MustParseSVG(iconFolderGitSVG)
 	iconFolderOpen     = ui.MustParseSVG(iconFolderOpenSVG)
 	iconFolderPlus     = ui.MustParseSVG(iconFolderPlusSVG)
-	iconFolderSearch   = ui.MustParseSVG(iconFolderSearchSVG)
 	iconGitBranch      = ui.MustParseSVG(iconGitBranchSVG)
 	iconGitCompare     = ui.MustParseSVG(iconGitCompareSVG)
 	iconGlobe          = ui.MustParseSVG(iconGlobeSVG)
 	iconInfo           = ui.MustParseSVG(iconInfoSVG)
 	iconMinus          = ui.MustParseSVG(iconMinusSVG)
-	iconMore           = ui.MustParseSVG(iconMoreSVG)
 	iconOpenInNew      = ui.MustParseSVG(iconOpenInNewSVG)
 	iconPanelLeft      = ui.MustParseSVG(iconPanelLeftSVG)
 	iconPanelLeftClose = ui.MustParseSVG(iconPanelLeftCloseSVG)
@@ -191,7 +176,6 @@ var (
 	iconRotate         = ui.MustParseSVG(iconRotateSVG)
 	iconRows2          = ui.MustParseSVG(iconRows2SVG)
 	iconSearch         = ui.MustParseSVG(iconSearchSVG)
-	iconSplit          = ui.MustParseSVG(iconSplitSVG)
 	iconTerminal       = ui.MustParseSVG(iconTerminalSVG)
 	iconTrash          = ui.MustParseSVG(iconTrashSVG)
 	iconUndo           = ui.MustParseSVG(iconUndoSVG)

@@ -105,14 +105,6 @@ func ensureContrast(c, bg ui.Color, ratio float64) ui.Color {
 	return o.color()
 }
 
-// opaque flattens c over bg.
-func opaque(c, bg ui.Color) ui.Color {
-	if c.A == 255 {
-		return c
-	}
-	return c.Over(bg)
-}
-
 // hueIn reports whether c has a hue within [lo, hi] degrees (wrapping when
 // lo > hi) and enough chroma to tell one.
 func hueIn(c ui.Color, lo, hi float64) bool {

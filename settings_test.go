@@ -391,3 +391,21 @@ func TestSettingsFieldsBehave(t *testing.T) {
 		t.Errorf("a half-typed shell is the setting: %q", a.settings.Terminal.Shell)
 	}
 }
+
+// A command with a run of keys (Alt+1 to Alt+9) shows the whole run: cut
+// at two, the Keyboard page showed only Alt+1 and Alt+2.
+func TestKeyboardShowsKeyRuns(t *testing.T) {
+	a, _ := newSettingsTester(t, "keyboard")
+	tall := ui.NewTester(a.settingsView, settingsWidth, 9000)
+	tall.Frame()
+	for _, e := range keymapFilter("") {
+		if len(e.Keys) <= 2 {
+			continue
+		}
+		if last := e.Keys[len(e.Keys)-1].Combo.Label(); !tall.HasText(last) {
+			t.Errorf("%s's last key %s isn't shown", e.Title, last)
+		}
+		return
+	}
+	t.Fatal("no row with more than two keys")
+}

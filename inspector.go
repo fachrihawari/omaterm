@@ -222,8 +222,10 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								mutedTxt2(c, port.Name, 11)
 								ui.Spacer(c)
 								if port.Open {
-									if cmdButton(c, iconExternalLink, iconBtn, false).Clicked() {
-										c.Toast("Open :" + itoa(port.Port))
+									// It only said the port; it opens its page now, where
+									// links open (Settings: a browser pane, or yours).
+									if cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Open http://localhost:" + itoa(port.Port)).Clicked() {
+										a.openURL("http://localhost:" + itoa(port.Port))
 									}
 								}
 							})
