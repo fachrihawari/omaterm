@@ -756,11 +756,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				}
 				di := cmdButton(c, discardIcon, iconBtn, false).Tooltip("Discard")
 				if di.Clicked() && r != nil {
-					if err := service.Discard(r.Root, f.Path, f.Status == "U"); err != nil {
-						c.Toast("Git error: " + err.Error())
-					} else {
-						a.refreshActiveRepo()
-					}
+					a.askDiscard(r.Root, f.Path, f.Status == "U")
 				}
 			}
 		})
@@ -831,24 +827,68 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 			actions.Opacity(0)
 		}
 		actions.Children(func() {
-			idx := s.Index
+			// Each acts on the stash by its commit, not where the list
+			// showed it: a drop or pop since moved the others up, and a
+			// quick second click dropped the wrong one.
+			hash := s.Hash
 			apply := cmdButton(c, iconRotate, iconBtn, false).Tooltip("Apply")
 			if apply.Clicked() {
-				a.gitStashApply(c, idx)
+				if i, ok := a.stashIndex(c, hash); ok {
+					a.gitStashApply(c, i)
+				}
 			}
 			pop := cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Pop")
 			if pop.Clicked() {
-				a.gitStashPop(c, idx)
+				if i, ok := a.stashIndex(c, hash); ok {
+					a.gitStashPop(c, i)
+				}
 			}
 			drop := cmdButton(c, iconTrash, iconBtn, false).Tooltip("Drop")
 			if drop.Clicked() {
-				a.gitStashDrop(c, idx)
+				msg := s.Message
+				a.askDanger("Drop Stash?", "“"+msg+"” is deleted for good.", "Drop", func() {
+					if i, ok := a.stashIndex(nil, hash); ok {
+						a.gitStashDrop(nil, i)
+					}
+				})
 			}
 		})
 	})
 	if e.Clicked() {
 		a.openStashDiff(s.Index)
 	}
+}
+
+// askDiscard discards a file's changes once the user confirms: a click
+// on the icon next to Stage threw them away for good.
+func (a *appState) askDiscard(root, path string, untracked bool) {
+	text := "Your changes to " + path + " are lost for good."
+	if untracked {
+		text = path + " is not in git yet: it is deleted for good."
+	}
+	a.askDanger("Discard Changes?", text, "Discard", func() {
+		if err := service.Discard(root, path, untracked); err != nil {
+			a.toast(nil, "Git error: "+err.Error())
+			return
+		}
+		a.refreshActiveRepo()
+	})
+}
+
+// stashIndex is where the stash of commit hash is as git lists them
+// now; false, told, when it is gone.
+func (a *appState) stashIndex(c *ui.Context, hash string) (int, bool) {
+	if r := a.activeRepoRef(); r != nil {
+		stashes, _ := service.StashList(r.Root)
+		for _, s := range stashes {
+			if s.Hash == hash {
+				return s.Index, true
+			}
+		}
+	}
+	a.toast(c, "That stash is gone")
+	a.refreshActiveRepo()
+	return 0, false
 }
 
 func (a *appState) gitStashPushUntracked(c *ui.Context) {
@@ -905,11 +945,11 @@ func (a *appState) gitStashDrop(c *ui.Context, index int) {
 		return
 	}
 	if err := service.StashDrop(r.Root, index); err != nil {
-		c.Toast("Drop failed: " + err.Error())
+		a.toast(c, "Drop failed: "+err.Error())
 		return
 	}
 	a.refreshActiveRepo()
-	c.Toast("Dropped stash@{" + itoa(index) + "}")
+	a.toast(c, "Dropped stash@{"+itoa(index)+"}")
 }
 
 // gitRemoteOp runs a network git command off the UI thread, showing its

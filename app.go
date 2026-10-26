@@ -63,7 +63,11 @@ func (a *appState) view(c *ui.Context) {
 
 	// Closing a session or pane that still runs a program.
 	if ask := a.closeAsk; ask != nil {
-		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, "Cancel", "Close")
+		confirm := ask.confirm
+		if confirm == "" {
+			confirm = "Close"
+		}
+		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, "Cancel", confirm)
 		if result != -1 || !ask.open {
 			a.closeAsk = nil
 			if result == 1 {

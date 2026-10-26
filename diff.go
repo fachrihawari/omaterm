@@ -440,12 +440,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 								}
 							}
 						}
-						if err := service.Discard(a.diffSrc.Repo, a.diffSrc.Path, untracked); err != nil {
-							c.Toast("Git error: " + err.Error())
-						} else {
-							a.refreshActiveRepo()
-							a.activeView = tabTerminal
-						}
+						a.askDiscard(a.diffSrc.Repo, a.diffSrc.Path, untracked)
 					}
 				}
 

@@ -360,7 +360,14 @@ func (a *appState) closeTabAsking(i int) {
 type closeAsk struct {
 	open        bool
 	title, text string
+	confirm     string // the button that does it: "Close" when empty
 	run         func()
+}
+
+// askDanger runs run once the user confirms a step that can't be undone,
+// as discarding a file's changes.
+func (a *appState) askDanger(title, text, confirm string, run func()) {
+	a.closeAsk = &closeAsk{open: true, title: title, text: text, confirm: confirm, run: run}
 }
 
 // confirmCloseRunning runs close at once, or, when one of the panes still

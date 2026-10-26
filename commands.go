@@ -360,3 +360,13 @@ func toast(c *ui.Context, msg string) {
 		c.Toast(msg)
 	}
 }
+
+// toast shows a message now, or with the next frame when there is no
+// context at hand, as for a step a dialog confirmed.
+func (a *appState) toast(c *ui.Context, msg string) {
+	if c != nil {
+		c.Toast(msg)
+		return
+	}
+	a.queuedToasts = append(a.queuedToasts, msg)
+}

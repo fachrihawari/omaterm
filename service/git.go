@@ -20,6 +20,7 @@ type GitFile struct {
 type Stash struct {
 	Index   int
 	Ref     string // stash@{0}
+	Hash    string // its commit: which stash it is, wherever the list moved it
 	Message string
 	Branch  string
 	When    time.Time
@@ -270,14 +271,14 @@ func CommitStaged(root, message string) error {
 
 // StashList lists stashes newest first.
 func StashList(root string) ([]Stash, error) {
-	out, err := gitCmd(root, "stash", "list", "--format=%gd%x1f%gs%x1f%ct")
+	out, err := gitCmd(root, "stash", "list", "--format=%gd%x1f%gs%x1f%ct%x1f%H")
 	if err != nil || out == "" {
 		return nil, err
 	}
 	var stashes []Stash
 	for i, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "\x1f", 3)
-		if len(parts) < 3 {
+		parts := strings.SplitN(line, "\x1f", 4)
+		if len(parts) < 4 {
 			continue
 		}
 		sec, _ := strconv.ParseInt(parts[2], 10, 64)
@@ -298,6 +299,7 @@ func StashList(root string) ([]Stash, error) {
 		stashes = append(stashes, Stash{
 			Index:   i,
 			Ref:     parts[0],
+			Hash:    parts[3],
 			Message: msg,
 			Branch:  branch,
 			When:    time.Unix(sec, 0),

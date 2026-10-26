@@ -614,3 +614,39 @@ func TestEditorFollowsDisk(t *testing.T) {
 		t.Errorf("the save changed the file's mode to %v", st.Mode().Perm())
 	}
 }
+
+// Discarding a file's changes asks first; and a stash is found by its
+// commit, not where the list showed it: a quick second Drop dropped the
+// stash that had moved into the first one's place.
+func TestDiscardAsksAndStashByHash(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	root := a.workspace
+	file := filepath.Join(root, "hello.txt")
+	a.askDiscard(root, "hello.txt", false)
+	if data, _ := os.ReadFile(file); string(data) != "one\ntwo\n" {
+		t.Fatalf("discarded before the user confirmed: %q", data)
+	}
+	if a.closeAsk == nil {
+		t.Fatal("no confirmation asked")
+	}
+	a.closeAsk.run()
+	if data, _ := os.ReadFile(file); string(data) != "one\n" {
+		t.Errorf("confirmed, the file holds %q", data)
+	}
+
+	for _, msg := range []string{"first", "second"} {
+		os.WriteFile(file, []byte(msg+"\n"), 0o644)
+		if err := service.StashPush(root, msg, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.applyRepos(root, service.DiscoverRepos(root, 1))
+	stashes, _ := service.StashList(root)
+	first := stashes[1].Hash // stash@{1}
+	service.StashDrop(root, 0)
+	i, ok := a.stashIndex(nil, first)
+	if !ok || i != 0 {
+		t.Errorf("the first stash found at %d (%v), want stash@{0} now", i, ok)
+	}
+}
