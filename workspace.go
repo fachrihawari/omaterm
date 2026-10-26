@@ -231,6 +231,32 @@ func (a *appState) projectTabs(id string) []topTab {
 	return nil
 }
 
+// projectPaneIDs are the terminal panes of a project's sessions.
+func (a *appState) projectPaneIDs(id string) []string {
+	var ids []string
+	for _, t := range a.projectTabs(id) {
+		if t.Kind == tabTerminal && t.Split != nil {
+			ids = append(ids, t.Split.termIDs()...)
+		}
+	}
+	return ids
+}
+
+// endingText says what ending the panes costs: the program one still
+// runs, and the unsaved files of editors, "" when nothing.
+func (a *appState) endingText(panes []string, unsaved int) string {
+	var s string
+	if what := a.runningProgram(panes); what != "" {
+		s = " Its sessions end with it, and " + what + " is still running."
+	} else if len(panes) > 0 {
+		s = " Its sessions end with it."
+	}
+	if unsaved > 0 {
+		s += " Unsaved changes to " + plural(unsaved, "file") + " are lost."
+	}
+	return s
+}
+
 // closeProjectPanes ends the sessions of a project.
 func (a *appState) closeProjectPanes(id string) {
 	for _, t := range a.projectTabs(id) {

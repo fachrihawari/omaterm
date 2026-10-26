@@ -113,8 +113,16 @@ func (a *appState) unavailableProject(c *ui.Context, i int) {
 		ui.Text(c, "folder missing").FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 	})
 	h.ContextMenu(func(m *ui.Menu) {
-		if m.Item("Remove Project").Chosen() {
-			a.removeUnavailable(p.ID)
+		if m.Item("Remove Project…").Chosen() {
+			var panes []string
+			for _, s := range a.saved[p.ID] {
+				for _, pn := range s.Panes {
+					panes = append(panes, pn.ID)
+				}
+			}
+			id := p.ID
+			a.askDanger("Remove Project", "Remove "+p.Name+" from the list?"+a.endingText(panes, 0), "Remove",
+				func() { a.removeUnavailable(id) })
 		}
 	})
 }
@@ -124,9 +132,7 @@ func (a *appState) unavailableProject(c *ui.Context, i int) {
 func (a *appState) removeUnavailable(id string) {
 	for _, s := range a.saved[id] {
 		for _, p := range s.Panes {
-			if a.panes.Get(p.ID) != nil {
-				a.panes.Remove(p.ID)
-			}
+			a.closePaneRuntime(p.ID) // its scrollback on disk too
 		}
 	}
 	delete(a.saved, id)

@@ -650,3 +650,34 @@ func TestDiscardAsksAndStashByHash(t *testing.T) {
 		t.Errorf("the first stash found at %d (%v), want stash@{0} now", i, ok)
 	}
 }
+
+// Every way to end a session that still runs a program says so first:
+// Remove Project and the palette's Close Pane ended agents and servers
+// without a word, as the pane's × didn't.
+func TestEndingRunningAsks(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.settings.ConfirmClose = true
+	ids := a.projectPaneIDs(a.projects[0].ID)
+	if len(ids) == 0 {
+		t.Fatal("the project has no panes")
+	}
+	a.status[ids[0]] = session.Info{ID: ids[0], Status: session.Working, Agent: "claude"}
+	if text := a.endingText(ids, 0); !strings.Contains(text, "Claude Code is still running") {
+		t.Errorf("Remove Project says %q: not that Claude Code runs", text)
+	}
+
+	// Split, so Close Pane closes the pane, not the tab.
+	other := a.splitPane(ids[0], splitVertical)
+	a.status[other] = session.Info{ID: other, Status: session.Working, Process: "vite"}
+	a.activePaneTermID = other
+	tr := ui.NewTester(func(c *ui.Context) { a.closeActivePane(c) }, 400, 300)
+	tr.Frame()
+	if !slices.Contains(a.activeSplit().termIDs(), other) || a.closeAsk == nil {
+		t.Fatal("Close Pane ended a running program without asking")
+	}
+	a.closeAsk.run()
+	if slices.Contains(a.activeSplit().termIDs(), other) {
+		t.Error("confirmed, the pane stayed")
+	}
+}

@@ -152,7 +152,8 @@ func (a *appState) view(c *ui.Context) {
 	if a.removeProjectConfirmOpen != nil {
 		result := a.confirmDialog(c, a.removeProjectConfirmOpen,
 			"Remove Project",
-			"Remove "+a.pendingRemoveProjectName+" from the list? Files on disk are not deleted.",
+			"Remove "+a.pendingRemoveProjectName+" from the list? Files on disk are not deleted."+
+				a.endingText(a.projectPaneIDs(a.pendingRemoveProjectID), a.projectUnsaved(a.pendingRemoveProjectID)),
 			true, "Cancel", "Remove")
 		if result != -1 {
 			if result == 1 {

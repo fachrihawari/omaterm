@@ -273,6 +273,24 @@ func (a *appState) unsavedEditors() []string {
 	return out
 }
 
+// projectUnsaved counts a project's editors with unsaved changes.
+func (a *appState) projectUnsaved(id string) int {
+	editors := a.editors
+	if id != a.wsOwner {
+		editors = nil
+		if ws := a.ws[id]; ws != nil {
+			editors = ws.editors
+		}
+	}
+	n := 0
+	for _, doc := range editors {
+		if doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
+			n++
+		}
+	}
+	return n
+}
+
 // beforeClose asks before the window closes, or omaterm quits or
 // relaunches, with editors unsaved: their changes were lost unasked.
 func (a *appState) beforeClose(e *mygo.CloseEvent) {

@@ -264,11 +264,16 @@ func (a *appState) closeActivePane(c *ui.Context) {
 		a.closeActiveTab(c)
 		return
 	}
-	a.removePane(leaf)
-	if ids := a.activeSplit().termIDs(); len(ids) > 0 {
-		a.activePaneTermID = ids[0]
-	}
-	c.Toast("Pane closed")
+	// As the pane's ×: asking first when it still runs a program.
+	a.confirmCloseRunning([]string{leaf}, "Close Pane", func() {
+		a.removePane(leaf)
+		if s := a.activeSplit(); s != nil {
+			if ids := s.termIDs(); len(ids) > 0 {
+				a.activePaneTermID = ids[0]
+			}
+		}
+		a.toast(nil, "Pane closed")
+	})
 }
 
 // cycleTab moves the active tab by d, wrapping around.
