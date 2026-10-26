@@ -219,6 +219,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 			ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 				a.stateBanner(c)
 				a.serviceBanner(c)
+				a.ignoredDaemonBanner(c)
 				a.crashBanner(c)
 				a.daemonBanner(c)
 				a.agentSetupBanner(c)

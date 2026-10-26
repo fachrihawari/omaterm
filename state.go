@@ -410,6 +410,10 @@ type appState struct {
 	// serviceConflict tells that the daemon is off but its systemd
 	// service would start it: agents aren't resumed until it is settled.
 	serviceConflict bool
+	// daemonIgnored tells that the user runs without a session daemon of
+	// another version, which still runs its sessions: agents aren't
+	// resumed here, which would run each conversation twice.
+	daemonIgnored bool
 	// postWin is a.win for post, set once the window is made.
 	postWin atomic.Pointer[mygo.Window]
 

@@ -151,8 +151,28 @@ func (a *appState) daemonDialog(c *ui.Context) {
 		return
 	case 1:
 		a.replaceRefusedDaemon()
+	default:
+		// Its sessions keep running there, agents with them.
+		a.daemonIgnored = true
 	}
 	a.daemonRefusedOpen = nil
+}
+
+// ignoredDaemonBanner tells that the sessions also run in the session
+// daemon of another version, the user having run without it.
+func (a *appState) ignoredDaemonBanner(c *ui.Context) {
+	if !a.daemonIgnored {
+		return
+	}
+	a.banner(c, "ignored-daemon-banner", iconAlert, pal.Warn, false,
+		"Your sessions also run in another version's session daemon, so agents aren't resumed here. Restart omaterm to run them in this version's.", func() {
+			// The dialog asks again at launch, where Restart Sessions
+			// moves them over.
+			if bannerButton(c, "Restart omaterm", true) {
+				a.saveState()
+				a.relaunch()
+			}
+		})
 }
 
 // daemonBanner offers to restart the sessions in this version's daemon

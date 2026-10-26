@@ -63,7 +63,7 @@ func (a *appState) restoreOptions(id string) (history []byte, command []string) 
 		return nil, nil
 	}
 	history = session.RestoredHistory(historyPath(id))
-	if a.settings.ResumeAgents && !a.serviceConflict {
+	if a.settings.ResumeAgents && !a.serviceConflict && !a.daemonIgnored {
 		command = agent.ResumeCommand(a.paneAgents[id])
 	}
 	return history, command

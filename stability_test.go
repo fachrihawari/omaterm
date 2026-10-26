@@ -681,3 +681,27 @@ func TestEndingRunningAsks(t *testing.T) {
 		t.Error("confirmed, the pane stayed")
 	}
 }
+
+// Running without a session daemon of another version, which still runs
+// the sessions, resumes no agent here: each conversation ran twice.
+func TestRunWithoutDaemonNoResume(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	open := true
+	a.daemonRefusedOpen = &open
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if err := tr.Click("Run Without It"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	a.settings.RestoreSessions, a.settings.ResumeAgents = true, true
+	a.restoring["p9"] = true
+	a.paneAgents["p9"] = &agent.Session{Agent: "claude", ID: "abc"}
+	if _, cmd := a.restoreOptions("p9"); cmd != nil {
+		t.Errorf("an agent resumed here too: %v", cmd)
+	}
+	if !tr.HasText("Restart omaterm") {
+		t.Error("no banner says the sessions also run elsewhere")
+	}
+}
