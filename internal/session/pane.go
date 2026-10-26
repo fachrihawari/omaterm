@@ -6,6 +6,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"regexp"
@@ -180,14 +181,22 @@ func (p *Pane) History(force bool) []byte {
 	return p.term.History()
 }
 
-// Wait waits until until holds for the pane's Info, or ctx ends.
+// ErrClosed is Wait's error for a pane closed before until held.
+var ErrClosed = errors.New("pane closed")
+
+// Wait waits until until holds for the pane's Info, or ctx ends, or the
+// pane is closed: waiting on, `omaterm wait` on a closed pane never
+// returned.
 func (p *Pane) Wait(ctx context.Context, until func(Info) bool) (Info, error) {
 	for {
 		p.mu.Lock()
-		info, ch := p.info, p.changed
+		info, ch, closed := p.info, p.changed, p.closed
 		p.mu.Unlock()
 		if until(info) {
 			return info, nil
+		}
+		if closed {
+			return info, ErrClosed
 		}
 		select {
 		case <-ch:

@@ -66,7 +66,11 @@ func (a *appState) useDaemon() {
 		if !a.settings.ControlSocket || a.host == nil {
 			return nil, proto.Errorf(proto.CodeAppClosed, "omaterm's control socket is off (Settings: controlSocket)")
 		}
-		return a.host.Handle(context.Background(), method, params)
+		// No longer than the daemon waits for the answer: past that, a
+		// wait went on here for ever, its caller long gone.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute+time.Second)
+		defer cancel()
+		return a.host.Handle(ctx, method, params)
 	}
 	r.OnConnection = func(reconnecting bool) {
 		a.post(func() {

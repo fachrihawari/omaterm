@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -40,4 +41,30 @@ func TestStartOnceAtATime(t *testing.T) {
 		t.Fatalf("%d panes listed after the close", n)
 	}
 	r.Tick(time.Now()) // panicked on the nil pane
+}
+
+// Waiting on a pane that closes returns "pane closed": `omaterm wait` on
+// it, with no timeout, waited for ever.
+func TestWaitEndsWithPane(t *testing.T) {
+	r := NewRegistry()
+	defer r.CloseAll()
+	p, err := r.Start(StartOptions{ID: "p1", Session: "s", Command: []string{"/bin/sh", "-c", "sleep 30"}, Exec: true, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Wait(context.Background(), func(Info) bool { return false })
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	r.Remove("p1")
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrClosed) {
+			t.Errorf("wait ended with %v, want ErrClosed", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the wait goes on after the pane closed")
+	}
 }

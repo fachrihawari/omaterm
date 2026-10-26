@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -239,7 +240,10 @@ func waitPane(ctx context.Context, p session.Handle, w proto.WaitParams) (proto.
 }
 
 func timeoutErr(err error) error {
-	if err != nil {
+	switch {
+	case errors.Is(err, session.ErrClosed):
+		return proto.Errorf(proto.CodeNotFound, "pane closed")
+	case err != nil:
 		return proto.Errorf(proto.CodeTimeout, "timed out")
 	}
 	return nil

@@ -597,6 +597,9 @@ func (p *remotePane) Wait(ctx context.Context, until func(session.Info) bool) (s
 		if until(info) {
 			return info, nil
 		}
+		if p.r.Get(p.id) == nil {
+			return info, session.ErrClosed // gone from the daemon
+		}
 		select {
 		case <-ch:
 		case <-ctx.Done():

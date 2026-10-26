@@ -183,7 +183,10 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			defer cancel()
 		}
 		info, err := session.Await(ctx, session.LocalHost{Registry: d.reg}.Get(p.ID), p.Status, p.Exit)
-		if err != nil {
+		switch {
+		case errors.Is(err, session.ErrClosed):
+			return nil, proto.Errorf(proto.CodeNotFound, "pane closed")
+		case err != nil:
 			return nil, proto.Errorf(proto.CodeTimeout, "timed out")
 		}
 		return info, nil
