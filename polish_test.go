@@ -432,8 +432,8 @@ func TestQuickOpenShowsPathOnce(t *testing.T) {
 	}
 }
 
-// The graph count shows a placeholder until history is loaded, instead of
-// a confident zero.
+// The graph count shows nothing until history is loaded: neither a
+// confident zero nor a dash, which read as a broken badge.
 func TestGraphCountUnknown(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -443,8 +443,8 @@ func TestGraphCountUnknown(t *testing.T) {
 
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	if !tr.HasText("—") {
-		t.Error("graph count does not show an unknown placeholder")
+	if tr.HasText("—") {
+		t.Error("graph count shows a dash before it is known")
 	}
 	if tr.HasText("GIT GRAPH") == false {
 		t.Error("graph section header missing")
@@ -754,9 +754,8 @@ func TestLongBranchUsesRoom(t *testing.T) {
 }
 
 // The file tree lists a folder's folders before its files, as file
-// managers do; the Git graph's section shows no dash for a count it
-// doesn't know yet.
-func TestFoldersFirstAndNoDash(t *testing.T) {
+// managers do.
+func TestFoldersFirst(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), nil, 0o644)
 	os.Mkdir(filepath.Join(dir, "b"), 0o755)
@@ -777,14 +776,6 @@ func TestFoldersFirstAndNoDash(t *testing.T) {
 		t.Errorf("in b, %v: want z before x.txt", b.Children)
 	}
 
-	g := newTestApp(t)
-	defer stopTermPanes(g)
-	g.inspectorVisible, g.inspectorTab, g.graphLoaded = true, 2, false
-	tr := ui.NewTester(g.view, 1440, 900)
-	tr.Frame()
-	if tr.HasText("—") {
-		t.Error("the Git graph's count shows a dash before it is known")
-	}
 }
 
 // A markdown preview has no caret, so no "Ln, Col"; its source does.
