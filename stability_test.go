@@ -738,3 +738,19 @@ func TestHostSwapNoRace(t *testing.T) {
 	}
 	<-done
 }
+
+// A control-socket call answered "busy" never runs later: a create the
+// caller was told failed happened anyway, and an agent that tried again
+// made a second session.
+func TestBusyCallNeverRuns(t *testing.T) {
+	a := newApp()
+	ran := false
+	_, err := onUIWithin(a, 50*time.Millisecond, true, func() (any, error) { ran = true; return nil, nil })
+	if err == nil {
+		t.Fatal("a call the UI thread never took was answered")
+	}
+	a.drainPosted() // the UI thread frees up
+	if ran {
+		t.Error("the call answered busy ran after all")
+	}
+}

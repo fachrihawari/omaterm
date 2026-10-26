@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"omaterm/internal/agent"
@@ -42,24 +43,42 @@ func newLocalHost(a *appState) *localHost {
 }
 
 // onUI runs fn on the UI thread and waits for it, five seconds at most.
+// A call that waited longer is answered "busy" and never runs: run later,
+// a create or close the caller was told failed happened anyway, and an
+// agent that tried again made a second session.
 func (h *localHost) onUI(fn func() (any, error)) (any, error) {
-	if h.a.win == nil {
+	return onUIWithin(h.a, 5*time.Second, h.a.win != nil, fn)
+}
+
+// onUIWithin is onUI waiting d; with no window (posted false), fn runs
+// here.
+func onUIWithin(a *appState, d time.Duration, posted bool, fn func() (any, error)) (any, error) {
+	if !posted {
 		return fn()
 	}
 	type result struct {
 		v   any
 		err error
 	}
+	const pending, running, abandoned = 0, 1, 2
+	var state atomic.Int32
 	ch := make(chan result, 1)
-	h.a.post(func() {
+	a.post(func() {
+		if !state.CompareAndSwap(pending, running) {
+			return // answered "busy" already
+		}
 		v, err := fn()
 		ch <- result{v, err}
 	})
 	select {
 	case r := <-ch:
 		return r.v, r.err
-	case <-time.After(5 * time.Second):
-		return nil, proto.Errorf(proto.CodeBusy, "omaterm is busy")
+	case <-time.After(d):
+		if state.CompareAndSwap(pending, abandoned) {
+			return nil, proto.Errorf(proto.CodeBusy, "omaterm is busy")
+		}
+		r := <-ch // started just now: its answer is the one
+		return r.v, r.err
 	}
 }
 
