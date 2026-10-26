@@ -29,6 +29,11 @@ import (
 // panes run in the app as before.
 func (a *appState) useDaemon() {
 	if !a.settings.Daemon || os.Getenv("OMATERM_NO_DAEMON") != "" || runtime.GOOS == "windows" {
+		// The daemon is off, yet its service starts it at login: both
+		// would run the sessions, and resume every agent twice.
+		if !a.settings.Daemon && runtime.GOOS == "linux" && daemon.ServiceInstalled() {
+			a.serviceConflict = true
+		}
 		return
 	}
 	r, err := daemon.Connect(true)
@@ -64,7 +69,15 @@ func (a *appState) useDaemon() {
 		return a.host.Handle(context.Background(), method, params)
 	}
 	r.OnConnection = func(reconnecting bool) {
-		a.post(func() { a.daemonReconnecting = reconnecting })
+		a.post(func() {
+			back := a.daemonReconnecting && !reconnecting
+			a.daemonReconnecting = reconnecting
+			// While the window was away, the daemon may have made
+			// sessions (web access, the omaterm command) in state.json.
+			if back {
+				a.adoptSavedSessions()
+			}
+		})
 	}
 	a.setPanes(r)
 	a.hookPanes()
@@ -205,6 +218,43 @@ func (a *appState) crashBanner(c *ui.Context) {
 				}
 			}
 			a.dismissCrashes()
+		}
+	})
+}
+
+// serviceBanner tells that the session daemon is off in the settings while
+// its service still starts it: one of the two has to go.
+func (a *appState) serviceBanner(c *ui.Context) {
+	if !a.serviceConflict {
+		return
+	}
+	ui.Row(c.Key("service-banner")).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).
+		Radius(8).Background(pal.Raised).Border(1, pal.Border).Children(func() {
+		ui.Icon(c, iconAlert).Width(14).Height(14).TextColor(pal.Warn)
+		msg := "The session daemon is off, but its service still starts it at login, so both run sessions. Agents aren't resumed here until one goes."
+		ui.Text(c, msg).Tooltip(msg).
+			FontSize(12).TextColor(pal.TextSoft).MaxLines(2).Ellipsis("…").Grow(1).MinWidth(0)
+		remove := ui.ButtonBase(c).Padding(4, 10).Radius(6).Height(26).Children(func() {
+			ui.Text(c, "Remove the Service").FontSize(12).TextColor(pal.TextMuted)
+		})
+		if remove.Clicked() {
+			a.serviceConflict = false
+			go func() {
+				err := cli.UninstallService()
+				a.post(func() {
+					if err != nil {
+						a.queuedToasts = append(a.queuedToasts, "Could not remove the service: "+err.Error())
+					}
+				})
+			}()
+		}
+		if ui.PrimaryButton(c, "Turn the Daemon Back On").Height(26).FontSize(12).Clicked() {
+			a.settings.Daemon = true
+			a.saveSettings()
+			a.saveState()
+			if a.win != nil {
+				mygo.App.Relaunch()
+			}
 		}
 	})
 }

@@ -378,6 +378,9 @@ type appState struct {
 	// (the control socket's, the panes' hooks), which must not read
 	// a.settings as the UI thread changes it.
 	remoteControl, gitSnapshots atomic.Bool
+	// serviceConflict tells that the daemon is off but its systemd
+	// service would start it: agents aren't resumed until it is settled.
+	serviceConflict bool
 	// postWin is a.win for post, set once the window is made.
 	postWin atomic.Pointer[mygo.Window]
 

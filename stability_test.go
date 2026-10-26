@@ -301,3 +301,41 @@ func TestBrokenSettingsKept(t *testing.T) {
 		t.Fatalf("no copy of the broken settings: %v", err)
 	}
 }
+
+// Sessions the session daemon made while the window was reconnecting to
+// it are taken from state.json; the window's next save dropped them, and
+// the next launch ended their panes.
+func TestAdoptSessionsMadeWhileReconnecting(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	st := a.state()
+	st.Sessions = append(st.Sessions, model.Session{ID: "fromweb", Project: a.projects[0].ID, Name: "web",
+		Layout: &model.Layout{Pane: "webpane"}, Panes: []model.Pane{{ID: "webpane", Dir: a.projects[0].Path}}})
+	path := stateFilePath()
+	if err := model.Save(path, st); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(path) })
+	a.adoptSavedSessions()
+	if _, _, _, ok := a.findSession("fromweb"); !ok {
+		t.Fatal("the session the daemon made was not adopted")
+	}
+	n := len(a.tabs)
+	a.adoptSavedSessions()
+	if len(a.tabs) != n {
+		t.Fatal("adopted twice")
+	}
+}
+
+// With the daemon off but its service installed, a banner asks to settle
+// it, and agents aren't resumed meanwhile.
+func TestServiceConflictBanner(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.serviceConflict = true
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("Turn the Daemon Back On") {
+		t.Fatal("no banner")
+	}
+}

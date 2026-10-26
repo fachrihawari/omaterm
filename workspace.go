@@ -75,29 +75,9 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 	if saved := a.saved[p.ID]; len(saved) > 0 {
 		delete(a.saved, p.ID)
 		for _, s := range saved {
-			split := fromLayout(s.Layout)
-			if split == nil {
+			t, ok := a.tabFromSession(s)
+			if !ok {
 				continue
-			}
-			for _, pane := range s.Panes {
-				a.restoring[pane.ID] = true
-				if pane.Dir != "" {
-					a.paneDirs[pane.ID] = pane.Dir
-				}
-				if pane.Agent != nil {
-					a.paneAgents[pane.ID] = pane.Agent
-				}
-				if pane.URL != "" {
-					a.paneURLs[pane.ID], a.paneTitles[pane.ID] = pane.URL, pane.Title
-				}
-			}
-			t := topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split,
-				AgentNamed: s.AgentNamed, Created: s.Created}
-			if split.contains(s.Focus) {
-				t.Focus = s.Focus
-			}
-			if split.contains(s.Zoomed) {
-				t.Zoomed = s.Zoomed
 			}
 			if s.ID == p.ActiveSession {
 				w.activeTab = len(w.tabs)
@@ -131,6 +111,90 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 		}
 	}
 	return w
+}
+
+// tabFromSession is a saved session's tab, its panes noted for their
+// start: where they ran, the agent to resume, a browser pane's page.
+func (a *appState) tabFromSession(s model.Session) (topTab, bool) {
+	split := fromLayout(s.Layout)
+	if split == nil {
+		return topTab{}, false
+	}
+	for _, pane := range s.Panes {
+		a.restoring[pane.ID] = true
+		if pane.Dir != "" {
+			a.paneDirs[pane.ID] = pane.Dir
+		}
+		if pane.Agent != nil {
+			a.paneAgents[pane.ID] = pane.Agent
+		}
+		if pane.URL != "" {
+			a.paneURLs[pane.ID], a.paneTitles[pane.ID] = pane.URL, pane.Title
+		}
+	}
+	t := topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split,
+		AgentNamed: s.AgentNamed, Created: s.Created}
+	if split.contains(s.Focus) {
+		t.Focus = s.Focus
+	}
+	if split.contains(s.Zoomed) {
+		t.Zoomed = s.Zoomed
+	}
+	return t, true
+}
+
+// adoptSavedSessions takes the sessions state.json has that the window
+// doesn't: ones the session daemon made while the window was away from it
+// (reconnecting), which the window's next save would drop.
+func (a *appState) adoptSavedSessions() {
+	if a.stateLoadFailed != "" {
+		return
+	}
+	st, err := model.Load(stateFilePath())
+	if err != nil {
+		return
+	}
+	known := map[string]bool{}
+	for _, s := range a.state().Sessions {
+		known[s.ID] = true
+	}
+	adopted := false
+	for _, s := range st.Sessions {
+		if known[s.ID] {
+			continue
+		}
+		pi := -1
+		for i := range a.projects {
+			if a.projects[i].ID == s.Project {
+				pi = i
+			}
+		}
+		if pi < 0 {
+			for _, p := range st.Projects {
+				if p.ID != s.Project {
+					continue
+				}
+				if info, err := os.Stat(p.Dir); err == nil && info.IsDir() {
+					a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: p.Dir})
+					pi = len(a.projects) - 1
+				}
+			}
+		}
+		if pi < 0 {
+			continue
+		}
+		if a.projectTabs(s.Project) == nil {
+			// Not built yet: it comes with the others as it shows.
+			a.saved[s.Project] = append(a.saved[s.Project], s)
+		} else if t, ok := a.tabFromSession(s); ok {
+			tabs := a.workspaceTabs(&a.projects[pi])
+			*tabs = append(*tabs, t)
+		}
+		adopted = true
+	}
+	if adopted {
+		a.saveSoon()
+	}
 }
 
 // workspaceOf returns a project's workspace to change: the shown one's
