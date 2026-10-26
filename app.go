@@ -86,6 +86,29 @@ func (a *appState) view(c *ui.Context) {
 		}
 	}
 
+	// Quitting with editors unsaved.
+	if a.quitAsk != nil {
+		files := a.unsavedEditors()
+		what := plural(len(files), "file") + " have unsaved changes"
+		if len(files) == 1 {
+			what = files[0] + " has unsaved changes"
+		}
+		verb := "Quit"
+		if a.quitWant == "relaunch" {
+			verb = "Restart"
+		}
+		result := a.confirmDialog(c, a.quitAsk, verb+" omaterm?", what+". "+verb+"ing loses them.",
+			true, "Cancel", verb+" Anyway")
+		if result != -1 {
+			want := a.quitWant
+			a.quitAsk, a.quitWant = nil, ""
+			if result == 1 {
+				a.quitAnyway = true
+				a.quitNow(want)
+			}
+		}
+	}
+
 	// Kill-process confirmation dialog.
 	if a.killConfirmOpen != nil {
 		result := a.confirmDialog(c, a.killConfirmOpen,
@@ -135,7 +158,7 @@ func (a *appState) view(c *ui.Context) {
 // background, which the cards sit on, or the plain color.
 // modalOpen tells whether a dialog of the window waits for an answer.
 func (a *appState) modalOpen() bool {
-	return a.closeTabConfirmOpen != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
+	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
 		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil
 }
 

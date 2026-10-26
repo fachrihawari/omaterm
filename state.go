@@ -374,6 +374,12 @@ type appState struct {
 	// file: tabs may move while it asks.
 	pendingClosePath    string
 	closeTabConfirmOpen *bool
+	// quitAsk is the dialog asking to quit with editors unsaved; quitWant
+	// what to do once the user agrees ("quit" or "relaunch"), and
+	// quitAnyway lets that quit through.
+	quitAsk    *bool
+	quitWant   string
+	quitAnyway bool
 	// tabInView is the tab the tab bar last scrolled into view;
 	// closingTab, one past the index of a tab whose ✕ was clicked.
 	tabInView, closingTab int

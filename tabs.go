@@ -1,6 +1,9 @@
 package main
 
 import (
+	"slices"
+
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
@@ -236,16 +239,77 @@ func (a *appState) closeActiveTab(c *ui.Context) {
 	if a.activeTab < 0 || a.activeTab >= len(a.tabs) {
 		return
 	}
-	t := a.tabs[a.activeTab]
-	if t.Kind == tabEditor && t.Path != "" {
-		if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
-			open := true
-			a.pendingClosePath = t.Path
-			a.closeTabConfirmOpen = &open
-			return
+	a.closeTabAsking(a.activeTab)
+}
+
+// editorModified tells whether the shown project's editor of path has
+// unsaved changes.
+func (a *appState) editorModified(path string) bool {
+	doc := a.editors[path]
+	return path != "" && doc != nil && doc.State != nil && doc.State.Buffer.Modified()
+}
+
+// unsavedEditors names the files with unsaved changes in every project,
+// the shown one's and those waiting in a.ws.
+func (a *appState) unsavedEditors() []string {
+	var out []string
+	add := func(editors map[string]*openFile) {
+		for path, doc := range editors {
+			if doc != nil && doc.State != nil && doc.State.Buffer.Modified() && !slices.Contains(out, path) {
+				out = append(out, path)
+			}
 		}
 	}
-	a.closeTabAsking(a.activeTab)
+	add(a.editors)
+	for owner, ws := range a.ws {
+		if owner != a.wsOwner && ws != nil {
+			add(ws.editors)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// beforeClose asks before the window closes, or omaterm quits or
+// relaunches, with editors unsaved: their changes were lost unasked.
+func (a *appState) beforeClose(e *mygo.CloseEvent) {
+	if a.quitAnyway || len(a.unsavedEditors()) == 0 {
+		a.quitWant = ""
+		return
+	}
+	e.PreventDefault()
+	if a.quitWant == "" {
+		a.quitWant = "quit"
+	}
+	open := true
+	a.quitAsk = &open
+	// The dialog is the main window's: Settings, a window above it, would
+	// hide it (Restart Now is in Settings).
+	a.closeSettings()
+	if a.win != nil {
+		a.win.Focus()
+		a.win.Invalidate()
+	}
+}
+
+// relaunch relaunches omaterm, asking first if editors are unsaved.
+func (a *appState) relaunch() {
+	a.quitWant = "relaunch"
+	if a.win != nil {
+		mygo.App.Relaunch()
+	}
+}
+
+// quitNow quits, or relaunches for want "relaunch", unasked.
+func (a *appState) quitNow(want string) {
+	if a.win == nil {
+		return
+	}
+	if want == "relaunch" {
+		mygo.App.Relaunch()
+	} else {
+		mygo.App.Quit()
+	}
 }
 
 // closePendingEditor closes the editor tab the unsaved-changes dialog
@@ -267,6 +331,13 @@ func (a *appState) closeTabAsking(i int) {
 		return
 	}
 	t := a.tabs[i]
+	if t.Kind == tabEditor && a.editorModified(t.Path) {
+		// The tab's × too, not just Ctrl+W: it closed edits unasked.
+		open := true
+		a.pendingClosePath = t.Path
+		a.closeTabConfirmOpen = &open
+		return
+	}
 	if t.Kind != tabTerminal || t.Split == nil {
 		a.closeTab(i)
 		return

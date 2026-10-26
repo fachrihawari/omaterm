@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
@@ -530,4 +531,43 @@ func TestStaleProjectResultsDropped(t *testing.T) {
 	repos := service.DiscoverRepos(shown, 1)
 	a.active = -1
 	a.applyRepos(a.workspace, repos)
+}
+
+// Unsaved edits are never lost unasked: not by a tab's ×, which closed
+// the editor where Ctrl+W asked, nor by quitting, closing the window or
+// relaunching, which never asked.
+func TestUnsavedEditorsAsk(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.openEditor("hello.txt")
+	doc := a.editors["hello.txt"]
+	doc.State.Buffer.Set("edited\n")
+	if !doc.State.Buffer.Modified() {
+		t.Fatal("the edit didn't mark the buffer modified")
+	}
+	i := slices.IndexFunc(a.tabs, func(t topTab) bool { return t.Kind == tabEditor })
+	a.closeTabAsking(i)
+	if a.editors["hello.txt"] == nil || a.closeTabConfirmOpen == nil {
+		t.Error("the tab's × closed unsaved edits without asking")
+	}
+	a.closeTabConfirmOpen = nil
+
+	// Another project's unsaved editor counts too.
+	a.ws["other"] = &projectWS{editors: map[string]*openFile{"b.go": doc}}
+	if got := a.unsavedEditors(); !slices.Equal(got, []string{"b.go", "hello.txt"}) {
+		t.Errorf("unsaved editors %v", got)
+	}
+	var e mygo.CloseEvent
+	a.beforeClose(&e)
+	if !e.DefaultPrevented() || a.quitAsk == nil {
+		t.Error("closing the window with unsaved edits didn't ask")
+	}
+
+	// Agreed to: the quit goes through.
+	a.quitAsk, a.quitAnyway = nil, true
+	e = mygo.CloseEvent{}
+	a.beforeClose(&e)
+	if e.DefaultPrevented() {
+		t.Error("the quit the user agreed to was stopped again")
+	}
 }

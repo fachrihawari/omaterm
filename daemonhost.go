@@ -259,9 +259,7 @@ func (a *appState) serviceBanner(c *ui.Context) {
 				a.settings.Daemon = true
 				a.saveSettings()
 				a.saveState()
-				if a.win != nil {
-					mygo.App.Relaunch()
-				}
+				a.relaunch()
 			}
 		})
 }

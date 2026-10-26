@@ -1023,9 +1023,7 @@ func (a *appState) settingsRestartBanner(c *ui.Context) {
 			a.saveState()
 			a.saveSettings()
 			a.saveUIPrefs()
-			if a.win != nil {
-				mygo.App.Relaunch()
-			}
+			a.relaunch()
 		}
 	})
 }
