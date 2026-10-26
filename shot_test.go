@@ -221,6 +221,7 @@ func TestShots(t *testing.T) {
 			a.inspectorTab = 2
 			if r := a.activeRepoRef(); r != nil {
 				a.branchesRepo = r.Root // don't reload over the override
+				r.Branch = "feature/very-long-branch-name-that-would-overflow-the-inspector"
 			}
 			a.currentBranch = "feature/very-long-branch-name-that-would-overflow-the-inspector"
 			if p := a.project(); p != nil {

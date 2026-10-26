@@ -332,11 +332,8 @@ func (a *appState) openBranchOverlay() {
 	if r == nil {
 		return
 	}
-	if bs, err := service.ListBranches(r.Root); err == nil {
-		a.branches = bs
-		a.branchesRepo = r.Root
-	}
-	if a.currentBranch == "" {
+	a.loadBranches(r.Root) // anew: one made in a terminal shows
+	if r.Branch != "" {
 		a.currentBranch = r.Branch
 	}
 	a.openOverlay(overlayBranch)
@@ -439,18 +436,15 @@ func (a *appState) checkoutBranch(c *ui.Context, items []service.FuzzyMatch) {
 		a.closeOverlay()
 		return
 	}
-	out, err := service.Checkout(r.Root, name)
-	if err != nil {
-		// Keep the picker open so another branch can be tried.
-		c.Toast("Checkout failed: " + strings.TrimSpace(out))
-		return
-	}
-	a.currentBranch = name
-	a.branches = nil
-	a.branchesRepo = ""
+	// Off the UI thread, as a commit: a post-checkout hook froze the
+	// window. The Git panel says how it went.
 	a.closeOverlay()
-	a.refreshActiveRepo()
-	c.Toast("Switched to " + name)
+	a.gitOp("Checkout", func(root string) (string, error) { return service.Checkout(root, name) }, func() {
+		a.currentBranch = name
+		a.branches = nil
+		a.branchesRepo = ""
+		a.gitMsg = "Switched to " + name
+	})
 }
 
 // branchRow renders one branch, marking the current one.

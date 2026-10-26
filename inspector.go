@@ -431,16 +431,16 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 
 		// Branch + commit box.
 		ui.Column(c).Padding(12).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
-			// Load branches if needed (or if repo changed).
-			if r != nil && a.branchesRepo != r.Root {
-				if bs, err := service.ListBranches(r.Root); err == nil {
-					a.branches = bs
-					a.branchesRepo = r.Root
+			// The branch the repo is on, as git last said: a cached one
+			// stayed "main" after a switch in a terminal, and the picker
+			// then wouldn't switch back.
+			if r != nil {
+				if r.Branch != "" {
 					a.currentBranch = r.Branch
 				}
-			}
-			if a.currentBranch == "" && r != nil {
-				a.currentBranch = r.Branch
+				if a.branchesRepo != r.Root {
+					a.loadBranches(r.Root)
+				}
 			}
 			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).ClipX().Children(func() {
 				ui.Icon(c, iconGitBranch).Width(16).Height(16).TextColor(pal.ANSI[5])
@@ -599,18 +599,13 @@ func (a *appState) gitCommit(c *ui.Context) {
 		c.Toast("Commit message is empty")
 		return
 	}
-	if err := service.CommitStaged(r.Root, msg); err != nil {
-		c.Toast("Commit failed: " + err.Error())
-		return
-	}
 	n := len(r.Staged)
-	a.commitMsg = ""
-	a.refreshActiveRepo()
-	word := "files"
-	if n == 1 {
-		word = "file"
-	}
-	c.Toast("Committed " + itoa(n) + " " + word)
+	a.gitOp("Commit", func(root string) (string, error) { return "", service.CommitStaged(root, msg) }, func() {
+		if a.commitMsg == msg {
+			a.commitMsg = ""
+		}
+		a.gitMsg = "Committed " + plural(n, "file")
+	})
 }
 
 func (a *appState) gitSection(c *ui.Context, label string, count int, staged bool) ui.Element {
@@ -955,33 +950,81 @@ func (a *appState) gitStashDrop(c *ui.Context, index int) {
 // gitRemoteOp runs a network git command off the UI thread, showing its
 // progress in the panel while it runs.
 func (a *appState) gitRemoteOp(verb string, fn func(root string) (string, error)) {
+	a.gitOp(verb, fn, nil)
+}
+
+// gitOp runs a git step off the UI thread, showing it under way and then
+// its outcome in the Git panel; ok runs after it succeeds. Run on the UI
+// thread, a commit froze the window, every terminal with it, for as long
+// as the repo's pre-commit hooks ran.
+func (a *appState) gitOp(verb string, fn func(root string) (string, error), ok func()) {
 	r := a.activeRepoRef()
-	if r == nil || a.win == nil {
+	if r == nil {
 		return
 	}
 	root := r.Root
+	if a.win == nil { // tests: at once
+		out, err := fn(root)
+		a.gitDone(verb, out, err, ok)
+		return
+	}
 	win := a.win
 	a.gitBusy = verb + "…"
 	a.gitMsg = ""
 	a.gitErr = false
 	a.gitJob.Run(func(ctx context.Context) error {
 		out, err := fn(root)
-		msg := strings.TrimSpace(out)
-		if err == nil {
-			msg = verb + " done"
-		} else if msg == "" {
-			msg = verb + " failed"
-		} else if i := strings.IndexByte(msg, '\n'); i >= 0 {
-			msg = msg[:i]
-		}
-		win.Update(func() {
-			a.gitBusy = ""
-			a.gitMsg = msg
-			a.gitErr = err != nil
-			a.refreshActiveRepo()
-		})
+		win.Update(func() { a.gitDone(verb, out, err, ok) })
 		return err
 	}, nil)
+}
+
+// loadBranches lists root's branches off the UI thread: listed as the
+// panel drew, a large repo held up the frame.
+func (a *appState) loadBranches(root string) {
+	a.branchesRepo = root
+	if a.win == nil {
+		a.branches, _ = service.ListBranches(root)
+		return
+	}
+	win := a.win
+	go func() {
+		bs, err := service.ListBranches(root)
+		win.Update(func() {
+			if err == nil && a.branchesRepo == root {
+				a.branches = bs
+			}
+		})
+	}()
+}
+
+// gitDone shows how a git step went.
+func (a *appState) gitDone(verb, out string, err error, ok func()) {
+	msg := strings.TrimSpace(out)
+	if err != nil && msg == "" {
+		msg = strings.TrimSpace(err.Error())
+	}
+	switch {
+	case err == nil:
+		msg = verb + " done"
+	case msg == "":
+		msg = verb + " failed"
+	default:
+		if i := strings.LastIndexByte(msg, '\n'); i >= 0 {
+			msg = msg[i+1:] // a hook's output ends with its verdict
+		}
+		msg = verb + " failed: " + msg
+	}
+	a.gitBusy = ""
+	a.gitMsg = msg
+	a.gitErr = err != nil
+	if err == nil && ok != nil {
+		ok()
+	}
+	if ok != nil {
+		a.toast(nil, a.gitMsg) // a commit or checkout: told wherever the user is
+	}
+	a.refreshActiveRepo()
 }
 
 func (a *appState) gitFetch(c *ui.Context) {

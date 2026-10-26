@@ -38,71 +38,93 @@ func (a *appState) webAvailable() bool {
 }
 
 // setWeb turns web access on or off.
-func (a *appState) setWeb(c *ui.Context, on bool) bool {
+func (a *appState) setWeb(c *ui.Context, on bool) {
+	a.setWebThen(c, on, nil)
+}
+
+// setWebThen is setWeb, running then once web access took the change.
+func (a *appState) setWebThen(c *ui.Context, on bool, then func()) {
 	if on && !a.webAvailable() {
 		toast(c, "Web access needs the session daemon, which is off")
-		return false
+		return
 	}
-	return a.changeWeb(c, func(cfg *web.Config) { cfg.Enabled = on })
+	a.changeWebSaying(c, func(cfg *web.Config) { cfg.Enabled = on }, "", then)
 }
 
 // setWebNetwork has web access listen on the network, or only on the
 // loopback, turning it on.
-func (a *appState) setWebNetwork(c *ui.Context, on bool) bool {
+func (a *appState) setWebNetwork(c *ui.Context, on bool) {
 	if !a.webAvailable() {
 		toast(c, "Web access needs the session daemon, which is off")
-		return false
+		return
 	}
-	return a.changeWeb(c, func(cfg *web.Config) {
+	a.changeWebSaying(c, func(cfg *web.Config) {
 		cfg.Enabled = true
 		cfg.Host = map[bool]string{true: "0.0.0.0"}[on]
-	})
+	}, "", nil)
 }
 
-// changeWeb changes web access's config, and has the daemon follow.
-func (a *appState) changeWeb(c *ui.Context, change func(*web.Config)) bool {
-	return a.changeWebSaying(c, change, "")
-}
-
-// changeWebSaying is changeWeb, telling said once it took rather than
-// whether web access is on, for a change of its port or URL.
-func (a *appState) changeWebSaying(c *ui.Context, change func(*web.Config), said string) bool {
+// changeWebSaying changes web access's config and has the daemon follow,
+// telling said once it took rather than whether web access is on (for a
+// change of its port or URL), and running then. The daemon is asked off
+// the UI thread: turning web access off waits for the pages in flight,
+// which waited on this window, so the window froze for seconds.
+func (a *appState) changeWebSaying(c *ui.Context, change func(*web.Config), said string, then func()) {
 	defer a.invalidateWindows() // both windows show it
 	cfg, err := webStore().SetConfig(change)
 	if err != nil {
 		toast(c, "Could not save: "+err.Error())
-		return false
+		return
 	}
-	st, err := daemon.ReloadWeb(false)
-	if err != nil && cfg.Enabled {
-		// It didn't start (the port is taken…): it isn't on.
-		cfg, _ = webStore().SetConfig(func(cfg *web.Config) { cfg.Enabled = false })
-		a.webOn, a.webNetwork = false, cfg.OnNetwork()
-		toast(c, "Web access could not start: "+err.Error())
-		return false
+	// Told where it was asked: Settings, while it is open.
+	say := func(msg string) {
+		if a.settingsWin != nil {
+			a.settingsToast(msg)
+		} else {
+			a.toast(nil, msg)
+		}
 	}
-	a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
-	switch {
-	case said != "":
-		toast(c, said)
-	case cfg.OnNetwork():
-		toast(c, "Web access on your network, over plain HTTP: use it on networks you trust")
-	case cfg.Enabled:
-		toast(c, "Web access on: http://"+st.Addr)
-	default:
-		toast(c, "Web access off")
-	}
-	return true
+	go func() {
+		st, err := daemon.ReloadWeb(false)
+		a.post(func() {
+			defer a.invalidateWindows()
+			if err != nil && cfg.Enabled {
+				// It didn't start (the port is taken…): it isn't on.
+				cfg, _ := webStore().SetConfig(func(cfg *web.Config) { cfg.Enabled = false })
+				a.webOn, a.webNetwork = false, cfg.OnNetwork()
+				say("Web access could not start: " + err.Error())
+				return
+			}
+			a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
+			switch {
+			case said != "":
+				say(said)
+			case cfg.OnNetwork():
+				say("Web access on your network, over plain HTTP: use it on networks you trust")
+			case cfg.Enabled:
+				say("Web access on: http://" + st.Addr)
+			default:
+				say("Web access off")
+			}
+			if then != nil {
+				then()
+			}
+		})
+	}()
 }
 
 // pairDevice turns web access on if need be, and shows a pairing code.
 func (a *appState) pairDevice(c *ui.Context) {
-	if !a.webOn && !a.setWeb(c, true) {
+	show := func() {
+		a.webPair = a.startPairing()
+		open := true
+		a.webPairOpen = &open
+	}
+	if a.webOn {
+		show()
 		return
 	}
-	a.webPair = a.startPairing()
-	open := true
-	a.webPairOpen = &open
+	a.setWebThen(c, true, show)
 }
 
 // startPairing makes a pairing code, its link and QR code, in the

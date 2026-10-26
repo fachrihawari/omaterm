@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -752,5 +753,43 @@ func TestBusyCallNeverRuns(t *testing.T) {
 	a.drainPosted() // the UI thread frees up
 	if ran {
 		t.Error("the call answered busy ran after all")
+	}
+}
+
+// A failed commit says what git said (a hook's verdict), not "exit status
+// 1"; and the branch shown follows the repo after a switch in a terminal,
+// where it stayed the old one and the picker wouldn't switch back.
+func TestGitSaysWhyAndFollowsBranch(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	root := a.workspace
+	hook := filepath.Join(root, ".git", "hooks", "pre-commit")
+	os.WriteFile(hook, []byte("#!/bin/sh\necho checking\necho 'lint failed: 3 problems'\nexit 1\n"), 0o755)
+	if err := service.StageAll(root); err != nil {
+		t.Fatal(err)
+	}
+	a.applyRepos(root, service.DiscoverRepos(root, 1))
+	a.commitMsg = "try"
+	tr := ui.NewTester(func(c *ui.Context) { a.gitCommit(c) }, 400, 300)
+	tr.Frame()
+	if !strings.Contains(a.gitMsg, "lint failed: 3 problems") {
+		t.Errorf("the commit's failure reads %q", a.gitMsg)
+	}
+	if a.commitMsg != "try" {
+		t.Error("a failed commit cleared its message")
+	}
+
+	a.inspectorVisible, a.inspectorTab = true, 2
+	main := ui.NewTester(a.view, 1440, 900)
+	main.Frame() // shows the branch it is on: main
+	cmd := exec.Command("git", "switch", "-q", "-c", "feature")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	a.applyRepos(root, service.DiscoverRepos(root, 1))
+	main.Frame()
+	if a.currentBranch != "feature" {
+		t.Errorf("the Git panel shows branch %q after a switch to feature", a.currentBranch)
 	}
 }

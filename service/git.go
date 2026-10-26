@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,6 +72,24 @@ func gitCmd(root string, args ...string) (string, error) {
 	}
 	out, err := cmd.CombinedOutput()
 	return strings.TrimRight(string(out), "\n"), err
+}
+
+// gitDo runs a git command that changes something; its error carries what
+// git said: "exit status 1" told nothing of a failed hook or a missing
+// user.email.
+func gitDo(root string, args ...string) error {
+	out, err := gitCmd(root, args...)
+	if err == nil {
+		return nil
+	}
+	if msg := strings.TrimSpace(out); msg != "" {
+		lines := strings.Split(msg, "\n")
+		if len(lines) > 6 {
+			lines = lines[len(lines)-6:] // a hook's output ends with its verdict
+		}
+		return errors.New(strings.Join(lines, "\n"))
+	}
+	return err
 }
 
 // IsRepoRoot reports whether dir is inside a work tree whose toplevel is dir.
@@ -231,42 +250,36 @@ func Push(root string) (string, error) {
 
 // Stage stages path.
 func Stage(root, path string) error {
-	_, err := gitCmd(root, "add", "--", path)
-	return err
+	return gitDo(root, "add", "--", path)
 }
 
 // StageAll stages all changes.
 func StageAll(root string) error {
-	_, err := gitCmd(root, "add", "-A")
-	return err
+	return gitDo(root, "add", "-A")
 }
 
 // Unstage unstages path.
 func Unstage(root, path string) error {
-	_, err := gitCmd(root, "reset", "-q", "--", path)
-	return err
+	return gitDo(root, "reset", "-q", "--", path)
 }
 
 // UnstageAll unstages everything.
 func UnstageAll(root string) error {
-	_, err := gitCmd(root, "reset", "-q")
-	return err
+	return gitDo(root, "reset", "-q")
 }
 
 // Discard discards working-tree changes of path (or deletes untracked files).
 func Discard(root, path string, untracked bool) error {
 	if untracked {
-		_, err := gitCmd(root, "clean", "-f", "--", path)
-		return err
+		// -d: an untracked folder shows as one entry, which plain clean left.
+		return gitDo(root, "clean", "-fd", "--", path)
 	}
-	_, err := gitCmd(root, "checkout", "--", path)
-	return err
+	return gitDo(root, "checkout", "--", path)
 }
 
 // CommitStaged commits the staged changes with message.
 func CommitStaged(root, message string) error {
-	_, err := gitCmd(root, "commit", "-m", message)
-	return err
+	return gitDo(root, "commit", "-m", message)
 }
 
 // StashList lists stashes newest first.
@@ -317,26 +330,22 @@ func StashPush(root, message string, includeUntracked bool) error {
 	if message != "" {
 		args = append(args, "-m", message)
 	}
-	_, err := gitCmd(root, args...)
-	return err
+	return gitDo(root, args...)
 }
 
 // StashApply applies stash without dropping it.
 func StashApply(root string, index int) error {
-	_, err := gitCmd(root, "stash", "apply", "stash@{"+strconv.Itoa(index)+"}")
-	return err
+	return gitDo(root, "stash", "apply", "stash@{"+strconv.Itoa(index)+"}")
 }
 
 // StashPop applies and drops the stash.
 func StashPop(root string, index int) error {
-	_, err := gitCmd(root, "stash", "pop", "stash@{"+strconv.Itoa(index)+"}")
-	return err
+	return gitDo(root, "stash", "pop", "stash@{"+strconv.Itoa(index)+"}")
 }
 
 // StashDrop drops the stash.
 func StashDrop(root string, index int) error {
-	_, err := gitCmd(root, "stash", "drop", "stash@{"+strconv.Itoa(index)+"}")
-	return err
+	return gitDo(root, "stash", "drop", "stash@{"+strconv.Itoa(index)+"}")
 }
 
 // StashShow returns the patch of a stash.

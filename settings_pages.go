@@ -810,7 +810,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 					if n == web.DefaultPort {
 						n = 0
 					}
-					a.changeWebSaying(c, func(cfg *web.Config) { cfg.Port = n }, "Web access now uses port "+strings.TrimSpace(d.port))
+					a.changeWebSaying(c, func(cfg *web.Config) { cfg.Port = n }, "Web access now uses port "+strings.TrimSpace(d.port), nil)
 					a.settingsUI.dataAt = time.Time{}
 				}
 			}
@@ -823,7 +823,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 					if url == "" {
 						said = "Public URL removed"
 					}
-					a.changeWebSaying(c, func(cfg *web.Config) { cfg.URL = url }, said)
+					a.changeWebSaying(c, func(cfg *web.Config) { cfg.URL = url }, said, nil)
 					a.settingsUI.dataAt = time.Time{}
 				}
 			}
