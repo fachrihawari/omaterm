@@ -32,6 +32,8 @@ type Remote struct {
 	// daemon was told, and sendingViewed whether a goroutine is telling it.
 	viewed, sentViewed string
 	sendingViewed      bool
+	// closeLater are panes whose close didn't reach the daemon.
+	closeLater []string
 	// TermOptions gives what a pane's terminal in the app looks like: its
 	// font, theme and padding.
 	TermOptions func() session.StartOptions
@@ -131,6 +133,12 @@ func (r *Remote) use(c *client.Client) error {
 	r.update(infos)
 	go r.events(c)
 	r.SetViewed(viewed)
+	r.mu.Lock()
+	pending := len(r.closeLater) > 0
+	r.mu.Unlock()
+	if pending {
+		go r.closePending()
+	}
 	return nil
 }
 
@@ -438,7 +446,41 @@ func (r *Remote) Remove(id string) {
 	if h != nil {
 		h.detach()
 	}
-	r.call("pane.close", proto.IDParams{ID: id}, nil)
+	if r.call("pane.close", proto.IDParams{ID: id}, nil) != nil {
+		// The daemon is slow or away: the pane, perhaps an agent still
+		// editing the repo, ran on unseen until the next launch. It is
+		// closed as the daemon answers again.
+		r.mu.Lock()
+		r.closeLater = append(r.closeLater, id)
+		r.mu.Unlock()
+		go r.closePending()
+	}
+}
+
+// closePending closes the panes whose close didn't get through.
+func (r *Remote) closePending() {
+	for try := 0; try < 3; try++ {
+		r.mu.Lock()
+		ids, c := r.closeLater, r.c
+		r.closeLater = nil
+		r.mu.Unlock()
+		var failed []string
+		for _, id := range ids {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if c.CallContext(ctx, "pane.close", proto.IDParams{ID: id}, nil) != nil {
+				failed = append(failed, id)
+			}
+			cancel()
+		}
+		r.mu.Lock()
+		r.closeLater = append(r.closeLater, failed...)
+		left := len(r.closeLater)
+		r.mu.Unlock()
+		if left == 0 {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // CloseAll lets go of the panes: their shells go on in the daemon.

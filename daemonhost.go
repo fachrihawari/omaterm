@@ -81,6 +81,9 @@ func (a *appState) useDaemon() {
 			// sessions (web access, the omaterm command) in state.json.
 			if back {
 				a.adoptSavedSessions()
+				// And end the panes of sessions closed while it was away,
+				// as at launch: they ran on unseen.
+				a.pruneUnknownPanes(r)
 				if a.saveDeferred {
 					a.saveDeferred = false
 					a.saveState()

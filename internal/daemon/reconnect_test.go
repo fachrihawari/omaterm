@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"omaterm/internal/session"
 )
 
 // A daemon that takes longer to come back than the quick retries is still
@@ -85,4 +87,32 @@ func TestViewedAfterReconnect(t *testing.T) {
 	second := start()
 	defer second.Stop()
 	waitFor(t, "the new daemon told", func() bool { return second.reg.Viewed() == "s1" })
+}
+
+// A pane closed while the daemon was away is closed once it is back: it
+// ran on unseen, an agent perhaps still editing the repo, until the next
+// launch.
+func TestCloseWhileAwayLands(t *testing.T) {
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "d.sock")
+	d, err := Start(Options{Socket: socket, StateDir: dir, IdleExit: time.Minute, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Stop()
+	r, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Start(session.StartOptions{ID: "p1", Session: "s1", Command: []string{"/bin/sh", "-c", "sleep 30"}, Exec: true, Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the pane", func() bool { return d.reg.Get("p1") != nil })
+	// The close is lost on the way, as to a daemon that stopped answering.
+	r.mu.Lock()
+	r.closeLater = append(r.closeLater, "p1")
+	r.mu.Unlock()
+	go r.closePending()
+	waitFor(t, "the late close", func() bool { return d.reg.Get("p1") == nil })
 }
