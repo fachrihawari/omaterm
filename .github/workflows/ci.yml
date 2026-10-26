@@ -58,6 +58,22 @@ jobs:
               go build -o /dev/null .
           done
 
+  # The race detector over every test but the screenshots, which write the
+  # goldens and take long under it.
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test -race
+        run: |
+          go test -race -count=1 -timeout 15m ./internal/... ./service/...
+          go test -race -count=1 -timeout 20m -skip '^TestShots$' .
+
   # The screenshots are goldens, but they are rendered with the system's
   # fonts: Inter and JetBrains Mono where they are installed, DejaVu or
   # Liberation where they are not, and every glyph's advance changes with
