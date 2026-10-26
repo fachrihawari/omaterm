@@ -62,9 +62,16 @@ type rgEvent struct {
 }
 
 func searchContentRG(ctx context.Context, root, query string) ([]Match, error) {
+	// Stopping early, rg must stop too: left writing into a full pipe,
+	// it blocked, and Wait with it, so a search with more than MaxMatches
+	// results never returned.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	args := []string{
 		"--json", "--fixed-strings", "--ignore-case",
 		"--max-count", strconv.Itoa(MaxMatches),
+		// A minified bundle's line, megabytes long, ended the reading.
+		"--max-columns", "2000", "--max-columns-preview",
 	}
 	if Protected(filepath.Join(root, "Library")) {
 		args = append(args, "--glob", "!/Library/")
@@ -112,6 +119,7 @@ func searchContentRG(ctx context.Context, root, query string) ([]Match, error) {
 			break
 		}
 	}
+	cancel()
 	_ = cmd.Wait()
 	return matches, nil
 }
