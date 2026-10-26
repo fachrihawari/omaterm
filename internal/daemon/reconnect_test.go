@@ -1,0 +1,59 @@
+//go:build linux || darwin
+
+package daemon
+
+import (
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+)
+
+// A daemon that takes longer to come back than the quick retries is still
+// reconnected to, and the app hears "connected" only then: it gave up,
+// said connected, and left every pane blank until a relaunch.
+func TestReconnectKeepsTrying(t *testing.T) {
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "d.sock")
+	start := func() *Daemon {
+		d, err := Start(Options{Socket: socket, StateDir: dir, IdleExit: time.Minute, Version: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	first := start()
+	r, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.Spawn, r.quickly = nil, 300*time.Millisecond
+	var mu sync.Mutex
+	var states []bool
+	r.OnConnection = func(reconnecting bool) {
+		mu.Lock()
+		states = append(states, reconnecting)
+		mu.Unlock()
+	}
+	first.Stop()
+	os.Remove(socket)
+	time.Sleep(1500 * time.Millisecond) // well past the quick retries
+	mu.Lock()
+	early := append([]bool(nil), states...)
+	mu.Unlock()
+	if len(early) != 1 || !early[0] {
+		t.Fatalf("before the daemon came back the app heard %v, want only reconnecting", early)
+	}
+	second := start()
+	defer second.Stop()
+	waitFor(t, "the reconnect", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(states) == 2 && !states[1]
+	})
+	if err := r.client().Call("panes", nil, nil); err != nil {
+		t.Errorf("connected, a call fails: %v", err)
+	}
+}

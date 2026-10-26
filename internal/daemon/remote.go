@@ -26,6 +26,8 @@ import (
 // panes the daemon runs, which outlive the app.
 type Remote struct {
 	socket string
+	// quickly is how long a reconnect tries every 100ms (10s when 0).
+	quickly time.Duration
 	// TermOptions gives what a pane's terminal in the app looks like: its
 	// font, theme and padding.
 	TermOptions func() session.StartOptions
@@ -145,11 +147,12 @@ func (r *Remote) Restart() error {
 }
 
 // reconnect connects to the daemon again once the connection ends,
-// starting one when none runs, for up to 10 seconds.
+// starting one when none runs. It tries every 100ms at first, then less
+// often, until it connects or the Remote closes: it gave up after 10
+// seconds, saying it was connected, and left every pane blank.
 func (r *Remote) reconnect() {
 	if r.OnConnection != nil {
 		r.OnConnection(true)
-		defer r.OnConnection(false)
 	}
 	var lost []string
 	r.mu.Lock()
@@ -157,7 +160,15 @@ func (r *Remote) reconnect() {
 		lost = append(lost, id)
 	}
 	r.mu.Unlock()
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+	quickly := r.quickly
+	if quickly == 0 {
+		quickly = 10 * time.Second
+	}
+	start, wait := time.Now(), 100*time.Millisecond
+	for ; ; time.Sleep(wait) {
+		if time.Since(start) > quickly {
+			wait = min(wait*2, 5*time.Second)
+		}
 		r.mu.Lock()
 		closed := r.closed
 		r.mu.Unlock()
@@ -188,6 +199,9 @@ func (r *Remote) reconnect() {
 		}
 		if len(gone) > 0 && r.OnLost != nil {
 			r.OnLost(gone)
+		}
+		if r.OnConnection != nil {
+			r.OnConnection(false)
 		}
 		return
 	}
