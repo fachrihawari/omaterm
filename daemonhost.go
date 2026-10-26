@@ -10,9 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/client"
+	"omaterm/internal/crash"
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
@@ -163,6 +165,47 @@ func (a *appState) daemonBanner(c *ui.Context) {
 			a.restartDaemon()
 		}
 	})
+}
+
+// crashBanner tells of a crash a past run left: the report is kept in a
+// log, which Show Report opens.
+func (a *appState) crashBanner(c *ui.Context) {
+	if len(a.crashes) == 0 {
+		return
+	}
+	what := "omaterm quit unexpectedly last time."
+	if len(a.crashes) == 1 && a.crashes[0].Name == "daemon" {
+		what = "The session daemon quit unexpectedly last time."
+	}
+	ui.Row(c.Key("crash-banner")).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).
+		Radius(8).Background(pal.Raised).Border(1, pal.Border).Children(func() {
+		ui.Icon(c, iconAlert).Width(14).Height(14).TextColor(pal.Bad)
+		msg := what + " Its report can help fix it."
+		ui.Text(c, msg).Tooltip(msg).
+			FontSize(12).TextColor(pal.TextSoft).MaxLines(2).Ellipsis("…").Grow(1).MinWidth(0)
+		dismiss := ui.ButtonBase(c).Padding(4, 10).Radius(6).Height(26).Children(func() {
+			ui.Text(c, "Dismiss").FontSize(12).TextColor(pal.TextMuted)
+		})
+		if dismiss.Clicked() {
+			a.dismissCrashes()
+		}
+		if ui.PrimaryButton(c, "Show Report").Height(26).FontSize(12).Clicked() {
+			if a.win != nil {
+				for _, r := range a.crashes {
+					mygo.Shell.OpenPath(r.Path)
+				}
+			}
+			a.dismissCrashes()
+		}
+	})
+}
+
+// dismissCrashes notes that the user was told of the crashes.
+func (a *appState) dismissCrashes() {
+	a.crashes = nil
+	if a.win != nil {
+		crash.MarkSeen(paths.StateDir())
+	}
 }
 
 // restartDaemon stops the session daemon and starts this version's: the

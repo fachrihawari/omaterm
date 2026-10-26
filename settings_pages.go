@@ -15,6 +15,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/cli"
+	"omaterm/internal/crash"
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
@@ -988,6 +989,8 @@ func (a *appState) settingsAbout(c *ui.Context) {
 		{"Sessions and layout", stateFilePath()},
 		{"Web access", web.StorePath(paths.ConfigDir())},
 		{"Saved scrollback", filepath.Join(paths.StateDir(), "sessions")},
+		{"Crash reports", crash.LogPath(paths.StateDir(), "app")},
+		{"Session daemon's crash reports", crash.LogPath(paths.StateDir(), "daemon")},
 	}
 	if runtime.GOOS == "linux" {
 		files = append(files, [2]string{"Session daemon service", daemon.UnitPath()})

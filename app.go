@@ -155,6 +155,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 		a.tabBar(c)
 		ui.Row(c).Grow(1).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Padding(0, gap, gap, left).Gap(gap).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+				a.crashBanner(c)
 				a.daemonBanner(c)
 				a.agentSetupBanner(c)
 				// No pane starts until the user chose what runs it.

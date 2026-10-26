@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
 	"omaterm/internal/paths"
@@ -360,6 +361,8 @@ type appState struct {
 	closeAsk *closeAsk
 	// bells is when each pane's bell last rang, which its card flashes.
 	bells map[string]time.Time
+	// crashes are the crash reports of past runs the user hasn't seen.
+	crashes []crash.Report
 
 	pendingRemoveProjectIdx  int
 	pendingRemoveProjectName string

@@ -12,6 +12,7 @@ import (
 
 	"omaterm/internal/cli"
 	"omaterm/internal/clilink"
+	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
@@ -81,6 +82,7 @@ func (a *appState) openFromArgs(args []string, wd string) {
 func main() {
 	// The session daemon the app starts: no window, the panes' shells.
 	if len(os.Args) > 1 && os.Args[1] == "__daemon" {
+		crash.Watch(paths.StateDir(), "daemon", appVersion())
 		err := daemon.Run(daemon.Options{Version: daemon.Build(appVersion()),
 			Serve: os.Getenv("OMATERM_SERVICE") != "", Restore: os.Getenv("OMATERM_SERVICE") != ""})
 		if err != nil {
@@ -114,6 +116,10 @@ func main() {
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
+	// A crash prints its report and is gone: keep it, and tell the user
+	// of the ones past runs left.
+	crashes := crash.Unseen(paths.StateDir())
+	crash.Watch(paths.StateDir(), "app", appVersion())
 	var app *appState
 	mygo.App.OnSecondInstance(func(args []string, wd string) {
 		if app == nil || app.win == nil {
@@ -125,6 +131,7 @@ func main() {
 	mygo.App.WhenReady(func() {
 		systemDark = mygo.Theme.IsDark
 		a := newApp()
+		a.crashes = crashes
 		app = a
 		a.useDaemon()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
