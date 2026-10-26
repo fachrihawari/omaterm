@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -28,7 +30,7 @@ func (a *appState) openEditorAt(path string, line int) {
 		if err != nil {
 			return
 		}
-		doc := &openFile{Path: path}
+		doc := &openFile{Path: path, Disk: sha256.Sum256(data), checked: time.Now()}
 		switch {
 		case isImagePath(path):
 			// A picture opens in the viewer. An SVG is text too, so its
@@ -131,6 +133,12 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 		})
 	}
 
+	// An agent may change the file while it shows: look every 2s.
+	if time.Since(doc.checked) > 2*time.Second {
+		a.checkDisk(doc)
+	}
+	c.After(2 * time.Second)
+
 	return ui.Column(c).Fill().Background(pal.Code).Children(func() {
 		// Breadcrumb + actions.
 		a.viewHeader(c, func() {
@@ -209,14 +217,82 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 // saveEditor writes the buffer back to disk.
 func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
 	abs := filepath.Join(a.workspace, doc.Path)
-	text := doc.State.Buffer.String()
-	if err := os.WriteFile(abs, []byte(text), 0o644); err != nil {
+	if data, err := os.ReadFile(abs); err == nil && sha256.Sum256(data) != doc.Disk {
+		// Changed on disk since it was opened, an agent's edit perhaps:
+		// saving would overwrite it.
+		open := true
+		a.overwriteAsk, a.overwriteDoc = &open, doc
+		return
+	}
+	a.writeEditor(doc, c)
+}
+
+// writeEditor writes the editor's text to its file, whatever is there.
+func (a *appState) writeEditor(doc *openFile, c *ui.Context) {
+	text := []byte(doc.State.Buffer.String())
+	if err := writeFileAtomic(filepath.Join(a.workspace, doc.Path), text); err != nil {
 		c.Toast("Save failed: " + err.Error())
 		return
 	}
 	doc.State.Buffer.MarkSaved()
+	doc.Disk = sha256.Sum256(text)
 	c.Toast("Saved " + doc.Path)
 	a.refreshActiveRepo()
+}
+
+// writeFileAtomic replaces path's contents through a file beside it, so a
+// full disk or a crash never leaves it half written or empty, as writing
+// it in place did. It keeps the file's mode, and writes through a link.
+func writeFileAtomic(path string, data []byte) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	mode := os.FileMode(0o644)
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, mode)
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}
+
+// checkDisk follows changes made to an editor's file on disk: an
+// unmodified editor takes them, so it never shows (or saves back) a
+// stale text. A modified one keeps its text, and its save asks.
+func (a *appState) checkDisk(doc *openFile) {
+	if doc == nil || doc.State == nil || doc.Binary {
+		return
+	}
+	doc.checked = time.Now()
+	data, err := os.ReadFile(filepath.Join(a.workspace, doc.Path))
+	if err != nil {
+		return
+	}
+	sum := sha256.Sum256(data)
+	if sum == doc.Disk || doc.State.Buffer.Modified() {
+		return
+	}
+	doc.State.Buffer.Reset(string(data))
+	doc.Disk = sum
 }
 
 // imageView shows a picture the way an image viewer does: the file's path

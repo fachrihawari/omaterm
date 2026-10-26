@@ -161,6 +161,9 @@ func (a *appState) activateTab(i int) {
 	t := a.tabs[i]
 	a.activeTab = i
 	a.activeView = t.Kind
+	if t.Kind == tabEditor {
+		a.checkDisk(a.editors[t.Path]) // changed while another tab showed
+	}
 	if t.Kind == tabTerminal && t.Split != nil {
 		if t.Focus != "" && t.Split.contains(t.Focus) {
 			a.activePaneTermID = t.Focus

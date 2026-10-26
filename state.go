@@ -111,6 +111,11 @@ type openFile struct {
 	Binary  bool // not text: show a placeholder instead of the editor
 	Size    int64
 	Image   *imageSide // a picture: shown in the image viewer
+	// Disk is the hash of the file as last read or written: a save checks
+	// it, so changes made on disk meanwhile (an agent's) aren't
+	// overwritten unasked. checked is when the file was last looked at.
+	Disk    [32]byte
+	checked time.Time
 }
 
 type appState struct {
@@ -377,9 +382,13 @@ type appState struct {
 	// quitAsk is the dialog asking to quit with editors unsaved; quitWant
 	// what to do once the user agrees ("quit" or "relaunch"), and
 	// quitAnyway lets that quit through.
-	quitAsk    *bool
-	quitWant   string
-	quitAnyway bool
+	// overwriteAsk asks to save over a file changed on disk since it
+	// was opened; overwriteDoc is that file's editor.
+	overwriteAsk *bool
+	overwriteDoc *openFile
+	quitAsk      *bool
+	quitWant     string
+	quitAnyway   bool
 	// tabInView is the tab the tab bar last scrolled into view;
 	// closingTab, one past the index of a tab whose ✕ was clicked.
 	tabInView, closingTab int

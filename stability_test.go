@@ -571,3 +571,46 @@ func TestUnsavedEditorsAsk(t *testing.T) {
 		t.Error("the quit the user agreed to was stopped again")
 	}
 }
+
+// A file changed on disk while open, by an agent say, is never
+// overwritten unasked: an unmodified editor takes the change, and saving
+// a modified one asks. Saving wrote the stale text over the change.
+func TestEditorFollowsDisk(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	path := filepath.Join(a.workspace, "hello.txt")
+	a.openEditor("hello.txt")
+	doc := a.editors["hello.txt"]
+
+	os.WriteFile(path, []byte("agent wrote this\n"), 0o644)
+	a.checkDisk(doc)
+	if got := doc.State.Buffer.String(); got != "agent wrote this\n" {
+		t.Errorf("an unmodified editor shows %q, not the file's new text", got)
+	}
+
+	doc.State.Buffer.Set("mine\n")
+	os.WriteFile(path, []byte("agent again\n"), 0o644)
+	a.checkDisk(doc)
+	if doc.State.Buffer.String() != "mine\n" {
+		t.Fatal("a modified editor lost its edits to the file's change")
+	}
+	tr := ui.NewTester(func(c *ui.Context) { a.saveEditor(doc, c) }, 400, 300)
+	tr.Frame()
+	if data, _ := os.ReadFile(path); string(data) != "agent again\n" {
+		t.Errorf("saving overwrote the change on disk unasked: %q", data)
+	}
+	if a.overwriteAsk == nil {
+		t.Error("saving over a change on disk didn't ask")
+	}
+
+	// Agreed to: it writes, keeping the file's mode.
+	os.Chmod(path, 0o755)
+	tr = ui.NewTester(func(c *ui.Context) { a.writeEditor(doc, c) }, 400, 300)
+	tr.Frame()
+	if data, _ := os.ReadFile(path); string(data) != "mine\n" {
+		t.Errorf("the file holds %q after the save", data)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o755 {
+		t.Errorf("the save changed the file's mode to %v", st.Mode().Perm())
+	}
+}

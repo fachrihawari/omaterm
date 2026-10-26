@@ -86,6 +86,20 @@ func (a *appState) view(c *ui.Context) {
 		}
 	}
 
+	// Saving over a file changed on disk.
+	if a.overwriteAsk != nil {
+		doc := a.overwriteDoc
+		result := a.confirmDialog(c, a.overwriteAsk, "Overwrite "+pathBase(doc.Path)+"?",
+			doc.Path+" changed on disk since you opened it, perhaps by an agent. Saving replaces those changes with yours.",
+			true, "Cancel", "Overwrite")
+		if result != -1 {
+			a.overwriteAsk, a.overwriteDoc = nil, nil
+			if result == 1 && doc.State != nil {
+				a.writeEditor(doc, c)
+			}
+		}
+	}
+
 	// Quitting with editors unsaved.
 	if a.quitAsk != nil {
 		files := a.unsavedEditors()
@@ -158,7 +172,7 @@ func (a *appState) view(c *ui.Context) {
 // background, which the cards sit on, or the plain color.
 // modalOpen tells whether a dialog of the window waits for an answer.
 func (a *appState) modalOpen() bool {
-	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
+	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.overwriteAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
 		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil
 }
 

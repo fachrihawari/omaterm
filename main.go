@@ -169,6 +169,7 @@ func main() {
 		// it when the window comes back instead of asking for a button.
 		a.win.OnFocus(func() {
 			a.recheckTheme()
+			a.checkDisk(a.activeEditor()) // changed while away
 			if a.inspectorVisible && a.inspectorTab == 2 {
 				a.refreshActiveRepo()
 			}
