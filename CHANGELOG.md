@@ -3,6 +3,61 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.2
+
+This release is about your sessions being safe, and omaterm staying up.
+
+### Your sessions are safer
+
+- **A damaged sessions file no longer wipes your sessions.** If omaterm
+  couldn't read its sessions file, it started empty, ended every running
+  session (and its scrollback) as unknown, and deleted the file as the
+  window closed. It now keeps a copy, leaves the file and every session
+  alone, and tells you.
+- **A project whose folder is missing keeps its sessions.** When a
+  project's folder was gone at launch (an unplugged drive, a rename), the
+  project and its sessions were dropped. It now shows as "folder missing",
+  its sessions keep running, and it comes back with the folder.
+- **Each session reopens as you left it:** the pane you were in, the
+  zoomed pane, and the session each project showed. omaterm used to open
+  on the first pane of the first session.
+- **A name you give a session sticks.** An agent that had named the
+  session first renamed it back at its next conversation.
+- **Agents resume after the session daemon restarts.** Without the
+  systemd service, a daemon restart brought agents back as bare shells.
+- **Sessions made from your phone while omaterm was reconnecting** are no
+  longer dropped.
+- **Upgrading from 0.8 keeps your text size and diff layout.**
+
+### omaterm stays up
+
+- **If omaterm crashes, it keeps the report** and tells you at the next
+  launch, with Show Report. Settings › About lists the reports.
+- **The session daemon survives a bug in one request,** rather than ending
+  every session with it, and a paired device can no longer exhaust its
+  memory.
+- **A session daemon that stopped answering no longer freezes the window.**
+- **No more crash** when showing a project after one of its sessions was
+  closed from the command line or a shell exited in it; such sessions
+  also no longer stay behind, dead.
+- **Status keeps updating after "Restart Sessions".** It froze for the
+  rest of the run.
+- **Programs reading the clipboard no longer hang** while the window is
+  closed.
+
+### Settings
+
+- **Keyboard lists and filters every shortcut itself.** "All Keyboard
+  Shortcuts" opened a dialog in the main window, under Settings.
+- **Text fields take what you type with Enter,** and Escape puts back
+  what they had; switching windows no longer applies a half-typed value.
+- **Confirmations that remove something are red,** as elsewhere.
+- **Choosing Custom… for the search engine** keeps the current one until
+  your URL works.
+- **Search lands on every setting it finds,** and Enter opens it.
+- The window fits at its smallest size, toasts show in it, and closing and
+  reopening it quickly keeps it open.
+
 ## 0.9.1
 
 ### Closing Settings no longer closes omaterm
