@@ -114,7 +114,10 @@ type openFile struct {
 type appState struct {
 	win          *mygo.Window
 	processTimer *time.Timer
-	processGen   int // counts stops: a tick that fired before one ends there
+	// historyMu orders a pane's close against saveHistories, which runs
+	// off the UI thread.
+	historyMu  sync.Mutex
+	processGen int // counts stops: a tick that fired before one ends there
 
 	projects  []project
 	active    int

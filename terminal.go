@@ -510,8 +510,10 @@ func randomTermID() string { return newID() }
 
 // closePaneRuntime ends what a pane runs: its shell, or its page.
 func (a *appState) closePaneRuntime(id string) {
+	a.historyMu.Lock() // not while saveHistories writes its file
 	a.panes.Remove(id)
 	os.Remove(historyPath(id))
+	a.historyMu.Unlock()
 	delete(a.restoring, id)
 	delete(a.paneAgents, id)
 	a.dropWeb(id)

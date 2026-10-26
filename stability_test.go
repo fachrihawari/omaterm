@@ -482,3 +482,24 @@ func TestStoppedTimersStayStopped(t *testing.T) {
 		t.Error("system stats restarted after they were stopped")
 	}
 }
+
+// Scrollback read just before its pane closed must not be written after:
+// the file stayed behind, the pane's output on disk for good.
+func TestNoHistoryAfterClose(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	a := newTestApp(t)
+	p, err := a.panes.Start(session.StartOptions{ID: "p1", Command: []string{"sleep", "30"}, Exec: true, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := p.ID()
+	a.writeHistory(id, []byte("open"))
+	if _, err := os.Stat(historyPath(id)); err != nil {
+		t.Fatalf("an open pane's scrollback isn't written: %v", err)
+	}
+	a.closePaneRuntime(id)
+	a.writeHistory(id, []byte("late"))
+	if _, err := os.Stat(historyPath(id)); err == nil {
+		t.Error("scrollback written after its pane closed")
+	}
+}

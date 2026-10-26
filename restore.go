@@ -30,13 +30,25 @@ func (a *appState) saveHistories(force bool) {
 		if h == nil {
 			return
 		}
-		path := historyPath(p.ID())
-		os.MkdirAll(filepath.Dir(path), 0o700)
-		tmp := path + ".tmp"
-		if os.WriteFile(tmp, h, 0o600) == nil {
-			os.Rename(tmp, path)
-		}
+		a.writeHistory(p.ID(), h)
 	})
+}
+
+// writeHistory writes a pane's scrollback, unless the pane was closed
+// while it was read: a file written now would stay behind, the pane's
+// output on disk long after it was closed.
+func (a *appState) writeHistory(id string, h []byte) {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	if a.panes.Get(id) == nil {
+		return
+	}
+	path := historyPath(id)
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, h, 0o600) == nil {
+		os.Rename(tmp, path)
+	}
 }
 
 // restoreOptions are what a pane coming back from the last run starts
