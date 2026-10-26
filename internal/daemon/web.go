@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"log"
 	"path/filepath"
@@ -81,7 +82,9 @@ func ReloadWeb(start bool) (web.Status, error) {
 	}
 	defer c.Close()
 	var st web.Status
-	if err := c.Call("web.reload", nil, &st); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.CallContext(ctx, "web.reload", nil, &st); err != nil {
 		return st, err
 	}
 	if st.Error != "" {

@@ -339,7 +339,7 @@ func (r *Remote) Start(o session.StartOptions) (session.Handle, error) {
 	p := StartParams{ID: o.ID, Session: o.Session, Project: o.Project, Dir: o.Dir, Command: o.Command,
 		Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History}
 	var info session.Info
-	if err := r.client().Call("pane.start", p, &info); err != nil {
+	if err := r.call("pane.start", p, &info); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
@@ -411,7 +411,7 @@ func (r *Remote) Remove(id string) {
 	if h != nil {
 		h.detach()
 	}
-	r.client().Call("pane.close", proto.IDParams{ID: id}, nil)
+	r.call("pane.close", proto.IDParams{ID: id}, nil)
 }
 
 // CloseAll lets go of the panes: their shells go on in the daemon.
@@ -502,6 +502,17 @@ func (p *remotePane) Changed() <-chan struct{} {
 	return ch
 }
 
+// uiCallTimeout bounds the calls the window makes as it draws or acts:
+// a session daemon that stopped answering must not freeze the window.
+var uiCallTimeout = 5 * time.Second
+
+// call calls the daemon, giving up after uiCallTimeout.
+func (r *Remote) call(method string, params, out any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), uiCallTimeout)
+	defer cancel()
+	return r.client().CallContext(ctx, method, params, out)
+}
+
 // Term is a terminal of the app's showing the pane: what the daemon's
 // shows, frame by frame, and what is typed in it goes to the daemon.
 func (p *remotePane) Term() *terminal.Terminal {
@@ -568,12 +579,12 @@ func (p *remotePane) detach() {
 }
 
 func (p *remotePane) Write(b []byte) error {
-	return p.r.client().Call("send", proto.SendParams{ID: p.id, Data: string(b)}, nil)
+	return p.r.call("send", proto.SendParams{ID: p.id, Data: string(b)}, nil)
 }
 
 func (p *remotePane) Text(scrollback bool, lines int) string {
 	var out proto.ReadResult
-	p.r.client().Call("read", proto.ReadParams{ID: p.id, Scrollback: scrollback, Lines: lines}, &out)
+	p.r.call("read", proto.ReadParams{ID: p.id, Scrollback: scrollback, Lines: lines}, &out)
 	return out.Text
 }
 
@@ -595,15 +606,15 @@ func (p *remotePane) Wait(ctx context.Context, until func(session.Info) bool) (s
 }
 
 func (p *remotePane) Flag(title, body string) {
-	p.r.client().Call("notify", proto.NotifyParams{ID: p.id, Title: title, Body: body}, nil)
+	p.r.call("notify", proto.NotifyParams{ID: p.id, Title: title, Body: body}, nil)
 }
 
 func (p *remotePane) SetAgentSession(s *agent.Session) {
-	p.r.client().Call("pane.setAgentSession", map[string]any{"ID": p.id, "Session": s}, nil)
+	p.r.call("pane.setAgentSession", map[string]any{"ID": p.id, "Session": s}, nil)
 }
 
 func (p *remotePane) SetTurn(t *session.Turn) {
-	p.r.client().Call("pane.setTurn", map[string]any{"ID": p.id, "Turn": t}, nil)
+	p.r.call("pane.setTurn", map[string]any{"ID": p.id, "Turn": t}, nil)
 }
 
 // --- an attach connection ---------------------------------------------------
@@ -629,12 +640,16 @@ func attach(socket, pane string) (*stream, error) {
 		conn.Close()
 		return nil, err
 	}
+	// The handshake runs as the window draws: a daemon that stopped
+	// answering must not freeze it.
+	conn.SetDeadline(time.Now().Add(uiCallTimeout))
 	r := bufio.NewReaderSize(conn, 64<<10)
 	line, err := proto.ReadLine(r, 64<<10)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
+	conn.SetDeadline(time.Time{})
 	var w proto.Welcome
 	if err := json.Unmarshal(line, &w); err != nil {
 		conn.Close()

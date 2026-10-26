@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,5 +202,38 @@ func TestResizeBounded(t *testing.T) {
 	d.resize("big", p, 65535, 65535, 65535, 65535)
 	if c, rows := p.Term().Size(); c > maxCols || rows > maxRows {
 		t.Fatalf("size %dx%d, want at most %dx%d", c, rows, maxCols, maxRows)
+	}
+}
+
+// A daemon that stopped answering doesn't freeze the window: attaching
+// to a pane, which the window does as it draws, gives up.
+func TestAttachGivesUp(t *testing.T) {
+	old := uiCallTimeout
+	uiCallTimeout = 200 * time.Millisecond
+	defer func() { uiCallTimeout = old }()
+	socket := filepath.Join(t.TempDir(), "stuck.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // reads nothing, answers nothing
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { _, err := attach(socket, "p1"); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("attach to a daemon that never answers succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("attach hangs on a daemon that never answers")
 	}
 }
