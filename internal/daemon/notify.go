@@ -91,8 +91,9 @@ func (d *Daemon) notifyPrefs() notifyPrefs {
 // takes as it starts: the app's shows what it has, so only the shell, the
 // scrollback, and who answers clipboard reads matter here.
 type termPrefs struct {
-	Shell        string `json:"shell"`
-	ScrollbackMB int    `json:"scrollbackMB"`
+	Shell         string `json:"shell"`
+	ScrollbackMB  int    `json:"scrollbackMB"`
+	ClipboardRead string `json:"clipboardRead"`
 }
 
 func (d *Daemon) termPrefs() termPrefs {
@@ -121,8 +122,10 @@ func (d *Daemon) browserURL(text string) string {
 	return proto.BrowserURL(text)
 }
 
-// apply gives a pane's start options the preferences. Clipboard reads go
-// to the app's terminal, which asks or refuses as its settings say.
+// apply gives a pane's start options the preferences. Clipboard reads
+// are refused here, unless the settings say to ask: then they go to the
+// app's terminal, which asks. Passed on with no app to ask, a read had no
+// answer, and came back later as stray input.
 func (t termPrefs) apply(o *session.StartOptions) {
 	if o.Shell == "" {
 		o.Shell = t.Shell
@@ -130,7 +133,10 @@ func (t termPrefs) apply(o *session.StartOptions) {
 	if t.ScrollbackMB > 0 {
 		o.Scrollback = t.ScrollbackMB << 20
 	}
-	o.ClipboardRead = terminal.ClipboardForward
+	o.ClipboardRead = terminal.ClipboardDeny
+	if t.ClipboardRead == "ask" {
+		o.ClipboardRead = terminal.ClipboardForward
+	}
 }
 
 // sessionLabel is "session · project", as the app titles its

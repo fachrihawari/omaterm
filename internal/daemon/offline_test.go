@@ -238,3 +238,33 @@ func TestBrokenStateLeftAlone(t *testing.T) {
 		t.Fatalf("state.json was written over: %s", got)
 	}
 }
+
+// A call passed to the app fails as soon as the app leaves without
+// answering; the omaterm command waited ten minutes.
+func TestForwardedCallFailsWhenAppLeaves(t *testing.T) {
+	_, socket, proj := offlineDaemon(t, false, nil)
+	app, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Call("subscribe", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	cli, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	done := make(chan error, 1)
+	go func() { done <- cli.Call("create", proto.CreateParams{Name: "x", Dir: proj}, nil) }()
+	time.Sleep(200 * time.Millisecond) // forwarded, unanswered
+	app.Close()
+	select {
+	case err := <-done:
+		if proto.CodeOf(err) != proto.CodeAppClosed {
+			t.Fatalf("got %v, want the app-closed error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call still waits for the app that left")
+	}
+}

@@ -617,7 +617,16 @@ func (d *Daemon) forward(ctx context.Context, method string, raw json.RawMessage
 		return m.Result, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(10 * time.Minute):
+	case <-time.After(forwardTimeout(method)):
 		return nil, proto.Errorf(proto.CodeTimeout, "the app did not answer")
 	}
+}
+
+// forwardTimeout is how long a call passed to the app may take: a wait
+// as long as the command waits, anything else half a minute.
+func forwardTimeout(method string) time.Duration {
+	if method == "wait" {
+		return 10 * time.Minute
+	}
+	return 30 * time.Second
 }

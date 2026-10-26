@@ -92,6 +92,16 @@ func (c *Client) read(r *bufio.Reader) {
 			continue
 		}
 		if m.Event != "" {
+			// Events are dropped when the subscriber is far behind (the
+			// next "panes" replaces the last), but not a call passed on to
+			// answer: the caller waits for it.
+			if m.Event == "call" {
+				select {
+				case c.events <- m:
+				case <-time.After(5 * time.Second):
+				}
+				continue
+			}
 			select {
 			case c.events <- m:
 			default:

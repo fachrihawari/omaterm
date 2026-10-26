@@ -442,7 +442,22 @@ func (d *Daemon) Subscribe(fn func(proto.Message)) func() {
 		delete(d.subs, id)
 		d.clients--
 		gone := len(d.subs) == 0
+		// Calls passed to an app that is gone get no answer: fail them
+		// now, rather than leave the omaterm command waiting.
+		var pending []chan proto.Message
+		if gone {
+			for id, ch := range d.calls {
+				pending = append(pending, ch)
+				delete(d.calls, id)
+			}
+		}
 		d.mu.Unlock()
+		for _, ch := range pending {
+			select {
+			case ch <- proto.Message{Error: "the omaterm window closed before it answered", Code: proto.CodeAppClosed}:
+			default:
+			}
+		}
 		// With no app, no session is in view: what they do from now on is
 		// unread, and notifies.
 		if gone {

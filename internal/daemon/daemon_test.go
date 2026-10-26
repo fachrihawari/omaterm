@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/plugins/terminal"
+
 	"omaterm/internal/session"
 )
 
@@ -235,5 +237,19 @@ func TestAttachGivesUp(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("attach hangs on a daemon that never answers")
+	}
+}
+
+// Clipboard reads are refused in the daemon unless the settings ask: one
+// passed on with no app to answer it hung the program.
+func TestClipboardReadsRefusedUnlessAsked(t *testing.T) {
+	var o session.StartOptions
+	termPrefs{}.apply(&o)
+	if o.ClipboardRead != terminal.ClipboardDeny {
+		t.Fatalf("by default %v, want deny", o.ClipboardRead)
+	}
+	termPrefs{ClipboardRead: "ask"}.apply(&o)
+	if o.ClipboardRead != terminal.ClipboardForward {
+		t.Fatalf("asked %v, want forward", o.ClipboardRead)
 	}
 }
