@@ -102,11 +102,14 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							// long branch can only squeeze the name, never
 							// the path below it.
 							ui.Row(c).Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+								// The name keeps a few letters; the branch
+								// takes the rest of the room before it
+								// ellipsizes, not just under half the line.
 								ui.Text(c, p.Name).FontSize(12).TextColor(pal.Text).
-									SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+									SingleLine().Ellipsis("…").Shrink(0.25).MinWidth(min(96, float32(len(p.Name))*8))
 								ui.Spacer(c)
 								if p.Branch != "" {
-									pillShrink(c, p.Branch)
+									pillShrink(c, p.Branch).Shrink(1).MinWidth(0).MaxWidthPercent(100)
 								}
 							})
 							ui.Text(c, p.Path).FontSize(10).TextColor(pal.TextMuted).

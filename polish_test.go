@@ -723,3 +723,31 @@ func TestBannersAlike(t *testing.T) {
 		t.Errorf("the daemon banner's button: %v", tr.Texts())
 	}
 }
+
+// A long branch takes the free room before it ellipsizes: the status bar
+// cut it at 160px with the bar half empty, and the Info card at under half
+// its line while the project's name beside it was short.
+func TestLongBranchUsesRoom(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	long := "feature/very-long-branch-name-that-would-overflow-the-inspector"
+	p := a.project()
+	a.inspectorVisible, a.inspectorTab = true, 0
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	short, ok := tr.Find(p.Name)
+	if !ok {
+		t.Fatal("no project name")
+	}
+	p.Branch, a.currentBranch = long, long
+	tr.Frame()
+	name, _ := tr.Find(p.Name)
+	if name.W < short.W {
+		t.Errorf("the project's name squeezed to %.0f of %.0f by the branch", name.W, short.W)
+	}
+	a.inspectorVisible = false
+	tr.Frame()
+	if r, ok := tr.Find(long); !ok || r.W <= 160 {
+		t.Errorf("the status bar's branch is %.0f wide, with room for more", r.W)
+	}
+}

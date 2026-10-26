@@ -36,7 +36,7 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 			if branch != "" {
 				ui.Icon(c, iconGitBranch).Width(12).Height(12).TextColor(pal.TextMuted)
 				ui.Text(c, branch).FontSize(10).TextColor(pal.TextMuted).SingleLine().
-					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(160).Tooltip(branch)
+					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(360).Tooltip(branch)
 			}
 		})
 		// Both open the Info tab, which lists them.
