@@ -195,7 +195,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 			on := d.service
 			a.settingDefRow(c, "loginStart", func() {
 				if settingsSwitch(c, "loginStart", &on, d.busy == "service") {
-					a.setService(on)
+					a.askService(on)
 				}
 			})
 		}
@@ -249,6 +249,27 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 			}
 		})
 	})
+}
+
+// askService confirms the switch to or from the systemd service: either
+// way the session daemon restarts, which ends every program the sessions
+// run. It switched at once.
+func (a *appState) askService(on bool) {
+	sh := &settingsSheet{
+		title:   "Start the Session Daemon at Login?",
+		danger:  true,
+		confirm: "Restart Daemon",
+		items: [][2]string{
+			{"The session daemon restarts as a service", "It then starts at login, before you open omaterm."},
+			{"Programs your sessions run end", "Dev servers, builds, ssh. Sessions come back with their scrollback, and agents resume their conversations."},
+		},
+		run: func(*ui.Context) { a.setService(on) },
+	}
+	if !on {
+		sh.title = "Stop Starting the Session Daemon at Login?"
+		sh.items[0] = [2]string{"The session daemon restarts without the service", "omaterm starts it again when it opens."}
+	}
+	a.settingsUI.sheet = sh
 }
 
 // setService installs or removes the session daemon's systemd service,

@@ -44,10 +44,14 @@ func UninstallService() error {
 	if !daemon.ServiceInstalled() {
 		return nil
 	}
-	exec.Command("systemctl", "--user", "disable", "--now", daemon.ServiceName()).Run()
+	// The unit goes before the daemon stops: an app reconnecting at the
+	// stop starts the service while its unit is there, which brought the
+	// service straight back.
+	exec.Command("systemctl", "--user", "disable", daemon.ServiceName()).Run()
 	if err := os.Remove(daemon.UnitPath()); err != nil {
 		return err
 	}
+	exec.Command("systemctl", "--user", "stop", daemon.ServiceName()).Run()
 	exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return nil
 }

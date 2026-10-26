@@ -351,3 +351,17 @@ func TestSettingsFooterAligned(t *testing.T) {
 		t.Errorf("footer text at x=%.0f, the pages' at x=%.0f", foot.X, want)
 	}
 }
+
+// The login-service switch asks before it restarts the daemon, which ends
+// every program the sessions run: it switched at once.
+func TestServiceSwitchAsks(t *testing.T) {
+	a, tr := newSettingsTester(t, "general")
+	a.askService(true)
+	tr.Frame()
+	if a.settingsUI.data.busy == "service" {
+		t.Fatal("the service changed before the user confirmed")
+	}
+	if sh := a.settingsUI.sheet; sh == nil || !sh.danger || !tr.HasText("Restart Daemon") {
+		t.Fatal("no red sheet asks first")
+	}
+}
