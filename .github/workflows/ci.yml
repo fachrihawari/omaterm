@@ -74,6 +74,36 @@ jobs:
           go test -race -count=1 -timeout 15m ./internal/... ./service/...
           go test -race -count=1 -timeout 20m -skip '^TestShots$' .
 
+  # The real app in a headless sway, driven by keys and the omaterm
+  # command (e2e/). It doesn't block a push until it has proved steady on
+  # the runners.
+  e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install sway, wtype, grim and the app's libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes sway wtype grim dbus libwebkit2gtk-4.1-0 \
+            libgl1-mesa-dri fonts-inter fonts-jetbrains-mono
+
+      - name: End-to-end tests
+        run: scripts/e2e.sh
+
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-screenshots
+          path: e2e/out/*.png
+          retention-days: 7
+
   # The screenshots are goldens, but they are rendered with the system's
   # fonts: Inter and JetBrains Mono where they are installed, DejaVu or
   # Liberation where they are not, and every glyph's advance changes with

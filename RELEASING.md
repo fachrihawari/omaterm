@@ -15,6 +15,14 @@ Releases are cut from a tag:
    `SITE_SHOTS=1 go test -run TestSiteShots .` renders the app's, and
    `node scripts/site-web-shots.mjs` the web access page's (it needs
    Chromium). Both write to `site/assets/`.
+   Run the end-to-end tests, the real app in a headless sway of its own
+   (needs `sway`, `wtype`, `grim` and `dbus-daemon`), and look at the
+   screenshots they leave in `e2e/out`:
+
+   ```sh
+   scripts/e2e.sh
+   ```
+
 2. Commit and push, then tag and push the tag:
 
    ```sh
