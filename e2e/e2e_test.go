@@ -4,7 +4,10 @@ package e2e
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -122,4 +125,28 @@ func lsPane(t *testing.T, a *App, name string) string {
 		}
 	}
 	return ""
+}
+
+// A crash leaves its report in the crash log, and the next launch tells.
+func TestCrashIsReported(t *testing.T) {
+	a := Start(t, Options{})
+	a.cmd.Process.Signal(syscall.SIGABRT) // as a fatal error dies: Go's report
+	select {
+	case <-a.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("omaterm did not die of SIGABRT")
+	}
+	log := filepath.Join(a.dir, "state", "omaterm", "crash-app.log")
+	b, err := os.ReadFile(log)
+	if err != nil || !strings.Contains(string(b), "SIGABRT") {
+		t.Fatalf("no crash report in %s: %v\n%s", log, err, b)
+	}
+	a.launch()
+	time.Sleep(time.Second)
+	a.Shot("banner")
+	// The banner is in the window: the report is noted as seen only when
+	// dismissed, so the log keeps its size.
+	if after, _ := os.ReadFile(log); !strings.Contains(string(after), "--- the crash above: omaterm app") {
+		t.Fatalf("the next run didn't note which run crashed:\n%s", after)
+	}
 }
