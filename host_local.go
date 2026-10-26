@@ -603,6 +603,19 @@ func (a *appState) cliCloseSession(id string) error {
 		a.closePaneRuntime(pid)
 	}
 	*tabs = append((*tabs)[:ti], (*tabs)[ti+1:]...)
+	// The project's kept workspace shows its tab again later: keep that
+	// tab pointing at one that is there.
+	if w := a.ws[a.projects[pi].ID]; w != nil {
+		if ti < w.activeTab || w.activeTab >= len(w.tabs) {
+			w.activeTab--
+		}
+		if w.activeTab < 0 && len(w.tabs) > 0 {
+			w.activeTab = 0
+		}
+		if !w.hasPane(w.activePane) {
+			w.activePane = ""
+		}
+	}
 	a.saveSoon()
 	return nil
 }
@@ -623,6 +636,12 @@ func (a *appState) cliClosePane(id string) error {
 	rebalance(root)
 	(*tabs)[ti].Split = root
 	a.closePaneRuntime(id)
+	if w := a.ws[a.projects[pi].ID]; w != nil && w.activePane == id {
+		w.activePane = ""
+		if ids := root.termIDs(); len(ids) > 0 {
+			w.activePane = ids[0]
+		}
+	}
 	a.saveSoon()
 	return nil
 }

@@ -45,6 +45,9 @@ func (a *appState) handle(key string) *ui.Handle {
 // renderPanes lays out the active tab's panes: the zoomed one alone, or
 // the split tree.
 func (a *appState) renderPanes(c *ui.Context) {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) {
+		return
+	}
 	root := a.ensureSingleSplit()
 	tab := &a.tabs[a.activeTab]
 	multi := !root.isLeaf()

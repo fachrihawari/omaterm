@@ -46,6 +46,27 @@ func (a *appState) restoreWorkspace(p *project) {
 	delete(a.ws, p.ID)
 	a.tabs, a.activeTab, a.activeView = w.tabs, w.activeTab, w.activeView
 	a.activePaneTermID, a.editors = w.activePane, w.editors
+	// Sessions may have closed while it was away (the omaterm command, a
+	// shell that exited): never show a tab or pane that is gone.
+	if a.activeTab >= len(a.tabs) {
+		a.activeTab = len(a.tabs) - 1
+	}
+	if !w.hasPane(a.activePaneTermID) {
+		a.activePaneTermID = ""
+	}
+}
+
+// hasPane tells whether a pane is in one of the workspace's tabs.
+func (w *projectWS) hasPane(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, t := range w.tabs {
+		if t.Split != nil && t.Split.contains(id) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildWorkspace makes the workspace of a project not yet shown this run:

@@ -262,18 +262,17 @@ func (a *appState) openTermLink(link string) bool {
 	return true
 }
 
-// paneExited closes a pane whose shell exited: the pane, or its tab when
-// it was the tab's last. UI thread.
+// paneExited closes a pane whose shell exited: the pane, or its session
+// when it was the session's last, in whichever project it is, not only
+// the one shown. UI thread.
 func (a *appState) paneExited(id string) {
-	tab := a.tabOfPane(id)
-	if tab < 0 || a.panes.Get(id) == nil {
+	if a.panes.Get(id) == nil {
 		return
 	}
-	if a.tabs[tab].Split.isLeaf() {
-		a.closeTab(tab)
-	} else {
-		a.removePaneIn(tab, id)
+	if _, _, _, ok := a.findPane(id); !ok {
+		return
 	}
+	a.cliClosePane(id)
 }
 
 // minimumContrast is the terminals' least contrast: the setting, else 1

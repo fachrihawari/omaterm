@@ -42,6 +42,9 @@ type settingsUI struct {
 	dataAt time.Time
 	// focused is which text fields had the keyboard last frame.
 	focused map[string]bool
+	// closing counts the closes asked and the openings since, so that an
+	// opening calls off a close still to run.
+	closing int
 }
 
 // settingsSheet is a confirmation: a title, what it explains, and its
@@ -93,6 +96,7 @@ func (a *appState) openSettings(page string) {
 		return // tests: the view is built with a tester instead
 	}
 	if w := a.settingsWin; w != nil && !w.IsDestroyed() {
+		a.settingsUI.closing++ // a close asked before this one is called off
 		w.Show()
 		w.Focus()
 		w.Invalidate()
@@ -122,8 +126,11 @@ func (a *appState) closeSettings() {
 	if w == nil || w.IsDestroyed() {
 		return
 	}
+	// Opening it again before this runs keeps it open.
+	a.settingsUI.closing++
+	gen := a.settingsUI.closing
 	w.Update(func() {
-		if !w.IsDestroyed() {
+		if !w.IsDestroyed() && a.settingsUI.closing == gen {
 			w.Close()
 		}
 	})
