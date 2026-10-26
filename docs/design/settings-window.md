@@ -15,6 +15,9 @@ Differences from the design below:
 - **Terminal options without a setter in mygo** (cursor, blink, right click, clipboard reads, scrollback) apply as terminals are made. A session daemon's panes get theirs again at once: the app lets go of their terminals and shows them anew. Panes that run in the app get them in new sessions.
 - **The daemon reads `settings.json`** for the shell, the scrollback and the search engine as it needs them. No new RPC was needed.
 - **The gear** is at the bottom of the sidebar, before Open Project and the palette: at the right end of the status bar it was hard to see.
+- **The toolbar's ✕** shows wherever the desktop draws no buttons on the window: Hyprland and other tiling compositors, not only GNOME. Escape and Ctrl+W close it too.
+- **The minimum width** is 680, not 600: at 600 a row's control crushed its title. Controls give way first, a long choice ending in "…".
+- **Nothing in Settings opens UI in the main window,** which it covers. Its pages, sheets and toasts stay in it; Keyboard lists and filters every shortcut itself.
 - **Closing the window** waits for the key press or click that asked to end: closed inside it, the window crashed GTK and took the app down (0.9.0).
 - **The "System" theme** is the default off Omarchy.
 - **`omaterm settings [page]`** starts the app with `--settings=<page>`. An open app takes it over, so it works with the control socket off.

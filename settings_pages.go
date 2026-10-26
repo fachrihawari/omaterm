@@ -957,8 +957,11 @@ func (a *appState) settingsBrowser(c *ui.Context) {
 // that dialog: the main window is under the Settings window.
 func (a *appState) settingsKeyboard(c *ui.Context) {
 	u := &a.settingsUI
-	ui.Row(c.Key("key-filter")).FillWidth().Height(30).Padding(0, 10).Gap(8).AlignItems(ui.Center).Radius(6).
-		Border(1, pal.Border).Background(pal.Input).Children(func() {
+	filter := ui.Row(c.Key("key-filter")).FillWidth().Height(30).Padding(0, 10).Gap(8).AlignItems(ui.Center).Radius(6).
+		Border(1, pal.Border).Background(pal.Input)
+	u.shown["shortcuts"] = true
+	a.settingsFlash(c, filter, "shortcuts")
+	filter.Children(func() {
 		ui.Icon(c, iconSearch).Size(14, 14).TextColor(pal.TextFaint)
 		ui.TextInputBase(c, &u.keyQuery).Placeholder("Filter by name or keys, as “split” or “ctrl+shift”").
 			FontSize(12.5).Grow(1).MinWidth(0).Label("Filter shortcuts")

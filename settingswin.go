@@ -51,6 +51,9 @@ type settingsUI struct {
 	keyQuery string
 	// escaped tells the focused field that Escape was pressed.
 	escaped bool
+	// shown are the IDs of the rows and groups the page drew last, which
+	// a search can lead to.
+	shown map[string]bool
 	// toasts wait for the Settings window's next frame: results of work
 	// in the background, which the main window, under it, would hide.
 	toasts []string
@@ -115,7 +118,7 @@ func (a *appState) openSettings(page string) {
 		Title:           "omaterm Settings",
 		Width:           settingsWidth,
 		Height:          settingsHeight,
-		MinWidth:        600,
+		MinWidth:        680,
 		MinHeight:       420,
 		Parent:          a.win,
 		StateKey:        "settings",
@@ -309,7 +312,15 @@ func (a *appState) settingsSidebar(c *ui.Context) {
 			in := ui.TextInputBase(c, &u.query).Placeholder("Search settings").FontSize(12.5).Grow(1).MinWidth(0).
 				Label("Search settings").Bind(a.handle("settings-search"))
 			if in.Submitted() {
-				if hits := a.settingsNavItems(); len(hits) > 0 {
+				// The first setting found, else the first page.
+				hits := a.settingsNavItems()
+				for _, it := range hits {
+					if it.def != nil {
+						a.settingsOpenHit(it)
+						return
+					}
+				}
+				if len(hits) > 0 {
 					a.settingsOpenHit(hits[0])
 				}
 			}
@@ -472,6 +483,7 @@ func (a *appState) settingsContent(c *ui.Context) {
 						a.settingsRestartBanner(c)
 					}
 					a.settingsUI.rowN, a.settingsUI.blocks = 0, 0
+					a.settingsUI.shown = map[string]bool{}
 					if p.Hero != "" {
 						settingsHero(c, p)
 						a.settingsUI.blocks++
@@ -575,8 +587,12 @@ func (a *appState) settingsGroup(c *ui.Context, key, header, footer string, rows
 	}
 	u.blocks++
 	u.rowN = 0
-	ui.Column(c.Key("group-"+key)).FillWidth().Radius(8).Background(settingsGroupFill()).Border(1, pal.Border).
-		Clip().Children(rows)
+	u.shown[key] = true
+	g := ui.Column(c.Key("group-"+key)).FillWidth().Radius(8).Background(settingsGroupFill()).Border(1, pal.Border).
+		Clip()
+	// A search can lead to a group as a whole (the theme, the devices).
+	a.settingsFlash(c, g, key)
+	g.Children(rows)
 	if footer != "" {
 		ui.Text(c, footer).FontSize(11.5).TextColor(pal.TextFaint).Margin(6, 2, 0, 2).Wrap()
 	}
@@ -618,21 +634,9 @@ func (a *appState) settingsRow(c *ui.Context, title string, o settingsRowOpts, c
 		row = ui.Row(c.Key("row-" + key))
 	}
 	row.MinHeight(40).FillWidth().Padding(8, 12).Gap(12).AlignItems(ui.Center)
-	if o.id != "" && o.id == u.flash {
-		if el := c.Now().Sub(u.flashAt); el < 1400*time.Millisecond {
-			k := float32(1)
-			if el > 560*time.Millisecond {
-				k = 1 - float32(el-560*time.Millisecond)/float32(840*time.Millisecond)
-			}
-			row.Background(pal.Accent.Alpha(0.12 * k))
-			c.AnimationFrame()
-			if !u.scrolled {
-				row.ScrollIntoView()
-				u.scrolled = true
-			}
-		} else {
-			u.flash = ""
-		}
+	if o.id != "" {
+		u.shown[o.id] = true
+		a.settingsFlash(c, row, o.id)
 	}
 	row.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
@@ -658,13 +662,39 @@ func (a *appState) settingsRow(c *ui.Context, title string, o settingsRowOpts, c
 			}
 		})
 		if control != nil {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(control)
+			// The control gives way before the title does, down to half
+			// the row: a long choice ellipsizes, the title stays readable.
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(1).MinWidth(0).MaxWidth(320).Children(control)
 		}
 		if o.link != "" {
 			ui.Icon(c, iconChevronRight).Size(14, 14).TextColor(pal.TextFaint).Shrink(0)
 		}
 	})
 	return o.link != "" && row.Clicked()
+}
+
+// settingsFlash lights e for a moment when a search led to id, and
+// scrolls it into view once.
+func (a *appState) settingsFlash(c *ui.Context, e ui.Element, id string) {
+	u := &a.settingsUI
+	if id != u.flash {
+		return
+	}
+	el := c.Now().Sub(u.flashAt)
+	if el >= 1400*time.Millisecond {
+		u.flash = ""
+		return
+	}
+	k := float32(1)
+	if el > 560*time.Millisecond {
+		k = 1 - float32(el-560*time.Millisecond)/float32(840*time.Millisecond)
+	}
+	e.Background(pal.Accent.Alpha(0.12 * k))
+	c.AnimationFrame()
+	if !u.scrolled {
+		e.ScrollIntoView()
+		u.scrolled = true
+	}
 }
 
 // settingsCheckMark is a setup step's ✓ or ✗.
@@ -756,11 +786,12 @@ func settingsPopup(c *ui.Context, key string, value *string, options [][2]string
 	}
 	before := *value
 	sel := ui.SelectBase(c.Key("pop-"+key), value)
-	sel.Trigger.Height(26).Padding(0, 8, 0, 10).Gap(6).Radius(6).AlignItems(ui.Center).Label(key)
+	sel.Trigger.Height(26).MaxWidth(260).Shrink(1).MinWidth(0).Padding(0, 8, 0, 10).Gap(6).Radius(6).AlignItems(ui.Center).
+		Label(key).Tooltip(shown)
 	face(sel.Trigger, pal.Raised).Border(1, pal.BorderStrong)
 	sel.Trigger.Children(func() {
-		ui.Text(c, shown).FontSize(12).TextColor(pal.Text).SingleLine()
-		ui.Icon(c, iconChevronsUpDown).Size(12, 12).TextColor(pal.TextFaint)
+		ui.Text(c, shown).FontSize(12).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		ui.Icon(c, iconChevronsUpDown).Size(12, 12).TextColor(pal.TextFaint).Shrink(0)
 	})
 	sel.Popup(func(panel ui.Element) {
 		floating(panel.Margin(4, 0, 0, 0).Padding(4).Radius(8).Background(pal.Popover).MinWidth(140))

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -41,6 +42,10 @@ func TestSettingsShots(t *testing.T) {
 				id = "agent:claude"
 			}
 			a, tr := newSettingsTester(t, id)
+			if w := os.Getenv("SETTINGS_SHOTS_WIDTH"); w != "" {
+				n, _ := strconv.Atoi(w)
+				tr.SetSize(n, settingsHeight)
+			}
 			a.setThemeMode(mode)
 			tr.Frame()
 			tr.Frame()
@@ -298,5 +303,35 @@ func TestRestoreTerminalClearsFields(t *testing.T) {
 	tr.Frame()
 	if a.settings.Terminal.FontFamily != "" || a.settingsUI.data.customFont != "" {
 		t.Fatalf("font %q, field %q after restoring", a.settings.Terminal.FontFamily, a.settingsUI.data.customFont)
+	}
+}
+
+// Every setting search finds leads to a row or group of its page, which
+// lights up; five led nowhere.
+func TestSettingsSearchHitsLeadSomewhere(t *testing.T) {
+	a, tr := newSettingsTester(t, "general")
+	defer stopTermPanes(a)
+	tr.SetSize(settingsWidth, 4000)
+	for _, d := range settingDefs {
+		a.settingsGo(d.Page)
+		tr.Frame()
+		if !a.settingsUI.shown[d.ID] {
+			t.Errorf("search hit %q (%s) leads to nothing on page %s", d.ID, d.Title, d.Page)
+		}
+	}
+}
+
+// Enter in the search opens the first setting found, not just its page.
+func TestSettingsSearchEnterOpensSetting(t *testing.T) {
+	a, tr := newSettingsTester(t, "general")
+	defer stopTermPanes(a)
+	if err := tr.Click("Search settings"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Type("ligatures")
+	tr.Key(0, ui.KeyEnter)
+	tr.Frame()
+	if a.settingsCurrent() != "terminal" || a.settingsUI.flash != "ligatures" {
+		t.Fatalf("page %q, lit %q", a.settingsCurrent(), a.settingsUI.flash)
 	}
 }
