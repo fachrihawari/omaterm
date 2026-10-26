@@ -145,21 +145,30 @@ func AheadBehind(root string) (ahead, behind int) {
 }
 
 // Status runs git status and returns staged + unstaged/untracked files.
+// Its paths are as they are (-z): quoted, a name with a space or an
+// accent wasn't found by Stage or Discard. Only what git prints on its
+// output is read: a warning on its errors was taken for a file.
 func Status(root string) (staged, changes []GitFile, err error) {
-	out, err := gitCmd(root, "status", "--porcelain=v1", "--untracked-files=normal")
+	out, err := gitOut(root, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if len(line) < 4 {
+	entries := strings.Split(out, "\x00")
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		if len(e) < 4 {
 			continue
 		}
-		x := line[0] // index status
-		y := line[1] // worktree status
-		path := strings.TrimSpace(line[3:])
-		// Renames show as "old -> new"; keep the new path.
-		if i := strings.Index(path, " -> "); i >= 0 {
-			path = path[i+4:]
+		x, y, path := e[0], e[1], e[3:]
+		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+			i++ // the path it was renamed or copied from follows
+		}
+		if conflicted(x, y) {
+			// Unmerged: one row, to resolve, not a staged and an
+			// untracked one (it read as untracked, and Discard did
+			// nothing).
+			changes = append(changes, GitFile{Path: path, Status: "!"})
+			continue
 		}
 		if x != ' ' && x != '?' {
 			staged = append(staged, GitFile{Path: path, Status: statusLetter(x), Staged: true})
@@ -175,6 +184,27 @@ func Status(root string) (staged, changes []GitFile, err error) {
 	return staged, changes, nil
 }
 
+// conflicted tells an unmerged path's XY (git status's man page).
+func conflicted(x, y byte) bool {
+	return x == 'U' || y == 'U' || x == 'A' && y == 'A' || x == 'D' && y == 'D'
+}
+
+// gitOut runs a git command for its output alone, not its warnings.
+func gitOut(root string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"--no-optional-locks"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			return "", errors.New(strings.TrimSpace(string(exit.Stderr)))
+		}
+		return "", err
+	}
+	return string(out), nil
+}
+
 func statusLetter(b byte) string {
 	switch b {
 	case 'M':
@@ -187,7 +217,7 @@ func statusLetter(b byte) string {
 		return "R"
 	case 'C':
 		return "C"
-	case '?', 'U':
+	case '?':
 		return "U"
 	}
 	return string(b)

@@ -737,7 +737,11 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 					}
 				}
 			} else {
-				st := cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stage")
+				stageTip := "Stage"
+				if f.Status == "!" {
+					stageTip = "Mark Resolved" // staging a conflicted file resolves it
+				}
+				st := cmdButton(c, iconPlus, iconBtn, false).Tooltip(stageTip)
 				if st.Clicked() && r != nil {
 					if err := service.Stage(r.Root, f.Path); err != nil {
 						c.Toast("Git error: " + err.Error())
@@ -749,9 +753,12 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				if f.Status == "U" || f.Status == "?" {
 					discardIcon = iconTrash
 				}
-				di := cmdButton(c, discardIcon, iconBtn, false).Tooltip("Discard")
-				if di.Clicked() && r != nil {
-					a.askDiscard(r.Root, f.Path, f.Status == "U")
+				// A conflict has no version to go back to: git refuses.
+				if f.Status != "!" {
+					di := cmdButton(c, discardIcon, iconBtn, false).Tooltip("Discard")
+					if di.Clicked() && r != nil {
+						a.askDiscard(r.Root, f.Path, f.Status == "U")
+					}
 				}
 			}
 		})

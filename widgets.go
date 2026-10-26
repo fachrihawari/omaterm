@@ -181,7 +181,7 @@ func statusColor(status string) ui.Color {
 		return pal.Ok
 	case "M":
 		return pal.Warn
-	case "D":
+	case "D", "!": // deleted, or in conflict
 		return pal.Bad
 	case "R", "C":
 		return pal.Accent
