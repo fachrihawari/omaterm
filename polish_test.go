@@ -685,3 +685,28 @@ func TestPaletteTitlesAligned(t *testing.T) {
 		}
 	}
 }
+
+// A changed file reads alike in the Git tab and in Changes: its status
+// letter after its name; Changes had it first, the Git tab last.
+func TestFileRowsAlike(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newShotApp(wd)
+	defer stopTermPanes(a)
+	shotChanges(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Image() // one frame, as the shots draw: a second reloads the list from git
+	name, ok := tr.Find("themewatch.go")
+	if !ok {
+		t.Fatal("Changes lists no themewatch.go")
+	}
+	letter, ok := tr.Find("M")
+	if !ok {
+		t.Fatal("no status letter")
+	}
+	if letter.X < name.X {
+		t.Errorf("status letter at x=%.0f, before the name at x=%.0f: want it at the end, as the Git tab has it", letter.X, name.X)
+	}
+}

@@ -692,22 +692,38 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 	}
 }
 
+// fileRowH is the height of a changed file's row, in the Git tab and in
+// Changes alike.
+const fileRowH = 30
+
+// fileLabel is a changed file as every list shows it: its badge, its
+// name, and its folder faint after it on the same line.
+func fileLabel(c *ui.Context, path string) {
+	fileBadge(c, pathBase(path))
+	ui.Row(c).Gap(6).Grow(1).MinWidth(0).AlignItems(ui.Center).Children(func() {
+		name := pathBase(path)
+		ui.Text(c, name).FontSize(12).TextColor(pal.Text).SingleLine().Ellipsis("…").
+			Shrink(0.5).MinWidth(min(60, float32(len(name))*7))
+		if dir := pathDir(path); dir != "" {
+			ui.Text(c, dir).FontSize(11).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		}
+	})
+}
+
+// statusLetter is a changed file's git status, at the end of its row.
+func statusLetter(c *ui.Context, letter string) {
+	ui.Text(c, letter).FontSize(10.5).FontWeight(700).TextColor(statusColor(letter)).
+		Width(12).TextAlign(ui.Center).SingleLine().Shrink(0)
+}
+
 func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui.Element {
-	e := ui.Row(c).Key(f.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(40).Padding(0, 12).ClipX().AlignItems(ui.Center).Gap(8)
+	e := ui.Row(c).Key(f.Path).FillWidth().Justify(ui.Start).Focusable().Cursor(ui.CursorPointer).Height(fileRowH).Padding(0, 12).ClipX().AlignItems(ui.Center).Gap(8)
 	hover := e.Hovered()
 	if hover {
 		e.Background(pal.Hover)
 	}
 	e.Children(func() {
-		fileBadge(c, pathBase(f.Path))
-		ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
-			txt(c, pathBase(f.Path), 11, pal.Text)
-			// A file at the root has no folder line, which would lift its
-			// name above the badge and status beside it.
-			if dir := pathDir(f.Path); dir != "" {
-				txt(c, dir, 9, pal.TextMuted)
-			}
-		})
+		fileLabel(c, f.Path)
 		actions := ui.Row(c).Gap(2).Shrink(0)
 		if !hover {
 			actions.Opacity(0)
@@ -746,7 +762,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				}
 			}
 		})
-		txt(c, f.Status, 10, statusColor(f.Status))
+		statusLetter(c, f.Status)
 	})
 	if e.Clicked() {
 		a.openWorkingDiff(f.Path, staged)

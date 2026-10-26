@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -298,29 +297,21 @@ func (a *appState) turnChanges(c *ui.Context, info session.Info) {
 func (a *appState) changeRow(c *ui.Context, f gitsnap.File) {
 	cs := &a.changes
 	cf := cs.open[f.Path]
-	row := ui.Row(c.Key("f-"+f.Path)).Height(28).Padding(0, 6).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	row := ui.Row(c.Key("f-"+f.Path)).Height(fileRowH).Padding(0, 6).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if cf != nil || row.Hovered() {
 		row.Background(pal.Hover)
 	}
-	letter, col := "M", pal.Warn
+	letter := "M"
 	switch f.Status {
 	case "added":
-		letter, col = "A", pal.Ok
+		letter = "A"
 	case "deleted":
-		letter, col = "D", pal.Bad
+		letter = "D"
 	case "renamed":
-		letter, col = "R", pal.Info
+		letter = "R"
 	}
 	row.Children(func() {
-		ui.Text(c, letter).FontSize(11).FontWeight(700).TextColor(col).Width(12).Shrink(0)
-		dir, base := filepath.Split(f.Path)
-		ui.Row(c).Shrink(1).MinWidth(0).Children(func() {
-			if dir != "" {
-				ui.Text(c, dir).FontSize(12).TextColor(pal.TextFaint).SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
-			}
-			ui.Text(c, base).FontSize(12).TextColor(pal.Text).SingleLine().Shrink(0)
-		})
-		ui.Spacer(c)
+		fileLabel(c, f.Path)
 		if f.Binary {
 			ui.Text(c, "binary").FontSize(11).TextColor(pal.TextFaint)
 		} else {
@@ -331,6 +322,7 @@ func (a *appState) changeRow(c *ui.Context, f gitsnap.File) {
 				ui.Text(c, "−"+strconv.Itoa(f.Removed)).FontSize(11.5).TextColor(pal.Bad).SingleLine()
 			}
 		}
+		statusLetter(c, letter)
 	})
 	if row.Clicked() {
 		if cf != nil {

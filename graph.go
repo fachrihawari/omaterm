@@ -330,31 +330,14 @@ func (a *appState) commitFileRow(c *ui.Context, hash string, f service.CommitFil
 		row.Background(pal.Hover)
 	}
 	row.Children(func() {
-		// Status column first, fixed width, so names never shift.
-		ui.Box(c).Width(12).Shrink(0).Children(func() {
-			txt(c, f.Status, 10, statusColor(f.Status)).FontWeight(700)
-		})
-		fileBadge(c, pathBase(f.Path))
-		ui.Text(c, pathBase(f.Path)).FontSize(11).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
-		if dir := pathDir(f.Path); dir != "" {
-			txt(c, truncTxtPath(dir, 28), 9, pal.TextFaint)
-		}
+		fileLabel(c, f.Path)
+		statusLetter(c, f.Status)
 	})
 	if row.Clicked() {
 		a.openCommitFileDiff(hash, f.Path)
 	}
 }
 
-// truncTxtPath shortens a directory path to max characters, keeping its
-// tail, which is the part that identifies it.
-func truncTxtPath(s string, max int) string {
-	if len(s) <= max || max < 2 {
-		return s
-	}
-	return "…" + s[len(s)-(max-1):]
-}
-
-// graphCanvas draws the lanes of one row.
 // graphGutter is the lanes the graph's column is wide: the most any row
 // has, so the hashes and subjects after it line up in every row, not
 // shifting right where a branch opens.
@@ -366,6 +349,7 @@ func graphGutter(lanes []graphLane) int {
 	return n
 }
 
+// graphCanvas draws the lanes of one row, gutter lanes wide.
 func (a *appState) graphCanvas(c *ui.Context, lane graphLane, gutter int, rowH float32) ui.Element {
 	w := float32(max(gutter, 1)) * laneWidth
 	return ui.Box(c).Width(w).Height(rowH).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
