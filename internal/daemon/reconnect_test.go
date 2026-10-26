@@ -26,19 +26,20 @@ func TestReconnectKeepsTrying(t *testing.T) {
 		return d
 	}
 	first := start()
-	r, err := Dial(socket)
+	var mu sync.Mutex
+	var states []bool
+	r, err := dialWith(socket, func(r *Remote) {
+		r.Spawn, r.quickly = nil, 300*time.Millisecond
+		r.OnConnection = func(reconnecting bool) {
+			mu.Lock()
+			states = append(states, reconnecting)
+			mu.Unlock()
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	r.Spawn, r.quickly = nil, 300*time.Millisecond
-	var mu sync.Mutex
-	var states []bool
-	r.OnConnection = func(reconnecting bool) {
-		mu.Lock()
-		states = append(states, reconnecting)
-		mu.Unlock()
-	}
 	first.Stop()
 	os.Remove(socket)
 	time.Sleep(1500 * time.Millisecond) // well past the quick retries
@@ -74,12 +75,11 @@ func TestViewedAfterReconnect(t *testing.T) {
 		return d
 	}
 	first := start()
-	r, err := Dial(socket)
+	r, err := dialWith(socket, func(r *Remote) { r.Spawn, r.quickly = nil, 300*time.Millisecond })
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	r.Spawn, r.quickly = nil, 300*time.Millisecond
 	r.SetViewed("s1")
 	waitFor(t, "the first daemon told", func() bool { return first.reg.Viewed() == "s1" })
 	first.Stop()

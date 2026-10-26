@@ -85,16 +85,27 @@ func Connect(start bool) (*Remote, error) {
 
 // Dial connects to a daemon at a socket (tests).
 func Dial(socket string) (*Remote, error) {
+	return dialWith(socket, nil)
+}
+
+// dialWith is Dial, set up by set before it follows the daemon: set after,
+// its fields raced the goroutines reading them.
+func dialWith(socket string, set func(*Remote)) (*Remote, error) {
 	c, err := client.Dial(socket)
 	if err != nil {
 		return nil, err
 	}
-	return newRemote(c, socket)
+	return newRemote(c, socket, set)
 }
 
-func newRemote(c *client.Client, socket string) (*Remote, error) {
+func newRemote(c *client.Client, socket string, set ...func(*Remote)) (*Remote, error) {
 	r := &Remote{socket: socket, infos: map[string]session.Info{}, changed: map[string]chan struct{}{},
 		handles: map[string]*remotePane{}, any: make(chan struct{}, 1), Spawn: func() error { return startProcess(true) }}
+	for _, fn := range set {
+		if fn != nil {
+			fn(r)
+		}
+	}
 	if err := r.use(c); err != nil {
 		return nil, err
 	}
