@@ -3,6 +3,46 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.5
+
+Nothing lost, and no crashes: a second look at what could go wrong.
+
+### Your work is safer
+
+- **Unsaved edits are never lost unasked.** Closing an editor's tab with
+  its ×, quitting, closing the window and Restart Now now ask first. They
+  used to drop your changes without a word.
+- **The editor follows its file on disk.** A file an agent changes while
+  it's open now shows the change, and saving no longer writes your old
+  text over theirs: if both changed, omaterm asks. Saving can no longer
+  leave a file empty when the disk is full.
+- **Discard and stash Drop ask first.** Both are one click on an icon
+  that appears next to Stage, and can't be undone. A quick second Drop no
+  longer drops the wrong stash.
+- **Removing a project says what it ends:** a running agent or server,
+  and unsaved files. Close Pane in the palette asks when a program still
+  runs, as the pane's × does.
+- **Turning "Start the session daemon at login" on or off asks first.**
+  It restarts the daemon, which ends the programs your sessions run.
+- **"Run Without It" no longer resumes each agent twice.** The other
+  version's daemon still runs your sessions; a banner says so.
+- **Agents can't end every session.** With "Let agents control the app"
+  on, `omaterm do` could restart the session daemon, set up the agent
+  integration, install the command or pair a device. It can't any more.
+
+### omaterm stays up
+
+- **The session daemon no longer crashes when a pane is started twice
+  at once**, which could happen at login, taking every session with it.
+- **No crash when the last project is removed while it loads.**
+- **A project's Git status, files and branch stay with it.** Switching
+  projects quickly could show the last one's changes, so Stage and
+  Commit acted on its repository.
+- **A closed session's scrollback is gone from disk for good** with the
+  session daemon too, and old scrollback no session holds is cleaned up.
+- **Built with Go 1.27.3**, which fixes vulnerabilities web access could
+  be reached through.
+
 ## 0.9.4
 
 Polish: omaterm looks like one app from corner to corner.
