@@ -51,6 +51,9 @@ type settingsUI struct {
 	keyQuery string
 	// escaped tells the focused field that Escape was pressed.
 	escaped bool
+	// toasts wait for the Settings window's next frame: results of work
+	// in the background, which the main window, under it, would hide.
+	toasts []string
 }
 
 // settingsSheet is a confirmation: a title, what it explains, and its
@@ -124,6 +127,16 @@ func (a *appState) openSettings(page string) {
 		a.settingsWin = nil
 		a.forgetSettingsEdits()
 	})
+}
+
+// settingsToast shows msg in the Settings window, from the UI thread.
+func (a *appState) settingsToast(msg string) {
+	if a.settingsWin == nil {
+		a.queuedToasts = append(a.queuedToasts, msg) // it closed: the main window
+		return
+	}
+	a.settingsUI.toasts = append(a.settingsUI.toasts, msg)
+	a.invalidateWindows()
 }
 
 // forgetSettingsEdits drops what the closed window had open: a sheet,
@@ -217,6 +230,10 @@ func (a *appState) settingsView(c *ui.Context) {
 	}
 	a.refreshSettingsData(c)
 	a.settingsKeys(c)
+	for _, msg := range u.toasts {
+		c.Toast(msg)
+	}
+	u.toasts = nil
 
 	root := ui.Row(c).Fill().AlignItems(ui.Stretch)
 	a.wash(root)
@@ -820,6 +837,14 @@ func settingsButton(c *ui.Context, label string, primary, danger, disabled bool)
 		Label(strings.Split(label, "##")[0]).Disabled(disabled)
 	fg := pal.Text
 	switch {
+	case primary && danger:
+		// A confirmation that ends something: red, as the main window's.
+		bg := pal.Bad
+		if b.Hovered() && !disabled {
+			bg = pal.Bad.Alpha(0.85)
+		}
+		b.Background(bg)
+		fg = pal.OnBad
 	case primary:
 		bg := pal.Accent
 		if b.Hovered() && !disabled {
@@ -834,7 +859,7 @@ func settingsButton(c *ui.Context, label string, primary, danger, disabled bool)
 		}
 		face(b, bg).Border(1, pal.BorderStrong)
 	}
-	if danger {
+	if danger && !primary {
 		fg = pal.Bad
 	}
 	if disabled {
@@ -928,7 +953,17 @@ func (a *appState) settingsRestoreButton(c *ui.Context, p *settingsPageDef) {
 				text:    "Every setting on this page goes back to how omaterm ships.",
 				confirm: "Restore",
 				run: func(c *ui.Context) {
+					before := a.settings
 					p.Restore(&a.settings, defaultSettings())
+					// Settings that apply as omaterm starts ask for it.
+					for _, d := range settingDefs {
+						if d.Restart && d.On != nil && d.On(&before) != d.On(&a.settings) {
+							a.settingsUI.restart = true
+						}
+					}
+					// What the page's fields held goes with the values.
+					d := &a.settingsUI.data
+					d.customFont, d.customSearch, d.searchCustom = "", "", false
 					if p.ID == "terminal" {
 						a.fontSize = a.settings.Terminal.FontSize
 					}
@@ -999,7 +1034,7 @@ func (a *appState) settingsSheetView(c *ui.Context) {
 			if settingsButton(c, "Cancel", false, false, false) {
 				open = false
 			}
-			if settingsButton(c, sh.confirm, true, false, false) {
+			if settingsButton(c, sh.confirm, true, sh.danger, false) {
 				open = false
 				sh.run(c)
 			}

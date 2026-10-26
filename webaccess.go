@@ -61,17 +61,30 @@ func (a *appState) setWebNetwork(c *ui.Context, on bool) bool {
 
 // changeWeb changes web access's config, and has the daemon follow.
 func (a *appState) changeWeb(c *ui.Context, change func(*web.Config)) bool {
+	return a.changeWebSaying(c, change, "")
+}
+
+// changeWebSaying is changeWeb, telling said once it took rather than
+// whether web access is on, for a change of its port or URL.
+func (a *appState) changeWebSaying(c *ui.Context, change func(*web.Config), said string) bool {
+	defer a.invalidateWindows() // both windows show it
 	cfg, err := webStore().SetConfig(change)
 	if err != nil {
 		toast(c, "Could not save: "+err.Error())
 		return false
 	}
-	a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
 	st, err := daemon.ReloadWeb(false)
-	switch {
-	case err != nil && cfg.Enabled:
+	if err != nil && cfg.Enabled {
+		// It didn't start (the port is taken…): it isn't on.
+		cfg, _ = webStore().SetConfig(func(cfg *web.Config) { cfg.Enabled = false })
+		a.webOn, a.webNetwork = false, cfg.OnNetwork()
 		toast(c, "Web access could not start: "+err.Error())
 		return false
+	}
+	a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
+	switch {
+	case said != "":
+		toast(c, said)
 	case cfg.OnNetwork():
 		toast(c, "Web access on your network, over plain HTTP: use it on networks you trust")
 	case cfg.Enabled:

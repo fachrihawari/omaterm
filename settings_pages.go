@@ -86,8 +86,10 @@ type settingsData struct {
 	busy string
 	// port and url are the Advanced fields of Web Access, as typed.
 	port, url string
-	// customFont and customSearch are fields as typed.
+	// customFont and customSearch are fields as typed; searchCustom
+	// tells that Custom… was picked for the search engine.
 	customFont, customSearch string
+	searchCustom             bool
 	// omarchy is Omarchy's theme, for its tile.
 	omarchy *theme.Source
 }
@@ -236,6 +238,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 			if settingsButton(c, "Clear…", false, false, d.scrollCount == 0) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear saved scrollback?",
+					danger:  true,
 					text:    "Sessions restored later start with an empty screen. Running sessions keep what they show.",
 					confirm: "Clear",
 					run: func(c *ui.Context) {
@@ -265,9 +268,9 @@ func (a *appState) setService(on bool) {
 			a.settingsUI.dataAt = time.Time{}
 			switch {
 			case err != nil:
-				a.queuedToasts = append(a.queuedToasts, "Could not change the service: "+err.Error())
+				a.settingsToast("Could not change the service: " + err.Error())
 			case on:
-				a.queuedToasts = append(a.queuedToasts, "The session daemon now starts at login")
+				a.settingsToast("The session daemon now starts at login")
 			}
 			a.invalidateWindows()
 		})
@@ -664,6 +667,7 @@ func (a *appState) settingsAgent(c *ui.Context) {
 		if installed && settingsButton(c, "Remove Integration", false, true, false) {
 			a.settingsUI.sheet = &settingsSheet{
 				title:   "Remove the " + agent.DisplayName(name) + " integration?",
+				danger:  true,
 				text:    "omaterm stops learning this agent's conversation, so a restart can only continue the folder's last one.",
 				confirm: "Remove",
 				run: func(c *ui.Context) {
@@ -688,9 +692,14 @@ func (a *appState) settingsAgent(c *ui.Context) {
 					msg += ". " + n
 				}
 				toast(c, msg)
+				// The main window's offer to set it up is answered.
+				if a.agentSetupOffer == name {
+					a.answerAgentSetup()
+				}
 			}
 			a.hookChecked = map[string]bool{}
 			a.settingsUI.dataAt = time.Time{}
+			a.invalidateWindows()
 		}
 	})
 }
@@ -780,7 +789,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 					if n == web.DefaultPort {
 						n = 0
 					}
-					a.changeWeb(c, func(cfg *web.Config) { cfg.Port = n })
+					a.changeWebSaying(c, func(cfg *web.Config) { cfg.Port = n }, "Web access now uses port "+strings.TrimSpace(d.port))
 					a.settingsUI.dataAt = time.Time{}
 				}
 			}
@@ -789,7 +798,11 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			if a.settingsTextField(c, "webURL", &d.url, "https://…", 200, true) {
 				url := strings.TrimSpace(d.url)
 				if url != d.web.URL {
-					a.changeWeb(c, func(cfg *web.Config) { cfg.URL = url })
+					said := "Public URL saved"
+					if url == "" {
+						said = "Public URL removed"
+					}
+					a.changeWebSaying(c, func(cfg *web.Config) { cfg.URL = url }, said)
 					a.settingsUI.dataAt = time.Time{}
 				}
 			}
@@ -804,7 +817,7 @@ func (a *appState) revokeSheet(id, name string) {
 		text = "Every device is signed out at once, and the pairing codes waiting stop working."
 	}
 	a.settingsUI.sheet = &settingsSheet{
-		title: "Revoke " + name + "?", text: text, confirm: "Revoke",
+		title: "Revoke " + name + "?", text: text, confirm: "Revoke", danger: true,
 		run: func(c *ui.Context) {
 			if _, err := webStore().Revoke(id); err != nil {
 				toast(c, "Could not revoke: "+err.Error())
@@ -878,27 +891,39 @@ func (a *appState) settingsBrowser(c *ui.Context) {
 		}
 		engine = "custom"
 	}
+	// Custom, picked but not yet given a URL that works: the engine in use
+	// stays until it is.
+	if d.searchCustom {
+		engine = "custom"
+	}
 	a.settingsGroup(c, "browser", "", "", func() {
 		a.settingDefRow(c, "searchEngine", func() {
 			if settingsPopup(c, "searchEngine", &engine, [][2]string{
 				{"duckduckgo", "DuckDuckGo"}, {"google", "Google"}, {"kagi", "Kagi"}, {"brave", "Brave Search"}, {"custom", "Custom…"},
 			}) {
-				if engine == "custom" {
-					if d.customSearch == "" {
-						d.customSearch = "https://"
-					}
-					a.settings.SearchEngine = d.customSearch
-				} else {
+				d.searchCustom = engine == "custom"
+				if engine != "custom" {
 					a.settings.SearchEngine = engine
+					a.applySettings()
+				} else if proto.ValidSearchURL(d.customSearch) {
+					a.settings.SearchEngine = d.customSearch
+					a.applySettings()
 				}
-				a.applySettings()
 			}
 		})
 		if engine == "custom" {
-			a.settingsRow(c, "Search URL", settingsRowOpts{id: "searchURL", sub: "%s is where the words go."}, func() {
+			sub := "%s is where the words go."
+			if !proto.ValidSearchURL(d.customSearch) {
+				sub = "Type a URL with %s where the words go, then press Enter. Until then the search engine above stays."
+			}
+			a.settingsRow(c, "Search URL", settingsRowOpts{id: "searchURL", sub: sub}, func() {
 				if a.settingsTextField(c, "searchURL", &d.customSearch, "https://example.com/?q=%s", 240, true) {
-					a.settings.SearchEngine = strings.TrimSpace(d.customSearch)
-					a.applySettings()
+					if u := strings.TrimSpace(d.customSearch); proto.ValidSearchURL(u) {
+						a.settings.SearchEngine = u
+						a.applySettings()
+					} else {
+						toast(c, "A search URL needs https:// and %s where the words go")
+					}
 				}
 			})
 		}
@@ -906,6 +931,7 @@ func (a *appState) settingsBrowser(c *ui.Context) {
 			if settingsButton(c, "Clear…", false, false, false) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear browsing data?",
+					danger:  true,
 					text:    "Signs you out of sites in browser panes and clears their cache.",
 					confirm: "Clear",
 					run: func(c *ui.Context) {
@@ -979,7 +1005,10 @@ func (a *appState) settingsAbout(c *ui.Context) {
 			}
 		}
 		a.settingsRow(c, "omaterm "+appVersion(), settingsRowOpts{id: "updates", sub: sub}, func() {
-			if settingsButton(c, "Check for Updates", false, false, !updatesReady) {
+			if settingsButton(c, "Check for Updates", false, false, !updatesReady || !mygo.Updater.Enabled()) {
+				// The updater's window opens over the main one: Settings,
+				// which stays above that, goes first.
+				a.closeSettings()
 				a.checkForUpdates(c)
 			}
 		})

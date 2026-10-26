@@ -21,12 +21,18 @@ var SearchEngines = map[string]string{
 
 var searchURL atomic.Value // string: a URL with %s
 
+// ValidSearchURL tells a search URL of the user's that works: a scheme,
+// and %s where the words go.
+func ValidSearchURL(u string) bool {
+	return strings.Contains(u, "%s") && hasScheme(u)
+}
+
 // SetSearchEngine makes BrowserURL search with an engine of
 // SearchEngines, or a URL of the user's with %s; anything else searches
 // with DuckDuckGo.
 func SetSearchEngine(engine string) {
 	u, ok := SearchEngines[engine]
-	if !ok && strings.Contains(engine, "%s") && hasScheme(engine) {
+	if !ok && ValidSearchURL(engine) {
 		u, ok = engine, true
 	}
 	if !ok {

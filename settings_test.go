@@ -263,3 +263,40 @@ func TestSettingsFieldEnterAndEscape(t *testing.T) {
 		t.Fatalf("Enter gave %q", a.settings.Terminal.Shell)
 	}
 }
+
+// Picking Custom… keeps the search engine in use until a URL that works
+// is given: it saved "https://", and every search broke.
+func TestCustomSearchEngineWaitsForAURL(t *testing.T) {
+	a, tr := newSettingsTester(t, "browser")
+	defer stopTermPanes(a)
+	a.settingsUI.data.searchCustom = true
+	a.settingsUI.data.customSearch = "https://"
+	tr.Frame()
+	if a.settings.SearchEngine != "duckduckgo" {
+		t.Fatalf("search engine %q, want duckduckgo kept", a.settings.SearchEngine)
+	}
+	if !tr.HasText("Type a URL with %s where the words go, then press Enter. Until then the search engine above stays.") {
+		t.Fatal("no hint for the custom URL")
+	}
+}
+
+// Restore Defaults on Terminal puts back the font, and the page's field.
+func TestRestoreTerminalClearsFields(t *testing.T) {
+	a, tr := newSettingsTester(t, "terminal")
+	defer stopTermPanes(a)
+	a.settings.Terminal.FontFamily = "Iosevka"
+	a.settingsUI.data.customFont = "Iosevka"
+	tr.SetSize(settingsWidth, 1800)
+	tr.Frame()
+	if err := tr.Click("Restore Defaults"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if err := tr.Click("Restore"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.settings.Terminal.FontFamily != "" || a.settingsUI.data.customFont != "" {
+		t.Fatalf("font %q, field %q after restoring", a.settings.Terminal.FontFamily, a.settingsUI.data.customFont)
+	}
+}
