@@ -114,10 +114,19 @@ func (a *appState) openSettings(page string) {
 }
 
 // closeSettings closes the Settings window.
+// It closes after the event that asked: destroyed inside its own key
+// press or click, the window crashed GTK, which still had the event's
+// hands on it.
 func (a *appState) closeSettings() {
-	if w := a.settingsWin; w != nil && !w.IsDestroyed() {
-		w.Close()
+	w := a.settingsWin
+	if w == nil || w.IsDestroyed() {
+		return
 	}
+	w.Update(func() {
+		if !w.IsDestroyed() {
+			w.Close()
+		}
+	})
 }
 
 // invalidateWindows redraws both windows, after a change one of them made

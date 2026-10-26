@@ -117,7 +117,7 @@ follows when you switch, with no restart needed.
 
 ### Settings
 
-Press `Ctrl+,`, or click the gear in the status bar, for the Settings
+Press `Ctrl+,`, or click the gear at the bottom of the sidebar, for the Settings
 window: a page for the theme, the terminal (font, line height, cursor,
 copy on select, clipboard, scrollback, bell), the editor, notifications,
 the agents' integration, web access and its paired devices, the browser's

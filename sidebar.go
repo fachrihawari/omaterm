@@ -348,11 +348,14 @@ func (a *appState) renameSession(pi int, tabID, name string) {
 	a.saveSoon()
 }
 
-// sidebarFooter holds the open-project and palette buttons, and chips that
-// count the sessions needing you, working, and done.
+// sidebarFooter holds the settings, open-project and palette buttons, and
+// chips that count the sessions needing you, working, and done.
 func (a *appState) sidebarFooter(c *ui.Context) {
 	waiting, working, done := a.statusCounts()
 	ui.Row(c).Height(44).Shrink(0).AlignItems(ui.Center).Padding(0, 6, 6, 8).Gap(4).Children(func() {
+		if cmdButton(c, iconSettings, 15, false).Tooltip("Settings (" + keyLabels("app.settings") + ")").Clicked() {
+			a.openSettings("")
+		}
 		if cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
 			a.openProjectDialog()
 		}

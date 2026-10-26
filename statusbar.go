@@ -76,11 +76,6 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 				})
 			}
 		}
-		if statusSegment(c, func() {
-			ui.Icon(c, iconSettings).Width(12).Height(12).TextColor(pal.TextMuted)
-		}).Tooltip("Settings (" + keyLabels("app.settings") + ")").Clicked() {
-			a.openSettings("")
-		}
 	})
 }
 
