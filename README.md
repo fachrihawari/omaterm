@@ -1,101 +1,114 @@
-<img src="site/assets/logo.svg" width="72" alt="omaterm logo">
+<div align="center">
+
+<img src="site/assets/logo.svg" width="80" alt="">
 
 # omaterm
 
-**A terminal workspace for running coding agents side by side.** Projects,
-sessions and split panes in one native window, with the status of every
-agent at a glance, what each one changed in its last turn, and a Git
-panel, editor and browser pane next to your shells.
+**Oh My Terminal: a terminal workspace for running coding agents side by side.**
 
-The name stands for **Oh My Terminal**.
+[![Latest release](https://img.shields.io/github/v/release/fachrihawari/omaterm?label=release&color=4c8bf5)](https://github.com/fachrihawari/omaterm/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-4c8bf5)](LICENSE)
+![Linux, macOS, Windows](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-555)
 
-**[Website](https://fachrihawari.github.io/omaterm/)** ·
-**[Download](https://github.com/fachrihawari/omaterm/releases/latest)** ·
-**[Changelog](CHANGELOG.md)**
+[Website](https://fachrihawari.github.io/omaterm/) ·
+[Download](https://github.com/fachrihawari/omaterm/releases/latest) ·
+[Changelog](CHANGELOG.md)
 
-![omaterm with an agent waiting for permission beside a dev server](site/assets/hero.png)
+</div>
+
+![omaterm with Claude Code asking for permission beside a dev server](site/assets/hero.png)
+
+Run Claude Code, Codex, Gemini, OpenCode and Pi in split panes, in one native
+window. omaterm shows you which agent needs you, what each one changed in its
+last turn, and keeps your sessions running after you close the window. Git,
+an editor and a browser sit next to your shells.
+
+## Highlights
+
+- **Agent status at a glance.** Every session shows whether it is working,
+  needs you, failed or is done, and notifies you when it needs you.
+- **Last turn.** See what an agent changed in its last turn, apart from your
+  own uncommitted work, and keep or revert each hunk.
+- **Sessions that keep running.** Close the window and they carry on. After a
+  reboot, agents resume the same conversation.
+- **On your phone.** Pair a browser with a QR code, then watch and type into
+  any session.
+- **Everything next to the terminal.** A Git panel, commit graph, diffs, a
+  file tree, an editor and browser panes.
+- **Scriptable.** The `omaterm` command lets agents and scripts open panes,
+  read them, type into them and wait for them.
+- **Themes that follow your desktop**, dark or light, including
+  [Omarchy](https://omarchy.org)'s themes, live.
 
 ## Install
 
-On Linux:
+**Linux** (x86-64 and ARM64):
 
 ```sh
 curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh
 ```
 
 This installs the app in `~/.local/omaterm.app` and adds it to your app
-launcher. It needs no root, and it updates itself: a new release shows up
-as an update in the app.
+launcher. It needs no root.
 
-Builds for macOS, Windows and Linux ARM64 are on the
-[releases page](https://github.com/fachrihawari/omaterm/releases/latest).
+**macOS** (Universal) and **Windows** (x64): download the `.dmg` or the
+`Setup.exe` from the
+[latest release](https://github.com/fachrihawari/omaterm/releases/latest).
+A `.deb` and `.tar.gz` for Linux are there too.
 
-## Features
+omaterm updates itself: a new release shows up as an update in the app.
 
-### See what your agents are doing
+### First steps
 
-Each session shows whether it is working, needs you, failed or is done.
-This works for Claude Code, Codex, Gemini, OpenCode, Pi and any other
-program that reports its status. When a session needs you while you look
-away, you get a notification. Press `Ctrl+Shift+J` to jump to it.
+1. Open a project folder from the sidebar.
+2. Start an agent in a session. Its status shows in the sidebar and in the
+   pane's header.
+3. Accept the offer to **set up the agent integration**, or run it from the
+   command palette (`Ctrl+Shift+P`). It installs a small hook and a skill
+   for your agents, so a restart resumes each one's own conversation and
+   agents learn the `omaterm` command.
+4. To use the `omaterm` command in your own shells too, run **Install Command
+   Line Tool** from the palette. It links the command into `~/.local/bin`.
+
+## A tour
+
+### See which agent needs you
+
+Each session shows whether it is working, needs you, failed or is done. This
+works for Claude Code, Codex, Gemini, OpenCode, Pi and any program that
+reports its status. When a session needs you while you look away, you get a
+notification; `Ctrl+Shift+J` jumps to it.
 
 ### What did that turn change?
 
-In the Git tab, Last turn (`Ctrl+Shift+A`) lists what an agent changed in
-its last turn, apart from everything else you haven't committed. You can keep
-or revert each hunk.
+In the Git tab, **Last turn** (`Ctrl+Shift+A`) lists what an agent changed in
+its last turn, apart from everything else you haven't committed. Keep or
+revert each hunk.
 
-![The Git tab's Last turn, listing the files an agent edited in its last turn](site/assets/changes.png)
+![Last turn, listing the files an agent edited in its last turn](site/assets/changes.png)
 
 ### Projects, sessions and split panes
 
-The sidebar lists each project with its sessions. Switching projects keeps
-the other project's shells running. You can split a pane right
-(`Ctrl+Shift+R`) or down (`Ctrl+Shift+D`), resize panes by their dividers
-and zoom one (`Ctrl+Shift+Enter`). To move a pane, drag its header onto
-another pane.
+The sidebar lists each project with its sessions, and switching projects
+keeps the other one's shells running. Split a pane right (`Ctrl+Shift+R`) or
+down (`Ctrl+Shift+D`), zoom one (`Ctrl+Shift+Enter`), and drag a pane's
+header to move it.
 
 ![Three split panes: an agent, a dev server and a test run](site/assets/split.png)
 
 ### Sessions keep running
 
-Sessions keep running after you close the window, and they are back when
-you open it again. After a reboot, Claude Code, Codex, OpenCode and Pi
-panes resume the same conversation. `omaterm daemon install-service` runs
-the session daemon as a systemd user service, so your sessions also come
-back when you log in.
+Sessions run in a session daemon, so they keep going after you close the
+window and are back when you open it. After a reboot, Claude Code, Codex,
+OpenCode and Pi resume the same conversation.
+`omaterm daemon install-service` runs the daemon as a systemd user service,
+so your sessions come back when you log in.
 
-### From your phone
+### Git, diffs and an editor
 
-Web access shows your sessions in a browser: your projects and sessions in
-a sidebar, which agents are working or need you, and any pane as a live
-terminal you can type into, with a key bar for Esc, Ctrl and the arrows on a
-phone. Turn it on in Settings, with **Web Access** in the command palette,
-or `omaterm web on`. While a browser shows a pane, the pane takes the browser's
-size; the window gets its size back when the browser leaves.
-
-omaterm serves it on `127.0.0.1:7370`. To reach it from your phone, carry it
-with a tunnel you already trust:
-
-```sh
-tailscale serve --bg 7370                      # your tailnet only
-cloudflared tunnel --url http://127.0.0.1:7370 # a public https URL
-```
-
-Or serve it on your local network with **Web Access on Your Network**, or
-`omaterm web on --network` (`--local` goes back). That is plain HTTP, so
-use it only on networks you trust.
-
-A browser sees nothing until you pair it: **Pair a Device** in Settings
-shows a QR code, and `omaterm web pair` prints one in the terminal. Each code
-works once, for ten minutes. Settings lists the paired browsers, and signs
-one out with Revoke; so do `omaterm web devices` and `omaterm web revoke`.
-
-### Git, diffs and an editor in the same window
-
-The Git panel lets you stage, commit, stash, fetch, pull and push. There is
-also a commit graph, side-by-side and inline diffs (including images), a
-file tree, and an editor with syntax highlighting and Markdown preview.
+Stage, commit, stash, fetch, pull and push from the Git panel. There is a
+commit graph, side-by-side and inline diffs (images too), a file tree, and an
+editor with syntax highlighting and Markdown preview.
 
 | Git panel | Diff |
 | --- | --- |
@@ -103,39 +116,58 @@ file tree, and an editor with syntax highlighting and Markdown preview.
 | **Commit graph** | **Editor** |
 | ![The commit graph with merges](site/assets/graph.png) | ![The editor with a Go file open](site/assets/editor.png) |
 
+### Your sessions, from your phone
+
+<img src="site/assets/web-phone.png" width="240" align="right" alt="A session on a phone, with a key bar for Esc, Tab, Ctrl and the arrows">
+
+**Web access** shows your sessions in a browser: which agents are working or
+need you, and any pane as a live terminal you can type into, with a key bar
+for Esc, Ctrl and the arrows on a phone.
+
+Turn it on in Settings, or with `omaterm web on`. It serves on
+`127.0.0.1:7370`; reach it through a tunnel you already trust:
+
+```sh
+tailscale serve --bg 7370                       # your tailnet only
+cloudflared tunnel --url http://127.0.0.1:7370  # a public https URL
+```
+
+`omaterm web on --network` serves it on your local network instead. That is
+plain HTTP, so use it only on networks you trust.
+
+A browser sees nothing until you pair it: **Pair a Device** in Settings, or
+`omaterm web pair`, shows a QR code that works once, for ten minutes. Revoke
+a device in Settings or with `omaterm web revoke`.
+
+<br clear="right">
+
+### Browser panes
+
+`Ctrl+Shift+O` opens a web page next to your terminals, as does
+`omaterm split --url localhost:5173`. With **Let Agents Control the App** on,
+agents can read, click, type into and screenshot the page with
+`omaterm browser`.
+
 ### Themes, dark and light
 
-omaterm has dark and light themes, or follows your desktop's, which you
-pick in Settings or the command palette. The window, terminals and editors share one palette, and its
-colors are checked for contrast so text stays readable. On
-[Omarchy](https://omarchy.org), omaterm uses the active Omarchy theme and
-follows when you switch, with no restart needed.
+Pick a dark or light theme, or follow your desktop's. The window, terminals
+and editor share one palette, checked for contrast so text stays readable.
+On [Omarchy](https://omarchy.org), omaterm follows the active theme as you
+switch it.
 
-| Tokyo Night (an Omarchy theme) | Lupine, light (an Omarchy theme) |
+| Tokyo Night | Lupine (light) |
 | --- | --- |
 | ![omaterm in the Tokyo Night theme](site/assets/theme-tokyo.png) | ![omaterm in a light theme](site/assets/theme-light.png) |
 
 ### Settings
 
-Press `Ctrl+,`, or click the gear at the bottom of the sidebar, for the Settings
-window: a page for the theme, the terminal (font, line height, cursor,
-copy on select, clipboard, scrollback, bell), the editor, notifications,
-the agents' integration, web access and its paired devices, the browser's
-search engine, and updates. Search finds any setting, and changes apply as
-you make them. `omaterm settings terminal` opens it on a page. The settings
-live in `~/.config/omaterm/settings.json`.
+`Ctrl+,` opens the Settings window: theme, terminal, editor, notifications,
+agents, web access and updates, with search, and changes apply as you make
+them. They live in `~/.config/omaterm/settings.json`.
 
-![The Settings window on its Terminal page](site/assets/settings.png)
+## The `omaterm` command
 
-### Browser panes
-
-Press `Ctrl+Shift+O` to open a web page next to your terminals, or run
-`omaterm split --url localhost:5173`. With "Let Agents Control the App" on (a palette setting), agents can
-read, click, type into and screenshot the page with `omaterm browser`.
-
-### The `omaterm` command
-
-Agents and scripts can drive your sessions with the `omaterm` command:
+Agents and scripts drive your sessions with it:
 
 ```sh
 omaterm split --down -- go test ./...   # run in a new pane below
@@ -146,8 +178,7 @@ omaterm diff --turn                     # what the last agent turn changed
 ```
 
 `omaterm help` lists every command. `omaterm skill setup` teaches Claude
-Code, Codex, Pi and OpenCode to use it. It also lets omaterm tell which
-conversation runs in which pane.
+Code, Codex, Pi and OpenCode to use it.
 
 ## Keyboard shortcuts
 
@@ -161,7 +192,7 @@ conversation runs in which pane.
 | Split right / down | `Ctrl+Shift+R` / `Ctrl+Shift+D` |
 | Zoom pane | `Ctrl+Shift+Enter` |
 | Go to the session that needs you | `Ctrl+Shift+J` |
-| Files / Git / Changes / Info | `Ctrl+Shift+E` / `G` / `A` / `I` |
+| Files / Git / Last turn / Info | `Ctrl+Shift+E` / `G` / `A` / `I` |
 | Toggle sidebar / inspector | `Ctrl+B` / `Ctrl+Shift+B` |
 | Open a browser pane | `Ctrl+Shift+O` |
 | All shortcuts | `Ctrl+Shift+/` |
@@ -170,58 +201,49 @@ On macOS, use `Cmd` in place of `Ctrl`.
 
 ## Building from source
 
-omaterm is written in Go with [mygo](https://github.com/egoist/mygo).
+omaterm is written in Go with [MyGo](https://github.com/egoist/mygo).
 
 ```sh
-go test ./...          # tests
-bun install            # mygo-cli, for the dev loop and packaging
-bun run dev            # run with reload (mygo dev)
-bun run build          # build the app (mygo build)
+go test ./...    # tests
+bun install      # mygo-cli, for the dev loop and packaging
+bun run dev      # run with reload
+bun run build    # build the app
 ```
 
-To refresh the screenshots in this README and on the website, run
-`SITE_SHOTS=1 go test -run TestSiteShots .`. It renders them into
-`site/assets`. See [RELEASING.md](RELEASING.md) for how releases are
-cut.
+`SITE_SHOTS=1 go test -run TestSiteShots .` renders the screenshots in this
+README and on the website into `site/assets`. [RELEASING.md](RELEASING.md)
+covers how releases are cut.
+
+## Credits
+
+omaterm builds on:
+
+- **[Kero](https://github.com/egoist/kero)** by EGOIST (MIT). Much of omaterm
+  is adapted from it: the session engine (control protocol, PTY, OSC status,
+  git turn snapshots), the `omaterm` command with its agent hooks, plugins
+  and skill, and browser panes, pane layout and elevation. Each such source
+  file names the Kero file it comes from.
+- **[herdr](https://github.com/herdrdev/herdr)** (Apache-2.0): the agent
+  detection rules, through Kero.
+- **[MyGo](https://github.com/egoist/mygo)** (MIT), the app framework, and
+  **[Ghostty](https://github.com/ghostty-org/ghostty)**'s libghostty-vt
+  (MIT), the terminal emulation.
+- **[Lucide](https://lucide.dev)** (ISC) and Feather (MIT) for the icons, and
+  **[Simple Icons](https://simpleicons.org)** (CC0) for the program logos,
+  which are their owners' trademarks.
+
+And learned from, sharing no code:
+**[Rex](https://superlogical.com)** by Superlogical (card panes, pane headers,
+and OSC 7501, the Program Status Protocol omaterm reads agents' status with),
+**[Tern](https://stencil.so/tern)** by Stencil (how an agent terminal should
+look and feel), **[OpenCode](https://opencode.ai)** (whose web mode inspired
+web access) and **[Omarchy](https://omarchy.org)** (the desktop omaterm was
+first made for).
+
+License texts for these and the Go libraries omaterm uses are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which ships with every
+release.
 
 ## License
 
 [MIT](LICENSE)
-
-## Credits
-
-omaterm builds on other people's work:
-
-- **[Kero](https://github.com/egoist/kero)** by EGOIST (MIT). Much of
-  omaterm is adapted from Kero:
-  - the session engine: the control protocol, the PTY, OSC status and
-    session code, and git turn snapshots
-  - the `omaterm` command and its agent hooks, plugins and skill
-  - browser panes, pane layout and elevation
-
-  Each such source file names the Kero file it comes from.
-- **[herdr](https://github.com/herdrdev/herdr)** (Apache-2.0): the agent
-  detection rules, through Kero.
-- **[MyGo](https://github.com/egoist/mygo)** (MIT): the app framework.
-  **[Ghostty](https://github.com/ghostty-org/ghostty)**'s libghostty-vt
-  (MIT) does the terminal emulation.
-- **[Lucide](https://lucide.dev)** (ISC) and Feather (MIT): the
-  interface icons.
-- **[Simple Icons](https://simpleicons.org)** (CC0): the program logos,
-  which are their owners' trademarks.
-
-omaterm also learned from projects it shares no code with:
-
-- **[Rex](https://superlogical.com)** by Superlogical: card panes, pane
-  headers and status at a glance, and OSC 7501, the Program Status
-  Protocol omaterm reads agents' status with.
-- **[Tern](https://stencil.so/tern)** by Stencil: how an agent terminal
-  should look and feel.
-- **[OpenCode](https://opencode.ai)**: its web mode gave omaterm the idea
-  of web access.
-- **[Omarchy](https://omarchy.org)**: the desktop omaterm was first made
-  for, and the themes it follows.
-
-Their license texts, and those of the Go libraries omaterm uses, are in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The file ships with
-every release.
