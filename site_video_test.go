@@ -495,7 +495,13 @@ func TestSiteVideo(t *testing.T) {
 		dark := image.NewRGBA(r.last.Rect)
 		xdraw.Draw(dark, dark.Rect, &image.Uniform{color.RGBA{0x0d, 0x11, 0x17, 0xff}}, image.Point{}, xdraw.Src)
 		r.fadeTo(dark, 12)
-		r.hold(dark, int(1.6*videoFPS))
+		// Uncaptioned, on the website, a long dark screen looks broken: a
+		// blink says the window went.
+		if os.Getenv("SITE_VIDEO_FORMAT") == "site" {
+			r.hold(dark, int(0.3*videoFPS))
+		} else {
+			r.hold(dark, int(1.6*videoFPS))
+		}
 
 		start := r.n
 		r.caption("Sesi balik, agent lanjut | percakapan yang sama.")

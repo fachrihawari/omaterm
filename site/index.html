@@ -185,7 +185,7 @@
     margin: 0; padding: 18px 20px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--surface); overflow-x: auto; font: 14px/1.8 var(--mono);
   }
-  .feature pre.cli { margin-top: 20px; font-size: 13px; }
+  .wide-clip { margin-top: 48px; }
   pre.cli .c { color: var(--dim); }
   pre.cli .p { color: var(--ok); }
 
@@ -205,6 +205,7 @@
   }
   @media (max-width: 900px) {
     .feature, .feature.flip { grid-template-columns: 1fr; gap: 24px; }
+    .wide-clip { margin-top: 24px; }
     .feature.flip > :first-child { order: 0; }
     .web-grid, .thanks-grid { grid-template-columns: 1fr; gap: 32px; }
     .gallery.three { grid-template-columns: 1fr 1fr; }
@@ -401,6 +402,7 @@
           <li><span>From a script or an agent</span><code class="k">omaterm split --url localhost:5173</code></li>
           <li><span>Let agents drive the page</span><span>Setting: <b>Let Agents Control the App</b></span></li>
         </ul>
+      </div>
 <pre class="cli"><span class="c"># open the app beside the agent</span>
 <span class="p">$</span> omaterm split --url localhost:5173
 <span class="c"># read it, click, type, wait</span>
@@ -409,9 +411,8 @@
 <span class="p">$</span> omaterm browser wait ".toast"
 <span class="c"># see what the user sees</span>
 <span class="p">$</span> omaterm browser screenshot -o page.png</pre>
-      </div>
-      <div class="shot"><video class="clip" src="assets/video/browser.mp4" poster="assets/video/browser.jpg" width="1920" height="1080" muted loop playsinline preload="none" aria-label="An agent opening a browser pane, adding a todo, checking it off and reading the page, all with omaterm browser"></video></div>
     </div>
+    <div class="wrap wide-clip"><div class="shot"><video class="clip" src="assets/video/browser.mp4" poster="assets/video/browser.jpg" width="1920" height="1080" muted loop playsinline preload="none" aria-label="An agent opening a browser pane, adding a todo, checking it off and reading the page, all with omaterm browser"></video></div></div>
   </section>
 
   <section id="daemon">
@@ -425,6 +426,7 @@
           <li><span>See what it runs</span><code class="k">omaterm daemon status</code></li>
         </ul>
         <p class="note">After a reboot, Claude Code, Codex, OpenCode and Pi resume the same conversation.</p>
+      </div>
 <pre class="cli"><span class="p">$</span> omaterm daemon status
 running omaterm 0.8.4, pid 4096, 6 panes
 <span class="p">$</span> omaterm ls
@@ -432,9 +434,8 @@ SESSION  PANE     NAME          STATUS   PROGRAM
 b8yvch4  jjybiza  omaterm/dev   waiting  claude
 kppgfhu  armc768  omaterm/web   working  bun
 5arwznq  ke45bsv  api/tests     idle     -</pre>
-      </div>
-      <div class="shot"><video class="clip" src="assets/video/resume.mp4" poster="assets/video/resume.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions, the window gone through a reboot, and the sessions back with the agent in the same conversation"></video></div>
     </div>
+    <div class="wrap wide-clip"><div class="shot"><video class="clip" src="assets/video/resume.mp4" poster="assets/video/resume.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions, the window gone through a reboot, and the sessions back with the agent in the same conversation"></video></div></div>
   </section>
 
   <section id="web">
@@ -498,6 +499,7 @@ kppgfhu  armc768  omaterm/web   working  bun
           <li><span>Teach Claude Code, Codex, Pi and OpenCode to use it</span><code class="k">omaterm skill setup</code></li>
           <li><span>Every command</span><code class="k">omaterm help</code></li>
         </ul>
+      </div>
 <pre class="cli"><span class="c"># run the tests in a new pane below</span>
 <span class="p">$</span> pane=$(omaterm split --down -- go test ./...)
 <span class="c"># wait for them, then read what they printed</span>
@@ -506,9 +508,8 @@ kppgfhu  armc768  omaterm/web   working  bun
 <span class="p">$</span> omaterm new -n review -- codex
 <span class="c"># tell the user you need them</span>
 <span class="p">$</span> omaterm report blocked "Which database?"</pre>
-      </div>
-      <div class="shot"><video class="clip" src="assets/video/cli.mp4" poster="assets/video/cli.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent running the tests in a pane below with omaterm split, waiting for them and reading the result"></video></div>
     </div>
+    <div class="wrap wide-clip"><div class="shot"><video class="clip" src="assets/video/cli.mp4" poster="assets/video/cli.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent running the tests in a pane below with omaterm split, waiting for them and reading the result"></video></div></div>
   </section>
 
   <section id="settings">
