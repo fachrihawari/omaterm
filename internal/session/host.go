@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
@@ -118,34 +119,68 @@ func Await(ctx context.Context, p Handle, statuses []string, exit bool) (Info, e
 }
 
 // FindAgentPane finds the pane an agent's hook ran in: the pane whose
-// shell is an ancestor of pid, else, for a hook that ran away from its
-// pane (as OpenCode's service runs it), the pane running that agent
-// without a conversation yet, the one in dir first (away).
-func FindAgentPane(h Host, pid int, agentName, dir string) (found Handle, away bool) {
+// shell is an ancestor of pid. Else the hook ran away from its pane, and
+// so do the agent's commands (away), as for OpenCode's service, or Claude
+// Code's background sessions, which a pane only attaches to:
+//   - the pane a process naming the conversation runs in, as `claude
+//     attach <id>` does;
+//   - else the one pane in dir that runs the agent without a conversation
+//     yet. In another folder, or one of several, it is a guess: none.
+func FindAgentPane(h Host, pid int, agentName, sessionID, dir string) (found Handle, away bool) {
 	shells := map[int]Handle{}
 	h.Each(func(p Handle) {
 		if pid := p.Info().PID; pid > 0 {
 			shells[pid] = p
 		}
 	})
-	for n := 0; pid > 1 && n < 64; pid, n = pty.ProcParent(pid), n+1 {
-		if p := shells[pid]; p != nil {
-			return p, false
+	paneOf := func(pid int) Handle {
+		for n := 0; pid > 1 && n < 64; pid, n = pty.ProcParent(pid), n+1 {
+			if p := shells[pid]; p != nil {
+				return p
+			}
+		}
+		return nil
+	}
+	if p := paneOf(pid); p != nil {
+		return p, false
+	}
+	if sessionID != "" {
+		named := map[Handle]bool{}
+		for _, proc := range pty.Procs() {
+			if namesSession(pty.ProcArgs(proc), sessionID) {
+				if p := paneOf(proc); p != nil {
+					named[p] = true
+				}
+			}
+		}
+		if len(named) == 1 {
+			for p := range named {
+				return p, true
+			}
 		}
 	}
 	var cands []Handle
 	h.Each(func(p Handle) {
 		i := p.Info()
-		if i.Agent == agentName && i.AgentSession == nil {
+		if i.Agent == agentName && i.AgentSession == nil && dir != "" && i.WorkDir() == dir {
 			cands = append(cands, p)
 		}
 	})
-	for _, c := range cands {
-		if found == nil || dir != "" && c.Info().WorkDir() == dir {
-			found = c
+	if len(cands) != 1 {
+		return nil, false
+	}
+	return cands[0], true
+}
+
+// namesSession reports whether a command line names conversation id: the
+// whole id, or a prefix of it of 8 or more, as `claude attach 8f0d0898`.
+func namesSession(args []string, id string) bool {
+	for _, a := range args[min(1, len(args)):] {
+		if len(a) >= 8 && strings.HasPrefix(id, a) {
+			return true
 		}
 	}
-	return found, found != nil
+	return false
 }
 
 // RestoredHistory is a pane's saved scrollback, at path, under a dim line

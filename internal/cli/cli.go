@@ -220,7 +220,7 @@ func run(args []string) error {
 		valued := map[string]string{"p": "project", "project": "project", "n": "name", "name": "name", "d": "dir", "dir": "dir",
 			"t": "timeout", "timeout": "timeout", "r": "ratio", "ratio": "ratio", "u": "url", "url": "url"}
 		boolean := map[string]string{"f": "focus", "focus": "focus", "w": "wait", "wait": "wait", "json": "json",
-			"right": "right", "down": "down", "left": "left", "up": "up"}
+			"right": "right", "down": "down", "left": "left", "up": "up", "any-project": "any-project"}
 		f, err := parse(args, valued, boolean)
 		if err != nil {
 			return err
@@ -239,6 +239,9 @@ func run(args []string) error {
 			}
 			t, err := findOrCurrent(st, f.pos)
 			if err != nil {
+				return err
+			}
+			if err := sameProject(st, projectOf(st, t.session), f.set["any-project"]); err != nil {
 				return err
 			}
 			p.Split = t.pane
@@ -260,6 +263,20 @@ func run(args []string) error {
 			}
 		} else if len(f.pos) > 0 {
 			return usageErr("omaterm new [-n name] [-d dir] [-- command…]")
+		} else if p.Project != "" {
+			st, err := state(c)
+			if err != nil {
+				return err
+			}
+			project := p.Project
+			for _, pr := range st.Projects {
+				if pr.ID == p.Project || strings.EqualFold(pr.Name, p.Project) {
+					project = pr.ID
+				}
+			}
+			if err := sameProject(st, project, f.set["any-project"]); err != nil {
+				return err
+			}
 		}
 		method := "create"
 		if cmd == "split" {
@@ -637,9 +654,28 @@ func find(st proto.State, ref string) (target, error) {
 	return target{}, fmt.Errorf("%w: no session or pane %q", errNotFound, ref)
 }
 
+// agentSessionEnv names the variable each agent gives its commands its
+// conversation in.
+var agentSessionEnv = map[string]string{"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID"}
+
 // current is the target of a command run in a pane with none named: the
-// pane itself.
-func current() string {
+// pane itself. The pane that runs the caller's agent conversation comes
+// first: a background agent's commands (Claude Code's) carry the
+// variables of whichever pane started its service, not their own.
+func current(st proto.State) string {
+	for agent, env := range agentSessionEnv {
+		id := os.Getenv(env)
+		if id == "" {
+			continue
+		}
+		for _, s := range st.Sessions {
+			for _, p := range s.Panes {
+				if a := p.AgentSession; a != nil && a.Agent == agent && a.ID == id {
+					return p.ID
+				}
+			}
+		}
+	}
 	if p := os.Getenv("OMATERM_PANE"); p != "" {
 		return p
 	}
@@ -650,10 +686,50 @@ func findOrCurrent(st proto.State, pos []string) (target, error) {
 	if len(pos) > 0 {
 		return find(st, pos[0])
 	}
-	if cur := current(); cur != "" {
+	if cur := current(st); cur != "" {
 		return find(st, cur)
 	}
 	return target{}, usageErr("name a target, or run this in an omaterm pane")
+}
+
+// projectOf is the project a session is in, "" for none.
+func projectOf(st proto.State, session string) string {
+	for _, s := range st.Sessions {
+		if s.ID == session {
+			return s.Project
+		}
+	}
+	return ""
+}
+
+// projectName is a project's name, or its id when it has none.
+func projectName(st proto.State, id string) string {
+	for _, p := range st.Projects {
+		if p.ID == id {
+			return p.Name
+		}
+	}
+	return id
+}
+
+// sameProject refuses to make a pane in another project than the one the
+// caller runs in: an agent's dev server, tests or helper belong beside
+// it, and one in another project is most likely a wrong target. Run
+// outside omaterm, or with --any-project, anything goes.
+func sameProject(st proto.State, project string, any bool) error {
+	cur := current(st)
+	if any || cur == "" || project == "" {
+		return nil
+	}
+	t, err := find(st, cur)
+	if err != nil {
+		return nil
+	}
+	if own := projectOf(st, t.session); own != "" && own != project {
+		return usageErr(fmt.Sprintf("that is in project %s, and you run in project %s: name a target in %s, or none for your own pane; --any-project if you mean %s",
+			projectName(st, project), projectName(st, own), projectName(st, own), projectName(st, project)))
+	}
+	return nil
 }
 
 func listSessions(st proto.State) {
@@ -933,8 +1009,8 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm [dir]                          open the app, or a folder in it
   omaterm ls [--json]                    sessions and their panes
   omaterm projects [--json]
-  omaterm new [-n name] [-d dir] [-p project] [-f] [-w] [-- command…]
-  omaterm split [target] [--down|--left|--up] [-r ratio] [-w] [--url url] [-- command…]
+  omaterm new [-n name] [-d dir] [-p project] [-f] [-w] [--any-project] [-- command…]
+  omaterm split [target] [--down|--left|--up] [-r ratio] [-w] [--url url] [--any-project] [-- command…]
   omaterm send <target> <text…> [--enter] [-e]
   omaterm key <target> <key…>            enter, tab, escape, up, ctrl+c, alt+x…
   omaterm prompt <target> <text…>        send, Enter, wait, print the screen

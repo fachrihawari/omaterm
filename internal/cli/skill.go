@@ -33,6 +33,9 @@ prefix works), or a session's name; a session stands for its focused pane.
     omaterm new -n tests -d ~/code/app -- go test ./...
     omaterm split --url localhost:3000           # a browser pane, to show the user a page
 
+What you start stays in your own project: new and split refuse a target in
+another project, unless you pass --any-project because the user asked for it.
+
 ## Drive it
 
     omaterm send <target> "some text" --enter    # type, then press Enter

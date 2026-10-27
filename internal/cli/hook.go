@@ -129,22 +129,25 @@ func contextCmd(agent, session string, wait bool) error {
 // c is omaterm, nil when it is unreachable. away tells an agent whose
 // commands don't run in its pane, and don't have its variables.
 func hookContext(c *client.Client, pane, sid string, away bool) string {
+	var st proto.State
+	known := c != nil && c.Call("state", nil, &st) == nil
+	// Where the pane is: an agent sees a folder that isn't its own.
+	where := ""
+	if known {
+		where = paneWhere(st, pane)
+	}
 	var b strings.Builder
 	if away {
-		fmt.Fprintf(&b, "You are running in omaterm, a terminal for coding agents: session %s, pane %s. "+
+		fmt.Fprintf(&b, "You are running in omaterm, a terminal for coding agents: session %s, pane %s%s. "+
 			"The `omaterm` command (see the omaterm skill) runs things beside you, such as a dev server, tests or another agent. "+
 			"Your commands don't run in your pane and don't have its $OMATERM_SESSION and $OMATERM_PANE: give omaterm your pane as the target, "+
-			"as in `omaterm split %s --down -- npm run dev`.", sid, pane, pane)
+			"as in `omaterm split %s --down -- npm run dev`.", sid, pane, where, pane)
 	} else {
-		fmt.Fprintf(&b, "You are running in omaterm, a terminal for coding agents: session %s, pane %s ($OMATERM_SESSION and $OMATERM_PANE). "+
+		fmt.Fprintf(&b, "You are running in omaterm, a terminal for coding agents: session %s, pane %s ($OMATERM_SESSION and $OMATERM_PANE)%s. "+
 			"The `omaterm` command (see the omaterm skill) runs things beside you, such as a dev server, tests or another agent, "+
-			"and tells the user what you are doing.", sid, pane)
+			"and tells the user what you are doing.", sid, pane, where)
 	}
-	if c == nil {
-		return b.String()
-	}
-	var st proto.State
-	if c.Call("state", nil, &st) != nil {
+	if !known {
 		return b.String()
 	}
 	for _, s := range st.Sessions {
@@ -159,6 +162,26 @@ func hookContext(c *client.Client, pane, sid string, away bool) string {
 		}
 	}
 	return b.String()
+}
+
+// paneWhere says which project and folder pane is in, as ", in project
+// oterm (~/Projects/oterm)"; "" when it isn't found.
+func paneWhere(st proto.State, pane string) string {
+	for _, s := range st.Sessions {
+		for _, p := range s.Panes {
+			if p.ID != pane {
+				continue
+			}
+			name := s.Project
+			for _, pr := range st.Projects {
+				if pr.ID == s.Project {
+					name = pr.Name
+				}
+			}
+			return fmt.Sprintf(", in project %s (%s)", name, shortDir(p.WorkDir()))
+		}
+	}
+	return ""
 }
 
 // integration is what omaterm installs in an agent, beside its skill, to

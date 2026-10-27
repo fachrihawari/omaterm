@@ -8,3 +8,4 @@ func ProcName(pid int) string   { return "" }
 func ProcArgs(pid int) []string { return nil }
 func ProcCwd(pid int) string    { return "" }
 func ProcParent(pid int) int    { return 0 }
+func Procs() []int              { return nil }

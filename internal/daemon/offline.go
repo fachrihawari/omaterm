@@ -196,7 +196,7 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 		if !agent.SessionIDRe.MatchString(p.Session) {
 			return nil, proto.Errorf(proto.CodeUsage, "bad session id")
 		}
-		found, away := session.FindAgentPane(session.LocalHost{Registry: d.reg}, p.PID, p.Agent, p.Dir)
+		found, away := session.FindAgentPane(session.LocalHost{Registry: d.reg}, p.PID, p.Agent, p.Session, p.Dir)
 		if found == nil {
 			return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 		}
