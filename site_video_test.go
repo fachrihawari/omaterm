@@ -62,7 +62,7 @@ const (
 	siteAgentSplit = "\x1b[1;36m❯\x1b[0m fix the failing theme test\n\n" +
 		"\x1b[32m●\x1b[0m Read \x1b[1minternal/theme/omarchy_test.go\x1b[0m\n" +
 		"\x1b[32m●\x1b[0m Update \x1b[1minternal/theme/omarchy.go\x1b[0m  \x1b[32m+3\x1b[0m \x1b[31m-1\x1b[0m\n" +
-		"\x1b[32m●\x1b[0m Bash   omaterm split --down -- go test ./internal/theme/...\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm split --down -- go test ./internal/theme\n" +
 		"  \x1b[2m└\x1b[0m 7f3k2mq\n"
 	siteAgentRead = "\x1b[32m●\x1b[0m Bash   omaterm wait 7f3k2mq --exit\n" +
 		"  \x1b[2m└\x1b[0m exited 0\n" +
@@ -396,10 +396,15 @@ func TestSiteVideo(t *testing.T) {
 	v := newVideoScene(t, wd, os.Getenv("SITE_VIDEO_FORMAT") == "tall")
 	defer stopTermPanes(v.a)
 	a := v.a
-	// The website shows the app at its own size: a bigger terminal and
-	// editor font reads there. Applied, not saved.
-	if os.Getenv("SITE_VIDEO_FORMAT") == "site" {
+	// A bigger terminal and editor font reads better: the website shows
+	// the app at its own size, a phone's feed far smaller. Applied, not
+	// saved.
+	switch os.Getenv("SITE_VIDEO_FORMAT") {
+	case "site":
 		a.fontSize = defaultFontSize + 2
+		a.applyTextSettings()
+	case "tall":
+		a.fontSize = defaultFontSize + 3
 		a.applyTextSettings()
 	}
 	tr := ui.NewTester(a.view, format.w, format.h)
@@ -479,7 +484,7 @@ func TestSiteVideo(t *testing.T) {
 		v.status(2, session.Info{Status: session.Working, Process: "go"})
 		r.fade(6)
 		_, testOut, _ := strings.Cut(siteTests, "\n")
-		r.lines(v.feeds[2], "\x1b[1;34m~/Projects/omaterm\x1b[0m \x1b[32m❯\x1b[0m go test ./internal/theme/...\n"+testOut, 9)
+		r.lines(v.feeds[2], "\x1b[1;34m~/Projects/omaterm\x1b[0m \x1b[32m❯\x1b[0m go test ./internal/theme\n"+testOut, 9)
 		v.status(2, session.Info{Status: session.Idle, Process: "go", Message: "Tests passed", Unread: true})
 		r.until(start, 3.5)
 
@@ -566,6 +571,9 @@ func TestSiteVideo(t *testing.T) {
 		r.play(15)
 
 	case "splits": // sessions and split panes from the keyboard
+		// Tall, the panes split twice need the sidebar's room; the tabs
+		// still show the new session.
+		a.sidebarVisible = !v.tall
 		v.tab.Split = &splitNode{TermID: v.ids[0]}
 		for i := 1; i < len(v.ids); i++ {
 			delete(a.status, v.ids[i])
@@ -585,15 +593,20 @@ func TestSiteVideo(t *testing.T) {
 			splits[0], splits[1] = splits[1], splits[0]
 		}
 		at := v.ids[0]
+		// Quarter-window panes: the timestamps and the long prompt would
+		// wrap.
+		narrow := strings.NewReplacer(
+			"\x1b[2m12:04:31\x1b[0m ", "", "\x1b[2m12:04:58\x1b[0m ", "", "\x1b[2m12:05:12\x1b[0m ", "",
+			"\x1b[1;34m~/Projects/omaterm\x1b[0m \x1b[32m❯\x1b[0m go test -run Theme ./...", "\x1b[32m❯\x1b[0m go test ./...")
 		for i, sp := range splits {
 			r.caption(sp.caption)
 			at = a.splitPane(at, sp.dir)
 			r.fade(6)
 			if i == 0 {
-				r.lines(v.feed(at), siteDevServer, 4)
+				r.lines(v.feed(at), narrow.Replace(siteDevServer), 4)
 				v.paneStatus(at, session.Info{Status: session.Working, Process: "bun", Title: "vite"})
 			} else {
-				r.lines(v.feed(at), siteTests, 4)
+				r.lines(v.feed(at), narrow.Replace(siteTests), 4)
 				v.paneStatus(at, session.Info{Status: session.Idle, Process: "go", Message: "Tests passed"})
 			}
 			r.play(20)
