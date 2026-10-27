@@ -41,7 +41,7 @@ var videoFormats = map[string]struct {
 }{
 	"wide": {1280, 720, 1.5},
 	"tall": {864, 880, 1.25},
-	"site": {1440, 900, 4.0 / 3},
+	"site": {1280, 800, 1.5},
 }
 
 // A Codex session asking to run a command, for the status clip.
@@ -396,6 +396,12 @@ func TestSiteVideo(t *testing.T) {
 	v := newVideoScene(t, wd, os.Getenv("SITE_VIDEO_FORMAT") == "tall")
 	defer stopTermPanes(v.a)
 	a := v.a
+	// The website shows the app at its own size: a bigger terminal and
+	// editor font reads there. Applied, not saved.
+	if os.Getenv("SITE_VIDEO_FORMAT") == "site" {
+		a.fontSize = defaultFontSize + 2
+		a.applyTextSettings()
+	}
 	tr := ui.NewTester(a.view, format.w, format.h)
 	tr.SetScale(format.scale)
 	r := &videoRec{t: t, tr: tr, dir: dir, enc: png.Encoder{CompressionLevel: png.BestSpeed}}
@@ -491,15 +497,13 @@ func TestSiteVideo(t *testing.T) {
 		v.status(2, session.Info{Status: session.Idle, Process: "go", Message: "Tests passed", Unread: true})
 		r.play(int(2.5 * videoFPS))
 
-		r.caption("...bahkan reboot.")
-		dark := image.NewRGBA(r.last.Rect)
-		xdraw.Draw(dark, dark.Rect, &image.Uniform{color.RGBA{0x0d, 0x11, 0x17, 0xff}}, image.Point{}, xdraw.Src)
-		r.fadeTo(dark, 12)
-		// Uncaptioned, on the website, a long dark screen looks broken: a
-		// blink says the window went.
-		if os.Getenv("SITE_VIDEO_FORMAT") == "site" {
-			r.hold(dark, int(0.3*videoFPS))
-		} else {
+		// Uncaptioned, on the website, a dark screen in a loop looks broken:
+		// there the sessions go straight to how they come back.
+		if os.Getenv("SITE_VIDEO_FORMAT") != "site" {
+			r.caption("...bahkan reboot.")
+			dark := image.NewRGBA(r.last.Rect)
+			xdraw.Draw(dark, dark.Rect, &image.Uniform{color.RGBA{0x0d, 0x11, 0x17, 0xff}}, image.Point{}, xdraw.Src)
+			r.fadeTo(dark, 12)
 			r.hold(dark, int(1.6*videoFPS))
 		}
 
@@ -510,7 +514,7 @@ func TestSiteVideo(t *testing.T) {
 			f("\x1b[2J\x1b[H")
 			v.status(i, session.Info{Status: session.Working, Process: []string{"claude", "bun", "go"}[i]})
 		}
-		v.feeds[0]("\x1b[2m  Resuming conversation · make the theme follow Omarchy theme switches\x1b[0m\r\n\r\n")
+		v.feeds[0]("\x1b[2m  Resuming conversation…\x1b[0m\r\n\r\n")
 		r.fadeTo(r.shoot(), 12)
 		r.lines(v.feeds[0], siteAgentDone, 3)
 		v.feeds[1](strings.ReplaceAll(siteDevServer, "\n", "\r\n"))
@@ -638,13 +642,13 @@ func TestSiteVideo(t *testing.T) {
 		r.caption("Ctrl+Shift+F | cari di seluruh project.")
 		a.openOverlay(overlayGlobalSearch)
 		r.fade(6)
+		// The matches follow the query as it is typed, as a search does.
 		const query = "applyTheme"
-		for i := 1; i <= len(query); i += 2 {
+		for i := 4; i <= len(query); i += 2 {
 			a.searchQuery = query[:i]
-			r.play(3)
+			searchVideo(t, a, query[:i])
+			r.play(4)
 		}
-		a.searchQuery = query
-		searchVideo(t, a, query)
 		r.play(int(2.5 * videoFPS))
 
 	case "ports": // what the sessions run and the ports they open
@@ -795,7 +799,7 @@ func searchVideo(t *testing.T, a *appState, query string) {
 	a.searchSelected = 0
 	m := a.searchResults[0]
 	data, _ := os.ReadFile(m.Path)
-	st := &editor.State{ReadOnly: true, Theme: omaEditorTheme()}
+	st := &editor.State{ReadOnly: true, Theme: omaEditorTheme(), Font: a.editorFont(a.fontSize)}
 	st.Buffer = editor.NewBuffer(string(data))
 	st.Buffer.SetLanguage(editor.LanguageFor(m.Path))
 	st.GoTo(editor.Pos{Line: m.Line - 1, Col: 0})

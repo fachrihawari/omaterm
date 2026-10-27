@@ -121,11 +121,18 @@
   h2 { font-size: clamp(24px, 3vw, 34px); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 12px; }
   section p { color: var(--muted); margin: 0 0 12px; }
   section p a { color: var(--text); }
-  .feature { display: grid; grid-template-columns: 4fr 7fr; gap: 48px; align-items: center; }
-  .feature.flip { grid-template-columns: 7fr 4fr; }
-  .feature.flip > :first-child { order: 2; }
+  /* A feature: what it does beside how to use it, then the app at its
+     own size, wider than the text. */
+  /* What it does beside how to use it, both from the top: the list starts
+     level with the heading. Each list keeps to a few rows, so the two
+     sides stay about as tall as each other. */
+  .feature-head { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 48px; align-items: start; }
+  .feature-head > :last-child { padding-top: 31px; }
+  .feature-head .how { margin-top: 0; }
+  .wrap.wide { max-width: 1328px; }
+  .media { margin-top: 32px; }
   .intro { max-width: 760px; }
-  .feature > *, .web-grid > *, .devices > * { min-width: 0; }
+  .feature-head > *, .web-grid > *, .devices > * { min-width: 0; }
   kbd, code.k {
     font: 500 13px var(--mono); padding: 1px 6px; border-radius: 4px;
     border: 1px solid var(--line); background: var(--surface); color: var(--text);
@@ -140,6 +147,9 @@
   }
   .how li > :last-child { justify-self: end; text-align: right; }
   .how code.k { white-space: normal; overflow-wrap: anywhere; }
+  /* A long command goes under what it does, rather than squeezing it. */
+  .how li.wide { grid-template-columns: 1fr; }
+  .how li.wide > :last-child { justify-self: start; text-align: left; }
   .note { font-size: 14px; color: var(--dim) !important; margin-top: 14px !important; }
 
   .status { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 16px; font: 13px var(--mono); color: var(--muted); }
@@ -185,9 +195,29 @@
     margin: 0; padding: 18px 20px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--surface); overflow-x: auto; font: 14px/1.8 var(--mono);
   }
-  .wide-clip { margin-top: 48px; }
   pre.cli .c { color: var(--dim); }
   pre.cli .p { color: var(--ok); }
+
+  /* The full view: any picture or video, as big as the screen allows. */
+  .shot, .phone { cursor: zoom-in; }
+  .shot:focus-visible, .phone:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  dialog.zoom {
+    max-width: none; max-height: none; width: 100vw; height: 100vh; margin: 0; padding: 24px;
+    border: 0; background: transparent; display: none; place-items: center;
+  }
+  dialog.zoom[open] { display: grid; }
+  dialog.zoom::backdrop { background: rgba(1, 4, 9, 0.88); }
+  dialog.zoom .slot { max-width: min(96vw, 1920px); max-height: 92vh; display: flex; }
+  dialog.zoom .slot > * {
+    max-width: 100%; max-height: 92vh; width: auto; height: auto; object-fit: contain;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  }
+  dialog.zoom .close {
+    position: fixed; top: 16px; right: 16px; width: 40px; height: 40px; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text);
+    font: 22px/1 var(--sans); cursor: pointer;
+  }
+  dialog.zoom .close:hover { border-color: var(--muted); }
 
   .end { padding: 120px 0 80px; }
   .end h2 { margin-bottom: 8px; }
@@ -204,9 +234,9 @@
     .phones { justify-content: center; }
   }
   @media (max-width: 900px) {
-    .feature, .feature.flip { grid-template-columns: 1fr; gap: 24px; }
-    .wide-clip { margin-top: 24px; }
-    .feature.flip > :first-child { order: 0; }
+    .feature-head { grid-template-columns: 1fr; }
+    .feature-head > :last-child { padding-top: 0; }
+    .media { margin-top: 24px; }
     .web-grid, .thanks-grid { grid-template-columns: 1fr; gap: 32px; }
     .gallery.three { grid-template-columns: 1fr 1fr; }
   }
@@ -254,7 +284,9 @@
       <a href="#tour">Take the tour</a>
       <a href="https://github.com/fachrihawari/omaterm/releases/latest">All downloads</a>
     </div>
-    <div class="shot"><video class="clip" src="assets/video/launch.mp4" poster="assets/hero.png" width="1920" height="1200" muted loop playsinline preload="none" aria-label="omaterm at work: three agents and a dev server side by side, an agent asking for permission, what its last turn changed, and the themes"></video></div>
+  </div>
+  <div class="wrap wide"><div class="shot"><video class="clip" src="assets/video/launch.mp4?v=3" poster="assets/hero.png" width="1920" height="1200" muted loop playsinline preload="none" aria-label="omaterm at work: three agents and a dev server side by side, an agent asking for permission, what its last turn changed, and the themes"></video></div></div>
+  <div class="wrap">
     <p class="agents">Knows when these are working, waiting or done: <span>Claude Code · Codex · Gemini · OpenCode · Pi</span></p>
   </div>
 </header>
@@ -287,7 +319,7 @@
 
 <main>
   <section id="status">
-    <div class="wrap feature">
+    <div class="wrap feature-head">
       <div>
         <p class="label">01 · agent status</p>
         <h2>See which agent needs you</h2>
@@ -298,50 +330,53 @@
           <span><i style="background: var(--ok)"></i>done</span>
           <span><i style="background: var(--err)"></i>failed</span>
         </div>
+      </div>
+      <div>
         <ul class="how">
           <li><span>Jump to the agent that needs you</span><kbd>Ctrl+Shift+J</kbd></li>
           <li><span>Next or previous session</span><span><kbd>Alt+↓</kbd> <kbd>Alt+↑</kbd></span></li>
-          <li><span>Teach your agents to report their status</span><code class="k">omaterm skill setup</code></li>
+          <li class="wide"><span>Teach your agents to report their status</span><code class="k">omaterm skill setup</code></li>
         </ul>
       </div>
-      <div class="shot"><video class="clip" src="assets/video/status.mp4" poster="assets/video/status.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions at work, an agent asking for permission, then a jump to the Codex session that needs you"></video></div>
     </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/status.mp4?v=3" poster="assets/video/status.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions at work, an agent asking for permission, then a jump to the Codex session that needs you"></video></div></div>
   </section>
 
   <section id="sessions">
-    <div class="wrap feature flip">
+    <div class="wrap feature-head">
       <div>
         <p class="label">02 · sessions and splits</p>
         <h2>Projects, sessions and split panes</h2>
         <p>A project is a folder you work in. Each one has its own sessions, and each session holds split panes: an agent, a dev server and your shell, side by side. Switching projects keeps the other project&rsquo;s shells running.</p>
+      </div>
+      <div>
         <ul class="how">
-          <li><span>Open a project</span><kbd>Ctrl+O</kbd></li>
           <li><span>New session</span><kbd>Ctrl+T</kbd></li>
           <li><span>Split right or down</span><span><kbd>Ctrl+Shift+R</kbd> <kbd>Ctrl+Shift+D</kbd></span></li>
           <li><span>Zoom the pane you&rsquo;re in</span><kbd>Ctrl+Shift+Enter</kbd></li>
-          <li><span>Go to session or project 1&ndash;9</span><span><kbd>Alt+1</kbd> <kbd>Alt+Shift+1</kbd></span></li>
-          <li><span>Every session, command and setting</span><kbd>Ctrl+Shift+P</kbd></li>
         </ul>
         <p class="note">Drag a pane&rsquo;s header onto another pane to move it, and drag the dividers to resize.</p>
       </div>
-      <div class="shot"><video class="clip" src="assets/video/splits.mp4" poster="assets/video/splits.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A pane split right and down, one zoomed, then a new session"></video></div>
     </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/splits.mp4?v=3" poster="assets/video/splits.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A pane split right and down, one zoomed, then a new session"></video></div></div>
   </section>
 
   <section id="last-turn">
-    <div class="wrap feature">
+    <div class="wrap feature-head">
       <div>
         <p class="label">03 · last turn</p>
         <h2>What did that turn change?</h2>
         <p>In the Git tab, <b>Last turn</b> lists only what the agent changed in its last turn, apart from everything else you haven&rsquo;t committed. Open a file to see its diff, then keep or revert each hunk.</p>
+      </div>
+      <div>
         <ul class="how">
           <li><span>Open Last turn</span><kbd>Ctrl+Shift+A</kbd></li>
-          <li><span>The same diff, from a script or another agent</span><code class="k">omaterm diff --turn</code></li>
+          <li class="wide"><span>The same diff, from a script or another agent</span><code class="k">omaterm diff --turn</code></li>
         </ul>
         <p class="note">omaterm takes a snapshot when a turn starts. No branch or commit is made.</p>
       </div>
-      <div class="shot"><video class="clip" src="assets/video/lastturn.mp4" poster="assets/video/lastturn.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent finishing its turn, then Last turn listing the three files it changed"></video></div>
     </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/lastturn.mp4?v=3" poster="assets/video/lastturn.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent finishing its turn, then Last turn listing the three files it changed"></video></div></div>
   </section>
 
   <section id="git">
@@ -360,82 +395,74 @@
   </section>
 
   <section id="editor">
-    <div class="wrap feature flip">
+    <div class="wrap feature-head">
       <div>
         <p class="label">05 · files and editor</p>
         <h2>Find a file, read it, fix it</h2>
         <p>The Files tab browses the project. Open any file in the editor, with syntax highlighting and a Markdown preview, for the quick fix an agent didn&rsquo;t need to make.</p>
+      </div>
+      <div>
         <ul class="how">
           <li><span>Go to a file</span><kbd>Ctrl+P</kbd></li>
           <li><span>Search the whole project</span><kbd>Ctrl+Shift+F</kbd></li>
           <li><span>The Files tab</span><kbd>Ctrl+Shift+E</kbd></li>
-          <li><span>Save</span><kbd>Ctrl+S</kbd></li>
         </ul>
       </div>
-      <div class="shot"><video class="clip" src="assets/video/files.mp4" poster="assets/video/files.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Go to File finding themewatch.go, the editor opening it, then a search of the project"></video></div>
     </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/files.mp4?v=4" poster="assets/video/files.jpg?v=4" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Go to File finding themewatch.go, the editor opening it, then a search of the project"></video></div></div>
   </section>
 
   <section id="info">
-    <div class="wrap feature">
+    <div class="wrap feature-head">
       <div>
         <p class="label">06 · processes and ports</p>
         <h2>What&rsquo;s running, and where</h2>
         <p>The Info tab lists what your project&rsquo;s sessions run, with CPU and memory, and the ports they listen on. Stop a runaway process, or open a port in the browser, in one click.</p>
+      </div>
+      <div>
         <ul class="how">
           <li><span>The Info tab</span><kbd>Ctrl+Shift+I</kbd></li>
           <li><span>Show or hide the side panel</span><kbd>Ctrl+Shift+B</kbd></li>
         </ul>
       </div>
-      <div class="shot"><video class="clip" src="assets/video/ports.mp4" poster="assets/video/ports.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A dev server starting, and its port appearing in the Info tab"></video></div>
     </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/ports.mp4?v=3" poster="assets/video/ports.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A dev server starting, and its port appearing in the Info tab"></video></div></div>
   </section>
 
   <section id="browser">
-    <div class="wrap feature flip">
+    <div class="wrap feature-head">
       <div>
         <p class="label">07 · browser panes</p>
         <h2>Your app, next to the code that makes it</h2>
         <p>Open a web page as a pane, beside your shells: your dev server reloads where you can see it. Agents can read it, click, type and take screenshots to check their own work.</p>
+      </div>
+      <div>
         <ul class="how">
           <li><span>Open a browser pane</span><kbd>Ctrl+Shift+O</kbd></li>
-          <li><span>From a script or an agent</span><code class="k">omaterm split --url localhost:5173</code></li>
-          <li><span>Let agents drive the page</span><span>Setting: <b>Let Agents Control the App</b></span></li>
+          <li class="wide"><span>From a script or an agent</span><code class="k">omaterm split --url localhost:5173</code></li>
+          <li class="wide"><span>Let agents drive the page</span><span>Setting: <b>Let Agents Control the App</b></span></li>
         </ul>
       </div>
-<pre class="cli"><span class="c"># open the app beside the agent</span>
-<span class="p">$</span> omaterm split --url localhost:5173
-<span class="c"># read it, click, type, wait</span>
-<span class="p">$</span> omaterm browser text
-<span class="p">$</span> omaterm browser click "button.save"
-<span class="p">$</span> omaterm browser wait ".toast"
-<span class="c"># see what the user sees</span>
-<span class="p">$</span> omaterm browser screenshot -o page.png</pre>
     </div>
-    <div class="wrap wide-clip"><div class="shot"><video class="clip" src="assets/video/browser.mp4" poster="assets/video/browser.jpg" width="1920" height="1080" muted loop playsinline preload="none" aria-label="An agent opening a browser pane, adding a todo, checking it off and reading the page, all with omaterm browser"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/browser.mp4?v=3" poster="assets/video/browser.jpg?v=3" width="1920" height="1080" muted loop playsinline preload="none" aria-label="An agent opening a browser pane, adding a todo, checking it off and reading the page, all with omaterm browser"></video></div></div>
   </section>
 
   <section id="daemon">
-    <div class="wrap feature">
+    <div class="wrap feature-head">
       <div>
         <p class="label">08 · sessions keep running</p>
         <h2>Close the window. Your agents carry on.</h2>
         <p>A session daemon runs your shells and agents, not the window. Close omaterm and they keep going; open it again and every pane is as you left it, scrollback included.</p>
+      </div>
+      <div>
         <ul class="how">
-          <li><span>Bring sessions back at login</span><code class="k">omaterm daemon install-service</code></li>
-          <li><span>See what it runs</span><code class="k">omaterm daemon status</code></li>
+          <li class="wide"><span>Bring sessions back at login</span><code class="k">omaterm daemon install-service</code></li>
+          <li class="wide"><span>See what it runs</span><code class="k">omaterm daemon status</code></li>
         </ul>
         <p class="note">After a reboot, Claude Code, Codex, OpenCode and Pi resume the same conversation.</p>
       </div>
-<pre class="cli"><span class="p">$</span> omaterm daemon status
-running omaterm 0.8.4, pid 4096, 6 panes
-<span class="p">$</span> omaterm ls
-SESSION  PANE     NAME          STATUS   PROGRAM
-b8yvch4  jjybiza  omaterm/dev   waiting  claude
-kppgfhu  armc768  omaterm/web   working  bun
-5arwznq  ke45bsv  api/tests     idle     -</pre>
     </div>
-    <div class="wrap wide-clip"><div class="shot"><video class="clip" src="assets/video/resume.mp4" poster="assets/video/resume.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions, the window gone through a reboot, and the sessions back with the agent in the same conversation"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/resume.mp4?v=3" poster="assets/video/resume.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions, the window gone through a reboot, and the sessions back with the agent in the same conversation"></video></div></div>
   </section>
 
   <section id="web">
@@ -490,41 +517,38 @@ kppgfhu  armc768  omaterm/web   working  bun
   </section>
 
   <section id="cli">
-    <div class="wrap feature flip">
+    <div class="wrap feature-head">
       <div>
         <p class="label">11 · agents drive it</p>
         <h2>Agents can use it too</h2>
         <p>The <code class="k">omaterm</code> command lets agents and scripts open panes, run commands, wait for them, read the screen and report their status. It works even while the window is closed.</p>
+      </div>
+      <div>
         <ul class="how">
-          <li><span>Teach Claude Code, Codex, Pi and OpenCode to use it</span><code class="k">omaterm skill setup</code></li>
-          <li><span>Every command</span><code class="k">omaterm help</code></li>
+          <li class="wide"><span>Teach Claude Code, Codex, Pi and OpenCode to use it</span><code class="k">omaterm skill setup</code></li>
+          <li class="wide"><span>Run the tests in a pane below</span><code class="k">omaterm split --down -- go test ./...</code></li>
+          <li class="wide"><span>Tell the user you need them</span><code class="k">omaterm report blocked "Which database?"</code></li>
         </ul>
       </div>
-<pre class="cli"><span class="c"># run the tests in a new pane below</span>
-<span class="p">$</span> pane=$(omaterm split --down -- go test ./...)
-<span class="c"># wait for them, then read what they printed</span>
-<span class="p">$</span> omaterm wait "$pane" --exit || omaterm read "$pane" -n 80
-<span class="c"># start another agent in a session of its own</span>
-<span class="p">$</span> omaterm new -n review -- codex
-<span class="c"># tell the user you need them</span>
-<span class="p">$</span> omaterm report blocked "Which database?"</pre>
     </div>
-    <div class="wrap wide-clip"><div class="shot"><video class="clip" src="assets/video/cli.mp4" poster="assets/video/cli.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent running the tests in a pane below with omaterm split, waiting for them and reading the result"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/cli.mp4?v=3" poster="assets/video/cli.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent running the tests in a pane below with omaterm split, waiting for them and reading the result"></video></div></div>
   </section>
 
   <section id="settings">
-    <div class="wrap feature">
+    <div class="wrap feature-head">
       <div>
         <p class="label">12 · settings</p>
         <h2>Every preference, in one window</h2>
         <p>Settings has a page for each part of omaterm: the theme, the terminal&rsquo;s font, cursor and clipboard, the editor, notifications, the agents&rsquo; integration, web access and its paired devices, the browser&rsquo;s search engine and updates. Search finds any setting, and changes apply as you make them.</p>
+      </div>
+      <div>
         <ul class="how">
           <li><span>Open Settings</span><kbd>Ctrl+,</kbd></li>
-          <li><span>Or from a terminal, on a page</span><code class="k">omaterm settings terminal</code></li>
+          <li class="wide"><span>Or from a terminal, on a page</span><code class="k">omaterm settings terminal</code></li>
         </ul>
       </div>
-      <div class="shot"><video class="clip" src="assets/video/settings.mp4" poster="assets/video/settings.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="The Settings window going through its pages, then a search for font"></video></div>
     </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/settings.mp4?v=3" poster="assets/video/settings.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="The Settings window going through its pages, then a search for font"></video></div></div>
   </section>
 
   <section id="more">
@@ -598,6 +622,11 @@ kppgfhu  armc768  omaterm/web   working  bun
   </div>
 </footer>
 
+<dialog class="zoom" aria-label="Full view">
+  <button class="close" type="button" aria-label="Close">&times;</button>
+  <div class="slot"></div>
+</dialog>
+
 <script>
   document.querySelectorAll("[data-copy]").forEach(function (b) {
     b.addEventListener("click", function () {
@@ -625,6 +654,51 @@ kppgfhu  armc768  omaterm/web   working  bun
     }, { threshold: 0.4 });
     clips.forEach(function (v) { seen.observe(v); });
   }
+  // A picture or video opens in the full view: by click, Enter or Space.
+  var zoom = document.querySelector("dialog.zoom");
+  var slot = zoom.querySelector(".slot");
+  var paused = null;
+  function openZoom(box) {
+    var media = box.querySelector("video, img");
+    if (!media) return;
+    var big;
+    if (media.tagName === "VIDEO") {
+      big = document.createElement("video");
+      big.src = media.currentSrc || media.src;
+      big.poster = media.poster;
+      big.muted = big.loop = big.autoplay = big.controls = big.playsInline = true;
+      if (!media.paused) { media.pause(); paused = media; }
+    } else {
+      big = document.createElement("img");
+      big.src = media.currentSrc || media.src;
+      big.alt = media.alt;
+    }
+    big.width = media.getAttribute("width");
+    big.height = media.getAttribute("height");
+    slot.replaceChildren(big);
+    zoom.showModal();
+  }
+  zoom.addEventListener("close", function () {
+    slot.replaceChildren();
+    if (paused) { paused.play().catch(function () {}); paused = null; }
+  });
+  zoom.querySelector(".close").addEventListener("click", function () { zoom.close(); });
+  zoom.addEventListener("click", function (e) { if (e.target === zoom) zoom.close(); });
+  document.querySelectorAll(".shot, .phone").forEach(function (box) {
+    var media = box.querySelector("video, img");
+    var what = media && (media.getAttribute("aria-label") || media.alt);
+    box.tabIndex = 0;
+    box.setAttribute("role", "button");
+    box.setAttribute("aria-label", "Open larger" + (what ? ": " + what : ""));
+    box.addEventListener("click", function (e) {
+      // A video's own controls keep their clicks.
+      if (e.target.tagName === "VIDEO" && e.target.controls) return;
+      openZoom(box);
+    });
+    box.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openZoom(box); }
+    });
+  });
   // The tag names the latest release when GitHub answers.
   fetch("https://api.github.com/repos/fachrihawari/omaterm/releases/latest")
     .then(function (r) { return r.ok ? r.json() : null; })

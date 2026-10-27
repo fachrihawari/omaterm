@@ -52,9 +52,9 @@ const (
 		"\x1b[32m●\x1b[0m Write  \x1b[1minternal/theme/omarchy_test.go\x1b[0m  \x1b[32m+7\x1b[0m\n" +
 		"\x1b[32m●\x1b[0m Bash   go test ./internal/theme/...\n" +
 		"  \x1b[2m└\x1b[0m \x1b[32mok\x1b[0m  omaterm/internal/theme  0.214s\n\n" +
-		"Done. omaterm now watches the current Omarchy theme and\n" +
-		"reloads its palette whenever \x1b[1momarchy-theme-set\x1b[0m runs,\n" +
-		"no restart needed.\n\n" +
+		"Done. omaterm now watches the current Omarchy\n" +
+		"theme and reloads its palette whenever\n" +
+		"\x1b[1momarchy-theme-set\x1b[0m runs, no restart needed.\n\n" +
 		"\x1b[1;36m❯\x1b[0m "
 
 	siteShell = "\x1b[1;34m~/Projects/omaterm\x1b[0m \x1b[35mmain\x1b[0m \x1b[32m❯\x1b[0m git status --short\n" +
