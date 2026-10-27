@@ -15,6 +15,8 @@ func (a *appState) view(c *ui.Context) {
 	a.drainPosted()
 	a.trackViewed()
 	c.SetTheme(omaTheme())
+	winW, _ := c.Size()
+	a.fitPanels(winW)
 
 	// Every window shortcut comes from the binding table in
 	// keybindings.go, which also feeds the command palette and the
@@ -207,10 +209,61 @@ func (a *appState) wash(e ui.Element) {
 	e.LinearGradient(ui.LinearGradient{Angle: 180, Oklab: true, From: pal.Wash, To: pal.Wash.Mix(pal.Accent, 0.04)})
 }
 
+// minPanesWidth is what the panes keep however narrow the window: the side
+// panels give way to them. A window tiled to half a laptop's screen is
+// about 750 wide.
+const minPanesWidth = 320
+
+const (
+	panelSidebar   = "sidebar"
+	panelInspector = "inspector"
+)
+
+// fitPanels decides which side panels a window w wide shows: those the user
+// has on, while the panes keep minPanesWidth. Too narrow for both, the one
+// opened last stays, the inspector going first.
+func (a *appState) fitPanels(w float32) {
+	side, insp := a.sidebarVisible, a.inspectorVisible
+	for side || insp {
+		need := float32(minPanesWidth)
+		if side {
+			need += a.sidebarWidth()
+		}
+		if insp {
+			need += a.inspectorW + a.paneGap()
+		}
+		if need <= w {
+			break
+		}
+		if insp && (!side || a.lastPanel != panelInspector) {
+			insp = false
+		} else {
+			side = false
+		}
+	}
+	a.sidebarShown, a.inspectorShown = side, insp
+}
+
+// setSidebar and setInspector show or hide a side panel; one shown is the
+// one that stays when the window is too narrow for both.
+func (a *appState) setSidebar(on bool) {
+	a.sidebarVisible = on
+	if on {
+		a.lastPanel = panelSidebar
+	}
+}
+
+func (a *appState) setInspector(on bool) {
+	a.inspectorVisible = on
+	if on {
+		a.lastPanel = panelInspector
+	}
+}
+
 func (a *appState) mainColumn(c *ui.Context) {
 	gap := a.paneGap()
 	left := gap
-	if a.sidebarVisible {
+	if a.sidebarShown {
 		left = 0
 	}
 	ui.Column(c).Grow(1).MinWidth(0).FillHeight().Children(func() {
@@ -236,7 +289,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 					})
 				}
 			})
-			if a.inspectorVisible {
+			if a.inspectorShown {
 				card := ui.Column(c).Width(a.inspectorW).Shrink(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
 				cardEdge(card).Children(func() {
 					a.inspector(c)

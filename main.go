@@ -142,8 +142,8 @@ func main() {
 			Title:           "omaterm",
 			Width:           1440,
 			Height:          900,
-			MinWidth:        900,
-			MinHeight:       560,
+			MinWidth:        600,
+			MinHeight:       400,
 			BackgroundColor: theme.Hex(pal.Wash),
 			StateKey:        "main",
 			Content:         ui.View(a.view),
@@ -172,10 +172,10 @@ func main() {
 		a.win.OnFocus(func() {
 			a.recheckTheme()
 			a.checkDisk(a.activeEditor()) // changed while away
-			if a.inspectorVisible && a.inspectorTab == 1 {
+			if a.inspectorShown && a.inspectorTab == 1 {
 				a.rebuildFileTree()
 			}
-			if a.inspectorVisible && a.inspectorTab == 2 {
+			if a.inspectorShown && a.inspectorTab == 2 {
 				a.refreshActiveRepo()
 			}
 		})

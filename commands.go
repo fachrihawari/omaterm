@@ -81,9 +81,9 @@ var commandRegistry = append([]Command{
 		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeLight) }},
 
 	{ID: "view.toggleSidebar", Title: "Toggle Sidebar", Category: "View",
-		Run: func(a *appState, c *ui.Context) { a.sidebarVisible = !a.sidebarVisible }},
+		Run: func(a *appState, c *ui.Context) { a.setSidebar(!a.sidebarShown) }},
 	{ID: "view.toggleInspector", Title: "Toggle Inspector", Category: "View",
-		Run: func(a *appState, c *ui.Context) { a.inspectorVisible = !a.inspectorVisible }},
+		Run: func(a *appState, c *ui.Context) { a.setInspector(!a.inspectorShown) }},
 	{ID: "view.terminal", Title: "Show Terminal", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.activateKind(tabTerminal) }},
 	{ID: "view.editor", Title: "Show Editor", Category: "View",

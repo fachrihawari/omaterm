@@ -15,15 +15,15 @@ import (
 
 func (a *appState) tabBar(c *ui.Context) ui.Element {
 	left := float32(8)
-	if a.sidebarVisible {
+	if a.sidebarShown {
 		left = 0
 	}
 	return ui.Row(c).Height(40).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, left).Gap(4).Children(func() {
 		// Show-sidebar button, only while the sidebar is hidden.
-		if !a.sidebarVisible {
+		if !a.sidebarShown {
 			if cmdButton(c, iconPanelLeft, 15, false).
 				Tooltip("Show Sidebar (" + keyLabels("view.toggleSidebar") + ")").Label("Show Sidebar").Clicked() {
-				a.sidebarVisible = true
+				a.setSidebar(true)
 			}
 		}
 		// The tabs scroll sideways when they don't fit, the shown one kept
@@ -68,9 +68,9 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
-			if cmdButton(c, iconPanelRight, 15, a.inspectorVisible).
+			if cmdButton(c, iconPanelRight, 15, a.inspectorShown).
 				Tooltip("Toggle Inspector (" + keyLabels("view.toggleInspector") + ")").Clicked() {
-				a.inspectorVisible = !a.inspectorVisible
+				a.setInspector(!a.inspectorShown)
 			}
 		})
 	})
