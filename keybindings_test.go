@@ -3,10 +3,14 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"omaterm/internal/session"
 )
 
 // The binding table must not point at commands that do not exist, and two
@@ -28,26 +32,130 @@ func TestKeybindingTableIsConsistent(t *testing.T) {
 
 // The palette shows a command's key from the same table the window uses.
 func TestKeyLabelsComeFromTheTable(t *testing.T) {
-	if got := keyPrimary("tab.select2"); got != "Alt+2" {
+	want := func(linux, mac string) string {
+		if onMac {
+			return mac
+		}
+		return linux
+	}
+	if got := keyPrimary("tab.select2"); got != want("Alt+2", "⌘2") {
 		t.Errorf("tab.select2 label = %q", got)
 	}
-	if got := keyPrimary("project.select3"); got != "Alt+Shift+3" {
+	if got := keyPrimary("project.select3"); got != want("Alt+Shift+3", "⌃3") {
 		t.Errorf("project.select3 label = %q", got)
 	}
-	if got := keyPrimary("terminal.splitRight"); got != "Ctrl+Shift+R" {
+	if got := keyPrimary("terminal.splitRight"); got != want("Ctrl+Shift+R", "⇧⌘R") {
 		t.Errorf("terminal.splitRight label = %q", got)
 	}
 	if got := keyPrimary("git.refresh"); got != "" {
 		t.Errorf("unbound command label = %q, want empty", got)
 	}
-	if got := combo(ui.Ctrl|ui.Shift, ui.KeyP).Label(); got != "Ctrl+Shift+P" {
-		t.Errorf("label = %q", got)
+	for _, c := range []struct {
+		k          keyCombo
+		linux, mac string
+	}{
+		{combo(ui.Ctrl|ui.Shift, ui.KeyP), "Ctrl+Shift+P", "⌃⇧P"},
+		{combo(ui.Super|ui.Shift, ui.KeyP), "Shift+Super+P", "⇧⌘P"},
+		{combo(ui.Alt, ui.KeyUp), "Alt+Up", "⌥↑"},
+		{combo(ui.Super|ui.Shift, ui.KeyEnter), "Shift+Super+Enter", "⇧⌘↩"},
+		{combo(ui.Ctrl, ui.KeyBackquote), "Ctrl+`", "⌃`"},
+	} {
+		if got := c.k.label(false); got != c.linux {
+			t.Errorf("label = %q, want %q", got, c.linux)
+		}
+		if got := c.k.label(true); got != c.mac {
+			t.Errorf("mac label = %q, want %q", got, c.mac)
+		}
 	}
-	if got := combo(ui.Alt, ui.KeyUp).Label(); got != "Alt+Up" {
-		t.Errorf("label = %q", got)
+}
+
+// Both platforms' tables are sound, and macOS's leaves Option to type:
+// ⌥1 is ¡ there, and [ ] { } @ on German and Nordic layouts, which jumped
+// to tabs and projects as they typed; ⌥← and ⌥→ move by words.
+func TestMacKeysLeaveOptionToType(t *testing.T) {
+	for _, mac := range []bool{false, true} {
+		if problems := checkTable(keybindingsFor(mac)); len(problems) > 0 {
+			t.Errorf("mac=%v table:\n%s", mac, strings.Join(problems, "\n"))
+		}
 	}
-	if got := combo(ui.Cmd, ui.KeyBackquote).Label(); got != "Ctrl+`" {
-		t.Errorf("label = %q", got)
+	find := func(table []keyBinding, id string) keyCombo {
+		for _, b := range table {
+			if b.Command == id {
+				return b.Combo
+			}
+		}
+		t.Fatalf("%s unbound", id)
+		return keyCombo{}
+	}
+	mac, linux := keybindingsFor(true), keybindingsFor(false)
+	for _, b := range mac {
+		if b.Combo.Mods == ui.Alt && b.Combo.Key != ui.KeyUp && b.Combo.Key != ui.KeyDown {
+			t.Errorf("mac: %s on %s, which Option types or moves words with", b.Command, b.Combo.label(true))
+		}
+		if b.Combo.Mods&ui.Ctrl != 0 && b.Combo.Mods != ui.Ctrl {
+			t.Errorf("mac: %s on %s, where ⌘ was meant", b.Command, b.Combo.label(true))
+		}
+	}
+	for id, want := range map[string]keyCombo{
+		"tab.select1": combo(ui.Super, ui.Key1), "project.select9": combo(ui.Ctrl, ui.Key9),
+		"browser.back": combo(ui.Super, ui.KeyBracketLeft), "browser.forward": combo(ui.Super, ui.KeyBracketRight),
+		"tab.close": combo(ui.Super, ui.KeyW),
+	} {
+		if got := find(mac, id); got != want {
+			t.Errorf("mac %s = %s, want %s", id, got.label(true), want.label(true))
+		}
+	}
+	for id, want := range map[string]keyCombo{
+		"tab.select1": combo(ui.Alt, ui.Key1), "project.select9": combo(ui.Alt|ui.Shift, ui.Key9),
+		"browser.back": combo(ui.Alt, ui.KeyLeft), "tab.close": combo(ui.Ctrl, ui.KeyW),
+	} {
+		if got := find(linux, id); got != want {
+			t.Errorf("%s = %s, want %s", id, got.label(false), want.label(false))
+		}
+	}
+}
+
+// The macOS menu bar keeps ⌘Q, copy and paste, but has no File or View
+// menu, whose ⌘W closed the window, quitting omaterm, and whose ⌘R, ⇧⌘R
+// and zoom keys did nothing: the menu's keys come before the window's.
+func TestAppMenuLeavesTheAppItsKeys(t *testing.T) {
+	var roles []mygo.MenuRole
+	for _, it := range appMenu().Items() {
+		roles = append(roles, it.Role)
+	}
+	want := []mygo.MenuRole{mygo.RoleAppMenu, mygo.RoleEditMenu, mygo.RoleWindowMenu}
+	if !slices.Equal(roles, want) {
+		t.Fatalf("menu roles = %v, want %v", roles, want)
+	}
+}
+
+// On macOS the shortcuts filter finds ⇧⌘D by "cmd+shift+d", in any order,
+// as on Linux "ctrl+shift+d" finds Ctrl+Shift+D: the labels are glyphs.
+func TestKeymapFilterSpelledKeys(t *testing.T) {
+	cmd := Command{ID: "terminal.splitDown", Title: "Split Down", Category: "Terminal"}
+	mac := []keyBinding{{cmd.ID, combo(ui.Super|ui.Shift, ui.KeyD), scopeTerminal}}
+	linux := []keyBinding{{cmd.ID, combo(ui.Ctrl|ui.Shift, ui.KeyD), scopeTerminal}}
+	was := onMac
+	defer func() { onMac = was }()
+	onMac = true
+	for _, q := range []string{"cmd+shift+d", "shift+cmd+d", "⇧⌘d", "split cmd+d", "command+d"} {
+		if !keymapMatches(cmd, mac, q) {
+			t.Errorf("mac: %q missed ⇧⌘D", q)
+		}
+	}
+	for _, q := range []string{"ctrl+shift+d", "cmd+shift+e", "alt+d"} {
+		if keymapMatches(cmd, mac, q) {
+			t.Errorf("mac: %q found ⇧⌘D", q)
+		}
+	}
+	onMac = false
+	for _, q := range []string{"ctrl+shift+d", "shift+ctrl+d", "ctrl+shift", "split"} {
+		if !keymapMatches(cmd, linux, q) {
+			t.Errorf("%q missed Ctrl+Shift+D", q)
+		}
+	}
+	if keymapMatches(cmd, linux, "cmd+d") {
+		t.Error(`"cmd+d" found Ctrl+Shift+D off macOS`)
 	}
 }
 
@@ -96,8 +204,10 @@ func TestTabShortcutsJump(t *testing.T) {
 	if len(a.tabs) < 2 {
 		t.Fatalf("want at least two tabs, got %d", len(a.tabs))
 	}
-	// Alt+1 and Alt+2 jump straight to the first and second tab.
-	tr.Key(ui.Alt, ui.Key1)
+	// Alt+1 and Alt+2 (⌘1 and ⌘2 on macOS) jump straight to the first
+	// and second tab.
+	tabMods, _ := digitMods(onMac)
+	tr.Key(tabMods, ui.Key1)
 	tr.Frame()
 	if a.activeTab != 0 {
 		t.Fatalf("Alt+1 went to tab %d, want 0", a.activeTab)
@@ -105,13 +215,13 @@ func TestTabShortcutsJump(t *testing.T) {
 	if a.activeView != a.tabs[0].Kind {
 		t.Errorf("Alt+1 showed view %v, want %v", a.activeView, a.tabs[0].Kind)
 	}
-	tr.Key(ui.Alt, ui.Key2)
+	tr.Key(tabMods, ui.Key2)
 	tr.Frame()
 	if a.activeTab != 1 {
 		t.Fatalf("Alt+2 went to tab %d, want 1", a.activeTab)
 	}
 	// A tab that does not exist is not an error, just a no-op.
-	tr.Key(ui.Alt, ui.Key9)
+	tr.Key(tabMods, ui.Key9)
 	tr.Frame()
 	if a.activeTab != 1 {
 		t.Fatalf("Alt+9 moved to tab %d", a.activeTab)
@@ -128,7 +238,8 @@ func TestProjectShortcuts(t *testing.T) {
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
 
-	tr.Key(ui.Alt|ui.Shift, ui.Key2)
+	_, projectMods := digitMods(onMac) // ⌃N on macOS
+	tr.Key(projectMods, ui.Key2)
 	tr.Frame()
 	if a.active != 1 {
 		t.Fatalf("Alt+Shift+2 went to project %d, want 1", a.active)
@@ -136,13 +247,13 @@ func TestProjectShortcuts(t *testing.T) {
 	if got := a.workspace; got != a.projects[1].Path {
 		t.Errorf("workspace = %q, want %q", got, a.projects[1].Path)
 	}
-	tr.Key(ui.Alt|ui.Shift, ui.Key3)
+	tr.Key(projectMods, ui.Key3)
 	tr.Frame()
 	if a.active != 2 {
 		t.Fatalf("Alt+Shift+3 went to project %d, want 2", a.active)
 	}
 	// A project that does not exist is a no-op.
-	tr.Key(ui.Alt|ui.Shift, ui.Key9)
+	tr.Key(projectMods, ui.Key9)
 	tr.Frame()
 	if a.active != 2 {
 		t.Fatalf("Alt+Shift+9 moved to project %d", a.active)
@@ -187,12 +298,13 @@ func TestViewAndPaletteShortcuts(t *testing.T) {
 	}
 	// The diff tab is last, the editor before it, the terminal first.
 	last := len(a.tabs) - 1
-	tr.Key(ui.Alt, ui.Key1)
+	tabMods, _ := digitMods(onMac)
+	tr.Key(tabMods, ui.Key1)
 	tr.Frame()
 	if a.activeView != tabTerminal {
 		t.Fatalf("Alt+1 showed %v, want the terminal", a.activeView)
 	}
-	tr.Key(ui.Alt, tabDigits[last])
+	tr.Key(tabMods, tabDigits[last])
 	tr.Frame()
 	if a.activeView != tabDiff {
 		t.Fatalf("Alt+%d showed %v, want the diff", last+1, a.activeView)
@@ -297,6 +409,87 @@ func TestCloseTabFromTerminal(t *testing.T) {
 	tr.Frame()
 	if len(a.tabs) != before-1 {
 		t.Fatalf("Ctrl+W in the terminal: tabs = %d, want %d", len(a.tabs), before-1)
+	}
+}
+
+// In a split, Ctrl+W closes the pane the keyboard is in, as its × does,
+// and the last pane the tab: it ended every shell of the split, and the
+// session beside a browser pane closed to close the page.
+func TestCloseKeyClosesThePane(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+
+	before := len(a.tabs)
+	shell := a.activeSplitLeaf()
+	tr.Key(ui.Cmd|ui.Shift, ui.KeyD)
+	tr.Frame()
+	if n := a.activeSplit().leafCount(); n != 2 {
+		t.Fatalf("after Split Down: %d panes", n)
+	}
+	tr.Key(ui.Cmd, ui.KeyW)
+	tr.Frame()
+	if len(a.tabs) != before || a.activeSplit().leafCount() != 1 {
+		t.Fatalf("Ctrl+W in a split: tabs = %d (want %d), panes = %d (want 1)",
+			len(a.tabs), before, a.activeSplit().leafCount())
+	}
+	if a.activeSplitLeaf() != shell {
+		t.Fatalf("the first shell went: focus %q, want %q", a.activeSplitLeaf(), shell)
+	}
+
+	// A browser pane goes alone, the session's shell with it staying.
+	a.openBrowser("localhost:5173")
+	page := a.activeSplitLeaf()
+	if !a.isBrowser(page) {
+		t.Fatal("the browser pane has no focus")
+	}
+	commandsByID["tab.close"].Run(a, nil)
+	if a.isBrowser(page) || len(a.tabs) != before || a.activeSplitLeaf() != shell {
+		t.Fatalf("closing the page: browser kept=%v tabs=%d focus=%q", a.isBrowser(page), len(a.tabs), a.activeSplitLeaf())
+	}
+
+	tr.Key(ui.Cmd, ui.KeyW)
+	tr.Frame()
+	if len(a.tabs) != before-1 {
+		t.Fatalf("Ctrl+W on the last pane: tabs = %d, want %d", len(a.tabs), before-1)
+	}
+}
+
+// Quitting with no daemon ends the sessions' programs: it asks first, as
+// closing a session does; a daemon's panes go on, and quit unasked.
+func TestQuitAsksBeforeEndingPrograms(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	if !a.panes.Owned() {
+		t.Skip("panes run in a daemon")
+	}
+	id := a.activeSplitLeaf()
+	a.status = map[string]session.Info{id: {ID: id, Status: session.Working, Process: "sleep"}}
+
+	e := &mygo.CloseEvent{}
+	a.beforeClose(e)
+	if !e.DefaultPrevented() || a.quitAsk == nil {
+		t.Fatal("quit with sleep running did not ask")
+	}
+	if got := a.quitText("Quit"); got != "sleep is still running. Quitting ends it." {
+		t.Errorf("dialog text = %q", got)
+	}
+
+	a.quitAsk, a.quitWant = nil, ""
+	a.settings.ConfirmClose = false
+	e = &mygo.CloseEvent{}
+	a.beforeClose(e)
+	if e.DefaultPrevented() {
+		t.Fatal("asked with Confirm Close off")
+	}
+
+	a.settings.ConfirmClose = true
+	a.status = map[string]session.Info{id: {ID: id, Status: session.Idle}}
+	e = &mygo.CloseEvent{}
+	a.beforeClose(e)
+	if e.DefaultPrevented() {
+		t.Fatal("asked with only a shell running")
 	}
 }
 

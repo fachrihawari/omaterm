@@ -174,7 +174,7 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 					label = "Source"
 				}
 				if cmdButton(c, iconFileText, iconBtn, false).
-					Tooltip(label + " (" + keyLabels("markdown.togglePreview") + ")").Clicked() {
+					Tooltip(withKeys(label, "markdown.togglePreview")).Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}

@@ -122,7 +122,9 @@ func (r *Registry) start(o StartOptions) (*Pane, error) {
 		p.awaiting = len(o.Command) > 0 && !o.Exec
 		opts.Conn = conn{p}
 	}
-	t, err := terminal.New(opts)
+	var t *terminal.Terminal
+	opts.OnKey = WordKeys(&t)
+	t, err = terminal.New(opts)
 	if err != nil {
 		if proc != nil {
 			proc.Kill()

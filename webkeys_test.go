@@ -8,17 +8,42 @@ import (
 )
 
 func TestPageKeyCommands(t *testing.T) {
-	keys := pageKeyCommands()
-	for chord, want := range map[string]string{
-		"c:KeyL": "browser.focusAddress", "c:KeyF": "browser.find", "a:ArrowLeft": "browser.back",
-		"cs:KeyP": "app.commandPalette", "cs:KeyJ": "session.attention",
+	for mac, want := range map[bool]map[string]string{
+		false: {
+			"c:KeyL": "browser.focusAddress", "c:KeyF": "browser.find", "a:ArrowLeft": "browser.back",
+			"cs:KeyP": "app.commandPalette", "cs:KeyJ": "session.attention", "c:Comma": "app.settings",
+			"cs:KeyD": "terminal.splitDown", "a:Digit1": "tab.select1",
+		},
+		true: {
+			"m:KeyL": "browser.focusAddress", "m:KeyW": "tab.close", "m:BracketLeft": "browser.back",
+			"m:BracketRight": "browser.forward", "sm:KeyP": "app.commandPalette", "m:Comma": "app.settings",
+			"m:Digit1": "tab.select1", "c:Digit2": "project.select2",
+		},
 	} {
-		if keys[chord] != want {
-			t.Errorf("%s = %q, want %q", chord, keys[chord], want)
+		keys := pageChords(keybindingsFor(mac))
+		for chord, id := range want {
+			if keys[chord] != id {
+				t.Errorf("mac=%v %s = %q, want %q", mac, chord, keys[chord], id)
+			}
+		}
+		for _, chord := range []string{"c:KeyS", "m:KeyS", "a:ArrowUp"} {
+			if id, ok := keys[chord]; ok {
+				t.Errorf("mac=%v: %s reached pages as %s", mac, chord, id)
+			}
+		}
+		if mac {
+			// ⌥← moves by words in a page's fields, and ⌥1 types.
+			for _, chord := range []string{"a:ArrowLeft", "a:ArrowRight", "a:Digit1", "as:Digit1"} {
+				if id, ok := keys[chord]; ok {
+					t.Errorf("mac: %s reached pages as %s", chord, id)
+				}
+			}
 		}
 	}
-	if _, ok := keys["c:KeyS"]; ok {
-		t.Error("an editor binding reached pages")
+	// A letter is the layout's, so AZERTY's Ctrl+Z, where QWERTY has W,
+	// undoes.
+	if !strings.Contains(pageKeysScript("x"), `"Key" + e.key.toUpperCase()`) {
+		t.Error("page keys match letters by position")
 	}
 }
 

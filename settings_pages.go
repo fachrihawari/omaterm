@@ -993,7 +993,7 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 	a.settingsFlash(c, filter, "shortcuts")
 	filter.Children(func() {
 		ui.Icon(c, iconSearch).Size(14, 14).TextColor(pal.TextFaint)
-		ui.TextInputBase(c, &u.keyQuery).Placeholder("Filter by name or keys, as “split” or “ctrl+shift”").
+		ui.TextInputBase(c, &u.keyQuery).Placeholder("Filter by name or keys, as “split” or “" + keyNames(combo(ui.Cmd, 0), onMac)[0] + "+shift”").
 			FontSize(12.5).Grow(1).MinWidth(0).Label("Filter shortcuts")
 	})
 	u.blocks++

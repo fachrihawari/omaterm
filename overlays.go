@@ -1054,7 +1054,8 @@ type keymapEntry struct {
 
 // keymapItems lists the commands that have keys, filtered by the query.
 // The query matches the title, the category, the scope and the keys, so
-// "ctrl+shift+d" and "split" both find the split commands.
+// "ctrl+shift+d" (on macOS "cmd+shift+d") and "split" both find the split
+// commands.
 //
 // Commands of one family (Command.Group) fold into a single entry, whose
 // keys are the family's in order: Alt+1 … Alt+9 is one row, not nine.
@@ -1077,16 +1078,8 @@ func keymapFilter(query string) []keymapEntry {
 				continue
 			}
 		}
-		if q != "" {
-			labels := make([]string, len(bs))
-			for i, b := range bs {
-				labels[i] = b.Combo.Label()
-			}
-			hay := strings.ToLower(cmd.Category + " " + cmd.Title + " " +
-				bs[0].Scope.String() + " " + strings.Join(labels, " "))
-			if !strings.Contains(hay, q) {
-				continue
-			}
+		if q != "" && !keymapMatches(cmd, bs, q) {
+			continue
 		}
 		if cmd.Group != "" {
 			grouped[cmd.Group] = len(out)
@@ -1104,6 +1097,57 @@ func keymapFilter(query string) []keymapEntry {
 		return out[i].Title < out[j].Title
 	})
 	return out
+}
+
+// keymapMatches tells whether each word of the query is in the command's
+// title, category, scope or keys. A word with "+" in it is a chord, all of
+// whose keys one binding has, in any order and by any of their names, so
+// on macOS "cmd+shift+d" finds ⇧⌘D as "ctrl+shift+d" finds Ctrl+Shift+D.
+func keymapMatches(cmd Command, bs []keyBinding, q string) bool {
+	labels := make([]string, len(bs))
+	for i, b := range bs {
+		labels[i] = b.Combo.Label()
+	}
+	hay := strings.ToLower(cmd.Category + " " + cmd.Title + " " +
+		bs[0].Scope.String() + " " + strings.Join(labels, " "))
+	for _, word := range strings.Fields(q) {
+		if strings.Contains(hay, word) {
+			continue
+		}
+		parts := strings.FieldsFunc(word, func(r rune) bool { return r == '+' })
+		if len(parts) == 0 || !slices.ContainsFunc(bs, func(b keyBinding) bool {
+			names := keyNames(b.Combo, onMac)
+			return !slices.ContainsFunc(parts, func(p string) bool { return !slices.Contains(names, p) })
+		}) {
+			return false
+		}
+	}
+	return true
+}
+
+// keyNames are the names one may type for a combo's keys, in lower case:
+// "cmd", "command" and "⌘" for ⌘ on macOS, "ctrl" for Ctrl elsewhere.
+func keyNames(k keyCombo, mac bool) []string {
+	var out []string
+	for _, m := range []struct {
+		mod         ui.Modifiers
+		mac, others []string
+	}{
+		{ui.Ctrl, []string{"ctrl", "control", "⌃"}, []string{"ctrl", "control"}},
+		{ui.Alt, []string{"opt", "option", "alt", "⌥"}, []string{"alt"}},
+		{ui.Shift, []string{"shift", "⇧"}, []string{"shift"}},
+		{ui.Super, []string{"cmd", "command", "⌘"}, []string{"super", "win", "meta"}},
+	} {
+		if k.Mods&m.mod == 0 {
+			continue
+		}
+		if mac {
+			out = append(out, m.mac...)
+		} else {
+			out = append(out, m.others...)
+		}
+	}
+	return append(out, strings.ToLower(keyLabel(k.Key, false)), strings.ToLower(keyLabel(k.Key, mac)))
 }
 
 func (a *appState) keyboardShortcutsBody(c *ui.Context) {

@@ -16,6 +16,12 @@ import (
 // picks the other one of a pair (B the other sidebar, D/R the split below
 // and right). Alt goes places: Alt+N jumps to the nth tab, Alt+Shift+N to
 // the nth project. There are no chords and no function keys.
+//
+// On macOS ⌘ takes Ctrl's place, and Option, which types characters there
+// (⌥1 is ¡, and [ ] { } @ on German and Nordic layouts), goes places only
+// with the arrows: ⌘N jumps to a tab, ⌃N to a project (⇧⌘3, 4 and 5 are
+// the system's screenshots), and a browser pane goes back and forward with
+// ⌘[ and ⌘], as Safari does.
 
 // keyCombo is one key with the modifiers held, as a shortcut is pressed.
 type keyCombo struct {
@@ -27,11 +33,17 @@ func combo(mods ui.Modifiers, key ui.Key) keyCombo {
 	return keyCombo{Mods: mods, Key: key}
 }
 
+// onMac tells whether the keys follow macOS, where ⌘ is the command key.
+var onMac = ui.Cmd == ui.Super
+
 // Label writes the combo as the UI shows it: "Ctrl+Shift+P" on Linux,
 // "⇧⌘P" on macOS, where the modifiers are glyphs and ⌘ comes first.
-func (k keyCombo) Label() string {
+func (k keyCombo) Label() string { return k.label(onMac) }
+
+// label writes the combo as Label does, for macOS or the others.
+func (k keyCombo) label(mac bool) string {
 	var b strings.Builder
-	if ui.Cmd == ui.Super {
+	if mac {
 		for _, m := range []struct {
 			mod  ui.Modifiers
 			name string
@@ -50,13 +62,23 @@ func (k keyCombo) Label() string {
 			}
 		}
 	}
-	b.WriteString(keyLabel(k.Key))
+	b.WriteString(keyLabel(k.Key, mac))
 	return b.String()
 }
 
+// macKeyGlyphs are the keys macOS menus draw as a glyph, not a word.
+var macKeyGlyphs = map[ui.Key]string{
+	ui.KeyEnter: "↩", ui.KeyEscape: "⎋", ui.KeyBackspace: "⌫", ui.KeyTab: "⇥",
+	ui.KeyDelete: "⌦", ui.KeyLeft: "←", ui.KeyRight: "→", ui.KeyUp: "↑", ui.KeyDown: "↓",
+	ui.KeyPageUp: "⇞", ui.KeyPageDown: "⇟", ui.KeyHome: "↖", ui.KeyEnd: "↘",
+}
+
 // keyLabel names a key as VS Code does: letters in upper case, and words
-// for the keys that type nothing.
-func keyLabel(k ui.Key) string {
+// for the keys that type nothing, which macOS draws as glyphs.
+func keyLabel(k ui.Key, mac bool) string {
+	if g, ok := macKeyGlyphs[k]; ok && mac {
+		return g
+	}
 	switch {
 	case k >= ui.KeyA && k <= ui.KeyZ:
 		return string(rune('A' + k - ui.KeyA))
@@ -161,58 +183,74 @@ type keyBinding struct {
 	Scope   keyScope
 }
 
-// keybindings is the default table. A command may have no binding at all,
-// which leaves it to the palette and the UI.
-var keybindings = append([]keyBinding{
-	// App.
-	{"file.quickOpen", combo(ui.Cmd, ui.KeyP), scopeGlobal},
-	{"app.commandPalette", combo(ui.Cmd|ui.Shift, ui.KeyP), scopeGlobal},
-	{"search.global", combo(ui.Cmd|ui.Shift, ui.KeyF), scopeGlobal},
-	{"app.openProject", combo(ui.Cmd, ui.KeyO), scopeGlobal},
-	{"help.keyboardShortcuts", combo(ui.Cmd|ui.Shift, ui.KeySlash), scopeGlobal},
-	{"app.settings", combo(ui.Cmd, ui.KeyComma), scopeGlobal},
+// keybindings is the default table, for the platform omaterm runs on.
+var keybindings = keybindingsFor(onMac)
 
-	// Zoom, of the terminal and the editor alike.
-	{"app.zoomIn", combo(ui.Cmd, ui.KeyEqual), scopeGlobal},
-	{"app.zoomOut", combo(ui.Cmd, ui.KeyMinus), scopeGlobal},
-	{"app.zoomReset", combo(ui.Cmd, ui.Key0), scopeGlobal},
+// keybindingsFor builds the table for macOS or the others. A command may
+// have no binding at all, which leaves it to the palette and the UI.
+func keybindingsFor(mac bool) []keyBinding {
+	cmd := ui.Ctrl
+	if mac {
+		cmd = ui.Super
+	}
+	// Back and forward: Alt and the arrows, but ⌘[ and ⌘] on macOS, where
+	// ⌥← and ⌥→ move by words in a page's text fields.
+	back, forward := combo(ui.Alt, ui.KeyLeft), combo(ui.Alt, ui.KeyRight)
+	if mac {
+		back, forward = combo(cmd, ui.KeyBracketLeft), combo(cmd, ui.KeyBracketRight)
+	}
+	return append([]keyBinding{
+		// App.
+		{"file.quickOpen", combo(cmd, ui.KeyP), scopeGlobal},
+		{"app.commandPalette", combo(cmd|ui.Shift, ui.KeyP), scopeGlobal},
+		{"search.global", combo(cmd|ui.Shift, ui.KeyF), scopeGlobal},
+		{"app.openProject", combo(cmd, ui.KeyO), scopeGlobal},
+		{"help.keyboardShortcuts", combo(cmd|ui.Shift, ui.KeySlash), scopeGlobal},
+		{"app.settings", combo(cmd, ui.KeyComma), scopeGlobal},
 
-	// The side panels: Ctrl+B toggles one, Shift the other.
-	{"view.toggleSidebar", combo(ui.Cmd, ui.KeyB), scopeGlobal},
-	{"view.toggleInspector", combo(ui.Cmd|ui.Shift, ui.KeyB), scopeGlobal},
-	{"view.files", combo(ui.Cmd|ui.Shift, ui.KeyE), scopeGlobal},
-	{"view.git", combo(ui.Cmd|ui.Shift, ui.KeyG), scopeGlobal},
-	{"view.info", combo(ui.Cmd|ui.Shift, ui.KeyI), scopeGlobal},
-	{"view.changes", combo(ui.Cmd|ui.Shift, ui.KeyA), scopeGlobal},
+		// Zoom, of the terminal and the editor alike.
+		{"app.zoomIn", combo(cmd, ui.KeyEqual), scopeGlobal},
+		{"app.zoomOut", combo(cmd, ui.KeyMinus), scopeGlobal},
+		{"app.zoomReset", combo(cmd, ui.Key0), scopeGlobal},
 
-	// Tabs. Ctrl+W closes one even from the terminal: closing a tab is
-	// the app's job in a terminal-first app.
-	{"tab.close", combo(ui.Cmd, ui.KeyW), scopeGlobal},
+		// The side panels: Ctrl+B toggles one, Shift the other.
+		{"view.toggleSidebar", combo(cmd, ui.KeyB), scopeGlobal},
+		{"view.toggleInspector", combo(cmd|ui.Shift, ui.KeyB), scopeGlobal},
+		{"view.files", combo(cmd|ui.Shift, ui.KeyE), scopeGlobal},
+		{"view.git", combo(cmd|ui.Shift, ui.KeyG), scopeGlobal},
+		{"view.info", combo(cmd|ui.Shift, ui.KeyI), scopeGlobal},
+		{"view.changes", combo(cmd|ui.Shift, ui.KeyA), scopeGlobal},
 
-	// Terminal.
-	{"terminal.new", combo(ui.Cmd, ui.KeyT), scopeGlobal},
-	{"terminal.splitDown", combo(ui.Cmd|ui.Shift, ui.KeyD), scopeTerminal},
-	{"terminal.splitRight", combo(ui.Cmd|ui.Shift, ui.KeyR), scopeTerminal},
-	{"pane.zoom", combo(ui.Cmd|ui.Shift, ui.KeyEnter), scopeTerminal},
+		// Tabs. Ctrl+W closes the pane, or the tab with one pane, even
+		// from the terminal: closing is the app's job in a terminal-first
+		// app.
+		{"tab.close", combo(cmd, ui.KeyW), scopeGlobal},
 
-	// Browser panes: Ctrl+Shift+O opens one (Ctrl+O opens a project), and
-	// the browser's own keys work while one has the keyboard.
-	{"browser.open", combo(ui.Cmd|ui.Shift, ui.KeyO), scopeGlobal},
-	{"browser.focusAddress", combo(ui.Cmd, ui.KeyL), scopeBrowser},
-	{"browser.reload", combo(ui.Cmd, ui.KeyR), scopeBrowser},
-	{"browser.back", combo(ui.Alt, ui.KeyLeft), scopeBrowser},
-	{"browser.forward", combo(ui.Alt, ui.KeyRight), scopeBrowser},
-	{"browser.find", combo(ui.Cmd, ui.KeyF), scopeBrowser},
+		// Terminal.
+		{"terminal.new", combo(cmd, ui.KeyT), scopeGlobal},
+		{"terminal.splitDown", combo(cmd|ui.Shift, ui.KeyD), scopeTerminal},
+		{"terminal.splitRight", combo(cmd|ui.Shift, ui.KeyR), scopeTerminal},
+		{"pane.zoom", combo(cmd|ui.Shift, ui.KeyEnter), scopeTerminal},
 
-	// Sessions: the one that needs you, and the next and previous in the
-	// sidebar's order.
-	{"session.attention", combo(ui.Cmd|ui.Shift, ui.KeyJ), scopeGlobal},
-	{"session.next", combo(ui.Alt, ui.KeyDown), scopeNotEditor},
-	{"session.prev", combo(ui.Alt, ui.KeyUp), scopeNotEditor},
+		// Browser panes: Ctrl+Shift+O opens one (Ctrl+O opens a project),
+		// and the browser's own keys work while one has the keyboard.
+		{"browser.open", combo(cmd|ui.Shift, ui.KeyO), scopeGlobal},
+		{"browser.focusAddress", combo(cmd, ui.KeyL), scopeBrowser},
+		{"browser.reload", combo(cmd, ui.KeyR), scopeBrowser},
+		{"browser.back", back, scopeBrowser},
+		{"browser.forward", forward, scopeBrowser},
+		{"browser.find", combo(cmd, ui.KeyF), scopeBrowser},
 
-	// Editor.
-	{"file.save", combo(ui.Cmd, ui.KeyS), scopeEditor},
-}, digitBindings()...)
+		// Sessions: the one that needs you, and the next and previous in
+		// the sidebar's order.
+		{"session.attention", combo(cmd|ui.Shift, ui.KeyJ), scopeGlobal},
+		{"session.next", combo(ui.Alt, ui.KeyDown), scopeNotEditor},
+		{"session.prev", combo(ui.Alt, ui.KeyUp), scopeNotEditor},
+
+		// Editor.
+		{"file.save", combo(cmd, ui.KeyS), scopeEditor},
+	}, digitBindings(mac)...)
+}
 
 // tabDigits are the keys Alt+N jumps to a tab with, and Alt+Shift+N to a
 // project. They are the row above the letters, in order.
@@ -247,14 +285,24 @@ func digitCommands() []Command {
 	return out
 }
 
-// digitBindings ties those commands to Alt+N and Alt+Shift+N.
-func digitBindings() []keyBinding {
+// digitMods are the modifiers that, with a digit, go to a tab and to a
+// project: Alt and Alt+Shift, but ⌘ and ⌃ on macOS, where Option types.
+func digitMods(mac bool) (tab, project ui.Modifiers) {
+	if mac {
+		return ui.Super, ui.Ctrl
+	}
+	return ui.Alt, ui.Alt | ui.Shift
+}
+
+// digitBindings ties those commands to the digits.
+func digitBindings(mac bool) []keyBinding {
+	tab, project := digitMods(mac)
 	out := make([]keyBinding, 0, 2*len(tabDigits))
 	for i, k := range tabDigits {
 		n := i + 1
 		out = append(out,
-			keyBinding{"tab.select" + itoa(n), combo(ui.Alt, k), scopeGlobal},
-			keyBinding{"project.select" + itoa(n), combo(ui.Alt|ui.Shift, k), scopeGlobal})
+			keyBinding{"tab.select" + itoa(n), combo(tab, k), scopeGlobal},
+			keyBinding{"project.select" + itoa(n), combo(project, k), scopeGlobal})
 	}
 	return out
 }
@@ -287,6 +335,15 @@ func keyLabels(id string) string {
 		labels[i] = b.Combo.Label()
 	}
 	return strings.Join(labels, ", ")
+}
+
+// withKeys adds a command's keys to a tooltip, "Save (Ctrl+S)", or
+// leaves it alone for a command with none.
+func withKeys(tip, id string) string {
+	if k := keyLabels(id); k != "" {
+		return tip + " (" + k + ")"
+	}
+	return tip
 }
 
 // keyPrimary writes the command's first key alone, which is the one the
@@ -338,7 +395,10 @@ func (a *appState) registerKeybindings(c *ui.Context) {
 // checkKeybindings reports the table's mistakes: a binding to a command
 // that does not exist, or two bindings of one key that can apply at the
 // same time. Tests and the shortcuts overlay both use it.
-func checkKeybindings() []string {
+func checkKeybindings() []string { return checkTable(keybindings) }
+
+// checkTable reports the mistakes of one platform's table.
+func checkTable(keybindings []keyBinding) []string {
 	var problems []string
 	seen := map[string]bool{}
 	for i := range commandRegistry {

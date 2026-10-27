@@ -353,7 +353,7 @@ var settingDefs = func() []settingDef {
 
 		// Terminal
 		row("font", "terminal", "Font", "", "family typeface"),
-		row("fontSize", "terminal", "Size", "Ctrl+= and Ctrl+− change it too.", "font zoom"),
+		row("fontSize", "terminal", "Size", keyLabels("app.zoomIn")+" and "+keyLabels("app.zoomOut")+" change it too.", "font zoom"),
 		row("lineHeight", "terminal", "Line height", "", "spacing"),
 		sw(boolDef("ligatures", "terminal", "Ligatures", "Joins characters such as -> and != in fonts that have them.",
 			func(s *Settings) *bool { return &s.Terminal.Ligatures }), "", false, "font"),

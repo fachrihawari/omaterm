@@ -99,7 +99,8 @@ header to move it.
 ### Sessions keep running
 
 Sessions run in a session daemon, so they keep going after you close the
-window and are back when you open it. After a reboot, Claude Code, Codex,
+window and are back when you open it. (Not on Windows, which has no daemon
+yet: there omaterm asks before quitting ends a running agent.) After a reboot, Claude Code, Codex,
 OpenCode and Pi resume the same conversation.
 `omaterm daemon install-service` runs the daemon as a systemd user service,
 so your sessions come back when you log in.
@@ -182,22 +183,32 @@ Code, Codex, Pi and OpenCode to use it.
 
 ## Keyboard shortcuts
 
-| Action | Keys |
-| --- | --- |
-| Command palette | `Ctrl+Shift+P` |
-| Settings | `Ctrl+,` |
-| Go to file | `Ctrl+P` |
-| Search in project | `Ctrl+Shift+F` |
-| New terminal | `Ctrl+T` |
-| Split right / down | `Ctrl+Shift+R` / `Ctrl+Shift+D` |
-| Zoom pane | `Ctrl+Shift+Enter` |
-| Go to the session that needs you | `Ctrl+Shift+J` |
-| Files / Git / Last turn / Info | `Ctrl+Shift+E` / `G` / `A` / `I` |
-| Toggle sidebar / inspector | `Ctrl+B` / `Ctrl+Shift+B` |
-| Open a browser pane | `Ctrl+Shift+O` |
-| All shortcuts | `Ctrl+Shift+/` |
+| Action | Linux and Windows | macOS |
+| --- | --- | --- |
+| Command palette | `Ctrl+Shift+P` | `⇧⌘P` |
+| Settings | `Ctrl+,` | `⌘,` |
+| Go to file | `Ctrl+P` | `⌘P` |
+| Search in project | `Ctrl+Shift+F` | `⇧⌘F` |
+| Open a project | `Ctrl+O` | `⌘O` |
+| New terminal | `Ctrl+T` | `⌘T` |
+| Close the pane, or the tab | `Ctrl+W` | `⌘W` |
+| Split right / down | `Ctrl+Shift+R` / `Ctrl+Shift+D` | `⇧⌘R` / `⇧⌘D` |
+| Zoom pane | `Ctrl+Shift+Enter` | `⇧⌘↩` |
+| Go to tab 1–9 | `Alt+1` … `Alt+9` | `⌘1` … `⌘9` |
+| Go to project 1–9 | `Alt+Shift+1` … `Alt+Shift+9` | `⌃1` … `⌃9` |
+| Next / previous session | `Alt+↓` / `Alt+↑` | `⌥↓` / `⌥↑` |
+| Go to the session that needs you | `Ctrl+Shift+J` | `⇧⌘J` |
+| Files / Git / Last turn / Info | `Ctrl+Shift+E` / `G` / `A` / `I` | `⇧⌘E` / `G` / `A` / `I` |
+| Toggle sidebar / inspector | `Ctrl+B` / `Ctrl+Shift+B` | `⌘B` / `⇧⌘B` |
+| Text size | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | `⌘=` / `⌘-` / `⌘0` |
+| Save a file | `Ctrl+S` | `⌘S` |
+| Open a browser pane | `Ctrl+Shift+O` | `⇧⌘O` |
+| In a browser pane: address, reload, find | `Ctrl+L`, `Ctrl+R`, `Ctrl+F` | `⌘L`, `⌘R`, `⌘F` |
+| In a browser pane: back / forward | `Alt+←` / `Alt+→` | `⌘[` / `⌘]` |
+| All shortcuts | `Ctrl+Shift+/` | `⇧⌘/` |
 
-On macOS, use `Cmd` in place of `Ctrl`.
+On macOS, Option types characters and moves the shell's cursor by words
+(`⌥←`, `⌥→`), so tabs and projects are `⌘` and `⌃` digits there.
 
 ## Building from source
 

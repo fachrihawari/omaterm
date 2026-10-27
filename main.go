@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -25,6 +26,17 @@ func appVersion() string {
 		return v
 	}
 	return "dev"
+}
+
+// appMenu is the macOS menu bar: the app's menu (⌘Q, ⌘H), Edit (copy,
+// paste, undo) and Window (⌘M). mygo's default one also has File and View,
+// whose keys come before the window's: ⌘W closed the window, so quit the
+// app, and ⌘R, ⇧⌘R and the zoom keys did nothing at all. omaterm's own
+// table has those keys. Linux and Windows get no menu bar.
+func appMenu() *mygo.Menu {
+	return mygo.NewMenu([]*mygo.MenuItem{
+		{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu}, {Role: mygo.RoleWindowMenu},
+	})
 }
 
 // startControl serves the control socket, unless the settings say not to,
@@ -133,6 +145,11 @@ func main() {
 	})
 
 	mygo.App.WhenReady(func() {
+		// Once ready, as mygo's own examples do: the roles' labels name
+		// the app.
+		if runtime.GOOS == "darwin" {
+			mygo.App.SetMenu(appMenu())
+		}
 		systemDark = mygo.Theme.IsDark
 		a := newApp()
 		a.crashes = crashes

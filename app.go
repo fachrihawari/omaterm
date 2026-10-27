@@ -106,18 +106,13 @@ func (a *appState) view(c *ui.Context) {
 		}
 	}
 
-	// Quitting with editors unsaved.
+	// Quitting with editors unsaved, or a session's program that ends.
 	if a.quitAsk != nil {
-		files := a.unsavedEditors()
-		what := plural(len(files), "file") + " have unsaved changes"
-		if len(files) == 1 {
-			what = files[0] + " has unsaved changes"
-		}
 		verb := "Quit"
 		if a.quitWant == "relaunch" {
 			verb = "Restart"
 		}
-		result := a.confirmDialog(c, a.quitAsk, verb+" omaterm?", what+". "+verb+"ing loses them.",
+		result := a.confirmDialog(c, a.quitAsk, verb+" omaterm?", a.quitText(verb),
 			true, "Cancel", verb+" Anyway")
 		if result != -1 {
 			want := a.quitWant
