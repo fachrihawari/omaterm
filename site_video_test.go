@@ -33,13 +33,15 @@ import (
 const videoFPS = 30
 
 // videoFormats are the window sizes the clips render at: wide is
-// 1920×1080, tall the 1080×1100 under a 4:5 video's caption band.
+// 1920×1080, tall the 1080×1100 under a 4:5 video's caption band, and
+// site the website's 1920×1200, the size of its pictures' window.
 var videoFormats = map[string]struct {
 	w, h  int
 	scale float32
 }{
 	"wide": {1280, 720, 1.5},
 	"tall": {864, 880, 1.25},
+	"site": {1440, 900, 4.0 / 3},
 }
 
 // A Codex session asking to run a command, for the status clip.
@@ -385,7 +387,7 @@ func TestSiteVideo(t *testing.T) {
 	}
 	format, ok := videoFormats[os.Getenv("SITE_VIDEO_FORMAT")]
 	if !ok {
-		t.Fatalf("SITE_VIDEO_FORMAT is %q, not wide or tall", os.Getenv("SITE_VIDEO_FORMAT"))
+		t.Fatalf("SITE_VIDEO_FORMAT is %q, not wide, tall or site", os.Getenv("SITE_VIDEO_FORMAT"))
 	}
 	wd, err := os.Getwd()
 	if err != nil {

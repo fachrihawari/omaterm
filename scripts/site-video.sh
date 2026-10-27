@@ -6,17 +6,21 @@
 #
 # clip is launch, status, cli, lastturn, resume, phone, allinone, splits,
 # files, ports or settings.
-# format is wide (1920×1080, captions over the app) or tall (1080×1350,
-# the 4:5 a phone's feed shows biggest, captions above the app). out
-# defaults to ~/Videos/omaterm-<clip>-<format>.mp4.
+# format is wide (1920×1080, captions over the app), tall (1080×1350, the
+# 4:5 a phone's feed shows biggest, captions above the app) or site
+# (1920×1200 for the website, no captions, with a poster picture of its
+# last frame beside it). out defaults to ~/Videos/omaterm-<clip>-<format>.mp4,
+# or site/assets/video/<clip>.mp4 for site.
 #
 # Needs ffmpeg (with libx264 and drawtext), ImageMagick and Noto Sans.
 set -euo pipefail
 
-clip=${1:?usage: scripts/site-video.sh <clip> <wide|tall> [out.mp4]}
-format=${2:?usage: scripts/site-video.sh <clip> <wide|tall> [out.mp4]}
+clip=${1:?usage: scripts/site-video.sh <clip> <wide|tall|site> [out.mp4]}
+format=${2:?usage: scripts/site-video.sh <clip> <wide|tall|site> [out.mp4]}
 cd "$(dirname "$0")/.."
-out=$(realpath -m "${3:-$HOME/Videos/omaterm-$clip-$format.mp4}")
+default=$HOME/Videos/omaterm-$clip-$format.mp4
+[ "$format" != site ] || default=site/assets/video/$clip.mp4
+out=$(realpath -m "${3:-$default}")
 mkdir -p "$(dirname "$out")"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -30,6 +34,17 @@ fps=30
 
 SITE_VIDEO=$clip SITE_VIDEO_FORMAT=$format SITE_VIDEO_DIR="$work/frames" \
 	go test -run '^TestSiteVideo$' -count=1 .
+
+# The website's: no captions, as the page says what it shows, and small
+# enough to load as the page scrolls to it.
+if [ "$format" = site ]; then
+	ffmpeg -loglevel error -y -framerate $fps -i "$work/frames/%05d.png" \
+		-c:v libx264 -preset veryslow -crf 28 -pix_fmt yuv420p -movflags +faststart "$out"
+	last=$(ls "$work/frames" | grep -c '\.png$')
+	magick "$work/frames/$(printf '%05d' $((last - 1))).png" -quality 82 "${out%.mp4}.jpg"
+	echo "$out"
+	exit
+fi
 
 # A wide video's captions sit in a pill over the panes' empty lower half;
 # a tall one's in the band above the app, in two lines. Each fades in and
