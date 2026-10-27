@@ -45,7 +45,7 @@
     overflow-x: hidden;
   }
   a { color: inherit; }
-  img { display: block; max-width: 100%; height: auto; }
+  img, video { display: block; max-width: 100%; height: auto; }
   .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
 
   /* Nav */
@@ -185,6 +185,7 @@
     margin: 0; padding: 18px 20px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--surface); overflow-x: auto; font: 14px/1.8 var(--mono);
   }
+  .feature pre.cli { margin-top: 20px; font-size: 13px; }
   pre.cli .c { color: var(--dim); }
   pre.cli .p { color: var(--ok); }
 
@@ -252,7 +253,7 @@
       <a href="#tour">Take the tour</a>
       <a href="https://github.com/fachrihawari/omaterm/releases/latest">All downloads</a>
     </div>
-    <div class="shot"><img src="assets/hero.png" width="2880" height="1800" alt="omaterm: an agent waiting for permission in one pane, a dev server in another, sessions with their status in the sidebar"></div>
+    <div class="shot"><video class="clip" src="assets/video/launch.mp4" poster="assets/hero.png" width="1920" height="1200" muted loop playsinline preload="none" aria-label="omaterm at work: three agents and a dev server side by side, an agent asking for permission, what its last turn changed, and the themes"></video></div>
     <p class="agents">Knows when these are working, waiting or done: <span>Claude Code · Codex · Gemini · OpenCode · Pi</span></p>
   </div>
 </header>
@@ -302,7 +303,7 @@
           <li><span>Teach your agents to report their status</span><code class="k">omaterm skill setup</code></li>
         </ul>
       </div>
-      <div class="shot"><img src="assets/split.png" width="2880" height="1800" loading="lazy" alt="Three split panes: an agent waiting for permission, a dev server and a test run"></div>
+      <div class="shot"><video class="clip" src="assets/video/status.mp4" poster="assets/video/status.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions at work, an agent asking for permission, then a jump to the Codex session that needs you"></video></div>
     </div>
   </section>
 
@@ -322,7 +323,7 @@
         </ul>
         <p class="note">Drag a pane&rsquo;s header onto another pane to move it, and drag the dividers to resize.</p>
       </div>
-      <div class="shot"><img src="assets/palette.png" width="2880" height="1800" loading="lazy" alt="The command palette listing sessions, commands and settings"></div>
+      <div class="shot"><video class="clip" src="assets/video/splits.mp4" poster="assets/video/splits.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A pane split right and down, one zoomed, then a new session"></video></div>
     </div>
   </section>
 
@@ -338,7 +339,7 @@
         </ul>
         <p class="note">omaterm takes a snapshot when a turn starts. No branch or commit is made.</p>
       </div>
-      <div class="shot"><img src="assets/changes.png" width="2880" height="1800" loading="lazy" alt="The Git tab on Last turn, listing three files an agent edited in its last turn"></div>
+      <div class="shot"><video class="clip" src="assets/video/lastturn.mp4" poster="assets/video/lastturn.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent finishing its turn, then Last turn listing the three files it changed"></video></div>
     </div>
   </section>
 
@@ -370,7 +371,7 @@
           <li><span>Save</span><kbd>Ctrl+S</kbd></li>
         </ul>
       </div>
-      <div class="shot"><img src="assets/editor.png" width="2880" height="1800" loading="lazy" alt="The editor with a Go file open"></div>
+      <div class="shot"><video class="clip" src="assets/video/files.mp4" poster="assets/video/files.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Go to File finding themewatch.go, the editor opening it, then a search of the project"></video></div>
     </div>
   </section>
 
@@ -385,7 +386,7 @@
           <li><span>Show or hide the side panel</span><kbd>Ctrl+Shift+B</kbd></li>
         </ul>
       </div>
-      <div class="shot"><img src="assets/info.png" width="2880" height="1800" loading="lazy" alt="The Info tab listing claude, bun and codex processes and port 5173"></div>
+      <div class="shot"><video class="clip" src="assets/video/ports.mp4" poster="assets/video/ports.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A dev server starting, and its port appearing in the Info tab"></video></div>
     </div>
   </section>
 
@@ -400,7 +401,6 @@
           <li><span>From a script or an agent</span><code class="k">omaterm split --url localhost:5173</code></li>
           <li><span>Let agents drive the page</span><span>Setting: <b>Let Agents Control the App</b></span></li>
         </ul>
-      </div>
 <pre class="cli"><span class="c"># open the app beside the agent</span>
 <span class="p">$</span> omaterm split --url localhost:5173
 <span class="c"># read it, click, type, wait</span>
@@ -409,6 +409,8 @@
 <span class="p">$</span> omaterm browser wait ".toast"
 <span class="c"># see what the user sees</span>
 <span class="p">$</span> omaterm browser screenshot -o page.png</pre>
+      </div>
+      <div class="shot"><video class="clip" src="assets/video/browser.mp4" poster="assets/video/browser.jpg" width="1920" height="1080" muted loop playsinline preload="none" aria-label="An agent opening a browser pane, adding a todo, checking it off and reading the page, all with omaterm browser"></video></div>
     </div>
   </section>
 
@@ -423,7 +425,6 @@
           <li><span>See what it runs</span><code class="k">omaterm daemon status</code></li>
         </ul>
         <p class="note">After a reboot, Claude Code, Codex, OpenCode and Pi resume the same conversation.</p>
-      </div>
 <pre class="cli"><span class="p">$</span> omaterm daemon status
 running omaterm 0.8.4, pid 4096, 6 panes
 <span class="p">$</span> omaterm ls
@@ -431,6 +432,8 @@ SESSION  PANE     NAME          STATUS   PROGRAM
 b8yvch4  jjybiza  omaterm/dev   waiting  claude
 kppgfhu  armc768  omaterm/web   working  bun
 5arwznq  ke45bsv  api/tests     idle     -</pre>
+      </div>
+      <div class="shot"><video class="clip" src="assets/video/resume.mp4" poster="assets/video/resume.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions, the window gone through a reboot, and the sessions back with the agent in the same conversation"></video></div>
     </div>
   </section>
 
@@ -495,7 +498,6 @@ kppgfhu  armc768  omaterm/web   working  bun
           <li><span>Teach Claude Code, Codex, Pi and OpenCode to use it</span><code class="k">omaterm skill setup</code></li>
           <li><span>Every command</span><code class="k">omaterm help</code></li>
         </ul>
-      </div>
 <pre class="cli"><span class="c"># run the tests in a new pane below</span>
 <span class="p">$</span> pane=$(omaterm split --down -- go test ./...)
 <span class="c"># wait for them, then read what they printed</span>
@@ -504,6 +506,8 @@ kppgfhu  armc768  omaterm/web   working  bun
 <span class="p">$</span> omaterm new -n review -- codex
 <span class="c"># tell the user you need them</span>
 <span class="p">$</span> omaterm report blocked "Which database?"</pre>
+      </div>
+      <div class="shot"><video class="clip" src="assets/video/cli.mp4" poster="assets/video/cli.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent running the tests in a pane below with omaterm split, waiting for them and reading the result"></video></div>
     </div>
   </section>
 
@@ -518,7 +522,7 @@ kppgfhu  armc768  omaterm/web   working  bun
           <li><span>Or from a terminal, on a page</span><code class="k">omaterm settings terminal</code></li>
         </ul>
       </div>
-      <div class="shot"><img src="assets/settings.png" width="1640" height="1280" loading="lazy" alt="The Settings window on its Terminal page: a preview of the terminal, then its font, size, line height, ligatures and cursor"></div>
+      <div class="shot"><video class="clip" src="assets/video/settings.mp4" poster="assets/video/settings.jpg" width="1920" height="1200" muted loop playsinline preload="none" aria-label="The Settings window going through its pages, then a search for font"></video></div>
     </div>
   </section>
 
@@ -602,6 +606,24 @@ kppgfhu  armc768  omaterm/web   working  bun
       });
     });
   });
+  // The clips play while they are on screen, and not at all for those who
+  // asked for less motion: they get the controls instead.
+  var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var clips = document.querySelectorAll("video.clip");
+  if (still || !("IntersectionObserver" in window)) {
+    clips.forEach(function (v) { v.controls = true; });
+  } else {
+    var seen = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          e.target.play().catch(function () { e.target.controls = true; });
+        } else {
+          e.target.pause();
+        }
+      });
+    }, { threshold: 0.4 });
+    clips.forEach(function (v) { seen.observe(v); });
+  }
   // The tag names the latest release when GitHub answers.
   fetch("https://api.github.com/repos/fachrihawari/omaterm/releases/latest")
     .then(function (r) { return r.ok ? r.json() : null; })
