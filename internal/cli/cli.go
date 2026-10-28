@@ -30,7 +30,7 @@ import (
 // starts the app.
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
-	"rename", "focus", "close", "kill", "restart", "notify", "report", "skill", "hook", "cli", "do", "actions",
+	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "skill", "hook", "cli", "do", "actions",
 	"diff", "browser", "daemon", "clients", "web", "settings", "help", "version", "--help", "-h", "--version",
 }
 
@@ -616,6 +616,15 @@ func run(args []string) error {
 	case "diff":
 		return diffCmd(c, args)
 
+	case "ask":
+		return askCmd(c, args)
+
+	case "reply":
+		return replyCmd(c, args)
+
+	case "inbox":
+		return inboxCmd(c, args)
+
 	case "browser":
 		return browserCmd(c, args)
 	}
@@ -1129,6 +1138,12 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm rename <session> <name…>
   omaterm focus | close | restart <target>
   omaterm notify [message…]
+  omaterm ask <target> <text…> [--no-wait] [-t timeout] [--file path]
+                                         type a message into an agent's prompt once it is
+                                         free, and wait for its answer
+  omaterm reply [id] <text…> [--file path]
+                                         answer a message you were sent
+  omaterm inbox [--json]                 the messages to and from your pane
   omaterm report <idle|working|done|blocked|error|clear> [message] [--kind] [--progress]
   omaterm diff [target] [--turn|--branch] [path…]
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …

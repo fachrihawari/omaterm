@@ -470,6 +470,21 @@ func (a *appState) sessionTooltip(i session.Info) string {
 		}
 		lines = append(lines, s)
 	}
+	// Messages between agents (package mail).
+	if i.Asking != "" {
+		who := "another agent"
+		if _, tabs, ti, ok := a.findPane(i.Asking); ok {
+			who = a.tabName((*tabs)[ti])
+		}
+		lines = append(lines, "Waiting for "+who+"'s answer")
+	}
+	if i.Inbox > 0 {
+		wait := " wait"
+		if i.Inbox == 1 {
+			wait = " waits"
+		}
+		lines = append(lines, plural(i.Inbox, "message")+wait+": "+i.Held)
+	}
 	return strings.Join(lines, "\n")
 }
 

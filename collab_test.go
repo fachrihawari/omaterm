@@ -439,3 +439,55 @@ func TestMailThroughTheDaemon(t *testing.T) {
 	}
 	waitForText(t, logs["lead"], "w1's answer to your message "+m.ID+":\nFixed")
 }
+
+// A lead asks its worker with omaterm ask, the worker answers with omaterm
+// reply, and the answer wakes the lead; asked waiting, the lead gets the
+// answer printed.
+func TestAskReplyCommands(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.panes.Run(ctx)
+	t.Setenv("OMATERM_SOCKET", a.ctl.Path())
+	t.Setenv("OMATERM_SESSION", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CODEX_THREAD_ID", "")
+	start := func(name, by string) (proto.Created, string) {
+		cmd, env, log := fakeAgent(t, name)
+		v, err := a.cliCreate(proto.CreateParams{Name: name, Dir: a.workspace, Command: cmd, Env: []string{env}, By: by})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.(proto.Created), log
+	}
+	lead, leadLog := start("lead", "")
+	worker, workerLog := start("w1", lead.Pane)
+
+	t.Setenv("OMATERM_PANE", lead.Pane)
+	if out, code := runCLI(t, "ask", "w1", "Fix", "the", "login", "--no-wait"); code != 0 || out != "m1\n" {
+		t.Fatalf("ask: %q, status %d", out, code)
+	}
+	waitForText(t, workerLog, "201~")
+	waitForText(t, workerLog, `Message m1 from the agent in session "lead" (pane `+lead.Pane+`), not from the user:`+"\nFix the login\n")
+
+	t.Setenv("OMATERM_PANE", worker.Pane)
+	if out, code := runCLI(t, "reply", "Fixed:", "the", "cookie"); code != 0 || out != "answered m1 from lead\n" {
+		t.Fatalf("reply: %q, status %d", out, code)
+	}
+	waitForText(t, leadLog, "w1's answer to your message m1:\nFixed: the cookie")
+	if out, _ := runCLI(t, "inbox"); !strings.Contains(out, "m1    lead           w1             replied   Fix the login") {
+		t.Fatalf("inbox %q", out)
+	}
+
+	t.Setenv("OMATERM_PANE", lead.Pane)
+	go func() {
+		waitForText(t, workerLog, "Is it tested?")
+		time.Sleep(100 * time.Millisecond)
+		c.Call("mail.reply", proto.MailReplyParams{From: worker.Pane, Text: "Yes, all green."}, nil)
+	}()
+	if out, code := runCLI(t, "ask", "w1", "Is it tested?", "-t", "10s"); code != 0 || out != "Yes, all green.\n" {
+		t.Fatalf("waiting ask: %q, status %d", out, code)
+	}
+}
