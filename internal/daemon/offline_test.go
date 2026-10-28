@@ -383,3 +383,45 @@ func TestParentWithWindowClosed(t *testing.T) {
 		}
 	}
 }
+
+// With the window closed, a worker's branch diff is what it changed since
+// its lead's branch, which it was made from.
+func TestBranchDiffWithWindowClosed(t *testing.T) {
+	_, socket, proj := offlineDaemon(t, false, nil)
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	commit := func(dir, name string) {
+		os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o644)
+		git(dir, "add", name)
+		git(dir, "commit", "-qm", "Add "+name)
+	}
+	git(proj, "init", "-q", "-b", "main")
+	commit(proj, "first.txt")
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	lead := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Worktree: &proto.WorktreeParams{Branch: "feat"}})
+	leadDir := filepath.Join(proj, ".worktrees", "feat")
+	commit(leadDir, "lead.txt")
+	worker := call[proto.Created](t, c, "create", proto.CreateParams{Dir: leadDir, By: lead.Pane, Worktree: &proto.WorktreeParams{Branch: "w1"}})
+	commit(filepath.Join(proj, ".worktrees", "w1"), "worker.txt")
+	out := call[proto.ReadResult](t, c, "git.diff", proto.GitParams{Pane: worker.Pane, Base: "branch"})
+	if !strings.Contains(out.Text, "worker.txt") || strings.Contains(out.Text, "lead.txt") {
+		t.Fatalf("diff %q", out.Text)
+	}
+	for _, s := range call[proto.State](t, c, "state", nil).Sessions {
+		if s.ID == worker.Session && (s.Parent != lead.Session || s.Worktree == nil || s.Worktree.Base != "feat") {
+			t.Fatalf("worker %+v", s)
+		}
+	}
+}

@@ -91,7 +91,7 @@ app open and the palette setting "Let Agents Control the App" on.
 
     omaterm diff --turn                        # what your last turn changed
     omaterm diff                               # uncommitted changes
-    omaterm diff --branch                      # since the default branch
+    omaterm diff --branch                      # since the default branch, or your worktree's base
 
 ## Tell the user
 

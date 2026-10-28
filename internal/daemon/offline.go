@@ -242,7 +242,14 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 		if pn == nil {
 			return nil, proto.Errorf(proto.CodeNotFound, "no pane "+p.Pane)
 		}
-		return gitsnap.Answer(ctx, method, p, pn.Info())
+		branch := ""
+		d.stateMu.Lock()
+		st := d.loadState()
+		d.stateMu.Unlock()
+		if s, _ := findPane(&st, p.Pane); s != nil && s.Worktree != nil {
+			branch = s.Worktree.Base
+		}
+		return gitsnap.Answer(ctx, method, p, pn.Info(), branch)
 	}
 	return nil, proto.Errorf(proto.CodeUsage, "no method "+method)
 }

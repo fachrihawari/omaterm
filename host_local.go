@@ -859,6 +859,16 @@ func (h *localHost) handleGit(ctx context.Context, method string, raw json.RawMe
 	if err != nil {
 		return nil, err, true
 	}
-	v, err := gitsnap.Answer(ctx, method, p, pane.Info())
+	branch := ""
+	if p.Base == gitsnap.BaseBranch {
+		v, _ := h.onUI(func() (any, error) {
+			if _, tabs, ti, ok := h.a.findPane(p.Pane); ok && (*tabs)[ti].Worktree != nil {
+				return (*tabs)[ti].Worktree.Base, nil
+			}
+			return "", nil
+		})
+		branch, _ = v.(string)
+	}
+	v, err := gitsnap.Answer(ctx, method, p, pane.Info(), branch)
 	return v, err, true
 }

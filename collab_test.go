@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"omaterm/internal/client"
 	"omaterm/internal/ctl"
 	"omaterm/internal/proto"
+	"omaterm/internal/worktree"
 )
 
 // dialApp serves a's control socket and connects to it, as the omaterm
@@ -229,5 +232,81 @@ func TestWaitMany(t *testing.T) {
 	}
 	if _, code = runCLI(t, "wait", "fast", "nope", "--exit"); code != 3 {
 		t.Fatalf("no such target exits %d", code)
+	}
+}
+
+// gitIn runs git in dir, as a user with a name.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// commitFile writes a file in dir and commits it.
+func commitFile(t *testing.T, dir, name, text string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "add", name)
+	gitIn(t, dir, "commit", "-qm", "Add "+name)
+}
+
+// leadAndWorker makes a lead's session in a worktree on feat, with a
+// commit of its own, and a worker's it started, in a worktree on w1 made
+// from feat, with another.
+func leadAndWorker(t *testing.T, a *appState) (lead, worker proto.Created, leadWT, workerWT worktree.Info) {
+	t.Helper()
+	gitIn(t, a.workspace, "commit", "-qam", "two")
+	add := func(from, branch, by string) (proto.Created, worktree.Info) {
+		wt, err := worktree.Add(context.Background(), from, branch, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := a.createWorktreeSession(wt, proto.CreateParams{Project: a.project().ID, Command: []string{"sleep", "30"}, By: by})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, wt
+	}
+	lead, leadWT = add(a.workspace, "feat", "")
+	commitFile(t, leadWT.Dir, "lead.txt", "lead\n")
+	worker, workerWT = add(leadWT.Dir, "w1", lead.Pane)
+	commitFile(t, workerWT.Dir, "worker.txt", "worker\n")
+	return
+}
+
+// A worker's branch diff is what it changed since its lead's branch: not
+// the lead's own commits, as since the default branch.
+func TestBranchDiffSinceItsBase(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	lead, worker, _, workerWT := leadAndWorker(t, a)
+	if workerWT.Base != "feat" {
+		t.Fatalf("the worker's base is %q", workerWT.Base)
+	}
+	if s, _ := sessionOf(t, c, worker.Session); s.Parent != lead.Session {
+		t.Fatalf("worker's parent %q", s.Parent)
+	}
+	var out proto.ReadResult
+	if err := c.Call("git.diff", proto.GitParams{Pane: worker.Pane, Base: "branch"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Text, "worker.txt") || strings.Contains(out.Text, "lead.txt") {
+		t.Fatalf("diff %q", out.Text)
+	}
+	if err := c.Call("git.diff", proto.GitParams{Pane: lead.Pane, Base: "branch"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Text, "lead.txt") {
+		t.Fatalf("the lead's diff %q", out.Text)
 	}
 }
