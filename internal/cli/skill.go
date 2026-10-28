@@ -61,8 +61,8 @@ then goes in as its prompt, saying who it is from and its id. Answer
 every message you are sent with omaterm reply. An answer to an ask you
 didn't wait for comes to you as a message of its own once you are at
 your prompt: so for work that takes long, ask with --no-wait and end
-your turn. An agent that stops without answering gets you the end of
-its screen instead.
+your turn, without waiting or polling for it. An agent that stops
+without answering gets you the end of its screen instead.
 
 To split a task between agents, work in a worktree yourself, then:
 

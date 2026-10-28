@@ -164,7 +164,7 @@ func reviewBrief(name, pane string, branch bool) string {
 		"1. Read %s: %s\n"+
 		"2. Change no files, and commit nothing.\n"+
 		"3. Send it what to fix, the most important first: omaterm ask %s \"<what to fix>\" --no-wait\n"+
-		"   Its answer comes to you as a message once it has fixed them: then review again.\n"+
+		"   Then end your turn, without waiting: its answer comes to you as a new message once it has fixed them. Then review again.\n"+
 		"4. At most %d rounds. When nothing important is left, or after the last, end with: omaterm report done \"<your verdict, in a line>\"",
 		name, pane, what, diff, pane, reviewRounds)
 }

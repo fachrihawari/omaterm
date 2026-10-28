@@ -30,7 +30,10 @@ func mergeCmd(c *client.Client, args []string) error {
 	if err != nil {
 		return err
 	}
-	by, _ := me(st)
+	by, _, err := mine(st)
+	if err != nil {
+		return err
+	}
 	if by == "" {
 		return usageErr("run omaterm merge in your pane: it merges into your branch")
 	}

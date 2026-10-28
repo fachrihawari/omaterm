@@ -35,6 +35,24 @@ func me(st proto.State) (pane, name string) {
 	return t.pane, s.Name
 }
 
+// mine is me, for a command whose answer comes back to its pane: one run
+// in a pane omaterm can't tell is refused, as the answer would be lost.
+// A Codex's commands carry the variables of whichever pane started its
+// shared service: its pane is told only by its hook.
+func mine(st proto.State) (pane, name string, err error) {
+	pane, name = me(st)
+	switch {
+	case pane != "":
+		return pane, name, nil
+	case os.Getenv("CODEX_THREAD_ID") != "":
+		return "", "", usageErr("omaterm can't tell which pane this Codex runs in, as its omaterm hook didn't run: " +
+			"ask the user to approve it in Codex (/hooks), then to start Codex again")
+	case os.Getenv("OMATERM_PANE") != "" || os.Getenv("OMATERM_SESSION") != "":
+		return "", "", usageErr("omaterm can't tell which pane you run in: name yours with OMATERM_PANE")
+	}
+	return "", "", nil // outside omaterm
+}
+
 // mailText is a message's text: its words, or "-" for the standard input,
 // or a file's.
 func mailText(words []string, file string) (string, error) {
@@ -84,7 +102,10 @@ func askCmd(c *client.Client, args []string) error {
 		return err
 	}
 	to, _ := sessionByID(st, t.session)
-	from, fromName := me(st)
+	from, fromName, err := mine(st)
+	if err != nil {
+		return err
+	}
 	var m proto.Mail
 	if err := c.Call("mail.ask", proto.MailAskParams{From: from, FromName: fromName, To: waitTarget(st, t), ToName: to.Name,
 		Text: text, NoWait: f.set["no-wait"]}, &m); err != nil {

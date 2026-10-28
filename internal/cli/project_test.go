@@ -127,3 +127,26 @@ func TestWaitTarget(t *testing.T) {
 		}
 	}
 }
+
+// A command whose answer comes back to its pane is refused when omaterm
+// can't tell the pane: a Codex whose hook didn't run carries another
+// pane's variables.
+func TestMine(t *testing.T) {
+	st := twoProjects()
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("OMATERM_SESSION", "")
+	t.Setenv("OMATERM_PANE", "pane2")
+	t.Setenv("CODEX_THREAD_ID", "thread-1")
+	if pane, _, err := mine(st); err != nil || pane != "pane2" {
+		t.Fatalf("%q %v", pane, err)
+	}
+	t.Setenv("OMATERM_PANE", "gone")
+	if _, _, err := mine(st); err == nil || !strings.Contains(err.Error(), "approve it in Codex (/hooks)") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("OMATERM_PANE", "")
+	if pane, _, err := mine(st); err != nil || pane != "" {
+		t.Fatalf("outside omaterm: %q %v", pane, err)
+	}
+}
