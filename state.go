@@ -218,6 +218,13 @@ type appState struct {
 
 	overlay overlayKind
 
+	// editorChord is how far the editor is in a chord of its keys, as
+	// ⌘K ⌘0 (Fold All), and editorChordKey the chord's first key: while
+	// one waits for its second key, the window's shortcuts leave that key
+	// to it.
+	editorChord    editorChordStep
+	editorChordKey ui.Key
+
 	// Quick open (Ctrl+P)
 	quickQuery    string
 	quickSelected int

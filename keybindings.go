@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
 )
 
 // Keybindings are declared once, here, and drive three things: the window
@@ -19,9 +20,10 @@ import (
 //
 // On macOS ⌘ takes Ctrl's place, and Option, which types characters there
 // (⌥1 is ¡, and [ ] { } @ on German and Nordic layouts), goes places only
-// with the arrows: ⌘N jumps to a tab, ⌃N to a project (⇧⌘3, 4 and 5 are
-// the system's screenshots), and a browser pane goes back and forward with
-// ⌘[ and ⌘], as Safari does.
+// with the arrows or with ⌘: ⌘N jumps to a tab and ⌥⌘N to a project, one
+// modifier more as Shift is elsewhere (⇧⌘3, 4 and 5 are the system's
+// screenshots), and a browser pane goes back and forward with ⌘[ and ⌘],
+// as Safari does.
 
 // keyCombo is one key with the modifiers held, as a shortcut is pressed.
 type keyCombo struct {
@@ -286,10 +288,11 @@ func digitCommands() []Command {
 }
 
 // digitMods are the modifiers that, with a digit, go to a tab and to a
-// project: Alt and Alt+Shift, but ⌘ and ⌃ on macOS, where Option types.
+// project: Alt and Alt+Shift, but ⌘ and ⌥⌘ on macOS, where Option alone
+// types. Not ⌃: it is Mission Control's Switch to Desktop N once on.
 func digitMods(mac bool) (tab, project ui.Modifiers) {
 	if mac {
-		return ui.Super, ui.Ctrl
+		return ui.Super, ui.Alt | ui.Super
 	}
 	return ui.Alt, ui.Alt | ui.Shift
 }
@@ -357,8 +360,62 @@ func keyPrimary(id string) string {
 	return bs[0].Combo.Label()
 }
 
+// editorChordStep is how far the editor is in a chord of its keys.
+type editorChordStep int
+
+const (
+	chordNone editorChordStep = iota
+	// chordPressed: the chord's first key is down.
+	chordPressed
+	// chordWaiting: it is up, and the editor waits for the second.
+	chordWaiting
+)
+
+// editorChordKeys are the first keys of the editor's chords, as ⌘K.
+var editorChordKeys = func() map[keyCombo]bool {
+	m := map[keyCombo]bool{}
+	for _, b := range editor.DefaultBindings() {
+		if b.ThenKey != 0 {
+			m[combo(b.Mods, b.Key)] = true
+		}
+	}
+	return m
+}()
+
+// trackEditorChord follows the editor's chords from the input it is
+// offered, which is every key but a chord's second key down, and leaves
+// the input to the editor. The window's shortcuts come before the editor:
+// ⌘K ⌘0 (Fold All) zoomed back, and ⌘K ⌘1 went to the first tab, leaving
+// the chord waiting for the key after.
+func (a *appState) trackEditorChord(ev ui.InputEvent) bool {
+	if ev.Key == ui.KeyUnknown { // a modifier, as ⌘ let go of
+		return false
+	}
+	switch ev.Kind {
+	case ui.InputKeyDown:
+		// A key offered is no chord's second: any chord is over.
+		a.editorChord, a.editorChordKey = chordNone, 0
+		if editorChordKeys[combo(ev.Mods, ev.Key)] {
+			a.editorChord, a.editorChordKey = chordPressed, ev.Key
+		}
+	case ui.InputKeyUp:
+		if a.editorChord == chordPressed && ev.Key == a.editorChordKey {
+			a.editorChord = chordWaiting
+		} else if a.editorChord != chordNone {
+			// The second key's release: the editor has run the chord.
+			a.editorChord, a.editorChordKey = chordNone, 0
+		}
+	}
+	return false
+}
+
 // keyActive reports whether a binding applies in the current state.
 func (a *appState) keyActive(b keyBinding) bool {
+	if a.editorChord != chordNone && a.activeView == tabEditor {
+		if doc := a.activeEditor(); doc != nil && doc.State != nil && doc.State.Focused() {
+			return false // the key after an editor's ⌘K is the chord's
+		}
+	}
 	switch b.Scope {
 	case scopeTerminal:
 		return a.activeView == tabTerminal

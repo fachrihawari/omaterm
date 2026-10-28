@@ -195,7 +195,7 @@ Code, Codex, Pi and OpenCode to use it.
 | Split right / down | `Ctrl+Shift+R` / `Ctrl+Shift+D` | `⇧⌘R` / `⇧⌘D` |
 | Zoom pane | `Ctrl+Shift+Enter` | `⇧⌘↩` |
 | Go to tab 1–9 | `Alt+1` … `Alt+9` | `⌘1` … `⌘9` |
-| Go to project 1–9 | `Alt+Shift+1` … `Alt+Shift+9` | `⌃1` … `⌃9` |
+| Go to project 1–9 | `Alt+Shift+1` … `Alt+Shift+9` | `⌥⌘1` … `⌥⌘9` |
 | Next / previous session | `Alt+↓` / `Alt+↑` | `⌥↓` / `⌥↑` |
 | Go to the session that needs you | `Ctrl+Shift+J` | `⇧⌘J` |
 | Files / Git / Last turn / Info | `Ctrl+Shift+E` / `G` / `A` / `I` | `⇧⌘E` / `G` / `A` / `I` |
@@ -208,7 +208,7 @@ Code, Codex, Pi and OpenCode to use it.
 | All shortcuts | `Ctrl+Shift+/` | `⇧⌘/` |
 
 On macOS, Option types characters and moves the shell's cursor by words
-(`⌥←`, `⌥→`), so tabs and projects are `⌘` and `⌃` digits there.
+(`⌥←`, `⌥→`), so tabs are `⌘` digits there and projects `⌥⌘` digits.
 
 ## Building from source
 

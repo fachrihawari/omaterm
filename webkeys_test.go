@@ -17,7 +17,7 @@ func TestPageKeyCommands(t *testing.T) {
 		true: {
 			"m:KeyL": "browser.focusAddress", "m:KeyW": "tab.close", "m:BracketLeft": "browser.back",
 			"m:BracketRight": "browser.forward", "sm:KeyP": "app.commandPalette", "m:Comma": "app.settings",
-			"m:Digit1": "tab.select1", "c:Digit2": "project.select2",
+			"m:Digit1": "tab.select1", "am:Digit2": "project.select2",
 		},
 	} {
 		keys := pageChords(keybindingsFor(mac))

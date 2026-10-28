@@ -437,7 +437,7 @@ func imageDiffSide(c *ui.Context, side imageSide, missingLabel string) {
 
 // newEditorState is a file editor over buf, as the settings have it.
 func (a *appState) newEditorState(buf *editor.Buffer) *editor.State {
-	st := &editor.State{Buffer: buf, Theme: omaEditorTheme()}
+	st := &editor.State{Buffer: buf, Theme: omaEditorTheme(), OnInput: a.trackEditorChord}
 	a.styleEditor(st)
 	return st
 }

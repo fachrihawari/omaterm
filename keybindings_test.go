@@ -41,7 +41,7 @@ func TestKeyLabelsComeFromTheTable(t *testing.T) {
 	if got := keyPrimary("tab.select2"); got != want("Alt+2", "⌘2") {
 		t.Errorf("tab.select2 label = %q", got)
 	}
-	if got := keyPrimary("project.select3"); got != want("Alt+Shift+3", "⌃3") {
+	if got := keyPrimary("project.select3"); got != want("Alt+Shift+3", "⌥⌘3") {
 		t.Errorf("project.select3 label = %q", got)
 	}
 	if got := keyPrimary("terminal.splitRight"); got != want("Ctrl+Shift+R", "⇧⌘R") {
@@ -92,12 +92,12 @@ func TestMacKeysLeaveOptionToType(t *testing.T) {
 		if b.Combo.Mods == ui.Alt && b.Combo.Key != ui.KeyUp && b.Combo.Key != ui.KeyDown {
 			t.Errorf("mac: %s on %s, which Option types or moves words with", b.Command, b.Combo.label(true))
 		}
-		if b.Combo.Mods&ui.Ctrl != 0 && b.Combo.Mods != ui.Ctrl {
+		if b.Combo.Mods&ui.Ctrl != 0 {
 			t.Errorf("mac: %s on %s, where ⌘ was meant", b.Command, b.Combo.label(true))
 		}
 	}
 	for id, want := range map[string]keyCombo{
-		"tab.select1": combo(ui.Super, ui.Key1), "project.select9": combo(ui.Ctrl, ui.Key9),
+		"tab.select1": combo(ui.Super, ui.Key1), "project.select9": combo(ui.Alt|ui.Super, ui.Key9),
 		"browser.back": combo(ui.Super, ui.KeyBracketLeft), "browser.forward": combo(ui.Super, ui.KeyBracketRight),
 		"tab.close": combo(ui.Super, ui.KeyW),
 	} {
@@ -156,6 +156,54 @@ func TestKeymapFilterSpelledKeys(t *testing.T) {
 	}
 	if keymapMatches(cmd, linux, "cmd+d") {
 		t.Error(`"cmd+d" found Ctrl+Shift+D off macOS`)
+	}
+}
+
+// The key after the editor's Ctrl+K (⌘K) is the chord's, as in VS Code:
+// Ctrl+K Ctrl+0 folds everything rather than zooming back, and Ctrl+K
+// Ctrl+1 folds a level rather than going to the first tab (⌘1 on macOS).
+// After the chord, the window's keys are the window's again.
+func TestEditorChordKeepsItsSecondKey(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	a.openEditor("hello.txt")
+	tr.Frame()
+	tr.ClickAt(720, 300)
+	tr.Frame()
+	doc := a.activeEditor()
+	if doc == nil || !doc.State.Focused() {
+		t.Fatal("the editor has no focus")
+	}
+
+	tr.Key(ui.Cmd, ui.KeyEqual)
+	tr.Frame()
+	zoomed := a.fontSize
+	tr.Key(ui.Cmd, ui.KeyK)
+	tr.Frame()
+	tr.Key(ui.Cmd, ui.Key0)
+	tr.Frame()
+	if a.fontSize != zoomed {
+		t.Fatalf("Ctrl+K Ctrl+0 zoomed back: size %v, want %v", a.fontSize, zoomed)
+	}
+	if a.editorChord != chordNone {
+		t.Fatal("the chord is still waiting after its second key")
+	}
+
+	tab := a.activeTab
+	tr.Key(ui.Cmd, ui.KeyK)
+	tr.Frame()
+	tr.Key(ui.Cmd, ui.Key1)
+	tr.Frame()
+	if a.activeTab != tab {
+		t.Fatalf("Ctrl+K Ctrl+1 went to tab %d", a.activeTab)
+	}
+
+	tr.Key(ui.Cmd, ui.Key0)
+	tr.Frame()
+	if a.fontSize != 0 {
+		t.Fatalf("Ctrl+0 after the chord: size %v, want the default", a.fontSize)
 	}
 }
 
@@ -238,7 +286,7 @@ func TestProjectShortcuts(t *testing.T) {
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
 
-	_, projectMods := digitMods(onMac) // ⌃N on macOS
+	_, projectMods := digitMods(onMac) // ⌥⌘N on macOS
 	tr.Key(projectMods, ui.Key2)
 	tr.Frame()
 	if a.active != 1 {
