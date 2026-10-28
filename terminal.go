@@ -177,6 +177,13 @@ func (a *appState) startRestored(id, sessionID, fallback string) (session.Handle
 	if dir == "" {
 		dir = fallback
 	}
+	if _, tabs, ti, ok := a.findSession(sessionID); ok && (*tabs)[ti].Worktree != nil {
+		var err error
+		if dir, err = (*tabs)[ti].Worktree.PaneDir(a.paneDirs[id]); err != nil {
+			a.paneFailed[id] = true
+			return nil, err
+		}
+	}
 	command, exec := a.termCmd, len(a.termCmd) > 0
 	history, resume := a.restoreOptions(id)
 	if resume != nil && !exec {

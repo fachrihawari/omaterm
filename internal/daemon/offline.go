@@ -139,7 +139,7 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.ID+" is a browser, not a terminal")
 		}
 		_, resume := d.restorePrefs()
-		if err := d.restorePane(s.ID, *pn, resume); err != nil && !errors.Is(err, session.ErrExists) {
+		if err := d.restorePane(s, *pn, resume); err != nil && !errors.Is(err, session.ErrExists) {
 			return nil, err // a wake racing another, or a restore, found it starting: it runs
 		}
 		return true, nil
@@ -154,13 +154,17 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			if pn.URL != "" {
 				return nil, errAppClosed("reload a page")
 			}
+			dir, err := s.Worktree.PaneDir(pn.Dir)
+			if err != nil {
+				return nil, err
+			}
 			// The command it started with runs again, as the app does.
 			var command []string
 			if p := d.reg.Get(pn.ID); p != nil {
 				command = p.Info().Command
 			}
 			d.endPane(pn.ID)
-			return true, d.startPane(s.ID, pn.ID, pn.Dir, command, nil)
+			return true, d.startPane(s.ID, pn.ID, dir, command, nil)
 		})
 	case "rename":
 		var p proto.RenameParams
@@ -435,6 +439,12 @@ func (d *Daemon) split(st *model.State, p proto.CreateParams) (any, error) {
 			dir = pn.Info().WorkDir()
 		}
 	}
+	if p.URL == "" {
+		var err error
+		if dir, err = s.Worktree.PaneDir(dir); err != nil {
+			return nil, err
+		}
+	}
 	targetID, pid := target.ID, model.NewID()
 	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
 	if p.URL != "" {
@@ -628,7 +638,7 @@ func (d *Daemon) restore() {
 			if pn.URL != "" || d.reg.Get(pn.ID) != nil {
 				continue
 			}
-			if d.restorePane(s.ID, pn, resume) == nil {
+			if d.restorePane(&s, pn, resume) == nil {
 				n++
 			}
 		}
@@ -653,12 +663,16 @@ func (d *Daemon) restorePrefs() (restore, resume bool) {
 
 // restorePane starts a pane of state.json from its scrollback, its agent
 // resuming its conversation when resume.
-func (d *Daemon) restorePane(sessionID string, pn model.Pane, resume bool) error {
+func (d *Daemon) restorePane(s *model.Session, pn model.Pane, resume bool) error {
+	dir, err := s.Worktree.PaneDir(pn.Dir)
+	if err != nil {
+		return err
+	}
 	var command []string
 	if resume {
 		command = agent.ResumeCommand(pn.Agent)
 	}
-	return d.startPaneWith(sessionID, pn.ID, pn.Dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID)))
+	return d.startPaneWith(s.ID, pn.ID, dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID)))
 }
 
 // ForwardedCall is a call of the omaterm command the daemon passes to the

@@ -216,6 +216,34 @@ func TestServiceRestores(t *testing.T) {
 	})
 }
 
+// A session whose worktree was deleted doesn't come back in the home
+// folder; one whose folder in it was, comes back in the worktree.
+func TestRestoreWorktreeGone(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	dir := t.TempDir()
+	gone, kept := filepath.Join(dir, ".worktrees", "gone"), filepath.Join(dir, ".worktrees", "kept")
+	os.MkdirAll(kept, 0o755)
+	st := &model.State{Version: model.Version, Projects: []model.Project{{ID: "p1", Name: "x", Dir: dir}},
+		Sessions: []model.Session{
+			{ID: "s1", Project: "p1", Layout: &model.Layout{Pane: "a1"}, Panes: []model.Pane{{ID: "a1", Dir: gone}},
+				Worktree: &model.Worktree{Dir: gone, Branch: "gone", Base: "main"}},
+			{ID: "s2", Project: "p1", Layout: &model.Layout{Pane: "b1"}, Panes: []model.Pane{{ID: "b1", Dir: filepath.Join(kept, "sub")}},
+				Worktree: &model.Worktree{Dir: kept, Branch: "kept", Base: "main"}},
+		}}
+	d, _, _ := offlineDaemon(t, false, st)
+	d.restore()
+	if d.reg.Get("a1") != nil {
+		t.Fatal("a pane of a deleted worktree started")
+	}
+	p := d.reg.Get("b1")
+	if p == nil {
+		t.Fatal("the kept worktree's pane didn't start")
+	}
+	if got := p.Info().Dir; got != kept {
+		t.Fatalf("started in %q, want %q", got, kept)
+	}
+}
+
 // While an app follows the daemon, the omaterm command's calls that reach
 // the daemon go to the app, as a browser op must: the first app to
 // answer wins, and an app with its control socket off refuses.

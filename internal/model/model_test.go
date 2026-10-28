@@ -70,3 +70,24 @@ func TestSaveKeepsNewerFile(t *testing.T) {
 		t.Errorf("the newer file was written over: %s", data)
 	}
 }
+
+// A pane of a session in a worktree starts in its folder, else in the
+// worktree; with the worktree gone, nowhere.
+func TestWorktreePaneDir(t *testing.T) {
+	var none *Worktree
+	if dir, err := none.PaneDir("/x"); dir != "/x" || err != nil {
+		t.Fatalf("no worktree: %q %v", dir, err)
+	}
+	w := &Worktree{Dir: t.TempDir(), Branch: "x", Base: "main"}
+	sub := filepath.Join(w.Dir, "sub")
+	os.Mkdir(sub, 0o755)
+	for in, want := range map[string]string{sub: sub, "": w.Dir, filepath.Join(w.Dir, "gone"): w.Dir} {
+		if dir, err := w.PaneDir(in); dir != want || err != nil {
+			t.Errorf("%q: %q %v, want %q", in, dir, err, want)
+		}
+	}
+	os.RemoveAll(w.Dir)
+	if dir, err := w.PaneDir(sub); err == nil || dir != "" || !w.Gone() {
+		t.Fatalf("gone: %q %v", dir, err)
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"omaterm/internal/client"
 	"omaterm/internal/ctl"
+	"omaterm/internal/model"
 	"omaterm/internal/proto"
 )
 
@@ -217,5 +219,34 @@ func TestCreateWorktreeOverSocket(t *testing.T) {
 	p.Split = made.Pane
 	if err := c.Call("split", p, &made); err == nil {
 		t.Fatal("split with a worktree")
+	}
+}
+
+// A session's panes start in its worktree: a split too, which has no
+// folder of its own; with the worktree gone, they don't start at all.
+func TestWorktreePanesStartInIt(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	wt := filepath.Join(a.workspace, ".worktrees", "x")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a.tabs[a.activeTab].Worktree = &model.Worktree{Dir: wt, Branch: "x", Base: "main"}
+	split := a.splitPane(a.activeSplitLeaf(), splitVertical)
+	p, err := a.startRestored(split, a.tabs[a.activeTab].ID, a.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Info().Dir; got != wt {
+		t.Fatalf("split started in %q, want %q", got, wt)
+	}
+
+	os.RemoveAll(wt)
+	other := a.splitPane(split, splitHorizontal)
+	if _, err := a.startRestored(other, a.tabs[a.activeTab].ID, a.workspace); err == nil || a.panes.Get(other) != nil {
+		t.Fatalf("started with the worktree gone: %v", err)
+	}
+	if !a.paneFailed[other] {
+		t.Fatal("not marked failed")
 	}
 }

@@ -600,6 +600,9 @@ func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 	a.paneDirs[paneID] = workDir
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
+	} else if workDir, err := tab.Worktree.PaneDir(workDir); err != nil {
+		a.paneFailed[paneID] = true
+		return nil, err
 	} else if _, err := a.startPane(paneID, tab.ID, workDir, p.Command, false, p.Env...); err != nil {
 		a.paneFailed[paneID] = true
 		return nil, err
@@ -709,11 +712,15 @@ func (a *appState) cliRestart(id string) error {
 	if dir == "" {
 		dir = a.paneDirs[id]
 	}
+	dir, err := (*tabs)[ti].Worktree.PaneDir(dir)
+	if err != nil {
+		return err
+	}
 	a.panes.Remove(id)
 	delete(a.paneFailed, id)
 	// The command it started with runs again: a dev server restarts as
 	// itself, not as a bare shell.
-	_, err := a.startPane(id, (*tabs)[ti].ID, dir, info.Command, false)
+	_, err = a.startPane(id, (*tabs)[ti].ID, dir, info.Command, false)
 	return err
 }
 
