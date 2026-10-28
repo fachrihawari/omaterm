@@ -454,9 +454,12 @@ func run(args []string) error {
 
 	case "wait":
 		f, err := parse(args, map[string]string{"for": "for", "t": "timeout", "timeout": "timeout"},
-			map[string]string{"x": "exit", "exit": "exit", "json": "json"})
+			map[string]string{"x": "exit", "exit": "exit", "json": "json", "any": "any", "all": "all"})
 		if err != nil {
 			return err
+		}
+		if f.set["any"] && f.set["all"] {
+			return usageErr("wait --any or --all, not both")
 		}
 		st, err := state(c)
 		if err != nil {
@@ -466,14 +469,14 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if f.set["exit"] {
+		if f.set["exit"] && len(f.pos) <= 1 {
 			return waitExit(c, t.pane, f.vals["timeout"])
 		}
 		ms, err := parseTimeout(f.vals["timeout"])
 		if err != nil {
 			return err
 		}
-		p := proto.WaitParams{ID: t.pane, TimeoutMS: ms}
+		p := proto.WaitParams{ID: waitTarget(st, t), TimeoutMS: ms, Exit: f.set["exit"]}
 		if v := f.vals["for"]; v != "" {
 			for _, s := range strings.Split(v, ",") {
 				s = strings.TrimSpace(s)
@@ -482,6 +485,9 @@ func run(args []string) error {
 				}
 				p.Status = append(p.Status, s)
 			}
+		}
+		if len(f.pos) > 1 {
+			return waitMany(c, st, f.pos, p, f.set["any"], f.set["json"])
 		}
 		var info proto.Pane
 		if err := c.Call("wait", p, &info); err != nil {
@@ -886,6 +892,72 @@ func keyBytes(name string) ([]byte, error) {
 
 // waitExit waits for the command a pane started with to end, and exits
 // with its status: or its shell's, if that ended first.
+// waitTarget is the pane a wait on t waits for: the pane t names, or for
+// a session its agent's, as a session's other panes may run a dev server.
+func waitTarget(st proto.State, t target) string {
+	if t.byPane {
+		return t.pane
+	}
+	if s, ok := sessionByID(st, t.session); ok {
+		return agentPane(s)
+	}
+	return t.pane
+}
+
+// waitMany waits for several targets, as p says, at once: for all of
+// them, or for the first (any). It prints each one's name, as given, and
+// status, as they come.
+func waitMany(c *client.Client, st proto.State, refs []string, p proto.WaitParams, any, asJSON bool) error {
+	type done struct {
+		ref  string
+		info proto.Pane
+		err  error
+	}
+	ch := make(chan done, len(refs))
+	for _, ref := range refs {
+		t, err := find(st, ref)
+		if err != nil {
+			return err
+		}
+		q := p
+		q.ID = waitTarget(st, t)
+		go func() {
+			var info proto.Pane
+			err := c.Call("wait", q, &info)
+			ch <- done{ref, info, err}
+		}()
+	}
+	var infos []proto.Pane
+	for range refs {
+		d := <-ch
+		if d.err != nil {
+			return fmt.Errorf("%s: %w", d.ref, d.err)
+		}
+		infos = append(infos, d.info)
+		switch {
+		case asJSON:
+		case p.Exit:
+			code := 0
+			if d.info.ExitCode != nil {
+				code = *d.info.ExitCode
+			}
+			if d.info.CommandExit != nil {
+				code = *d.info.CommandExit
+			}
+			fmt.Println(d.ref, "exited", code)
+		default:
+			fmt.Println(d.ref, d.info.Status)
+		}
+		if any {
+			break
+		}
+	}
+	if asJSON {
+		return printJSON(infos)
+	}
+	return nil
+}
+
 func waitExit(c *client.Client, pane, timeout string) error {
 	ms, err := parseTimeout(timeout)
 	if err != nil {
@@ -1052,7 +1124,7 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm key <target> <key…>            enter, tab, escape, up, ctrl+c, alt+x…
   omaterm prompt <target> <text…>        send, Enter, wait, print the screen
   omaterm read [target] [-n lines] [-a]
-  omaterm wait [target] [--for idle,waiting,error,exited] [--exit] [-t timeout]
+  omaterm wait [target…] [--any|--all] [--for idle,waiting,error,exited] [--exit] [-t timeout]
   omaterm status [target] [--json]
   omaterm rename <session> <name…>
   omaterm focus | close | restart <target>

@@ -110,3 +110,20 @@ func TestSessionNotesParent(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// A wait on a session waits for its agent, not the dev server beside it
+// that has the focus; one on a pane, for that pane.
+func TestWaitTarget(t *testing.T) {
+	st := twoProjects()
+	st.Sessions[0].Focus = "dev"
+	st.Sessions[0].Panes = []proto.Pane{{ID: "dev", Process: "npm"}, {ID: "pane1", Agent: "claude"}}
+	for ref, want := range map[string]string{"s1": "pane1", "dev": "dev", "s2": "pane2"} {
+		tg, err := find(st, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitTarget(st, tg); got != want {
+			t.Errorf("%s: waits for %s, want %s", ref, got, want)
+		}
+	}
+}

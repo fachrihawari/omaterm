@@ -1,12 +1,16 @@
 package main
 
 import (
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/cli"
 	"omaterm/internal/client"
 	"omaterm/internal/ctl"
 	"omaterm/internal/proto"
@@ -177,5 +181,53 @@ func TestSessionTree(t *testing.T) {
 	a.closeAsk = nil
 	if index(lead.Session) >= 0 || index(w2.Session) >= 0 || index(other.Session) < 0 || index(g.Session) < 0 {
 		t.Fatalf("close all: lead %d, w2 %d, other %d, grandchild %d", index(lead.Session), index(w2.Session), index(other.Session), index(g.Session))
+	}
+}
+
+// runCLI runs the omaterm command, returning what it printed and its exit
+// status.
+func runCLI(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	code := cli.Run(args)
+	w.Close()
+	os.Stdout = stdout
+	out, _ := io.ReadAll(r)
+	return string(out), code
+}
+
+// omaterm wait waits for several sessions at once: for the first, or for
+// all of them.
+func TestWaitMany(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	dialApp(t, a)
+	t.Setenv("OMATERM_SOCKET", a.ctl.Path())
+	t.Setenv("OMATERM_PANE", "")
+	t.Setenv("OMATERM_SESSION", "")
+	for _, s := range []struct{ name, cmd string }{{"fast", "sleep 0.2; exit 3"}, {"slow", "sleep 1.5"}, {"never", "sleep 60"}} {
+		if _, err := a.cliCreate(proto.CreateParams{Name: s.name, Dir: a.workspace, Command: []string{"sh", "-c", s.cmd}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now()
+	out, code := runCLI(t, "wait", "slow", "fast", "--any", "--exit", "-t", "10s")
+	if code != 0 || out != "fast exited 3\n" || time.Since(start) > time.Second {
+		t.Fatalf("--any: %q, status %d, after %v", out, code, time.Since(start))
+	}
+	out, code = runCLI(t, "wait", "slow", "fast", "--exit", "-t", "10s")
+	if code != 0 || out != "fast exited 3\nslow exited 0\n" {
+		t.Fatalf("all: %q, status %d", out, code)
+	}
+	if _, code = runCLI(t, "wait", "fast", "never", "--exit", "-t", "300ms"); code != 1 {
+		t.Fatalf("a timeout exits %d", code)
+	}
+	if _, code = runCLI(t, "wait", "fast", "nope", "--exit"); code != 3 {
+		t.Fatalf("no such target exits %d", code)
 	}
 }
