@@ -207,6 +207,10 @@ func (p *Pane) MailHold(now time.Time) (hold string, bracketed bool) {
 		return "the user is typing in it", false
 	case !p.typedEnd && now.Sub(p.typed) < draftHold:
 		return "the user left a draft in it", false
+	case !p.prompt && detect.ShowsPrompt(i.Agent):
+		// Something else shows over it, as a dialog, which what is typed
+		// would answer.
+		return "it isn't at its prompt", false
 	case p.seen != detect.Idle && !p.reported,
 		!p.prompt && !p.reported && now.Sub(since) < settleHold,
 		now.Sub(time.UnixMilli(i.Activity)) < time.Second:
@@ -851,11 +855,11 @@ func (p *Pane) look(now time.Time, screen string) bool {
 	st, visible := detect.Idle, true
 	if detect.Known(p.info.Agent) {
 		r := detect.Detect(p.info.Agent, detect.Input{Screen: screen, Title: p.info.Title, Progress: p.progress})
+		p.prompt = r.State == detect.Idle && r.Visible && !r.Skip
 		if r.Skip {
 			return false
 		}
 		st, visible = r.State, r.Visible
-		p.prompt = st == detect.Idle && visible
 	} else if agent.TitleBusy(p.info.Title) {
 		st = detect.Working
 	}

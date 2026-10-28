@@ -15,15 +15,17 @@ import (
 )
 
 // fakeAgent is a script named claude, as omaterm knows the agent by its
-// process: it takes bracketed pastes, says it is idle, and writes what
+// process: it takes bracketed pastes, shows its prompt, and writes what
 // it is given to its log; a message ended, it works a moment, then is
 // done.
 const fakeAgent = `#!/bin/sh
-printf '\033[?2004h\033]7501;state=idle\007'
+R=────────────────────────────────────────
+box() { printf '\n%s\n❯ \n%s\n  ? for shortcuts\n' "$R" "$R"; }
+printf '\033[?2004h\033]7501;state=idle\007'; box
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$LOG"
   case "$line" in
-  *'201~'*) printf '\033]7501;state=working\007'; sleep 0.5; printf '\033]7501;state=done\007' ;;
+  *'201~'*) printf '\033]7501;state=working\007working…\n'; sleep 0.5; printf '\033]7501;state=done\007'; box ;;
   esac
 done
 `
@@ -286,7 +288,9 @@ func TestLimit(t *testing.T) {
 // starts on its first message, and takes it, as Codex's hooks to review
 // do.
 const takingAgent = `#!/bin/sh
-printf '\033[?2004h\033]7501;state=idle\007'
+R=────────────────────────────────────────
+box() { printf '\n%s\n❯ \n%s\n  ? for shortcuts\n' "$R" "$R"; }
+printf '\033[?2004h\033]7501;state=idle\007'; box
 first=1
 while IFS= read -r line; do
   case "$line" in
@@ -294,10 +298,11 @@ while IFS= read -r line; do
     if [ $first = 1 ]; then
       first=0
       printf '\033]7501;state=working\007'; sleep 0.4
-      printf '\033]7501;state=blocked:kind=question\007'; sleep 1; printf '\033]7501;state=idle\007'
+      printf '\033]7501;state=blocked:kind=question\007 Trust the hooks? enter review · esc close\n'; sleep 1
+      printf '\033]7501;state=idle\007'; box
     else
       printf '%s\n' "$line" >> "$LOG"
-      printf '\033]7501;state=working\007'; sleep 0.5; printf '\033]7501;state=done\007'
+      printf '\033]7501;state=working\007'; sleep 0.5; printf '\033]7501;state=done\007'; box
     fi ;;
   esac
 done
@@ -326,4 +331,35 @@ func TestRetypedAfterADialog(t *testing.T) {
 	if n := strings.Count(read(log), "Review it"); n != 1 {
 		t.Fatalf("taken up %d times", n)
 	}
+}
+
+// dialogAgent is fakeAgent, but a dialog shows over its prompt as it
+// starts, as Claude Code's do, for a while.
+const dialogAgent = `#!/bin/sh
+R=────────────────────────────────────────
+box() { printf '\033[2J\033[H%s\n❯ \n%s\n  ? for shortcuts\n' "$R" "$R"; }
+printf '\033[?2004h\033]7501;state=idle\007 Teach auto mode about your environment?\n ❯ Also scan shell history  true\n Enter to continue · Esc to cancel\n'
+sleep 3; box
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG"
+done
+`
+
+// A message waits while a dialog shows over its agent's prompt: what is
+// typed would answer the dialog.
+func TestHeldForADialog(t *testing.T) {
+	w := newWorld(t)
+	if err := os.WriteFile(filepath.Join(w.dir, "claude"), []byte(dialogAgent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := w.agent("b")
+	m, err := w.box.Ask(proto.MailAskParams{To: "b", Text: "Hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.eventually("held for the dialog", func() bool { return w.mail(m.ID).Why == "it isn't at its prompt" })
+	if read(log) != "" {
+		t.Fatalf("typed into the dialog: %q", read(log))
+	}
+	w.eventually("delivered at the prompt", func() bool { return strings.Contains(read(log), "Hi") })
 }

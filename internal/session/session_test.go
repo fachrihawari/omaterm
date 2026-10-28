@@ -200,7 +200,8 @@ func TestMailHold(t *testing.T) {
 	procName = func(pid int) string { return "claude" }
 	defer func() { procName = prev }()
 	r := NewRegistry()
-	p := startExec(t, r, "p1", "s1", `set -m; printf '\033[?2004h'; sleep 0.3; printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=done\007'; sleep 5; :`)
+	p := startExec(t, r, "p1", "s1", `set -m; printf '\033[?2004h'; sleep 0.3; printf '\033]7501;state=working\007'; sleep 0.3; `+
+		`printf '\033]7501;state=done\007\n────────────────────\n❯ \n────────────────────\n'; sleep 5; :`)
 	if hold, _ := p.MailHold(time.Now()); hold != "no agent runs in it" {
 		t.Fatalf("hold %q", hold)
 	}
@@ -211,6 +212,8 @@ func TestMailHold(t *testing.T) {
 		t.Fatalf("hold %q", hold)
 	}
 	waitFor(t, p, "done", func(i Info) bool { return i.Status == Idle && len(i.Records) > 0 })
+	time.Sleep(100 * time.Millisecond)
+	r.Tick(time.Now()) // the screen read: its prompt shows
 	later := time.Now().Add(3 * time.Second)
 	if hold, bracketed := p.MailHold(later); hold != "" || !bracketed {
 		t.Fatalf("hold %q, bracketed %v", hold, bracketed)

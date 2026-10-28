@@ -387,7 +387,9 @@ func (m *Mailbox) Tick(now time.Time) {
 			case it.Note:
 				// Taken up: worked on, and no dialog came up as it was sent.
 				it.noted = it.worked && (it.past || !it.taken && now.Sub(it.at) >= enterAgain) || now.Sub(it.at) > startLimit
-			case !worked && !it.taken && !it.again && now.Sub(it.at) > enterAgain:
+			case !worked && !it.taken && !it.again && now.Sub(it.at) > enterAgain && hold == "":
+				// Still at its prompt, the message in it: Enter again. Into
+				// anything else, as a dialog, Enter would answer it.
 				it.again = true
 				sends = append(sends, send{it: it, p: p, b: []byte("\r"), enter: true})
 			case worked && stopped && now.Sub(time.UnixMilli(info.Since)) >= quietGrace:

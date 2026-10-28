@@ -314,14 +314,16 @@ func TestBranchDiffSinceItsBase(t *testing.T) {
 }
 
 // fakeAgentScript is a script named claude, as omaterm knows the agent by
-// its process: it takes bracketed pastes, says it is idle, and writes
+// its process: it takes bracketed pastes, shows its prompt, and writes
 // what it is given to its log; a message ended, it works a moment.
 const fakeAgentScript = `#!/bin/sh
-printf '\033[?2004h\033]7501;state=idle\007'
+R=────────────────────────────────────────
+box() { printf '\n%s\n❯ \n%s\n  ? for shortcuts\n' "$R" "$R"; }
+printf '\033[?2004h\033]7501;state=idle\007'; box
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$LOG"
   case "$line" in
-  *'201~'*) printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=done\007' ;;
+  *'201~'*) printf '\033]7501;state=working\007working…\n'; sleep 0.3; printf '\033]7501;state=done\007'; box ;;
   esac
 done
 `

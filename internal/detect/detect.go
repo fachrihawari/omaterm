@@ -150,6 +150,22 @@ func find(agent string) *manifest {
 	return loaded[agent]
 }
 
+// ShowsPrompt tells an agent whose screen shows outright when it is at its
+// prompt, by a rule of its manifest, not just its title: anything else
+// on its screen, as a dialog over the prompt, is not its prompt.
+func ShowsPrompt(agent string) bool {
+	m := find(agent)
+	if m == nil {
+		return false
+	}
+	for _, r := range m.Rules {
+		if r.State == Idle && r.VisibleIdle && r.Region != "osc_title" {
+			return true
+		}
+	}
+	return false
+}
+
 // Detect tells what the agent is doing, from its manifest's rules.
 func Detect(agent string, in Input) Result {
 	m := find(agent)
