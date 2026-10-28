@@ -408,12 +408,83 @@ func (a *appState) closeTabAsking(i int) {
 		a.closeTab(i)
 		return
 	}
+	if kids := a.startedBy(t.ID); len(kids) > 0 {
+		a.closeParentAsking(t, kids)
+		return
+	}
+	a.closeSessionAsking(t)
+}
+
+// closeSessionAsking closes a session its own way: asking about its
+// worktree's work, or the program it still runs.
+func (a *appState) closeSessionAsking(t topTab) {
 	if t.Worktree != nil && !t.Worktree.Gone() {
 		a.closeWorktreeAsking(t)
 		return
 	}
 	id := t.ID
 	a.confirmCloseRunning(t.Split.termIDs(), "Close Session", func() { a.closeTabID(id) })
+}
+
+// startedBy lists the sessions of the shown project that the session id
+// started, and those they started, and so on.
+func (a *appState) startedBy(id string) []topTab {
+	var kids []topTab
+	for _, n := range sessionOrder(a.tabs) {
+		if a.tabs[n.index].ID == id {
+			for _, k := range n.kids {
+				kids = append(kids, a.tabs[k])
+			}
+		}
+	}
+	return kids
+}
+
+// closeParentAsking closes a session that started others: with them, or
+// leaving them as sessions of their own. Their worktrees stay either way,
+// as closing a worktree's session from elsewhere keeps it.
+func (a *appState) closeParentAsking(t topTab, kids []topTab) {
+	names := make([]string, len(kids))
+	worktrees := false
+	for i, k := range kids {
+		names[i] = a.tabName(k)
+		worktrees = worktrees || k.Worktree != nil
+	}
+	text := a.tabName(t) + " started " + andList(names) + ". Close them too, or keep them as sessions of their own."
+	if worktrees {
+		text += " Their worktrees stay either way."
+	}
+	if t.Worktree == nil {
+		// Asked here, not again after.
+		if what := a.runningProgram(t.Split.termIDs()); what != "" {
+			text = what + " is still running. Closing ends it. " + text
+		}
+	}
+	closeIt := func() {
+		if t.Worktree != nil && !t.Worktree.Gone() {
+			a.closeWorktreeAsking(t)
+		} else {
+			a.closeTabID(t.ID)
+		}
+	}
+	a.closeAsk = &closeAsk{open: true, title: "Close Session", text: text, alt: "Keep Them", altRun: closeIt,
+		confirm: "Close All", run: func() {
+			for _, k := range kids {
+				a.cliCloseSession(k.ID)
+			}
+			closeIt()
+		}}
+}
+
+// andList joins names as a sentence does: "a", "a and b", "a, b and c".
+func andList(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // closeTabID closes the shown project's tab id.

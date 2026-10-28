@@ -42,3 +42,36 @@ func Tree(n int, id, parent func(i int) string) []TreeNode {
 	}
 	return out
 }
+
+// TreeInsert is where a new item goes in a list ordered as a tree, for it
+// to come last under parent: after the parent and what is under it; n
+// when the parent isn't among the n items.
+func TreeInsert(n int, id, parent func(i int) string, parentID string) int {
+	index := make(map[string]int, n)
+	for i := range n {
+		index[id(i)] = i
+	}
+	at, ok := index[parentID]
+	if !ok {
+		return n
+	}
+	under := func(i int) bool {
+		for hops := 0; hops < n; hops++ {
+			p := parent(i)
+			if p == parentID {
+				return true
+			}
+			j, ok := index[p]
+			if !ok {
+				return false
+			}
+			i = j
+		}
+		return false
+	}
+	at++
+	for at < n && under(at) {
+		at++
+	}
+	return at
+}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -480,7 +481,7 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	paneID := newID()
 	tab := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen, Split: &splitNode{TermID: paneID},
 		Created: nowFunc().UnixMilli(), Parent: parent}
-	*tabs = append(*tabs, tab)
+	a.insertTab(proj, tabs, tab)
 	dir := p.Dir
 	if dir == "" {
 		dir = proj.Path
@@ -497,6 +498,28 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	}
 	a.saveSoon()
 	return proto.Created{Session: tab.ID, Pane: paneID}, nil
+}
+
+// insertTab adds a session to project p's tabs: last, or last under the
+// session that started it, so that the tab bar and the keys go through
+// them as the sidebar shows them.
+func (a *appState) insertTab(p *project, tabs *[]topTab, tab topTab) {
+	at := len(*tabs)
+	if tab.Parent != "" {
+		at = model.TreeInsert(len(*tabs), func(i int) string { return (*tabs)[i].ID },
+			func(i int) string { return (*tabs)[i].Parent }, tab.Parent)
+	}
+	*tabs = slices.Insert(*tabs, at, tab)
+	switch w := a.ws[p.ID]; {
+	case p.ID == a.wsOwner:
+		if at <= a.activeTab && a.activeTab < len(*tabs)-1 {
+			a.activeTab++
+		}
+	case w != nil && &w.tabs == tabs:
+		if at <= w.activeTab && w.activeTab < len(*tabs)-1 {
+			w.activeTab++
+		}
+	}
 }
 
 // findPane finds the project and tab holding a pane, among all projects'.

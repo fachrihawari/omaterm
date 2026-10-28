@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -322,7 +323,10 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 	} else if err := d.startPane(sid, pid, dir, p.Command, p.Env); err != nil {
 		return nil, err
 	}
-	st.Sessions = append(st.Sessions, model.Session{ID: sid, Project: proj.ID, Name: name, Parent: parent,
+	// Last under the session that started it, as the app shows it.
+	at := model.TreeInsert(len(st.Sessions), func(i int) string { return st.Sessions[i].ID },
+		func(i int) string { return st.Sessions[i].Parent }, parent)
+	st.Sessions = slices.Insert(st.Sessions, at, model.Session{ID: sid, Project: proj.ID, Name: name, Parent: parent,
 		Created: time.Now().UnixMilli(), Focus: pid, Layout: &model.Layout{Pane: pid}, Panes: []model.Pane{pane}})
 	return proto.Created{Session: sid, Pane: pid}, nil
 }
@@ -364,7 +368,8 @@ func (d *Daemon) createWorktree(ctx context.Context, p proto.CreateParams) (any,
 		}
 		v, err := d.create(st, p)
 		if err == nil {
-			st.Sessions[len(st.Sessions)-1].Worktree = &model.Worktree{Dir: wt.Dir, Branch: wt.Branch, Base: wt.Base}
+			i := sessionIndex(st, v.(proto.Created).Session)
+			st.Sessions[i].Worktree = &model.Worktree{Dir: wt.Dir, Branch: wt.Branch, Base: wt.Base}
 		}
 		return v, err
 	})

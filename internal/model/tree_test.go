@@ -25,3 +25,16 @@ func TestTree(t *testing.T) {
 		}
 	}
 }
+
+func TestTreeInsert(t *testing.T) {
+	ids := []string{"a", "c", "e", "d", "b"}
+	parents := []string{"", "a", "c", "a", ""}
+	at := func(parent string) int {
+		return TreeInsert(len(ids), func(i int) string { return ids[i] }, func(i int) string { return parents[i] }, parent)
+	}
+	for parent, want := range map[string]int{"a": 4, "c": 3, "e": 3, "b": 5, "gone": 5} {
+		if got := at(parent); got != want {
+			t.Errorf("under %s: at %d, want %d", parent, got, want)
+		}
+	}
+}
