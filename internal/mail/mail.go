@@ -55,6 +55,8 @@ type Mailbox struct {
 	next    int
 	items   []*item
 	changed chan struct{} // closed and replaced on every change
+	// limits are how many more times a pane may ask another (Limit).
+	limits map[[2]string]int
 }
 
 // item is a message, with what the mailbox knows of its way.
@@ -73,7 +75,7 @@ type item struct {
 
 // New returns a mailbox for reg's panes.
 func New(reg *session.Registry) *Mailbox {
-	return &Mailbox{reg: reg, now: time.Now, changed: make(chan struct{})}
+	return &Mailbox{reg: reg, now: time.Now, changed: make(chan struct{}), limits: map[[2]string]int{}}
 }
 
 // settled tells a message whose way is over: answered, or not to be, or
@@ -147,6 +149,13 @@ func (m *Mailbox) Ask(p proto.MailAskParams) (proto.Mail, error) {
 			}
 		}
 	}
+	if n, ok := m.limits[[2]string{p.From, p.To}]; ok && !p.Note {
+		if n <= 0 {
+			return proto.Mail{}, proto.Errorf(proto.CodeUsage, "you asked "+named(p.ToName, p.To)+
+				" as many times as you may: tell the user what you found, with omaterm report done")
+		}
+		m.limits[[2]string{p.From, p.To}] = n - 1
+	}
 	now := m.now()
 	m.next++
 	it := &item{Mail: proto.Mail{ID: "m" + strconv.Itoa(m.next), From: p.From, FromName: p.FromName, To: p.To, ToName: p.ToName,
@@ -156,6 +165,14 @@ func (m *Mailbox) Ask(p proto.MailAskParams) (proto.Mail, error) {
 	m.trim()
 	m.changedLocked()
 	return it.Mail, nil
+}
+
+// Limit lets pane from ask pane to at most n times more: a review's
+// rounds.
+func (m *Mailbox) Limit(from, to string, n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.limits[[2]string{from, to}] = n
 }
 
 // trim forgets the oldest messages past kept that are over.
@@ -506,6 +523,13 @@ func (m *Mailbox) Serve(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		return m.Reply(p)
+	case "mail.limit":
+		var p proto.MailLimitParams
+		if err := decode(&p); err != nil {
+			return nil, err
+		}
+		m.Limit(p.From, p.To, p.N)
+		return true, nil
 	case "mail.list":
 		var p proto.MailListParams
 		if err := decode(&p); err != nil {

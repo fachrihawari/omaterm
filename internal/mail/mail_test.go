@@ -261,3 +261,23 @@ func TestAskRefuses(t *testing.T) {
 		}
 	}
 }
+
+// A pane limited in how often it may ask another is refused past that.
+func TestLimit(t *testing.T) {
+	w := newWorld(t)
+	w.start("a", []string{"sleep", "30"})
+	w.start("b", []string{"sleep", "30"})
+	w.box.Limit("b", "a", 2)
+	for i := range 3 {
+		_, err := w.box.Ask(proto.MailAskParams{From: "b", To: "a", ToName: "w1", Text: "Fix it", NoWait: true})
+		if (err == nil) != (i < 2) {
+			t.Fatalf("ask %d: %v", i+1, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "you asked w1 as many times as you may") {
+			t.Fatal(err)
+		}
+	}
+	if _, err := w.box.Ask(proto.MailAskParams{From: "a", To: "b", Text: "Others may"}); err != nil {
+		t.Fatal(err)
+	}
+}

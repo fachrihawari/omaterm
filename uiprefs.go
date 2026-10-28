@@ -22,6 +22,8 @@ type uiPrefs struct {
 	WorktreeAgent string `json:"worktreeAgent,omitempty"`
 	WorktreeEnv   *bool  `json:"worktreeEnv,omitempty"`
 	MergeSquash   *bool  `json:"mergeSquash,omitempty"`
+	// ReviewAgent is the Ask for Review dialog's last reviewer.
+	ReviewAgent string `json:"reviewAgent,omitempty"`
 	// DiffSplit and FontSize are read once, to move them to settings.json.
 	DiffSplit *bool   `json:"diffSplit,omitempty"`
 	FontSize  float32 `json:"fontSize,omitempty"`
@@ -71,7 +73,7 @@ func (a *appState) loadUIPrefs() {
 	}
 	a.agentSetupAsked = u.AgentSetupAsked
 	a.settingsPage = u.SettingsPage
-	a.wtAgent = u.WorktreeAgent
+	a.wtAgent, a.reviewAgent = u.WorktreeAgent, u.ReviewAgent
 	if u.WorktreeEnv != nil {
 		a.wtEnv = *u.WorktreeEnv
 	}
@@ -92,6 +94,7 @@ func (a *appState) saveUIPrefs() {
 		AgentSetupAsked: a.agentSetupAsked,
 		SettingsPage:    a.settingsPage,
 		WorktreeAgent:   a.wtAgent, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
+		ReviewAgent: a.reviewAgent,
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {

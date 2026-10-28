@@ -345,6 +345,10 @@ type appState struct {
 	wtAgent     string
 	wtEnv       bool
 	mergeSquash bool
+	// review is the Ask for Review dialog, open while set; reviewAgent its
+	// last choice.
+	review      *reviewAsk
+	reviewAgent string
 	// paneShown is when each pane was last shown: a daemon pane hidden
 	// long lets go of its terminal in the app (detachHidden).
 	paneShown         map[string]time.Time

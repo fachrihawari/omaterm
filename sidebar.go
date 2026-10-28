@@ -397,6 +397,9 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			mygo.Clipboard.WriteText(info.WorkDir())
 			c.Toast("Copied")
 		}
+		if _, _, ok := a.agentOf(t); ok && m.Item("Ask for Review…").Chosen() {
+			a.openReviewDialog(t)
+		}
 		if w := t.Worktree; w != nil {
 			m.Separator()
 			if m.Item("Merge into " + w.Base + "…").Chosen() {

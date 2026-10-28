@@ -589,3 +589,79 @@ func TestMergeCommand(t *testing.T) {
 		t.Fatalf("merging it again exits %d", code)
 	}
 }
+
+// Ask for Review starts a reviewer under the session reviewed, in its
+// folder, briefed once it is up, and asking it 3 times at most.
+func TestAskForReview(t *testing.T) {
+	prev := reviewCommand
+	var started []string
+	reviewCommand = func(agent string) []string { started = append(started, agent); return []string{"sleep", "30"} }
+	defer func() { reviewCommand = prev }()
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.panes.Run(ctx)
+	_, author, _, workerWT := leadAndWorker(t, a)
+	cmd, env, _ := fakeAgent(t, "w1")
+	// The worker's agent, in a pane of its own beside the sleep.
+	if _, err := a.cliSplit(proto.CreateParams{Split: author.Pane, Command: cmd, Env: []string{env}}); err != nil {
+		t.Fatal(err)
+	}
+	_, tabs, ti, _ := a.findSession(author.Session)
+	var agentPane string
+	for deadline := time.Now().Add(10 * time.Second); agentPane == ""; time.Sleep(50 * time.Millisecond) {
+		a.syncStatus()
+		agentPane, _, _ = a.agentOf((*tabs)[ti])
+		if time.Now().After(deadline) {
+			t.Fatal("no agent in the worker's session")
+		}
+	}
+
+	a.openReviewDialog((*tabs)[ti])
+	if a.review == nil || a.review.agent != "codex" {
+		t.Fatalf("dialog %+v: the reviewer should be other than the session's claude", a.review)
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("Ask for Review") {
+		t.Fatalf("no dialog: %v", tr.Texts())
+	}
+	if err := tr.Click("Start Review"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.review != nil || len(started) != 1 || started[0] != "codex" || a.reviewAgent != "codex" {
+		t.Fatalf("dialog %+v, started %v", a.review, started)
+	}
+	var reviewer *topTab
+	for i := range a.tabs {
+		if a.tabs[i].Label == "review w1" {
+			reviewer = &a.tabs[i]
+		}
+	}
+	if reviewer == nil || reviewer.Parent != author.Session || reviewer.Worktree != nil {
+		t.Fatalf("reviewer %+v", reviewer)
+	}
+	rpane := reviewer.Split.termIDs()[0]
+	if dir := a.paneDirs[rpane]; dir != workerWT.Dir {
+		t.Errorf("the reviewer works in %s, not the worker's %s", dir, workerWT.Dir)
+	}
+	var list []proto.Mail
+	if err := c.Call("mail.list", proto.MailListParams{Pane: rpane}, &list); err != nil || len(list) != 1 {
+		t.Fatalf("mail %+v %v", list, err)
+	}
+	for _, want := range []string{"review the work of the agent in session \"w1\" (pane " + agentPane + ")",
+		"omaterm diff " + agentPane + " --branch", "omaterm ask " + agentPane, "At most 3 rounds"} {
+		if !strings.Contains(list[0].Text, want) || !list[0].Note {
+			t.Errorf("no %q in the brief %q", want, list[0].Text)
+		}
+	}
+	for i := range 4 {
+		err := c.Call("mail.ask", proto.MailAskParams{From: rpane, To: agentPane, Text: "Fix it", NoWait: true}, nil)
+		if (err == nil) != (i < 3) {
+			t.Fatalf("round %d: %v", i+1, err)
+		}
+	}
+}

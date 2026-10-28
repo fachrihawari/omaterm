@@ -272,6 +272,14 @@ type MailReplyParams struct {
 	Text string `json:"text"`
 }
 
+// MailLimitParams let pane From ask pane To at most N times more
+// (mail.limit), as a review's rounds.
+type MailLimitParams struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	N    int    `json:"n"`
+}
+
 // MailListParams list the messages to and from a pane (mail.list); all
 // of them for none.
 type MailListParams struct {
