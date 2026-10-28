@@ -174,7 +174,7 @@ var commandRegistry = append([]Command{
 		Enabled: func(a *appState) bool { return a.focusedWeb() != nil && a.focusedWeb().view != nil },
 		Run:     func(a *appState, c *ui.Context) { a.focusedWeb().view.Page().OpenDevTools() }},
 	{ID: "view.changes", Title: "Show Last Turn", Category: "View",
-		Run: func(a *appState, c *ui.Context) { a.changes.lastTurn = true; a.showInspectorTab(2) }},
+		Run: func(a *appState, c *ui.Context) { a.changes.mode = changesTurn; a.showInspectorTab(2) }},
 	{ID: "pane.zoom", Title: "Zoom Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.toggleZoom() }},

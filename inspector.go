@@ -413,13 +413,14 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 			a.repoSwitcher(c)
 		}
 
-		// While the focused pane's agent has a turn, a switch shows its
-		// changes alone.
-		if info, ok := a.changesPane(); ok && info.Turn != nil {
+		// While the focused pane's agent has a turn, or its session a
+		// worktree, a switch shows the turn's changes alone, or the
+		// branch's.
+		if info, ok := a.changesPane(); ok && (info.Turn != nil || a.focusedWorktree() != nil) {
 			ui.Box(c).Padding(10, 10, 8, 10).Shrink(0).Children(func() {
-				a.turnSwitch(c)
+				a.turnSwitch(c, info)
 			})
-			if a.changes.lastTurn {
+			if a.changesView(info) != changesAll {
 				a.turnChanges(c, info)
 				return
 			}

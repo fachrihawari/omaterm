@@ -55,7 +55,7 @@ func (a *appState) loadUIPrefs() {
 		a.inspectorTab = *u.InspectorTab
 	} else if u.InspectorTab != nil && *u.InspectorTab == 3 {
 		// The Changes tab, now the Git tab's Last turn.
-		a.inspectorTab, a.changes.lastTurn = 2, true
+		a.inspectorTab, a.changes.mode = 2, changesTurn
 	}
 	// The text size and the diff layout were kept here before they were
 	// settings: settings.json takes them once, while it has none.

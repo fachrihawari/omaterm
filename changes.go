@@ -3,7 +3,9 @@ package main
 // The Git tab's Last turn view: what the focused pane's agent changed in
 // its last turn, against a snapshot taken as the agent began working.
 // Each file opens to its diff, whose changes can be kept or reverted, one
-// at a time. It follows the focused pane, into a worktree too.
+// at a time. It follows the focused pane, into a worktree too. Its Branch
+// view is what a worktree's branch changed since its base, committed or
+// not: what a merge would bring.
 
 import (
 	"context"
@@ -15,14 +17,25 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 
 	"omaterm/internal/gitsnap"
+	"omaterm/internal/model"
 	"omaterm/internal/session"
 	"omaterm/service"
 )
 
+// changeMode is what the Git tab shows of the focused pane.
+type changeMode int
+
+const (
+	changesAll    changeMode = iota // everything not committed
+	changesTurn                     // the agent's last turn
+	changesBranch                   // the worktree's branch since its base
+)
+
 // changeSet is the Last turn view's state.
 type changeSet struct {
-	// lastTurn is the Git tab's switch: the turn's changes, not all.
-	lastTurn bool
+	// mode is the Git tab's switch; filesMode what files are of.
+	mode      changeMode
+	filesMode changeMode
 
 	// What the list is of: the pane, its worktree, the turn's revision,
 	// and its files.
@@ -64,17 +77,44 @@ func (a *appState) changesPane() (session.Info, bool) {
 	return info, true
 }
 
-// refreshChanges lists the files the turn changed, off the UI thread,
-// when what the list is of changed or it is due.
+// focusedWorktree is the worktree of the session shown, nil for none.
+func (a *appState) focusedWorktree() *model.Worktree {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+		return nil
+	}
+	return a.tabs[a.activeTab].Worktree
+}
+
+// changesView is what the Git tab shows of the focused pane: the switch's
+// view, when the pane has what it shows, else all changes.
+func (a *appState) changesView(info session.Info) changeMode {
+	switch {
+	case a.changes.mode == changesTurn && info.Turn != nil:
+		return changesTurn
+	case a.changes.mode == changesBranch && a.focusedWorktree() != nil:
+		return changesBranch
+	}
+	return changesAll
+}
+
+// refreshChanges lists the files the turn, or the worktree's branch,
+// changed, off the UI thread, when what the list is of changed or it is
+// due.
 func (a *appState) refreshChanges(force bool) {
 	cs := &a.changes
 	info, ok := a.changesPane()
-	if !ok || info.Turn == nil {
+	mode := a.changesView(info)
+	if !ok || mode == changesAll {
 		cs.files, cs.err, cs.pane = nil, "", ""
 		return
 	}
-	turn := info.Turn.Tree
-	key := info.ID + "|" + turn
+	turn, base := "", ""
+	if mode == changesTurn {
+		turn = info.Turn.Tree
+	} else {
+		base = a.focusedWorktree().Base
+	}
+	key := info.ID + "|" + turn + "|" + base
 	stamp := service.GitStamp(firstNonEmpty(cs.root, service.RepoRoot(info.WorkDir())))
 	every := 30 * time.Second
 	if info.Status == session.Working {
@@ -96,7 +136,12 @@ func (a *appState) refreshChanges(force bool) {
 		var rev string
 		var files []gitsnap.File
 		if err == nil {
-			if rev, _, err = r.Base(ctx, gitsnap.BaseTurn, turn); err == nil {
+			if base != "" {
+				rev, err = r.MergeBase(ctx, base)
+			} else {
+				rev, _, err = r.Base(ctx, gitsnap.BaseTurn, turn)
+			}
+			if err == nil {
 				files, err = r.Changes(ctx, rev, "")
 			}
 		}
@@ -119,7 +164,7 @@ func (a *appState) refreshChanges(force bool) {
 				cs.err, cs.files = err.Error(), nil
 				return
 			}
-			cs.root, cs.rev, cs.files = r.Root, rev, files
+			cs.root, cs.rev, cs.files, cs.filesMode = r.Root, rev, files, mode
 			for path, f := range cs.open {
 				f.loading = false
 				a.loadChangeFile(path, f.file)
@@ -207,36 +252,42 @@ func (a *appState) revertHunk(c *ui.Context, cf *changeFile, i int) {
 	a.refreshChanges(true)
 }
 
-// turnSwitch is the Git tab's switch between all changes and the last
-// turn's, shown while the focused pane's agent has one.
-func (a *appState) turnSwitch(c *ui.Context) {
+// turnSwitch is the Git tab's switch between all changes, the last
+// turn's, while the focused pane's agent has one, and its worktree
+// branch's, for a session in a worktree.
+func (a *appState) turnSwitch(c *ui.Context, info session.Info) {
 	cs := &a.changes
+	type segment struct {
+		mode       changeMode
+		label, tip string
+	}
+	segs := []segment{{changesAll, "All changes", "Everything not committed"}}
+	if info.Turn != nil {
+		segs = append(segs, segment{changesTurn, "Last turn", "What the agent changed in its last turn"})
+	}
+	if w := a.focusedWorktree(); w != nil {
+		segs = append(segs, segment{changesBranch, "Branch", "What " + w.Branch + " changed since " + w.Base + ", committed or not"})
+	}
+	view := a.changesView(info)
 	ui.Row(c.Key("turn-seg")).Radius(8).Padding(2).Background(pal.Chip).Shrink(0).Children(func() {
-		for _, b := range []struct {
-			turn  bool
-			label string
-			tip   string
-		}{
-			{false, "All changes", "Everything not committed"},
-			{true, "Last turn", "What the agent changed in its last turn"},
-		} {
+		for _, b := range segs {
 			seg := ui.ButtonBase(c.Key(b.label)).Grow(1).Height(26).Radius(6).Center().Tooltip(b.tip)
 			col := pal.TextMuted
-			if cs.lastTurn == b.turn {
+			if view == b.mode {
 				raised(seg.Background(pal.Raised))
 				col = pal.Text
 			}
 			seg.Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 					ui.Text(c, b.label).FontSize(12).FontWeight(500).TextColor(col).SingleLine()
-					if b.turn && len(cs.files) > 0 {
+					if b.mode != changesAll && b.mode == cs.filesMode && len(cs.files) > 0 {
 						countBadge(c, len(cs.files))
 					}
 				})
 			})
-			if seg.Clicked() && cs.lastTurn != b.turn {
-				cs.lastTurn = b.turn
-				if b.turn {
+			if seg.Clicked() && view != b.mode {
+				cs.mode = b.mode
+				if b.mode != changesAll {
 					a.refreshChanges(true)
 				}
 			}
@@ -268,7 +319,12 @@ func (a *appState) turnChanges(c *ui.Context, info session.Info) {
 			if removed > 0 {
 				ui.Text(c, "−"+strconv.Itoa(removed)).FontSize(12).TextColor(pal.Bad).SingleLine()
 			}
-			since := "since turn " + ago(nowFunc().Sub(time.UnixMilli(info.Turn.At))) + " ago"
+			var since string
+			if w := a.focusedWorktree(); cs.filesMode == changesBranch && w != nil {
+				since = "since " + w.Base
+			} else if info.Turn != nil {
+				since = "since turn " + ago(nowFunc().Sub(time.UnixMilli(info.Turn.At))) + " ago"
+			}
 			ui.Text(c, "· "+since).FontSize(12).TextColor(pal.TextFaint).SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
 			ui.Spacer(c)
 			if cmdButton(c, iconRefresh, 13, false).Tooltip("Refresh").Clicked() {
@@ -349,7 +405,8 @@ func (a *appState) changeRow(c *ui.Context, f gitsnap.File) {
 		ui.Text(c, "Too large to show: omaterm diff prints it").FontSize(11.5).TextColor(pal.TextMuted).Padding(4, 8)
 	case cf.ds != nil:
 		ds := cf.ds
-		ds.HunkActions = !a.worktreeBusy(cs.root)
+		// A branch's changes are committed: reverting is for a turn's.
+		ds.HunkActions = cs.filesMode == changesTurn && !a.worktreeBusy(cs.root)
 		ds.RenderHunkActions = func(c *ui.Context, bar ui.Element, h *editor.DiffHunkActions) {
 			bar.Row().Gap(4).Children(func() {
 				keep := ui.ButtonBase(c.Key("keep")).Height(20).Padding(0, 8).Radius(5)

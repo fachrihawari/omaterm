@@ -15,6 +15,7 @@ import (
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
+	"omaterm/internal/session"
 	"omaterm/internal/worktree"
 	"omaterm/service"
 )
@@ -466,5 +467,47 @@ func TestMergeWorktree(t *testing.T) {
 	}
 	if a.inspectorTab != 2 {
 		t.Fatal("the Git panel isn't shown")
+	}
+}
+
+// A worktree's session offers the Git tab's Branch view: what its branch
+// changed since its base, committed or not, with no Revert.
+func TestGitTabBranchView(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	wt, err := worktree.Add(context.Background(), a.workspace, "feat", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := a.createWorktreeSession(wt, proto.CreateParams{Project: a.project().ID, Command: []string{"sleep", "30"}, Focus: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(wt.Dir, "committed.txt"), []byte("c\n"), 0o644)
+	for _, args := range [][]string{{"add", "."}, {"-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "c"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wt.Dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+	os.WriteFile(filepath.Join(wt.Dir, "uncommitted.txt"), []byte("u\n"), 0o644)
+	_, tabs, ti, _ := a.findSession(c.Session)
+	id := (*tabs)[ti].Split.termIDs()[0]
+	a.status[id] = session.Info{ID: id, Session: c.Session, Dir: wt.Dir, Status: session.Idle, Progress: -1}
+	a.inspectorVisible, a.inspectorTab = true, 2
+	tr := ui.NewTester(a.view, 1440, 900)
+	frameUntil(t, tr, "the switch", func() bool { return tr.HasText("Branch") })
+	if tr.HasText("Last turn") {
+		t.Fatal("Last turn offered with no turn")
+	}
+	if err := tr.Click("Branch"); err != nil {
+		t.Fatal(err)
+	}
+	frameUntil(t, tr, "the branch's files", func() bool {
+		return tr.HasText("committed.txt") && tr.HasText("uncommitted.txt") && tr.HasText("· since main")
+	})
+	if tr.HasText("hello.txt") {
+		t.Fatal("the main checkout's change shows")
 	}
 }
