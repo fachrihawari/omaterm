@@ -692,4 +692,12 @@ func TestReportWithoutATerminal(t *testing.T) {
 	if info.Message != "Merged w1" || len(info.Records) != 1 || info.Records[0].State != "done" {
 		t.Fatalf("%+v", info)
 	}
+	// The agent's program reports its turn done, as Claude Code does: what
+	// the agent said stays.
+	if err := a.panes.Get(pane).Report("state=done:app=claude-code"); err != nil {
+		t.Fatal(err)
+	}
+	if info := a.panes.Get(pane).Info(); info.Message != "Merged w1" {
+		t.Fatalf("after the program's own report: %+v", info)
+	}
 }

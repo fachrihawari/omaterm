@@ -1023,12 +1023,17 @@ func report(args []string) error {
 		_, err = tty.WriteString(seq)
 		return err
 	}
-	// None, as for an agent's commands: to omaterm, for the pane.
+	// None, as for an agent's commands: to omaterm, for the pane. The
+	// agent's program may report too, with no id, which would replace
+	// what the agent says: the agent's has an id of its own.
 	if c, err := connect(); err == nil {
 		defer c.Close()
 		if st, err := state(c); err == nil {
 			if pane, _ := me(st); pane != "" {
-				body := strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b]7501;"), "\x1b\\")
+				if r.ID == "" {
+					r.ID = "agent"
+				}
+				body := strings.TrimSuffix(strings.TrimPrefix(osc.Encode(r), "\x1b]7501;"), "\x1b\\")
 				return c.Call("report", proto.ReportParams{ID: pane, Body: body}, nil)
 			}
 		}

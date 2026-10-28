@@ -176,3 +176,18 @@ func TestScannerBracketed(t *testing.T) {
 		t.Errorf("bodies %q", b)
 	}
 }
+
+// Of reports of a state, one that words it leads: an agent's own, over
+// its program's bare one as its turn ends.
+func TestLeadWorded(t *testing.T) {
+	var rs Records
+	rs.Apply(Record{ID: "agent", State: "done", Msg: "Merged w1", Progress: -1})
+	rs.Apply(Record{State: "done", App: "claude-code", Progress: -1})
+	if r, _ := rs.Lead(); r.Msg != "Merged w1" {
+		t.Fatalf("lead %+v", r)
+	}
+	rs.Apply(Record{State: "working", App: "claude-code", Progress: -1})
+	if r, _ := rs.Lead(); r.State != "working" {
+		t.Fatalf("lead %+v", r)
+	}
+}
