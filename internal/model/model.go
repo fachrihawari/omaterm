@@ -58,6 +58,10 @@ type Session struct {
 	Panes      []Pane  `json:"panes"`
 	// Worktree is the git worktree the session works in, nil for none.
 	Worktree *Worktree `json:"worktree,omitempty"`
+	// Parent is the session whose agent started this one, "" for none;
+	// Collapsed hides the sessions it started in the sidebar.
+	Parent    string `json:"parent,omitempty"`
+	Collapsed bool   `json:"collapsed,omitempty"`
 }
 
 // Worktree is a git worktree omaterm made for a session (internal/worktree):

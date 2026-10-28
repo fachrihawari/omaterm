@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"omaterm/internal/client"
+	"omaterm/internal/model"
 	"omaterm/internal/osc"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
@@ -284,19 +285,25 @@ func run(args []string) error {
 			}
 		} else if len(f.pos) > 0 {
 			return usageErr("omaterm new [-n name] [-d dir] [--worktree branch] [-- command…]")
-		} else if p.Project != "" {
+		} else if p.Project != "" || os.Getenv("OMATERM_PANE") != "" || os.Getenv("OMATERM_SESSION") != "" {
 			st, err := state(c)
 			if err != nil {
 				return err
 			}
-			project := p.Project
-			for _, pr := range st.Projects {
-				if pr.ID == p.Project || strings.EqualFold(pr.Name, p.Project) {
-					project = pr.ID
+			if p.Project != "" {
+				project := p.Project
+				for _, pr := range st.Projects {
+					if pr.ID == p.Project || strings.EqualFold(pr.Name, p.Project) {
+						project = pr.ID
+					}
+				}
+				if err := sameProject(st, project, f.set["any-project"]); err != nil {
+					return err
 				}
 			}
-			if err := sameProject(st, project, f.set["any-project"]); err != nil {
-				return err
+			// Started from a pane: its session is the new one's parent.
+			if t, err := find(st, current(st)); err == nil {
+				p.By = t.pane
 			}
 		}
 		method := "create"
@@ -759,9 +766,16 @@ func listSessions(st proto.State) {
 		projects[p.ID] = p.Name
 	}
 	fmt.Printf("%-8s %-8s %-22s %-9s %-14s %s\n", "SESSION", "PANE", "NAME", "STATUS", "PROGRAM", "DIR")
-	for _, s := range st.Sessions {
+	// A session another's agent started comes under it.
+	tree := model.Tree(len(st.Sessions), func(i int) string { return st.Sessions[i].ID },
+		func(i int) string { return st.Sessions[i].Parent })
+	for _, n := range tree {
+		s := st.Sessions[n.Index]
+		name := projects[s.Project] + "/" + s.Name
+		if n.Depth > 0 {
+			name = strings.Repeat("  ", n.Depth-1) + "└ " + s.Name
+		}
 		for _, p := range s.Panes {
-			name := projects[s.Project] + "/" + s.Name
 			fmt.Printf("%-8s %-8s %-22s %-9s %-14s %s\n", s.ID, p.ID, trunc(name, 22), p.Status,
 				trunc(orDash(firstNonEmpty(p.Agent, p.Process)), 14), shortDir(p.WorkDir()))
 		}

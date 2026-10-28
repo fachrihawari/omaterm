@@ -154,7 +154,7 @@ func hookContext(c *client.Client, pane, sid string, away bool) string {
 }
 
 // sessionNotes tells the agent what to know of its session: its name,
-// and the worktree it works in.
+// the worktree it works in, and the session that started it.
 func sessionNotes(st proto.State, sid string) string {
 	var b strings.Builder
 	for _, s := range st.Sessions {
@@ -167,12 +167,48 @@ func sessionNotes(st proto.State, sid string) string {
 		case s.Name != "":
 			fmt.Fprintf(&b, " The user knows this session as %q: leave its name alone.", s.Name)
 		}
+		parent, ok := sessionByID(st, s.Parent)
 		if w := s.Worktree; w != nil {
+			who := "the user reviews it and merges it"
+			if ok && parent.Worktree != nil && parent.Worktree.Branch == w.Base {
+				who = fmt.Sprintf("the agent in session %q, which started this one, merges it", parent.Name)
+			}
 			fmt.Fprintf(&b, " This session works in a git worktree, on a branch of its own, %s, made from %s: "+
-				"commit your work on it there; the user reviews it and merges it into %s.", w.Branch, w.Base, w.Base)
+				"commit your work on it there; %s into %s.", w.Branch, w.Base, who, w.Base)
+		}
+		if ok {
+			fmt.Fprintf(&b, " The agent in session %q (pane %s) started this session: "+
+				"answer the messages it sends you with omaterm reply.", parent.Name, agentPane(parent))
 		}
 	}
 	return b.String()
+}
+
+// sessionByID finds a session of st.
+func sessionByID(st proto.State, id string) (proto.Session, bool) {
+	for _, s := range st.Sessions {
+		if s.ID == id && id != "" {
+			return s, true
+		}
+	}
+	return proto.Session{}, false
+}
+
+// agentPane is the pane that speaks for a session to other agents: the
+// first that runs an agent, else its focused one.
+func agentPane(s proto.Session) string {
+	for _, p := range s.Panes {
+		if p.Agent != "" {
+			return p.ID
+		}
+	}
+	if s.Focus != "" {
+		return s.Focus
+	}
+	if len(s.Panes) > 0 {
+		return s.Panes[0].ID
+	}
+	return ""
 }
 
 // paneWhere says which project and folder pane is in, as ", in project

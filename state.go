@@ -62,6 +62,10 @@ type topTab struct {
 	Diff *diffSource
 	// Worktree is the git worktree a session works in, nil for none.
 	Worktree *model.Worktree
+	// Parent is the session whose agent started this one, "" for none;
+	// Collapsed hides the sessions it started in the sidebar.
+	Parent    string
+	Collapsed bool
 }
 
 const (

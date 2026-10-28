@@ -87,3 +87,26 @@ func TestSessionNotes(t *testing.T) {
 		t.Errorf("s1: %q", got)
 	}
 }
+
+// A session another's agent started is told who, and when it works on a
+// branch made from that agent's, that the agent merges it.
+func TestSessionNotesParent(t *testing.T) {
+	st := twoProjects()
+	st.Sessions[0].Name = "lead"
+	st.Sessions[0].Panes = append([]proto.Pane{{ID: "dev"}}, proto.Pane{ID: "pane1", Agent: "claude"})
+	st.Sessions[0].Worktree = &model.Worktree{Dir: "/p/oterm/.worktrees/feat", Branch: "feat", Base: "main"}
+	st.Sessions[1].Parent = "s1"
+	st.Sessions[1].Worktree = &model.Worktree{Dir: "/p/oterm/.worktrees/w1", Branch: "w1", Base: "feat"}
+	got := sessionNotes(st, "s2")
+	for _, want := range []string{`the agent in session "lead", which started this one, merges it into feat`,
+		`The agent in session "lead" (pane pane1) started this session`, "omaterm reply"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %q", want, got)
+		}
+	}
+	// From another branch than the lead's, the user merges it.
+	st.Sessions[1].Worktree.Base = "main"
+	if got := sessionNotes(st, "s2"); !strings.Contains(got, "the user reviews it and merges it into main") {
+		t.Errorf("%q", got)
+	}
+}

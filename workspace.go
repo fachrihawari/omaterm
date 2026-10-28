@@ -133,7 +133,7 @@ func (a *appState) tabFromSession(s model.Session) (topTab, bool) {
 		}
 	}
 	t := topTab{ID: s.ID, Kind: tabTerminal, Label: s.Name, Dot: dotGreen, Split: split,
-		AgentNamed: s.AgentNamed, Created: s.Created, Worktree: s.Worktree}
+		AgentNamed: s.AgentNamed, Created: s.Created, Worktree: s.Worktree, Parent: s.Parent, Collapsed: s.Collapsed}
 	if split.contains(s.Focus) {
 		t.Focus = s.Focus
 	}
@@ -379,7 +379,8 @@ func (a *appState) state() model.State {
 				}
 			}
 			s := model.Session{ID: t.ID, Project: p.ID, Name: t.Label, Layout: toLayout(t.Split),
-				AgentNamed: t.AgentNamed, Created: t.Created, Focus: focus, Zoomed: t.Zoomed, Worktree: t.Worktree}
+				AgentNamed: t.AgentNamed, Created: t.Created, Focus: focus, Zoomed: t.Zoomed, Worktree: t.Worktree,
+				Parent: t.Parent, Collapsed: t.Collapsed}
 			for _, id := range t.Split.termIDs() {
 				dir := a.paneDirs[id]
 				if info, ok := a.status[id]; ok && info.Dir != "" {

@@ -359,7 +359,7 @@ func (a *appState) protoState(started time.Time) proto.State {
 				continue
 			}
 			s := proto.Session{ID: t.ID, Project: p.ID, Zoomed: t.Zoomed, Layout: toLayout(t.Split), AgentNamed: t.AgentNamed,
-				Worktree: t.Worktree}
+				Worktree: t.Worktree, Parent: t.Parent}
 			for _, id := range t.Split.termIDs() {
 				info, ok := a.status[id]
 				if a.isBrowser(id) {
@@ -385,6 +385,7 @@ func (a *appState) protoState(started time.Time) proto.State {
 			st.Sessions = append(st.Sessions, s)
 		}
 	}
+	proto.DropGoneParents(st.Sessions)
 	return st
 }
 
@@ -471,10 +472,14 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	if name == "" {
 		name = shellcmd.Name(shellcmd.Login())
 	}
+	parent := ""
+	if _, ptabs, pti, ok := a.findPane(p.By); ok && p.By != "" {
+		parent = (*ptabs)[pti].ID
+	}
 	tabs := a.workspaceTabs(proj)
 	paneID := newID()
 	tab := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen, Split: &splitNode{TermID: paneID},
-		Created: nowFunc().UnixMilli()}
+		Created: nowFunc().UnixMilli(), Parent: parent}
 	*tabs = append(*tabs, tab)
 	dir := p.Dir
 	if dir == "" {

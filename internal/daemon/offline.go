@@ -256,7 +256,7 @@ func (d *Daemon) protoState(st model.State) proto.State {
 	}
 	for _, s := range st.Sessions {
 		ps := proto.Session{ID: s.ID, Project: s.Project, AgentNamed: s.AgentNamed, Focus: s.Focus, Zoomed: s.Zoomed, Layout: s.Layout,
-			Worktree: s.Worktree}
+			Worktree: s.Worktree, Parent: s.Parent}
 		for _, pn := range s.Panes {
 			info, ok := infos[pn.ID]
 			if !ok {
@@ -272,6 +272,7 @@ func (d *Daemon) protoState(st model.State) proto.State {
 		ps.Name = sessionName(s, ps.Lead)
 		out.Sessions = append(out.Sessions, ps)
 	}
+	proto.DropGoneParents(out.Sessions)
 	return out
 }
 
@@ -310,6 +311,10 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 	if name == "" {
 		name = shellcmd.Name(shellcmd.Login())
 	}
+	parent := ""
+	if s, _ := findPane(st, p.By); s != nil && p.By != "" {
+		parent = s.ID
+	}
 	sid, pid := model.NewID(), model.NewID()
 	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
 	if p.URL != "" {
@@ -317,7 +322,7 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 	} else if err := d.startPane(sid, pid, dir, p.Command, p.Env); err != nil {
 		return nil, err
 	}
-	st.Sessions = append(st.Sessions, model.Session{ID: sid, Project: proj.ID, Name: name,
+	st.Sessions = append(st.Sessions, model.Session{ID: sid, Project: proj.ID, Name: name, Parent: parent,
 		Created: time.Now().UnixMilli(), Focus: pid, Layout: &model.Layout{Pane: pid}, Panes: []model.Pane{pane}})
 	return proto.Created{Session: sid, Pane: pid}, nil
 }

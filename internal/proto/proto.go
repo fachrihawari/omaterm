@@ -110,6 +110,22 @@ type Session struct {
 	Lead       Pane          `json:"lead"`
 	// Worktree is the git worktree the session works in.
 	Worktree *model.Worktree `json:"worktree,omitempty"`
+	// Parent is the session whose agent started this one.
+	Parent string `json:"parent,omitempty"`
+}
+
+// DropGoneParents forgets the parents that are no more: a session whose
+// parent closed stands on its own.
+func DropGoneParents(sessions []Session) {
+	ids := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		ids[s.ID] = true
+	}
+	for i := range sessions {
+		if !ids[sessions[i].Parent] {
+			sessions[i].Parent = ""
+		}
+	}
 }
 
 // Project is a folder the user works in.
@@ -144,6 +160,9 @@ type CreateParams struct {
 	Ratio     float64 `json:"ratio,omitempty"`
 	// Worktree makes the session a git worktree of its own to work in.
 	Worktree *WorktreeParams `json:"worktree,omitempty"`
+	// By is the pane of the agent making the session: its session is the
+	// new one's parent.
+	By string `json:"by,omitempty"`
 }
 
 // WorktreeParams make a session's worktree: on Branch, a new branch from

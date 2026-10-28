@@ -357,3 +357,29 @@ func TestOfflineRestartKeepsCommand(t *testing.T) {
 		t.Fatalf("restarted with %q, want %q", got, cmd)
 	}
 }
+
+// With the window closed, a session made from an agent's pane is its
+// session's child, saved for the app; closing the parent frees it.
+func TestParentWithWindowClosed(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	lead := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Name: "lead"})
+	child := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Name: "w1", By: lead.Pane})
+	saved, err := model.Load(d.stateFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := sessionIndex(&saved, child.Session); i < 0 || saved.Sessions[i].Parent != lead.Session {
+		t.Fatalf("saved %+v", saved.Sessions)
+	}
+	call[bool](t, c, "close", proto.IDParams{ID: lead.Session})
+	for _, s := range call[proto.State](t, c, "state", nil).Sessions {
+		if s.ID == child.Session && s.Parent != "" {
+			t.Fatalf("parent %q after it closed", s.Parent)
+		}
+	}
+}
