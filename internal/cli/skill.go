@@ -16,7 +16,7 @@ import (
 // installs, from this binary, so that it follows omaterm's updates.
 const skillGuide = `---
 name: omaterm
-description: Drive terminal sessions in omaterm — start agents and commands in their own sessions or panes, type into them, wait for them, read their screens, and report your own status. Use when running inside omaterm ($OMATERM_PANE is set) and the task needs another terminal, a long-running process, a parallel agent, or the user's attention.
+description: Drive terminal sessions in omaterm — start agents and commands in their own sessions or panes, type into them, wait for them, read their screens, ask other agents and answer them, and report your own status. Use when running inside omaterm ($OMATERM_PANE is set) and the task needs another terminal, a long-running process, a parallel agent, another agent's help or review, or the user's attention.
 ---
 
 # omaterm
@@ -47,6 +47,39 @@ Several agents can work in parallel this way without touching each
 other's files, or yours. The user reviews each branch and merges it, or
 discards it, from omaterm; omaterm close ends the session and keeps its
 worktree.
+
+## Work with other agents
+
+    omaterm ask w1 "Does the login keep the session cookie?"   # waits, prints its answer
+    omaterm ask w1 "Fix the login test" --no-wait  # its answer comes to you later
+    omaterm reply "Fixed: the cookie expired"      # answer a message you were sent
+    omaterm reply m7 --file notes.md               # a given message, a long answer
+    omaterm inbox                                  # your messages, and their answers
+
+A message from omaterm ask waits until the other agent is at its prompt,
+then goes in as its prompt, saying who it is from and its id. Answer
+every message you are sent with omaterm reply. An answer to an ask you
+didn't wait for comes to you as a message of its own once you are at
+your prompt: so for work that takes long, ask with --no-wait and end
+your turn. An agent that stops without answering gets you the end of
+its screen instead.
+
+To split a task between agents, work in a worktree yourself, then:
+
+    omaterm new --worktree w1 -- claude            # each on a branch made from yours
+    omaterm new --worktree w2 -- codex
+    omaterm ask w1 "<its part: what, which files, what to leave alone>" --no-wait
+    omaterm ask w2 "<its part>" --no-wait
+    omaterm wait w1 w2 --all                       # or --any, for the first done
+    omaterm diff w1 --branch                       # what w1 changed
+    omaterm merge w1                               # into your branch; closes w1
+    omaterm merge w2 --commit -m "Add the export"  # a merge commit, not a squash
+
+The sessions you start show under yours. omaterm merge takes only a
+worktree made from your own branch, and squashes it unless --commit;
+--keep leaves its session and worktree. A conflict is for its agent to
+resolve: ask it to merge your branch into its own, then merge again.
+Merging into the main checkout is the user's, never yours.
 
 ## Drive it
 
@@ -107,7 +140,9 @@ Report blocked only when you truly cannot go on without them.
 ## Etiquette
 
 - Close what you started when it is done: ` + "`omaterm close <target>`" + `.
-- Never type into a pane you did not start unless the user asked.
+- Reach another agent with omaterm ask; type with send, key or prompt only
+  into panes you started, unless the user asked.
+- Never merge into the main checkout: the user reviews and merges.
 - Exit status 3 means no such target, 4 that omaterm is not running, or
   that its window is closed for what needs it (focus, browser, do); the
   sessions keep running, and the rest works, while the window is closed.

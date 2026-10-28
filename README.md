@@ -32,6 +32,9 @@ an editor and a browser sit next to your shells.
 - **Agents on branches of their own.** Start an agent in a git worktree, so
   several work in parallel without touching each other's files. Review its
   branch, then merge it or discard it.
+- **Agents that work together.** An agent splits a task between agents on
+  branches made from its own, asks them and gets their answers, and merges
+  their work. Another agent can review a session's work, round after round.
 - **Sessions that keep running.** Close the window and they carry on. After a
   reboot, agents resume the same conversation.
 - **On your phone.** Pair a browser with a QR code, then watch and type into
@@ -119,6 +122,20 @@ menu:
 
 Closing the session asks before it drops work that isn't in main.
 
+### Agents working together
+
+An agent can lead others. It starts workers in worktrees made from its own
+branch, which show under its session in the sidebar, and hands each its
+part with `omaterm ask`. omaterm types each message into the worker's prompt
+once it is free and you aren't typing there, and the worker's answer comes
+back to the lead, waking it. The lead merges each worker into its own
+branch with `omaterm merge`; merging into main stays yours.
+
+**Ask for Review…**, in a session's menu or the command palette, starts a
+second agent beside it, Codex reviewing Claude Code for instance. The
+reviewer reads what the session changed, changes nothing itself, and sends
+the agent what to fix, for up to three rounds, then tells you its verdict.
+
 ### Sessions keep running
 
 Sessions run in a session daemon, so they keep going after you close the
@@ -200,6 +217,7 @@ omaterm read <pane>                     # read its screen
 omaterm send <pane> "y" --enter         # type into it
 omaterm diff --turn                     # what the last agent turn changed
 omaterm new --worktree fix-login -- claude  # an agent on a branch of its own
+omaterm ask fix-login "Is the test green?"  # ask another agent, get its answer
 ```
 
 `omaterm help` lists every command. `omaterm skill setup` teaches Claude
