@@ -36,6 +36,18 @@ prefix works), or a session's name; a session stands for its focused pane.
 What you start stays in your own project: new and split refuse a target in
 another project, unless you pass --any-project because the user asked for it.
 
+## Work on a branch of its own
+
+    omaterm new --worktree fix-login -- claude   # an agent in a git worktree of its own
+
+A worktree session works in .worktrees/<branch> of the repository, on a
+new branch made from yours (--base <branch> picks another), with the
+repository's ignored .env files copied in (--no-env leaves them out).
+Several agents can work in parallel this way without touching each
+other's files, or yours. The user reviews each branch and merges it, or
+discards it, from omaterm; omaterm close ends the session and keeps its
+worktree.
+
 ## Drive it
 
     omaterm send <target> "some text" --enter    # type, then press Enter

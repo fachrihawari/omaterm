@@ -29,6 +29,9 @@ an editor and a browser sit next to your shells.
   needs you, failed or is done, and notifies you when it needs you.
 - **Last turn.** See what an agent changed in its last turn, apart from your
   own uncommitted work, and keep or revert each hunk.
+- **Agents on branches of their own.** Start an agent in a git worktree, so
+  several work in parallel without touching each other's files. Review its
+  branch, then merge it or discard it.
 - **Sessions that keep running.** Close the window and they carry on. After a
   reboot, agents resume the same conversation.
 - **On your phone.** Pair a browser with a QR code, then watch and type into
@@ -95,6 +98,26 @@ down (`Ctrl+Shift+D`), zoom one (`Ctrl+Shift+Enter`), and drag a pane's
 header to move it.
 
 ![Three split panes: an agent, a dev server and a test run](site/assets/split.png)
+
+### Agents on branches of their own
+
+**New Agent in Worktree…**, in the command palette or a project's menu,
+starts an agent on a new branch, in a git worktree of its own under the
+repository's `.worktrees` folder, with your `.env` files copied in. Run
+several at once: none touches another's files, or yours.
+
+The Git tab follows the session into its worktree, and its **Branch** view
+shows everything the branch changed since it started. From the session's
+menu:
+
+- **Merge into main…** squashes the branch into one commit, or makes a merge
+  commit, then removes the worktree. A merge that would conflict isn't made.
+- **Update from main** brings main's new commits in, so conflicts are
+  resolved in the worktree, never in your checkout.
+- **Push & Create PR** pushes the branch and opens its pull request.
+- **Discard Worktree…** deletes the worktree and its branch.
+
+Closing the session asks before it drops work that isn't in main.
 
 ### Sessions keep running
 
@@ -176,6 +199,7 @@ omaterm wait <pane> --exit              # wait for it to finish
 omaterm read <pane>                     # read its screen
 omaterm send <pane> "y" --enter         # type into it
 omaterm diff --turn                     # what the last agent turn changed
+omaterm new --worktree fix-login -- claude  # an agent on a branch of its own
 ```
 
 `omaterm help` lists every command. `omaterm skill setup` teaches Claude

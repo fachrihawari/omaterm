@@ -1031,6 +1031,8 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm ls [--json]                    sessions and their panes
   omaterm projects [--json]
   omaterm new [-n name] [-d dir] [-p project] [-f] [-w] [--any-project] [-- command…]
+  omaterm new --worktree <branch> [--base <branch>] [--no-env] [-- command…]
+                                         a session in a git worktree on a branch of its own
   omaterm split [target] [--down|--left|--up] [-r ratio] [-w] [--url url] [--any-project] [-- command…]
   omaterm send <target> <text…> [--enter] [-e]
   omaterm key <target> <key…>            enter, tab, escape, up, ctrl+c, alt+x…

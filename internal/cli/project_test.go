@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/model"
 	"omaterm/internal/proto"
 )
 
@@ -67,5 +68,22 @@ func TestPaneWhere(t *testing.T) {
 	}
 	if got := paneWhere(twoProjects(), "gone"); got != "" {
 		t.Fatalf("got %q for no pane", got)
+	}
+}
+
+// The hook tells the agent its session's name, and the worktree it works
+// in, to commit there.
+func TestSessionNotes(t *testing.T) {
+	st := twoProjects()
+	st.Sessions[1].Name = "fix-login"
+	st.Sessions[1].Worktree = &model.Worktree{Dir: "/p/random/.worktrees/fix-login", Branch: "fix-login", Base: "main"}
+	got := sessionNotes(st, "s2")
+	for _, want := range []string{`knows this session as "fix-login"`, "a git worktree", "fix-login, made from main", "merges it into main"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %q", want, got)
+		}
+	}
+	if got := sessionNotes(st, "s1"); got != "" {
+		t.Errorf("s1: %q", got)
 	}
 }

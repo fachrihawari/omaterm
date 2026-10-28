@@ -147,9 +147,16 @@ func hookContext(c *client.Client, pane, sid string, away bool) string {
 			"The `omaterm` command (see the omaterm skill) runs things beside you, such as a dev server, tests or another agent, "+
 			"and tells the user what you are doing.", sid, pane, where)
 	}
-	if !known {
-		return b.String()
+	if known {
+		b.WriteString(sessionNotes(st, sid))
 	}
+	return b.String()
+}
+
+// sessionNotes tells the agent what to know of its session: its name,
+// and the worktree it works in.
+func sessionNotes(st proto.State, sid string) string {
+	var b strings.Builder
 	for _, s := range st.Sessions {
 		if s.ID != sid || len(s.Panes) == 0 {
 			continue
@@ -159,6 +166,10 @@ func hookContext(c *client.Client, pane, sid string, away bool) string {
 			fmt.Fprintf(&b, " This conversation named the session %q: leave its name alone.", s.Name)
 		case s.Name != "":
 			fmt.Fprintf(&b, " The user knows this session as %q: leave its name alone.", s.Name)
+		}
+		if w := s.Worktree; w != nil {
+			fmt.Fprintf(&b, " This session works in a git worktree, on a branch of its own, %s, made from %s: "+
+				"commit your work on it there; the user reviews it and merges it into %s.", w.Branch, w.Base, w.Base)
 		}
 	}
 	return b.String()
