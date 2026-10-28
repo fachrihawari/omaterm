@@ -176,6 +176,12 @@ type appState struct {
 	activeRepo int
 	repoJob    service.Job
 	repoErr    string
+	// repoFollow is the session the Git panel last followed, repoMain the
+	// repo it showed before following one into its worktree, and
+	// repoAsked the worktree last searched for.
+	repoFollow string
+	repoMain   int
+	repoAsked  string
 
 	processJob  service.Job
 	processErr  string
@@ -626,6 +632,7 @@ func (a *appState) setProject(i int) {
 	// Reset per-project state.
 	a.repos = nil
 	a.activeRepo = 0
+	a.repoFollow, a.repoMain, a.repoAsked = "", 0, ""
 	a.repoErr = ""
 	a.commits = nil
 	a.graphLoaded = false
@@ -741,8 +748,16 @@ func (a *appState) clearWorkspace() {
 func (a *appState) refreshRepos() {
 	workspace := a.workspace
 	win := a.win
+	worktrees := a.worktreeDirs()
 	a.repoJob.Run(func(ctx context.Context) error {
 		repos := service.DiscoverRepos(workspace, 1)
+		// The worktrees of its sessions, which the panel follows: none is
+		// found in the project's folders, as they are hidden.
+		for _, dir := range worktrees {
+			if r, err := service.RepoStatus(dir, workspace); err == nil {
+				repos = append(repos, *r)
+			}
+		}
 		if win != nil && ctx.Err() == nil {
 			win.Update(func() { a.applyRepos(workspace, repos) })
 		}
@@ -762,9 +777,16 @@ func (a *appState) applyRepos(workspace string, repos []service.Repo) {
 	if a.activeRepo >= len(a.repos) {
 		a.activeRepo = 0
 	}
+	a.repoFollow = "" // a worktree's repo may be here now
 	r, p := a.activeRepoRef(), a.project()
 	if r == nil || p == nil {
 		return
+	}
+	// The project's branch is its checkout's, not a worktree's.
+	for i := 0; a.isWorktreeRoot(r.Root) && i < len(a.repos); i++ {
+		if !a.isWorktreeRoot(a.repos[i].Root) {
+			r = &a.repos[i]
+		}
 	}
 	p.Branch = r.Branch
 	if r.Ahead > 0 || r.Behind > 0 {

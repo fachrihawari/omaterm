@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
+	"omaterm/internal/worktree"
+	"omaterm/service"
 )
 
 // The control socket drives the app's sessions as the omaterm command
@@ -248,5 +251,38 @@ func TestWorktreePanesStartInIt(t *testing.T) {
 	}
 	if !a.paneFailed[other] {
 		t.Fatal("not marked failed")
+	}
+}
+
+// The Git panel shows the worktree of the session the user goes to, and
+// the project's checkout again for a session there; the project's branch
+// stays the checkout's.
+func TestGitPanelFollowsWorktree(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	wt, err := worktree.Add(context.Background(), a.workspace, "x", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.newTerminalTabReal()
+	a.tabs[a.activeTab].Worktree = &model.Worktree{Dir: wt.Dir, Branch: "x", Base: "main"}
+	r, err := service.RepoStatus(wt.Dir, a.workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.applyRepos(a.workspace, append(a.repos, *r))
+	a.followWorktreeRepo()
+	if got := a.activeRepoRef().Root; got != wt.Dir {
+		t.Fatalf("panel on %s, want the worktree", got)
+	}
+	a.applyRepos(a.workspace, a.repos)
+	if b := a.project().Branch; b != "main" {
+		t.Fatalf("project branch %q", b)
+	}
+	a.followWorktreeRepo()
+	a.activeTab = 0
+	a.followWorktreeRepo()
+	if got := a.activeRepoRef().Root; got != a.workspace {
+		t.Fatalf("panel on %s, want the checkout", got)
 	}
 }

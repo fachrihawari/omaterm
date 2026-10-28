@@ -94,3 +94,71 @@ func (a *appState) worktreeSession(dir string) (pi int, t *topTab) {
 	}
 	return -1, nil
 }
+
+// worktreeDirs lists the worktrees of the shown project's sessions.
+func (a *appState) worktreeDirs() []string {
+	var dirs []string
+	for _, t := range a.tabs {
+		if t.Worktree != nil && !t.Worktree.Gone() {
+			dirs = append(dirs, t.Worktree.Dir)
+		}
+	}
+	return dirs
+}
+
+// isWorktreeRoot reports whether root is a worktree of a shown session.
+func (a *appState) isWorktreeRoot(root string) bool {
+	for _, t := range a.tabs {
+		if t.Worktree != nil && t.Worktree.Dir == root {
+			return true
+		}
+	}
+	return false
+}
+
+// selectRepo shows the i-th repo in the Git panel.
+func (a *appState) selectRepo(i int) {
+	if i < 0 || i >= len(a.repos) || i == a.activeRepo {
+		return
+	}
+	a.activeRepo = i
+	a.commits = nil
+	a.graphLoaded = false
+}
+
+// followWorktreeRepo shows, in the Git panel, the worktree of the session
+// the user goes to, and the repo shown before when they go to one in the
+// project's checkout: committing, and resolving an update's conflicts,
+// happen in the worktree. It follows the session as it changes only, so a
+// repo picked meanwhile stays.
+func (a *appState) followWorktreeRepo() {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+		return // an editor or a diff, opened from the panel
+	}
+	t := &a.tabs[a.activeTab]
+	if t.ID == a.repoFollow {
+		return
+	}
+	a.repoFollow = t.ID
+	cur := a.activeRepoRef()
+	if t.Worktree == nil {
+		if cur != nil && a.isWorktreeRoot(cur.Root) {
+			a.selectRepo(min(a.repoMain, len(a.repos)-1))
+		}
+		return
+	}
+	for i := range a.repos {
+		if a.repos[i].Root == t.Worktree.Dir {
+			if cur != nil && !a.isWorktreeRoot(cur.Root) {
+				a.repoMain = a.activeRepo
+			}
+			a.selectRepo(i)
+			return
+		}
+	}
+	// Made since the repos were found: search again, once.
+	if a.repoAsked != t.Worktree.Dir && !t.Worktree.Gone() {
+		a.repoAsked = t.Worktree.Dir
+		a.refreshRepos()
+	}
+}

@@ -14,6 +14,7 @@ import (
 func (a *appState) view(c *ui.Context) {
 	a.drainPosted()
 	a.trackViewed()
+	a.followWorktreeRepo()
 	c.SetTheme(omaTheme())
 	winW, _ := c.Size()
 	a.fitPanels(winW)
