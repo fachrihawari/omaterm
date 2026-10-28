@@ -61,8 +61,8 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 // showInspectorTab switches the inspector to Info (0), Files (1) or Git
 // (2), loading what that tab shows.
 func (a *appState) showInspectorTab(idx int) {
-	if !a.inspectorVisible {
-		a.inspectorVisible = true
+	if !a.inspectorShown {
+		a.setInspector(true)
 	}
 	wasTab := a.inspectorTab
 	a.inspectorTab = idx

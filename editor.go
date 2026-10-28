@@ -174,7 +174,7 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 					label = "Source"
 				}
 				if cmdButton(c, iconFileText, iconBtn, false).
-					Tooltip(label + " (" + keyLabels("markdown.togglePreview") + ")").Clicked() {
+					Tooltip(withKeys(label, "markdown.togglePreview")).Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}
@@ -437,7 +437,7 @@ func imageDiffSide(c *ui.Context, side imageSide, missingLabel string) {
 
 // newEditorState is a file editor over buf, as the settings have it.
 func (a *appState) newEditorState(buf *editor.Buffer) *editor.State {
-	st := &editor.State{Buffer: buf, Theme: omaEditorTheme()}
+	st := &editor.State{Buffer: buf, Theme: omaEditorTheme(), OnInput: a.trackEditorChord}
 	a.styleEditor(st)
 	return st
 }

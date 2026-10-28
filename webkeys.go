@@ -19,11 +19,19 @@ const pageKeyScheme = "omaterm-key:"
 
 // pageKeyCommands maps a chord, as pageKeysScript writes it from a DOM
 // keydown (modifier letters, ":", the key's code), to its command: the
-// bindings that apply anywhere or in a browser pane.
-func pageKeyCommands() map[string]string {
+// bindings that apply anywhere or in a browser pane. A letter is the one
+// the layout types, as in the native UI, so AZERTY's Ctrl+Z undoes rather
+// than closing the tab from where QWERTY has W; other keys, and letters
+// of a layout without Latin ones, are where they are on the keyboard.
+func pageKeyCommands() map[string]string { return pageChords(keybindings) }
+
+// pageChords maps the chords of one platform's table. A browser pane is in
+// the terminal view, so the split keys work from a page too; Alt+Up and
+// Down stay the page's, which scroll and, on macOS, move by paragraphs.
+func pageChords(keybindings []keyBinding) map[string]string {
 	out := map[string]string{}
 	for _, b := range keybindings {
-		if b.Scope != scopeGlobal && b.Scope != scopeBrowser {
+		if b.Scope != scopeGlobal && b.Scope != scopeBrowser && b.Scope != scopeTerminal {
 			continue
 		}
 		code := domCode(b.Combo.Key)
@@ -70,6 +78,12 @@ func domCode(k ui.Key) string {
 		return "Equal"
 	case ui.KeyMinus:
 		return "Minus"
+	case ui.KeyComma:
+		return "Comma"
+	case ui.KeyBracketLeft:
+		return "BracketLeft"
+	case ui.KeyBracketRight:
+		return "BracketRight"
 	}
 	return ""
 }
@@ -82,7 +96,8 @@ func pageKeysScript(secret string) string {
 	return `(() => {
   const keys = ` + string(keys) + `, to = ` + string(s) + `, go = location.assign.bind(location);
   addEventListener("keydown", (e) => {
-    const k = (e.ctrlKey ? "c" : "") + (e.altKey ? "a" : "") + (e.shiftKey ? "s" : "") + (e.metaKey ? "m" : "") + ":" + e.code;
+    const code = /^[a-z]$/i.test(e.key) ? "Key" + e.key.toUpperCase() : e.code;
+    const k = (e.ctrlKey ? "c" : "") + (e.altKey ? "a" : "") + (e.shiftKey ? "s" : "") + (e.metaKey ? "m" : "") + ":" + code;
     const id = keys[k];
     if (!id || e.isComposing) return;
     e.preventDefault();

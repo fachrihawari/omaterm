@@ -8,7 +8,6 @@ package main
 
 import (
 	"errors"
-	"os/exec"
 	"time"
 	"unicode/utf8"
 
@@ -313,11 +312,8 @@ func (a *appState) browserBar(c *ui.Context, tab *topTab, id string, e *webEntry
 		dragging = a.addressBar(c, tab, id, e, multi)
 		if e.url != proto.BlankURL {
 			navButton(c, "external", iconExternalLink, "Open in Default Browser", true, func() {
-				// Waited for, as it hands over and exits: each click left
-				// a zombie process.
-				if cmd := exec.Command("xdg-open", e.url); cmd.Start() == nil {
-					go cmd.Wait()
-				}
+				// The system's opener: xdg-open is Linux's alone.
+				mygo.Shell.OpenExternal(e.url)
 			})
 		}
 		a.paneControls(c, tab, id, (hovered || focused && multi) && !dragging, multi)

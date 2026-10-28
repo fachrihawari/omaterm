@@ -311,7 +311,7 @@ func TestAuditNarrowPaneHeader(t *testing.T) {
 	a.ws, a.wsOwner, a.active = map[string]*projectWS{}, "", -1
 	a.setProject(0)
 	shotStatuses(a)
-	tr := ui.NewTester(a.view, 900, 560)
+	tr := ui.NewTester(a.view, 600, 400)
 	tr.Frame()
 	tr.Frame()
 	title, ok := tr.Find("Claude Code")

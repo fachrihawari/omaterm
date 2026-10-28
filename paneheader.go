@@ -185,7 +185,7 @@ func (a *appState) gitChip(c *ui.Context, branch string, added, removed int) {
 		}
 	})
 	if chip.Clicked() {
-		a.inspectorVisible = true
+		a.setInspector(true)
 		a.showInspectorTab(2)
 	}
 }

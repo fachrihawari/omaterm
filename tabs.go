@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -15,15 +16,15 @@ import (
 
 func (a *appState) tabBar(c *ui.Context) ui.Element {
 	left := float32(8)
-	if a.sidebarVisible {
+	if a.sidebarShown {
 		left = 0
 	}
 	return ui.Row(c).Height(40).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, left).Gap(4).Children(func() {
 		// Show-sidebar button, only while the sidebar is hidden.
-		if !a.sidebarVisible {
+		if !a.sidebarShown {
 			if cmdButton(c, iconPanelLeft, 15, false).
 				Tooltip("Show Sidebar (" + keyLabels("view.toggleSidebar") + ")").Label("Show Sidebar").Clicked() {
-				a.sidebarVisible = true
+				a.setSidebar(true)
 			}
 		}
 		// The tabs scroll sideways when they don't fit, the shown one kept
@@ -68,9 +69,9 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
-			if cmdButton(c, iconPanelRight, 15, a.inspectorVisible).
+			if cmdButton(c, iconPanelRight, 15, a.inspectorShown).
 				Tooltip("Toggle Inspector (" + keyLabels("view.toggleInspector") + ")").Clicked() {
-				a.inspectorVisible = !a.inspectorVisible
+				a.setInspector(!a.inspectorShown)
 			}
 		})
 	})
@@ -190,7 +191,7 @@ func (a *appState) rememberFocus() {
 
 // activateKind shows kind: the active tab when it already is of that kind,
 // else the first tab of it, else just the view, which then says there is
-// nothing to show. Ctrl+2 must not jump from the second editor back to
+// nothing to show. Alt+2 must not jump from the second editor back to
 // the first.
 func (a *appState) activateKind(kind topTabKind) {
 	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == kind {
@@ -300,9 +301,10 @@ func (a *appState) projectUnsaved(id string) int {
 }
 
 // beforeClose asks before the window closes, or omaterm quits or
-// relaunches, with editors unsaved: their changes were lost unasked.
+// relaunches, with editors unsaved, or, with no daemon to keep them, a
+// session running a program: they were lost unasked.
 func (a *appState) beforeClose(e *mygo.CloseEvent) {
-	if a.quitAnyway || len(a.unsavedEditors()) == 0 {
+	if a.quitAnyway || len(a.unsavedEditors()) == 0 && a.quitEndsProgram() == "" {
 		a.quitWant = ""
 		return
 	}
@@ -319,6 +321,41 @@ func (a *appState) beforeClose(e *mygo.CloseEvent) {
 		a.win.Focus()
 		a.win.Invalidate()
 	}
+}
+
+// quitEndsProgram names a program other than a shell that quitting would
+// end, "" for none or when the settings say not to ask. A daemon's panes
+// go on without the app; without one (on Windows, or with the daemon off)
+// they end with it, as Alt+F4 or ⌘Q ended running agents unasked.
+func (a *appState) quitEndsProgram() string {
+	if a.panes == nil || !a.panes.Owned() || !a.settings.ConfirmClose {
+		return ""
+	}
+	ids := make([]string, 0, len(a.status))
+	for id := range a.status {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids) // the same program named every frame
+	return a.runningProgram(ids)
+}
+
+// quitText says what quitting, or verb, loses: "a.go has unsaved changes.
+// Claude Code is still running. Quitting loses them and ends it."
+func (a *appState) quitText(verb string) string {
+	var said, loses []string
+	if files := a.unsavedEditors(); len(files) == 1 {
+		said, loses = append(said, files[0]+" has unsaved changes."), append(loses, "loses them")
+	} else if len(files) > 1 {
+		said, loses = append(said, plural(len(files), "file")+" have unsaved changes."), append(loses, "loses them")
+	}
+	if what := a.quitEndsProgram(); what != "" {
+		said, loses = append(said, what+" is still running."), append(loses, "ends it")
+	}
+	if len(said) == 0 { // saved, or ended, while the dialog was open
+		return "Nothing is unsaved or running any more."
+	}
+	gerund := map[string]string{"Quit": "Quitting", "Restart": "Restarting"}[verb]
+	return strings.Join(said, " ") + " " + gerund + " " + strings.Join(loses, " and ") + "."
 }
 
 // relaunch relaunches omaterm, asking first if editors are unsaved.

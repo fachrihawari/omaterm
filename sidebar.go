@@ -25,7 +25,7 @@ func (a *appState) sidebarWidth() float32 {
 func (a *appState) sidebar(c *ui.Context) {
 	box := ui.Row(c.Key("sidebar")).FillHeight().Shrink(0).ClipX()
 	target := float32(0)
-	if a.sidebarVisible {
+	if a.sidebarShown {
 		target = a.sidebarWidth()
 	}
 	w := box.AnimateTo("w", target, ui.Animation{Spring: ui.SpringOptions{Duration: 260 * time.Millisecond}})

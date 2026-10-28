@@ -52,3 +52,15 @@ func ProcParent(pid int) int {
 	ppid, _ := strconv.Atoi(f[1])
 	return ppid
 }
+
+// Procs returns the processes running now.
+func Procs() []int {
+	ents, _ := os.ReadDir("/proc")
+	var pids []int
+	for _, e := range ents {
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}

@@ -44,14 +44,14 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 			ui.Text(c, "●").FontSize(8).TextColor(pal.Ok)
 			ui.Text(c, plural(len(a.processes), "process")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
 		}).Tooltip("Show processes (" + keyLabels("view.info") + ")").Clicked() {
-			a.inspectorVisible = true
+			a.setInspector(true)
 			a.showInspectorTab(0)
 		}
 		if statusSegment(c, func() {
 			ui.Icon(c, iconRadio).Width(12).Height(12).TextColor(pal.TextMuted)
 			ui.Text(c, plural(len(a.ports), "port")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
 		}).Tooltip("Show ports (" + keyLabels("view.info") + ")").Clicked() {
-			a.inspectorVisible = true
+			a.setInspector(true)
 			a.showInspectorTab(0)
 		}
 

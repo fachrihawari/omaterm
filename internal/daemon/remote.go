@@ -645,13 +645,14 @@ func (p *remotePane) Term() *terminal.Terminal {
 	if p.r.TermOptions != nil {
 		o = p.r.TermOptions()
 	}
-	t, err := terminal.New(terminal.Options{
+	var t *terminal.Terminal
+	t, err = terminal.New(terminal.Options{
 		Conn: s, ResizeByConn: true,
 		Font: o.Font, Theme: o.Theme, MinimumContrast: o.MinimumContrast,
 		Padding: o.Padding, PaddingColor: terminal.PaddingExtend,
 		Cursor: o.Cursor, NoBlink: o.NoBlink, CopyOnSelect: o.CopyOnSelect,
 		RightClick: o.RightClick, ClipboardRead: o.ClipboardRead, Scrollback: o.Scrollback,
-		OpenLink: o.OpenLink, OnZoom: o.OnZoom,
+		OpenLink: o.OpenLink, OnZoom: o.OnZoom, OnKey: session.WordKeys(&t),
 	})
 	if err != nil {
 		s.Close()

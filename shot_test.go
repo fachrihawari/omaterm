@@ -360,7 +360,7 @@ func TestShots(t *testing.T) {
 			w, h = 2560, 1440 // the maximized case, where alignment shows
 		}
 		if os.Getenv("SHOT_SIZE") == "min" {
-			w, h = 900, 560 // the smallest window
+			w, h = 600, 400 // the smallest window
 		}
 		tr := ui.NewTester(a.view, w, h)
 		dir := "testdata"

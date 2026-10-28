@@ -81,9 +81,9 @@ var commandRegistry = append([]Command{
 		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeLight) }},
 
 	{ID: "view.toggleSidebar", Title: "Toggle Sidebar", Category: "View",
-		Run: func(a *appState, c *ui.Context) { a.sidebarVisible = !a.sidebarVisible }},
+		Run: func(a *appState, c *ui.Context) { a.setSidebar(!a.sidebarShown) }},
 	{ID: "view.toggleInspector", Title: "Toggle Inspector", Category: "View",
-		Run: func(a *appState, c *ui.Context) { a.inspectorVisible = !a.inspectorVisible }},
+		Run: func(a *appState, c *ui.Context) { a.setInspector(!a.inspectorShown) }},
 	{ID: "view.terminal", Title: "Show Terminal", Category: "View",
 		Run: func(a *appState, c *ui.Context) { a.activateKind(tabTerminal) }},
 	{ID: "view.editor", Title: "Show Editor", Category: "View",
@@ -104,8 +104,16 @@ var commandRegistry = append([]Command{
 		Run: func(a *appState, c *ui.Context) { a.cycleTab(1) }},
 	{ID: "tab.prev", Title: "Previous Tab", Category: "Tab",
 		Run: func(a *appState, c *ui.Context) { a.cycleTab(-1) }},
-	{ID: "tab.close", Title: "Close Tab", Category: "Tab",
-		Run: func(a *appState, c *ui.Context) { a.closeActiveTab(c) }},
+	// The pane the keyboard is in goes first, as its × does: a split's
+	// other shells, and the session beside a browser pane, stay.
+	{ID: "tab.close", Title: "Close Pane or Tab", Category: "Tab",
+		Run: func(a *appState, c *ui.Context) {
+			if a.activeView == tabTerminal && a.activeSplitLeaf() != "" {
+				a.closeActivePane(c)
+				return
+			}
+			a.closeActiveTab(c)
+		}},
 
 	{ID: "file.save", Title: "Save File", Category: "File",
 		Enabled: func(a *appState) bool {

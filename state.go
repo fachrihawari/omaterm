@@ -140,9 +140,14 @@ type appState struct {
 
 	sidebarVisible   bool
 	inspectorVisible bool
-	sidebarW         float32
-	inspectorW       float32
-	activePaneTermID string // TermID of the focused terminal pane
+	// sidebarShown and inspectorShown are what the window shows of them
+	// (fitPanels): too narrow for both beside the panes, one gives way.
+	// lastPanel is the one the user opened last, which stays.
+	sidebarShown, inspectorShown bool
+	lastPanel                    string
+	sidebarW                     float32
+	inspectorW                   float32
+	activePaneTermID             string // TermID of the focused terminal pane
 
 	inspectorTab int // 0 info, 1 files, 2 git
 
@@ -212,6 +217,13 @@ type appState struct {
 	// --- Overlays ---
 
 	overlay overlayKind
+
+	// editorChord is how far the editor is in a chord of its keys, as
+	// ⌘K ⌘0 (Fold All), and editorChordKey the chord's first key: while
+	// one waits for its second key, the window's shortcuts leave that key
+	// to it.
+	editorChord    editorChordStep
+	editorChordKey ui.Key
 
 	// Quick open (Ctrl+P)
 	quickQuery    string
@@ -497,6 +509,8 @@ func newApp() *appState {
 	a := &appState{
 		sidebarVisible:   true,
 		inspectorVisible: true,
+		sidebarShown:     true,
+		inspectorShown:   true,
 		sidebarW:         240,
 		inspectorW:       330,
 		activePaneTermID: "",
@@ -650,7 +664,7 @@ func (a *appState) start() {
 		a.loadProjectData()
 	}
 	a.startSystemStats()
-	if a.inspectorTab == 0 && a.inspectorVisible {
+	if a.inspectorTab == 0 && a.inspectorShown {
 		a.startProcessRefresh()
 	}
 }
