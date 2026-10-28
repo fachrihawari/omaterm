@@ -666,12 +666,9 @@ func TestAskForReview(t *testing.T) {
 	}
 }
 
-// omaterm report run with no terminal, as an agent's commands are, gives
-// the report to its pane through omaterm.
-func TestReportWithoutATerminal(t *testing.T) {
-	prev := cli.OpenTTY
-	cli.OpenTTY = func() (*os.File, error) { return nil, os.ErrNotExist }
-	defer func() { cli.OpenTTY = prev }()
+// omaterm report in a pane gives the report to it through omaterm: an
+// agent's commands run with no terminal, or one of the agent's own.
+func TestReportThroughOmaterm(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	dialApp(t, a)
