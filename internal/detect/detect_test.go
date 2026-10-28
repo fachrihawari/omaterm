@@ -82,3 +82,17 @@ func TestProgress(t *testing.T) {
 		t.Errorf("progress 4;0: %s (rule %q), want idle", got.State, got.Rule)
 	}
 }
+
+// Codex's hooks waiting for review, over its prompt as it starts: the
+// user's to answer, and nothing typed reaches the prompt meanwhile.
+func TestCodexHooksReview(t *testing.T) {
+	in := Input{Screen: screen(t, "codex-hooks-review.txt"), Title: "repo"}
+	if got := Detect("codex", in); got.State != Blocked {
+		t.Fatalf("%s (rule %q), want blocked", got.State, got.Rule)
+	}
+	// Closed, Codex is at its prompt.
+	in.Screen = "  >_ OpenAI Codex (v0.163.0)\n\n› Ask Codex to do anything\n\n  gpt-6 medium · ~/repo\n"
+	if got := Detect("codex", in); got.State != Idle {
+		t.Fatalf("closed: %s (rule %q)", got.State, got.Rule)
+	}
+}

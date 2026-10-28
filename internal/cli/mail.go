@@ -143,7 +143,11 @@ func replyCmd(c *client.Client, args []string) error {
 	if err := c.Call("mail.reply", proto.MailReplyParams{ID: id, From: from, Text: text}, &m); err != nil {
 		return err
 	}
-	fmt.Printf("answered %s from %s\n", m.ID, orDash(m.FromName))
+	if m.FromName == "" {
+		fmt.Printf("answered %s\n", m.ID)
+	} else {
+		fmt.Printf("answered %s from %s\n", m.ID, m.FromName)
+	}
 	return nil
 }
 
