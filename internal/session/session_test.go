@@ -174,7 +174,7 @@ func TestTyping(t *testing.T) {
 			t.Fatalf("%q counted as typing", b)
 		}
 	}
-	p.deliver([]byte("from the mailbox\r"))
+	p.Deliver([]byte("from the mailbox\r"))
 	if at, _ := typed(); !at.IsZero() {
 		t.Fatal("the mailbox's delivery counted as typing")
 	}
@@ -198,18 +198,18 @@ func TestMailHold(t *testing.T) {
 	defer func() { procName = prev }()
 	r := NewRegistry()
 	p := startExec(t, r, "p1", "s1", `set -m; printf '\033[?2004h'; sleep 0.3; printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=done\007'; sleep 5; :`)
-	if hold, _ := p.mailHold(time.Now()); hold != "no agent runs in it" {
+	if hold, _ := p.MailHold(time.Now()); hold != "no agent runs in it" {
 		t.Fatalf("hold %q", hold)
 	}
 	time.Sleep(200 * time.Millisecond)
 	r.Tick(time.Now())
 	waitFor(t, p, "working", func(i Info) bool { return i.Status == Working })
-	if hold, _ := p.mailHold(time.Now()); hold != "it is working" {
+	if hold, _ := p.MailHold(time.Now()); hold != "it is working" {
 		t.Fatalf("hold %q", hold)
 	}
 	waitFor(t, p, "done", func(i Info) bool { return i.Status == Idle && len(i.Records) > 0 })
 	later := time.Now().Add(3 * time.Second)
-	if hold, bracketed := p.mailHold(later); hold != "" || !bracketed {
+	if hold, bracketed := p.MailHold(later); hold != "" || !bracketed {
 		t.Fatalf("hold %q, bracketed %v", hold, bracketed)
 	}
 	p.Write([]byte("hel"))
@@ -218,12 +218,12 @@ func TestMailHold(t *testing.T) {
 		after time.Duration
 		hold  string
 	}{{time.Second, "the user is typing in it"}, {3 * time.Second, "the user left a draft in it"}, {2 * time.Minute, ""}} {
-		if hold, _ := p.mailHold(now.Add(c.after)); hold != c.hold {
+		if hold, _ := p.MailHold(now.Add(c.after)); hold != c.hold {
 			t.Errorf("%v after typing: hold %q", c.after, hold)
 		}
 	}
 	p.Write([]byte("\r"))
-	if hold, _ := p.mailHold(time.Now().Add(3 * time.Second)); hold != "" {
+	if hold, _ := p.MailHold(time.Now().Add(3 * time.Second)); hold != "" {
 		t.Fatalf("after Enter: hold %q", hold)
 	}
 }

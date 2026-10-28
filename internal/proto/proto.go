@@ -214,6 +214,70 @@ type WaitParams struct {
 	TimeoutMS int64    `json:"timeout,omitempty"`
 }
 
+// Mail is a message between agents, or from omaterm to one, as the
+// mailbox carries it (package mail).
+type Mail struct {
+	ID string `json:"id"`
+	// From is the asking pane, "" for omaterm itself or a command run
+	// outside it; To the pane whose agent the message is for.
+	From     string `json:"from,omitempty"`
+	FromName string `json:"fromName,omitempty"`
+	To       string `json:"to"`
+	ToName   string `json:"toName,omitempty"`
+	Text     string `json:"text"`
+	// Note wants no answer.
+	Note  bool   `json:"note,omitempty"`
+	State string `json:"state"`
+	Reply string `json:"reply,omitempty"`
+	// Screen is the end of the agent's screen when it stopped without
+	// replying; Why why the message waits, or failed.
+	Screen  string `json:"screen,omitempty"`
+	Why     string `json:"why,omitempty"`
+	Created int64  `json:"created"`
+}
+
+// A Mail's states.
+const (
+	MailQueued    = "queued"    // waiting for its agent to be free
+	MailDelivered = "delivered" // typed into its agent's prompt
+	MailReplied   = "replied"
+	MailNoReply   = "noreply" // its agent stopped without replying
+	MailFailed    = "failed"  // it couldn't be delivered
+)
+
+// MailAskParams send a message (mail.ask). Its answer comes to whoever
+// waits for it (mail.await), else, with NoWait or once none waits, to
+// the asker as a message of its own.
+type MailAskParams struct {
+	From     string `json:"from,omitempty"`
+	FromName string `json:"fromName,omitempty"`
+	To       string `json:"to"`
+	ToName   string `json:"toName,omitempty"`
+	Text     string `json:"text"`
+	Note     bool   `json:"note,omitempty"`
+	NoWait   bool   `json:"noWait,omitempty"`
+}
+
+// MailAwaitParams wait for a message's answer (mail.await).
+type MailAwaitParams struct {
+	ID        string `json:"id"`
+	TimeoutMS int64  `json:"timeout,omitempty"`
+}
+
+// MailReplyParams answer a message (mail.reply): ID, else the last one
+// From's agent was asked.
+type MailReplyParams struct {
+	ID   string `json:"id,omitempty"`
+	From string `json:"from,omitempty"`
+	Text string `json:"text"`
+}
+
+// MailListParams list the messages to and from a pane (mail.list); all
+// of them for none.
+type MailListParams struct {
+	Pane string `json:"pane,omitempty"`
+}
+
 type NotifyParams struct {
 	ID    string `json:"id"`
 	Title string `json:"title,omitempty"`

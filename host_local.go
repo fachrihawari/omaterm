@@ -19,6 +19,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
 	"omaterm/internal/gitsnap"
+	"omaterm/internal/mail"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
@@ -35,6 +36,10 @@ type localHost struct {
 	subs    map[int]func(proto.Message)
 	nextSub int
 	pending bool
+	// mailbox is the mailbox of the app's own panes (mailFor).
+	mailbox  *mail.Mailbox
+	mailReg  *session.Registry
+	mailStop context.CancelFunc
 }
 
 var _ ctl.Host = (*localHost)(nil)
@@ -96,6 +101,9 @@ func decode[T any](raw json.RawMessage) (T, error) {
 // Handle runs a method.
 func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	a := h.a
+	if mail.IsMethod(method) {
+		return h.mail(ctx, method, raw)
+	}
 	switch method {
 	case "version":
 		return map[string]any{"app": appVersion(), "proto": proto.Version}, nil

@@ -32,6 +32,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
+	"omaterm/internal/mail"
 	"omaterm/internal/notice"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
@@ -66,6 +67,7 @@ type Options struct {
 type Daemon struct {
 	opts    Options
 	reg     *session.Registry
+	mailbox *mail.Mailbox
 	srv     *ctl.Server
 	quit    chan struct{}
 	once    sync.Once
@@ -193,6 +195,8 @@ func Start(opts Options) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-d.quit; cancel() }()
 	go d.reg.Run(ctx)
+	d.mailbox = mail.New(d.reg)
+	go d.mailbox.Run(ctx)
 	go d.loop(ctx)
 	if opts.Restore {
 		d.restore()
@@ -382,6 +386,10 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 }
 
 func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	if mail.IsMethod(method) {
+		// The daemon's own, as its panes are: never the app's.
+		return d.mailbox.Serve(ctx, method, raw)
+	}
 	pane := func(id string) (*session.Pane, error) {
 		if p := d.reg.Get(id); p != nil {
 			return p, nil

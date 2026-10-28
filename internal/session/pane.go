@@ -156,9 +156,10 @@ func (p *Pane) Write(b []byte) error {
 	return err
 }
 
-// deliver types b for the mailbox. Unlike Write it is no user's typing:
-// it only dismisses the finished reports a new turn makes old.
-func (p *Pane) deliver(b []byte) error {
+// Deliver types b for the mailbox (package mail). Unlike Write it is no
+// user's typing: it only dismisses the finished reports a new turn makes
+// old.
+func (p *Pane) Deliver(b []byte) error {
 	p.mu.Lock()
 	proc, closed := p.proc, p.closed
 	if !closed && p.recs.Len() > 0 && p.recs.DismissFinished() {
@@ -182,10 +183,13 @@ const (
 	settleHold = 2 * time.Second
 )
 
-// mailHold tells why a message for the pane's agent waits, "" when it can
+// NoAgent is MailHold's word for a pane that runs no agent.
+const NoAgent = "no agent runs in it"
+
+// MailHold tells why a message for the pane's agent waits, "" when it can
 // go now: an agent is at its prompt, and the user neither types in the
 // pane nor left a draft there. bracketed tells to paste it bracketed.
-func (p *Pane) mailHold(now time.Time) (hold string, bracketed bool) {
+func (p *Pane) MailHold(now time.Time) (hold string, bracketed bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	i := p.info
@@ -194,21 +198,35 @@ func (p *Pane) mailHold(now time.Time) (hold string, bracketed bool) {
 	case p.closed || i.Status == Exited:
 		return "it closed", false
 	case !detect.Known(i.Agent):
-		return "no agent runs in it", false
+		return NoAgent, false
 	case i.Status == Waiting:
 		return "it waits for the user", false
 	case i.Status == Working:
 		return "it is working", false
-	case p.seen != detect.Idle && !p.reported,
-		!p.prompt && !p.reported && now.Sub(since) < settleHold,
-		now.Sub(time.UnixMilli(i.Activity)) < time.Second:
-		return "it is starting", false
 	case now.Sub(p.typed) < typingHold:
 		return "the user is typing in it", false
 	case !p.typedEnd && now.Sub(p.typed) < draftHold:
 		return "the user left a draft in it", false
+	case p.seen != detect.Idle && !p.reported,
+		!p.prompt && !p.reported && now.Sub(since) < settleHold,
+		now.Sub(time.UnixMilli(i.Activity)) < time.Second:
+		return "it is starting", false
 	}
 	return "", p.scan.Bracketed
+}
+
+// Started is when the pane started.
+func (p *Pane) Started() time.Time { return p.started }
+
+// SetMail tells what the mailbox holds for the pane (Info.Inbox, Held and
+// Asking).
+func (p *Pane) SetMail(inbox int, held, asking string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.info.Inbox != inbox || p.info.Held != held || p.info.Asking != asking {
+		p.info.Inbox, p.info.Held, p.info.Asking = inbox, held, asking
+		p.changedLocked()
+	}
 }
 
 // Text returns the pane's text: the screen, or with scrollback; the last

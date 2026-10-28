@@ -15,7 +15,9 @@ import (
 	"omaterm/internal/cli"
 	"omaterm/internal/client"
 	"omaterm/internal/ctl"
+	"omaterm/internal/daemon"
 	"omaterm/internal/proto"
+	"omaterm/internal/session"
 	"omaterm/internal/worktree"
 )
 
@@ -309,4 +311,131 @@ func TestBranchDiffSinceItsBase(t *testing.T) {
 	if !strings.Contains(out.Text, "lead.txt") {
 		t.Fatalf("the lead's diff %q", out.Text)
 	}
+}
+
+// fakeAgentScript is a script named claude, as omaterm knows the agent by
+// its process: it takes bracketed pastes, says it is idle, and writes
+// what it is given to its log; a message ended, it works a moment.
+const fakeAgentScript = `#!/bin/sh
+printf '\033[?2004h\033]7501;state=idle\007'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG"
+  case "$line" in
+  *'201~'*) printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=done\007' ;;
+  esac
+done
+`
+
+// fakeAgent is the command of a fake agent, in a job of its own as one
+// run from a shell is, and the variable naming its log.
+func fakeAgent(t *testing.T, name string) (cmd []string, env, log string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(fakeAgentScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log = filepath.Join(dir, name+".log")
+	return []string{"/bin/sh", "-c", "set -m; '" + path + "'; :"}, "LOG=" + log, log
+}
+
+func waitForText(t *testing.T, path, want string) {
+	t.Helper()
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		b, _ := os.ReadFile(path)
+		if strings.Contains(string(b), want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %q in %q", want, b)
+		}
+	}
+}
+
+// Without a session daemon, the app's mailbox carries a lead's task to
+// its worker, and the worker's answer back to the lead.
+func TestMailInTheApp(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.panes.Run(ctx)
+	start := func(name, by string) (proto.Created, string) {
+		cmd, env, log := fakeAgent(t, name)
+		v, err := a.cliCreate(proto.CreateParams{Name: name, Dir: a.workspace, Command: cmd, Env: []string{env}, By: by})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.(proto.Created), log
+	}
+	lead, leadLog := start("lead", "")
+	worker, workerLog := start("w1", lead.Pane)
+	var m proto.Mail
+	if err := c.Call("mail.ask", proto.MailAskParams{From: lead.Pane, FromName: "lead", To: worker.Pane, ToName: "w1",
+		Text: "Fix the login", NoWait: true}, &m); err != nil {
+		t.Fatal(err)
+	}
+	waitForText(t, workerLog, "201~")
+	if err := c.Call("mail.reply", proto.MailReplyParams{From: worker.Pane, Text: "Fixed"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForText(t, leadLog, "w1's answer to your message "+m.ID+":\nFixed")
+	var list []proto.Mail
+	if err := c.Call("mail.list", proto.MailListParams{Pane: lead.Pane}, &list); err != nil || len(list) != 2 {
+		t.Fatalf("list %+v %v", list, err)
+	}
+}
+
+// With a session daemon, the app passes the mail methods on to it; a wait
+// whose command went away leaves the answer to come to the asker.
+func TestMailThroughTheDaemon(t *testing.T) {
+	dir, err := os.MkdirTemp("", "omm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "d.sock")
+	d, err := daemon.Start(daemon.Options{Socket: socket, StateDir: dir, StateFile: filepath.Join(dir, "state.json"), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Stop()
+	r, err := daemon.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	a := newApp()
+	a.win = nil
+	a.setPanes(r)
+	a.projects = []project{{Name: "test", Path: dir, Tabs: []string{"dev"}}}
+	a.setProject(0)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	logs := map[string]string{}
+	for _, id := range []string{"lead", "w1"} {
+		cmd, env, log := fakeAgent(t, id)
+		logs[id] = log
+		if _, err := r.Start(session.StartOptions{ID: id, Exec: true, Command: cmd, Env: []string{env}, Cols: 100, Rows: 30}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var m proto.Mail
+	if err := c.Call("mail.ask", proto.MailAskParams{From: "lead", FromName: "lead", To: "w1", ToName: "w1", Text: "Fix the login"}, &m); err != nil {
+		t.Fatal(err)
+	}
+	// A command waits for the answer, then goes away.
+	waiter, err := client.Dial(a.ctl.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go waiter.Call("mail.await", proto.MailAwaitParams{ID: m.ID}, nil)
+	waitForText(t, logs["w1"], "201~")
+	waiter.Close()
+	time.Sleep(300 * time.Millisecond)
+	if err := c.Call("mail.reply", proto.MailReplyParams{From: "w1", Text: "Fixed"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForText(t, logs["lead"], "w1's answer to your message "+m.ID+":\nFixed")
 }

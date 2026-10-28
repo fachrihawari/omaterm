@@ -86,6 +86,12 @@ type Info struct {
 	AgentSession *agent.Session `json:"agentSession,omitempty"`
 	Turn         *Turn          `json:"turn,omitempty"`
 	Restored     bool           `json:"restored,omitempty"`
+
+	// The mailbox's (package mail): how many messages wait for the pane's
+	// agent, and why; the pane whose answer the agent waits for.
+	Inbox  int    `json:"inbox,omitempty"`
+	Held   string `json:"held,omitempty"`
+	Asking string `json:"asking,omitempty"`
 }
 
 // WorkDir is the directory the pane works in: its program's, else its

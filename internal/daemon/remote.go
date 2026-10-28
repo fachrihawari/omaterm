@@ -159,6 +159,18 @@ func (r *Remote) client() *client.Client {
 	return r.c
 }
 
+// Forward passes a call of the omaterm command on to the daemon, for as
+// long as ctx lets it: one the daemon answers, as for its mailbox.
+func (r *Remote) Forward(ctx context.Context, method string, raw json.RawMessage) (json.RawMessage, error) {
+	c := r.client()
+	if c == nil {
+		return nil, proto.Errorf(proto.CodeBusy, "the session daemon is reconnecting: try again")
+	}
+	var out json.RawMessage
+	err := c.CallContext(ctx, method, raw, &out)
+	return out, err
+}
+
 // Version is the daemon's build.
 func (r *Remote) Version() string {
 	r.mu.Lock()
