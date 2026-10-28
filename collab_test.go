@@ -665,3 +665,31 @@ func TestAskForReview(t *testing.T) {
 		}
 	}
 }
+
+// omaterm report run with no terminal, as an agent's commands are, gives
+// the report to its pane through omaterm.
+func TestReportWithoutATerminal(t *testing.T) {
+	prev := cli.OpenTTY
+	cli.OpenTTY = func() (*os.File, error) { return nil, os.ErrNotExist }
+	defer func() { cli.OpenTTY = prev }()
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	dialApp(t, a)
+	t.Setenv("OMATERM_SOCKET", a.ctl.Path())
+	t.Setenv("OMATERM_SESSION", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CODEX_THREAD_ID", "")
+	v, err := a.cliCreate(proto.CreateParams{Name: "agent", Dir: a.workspace, Command: []string{"sleep", "30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane := v.(proto.Created).Pane
+	t.Setenv("OMATERM_PANE", pane)
+	if out, code := runCLI(t, "report", "done", "Merged", "w1"); code != 0 || out != "" {
+		t.Fatalf("%q, status %d", out, code)
+	}
+	info := a.panes.Get(pane).Info()
+	if info.Message != "Merged w1" || len(info.Records) != 1 || info.Records[0].State != "done" {
+		t.Fatalf("%+v", info)
+	}
+}

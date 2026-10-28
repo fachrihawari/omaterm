@@ -290,6 +290,23 @@ func (p *Pane) Wait(ctx context.Context, until func(Info) bool) (Info, error) {
 	}
 }
 
+// Report takes a status report (OSC 7501's body after "7501;") as if the
+// program wrote it to the terminal: from `omaterm report` run with none,
+// as by an agent's commands.
+func (p *Pane) Report(body string) error {
+	rep, ok := osc.ParseStatus(body)
+	if !ok || rep.Query {
+		return errors.New("not a status report")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recs.Apply(rep.Record)
+	p.reported = true
+	p.fromRecords()
+	p.changedLocked()
+	return nil
+}
+
 // Flag marks the pane as needing the user, as `omaterm notify` asks.
 func (p *Pane) Flag(title, body string) {
 	msg := strings.TrimSpace(body)

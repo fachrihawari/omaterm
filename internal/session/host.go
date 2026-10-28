@@ -29,6 +29,7 @@ type Handle interface {
 	History(force bool) []byte
 	Wait(ctx context.Context, until func(Info) bool) (Info, error)
 	Flag(title, body string)
+	Report(body string) error
 	SetAgentSession(s *agent.Session)
 	SetTurn(t *Turn)
 }

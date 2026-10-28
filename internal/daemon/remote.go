@@ -734,6 +734,10 @@ func (p *remotePane) Wait(ctx context.Context, until func(session.Info) bool) (s
 	}
 }
 
+func (p *remotePane) Report(body string) error {
+	return p.r.call("report", proto.ReportParams{ID: p.id, Body: body}, nil)
+}
+
 func (p *remotePane) Flag(title, body string) {
 	p.r.call("notify", proto.NotifyParams{ID: p.id, Title: title, Body: body}, nil)
 }

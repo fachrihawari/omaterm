@@ -211,6 +211,19 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		}
 		pane.Flag(p.Title, p.Body)
 		return true, nil
+	case "report":
+		p, err := decode[proto.ReportParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		pane, err := h.pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := pane.Report(p.Body); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		return true, nil
 	case "pane.agentSession":
 		p, err := decode[proto.AgentSessionParams](raw)
 		if err != nil {

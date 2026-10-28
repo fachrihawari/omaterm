@@ -305,6 +305,14 @@ type Merged struct {
 	Removed bool     `json:"removed"`
 }
 
+// ReportParams give pane ID a status report (report), as OSC 7501 would:
+// Body is what follows "7501;", for a program with no terminal to write
+// it to, as an agent's commands.
+type ReportParams struct {
+	ID   string `json:"id"`
+	Body string `json:"body"`
+}
+
 type NotifyParams struct {
 	ID    string `json:"id"`
 	Title string `json:"title,omitempty"`

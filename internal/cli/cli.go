@@ -1018,14 +1018,27 @@ func report(args []string) error {
 	r.Msg = strings.Join(append(f.pos[1:], f.rest...), " ")
 	seq := osc.Encode(r)
 	// To the terminal, even when the output goes elsewhere.
-	if tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
+	if tty, err := OpenTTY(); err == nil {
 		defer tty.Close()
 		_, err = tty.WriteString(seq)
 		return err
 	}
+	// None, as for an agent's commands: to omaterm, for the pane.
+	if c, err := connect(); err == nil {
+		defer c.Close()
+		if st, err := state(c); err == nil {
+			if pane, _ := me(st); pane != "" {
+				body := strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b]7501;"), "\x1b\\")
+				return c.Call("report", proto.ReportParams{ID: pane, Body: body}, nil)
+			}
+		}
+	}
 	_, err = os.Stdout.WriteString(seq)
 	return err
 }
+
+// OpenTTY opens the terminal the command runs in; tests replace it.
+var OpenTTY = func() (*os.File, error) { return os.OpenFile("/dev/tty", os.O_WRONLY, 0) }
 
 // unescape interprets the escapes of echo -e: \n \r \t \e \a \b \\ \xHH.
 func unescape(s string) string {

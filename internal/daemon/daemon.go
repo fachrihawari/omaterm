@@ -460,6 +460,17 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		}
 		pn.Flag(p.Title, p.Body)
 		return true, nil
+	case "report":
+		var p proto.ReportParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := pn.Report(p.Body); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		return true, nil
 	case "pane.setAgentSession":
 		var p struct {
 			ID      string
