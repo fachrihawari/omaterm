@@ -1,9 +1,10 @@
 package main
 
-// The dialogs of sessions in a worktree: New Agent in Worktree.
+// The dialogs of sessions in a worktree: New Agent in Worktree, Merge.
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/model"
 	"omaterm/internal/proto"
 	"omaterm/internal/worktree"
 	"omaterm/service"
@@ -232,7 +234,7 @@ func (a *appState) worktreeJob(work func(ctx context.Context) error, done func(e
 // dialogField is a row of a dialog: a label, then its control.
 func dialogField(c *ui.Context, label string, control func()) {
 	ui.Row(c.Key("field-" + label)).FillWidth().Gap(10).AlignItems(ui.Center).MinHeight(28).Children(func() {
-		ui.Text(c, label).FontSize(12.5).TextColor(pal.Text).Width(110).Shrink(0)
+		ui.Text(c, label).FontSize(12.5).TextColor(pal.Text).Width(130).Shrink(0)
 		ui.Row(c).Grow(1).MinWidth(0).Justify(ui.End).AlignItems(ui.Center).Children(control)
 	})
 }
@@ -243,11 +245,235 @@ func dialogNote(c *ui.Context, text string, bad bool) {
 	if bad {
 		color = pal.Bad
 	}
-	ui.Text(c, text).FontSize(11.5).TextColor(color).Wrap().Margin(-4, 0, 0, 120)
+	ui.Text(c, text).FontSize(11.5).TextColor(color).Wrap().Margin(-4, 0, 0, 140)
 }
 
 // sentence makes a message a sentence: its first letter capital.
 func sentence(s string) string {
 	r, n := utf8.DecodeRuneInString(s)
 	return string(unicode.ToUpper(r)) + s[n:]
+}
+
+// worktreeMerge is the Merge dialog of a session's worktree.
+type worktreeMerge struct {
+	open    bool
+	session string // the session's ID
+	w       model.Worktree
+	sum     *worktree.Summary // nil until read
+	sumErr  string
+	how     string // "squash" or "merge commit"
+	msg     string
+	remove  bool // the worktree and branch, once merged
+	busy    bool
+	err     string
+}
+
+// atWork tells, in a toast, that an agent works in the worktree, which
+// what changes it waits for: its files would change under it.
+func (a *appState) atWork(w *model.Worktree) bool {
+	if !a.worktreeBusy(w.Dir) {
+		return false
+	}
+	a.toast(nil, "An agent is working in "+w.Branch+": wait until it stops")
+	return true
+}
+
+// openMergeDialog asks how to merge a session's worktree into its base.
+func (a *appState) openMergeDialog(t topTab) {
+	if a.atWork(t.Worktree) {
+		return
+	}
+	st := &worktreeMerge{open: true, session: t.ID, w: *t.Worktree, how: "squash", remove: true}
+	if !a.mergeSquash {
+		st.how = "merge commit"
+	}
+	a.wtMerge = st
+	var s worktree.Summary
+	a.worktreeJob(func(ctx context.Context) (err error) {
+		s, err = worktree.Summarize(ctx, worktreeOf(&st.w))
+		return err
+	}, func(err error) {
+		if err != nil {
+			st.sumErr = err.Error()
+			return
+		}
+		st.sum = &s
+		// One commit says it all; several make the body.
+		switch n := len(s.Commits); {
+		case n == 1:
+			st.msg = s.Commits[0]
+		case n > 1:
+			st.msg = st.w.Branch + "\n"
+			for _, c := range s.Commits {
+				st.msg += "\n* " + c
+			}
+		default:
+			st.msg = st.w.Branch
+		}
+	})
+}
+
+// mergeSummary words what a merge brings: its commits, its files and
+// lines, and its files not committed yet.
+func mergeSummary(s worktree.Summary) string {
+	var parts []string
+	if n := len(s.Commits); n > 0 {
+		parts = append(parts, plural(n, "commit"))
+	}
+	if s.Files > 0 {
+		parts = append(parts, plural(s.Files, "file")+" changed (+"+itoa(s.Added)+" −"+itoa(s.Removed)+")")
+	}
+	if s.Uncommitted > 0 {
+		parts = append(parts, plural(s.Uncommitted, "uncommitted file"))
+	}
+	if len(parts) == 0 {
+		return "Nothing to merge yet."
+	}
+	return strings.Join(parts, ", ")
+}
+
+// mergeDialog is the Merge dialog, while open.
+func (a *appState) mergeDialog(c *ui.Context) {
+	st := a.wtMerge
+	if st == nil {
+		return
+	}
+	if !st.open {
+		a.wtMerge = nil
+		return
+	}
+	squash := st.how == "squash"
+	// A message for the squashed commit, or for the files not committed,
+	// which a merge commit commits first.
+	needMsg := squash || st.sum != nil && st.sum.Uncommitted > 0
+	merge := false
+	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
+		dialogFrame(c, backdrop, panel)
+		dialogTitle(c, "Merge "+st.w.Branch+" into "+st.w.Base, false)
+		switch {
+		case st.sumErr != "":
+			ui.Text(c, st.sumErr).FontSize(12).TextColor(pal.Bad).Wrap()
+		case st.sum == nil:
+			ui.Text(c, "Reading the worktree…").FontSize(12.5).TextColor(pal.TextMuted)
+		default:
+			ui.Text(c, mergeSummary(*st.sum)).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
+		}
+		dialogField(c, "Merge as", func() {
+			settingsSegmented(c, "merge-how", &st.how, []string{"Squash", "Merge Commit"})
+		})
+		if needMsg {
+			label := "Commit message"
+			if !squash {
+				label = "Commit its uncommitted files as"
+			}
+			ui.Text(c, label).FontSize(12.5).TextColor(pal.Text)
+			ui.Box(c).FillWidth().Radius(6).Border(1, pal.BorderStrong).Background(pal.Input).Children(func() {
+				ui.TextAreaBase(c, &st.msg).FontSize(12).Padding(8).MinHeight(64).MaxHeight(160).FillWidth().Label("Message")
+			})
+		}
+		dialogField(c, "Remove the worktree", func() {
+			settingsSwitch(c, "merge-remove", &st.remove, false)
+		})
+		if st.err != "" {
+			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
+		}
+		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
+			if dialogButton(c, "Cancel", false, false) && !st.busy {
+				st.open = false
+			}
+			label := "Merge"
+			if st.busy {
+				label = "Merging…"
+			}
+			if dialogButton(c, label, true, false) {
+				merge = true
+			}
+		})
+	})
+	if st.busy {
+		st.open = true
+	}
+	if merge && !st.busy && st.sum != nil {
+		a.mergeFromDialog(st, needMsg)
+	}
+}
+
+// mergeFromDialog merges the worktree as the dialog says, then closes its
+// session and removes it, or, kept, brings the merge back into it, so
+// that it merges again with only what is new.
+func (a *appState) mergeFromDialog(st *worktreeMerge, needMsg bool) {
+	msg := strings.TrimSpace(st.msg)
+	if needMsg && msg == "" {
+		st.err = "Write the commit's message"
+		return
+	}
+	if msg == "" {
+		msg = "Work on " + st.w.Branch
+	}
+	if a.worktreeBusy(st.w.Dir) {
+		st.err = "An agent is working in it: wait until it stops"
+		return
+	}
+	squash, remove, w := st.how == "squash", st.remove, st.w
+	st.busy, st.err = true, ""
+	a.mergeSquash = squash
+	a.worktreeJob(func(ctx context.Context) error {
+		if err := worktree.Merge(ctx, worktreeOf(&w), msg, squash); err != nil {
+			return err
+		}
+		if squash && !remove {
+			return worktree.Update(ctx, worktreeOf(&w), msg)
+		}
+		return nil
+	}, func(err error) {
+		st.busy = false
+		var conflict *worktree.ConflictError
+		switch {
+		case errors.As(err, &conflict):
+			st.err = sentence(conflict.Error()) + ". Choose Update from " + w.Base + " to resolve the conflict in the worktree."
+			return
+		case err != nil:
+			st.err = "Couldn't merge: " + err.Error()
+			return
+		}
+		if a.wtMerge == st {
+			a.wtMerge = nil
+		}
+		a.toast(nil, "Merged "+w.Branch+" into "+w.Base)
+		if remove {
+			a.cliCloseSession(st.session)
+			a.removeWorktree(w)
+			return
+		}
+		a.refreshRepos()
+	})
+}
+
+// updateWorktree brings the base's work into a session's worktree. A
+// conflict stays there, for the user or the agent to resolve: the Git
+// panel shows it.
+func (a *appState) updateWorktree(t topTab) {
+	w := *t.Worktree
+	if a.atWork(&w) {
+		return
+	}
+	a.worktreeJob(func(ctx context.Context) error {
+		return worktree.Update(ctx, worktreeOf(&w), "Work on "+w.Branch)
+	}, func(err error) {
+		var conflict *worktree.ConflictError
+		switch {
+		case errors.As(err, &conflict):
+			if pi, _, _, ok := a.findSession(t.ID); ok {
+				a.focusSession(pi, t.ID)
+				a.setInspector(true)
+				a.showInspectorTab(2)
+			}
+			a.toast(nil, sentence(conflict.Error())+". Resolve the conflict in the Git panel, or ask the agent to.")
+		case err != nil:
+			a.toast(nil, "Couldn't update "+w.Branch+": "+err.Error())
+		default:
+			a.toast(nil, "Updated "+w.Branch+" from "+w.Base)
+		}
+		a.refreshRepos()
+	})
 }

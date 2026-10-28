@@ -193,7 +193,7 @@ func (a *appState) closeWorktreeAsking(t topTab) {
 		s, err = worktree.Summarize(ctx, worktreeOf(&w))
 		return err
 	}, func(err error) {
-		closeIt := func() { a.closeTabID(t.ID) }
+		closeIt := func() { a.cliCloseSession(t.ID) }
 		discard := func() {
 			closeIt()
 			a.removeWorktree(w)
@@ -231,7 +231,7 @@ func (a *appState) discardWorktreeAsking(t topTab) {
 			text += " " + what + " is still running: it ends."
 		}
 		a.askDanger("Discard "+w.Branch+"?", text, "Discard", func() {
-			a.closeTabID(t.ID)
+			a.cliCloseSession(t.ID)
 			a.removeWorktree(w)
 		})
 	})

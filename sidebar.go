@@ -327,8 +327,16 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 			mygo.Clipboard.WriteText(info.WorkDir())
 			c.Toast("Copied")
 		}
-		if t.Worktree != nil {
+		if w := t.Worktree; w != nil {
 			m.Separator()
+			if m.Item("Merge into " + w.Base + "…").Chosen() {
+				a.focusSession(pi, t.ID)
+				a.openMergeDialog(t)
+			}
+			if m.Item("Update from " + w.Base).Chosen() {
+				a.focusSession(pi, t.ID)
+				a.updateWorktree(t)
+			}
 			if m.Item("Discard Worktree…").Chosen() {
 				a.focusSession(pi, t.ID)
 				a.discardWorktreeAsking(t)

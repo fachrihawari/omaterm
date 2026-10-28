@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -387,5 +388,83 @@ func TestCloseWorktreeSession(t *testing.T) {
 	cli, id := start("cli")
 	if err := a.cliCloseSession(id); err != nil || !exists(cli.Dir) {
 		t.Fatalf("omaterm close: %v, folder kept %v", err, exists(cli.Dir))
+	}
+}
+
+// Merge squashes a worktree's work into its base, then closes its session
+// and removes it; one that would conflict isn't made, and Update leaves
+// the conflict in the worktree, for the Git panel.
+func TestMergeWorktree(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	gitIn := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	gitIn(a.workspace, "commit", "-qam", "two")
+	start := func(branch string) (worktree.Info, topTab) {
+		t.Helper()
+		wt, err := worktree.Add(context.Background(), a.workspace, branch, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := a.createWorktreeSession(wt, proto.CreateParams{Project: a.project().ID, Command: []string{"sleep", "30"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, tabs, ti, _ := a.findSession(c.Session)
+		return wt, (*tabs)[ti]
+	}
+
+	wt, tab := start("feat")
+	os.WriteFile(filepath.Join(wt.Dir, "feat.txt"), []byte("feat\n"), 0o644)
+	gitIn(wt.Dir, "add", ".")
+	gitIn(wt.Dir, "commit", "-qm", "Add feat")
+	a.openMergeDialog(tab)
+	st := a.wtMerge
+	if st == nil || st.sum == nil || st.msg != "Add feat" || st.how != "squash" {
+		t.Fatalf("dialog %+v", st)
+	}
+	a.mergeFromDialog(st, true)
+	if a.wtMerge != nil || st.err != "" {
+		t.Fatalf("still open: %q", st.err)
+	}
+	if log := gitIn(a.workspace, "log", "-1", "--format=%s"); log != "Add feat" {
+		t.Fatalf("main's last commit %q", log)
+	}
+	if _, err := os.Stat(wt.Dir); err == nil {
+		t.Fatal("the worktree is left")
+	}
+	if _, found := a.worktreeSession(wt.Dir); found != nil {
+		t.Fatal("its session is left")
+	}
+
+	wt, tab = start("clash")
+	os.WriteFile(filepath.Join(wt.Dir, "hello.txt"), []byte("one\nthree\n"), 0o644)
+	os.WriteFile(filepath.Join(a.workspace, "hello.txt"), []byte("one\nfour\n"), 0o644)
+	gitIn(a.workspace, "commit", "-qam", "four")
+	a.openMergeDialog(tab)
+	a.mergeFromDialog(a.wtMerge, true)
+	if a.wtMerge == nil || !strings.Contains(a.wtMerge.err, "Conflicts with main in hello.txt. Choose Update from main") {
+		t.Fatalf("conflict: %+v", a.wtMerge)
+	}
+	if s := gitIn(a.workspace, "status", "--porcelain"); s != "" {
+		t.Fatalf("main checkout changed: %q", s)
+	}
+	a.wtMerge = nil
+	a.updateWorktree(tab)
+	if gitIn(wt.Dir, "status", "--porcelain") != "UU hello.txt" {
+		t.Fatal("no conflict in the worktree")
+	}
+	if a.inspectorTab != 2 {
+		t.Fatal("the Git panel isn't shown")
 	}
 }

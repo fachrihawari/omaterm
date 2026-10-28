@@ -334,9 +334,10 @@ type appState struct {
 	agentSetupOffer string
 	agentSetupAsked bool
 	hookChecked     map[string]bool
-	// wtNew is the New Agent in Worktree dialog, open while set; wtAgent,
-	// wtEnv and mergeSquash the worktree dialogs' last choices.
+	// wtNew and wtMerge are the New Agent in Worktree and Merge dialogs,
+	// open while set; wtAgent, wtEnv and mergeSquash their last choices.
 	wtNew       *worktreeNew
+	wtMerge     *worktreeMerge
 	wtAgent     string
 	wtEnv       bool
 	mergeSquash bool

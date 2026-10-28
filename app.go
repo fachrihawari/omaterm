@@ -153,6 +153,7 @@ func (a *appState) view(c *ui.Context) {
 
 	a.webPairDialog(c)
 	a.worktreeDialog(c)
+	a.mergeDialog(c)
 
 	// Remove-project confirmation dialog.
 	if a.removeProjectConfirmOpen != nil {
@@ -184,7 +185,7 @@ func (a *appState) view(c *ui.Context) {
 // modalOpen tells whether a dialog of the window waits for an answer.
 func (a *appState) modalOpen() bool {
 	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.overwriteAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
-		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil || a.wtNew != nil
+		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil || a.wtNew != nil || a.wtMerge != nil
 }
 
 // animColor animates e's color to target, or, with Reduce Motion on,

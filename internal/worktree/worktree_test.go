@@ -339,11 +339,31 @@ func TestMergeConflict(t *testing.T) {
 		clean(t, dir)
 	}
 	var conflict *ConflictError
-	if err := Update(ctx, w, "wip"); !errors.As(err, &conflict) || conflict.Error() != "a.txt conflicts with main" {
+	if err := Update(ctx, w, "wip"); !errors.As(err, &conflict) || conflict.Error() != "conflicts with main in a.txt" {
 		t.Fatalf("update: %v", err)
 	}
 	if git(t, w.Dir, "rev-parse", "-q", "--verify", "MERGE_HEAD") == "" {
 		t.Fatal("the conflict isn't left in the worktree")
+	}
+}
+
+// The user's own changes in the main checkout, which a merge would
+// overwrite, stop it, and are left as they were.
+func TestMergeKeepsLocalChanges(t *testing.T) {
+	dir := repo(t)
+	w := add(t, dir, "x")
+	write(t, filepath.Join(w.Dir, "a.txt"), "one\n2\nthree\n")
+	write(t, filepath.Join(dir, "a.txt"), "mine\n")
+	for _, squash := range []bool{true, false} {
+		if err := Merge(context.Background(), w, "m", squash); err == nil {
+			t.Fatalf("squash %v: merged over local changes", squash)
+		}
+		if b, _ := os.ReadFile(filepath.Join(dir, "a.txt")); string(b) != "mine\n" {
+			t.Fatalf("squash %v: local change now %q", squash, b)
+		}
+		if s := git(t, dir, "status", "--porcelain"); s != "M a.txt" { // unstaged, the line trimmed
+			t.Fatalf("squash %v: status %q", squash, s)
+		}
 	}
 }
 

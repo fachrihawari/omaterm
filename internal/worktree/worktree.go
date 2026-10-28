@@ -319,11 +319,10 @@ type ConflictError struct {
 }
 
 func (e *ConflictError) Error() string {
-	n := len(e.Files)
-	if n == 1 {
-		return fmt.Sprintf("%s conflicts with %s", e.Files[0], e.Base)
+	if len(e.Files) == 1 {
+		return fmt.Sprintf("conflicts with %s in %s", e.Base, e.Files[0])
 	}
-	return fmt.Sprintf("%d files conflict with %s", n, e.Base)
+	return fmt.Sprintf("conflicts with %s in %d files", e.Base, len(e.Files))
 }
 
 // Merge brings the worktree's work into its base, in the checkout of the
