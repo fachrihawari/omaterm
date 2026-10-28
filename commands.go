@@ -138,6 +138,9 @@ var commandRegistry = append([]Command{
 
 	{ID: "terminal.new", Title: "New Terminal Tab", Category: "Terminal",
 		Run: func(a *appState, c *ui.Context) { a.newTerminalTab() }},
+	{ID: "session.newWorktree", Title: "New Agent in Worktree…", Category: "Session",
+		Enabled: func(a *appState) bool { return a.project() != nil && service.RepoRoot(a.workspace) != "" },
+		Run:     func(a *appState, c *ui.Context) { a.openWorktreeDialog(a.active) }},
 	{ID: "terminal.splitDown", Title: "Split Terminal Down", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.splitActivePane(c, splitHorizontal) }},

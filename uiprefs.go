@@ -17,6 +17,11 @@ type uiPrefs struct {
 	AgentSetupAsked  bool    `json:"agentSetupAsked,omitempty"`
 	// SettingsPage is the Settings window's page, where it opens again.
 	SettingsPage string `json:"settingsPage,omitempty"`
+	// The worktree dialogs' last choices: the agent, copying .env files,
+	// and squashing a merge.
+	WorktreeAgent string `json:"worktreeAgent,omitempty"`
+	WorktreeEnv   *bool  `json:"worktreeEnv,omitempty"`
+	MergeSquash   *bool  `json:"mergeSquash,omitempty"`
 	// DiffSplit and FontSize are read once, to move them to settings.json.
 	DiffSplit *bool   `json:"diffSplit,omitempty"`
 	FontSize  float32 `json:"fontSize,omitempty"`
@@ -66,6 +71,13 @@ func (a *appState) loadUIPrefs() {
 	}
 	a.agentSetupAsked = u.AgentSetupAsked
 	a.settingsPage = u.SettingsPage
+	a.wtAgent = u.WorktreeAgent
+	if u.WorktreeEnv != nil {
+		a.wtEnv = *u.WorktreeEnv
+	}
+	if u.MergeSquash != nil {
+		a.mergeSquash = *u.MergeSquash
+	}
 }
 
 // saveUIPrefs writes ui.json, as the window closes.
@@ -79,6 +91,7 @@ func (a *appState) saveUIPrefs() {
 		InspectorTab:    &a.inspectorTab,
 		AgentSetupAsked: a.agentSetupAsked,
 		SettingsPage:    a.settingsPage,
+		WorktreeAgent:   a.wtAgent, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {

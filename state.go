@@ -334,6 +334,12 @@ type appState struct {
 	agentSetupOffer string
 	agentSetupAsked bool
 	hookChecked     map[string]bool
+	// wtNew is the New Agent in Worktree dialog, open while set; wtAgent,
+	// wtEnv and mergeSquash the worktree dialogs' last choices.
+	wtNew       *worktreeNew
+	wtAgent     string
+	wtEnv       bool
+	mergeSquash bool
 	// paneShown is when each pane was last shown: a daemon pane hidden
 	// long lets go of its terminal in the app (detachHidden).
 	paneShown         map[string]time.Time
@@ -529,6 +535,8 @@ func newApp() *appState {
 		editors:          map[string]*openFile{},
 		panes:            session.NewLocalHost(),
 		paneFailed:       map[string]bool{},
+		wtEnv:            true,
+		mergeSquash:      true,
 		paneShown:        map[string]time.Time{},
 		hookChecked:      map[string]bool{},
 		git:              newGitWatch(),

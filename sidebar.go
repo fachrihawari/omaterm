@@ -197,6 +197,10 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.switchProject(i)
 			a.newTerminalTab()
 		}
+		if m.Item("New Agent in Worktree…").Chosen() {
+			a.switchProject(i)
+			a.openWorktreeDialog(i)
+		}
 		label := "Collapse"
 		if p.Collapsed {
 			label = "Expand"

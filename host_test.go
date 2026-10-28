@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
+
 	"omaterm/internal/client"
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
@@ -284,5 +286,44 @@ func TestGitPanelFollowsWorktree(t *testing.T) {
 	a.followWorktreeRepo()
 	if got := a.activeRepoRef().Root; got != a.workspace {
 		t.Fatalf("panel on %s, want the checkout", got)
+	}
+}
+
+// New Agent in Worktree says what is wrong with a branch's name, and with
+// a good one makes the worktree and its session, in the project.
+func TestNewWorktreeDialog(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.wtAgent = "shell"
+	a.openWorktreeDialog(a.active)
+	if a.wtNew == nil || a.wtNew.base != "main" {
+		t.Fatalf("dialog %+v", a.wtNew)
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("New Agent in Worktree") {
+		t.Fatal("no dialog")
+	}
+	tr.Type("a b")
+	tr.Frame()
+	if !tr.HasText("A branch's name has no spaces") {
+		t.Fatalf("no word of the space: %v", tr.Texts())
+	}
+	for range 3 {
+		tr.Key(0, ui.KeyBackspace)
+	}
+	tr.Type("feat/x")
+	tr.Key(0, ui.KeyEnter)
+	tr.Frame()
+	if a.wtNew != nil {
+		t.Fatalf("dialog still open: %+v", a.wtNew)
+	}
+	dir := filepath.Join(a.workspace, ".worktrees", "feat-x")
+	pi, tab := a.worktreeSession(dir)
+	if tab == nil || pi != a.active || tab.Label != "feat/x" || tab.Worktree.Base != "main" {
+		t.Fatalf("session %+v in project %d", tab, pi)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
 	}
 }

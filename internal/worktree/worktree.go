@@ -477,21 +477,21 @@ func ValidBranch(name string) error {
 	case strings.ContainsAny(name, " \t"):
 		return errors.New("a branch's name has no spaces")
 	case name == "@" || name == "HEAD" || strings.HasPrefix(name, "-"):
-		return fmt.Errorf("%s can't be a branch's name", name)
+		return fmt.Errorf("a branch can't be named %s", name)
 	}
 	if strings.ContainsAny(name, "~^:?*[\\") || strings.Contains(name, "..") || strings.Contains(name, "@{") ||
 		strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") ||
 		strings.Contains(name, "//") {
-		return fmt.Errorf("%s can't be a branch's name", name)
+		return fmt.Errorf("a branch can't be named %s", name)
 	}
 	for _, r := range name {
 		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("%q can't be a branch's name", name)
+			return fmt.Errorf("a branch can't be named %q", name)
 		}
 	}
 	for _, part := range strings.Split(name, "/") {
 		if strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
-			return fmt.Errorf("%s can't be a branch's name", name)
+			return fmt.Errorf("a branch can't be named %s", name)
 		}
 	}
 	return nil
