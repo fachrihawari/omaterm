@@ -282,8 +282,9 @@ func TestLimit(t *testing.T) {
 	}
 }
 
-// takingAgent is fakeAgent, but a dialog comes up over its prompt as its
-// first message is sent, and takes it, as Codex's hooks to review do.
+// takingAgent is fakeAgent, but a dialog comes up over its prompt as it
+// starts on its first message, and takes it, as Codex's hooks to review
+// do.
 const takingAgent = `#!/bin/sh
 printf '\033[?2004h\033]7501;state=idle\007'
 first=1
@@ -292,6 +293,7 @@ while IFS= read -r line; do
   *'201~'*)
     if [ $first = 1 ]; then
       first=0
+      printf '\033]7501;state=working\007'; sleep 0.4
       printf '\033]7501;state=blocked:kind=question\007'; sleep 1; printf '\033]7501;state=idle\007'
     else
       printf '%s\n' "$line" >> "$LOG"

@@ -72,8 +72,9 @@ type item struct {
 	at       time.Time // when it was typed
 	again    bool      // Enter was pressed again
 	// worked tells that its agent worked since it was typed; taken, that
-	// a dialog came up instead, which may have taken it (retyped once).
-	worked, taken, retyped bool
+	// a dialog came up at once, which may have taken it (retyped once),
+	// unless the agent worked after; past, that it was over by then.
+	worked, taken, past, retyped bool
 	// noted tells a note its agent took up, or had the time to.
 	noted bool
 }
@@ -369,20 +370,23 @@ func (m *Mailbox) Tick(now time.Time) {
 			switch info.Status {
 			case session.Working:
 				it.worked = true
+				it.past = it.past || it.taken
 			case session.Waiting:
-				it.taken = it.taken || !it.worked
+				// A dialog as it was sent, as Codex's hooks to review take a
+				// first prompt to show, even as it starts on it.
+				it.taken = it.taken || now.Sub(it.at) < enterAgain
 			}
 			worked := it.worked || info.Since >= it.at.UnixMilli() && !it.taken
 			stopped := info.Status != session.Working && info.Status != session.Waiting
 			hold, _ := p.MailHold(now)
 			switch {
-			case it.taken && !it.worked && hold == "" && !it.retyped:
-				// A dialog came up as it was sent, as Codex's hooks to review
-				// do on a first prompt, and is gone: the agent may never
-				// have had it, and gets it again.
-				it.State, it.retyped, it.taken, it.again = proto.MailQueued, true, false, false
+			case it.taken && !it.past && hold == "" && !it.retyped:
+				// The dialog is gone, and the agent never worked after: it
+				// may never have had it, and gets it again.
+				it.State, it.retyped, it.taken, it.worked, it.again = proto.MailQueued, true, false, false, false
 			case it.Note:
-				it.noted = it.worked || now.Sub(it.at) > startLimit
+				// Taken up: worked on, and no dialog came up as it was sent.
+				it.noted = it.worked && (it.past || !it.taken && now.Sub(it.at) >= enterAgain) || now.Sub(it.at) > startLimit
 			case !worked && !it.taken && !it.again && now.Sub(it.at) > enterAgain:
 				it.again = true
 				sends = append(sends, send{it: it, p: p, b: []byte("\r"), enter: true})
