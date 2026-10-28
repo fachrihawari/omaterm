@@ -242,7 +242,8 @@ func (d *Daemon) protoState(st model.State) proto.State {
 		out.Projects = append(out.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Dir})
 	}
 	for _, s := range st.Sessions {
-		ps := proto.Session{ID: s.ID, Project: s.Project, AgentNamed: s.AgentNamed, Focus: s.Focus, Zoomed: s.Zoomed, Layout: s.Layout}
+		ps := proto.Session{ID: s.ID, Project: s.Project, AgentNamed: s.AgentNamed, Focus: s.Focus, Zoomed: s.Zoomed, Layout: s.Layout,
+			Worktree: s.Worktree}
 		for _, pn := range s.Panes {
 			info, ok := infos[pn.ID]
 			if !ok {

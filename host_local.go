@@ -351,7 +351,8 @@ func (a *appState) protoState(started time.Time) proto.State {
 			if t.Kind != tabTerminal || t.Split == nil {
 				continue
 			}
-			s := proto.Session{ID: t.ID, Project: p.ID, Zoomed: t.Zoomed, Layout: toLayout(t.Split), AgentNamed: t.AgentNamed}
+			s := proto.Session{ID: t.ID, Project: p.ID, Zoomed: t.Zoomed, Layout: toLayout(t.Split), AgentNamed: t.AgentNamed,
+				Worktree: t.Worktree}
 			for _, id := range t.Split.termIDs() {
 				info, ok := a.status[id]
 				if a.isBrowser(id) {

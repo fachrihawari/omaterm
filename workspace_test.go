@@ -78,6 +78,8 @@ func TestSessionsRoundTrip(t *testing.T) {
 	a.splitPane(first, splitVertical)
 	a.newTerminalTabReal()
 	a.tabs[len(a.tabs)-1].Label = "server"
+	wt := &model.Worktree{Dir: filepath.Join(a.workspace, ".worktrees", "x"), Branch: "x", Base: "main"}
+	a.tabs[len(a.tabs)-1].Worktree = wt
 	if err := model.Save(filepath.Join(cfg, "omaterm", "state.json"), a.state()); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +91,9 @@ func TestSessionsRoundTrip(t *testing.T) {
 	}
 	if len(b.tabs) != 2 || b.tabs[1].Label != "server" {
 		t.Fatalf("tabs %+v", b.tabs)
+	}
+	if b.tabs[0].Worktree != nil || b.tabs[1].Worktree == nil || *b.tabs[1].Worktree != *wt {
+		t.Fatalf("worktrees %+v %+v", b.tabs[0].Worktree, b.tabs[1].Worktree)
 	}
 	if got := b.tabs[0].Split.termIDs(); len(got) != 2 || got[0] != first {
 		t.Fatalf("split %v", got)

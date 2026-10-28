@@ -60,6 +60,8 @@ type topTab struct {
 	Created int64
 	// Diff is what a diff tab compares.
 	Diff *diffSource
+	// Worktree is the git worktree a session works in, nil for none.
+	Worktree *model.Worktree
 }
 
 const (

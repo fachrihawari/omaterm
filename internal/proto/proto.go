@@ -108,6 +108,8 @@ type Session struct {
 	Layout     *model.Layout `json:"layout,omitempty"`
 	Panes      []Pane        `json:"panes"`
 	Lead       Pane          `json:"lead"`
+	// Worktree is the git worktree the session works in.
+	Worktree *model.Worktree `json:"worktree,omitempty"`
 }
 
 // Project is a folder the user works in.
@@ -140,6 +142,17 @@ type CreateParams struct {
 	Split     string  `json:"split,omitempty"`
 	Direction string  `json:"direction,omitempty"`
 	Ratio     float64 `json:"ratio,omitempty"`
+	// Worktree makes the session a git worktree of its own to work in.
+	Worktree *WorktreeParams `json:"worktree,omitempty"`
+}
+
+// WorktreeParams make a session's worktree: on Branch, a new branch from
+// Base (the checkout's own when ""), or one not checked out elsewhere.
+type WorktreeParams struct {
+	Branch string `json:"branch"`
+	Base   string `json:"base,omitempty"`
+	// NoEnv leaves out the checkout's .env files, copied otherwise.
+	NoEnv bool `json:"noEnv,omitempty"`
 }
 
 // Created is what create and split made.

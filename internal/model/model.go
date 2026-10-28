@@ -55,6 +55,16 @@ type Session struct {
 	Zoomed     string  `json:"zoomed,omitempty"`
 	Layout     *Layout `json:"layout,omitempty"`
 	Panes      []Pane  `json:"panes"`
+	// Worktree is the git worktree the session works in, nil for none.
+	Worktree *Worktree `json:"worktree,omitempty"`
+}
+
+// Worktree is a git worktree omaterm made for a session (internal/worktree):
+// its folder, its branch, and the branch it merges into.
+type Worktree struct {
+	Dir    string `json:"dir"`
+	Branch string `json:"branch"`
+	Base   string `json:"base"`
 }
 
 // Pane is a pane of a session: a shell, or a browser page (URL).
