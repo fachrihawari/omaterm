@@ -3,6 +3,43 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.9.9
+
+Shortcuts that fit your Mac, and a window that fits half a screen.
+
+### Keyboard shortcuts
+
+- **⌘W closes the tab on macOS, not omaterm.** The menu bar's Close
+  Window took it, and with it the app. ⌘R, ⇧⌘R and the zoom keys did
+  nothing there, and now reload, split right and zoom.
+- **Ctrl+W (⌘W) closes the pane you're in**, and the tab with its last
+  pane, as the pane's × does. It ended every shell of a split, and
+  closing a browser pane closed the session beside it.
+- **Option types again on macOS.** ⌥1 typed ¡ (and [ ] { } @ on German
+  and Nordic keyboards) while it switched tabs. On a Mac, tabs are now
+  ⌘1–⌘9, projects ⌥⌘1–⌥⌘9, and a browser pane goes back and forward
+  with ⌘[ and ⌘]. ⌥← and ⌥→ move the shell's cursor by words. Linux
+  and Windows keep Alt.
+- **The editor's two-key shortcuts work:** Ctrl+K Ctrl+0 folds
+  everything rather than resetting the zoom.
+- **Shortcuts in a web page follow your keyboard's layout.** On AZERTY,
+  Ctrl+Z in a page's form closed the tab.
+- **The shortcuts list finds "cmd+shift+d" on macOS**, where it shows
+  ⇧⌘D.
+
+### Smaller things
+
+- **The window goes down to 600 wide.** Tiled to half a laptop's
+  screen, it was drawn 900 wide anyway and squeezed, its text tall and
+  narrow. The side panels give way when there's no room, and come back
+  as it widens.
+- **Quitting asks first when it would end a running agent**: on
+  Windows, or with the session daemon off, sessions end with the app.
+- **An agent's panes stay in its own project.** A Claude Code
+  background session could take a pane of another project for its own,
+  and start its dev server there.
+- **Open in Default Browser works on macOS and Windows.**
+
 ## 0.9.8
 
 ### Files
