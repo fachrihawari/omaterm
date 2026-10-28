@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"omaterm/internal/model"
@@ -161,4 +162,90 @@ func (a *appState) followWorktreeRepo() {
 		a.repoAsked = t.Worktree.Dir
 		a.refreshRepos()
 	}
+}
+
+// worktreeOf is a session's worktree, as internal/worktree has it.
+func worktreeOf(w *model.Worktree) worktree.Info { return worktree.Of(w.Dir, w.Branch, w.Base) }
+
+// unmergedText says what of a worktree's work its base hasn't.
+func unmergedText(w *model.Worktree, s worktree.Summary) string {
+	var parts []string
+	if n := len(s.Commits); n > 0 {
+		parts = append(parts, plural(n, "commit"))
+	}
+	if s.Uncommitted > 0 {
+		parts = append(parts, plural(s.Uncommitted, "uncommitted file"))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, plural(s.Files, "changed file"))
+	}
+	return w.Branch + " has " + strings.Join(parts, " and ") + " not in " + w.Base + "."
+}
+
+// closeWorktreeAsking closes a session in a worktree: with its worktree
+// when nothing in it is missing from its base, else as the user chooses,
+// keeping the worktree to go on later or discarding it. That is asked
+// whatever the settings say: closing would lose work.
+func (a *appState) closeWorktreeAsking(t topTab) {
+	w, panes := *t.Worktree, t.Split.termIDs()
+	var s worktree.Summary
+	a.worktreeJob(func(ctx context.Context) (err error) {
+		s, err = worktree.Summarize(ctx, worktreeOf(&w))
+		return err
+	}, func(err error) {
+		closeIt := func() { a.closeTabID(t.ID) }
+		discard := func() {
+			closeIt()
+			a.removeWorktree(w)
+		}
+		switch {
+		case err != nil: // it can't tell: the worktree stays
+			a.confirmCloseRunning(panes, "Close Session", closeIt)
+		case !s.Unmerged():
+			a.confirmCloseRunning(panes, "Close Session", discard)
+		default:
+			text := unmergedText(&w, s) + " Keep its worktree to go on later, or discard it."
+			if what := a.runningProgram(panes); what != "" {
+				text = what + " is still running. Closing ends it. " + text
+			}
+			a.closeAsk = &closeAsk{open: true, title: "Close Session", text: text,
+				alt: "Keep Worktree", altRun: closeIt, confirm: "Discard", run: discard}
+		}
+	})
+}
+
+// discardWorktreeAsking deletes a session's worktree and branch, and
+// closes the session, once the user confirms what goes with them.
+func (a *appState) discardWorktreeAsking(t topTab) {
+	w, panes := *t.Worktree, t.Split.termIDs()
+	var s worktree.Summary
+	a.worktreeJob(func(ctx context.Context) (err error) {
+		s, err = worktree.Summarize(ctx, worktreeOf(&w))
+		return err
+	}, func(err error) {
+		text := "Its folder and the branch " + w.Branch + " are deleted."
+		if err == nil && s.Unmerged() {
+			text += " " + unmergedText(&w, s)
+		}
+		if what := a.runningProgram(panes); what != "" {
+			text += " " + what + " is still running: it ends."
+		}
+		a.askDanger("Discard "+w.Branch+"?", text, "Discard", func() {
+			a.closeTabID(t.ID)
+			a.removeWorktree(w)
+		})
+	})
+}
+
+// removeWorktree deletes a worktree and its branch, its session closed.
+func (a *appState) removeWorktree(w model.Worktree) {
+	a.worktreeJob(func(ctx context.Context) error {
+		return worktree.Remove(ctx, worktreeOf(&w))
+	}, func(err error) {
+		if err != nil {
+			a.toast(nil, "Couldn't remove "+w.Branch+"'s worktree: "+err.Error())
+			return
+		}
+		a.refreshRepos()
+	})
 }

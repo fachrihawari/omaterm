@@ -70,11 +70,18 @@ func (a *appState) view(c *ui.Context) {
 		if confirm == "" {
 			confirm = "Close"
 		}
-		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, "Cancel", confirm)
+		buttons := []string{"Cancel", confirm}
+		if ask.alt != "" {
+			buttons = []string{"Cancel", ask.alt, confirm}
+		}
+		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, buttons...)
 		if result != -1 || !ask.open {
 			a.closeAsk = nil
-			if result == 1 {
+			switch {
+			case result == len(buttons)-1:
 				ask.run()
+			case result == 1:
+				ask.altRun()
 			}
 		}
 	}

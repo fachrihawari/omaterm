@@ -327,3 +327,65 @@ func TestNewWorktreeDialog(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Closing a worktree's session takes the worktree along when nothing in
+// it is missing from its base; with work in it, it asks to keep it or
+// discard it. Closed by the omaterm command, it stays.
+func TestCloseWorktreeSession(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	start := func(branch string) (worktree.Info, string) {
+		t.Helper()
+		wt, err := worktree.Add(context.Background(), a.workspace, branch, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := a.createWorktreeSession(wt, proto.CreateParams{Project: a.project().ID, Command: []string{"sleep", "30"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wt, c.Session
+	}
+	index := func(id string) int {
+		for i, t := range a.tabs {
+			if t.ID == id {
+				return i
+			}
+		}
+		return -1
+	}
+	exists := func(dir string) bool { _, err := os.Stat(dir); return err == nil }
+
+	clean, id := start("clean")
+	a.closeTabAsking(index(id))
+	if a.closeAsk != nil || index(id) >= 0 || exists(clean.Dir) {
+		t.Fatalf("clean: asked %v, tab %d, folder kept %v", a.closeAsk != nil, index(id), exists(clean.Dir))
+	}
+
+	kept, id := start("kept")
+	os.WriteFile(filepath.Join(kept.Dir, "new.txt"), []byte("work\n"), 0o644)
+	a.closeTabAsking(index(id))
+	if a.closeAsk == nil || a.closeAsk.alt != "Keep Worktree" || !strings.Contains(a.closeAsk.text, "1 uncommitted file not in main") {
+		t.Fatalf("with work: %+v", a.closeAsk)
+	}
+	a.closeAsk.altRun()
+	a.closeAsk = nil
+	if index(id) >= 0 || !exists(kept.Dir) {
+		t.Fatalf("keep: tab %d, folder kept %v", index(id), exists(kept.Dir))
+	}
+
+	gone, id := start("gone")
+	a.discardWorktreeAsking(a.tabs[index(id)])
+	if a.closeAsk == nil || a.closeAsk.confirm != "Discard" {
+		t.Fatalf("discard: %+v", a.closeAsk)
+	}
+	a.closeAsk.run()
+	if index(id) >= 0 || exists(gone.Dir) {
+		t.Fatalf("discarded: tab %d, folder kept %v", index(id), exists(gone.Dir))
+	}
+
+	cli, id := start("cli")
+	if err := a.cliCloseSession(id); err != nil || !exists(cli.Dir) {
+		t.Fatalf("omaterm close: %v, folder kept %v", err, exists(cli.Dir))
+	}
+}

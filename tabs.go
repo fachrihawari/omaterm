@@ -408,15 +408,22 @@ func (a *appState) closeTabAsking(i int) {
 		a.closeTab(i)
 		return
 	}
+	if t.Worktree != nil && !t.Worktree.Gone() {
+		a.closeWorktreeAsking(t)
+		return
+	}
 	id := t.ID
-	a.confirmCloseRunning(t.Split.termIDs(), "Close Session", func() {
-		for j, tab := range a.tabs {
-			if tab.ID == id {
-				a.closeTab(j)
-				return
-			}
+	a.confirmCloseRunning(t.Split.termIDs(), "Close Session", func() { a.closeTabID(id) })
+}
+
+// closeTabID closes the shown project's tab id.
+func (a *appState) closeTabID(id string) {
+	for j, tab := range a.tabs {
+		if tab.ID == id {
+			a.closeTab(j)
+			return
 		}
-	})
+	}
 }
 
 // closeAsk is a close waiting for the user to confirm it.
@@ -425,6 +432,9 @@ type closeAsk struct {
 	title, text string
 	confirm     string // the button that does it: "Close" when empty
 	run         func()
+	// alt is a button between Cancel and confirm, which runs altRun.
+	alt    string
+	altRun func()
 }
 
 // askDanger runs run once the user confirms a step that can't be undone,

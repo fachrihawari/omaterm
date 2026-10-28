@@ -290,7 +290,14 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 		case info.Status == session.Exited:
 			name.TextColor(pal.TextMuted)
 		}
-		if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" && g.Branch != p.Branch && !strings.HasPrefix(p.Branch, g.Branch) {
+		if w := t.Worktree; w != nil {
+			// A worktree's branch, from the session: the project's isn't
+			// known until it shows.
+			ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint).Shrink(0)
+			if w.Branch != a.sessionName(t, info) {
+				ui.Text(c, w.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+			}
+		} else if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" && g.Branch != p.Branch && !strings.HasPrefix(p.Branch, g.Branch) {
 			ui.Text(c, g.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
 		}
 		ui.Spacer(c)
@@ -299,7 +306,11 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 		}
 		a.statusIcon(c, info, 14)
 	})
-	if tip := a.sessionTooltip(info); tip != "" {
+	tip := a.sessionTooltip(info)
+	if w := t.Worktree; w != nil {
+		tip = strings.TrimSpace("Worktree on " + w.Branch + ", from " + w.Base + "\n" + tip)
+	}
+	if tip != "" {
 		row.Tooltip(tip)
 	}
 	if row.DoubleClicked() {
@@ -315,6 +326,14 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 		if m.Item("Copy Working Directory").Chosen() {
 			mygo.Clipboard.WriteText(info.WorkDir())
 			c.Toast("Copied")
+		}
+		if t.Worktree != nil {
+			m.Separator()
+			if m.Item("Discard Worktree…").Chosen() {
+				a.focusSession(pi, t.ID)
+				a.discardWorktreeAsking(t)
+			}
+			m.Separator()
 		}
 		if m.Item("Close Session").Chosen() {
 			a.focusSession(pi, t.ID)
