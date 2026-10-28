@@ -337,6 +337,10 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 				a.focusSession(pi, t.ID)
 				a.updateWorktree(t)
 			}
+			if m.Item("Push & Create PR").Chosen() {
+				a.focusSession(pi, t.ID)
+				a.pushWorktree(t)
+			}
 			if m.Item("Discard Worktree…").Chosen() {
 				a.focusSession(pi, t.ID)
 				a.discardWorktreeAsking(t)

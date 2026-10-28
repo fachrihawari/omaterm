@@ -419,3 +419,51 @@ func TestValidBranch(t *testing.T) {
 		}
 	}
 }
+
+func TestCompareURL(t *testing.T) {
+	for remote, want := range map[string]string{
+		"https://github.com/o/r.git":     "https://github.com/o/r/compare/main...feat/x?expand=1",
+		"https://github.com/o/r":         "https://github.com/o/r/compare/main...feat/x?expand=1",
+		"git@github.com:o/r.git":         "https://github.com/o/r/compare/main...feat/x?expand=1",
+		"ssh://git@github.com/o/r.git":   "https://github.com/o/r/compare/main...feat/x?expand=1",
+		"https://gitlab.com/o/r.git":     "",
+		"/srv/git/r.git":                 "",
+		"https://github.com/o/r/x/y.git": "",
+	} {
+		if got := CompareURL(remote, "main", "feat/x"); got != want {
+			t.Errorf("%s: %q, want %q", remote, got, want)
+		}
+	}
+	if got := CompareURL("git@github.com:o/r.git", "main", "fix#1"); got != "https://github.com/o/r/compare/main...fix%231?expand=1" {
+		t.Errorf("escaped: %s", got)
+	}
+}
+
+// PR pushes the branch, then gives the page that opens its request; with
+// uncommitted files, or no origin, it pushes nothing.
+func TestPR(t *testing.T) {
+	gh := ghPath
+	ghPath = func() string { return "" } // never GitHub's
+	defer func() { ghPath = gh }()
+	dir := repo(t)
+	w := add(t, dir, "feat")
+	ctx := context.Background()
+	if _, err := PR(ctx, w); err == nil || !strings.Contains(err.Error(), "no origin") {
+		t.Fatalf("no origin: %v", err)
+	}
+	bare := filepath.Join(t.TempDir(), "r.git")
+	git(t, dir, "init", "-q", "--bare", bare)
+	git(t, dir, "remote", "add", "origin", bare)
+	write(t, filepath.Join(w.Dir, "b.txt"), "b\n")
+	if _, err := PR(ctx, w); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Fatalf("uncommitted: %v", err)
+	}
+	git(t, w.Dir, "add", ".")
+	git(t, w.Dir, "commit", "-qm", "b")
+	if url, err := PR(ctx, w); err != nil || url != "" {
+		t.Fatalf("pushed: %q %v", url, err)
+	}
+	if got := git(t, bare, "rev-parse", "feat"); got != git(t, w.Dir, "rev-parse", "HEAD") {
+		t.Fatalf("origin's feat is %s", got)
+	}
+}

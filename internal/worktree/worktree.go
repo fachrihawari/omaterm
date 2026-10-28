@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -465,6 +467,69 @@ func Remove(ctx context.Context, w Info) error {
 		return do(ctx, w.Main, "branch", "-D", w.Branch)
 	}
 	return nil
+}
+
+// ghPath finds the GitHub command, "" when it isn't installed.
+var ghPath = func() string {
+	p, _ := exec.LookPath("gh")
+	return p
+}
+
+// PR pushes the worktree's branch to origin, then opens a pull request of
+// it into its base with the GitHub command, and returns the request's
+// page: the one there already, if any. Without the command, or when it
+// fails, it is the page that opens one, for a remote on GitHub, else "".
+// Only what is committed goes: uncommitted files are refused.
+func PR(ctx context.Context, w Info) (string, error) {
+	if status, err := out(ctx, w.Dir, "status", "--porcelain"); err != nil {
+		return "", err
+	} else if status != "" {
+		return "", fmt.Errorf("%s has uncommitted files: commit them first", w.Branch)
+	}
+	remote, err := out(ctx, w.Dir, "remote", "get-url", "origin")
+	if err != nil {
+		return "", errors.New("the repository has no origin to push to")
+	}
+	if err := do(ctx, w.Dir, "push", "-q", "-u", "origin", w.Branch); err != nil {
+		return "", err
+	}
+	if gh := ghPath(); gh != "" {
+		cmd := exec.CommandContext(ctx, gh, "pr", "create", "--fill", "--base", w.Base, "--head", w.Branch)
+		cmd.Dir = w.Dir
+		cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1", "NO_COLOR=1")
+		hide(cmd)
+		// What it made, or, when one is there already, that one.
+		b, _ := cmd.CombinedOutput()
+		for _, f := range strings.Fields(string(b)) {
+			if strings.HasPrefix(f, "https://") {
+				return f, nil
+			}
+		}
+	}
+	return CompareURL(remote, w.Base, w.Branch), nil
+}
+
+// CompareURL is the page opening a pull request of branch into base, for
+// a remote on GitHub (https, ssh, or scp-like), "" for others.
+func CompareURL(remote, base, branch string) string {
+	path := ""
+	for _, prefix := range []string{"https://github.com/", "http://github.com/", "ssh://git@github.com/", "git@github.com:"} {
+		if rest, ok := strings.CutPrefix(remote, prefix); ok {
+			path = rest
+		}
+	}
+	path = strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git")
+	if strings.Count(path, "/") != 1 {
+		return ""
+	}
+	esc := func(ref string) string {
+		parts := strings.Split(ref, "/")
+		for i, p := range parts {
+			parts[i] = url.PathEscape(p)
+		}
+		return strings.Join(parts, "/")
+	}
+	return "https://github.com/" + path + "/compare/" + esc(base) + "..." + esc(branch) + "?expand=1"
 }
 
 // ValidBranch says what is wrong with a branch's name, nil when nothing:

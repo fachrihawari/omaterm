@@ -1,6 +1,7 @@
 package main
 
-// The dialogs of sessions in a worktree: New Agent in Worktree, Merge.
+// What the user does with sessions in a worktree: New Agent in Worktree,
+// Merge, Update from the base, Push & Create PR.
 
 import (
 	"context"
@@ -475,5 +476,29 @@ func (a *appState) updateWorktree(t topTab) {
 			a.toast(nil, "Updated "+w.Branch+" from "+w.Base)
 		}
 		a.refreshRepos()
+	})
+}
+
+// pushWorktree pushes a session's worktree branch, and opens the page of
+// its pull request, made with the GitHub command when it is installed.
+func (a *appState) pushWorktree(t topTab) {
+	w := *t.Worktree
+	if a.atWork(&w) {
+		return
+	}
+	a.toast(nil, "Pushing "+w.Branch+"…")
+	var page string
+	a.worktreeJob(func(ctx context.Context) (err error) {
+		page, err = worktree.PR(ctx, worktreeOf(&w))
+		return err
+	}, func(err error) {
+		switch {
+		case err != nil:
+			a.toast(nil, "Couldn't push "+w.Branch+": "+err.Error())
+		case page == "":
+			a.toast(nil, "Pushed "+w.Branch)
+		default:
+			a.openURL(page)
+		}
 	})
 }
