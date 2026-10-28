@@ -159,3 +159,63 @@ func TestWakePane(t *testing.T) {
 		t.Fatal("woke a pane that is none")
 	}
 }
+
+// omaterm new --worktree makes the session in a worktree of its project's
+// repository, in the same project, and saves it; the worktree takes one
+// session, and a split none of its own.
+func TestCreateWorktreeOverSocket(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.host = newLocalHost(a)
+	s, err := ctl.Listen(filepath.Join(t.TempDir(), "omaterm.sock"), a.host, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c, err := client.Dial(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	p := proto.CreateParams{Dir: a.workspace, Command: []string{"sleep", "30"}, Worktree: &proto.WorktreeParams{Branch: "feat/x"}}
+	var made proto.Created
+	if err := c.Call("create", p, &made); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(a.workspace, ".worktrees", "feat-x")
+	if a.paneDirs[made.Pane] != dir {
+		t.Fatalf("pane in %q, want %q", a.paneDirs[made.Pane], dir)
+	}
+	var st proto.State
+	if err := c.Call("state", nil, &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Projects) != 1 {
+		t.Fatalf("projects %+v", st.Projects)
+	}
+	var got *proto.Session
+	for i := range st.Sessions {
+		if st.Sessions[i].ID == made.Session {
+			got = &st.Sessions[i]
+		}
+	}
+	if got == nil || got.Name != "feat/x" || got.Worktree == nil || got.Worktree.Dir != dir || got.Worktree.Base != "main" {
+		t.Fatalf("session %+v", got)
+	}
+	saved := false
+	for _, s := range a.state().Sessions {
+		saved = saved || (s.ID == made.Session && s.Worktree != nil && s.Worktree.Branch == "feat/x")
+	}
+	if !saved {
+		t.Fatal("the worktree isn't saved")
+	}
+
+	if err := c.Call("create", p, &made); err == nil || !strings.Contains(err.Error(), "has a session already") {
+		t.Fatalf("second session: %v", err)
+	}
+	p.Split = made.Pane
+	if err := c.Call("split", p, &made); err == nil {
+		t.Fatal("split with a worktree")
+	}
+}

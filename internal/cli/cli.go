@@ -89,6 +89,29 @@ type flags struct {
 	rest []string // after --
 }
 
+// createParams is what new or split's flags ask to make: in the folder
+// given, else the current one; in a worktree of its own with --worktree.
+func createParams(cmd string, f *flags) (proto.CreateParams, error) {
+	p := proto.CreateParams{Project: f.vals["project"], Name: f.vals["name"], Dir: f.vals["dir"], Command: f.rest,
+		Focus: f.set["focus"], URL: f.vals["url"]}
+	if p.Dir == "" {
+		p.Dir, _ = os.Getwd()
+	} else if abs, err := filepath.Abs(p.Dir); err == nil {
+		p.Dir = abs
+	}
+	switch b := f.vals["worktree"]; {
+	case b != "" && cmd == "split":
+		return p, usageErr("a split works in its session's folder: --worktree is for new")
+	case b != "" && p.URL != "":
+		return p, usageErr("a browser pane has no worktree: --worktree goes without --url")
+	case b != "":
+		p.Worktree = &proto.WorktreeParams{Branch: b, Base: f.vals["base"], NoEnv: f.set["no-env"]}
+	case f.vals["base"] != "" || f.set["no-env"]:
+		return p, usageErr("--base and --no-env go with --worktree")
+	}
+	return p, nil
+}
+
 func parse(args []string, valued, boolean map[string]string) (*flags, error) {
 	f := &flags{vals: map[string]string{}, set: map[string]bool{}}
 	for i := 0; i < len(args); i++ {
@@ -218,19 +241,17 @@ func run(args []string) error {
 
 	case "new", "split":
 		valued := map[string]string{"p": "project", "project": "project", "n": "name", "name": "name", "d": "dir", "dir": "dir",
-			"t": "timeout", "timeout": "timeout", "r": "ratio", "ratio": "ratio", "u": "url", "url": "url"}
+			"t": "timeout", "timeout": "timeout", "r": "ratio", "ratio": "ratio", "u": "url", "url": "url",
+			"worktree": "worktree", "base": "base"}
 		boolean := map[string]string{"f": "focus", "focus": "focus", "w": "wait", "wait": "wait", "json": "json",
-			"right": "right", "down": "down", "left": "left", "up": "up", "any-project": "any-project"}
+			"right": "right", "down": "down", "left": "left", "up": "up", "any-project": "any-project", "no-env": "no-env"}
 		f, err := parse(args, valued, boolean)
 		if err != nil {
 			return err
 		}
-		p := proto.CreateParams{Project: f.vals["project"], Name: f.vals["name"], Dir: f.vals["dir"], Command: f.rest,
-			Focus: f.set["focus"], URL: f.vals["url"]}
-		if p.Dir == "" {
-			p.Dir, _ = os.Getwd()
-		} else if abs, err := filepath.Abs(p.Dir); err == nil {
-			p.Dir = abs
+		p, err := createParams(cmd, f)
+		if err != nil {
+			return err
 		}
 		if cmd == "split" {
 			st, err := state(c)
@@ -262,7 +283,7 @@ func run(args []string) error {
 				p.Dir = ""
 			}
 		} else if len(f.pos) > 0 {
-			return usageErr("omaterm new [-n name] [-d dir] [-- command…]")
+			return usageErr("omaterm new [-n name] [-d dir] [--worktree branch] [-- command…]")
 		} else if p.Project != "" {
 			st, err := state(c)
 			if err != nil {

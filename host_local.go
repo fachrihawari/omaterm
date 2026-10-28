@@ -105,8 +105,15 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		if err != nil {
 			return nil, err
 		}
+		split := method == "split" || p.Split != ""
+		if p.Worktree != nil {
+			if split {
+				return nil, proto.Errorf(proto.CodeUsage, "a split works in its session's folder: --worktree is for new")
+			}
+			return h.createWorktree(ctx, p)
+		}
 		return h.onUI(func() (any, error) {
-			if method == "split" || p.Split != "" {
+			if split {
 				return a.cliSplit(p)
 			}
 			return a.cliCreate(p)

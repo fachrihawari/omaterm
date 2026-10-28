@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
+	"omaterm/internal/worktree"
 )
 
 // While no app follows it, the daemon answers the omaterm command itself:
@@ -93,7 +95,14 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, proto.Errorf(proto.CodeUsage, err.Error())
 		}
-		if method == "split" || p.Split != "" {
+		split := method == "split" || p.Split != ""
+		if p.Worktree != nil {
+			if split {
+				return nil, proto.Errorf(proto.CodeUsage, "a split works in its session's folder: --worktree is for new")
+			}
+			return d.createWorktree(ctx, p)
+		}
+		if split {
 			return d.change(func(st *model.State) (any, error) { return d.split(st, p) })
 		}
 		return d.change(func(st *model.State) (any, error) { return d.create(st, p) })
@@ -284,43 +293,9 @@ func sessionName(s model.Session, lead session.Info) string {
 // create makes a session, in the project p names, else the one holding
 // its folder (or a new one for it), else the active one.
 func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
-	pi := -1
-	switch {
-	case p.Project != "":
-		for i, pr := range st.Projects {
-			if pr.ID == p.Project || strings.EqualFold(pr.Name, p.Project) {
-				pi = i
-			}
-		}
-		if pi < 0 {
-			return nil, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
-		}
-	case p.Dir != "":
-		best := -1
-		for i, pr := range st.Projects {
-			if within(p.Dir, pr.Dir) && (best < 0 || len(pr.Dir) > len(st.Projects[best].Dir)) {
-				best = i
-			}
-		}
-		pi = best
-		if pi < 0 {
-			var err error
-			if pi, err = addProject(st, p.Dir, ""); err != nil {
-				return nil, err
-			}
-		}
-	default:
-		for i, pr := range st.Projects {
-			if pr.ID == st.ActiveProject {
-				pi = i
-			}
-		}
-		if pi < 0 && len(st.Projects) > 0 {
-			pi = 0
-		}
-		if pi < 0 {
-			return nil, proto.Errorf(proto.CodeUsage, "no project: give a directory")
-		}
+	pi, err := findProject(st, p)
+	if err != nil {
+		return nil, err
 	}
 	proj := st.Projects[pi]
 	dir := p.Dir
@@ -341,6 +316,94 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 	st.Sessions = append(st.Sessions, model.Session{ID: sid, Project: proj.ID, Name: name,
 		Created: time.Now().UnixMilli(), Focus: pid, Layout: &model.Layout{Pane: pid}, Panes: []model.Pane{pane}})
 	return proto.Created{Session: sid, Pane: pid}, nil
+}
+
+// createWorktree makes a session in a worktree of its own: the worktree
+// is made outside the sessions file's lock, as git may take a while.
+func (d *Daemon) createWorktree(ctx context.Context, p proto.CreateParams) (any, error) {
+	v, err := d.change(func(st *model.State) (any, error) {
+		pi, err := findProject(st, p)
+		if err != nil {
+			return nil, err
+		}
+		return st.Projects[pi], nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	proj := v.(model.Project)
+	from := p.Dir
+	if from == "" {
+		from = proj.Dir
+	}
+	// The command going away doesn't stop git midway through a checkout.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	defer cancel()
+	wt, err := worktree.Add(ctx, from, p.Worktree.Branch, p.Worktree.Base, !p.Worktree.NoEnv)
+	if err != nil {
+		return nil, err
+	}
+	p.Project, p.Dir, p.Worktree = proj.ID, wt.Start(), nil
+	if p.Name == "" {
+		p.Name = wt.Branch
+	}
+	return d.change(func(st *model.State) (any, error) {
+		for _, s := range st.Sessions {
+			if s.Worktree != nil && s.Worktree.Dir == wt.Dir {
+				return nil, fmt.Errorf("%s has a session already", wt.Branch)
+			}
+		}
+		v, err := d.create(st, p)
+		if err == nil {
+			st.Sessions[len(st.Sessions)-1].Worktree = &model.Worktree{Dir: wt.Dir, Branch: wt.Branch, Base: wt.Base}
+		}
+		return v, err
+	})
+}
+
+// findProject finds the project a new session goes in: the one p names,
+// else the one holding its folder (or a new one for it), else the active
+// one.
+func findProject(st *model.State, p proto.CreateParams) (int, error) {
+	pi := -1
+	switch {
+	case p.Project != "":
+		for i, pr := range st.Projects {
+			if pr.ID == p.Project || strings.EqualFold(pr.Name, p.Project) {
+				pi = i
+			}
+		}
+		if pi < 0 {
+			return -1, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
+		}
+	case p.Dir != "":
+		best := -1
+		for i, pr := range st.Projects {
+			if within(p.Dir, pr.Dir) && (best < 0 || len(pr.Dir) > len(st.Projects[best].Dir)) {
+				best = i
+			}
+		}
+		pi = best
+		if pi < 0 {
+			var err error
+			if pi, err = addProject(st, p.Dir, ""); err != nil {
+				return -1, err
+			}
+		}
+	default:
+		for i, pr := range st.Projects {
+			if pr.ID == st.ActiveProject {
+				pi = i
+			}
+		}
+		if pi < 0 && len(st.Projects) > 0 {
+			pi = 0
+		}
+		if pi < 0 {
+			return -1, proto.Errorf(proto.CodeUsage, "no project: give a directory")
+		}
+	}
+	return pi, nil
 }
 
 // split makes a pane beside p.Split, a pane or a session (its focused

@@ -5,6 +5,7 @@ package daemon
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,6 +53,45 @@ func call[T any](t *testing.T, c *client.Client, method string, params any) T {
 		t.Fatalf("%s: %v", method, err)
 	}
 	return out
+}
+
+// With the window closed, omaterm new --worktree makes the worktree and
+// its session in the project, saved for the app.
+func TestWorktreeWithWindowClosed(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"commit", "-q", "--allow-empty", "-m", "first"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = proj
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	p := proto.CreateParams{Dir: proj, Worktree: &proto.WorktreeParams{Branch: "x"}}
+	made := call[proto.Created](t, c, "create", p)
+	dir := filepath.Join(proj, ".worktrees", "x")
+	saved, err := model.Load(d.stateFile())
+	if err != nil || len(saved.Projects) != 1 || len(saved.Sessions) != 1 {
+		t.Fatalf("state.json: %+v, %v", saved, err)
+	}
+	s := saved.Sessions[0]
+	if s.ID != made.Session || s.Project != "p1" || s.Name != "x" || s.Panes[0].Dir != dir ||
+		s.Worktree == nil || *s.Worktree != (model.Worktree{Dir: dir, Branch: "x", Base: "main"}) {
+		t.Fatalf("session %+v, worktree %+v", s, s.Worktree)
+	}
+	if st := call[proto.State](t, c, "state", nil); st.Sessions[0].Worktree == nil {
+		t.Fatal("state doesn't tell the worktree")
+	}
+	if err := c.Call("create", p, nil); err == nil || !strings.Contains(err.Error(), "has a session already") {
+		t.Fatalf("second session: %v", err)
+	}
 }
 
 // With the window closed, the omaterm command makes, splits, drives and

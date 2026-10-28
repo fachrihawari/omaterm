@@ -281,6 +281,25 @@ func TestMergeCommit(t *testing.T) {
 	}
 }
 
+// A worktree made from another merges into that one, where its base is
+// checked out.
+func TestMergeIntoWorktree(t *testing.T) {
+	dir := repo(t)
+	w := add(t, dir, "w")
+	v := add(t, w.Dir, "v")
+	write(t, filepath.Join(v.Dir, "v.txt"), "v\n")
+	if err := Merge(context.Background(), v, "Do v", true); err != nil {
+		t.Fatal(err)
+	}
+	clean(t, dir)
+	if log := git(t, w.Dir, "log", "-1", "--format=%s"); log != "Do v" {
+		t.Fatalf("w's log: %s", log)
+	}
+	if v.Start() != v.Dir {
+		t.Fatalf("Start %s", v.Start())
+	}
+}
+
 func TestMergeRefuses(t *testing.T) {
 	dir := repo(t)
 	w := add(t, dir, "x")

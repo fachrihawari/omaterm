@@ -39,6 +39,17 @@ func Of(dir, branch, base string) Info {
 	return Info{Main: filepath.Dir(filepath.Dir(dir)), Dir: dir, Branch: branch, Base: base}
 }
 
+// Start is the folder a session in the worktree starts in: the project's
+// folder in it, else its top level when the branch hasn't that folder.
+func (w Info) Start() string {
+	if w.Rel != "" {
+		if fi, err := os.Stat(filepath.Join(w.Dir, w.Rel)); err == nil && fi.IsDir() {
+			return filepath.Join(w.Dir, w.Rel)
+		}
+	}
+	return w.Dir
+}
+
 // Add makes a worktree for branch beside the checkout projectDir is in:
 // on a new branch from base, or on branch when it exists. base "" is the
 // branch checked out there. A worktree of branch already in Folder is
@@ -315,25 +326,23 @@ func (e *ConflictError) Error() string {
 	return fmt.Sprintf("%d files conflict with %s", n, e.Base)
 }
 
-// Merge brings the worktree's work into its base in the main checkout:
-// as one commit with msg when squash, else as a merge commit, its pending
-// changes committed first with msg. The main checkout must be on the base
-// with nothing staged. A merge that would conflict is not made, and
-// returns a *ConflictError: Update resolves it in the worktree.
+// Merge brings the worktree's work into its base, in the checkout of the
+// base (the main one, usually): as one commit with msg when squash, else
+// as a merge commit, its pending changes committed first with msg. That
+// checkout must have nothing staged. A merge that would conflict is not
+// made, and returns a *ConflictError: Update resolves it in the worktree.
 func Merge(ctx context.Context, w Info, msg string, squash bool) error {
-	name := filepath.Base(w.Main)
-	if cur, _ := out(ctx, w.Main, "branch", "--show-current"); cur != w.Base {
-		if cur == "" {
-			cur = "a detached HEAD"
-		}
-		return fmt.Errorf("%s is on %s, not %s: switch it first", name, cur, w.Base)
+	into, err := checkout(ctx, w)
+	if err != nil {
+		return err
 	}
-	if r, err := gitsnap.Open(ctx, w.Main); err != nil {
+	name := filepath.Base(into)
+	if r, err := gitsnap.Open(ctx, into); err != nil {
 		return err
 	} else if state := midway(r.GitDir); state != "" {
 		return fmt.Errorf("%s is in the middle of a %s: finish it first", name, state)
 	}
-	if same, err := test(ctx, w.Main, "diff", "--cached", "--quiet"); err != nil {
+	if same, err := test(ctx, into, "diff", "--cached", "--quiet"); err != nil {
 		return err
 	} else if !same {
 		return fmt.Errorf("%s has staged changes: commit or unstage them first", name)
@@ -341,36 +350,54 @@ func Merge(ctx context.Context, w Info, msg string, squash bool) error {
 	if err := CommitPending(ctx, w.Dir, msg); err != nil {
 		return err
 	}
-	if same, err := test(ctx, w.Main, "diff", "--quiet", w.Base+"..."+w.Branch); err != nil {
+	if same, err := test(ctx, into, "diff", "--quiet", w.Base+"..."+w.Branch); err != nil {
 		return err
 	} else if same {
 		return fmt.Errorf("%s has nothing to merge into %s", w.Branch, w.Base)
 	}
-	if files, err := conflicts(ctx, w); err != nil {
+	if files, err := conflicts(ctx, into, w); err != nil {
 		return err
 	} else if len(files) > 0 {
 		return &ConflictError{Base: w.Base, Files: files}
 	}
 	if squash {
-		if err := do(ctx, w.Main, "merge", "--squash", w.Branch); err != nil {
-			return undo(ctx, w, err)
+		if err := do(ctx, into, "merge", "--squash", w.Branch); err != nil {
+			return undo(ctx, into, w.Base, err)
 		}
-		if err := do(ctx, w.Main, "commit", "-q", "-m", msg); err != nil {
-			return undo(ctx, w, err)
+		if err := do(ctx, into, "commit", "-q", "-m", msg); err != nil {
+			return undo(ctx, into, w.Base, err)
 		}
 		return nil
 	}
-	if err := do(ctx, w.Main, "merge", "--no-ff", "--no-edit", w.Branch); err != nil {
-		return undo(ctx, w, err)
+	if err := do(ctx, into, "merge", "--no-ff", "--no-edit", w.Branch); err != nil {
+		return undo(ctx, into, w.Base, err)
 	}
 	return nil
+}
+
+// checkout returns the checkout the worktree's base is checked out in.
+func checkout(ctx context.Context, w Info) (string, error) {
+	list, err := worktrees(ctx, w.Main)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range list {
+		if e.branch == w.Base {
+			return e.path, nil
+		}
+	}
+	cur, _ := out(ctx, w.Main, "branch", "--show-current")
+	if cur == "" {
+		cur = "a detached HEAD"
+	}
+	return "", fmt.Errorf("%s is on %s, not %s: switch it first", filepath.Base(w.Main), cur, w.Base)
 }
 
 // conflicts returns the files merging the worktree's branch into its base
 // would conflict in, without touching either: none when git is too old to
 // tell, as merge itself then finds them.
-func conflicts(ctx context.Context, w Info) ([]string, error) {
-	s, err := out(ctx, w.Main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", w.Base, w.Branch)
+func conflicts(ctx context.Context, into string, w Info) ([]string, error) {
+	s, err := out(ctx, into, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", w.Base, w.Branch)
 	if err == nil {
 		return nil, nil
 	}
@@ -383,13 +410,13 @@ func conflicts(ctx context.Context, w Info) ([]string, error) {
 	return files, nil // none: git before 2.38, without --write-tree
 }
 
-// undo puts the main checkout back as it was before a merge that failed,
+// undo puts the checkout into back as it was before a merge that failed,
 // and returns its conflict, else err.
-func undo(ctx context.Context, w Info, err error) error {
-	files, _ := out(ctx, w.Main, "diff", "--name-only", "--diff-filter=U")
-	do(ctx, w.Main, "reset", "-q", "--merge")
+func undo(ctx context.Context, into, base string, err error) error {
+	files, _ := out(ctx, into, "diff", "--name-only", "--diff-filter=U")
+	do(ctx, into, "reset", "-q", "--merge")
 	if files != "" {
-		return &ConflictError{Base: w.Base, Files: strings.Split(files, "\n")}
+		return &ConflictError{Base: base, Files: strings.Split(files, "\n")}
 	}
 	return err
 }
