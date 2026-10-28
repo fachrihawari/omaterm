@@ -60,6 +60,16 @@ type Pane struct {
 	rows     int
 	closed   bool
 	dirty    bool // output since History was last taken
+
+	// For the mailbox: typed is when the user last typed in the pane
+	// (keys: not the terminal's answers, nor focus or mouse reports), and
+	// typedEnd whether that ended what they typed (Enter, Ctrl+C, Escape)
+	// or may have left a draft; started is when the pane started; prompt
+	// tells that the screen last showed the agent's prompt outright.
+	typed    time.Time
+	typedEnd bool
+	started  time.Time
+	prompt   bool
 }
 
 // StartOptions are how Registry.Start runs a pane.
@@ -135,6 +145,7 @@ func (p *Pane) changedLocked() {
 // send`'s.
 func (p *Pane) Write(b []byte) error {
 	p.input()
+	p.typing(b)
 	p.mu.Lock()
 	proc := p.proc
 	p.mu.Unlock()
@@ -143,6 +154,61 @@ func (p *Pane) Write(b []byte) error {
 	}
 	_, err := proc.Write(b)
 	return err
+}
+
+// deliver types b for the mailbox. Unlike Write it is no user's typing:
+// it only dismisses the finished reports a new turn makes old.
+func (p *Pane) deliver(b []byte) error {
+	p.mu.Lock()
+	proc, closed := p.proc, p.closed
+	if !closed && p.recs.Len() > 0 && p.recs.DismissFinished() {
+		p.fromRecords()
+		p.changedLocked()
+	}
+	p.mu.Unlock()
+	if closed || proc == nil {
+		return io.ErrClosedPipe
+	}
+	_, err := proc.Write(b)
+	return err
+}
+
+// The mailbox's holds: the user typed in the pane this recently, or left
+// a draft in it this recently; an agent without its prompt in sight is
+// taken to be at it once its screen stays idle this long.
+const (
+	typingHold = 2 * time.Second
+	draftHold  = time.Minute
+	settleHold = 2 * time.Second
+)
+
+// mailHold tells why a message for the pane's agent waits, "" when it can
+// go now: an agent is at its prompt, and the user neither types in the
+// pane nor left a draft there. bracketed tells to paste it bracketed.
+func (p *Pane) mailHold(now time.Time) (hold string, bracketed bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	i := p.info
+	since := time.UnixMilli(i.Since)
+	switch {
+	case p.closed || i.Status == Exited:
+		return "it closed", false
+	case !detect.Known(i.Agent):
+		return "no agent runs in it", false
+	case i.Status == Waiting:
+		return "it waits for the user", false
+	case i.Status == Working:
+		return "it is working", false
+	case p.seen != detect.Idle && !p.reported,
+		!p.prompt && !p.reported && now.Sub(since) < settleHold,
+		now.Sub(time.UnixMilli(i.Activity)) < time.Second:
+		return "it is starting", false
+	case now.Sub(p.typed) < typingHold:
+		return "the user is typing in it", false
+	case !p.typedEnd && now.Sub(p.typed) < draftHold:
+		return "the user left a draft in it", false
+	}
+	return "", p.scan.Bracketed
 }
 
 // Text returns the pane's text: the screen, or with scrollback; the last
@@ -290,6 +356,7 @@ var reply = regexp.MustCompile(`^\x1b(\[[?>=]?[0-9;]*[RcntIO]|\[\?[0-9;]*[u$]|\[
 func (c conn) Write(b []byte) (int, error) {
 	if !reply.Match(b) {
 		c.p.input()
+		c.p.typing(b)
 	}
 	return c.p.proc.Write(b)
 }
@@ -437,6 +504,35 @@ func (p *Pane) input() {
 	if changed {
 		p.changedLocked()
 	}
+}
+
+// mouse tells mouse reports, SGR's and X10's, from what the user types.
+var mouse = regexp.MustCompile(`^\x1b\[(<[0-9;]*[Mm]|M)`)
+
+// typing notes what the user typed, for the mailbox (Pane.typed).
+func (p *Pane) typing(b []byte) {
+	if len(b) == 0 || reply.Match(b) || mouse.Match(b) {
+		return
+	}
+	p.mu.Lock()
+	p.typed, p.typedEnd = time.Now(), endsInput(b)
+	p.mu.Unlock()
+}
+
+// inputEnd is a key that leaves no draft behind, in the Kitty keyboard
+// protocol: Enter (CSI 13 u), Escape (27) and Ctrl+C (99;5).
+var inputEnd = regexp.MustCompile(`\x1b\[(13|27|99;5)[;:0-9]*u$`)
+
+// endsInput tells input after which no draft is left: Enter, Ctrl+C,
+// Ctrl+U or Escape last.
+func endsInput(b []byte) bool {
+	switch b[len(b)-1] {
+	case '\r', '\n', 0x03, 0x15:
+		return true
+	case 0x1b:
+		return len(b) == 1
+	}
+	return inputEnd.Match(b)
 }
 
 func (p *Pane) viewed() bool { return p.reg.isViewed(p.info.Session) }
@@ -659,7 +755,7 @@ func (p *Pane) tick(now time.Time) bool {
 			p.progress = ""
 		}
 		p.info.Process, p.info.Agent, p.info.Runtime = proc, ag, runtime
-		p.seen, p.looked = "", false
+		p.seen, p.looked, p.prompt = "", false, false
 		changed = true
 	}
 	if readCwd {
@@ -724,6 +820,7 @@ func (p *Pane) look(now time.Time, screen string) bool {
 			return false
 		}
 		st, visible = r.State, r.Visible
+		p.prompt = st == detect.Idle && visible
 	} else if agent.TitleBusy(p.info.Title) {
 		st = detect.Working
 	}

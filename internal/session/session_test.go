@@ -157,3 +157,73 @@ func TestEnvironment(t *testing.T) {
 		t.Error("kept the outer terminal's variables")
 	}
 }
+
+// What the user types is told from the terminal's answers and mouse
+// reports, and from what omaterm's mailbox types.
+func TestTyping(t *testing.T) {
+	r := NewRegistry()
+	p := startExec(t, r, "p1", "s1", `sleep 5`)
+	typed := func() (time.Time, bool) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.typed, p.typedEnd
+	}
+	for _, b := range []string{"\x1b[I", "\x1b[O", "\x1b[<0;3;4M", "\x1b[<0;3;4m", "\x1b[M !!", "\x1b[2;1R"} {
+		p.Write([]byte(b))
+		if at, _ := typed(); !at.IsZero() {
+			t.Fatalf("%q counted as typing", b)
+		}
+	}
+	p.deliver([]byte("from the mailbox\r"))
+	if at, _ := typed(); !at.IsZero() {
+		t.Fatal("the mailbox's delivery counted as typing")
+	}
+	for _, c := range []struct {
+		in  string
+		end bool
+	}{{"x", false}, {"\r", true}, {"ab\x1b[200~c\x1b[201~", false}, {"\x03", true}, {"\x1b", true},
+		{"\x1b[13u", true}, {"\x1b[99;5u", true}, {"\x1b[97u", false}, {"\x15", true}} {
+		p.Write([]byte(c.in))
+		if at, end := typed(); at.IsZero() || end != c.end {
+			t.Errorf("%q: typed %v, ends %v", c.in, !at.IsZero(), end)
+		}
+	}
+}
+
+// A message waits for an agent at its prompt, and for the user to stop
+// typing and leave no draft; it is pasted bracketed when the agent asks.
+func TestMailHold(t *testing.T) {
+	prev := procName
+	procName = func(pid int) string { return "claude" }
+	defer func() { procName = prev }()
+	r := NewRegistry()
+	p := startExec(t, r, "p1", "s1", `set -m; printf '\033[?2004h'; sleep 0.3; printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=done\007'; sleep 5; :`)
+	if hold, _ := p.mailHold(time.Now()); hold != "no agent runs in it" {
+		t.Fatalf("hold %q", hold)
+	}
+	time.Sleep(200 * time.Millisecond)
+	r.Tick(time.Now())
+	waitFor(t, p, "working", func(i Info) bool { return i.Status == Working })
+	if hold, _ := p.mailHold(time.Now()); hold != "it is working" {
+		t.Fatalf("hold %q", hold)
+	}
+	waitFor(t, p, "done", func(i Info) bool { return i.Status == Idle && len(i.Records) > 0 })
+	later := time.Now().Add(3 * time.Second)
+	if hold, bracketed := p.mailHold(later); hold != "" || !bracketed {
+		t.Fatalf("hold %q, bracketed %v", hold, bracketed)
+	}
+	p.Write([]byte("hel"))
+	now := time.Now()
+	for _, c := range []struct {
+		after time.Duration
+		hold  string
+	}{{time.Second, "the user is typing in it"}, {3 * time.Second, "the user left a draft in it"}, {2 * time.Minute, ""}} {
+		if hold, _ := p.mailHold(now.Add(c.after)); hold != c.hold {
+			t.Errorf("%v after typing: hold %q", c.after, hold)
+		}
+	}
+	p.Write([]byte("\r"))
+	if hold, _ := p.mailHold(time.Now().Add(3 * time.Second)); hold != "" {
+		t.Fatalf("after Enter: hold %q", hold)
+	}
+}

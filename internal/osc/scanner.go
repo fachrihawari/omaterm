@@ -5,7 +5,7 @@
 // what they are doing: OSC 7501 (the Program Status Protocol), OSC 133
 // (shell prompts and command ends) and OSC 9;4 (progress). The terminal
 // emulator ignores these; the app reads them from the output on its way to
-// the emulator.
+// the emulator, and with them whether the program takes bracketed pastes.
 package osc
 
 import "bytes"
@@ -13,12 +13,16 @@ import "bytes"
 // Scanner finds OSC 7501, 133 and 9;4 in a program's output, and full
 // resets (RIS), across reads. Its zero value is ready.
 type Scanner struct {
-	state int // 0 text, 1 after ESC, 2 in an OSC we keep, 3 in one we skip, 4 ESC in an OSC
+	state int // 0 text, 1 after ESC, 2 in an OSC we keep, 3 in one we skip, 4 ESC in an OSC, 5 in a CSI
 	buf   []byte
 	// prev is the byte before, across reads: after a byte of 0x80 or
 	// more, 0x9d and 0x9c continue a UTF-8 character ("Н" is D0 9D),
 	// and are no C1 controls.
 	prev byte
+	// Bracketed tells that the program asked for bracketed pastes (mode
+	// 2004), until it asks no more or a full reset.
+	Bracketed bool
+	csi       []byte // a CSI's parameters and intermediates, so far
 }
 
 // MaxLen is the longest sequence kept, OSC 7501's limit.
@@ -36,15 +40,39 @@ func (o *Scanner) Scan(p []byte, fn func(body []byte), reset func()) {
 				o.state = 1
 			} else if b == 0x9d && c1 { // C1 OSC, in 8-bit output
 				o.begin()
+			} else if b == 0x9b && c1 { // C1 CSI
+				o.state, o.csi = 5, o.csi[:0]
 			}
 		case 1:
-			if b == ']' {
+			switch {
+			case b == ']':
 				o.begin()
-			} else if b != 0x1b {
+			case b == '[':
+				o.state, o.csi = 5, o.csi[:0]
+			case b != 0x1b:
 				o.state = 0
-				if b == 'c' && reset != nil {
-					reset()
+				if b == 'c' {
+					o.Bracketed = false
+					if reset != nil {
+						reset()
+					}
 				}
+			}
+		case 5:
+			switch {
+			case b >= 0x40 && b <= 0x7e:
+				o.state = 0
+				o.mode(b)
+			case b == 0x1b:
+				o.state = 1
+			case b < 0x20 || len(o.csi) >= 64:
+				// A control in a CSI is acted on, and the CSI goes on; one
+				// this long is none a program sends to set modes.
+				if len(o.csi) >= 64 {
+					o.state = 0
+				}
+			default:
+				o.csi = append(o.csi, b)
 			}
 		case 2, 3:
 			switch {
@@ -77,6 +105,19 @@ func (o *Scanner) Scan(p []byte, fn func(body []byte), reset func()) {
 }
 
 func (o *Scanner) begin() { o.state, o.buf = 2, o.buf[:0] }
+
+// mode follows a CSI that ended with final: DECSET and DECRST ("CSI ? …
+// h" and "l") of mode 2004, among the modes they set.
+func (o *Scanner) mode(final byte) {
+	if final != 'h' && final != 'l' || len(o.csi) < 2 || o.csi[0] != '?' {
+		return
+	}
+	for _, m := range bytes.Split(o.csi[1:], []byte(";")) {
+		if string(m) == "2004" {
+			o.Bracketed = final == 'h'
+		}
+	}
+}
 
 func (o *Scanner) end(fn func([]byte)) {
 	if o.state == 2 || o.state == 4 && len(o.buf) > 0 {
