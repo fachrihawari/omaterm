@@ -30,7 +30,7 @@ import (
 // starts the app.
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
-	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "skill", "hook", "cli", "do", "actions",
+	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "merge", "skill", "hook", "cli", "do", "actions",
 	"diff", "browser", "daemon", "clients", "web", "settings", "help", "version", "--help", "-h", "--version",
 }
 
@@ -625,6 +625,9 @@ func run(args []string) error {
 	case "inbox":
 		return inboxCmd(c, args)
 
+	case "merge":
+		return mergeCmd(c, args)
+
 	case "browser":
 		return browserCmd(c, args)
 	}
@@ -1144,6 +1147,8 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm reply [id] <text…> [--file path]
                                          answer a message you were sent
   omaterm inbox [--json]                 the messages to and from your pane
+  omaterm merge <target> [--squash|--commit] [-m message] [--keep]
+                                         merge a worktree made from your branch into it
   omaterm report <idle|working|done|blocked|error|clear> [message] [--kind] [--progress]
   omaterm diff [target] [--turn|--branch] [path…]
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …

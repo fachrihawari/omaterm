@@ -436,6 +436,55 @@ func midway(gitDir string) string {
 	return ""
 }
 
+// MergeMessage is the message of a squash of a worktree's work: its one
+// commit's, or the branch's with its commits' as the body.
+func MergeMessage(branch string, s Summary) string {
+	switch len(s.Commits) {
+	case 0:
+		return branch
+	case 1:
+		return s.Commits[0]
+	}
+	msg := branch + "\n"
+	for _, c := range s.Commits {
+		msg += "\n* " + c
+	}
+	return msg
+}
+
+// ForLead words a failed merge of worker name's worktree, into base, for
+// its lead's agent: a conflict is the worker's to resolve.
+func ForLead(err error, name, base string) error {
+	var conflict *ConflictError
+	if errors.As(err, &conflict) {
+		return fmt.Errorf("%s %s: ask it to merge %s into its branch and resolve that, then merge again", name, conflict.Error(), base)
+	}
+	return err
+}
+
+// MergeWork merges w into its base as omaterm merge does: with msg, else
+// MergeMessage's. A squash of a worktree that stays brings its base back
+// into it, for the next squash to be clean. It returns the subjects of
+// the commits it brought.
+func MergeWork(ctx context.Context, w Info, msg string, squash, keep bool) ([]string, error) {
+	s, err := Summarize(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+	if msg == "" {
+		msg = MergeMessage(w.Branch, s)
+	}
+	if err := Merge(ctx, w, msg, squash); err != nil {
+		return nil, err
+	}
+	if squash && keep {
+		if err := Update(ctx, w, msg); err != nil {
+			return s.Commits, err
+		}
+	}
+	return s.Commits, nil
+}
+
 // Update merges the base into the worktree's branch, its pending changes
 // committed first with msg. A conflict is left in the worktree, to be
 // resolved there; it returns a *ConflictError.

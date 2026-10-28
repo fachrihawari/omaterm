@@ -72,6 +72,21 @@ type Worktree struct {
 	Base   string `json:"base"`
 }
 
+// LeadMerge tells why the agent of a session in worktree lead may not
+// merge w, the worktree of session name: only one made from the lead's
+// own branch may be. Merging into the main checkout is the user's.
+func LeadMerge(lead, w *Worktree, name string) error {
+	switch {
+	case w == nil:
+		return fmt.Errorf("%s works in no worktree of its own", name)
+	case lead == nil:
+		return fmt.Errorf("you work in the main checkout, and merging into %s is the user's: they merge %s from omaterm", w.Base, w.Branch)
+	case w.Base != lead.Branch:
+		return fmt.Errorf("%s was made from %s, not from your branch %s: the user merges it", w.Branch, w.Base, lead.Branch)
+	}
+	return nil
+}
+
 // Gone reports whether the worktree's folder was deleted.
 func (w *Worktree) Gone() bool {
 	fi, err := os.Stat(w.Dir)

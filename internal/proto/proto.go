@@ -278,6 +278,25 @@ type MailListParams struct {
 	Pane string `json:"pane,omitempty"`
 }
 
+// MergeParams merge the worktree of session Target into the branch of
+// pane By's session (worktree.merge): squashed, unless Commit; its
+// worktree and session removed after, unless Keep.
+type MergeParams struct {
+	By      string `json:"by"`
+	Target  string `json:"target"`
+	Commit  bool   `json:"commit,omitempty"`
+	Message string `json:"message,omitempty"`
+	Keep    bool   `json:"keep,omitempty"`
+}
+
+// Merged is what worktree.merge did.
+type Merged struct {
+	Branch  string   `json:"branch"`
+	Into    string   `json:"into"`
+	Commits []string `json:"commits,omitempty"`
+	Removed bool     `json:"removed"`
+}
+
 type NotifyParams struct {
 	ID    string `json:"id"`
 	Title string `json:"title,omitempty"`

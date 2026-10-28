@@ -491,3 +491,101 @@ func TestAskReplyCommands(t *testing.T) {
 		t.Fatalf("waiting ask: %q, status %d", out, code)
 	}
 }
+
+// A lead merges its worker into its own branch, which closes the worker
+// and removes its worktree; the main checkout stays as it was. It can't
+// merge into the main checkout, nor what wasn't made from its branch; a
+// conflict is for the worker to resolve.
+func TestLeadMergesItsWorker(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	lead, worker, leadWT, workerWT := leadAndWorker(t, a)
+	mainHead := gitIn(t, a.workspace, "rev-parse", "HEAD")
+
+	var out proto.Merged
+	if err := c.Call("worktree.merge", proto.MergeParams{By: lead.Pane, Target: worker.Session}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Branch != "w1" || out.Into != "feat" || !out.Removed || len(out.Commits) != 1 || out.Commits[0] != "Add worker.txt" {
+		t.Fatalf("merged %+v", out)
+	}
+	if got := gitIn(t, leadWT.Dir, "log", "-1", "--format=%s"); got != "Add worker.txt" {
+		t.Errorf("the lead's branch has %q last", got)
+	}
+	if _, err := os.Stat(filepath.Join(leadWT.Dir, "worker.txt")); err != nil {
+		t.Error("the worker's file isn't in the lead's worktree")
+	}
+	if _, err := os.Stat(workerWT.Dir); err == nil {
+		t.Error("the worker's worktree stays")
+	}
+	if _, _, _, ok := a.findSession(worker.Session); ok {
+		t.Error("the worker's session stays")
+	}
+	if got := gitIn(t, a.workspace, "rev-parse", "HEAD"); got != mainHead {
+		t.Error("the main checkout moved")
+	}
+
+	// From the main checkout, and of a worktree made from main.
+	plain, err := a.cliCreate(proto.CreateParams{Name: "plain", Dir: a.workspace, Command: []string{"sleep", "30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt, err := worktree.Add(context.Background(), a.workspace, "other", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := a.createWorktreeSession(wt, proto.CreateParams{Project: a.project().ID, Command: []string{"sleep", "30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c2 := range []struct {
+		by, target, want string
+	}{
+		{plain.(proto.Created).Pane, other.Session, "you work in the main checkout, and merging into main is the user's"},
+		{lead.Pane, other.Session, "other was made from main, not from your branch feat: the user merges it"},
+	} {
+		if err := c.Call("worktree.merge", proto.MergeParams{By: c2.by, Target: c2.target}, nil); err == nil || !strings.Contains(err.Error(), c2.want) {
+			t.Errorf("merged: %v", err)
+		}
+	}
+
+	// A conflict.
+	add, err := worktree.Add(context.Background(), leadWT.Dir, "w2", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2, err := a.createWorktreeSession(add, proto.CreateParams{Project: a.project().ID, Command: []string{"sleep", "30"}, By: lead.Pane})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, add.Dir, "lead.txt", "the worker's\n")
+	commitFile(t, leadWT.Dir, "lead.txt", "the lead's\n")
+	err = c.Call("worktree.merge", proto.MergeParams{By: lead.Pane, Target: w2.Session}, nil)
+	if err == nil || !strings.Contains(err.Error(), "w2 conflicts with feat in lead.txt: ask it to merge feat into its branch") {
+		t.Fatalf("conflict: %v", err)
+	}
+	if st := gitIn(t, leadWT.Dir, "status", "--porcelain"); st != "" {
+		t.Fatalf("the lead's worktree after a conflict: %q", st)
+	}
+}
+
+// omaterm merge, run in the lead's pane, merges its worker by name.
+func TestMergeCommand(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	dialApp(t, a)
+	t.Setenv("OMATERM_SOCKET", a.ctl.Path())
+	t.Setenv("OMATERM_SESSION", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CODEX_THREAD_ID", "")
+	lead, _, _, _ := leadAndWorker(t, a)
+	t.Setenv("OMATERM_PANE", lead.Pane)
+	out, code := runCLI(t, "merge", "w1", "--commit", "-m", "Bring w1")
+	if code != 0 || out != "merged w1 into feat (1 commit)\nclosed its session, and removed its worktree and branch\n" {
+		t.Fatalf("%q, status %d", out, code)
+	}
+	if _, code := runCLI(t, "merge", "w1"); code != 3 {
+		t.Fatalf("merging it again exits %d", code)
+	}
+}

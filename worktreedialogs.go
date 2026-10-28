@@ -299,18 +299,7 @@ func (a *appState) openMergeDialog(t topTab) {
 			return
 		}
 		st.sum = &s
-		// One commit says it all; several make the body.
-		switch n := len(s.Commits); {
-		case n == 1:
-			st.msg = s.Commits[0]
-		case n > 1:
-			st.msg = st.w.Branch + "\n"
-			for _, c := range s.Commits {
-				st.msg += "\n* " + c
-			}
-		default:
-			st.msg = st.w.Branch
-		}
+		st.msg = worktree.MergeMessage(st.w.Branch, s)
 	})
 }
 

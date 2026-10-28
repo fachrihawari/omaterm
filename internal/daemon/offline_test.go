@@ -385,7 +385,7 @@ func TestParentWithWindowClosed(t *testing.T) {
 }
 
 // With the window closed, a worker's branch diff is what it changed since
-// its lead's branch, which it was made from.
+// its lead's branch, which it was made from, and the lead merges it.
 func TestBranchDiffWithWindowClosed(t *testing.T) {
 	_, socket, proj := offlineDaemon(t, false, nil)
 	git := func(dir string, args ...string) {
@@ -404,6 +404,8 @@ func TestBranchDiffWithWindowClosed(t *testing.T) {
 		git(dir, "commit", "-qm", "Add "+name)
 	}
 	git(proj, "init", "-q", "-b", "main")
+	git(proj, "config", "user.name", "t") // the daemon's merge commits
+	git(proj, "config", "user.email", "t@example.com")
 	commit(proj, "first.txt")
 	c, err := client.Dial(socket)
 	if err != nil {
@@ -423,5 +425,28 @@ func TestBranchDiffWithWindowClosed(t *testing.T) {
 		if s.ID == worker.Session && (s.Parent != lead.Session || s.Worktree == nil || s.Worktree.Base != "feat") {
 			t.Fatalf("worker %+v", s)
 		}
+	}
+
+	// The lead merges it: into its branch, closing it, its worktree gone.
+	merged := call[proto.Merged](t, c, "worktree.merge", proto.MergeParams{By: lead.Pane, Target: worker.Session})
+	if merged.Into != "feat" || !merged.Removed || len(merged.Commits) != 1 {
+		t.Fatalf("merged %+v", merged)
+	}
+	if _, err := os.Stat(filepath.Join(leadDir, "worker.txt")); err != nil {
+		t.Error("the worker's file isn't in the lead's worktree")
+	}
+	if _, err := os.Stat(filepath.Join(proj, ".worktrees", "w1")); err == nil {
+		t.Error("the worker's worktree stays")
+	}
+	for _, s := range call[proto.State](t, c, "state", nil).Sessions {
+		if s.ID == worker.Session {
+			t.Error("the worker's session stays")
+		}
+	}
+	// Not into the main checkout.
+	plain := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Name: "plain"})
+	if err := c.Call("worktree.merge", proto.MergeParams{By: plain.Pane, Target: lead.Session}, nil); err == nil ||
+		!strings.Contains(err.Error(), "merging into main is the user's") {
+		t.Fatalf("merged into main: %v", err)
 	}
 }

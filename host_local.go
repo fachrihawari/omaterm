@@ -104,6 +104,13 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 	if mail.IsMethod(method) {
 		return h.mail(ctx, method, raw)
 	}
+	if method == "worktree.merge" {
+		p, err := decode[proto.MergeParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		return h.mergeWorktree(ctx, p)
+	}
 	switch method {
 	case "version":
 		return map[string]any{"app": appVersion(), "proto": proto.Version}, nil

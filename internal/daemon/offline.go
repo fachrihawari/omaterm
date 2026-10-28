@@ -81,7 +81,8 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 	if d.appAttached() {
 		switch method {
 		case "state", "create", "split", "close", "restart", "rename", "focus", "select", "wait",
-			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions", "pane.wake":
+			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions", "pane.wake",
+			"worktree.merge":
 			return d.forward(ctx, method, raw)
 		}
 	}
@@ -110,17 +111,13 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 	case "close":
 		var p proto.IDParams
 		json.Unmarshal(raw, &p)
-		return d.change(func(st *model.State) (any, error) {
-			i := sessionIndex(st, p.ID)
-			if i < 0 {
-				return nil, proto.Errorf(proto.CodeNotFound, "no session "+p.ID)
-			}
-			for _, pn := range st.Sessions[i].Panes {
-				d.endPane(pn.ID)
-			}
-			st.Sessions = append(st.Sessions[:i], st.Sessions[i+1:]...)
-			return true, nil
-		})
+		return d.change(func(st *model.State) (any, error) { return true, d.closeSession(st, p.ID) })
+	case "worktree.merge":
+		var p proto.MergeParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		return d.mergeWorktree(ctx, p)
 	case "pane.wake":
 		// Web access shows any pane: one of state.json not running yet
 		// starts, as at a restore.
@@ -338,6 +335,69 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 	return proto.Created{Session: sid, Pane: pid}, nil
 }
 
+// closeSession ends session id of st, and its panes.
+func (d *Daemon) closeSession(st *model.State, id string) error {
+	i := sessionIndex(st, id)
+	if i < 0 {
+		return proto.Errorf(proto.CodeNotFound, "no session "+id)
+	}
+	for _, pn := range st.Sessions[i].Panes {
+		d.endPane(pn.ID)
+	}
+	st.Sessions = append(st.Sessions[:i], st.Sessions[i+1:]...)
+	return nil
+}
+
+// mergeWorktree merges a worker's worktree into its lead's branch, for
+// omaterm merge with the window closed: as the app does, git's work
+// outside the sessions file's lock.
+func (d *Daemon) mergeWorktree(ctx context.Context, p proto.MergeParams) (any, error) {
+	d.stateMu.Lock()
+	st := d.loadState()
+	d.stateMu.Unlock()
+	lead, _ := findPane(&st, p.By)
+	if lead == nil {
+		return nil, proto.Errorf(proto.CodeUsage, "run omaterm merge in your pane: it merges into your branch")
+	}
+	i := sessionIndex(&st, p.Target)
+	if i < 0 {
+		return nil, proto.Errorf(proto.CodeNotFound, "no session "+p.Target)
+	}
+	t := st.Sessions[i]
+	name := sessionName(t, session.Info{})
+	if err := model.LeadMerge(lead.Worktree, t.Worktree, name); err != nil {
+		return nil, proto.Errorf(proto.CodeUsage, err.Error())
+	}
+	w := *t.Worktree
+	for _, info := range d.reg.Infos() {
+		if info.Status == session.Working && info.Agent != "" && within(info.WorkDir(), w.Dir) {
+			return nil, proto.Errorf(proto.CodeUsage, name+" is working: wait until it stops (omaterm wait "+name+"), then merge")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeTimeout)
+	defer cancel()
+	wt := worktree.Of(w.Dir, w.Branch, w.Base)
+	commits, err := worktree.MergeWork(ctx, wt, p.Message, !p.Commit, p.Keep)
+	if err != nil {
+		return nil, worktree.ForLead(err, name, w.Base)
+	}
+	merged := proto.Merged{Branch: w.Branch, Into: w.Base, Commits: commits}
+	if !p.Keep {
+		if _, err := d.change(func(st *model.State) (any, error) { return nil, d.closeSession(st, t.ID) }); err != nil {
+			return nil, fmt.Errorf("merged, but its session stays: %w", err)
+		}
+		if err := worktree.Remove(ctx, wt); err != nil {
+			return nil, fmt.Errorf("merged, but its worktree stays: %w", err)
+		}
+		merged.Removed = true
+	}
+	return merged, nil
+}
+
+// worktreeTimeout bounds a worktree's git work: a checkout of a large
+// repository, with its hooks, or a merge.
+const worktreeTimeout = 5 * time.Minute
+
 // createWorktree makes a session in a worktree of its own: the worktree
 // is made outside the sessions file's lock, as git may take a while.
 func (d *Daemon) createWorktree(ctx context.Context, p proto.CreateParams) (any, error) {
@@ -357,7 +417,7 @@ func (d *Daemon) createWorktree(ctx context.Context, p proto.CreateParams) (any,
 		from = proj.Dir
 	}
 	// The command going away doesn't stop git midway through a checkout.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeTimeout)
 	defer cancel()
 	wt, err := worktree.Add(ctx, from, p.Worktree.Branch, p.Worktree.Base, !p.Worktree.NoEnv)
 	if err != nil {
@@ -723,14 +783,19 @@ func (d *Daemon) forward(ctx context.Context, method string, raw json.RawMessage
 		return m.Result, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(forwardTimeout(method)):
+	case <-time.After(forwardTimeout(method, raw)):
 		return nil, proto.Errorf(proto.CodeTimeout, "the app did not answer")
 	}
 }
 
 // forwardTimeout is how long a call passed to the app may take: a wait
-// as long as the command waits, anything else half a minute.
-func forwardTimeout(method string) time.Duration {
+// as long as the command waits, git's work on a worktree as long as it
+// may take, anything else half a minute.
+func forwardTimeout(method string, raw json.RawMessage) time.Duration {
+	var p struct{ Worktree any }
+	if method == "worktree.merge" || method == "create" && json.Unmarshal(raw, &p) == nil && p.Worktree != nil {
+		return worktreeTimeout
+	}
 	if method == "wait" {
 		return 10 * time.Minute
 	}

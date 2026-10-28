@@ -80,6 +80,58 @@ func (a *appState) createWorktreeSession(wt worktree.Info, p proto.CreateParams)
 	return c, nil
 }
 
+// mergeWorktree merges a worker's worktree into its lead's branch, for
+// omaterm merge: a lead's agent merges only what was made from its own
+// branch (model.LeadMerge). The worker's session closes, and its worktree
+// goes, unless kept.
+func (h *localHost) mergeWorktree(ctx context.Context, p proto.MergeParams) (any, error) {
+	a := h.a
+	type job struct {
+		w             model.Worktree
+		session, name string
+	}
+	v, err := h.onUI(func() (any, error) {
+		_, ltabs, lti, ok := a.findPane(p.By)
+		if !ok {
+			return nil, proto.Errorf(proto.CodeUsage, "run omaterm merge in your pane: it merges into your branch")
+		}
+		_, ttabs, tti, ok := a.findSession(p.Target)
+		if !ok {
+			return nil, proto.Errorf(proto.CodeNotFound, "no session "+p.Target)
+		}
+		t := (*ttabs)[tti]
+		name := a.tabName(t)
+		if err := model.LeadMerge((*ltabs)[lti].Worktree, t.Worktree, name); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		if a.worktreeBusy(t.Worktree.Dir) {
+			return nil, proto.Errorf(proto.CodeUsage, name+" is working: wait until it stops (omaterm wait "+name+"), then merge")
+		}
+		return job{*t.Worktree, t.ID, name}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	j := v.(job)
+	// The command going away doesn't stop git midway through a merge.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeTimeout)
+	defer cancel()
+	commits, err := worktree.MergeWork(ctx, worktreeOf(&j.w), p.Message, !p.Commit, p.Keep)
+	if err != nil {
+		return nil, worktree.ForLead(err, j.name, j.w.Base)
+	}
+	merged := proto.Merged{Branch: j.w.Branch, Into: j.w.Base, Commits: commits}
+	if !p.Keep {
+		h.onUI(func() (any, error) { return nil, a.cliCloseSession(j.session) })
+		if err := worktree.Remove(ctx, worktreeOf(&j.w)); err != nil {
+			return nil, fmt.Errorf("merged, but its worktree stays: %w", err)
+		}
+		merged.Removed = true
+	}
+	h.onUI(func() (any, error) { a.refreshRepos(); return nil, nil })
+	return merged, nil
+}
+
 // worktreeSession finds the session working in the worktree dir.
 func (a *appState) worktreeSession(dir string) (pi int, t *topTab) {
 	for pi := range a.projects {
