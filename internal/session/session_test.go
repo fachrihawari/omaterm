@@ -147,13 +147,16 @@ func TestLead(t *testing.T) {
 func TestEnvironment(t *testing.T) {
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("TMUX", "x")
+	t.Setenv("OMATERM_PANE", "outer")
+	t.Setenv("OMATERM_DEV", "1")
 	env := strings.Join(environment("s1", "p1", "/bin/zsh", []string{"OMATERM_SOCKET=/run/x.sock"}), "\n")
-	for _, want := range []string{"OMATERM_PANE=p1", "OMATERM_SESSION=s1", "OMATERM_SOCKET=/run/x.sock", "TERM_PROGRAM=ghostty", "SHELL=/bin/zsh"} {
+	for _, want := range []string{"OMATERM_PANE=p1", "OMATERM_SESSION=s1", "OMATERM_SOCKET=/run/x.sock", "TERM_PROGRAM=ghostty", "SHELL=/bin/zsh",
+		"OMATERM_DEV=1"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("missing %s", want)
 		}
 	}
-	if strings.Contains(env, "CLAUDECODE=") || strings.Contains(env, "TMUX=") {
+	if strings.Contains(env, "CLAUDECODE=") || strings.Contains(env, "TMUX=") || strings.Contains(env, "OMATERM_PANE=outer") {
 		t.Error("kept the outer terminal's variables")
 	}
 }

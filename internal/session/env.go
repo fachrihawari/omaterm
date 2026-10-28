@@ -15,7 +15,8 @@ const GhosttyVersion = "1.3.2-dev"
 
 // environment is the environment of a pane's shell: the app's, without
 // what describes the terminal the app was started from, and with what
-// tells programs where they run.
+// tells programs where they run. A development build's OMATERM_DEV stays:
+// the omaterm command in its panes is to reach it, not the installed one.
 func environment(sessionID, paneID, shell string, extra []string) []string {
 	env := make([]string, 0, len(os.Environ())+12)
 	for _, kv := range os.Environ() {
@@ -24,7 +25,7 @@ func environment(sessionID, paneID, shell string, extra []string) []string {
 		case k == "CLAUDECODE", k == "TERM_PROGRAM", k == "TERM_PROGRAM_VERSION", k == "TERM_SESSION_ID",
 			k == "ITERM_SESSION_ID", k == "WINDOWID", k == "KITTY_WINDOW_ID", k == "LC_TERMINAL", k == "LC_TERMINAL_VERSION",
 			k == "INVOCATION_ID", k == "MYGO_GHOSTTY_VT", k == "TMUX", k == "TMUX_PANE", k == "ALACRITTY_WINDOW_ID",
-			strings.HasPrefix(k, "OMATERM_"), strings.HasPrefix(k, "CLAUDE_CODE_"), strings.HasPrefix(k, "GHOSTTY_"),
+			strings.HasPrefix(k, "OMATERM_") && k != "OMATERM_DEV", strings.HasPrefix(k, "CLAUDE_CODE_"), strings.HasPrefix(k, "GHOSTTY_"),
 			strings.HasPrefix(k, "VSCODE_"):
 			continue
 		}
