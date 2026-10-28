@@ -281,3 +281,47 @@ func TestLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// takingAgent is fakeAgent, but a dialog comes up over its prompt as its
+// first message is sent, and takes it, as Codex's hooks to review do.
+const takingAgent = `#!/bin/sh
+printf '\033[?2004h\033]7501;state=idle\007'
+first=1
+while IFS= read -r line; do
+  case "$line" in
+  *'201~'*)
+    if [ $first = 1 ]; then
+      first=0
+      printf '\033]7501;state=blocked:kind=question\007'; sleep 1; printf '\033]7501;state=idle\007'
+    else
+      printf '%s\n' "$line" >> "$LOG"
+      printf '\033]7501;state=working\007'; sleep 0.5; printf '\033]7501;state=done\007'
+    fi ;;
+  esac
+done
+`
+
+// A message a dialog took as it was sent goes again, once the dialog is
+// gone; a note too, which wants no answer.
+func TestRetypedAfterADialog(t *testing.T) {
+	w := newWorld(t)
+	if err := os.WriteFile(filepath.Join(w.dir, "claude"), []byte(takingAgent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := w.agent("b")
+	m, err := w.box.Ask(proto.MailAskParams{To: "b", Text: "Review it", Note: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.eventually("the note retyped and taken up", func() bool {
+		return strings.Contains(read(log), "Review it") && w.mail(m.ID).State == proto.MailDelivered
+	})
+	w.eventually("the note settled", func() bool {
+		w.box.mu.Lock()
+		defer w.box.mu.Unlock()
+		return w.box.find(m.ID).settled()
+	})
+	if n := strings.Count(read(log), "Review it"); n != 1 {
+		t.Fatalf("taken up %d times", n)
+	}
+}

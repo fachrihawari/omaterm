@@ -71,6 +71,11 @@ type item struct {
 	sending  bool      // being typed
 	at       time.Time // when it was typed
 	again    bool      // Enter was pressed again
+	// worked tells that its agent worked since it was typed; taken, that
+	// a dialog came up instead, which may have taken it (retyped once).
+	worked, taken, retyped bool
+	// noted tells a note its agent took up, or had the time to.
+	noted bool
 }
 
 // New returns a mailbox for reg's panes.
@@ -85,7 +90,7 @@ func (it *item) settled() bool {
 	case proto.MailReplied, proto.MailNoReply, proto.MailFailed:
 		return true
 	}
-	return it.Note && it.State == proto.MailDelivered
+	return it.Note && it.State == proto.MailDelivered && it.noted
 }
 
 func (it *item) open() bool {
@@ -352,16 +357,33 @@ func (m *Mailbox) Tick(now time.Time) {
 				it.sending, it.at, it.Why = true, now, ""
 				sends = append(sends, send{it: it, p: p, b: paste(m.wrap(it), bracketed)})
 			}
-		case it.State == proto.MailDelivered && !it.Note:
+		case it.State == proto.MailDelivered && !it.settled():
 			if p == nil {
 				it.State, it.Why = proto.MailNoReply, it.to()+" closed"
+				if it.Note {
+					it.State = proto.MailFailed
+				}
 				break
 			}
 			info := p.Info()
-			worked := info.Status == session.Working || info.Since >= it.at.UnixMilli()
+			switch info.Status {
+			case session.Working:
+				it.worked = true
+			case session.Waiting:
+				it.taken = it.taken || !it.worked
+			}
+			worked := it.worked || info.Since >= it.at.UnixMilli() && !it.taken
 			stopped := info.Status != session.Working && info.Status != session.Waiting
+			hold, _ := p.MailHold(now)
 			switch {
-			case !worked && !it.again && now.Sub(it.at) > enterAgain:
+			case it.taken && !it.worked && hold == "" && !it.retyped:
+				// A dialog came up as it was sent, as Codex's hooks to review
+				// do on a first prompt, and is gone: the agent may never
+				// have had it, and gets it again.
+				it.State, it.retyped, it.taken, it.again = proto.MailQueued, true, false, false
+			case it.Note:
+				it.noted = it.worked || now.Sub(it.at) > startLimit
+			case !worked && !it.taken && !it.again && now.Sub(it.at) > enterAgain:
 				it.again = true
 				sends = append(sends, send{it: it, p: p, b: []byte("\r"), enter: true})
 			case worked && stopped && now.Sub(time.UnixMilli(info.Since)) >= quietGrace:
