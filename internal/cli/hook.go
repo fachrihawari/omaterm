@@ -143,7 +143,8 @@ func hookContext(c *client.Client, pane, sid string, away bool) string {
 			"Your commands don't run in your pane and don't have its $OMATERM_SESSION and $OMATERM_PANE: give omaterm your pane as the target, "+
 			"as in `omaterm split %s --down -- npm run dev`.", sid, pane, where, pane)
 	} else {
-		fmt.Fprintf(&b, "You are running in omaterm, a terminal for coding agents: session %s, pane %s ($OMATERM_SESSION and $OMATERM_PANE)%s. "+
+		fmt.Fprintf(&b, "You are running in omaterm, a terminal for coding agents: session %s, pane %s ($OMATERM_SESSION and $OMATERM_PANE; "+
+			"$OMATERM_PROJECT and $OMATERM_PROJECT_DIR name your project and its folder)%s. "+
 			"The `omaterm` command (see the omaterm skill) runs things beside you, such as a dev server, tests or another agent, "+
 			"and tells the user what you are doing.", sid, pane, where)
 	}

@@ -1182,7 +1182,9 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm version
 
 A target is a session or pane id (a prefix works) or a session's name; in
-an omaterm pane it defaults to the pane itself ($OMATERM_PANE).
+an omaterm pane it defaults to the pane itself ($OMATERM_PANE). A pane
+also has $OMATERM_SESSION, and $OMATERM_PROJECT and $OMATERM_PROJECT_DIR
+for its project's name and folder.
 
 With the window closed, the session daemon answers for the sessions;
 focus, browser and do need the window.

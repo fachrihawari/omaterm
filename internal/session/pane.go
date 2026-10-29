@@ -77,6 +77,9 @@ type Pane struct {
 // StartOptions are how Registry.Start runs a pane.
 type StartOptions struct {
 	ID, Session, Project string
+	// ProjectName and ProjectDir tell programs the project they run in
+	// (OMATERM_PROJECT, OMATERM_PROJECT_DIR); not set, they aren't told.
+	ProjectName, ProjectDir string
 	// Dir is where the shell starts; the home directory when empty.
 	Dir string
 	// Command runs first, in the user's login shell, which the pane goes

@@ -394,8 +394,8 @@ func sameInfo(a, b session.Info) bool {
 
 // Start starts a pane in the daemon.
 func (r *Remote) Start(o session.StartOptions) (session.Handle, error) {
-	p := StartParams{ID: o.ID, Session: o.Session, Project: o.Project, Dir: o.Dir, Command: o.Command,
-		Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History}
+	p := StartParams{ID: o.ID, Session: o.Session, Project: o.Project, ProjectName: o.ProjectName, ProjectDir: o.ProjectDir,
+		Dir: o.Dir, Command: o.Command, Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History}
 	var info session.Info
 	if err := r.call("pane.start", p, &info); err != nil {
 		return nil, err

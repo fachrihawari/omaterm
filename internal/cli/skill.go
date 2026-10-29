@@ -22,7 +22,8 @@ description: Drive terminal sessions in omaterm — start agents and commands in
 # omaterm
 
 You run inside omaterm, a terminal for coding agents whose sessions keep
-running in the background. $OMATERM_SESSION is your session and $OMATERM_PANE your pane; the
+running in the background. $OMATERM_SESSION is your session and $OMATERM_PANE your pane
+($OMATERM_PROJECT and $OMATERM_PROJECT_DIR name your project and its folder); the
 ` + "`omaterm`" + ` command drives them. A target is a session or a pane id (a
 prefix works), or a session's name; a session stands for its focused pane.
 

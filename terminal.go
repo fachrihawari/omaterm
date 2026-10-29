@@ -217,7 +217,8 @@ func (a *appState) startPaneWith(id, sessionID, dir string, command []string, ex
 	o.ID, o.Session, o.Dir = id, sessionID, dir
 	o.Command, o.Exec, o.Env, o.History = command, exec, env, history
 	if pi, _, _, ok := a.findSession(sessionID); ok {
-		o.Project = a.projects[pi].ID
+		p := &a.projects[pi]
+		o.Project, o.ProjectName, o.ProjectDir = p.ID, p.Name, p.Path
 	}
 	return a.panes.Start(o)
 }

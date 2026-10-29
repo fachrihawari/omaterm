@@ -137,7 +137,7 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.ID+" is a browser, not a terminal")
 		}
 		_, resume := d.restorePrefs()
-		if err := d.restorePane(s, *pn, resume); err != nil && !errors.Is(err, session.ErrExists) {
+		if err := d.restorePane(&st, s, *pn, resume); err != nil && !errors.Is(err, session.ErrExists) {
 			return nil, err // a wake racing another, or a restore, found it starting: it runs
 		}
 		return true, nil
@@ -163,7 +163,7 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 				command, env = p.Info().Command, p.Env()
 			}
 			d.endPane(pn.ID)
-			return true, d.startPane(s.ID, pn.ID, dir, command, env)
+			return true, d.startPane(projectOf(st, s.Project), s.ID, pn.ID, dir, command, env)
 		})
 	case "rename":
 		var p proto.RenameParams
@@ -325,7 +325,7 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
 	if p.URL != "" {
 		pane.URL = d.browserURL(p.URL) // the app loads it once open
-	} else if err := d.startPane(sid, pid, dir, p.Command, p.Env); err != nil {
+	} else if err := d.startPane(proj, sid, pid, dir, p.Command, p.Env); err != nil {
 		return nil, err
 	}
 	// Last under the session that started it, as the app shows it.
@@ -527,7 +527,7 @@ func (d *Daemon) split(st *model.State, p proto.CreateParams) (any, error) {
 	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
 	if p.URL != "" {
 		pane.URL = d.browserURL(p.URL)
-	} else if err := d.startPane(s.ID, pid, dir, p.Command, p.Env); err != nil {
+	} else if err := d.startPane(projectOf(st, s.Project), s.ID, pid, dir, p.Command, p.Env); err != nil {
 		return nil, err
 	}
 	s.Layout = splitLayout(s.Layout, targetID, pid, p.Direction, ratio)
@@ -605,15 +605,16 @@ func (d *Daemon) closePane(id string) (any, error) {
 	})
 }
 
-// startPane starts a pane's shell in dir, running command first when set.
-func (d *Daemon) startPane(sessionID, id, dir string, command, env []string) error {
-	return d.startPaneWith(sessionID, id, dir, command, env, nil)
+// startPane starts a pane's shell in dir, running command first when set,
+// in a session of project proj.
+func (d *Daemon) startPane(proj model.Project, sessionID, id, dir string, command, env []string) error {
+	return d.startPaneWith(proj, sessionID, id, dir, command, env, nil)
 }
 
 // startPaneWith is startPane with the scrollback a restored pane shows.
-func (d *Daemon) startPaneWith(sessionID, id, dir string, command, env []string, history []byte) error {
-	o := session.StartOptions{ID: id, Session: sessionID, Dir: dir, Command: command,
-		Env: append(d.paneEnv(), env...), Cols: 120, Rows: 40, Theme: d.currentTheme(), History: history}
+func (d *Daemon) startPaneWith(proj model.Project, sessionID, id, dir string, command, env []string, history []byte) error {
+	o := session.StartOptions{ID: id, Session: sessionID, Project: proj.ID, ProjectName: proj.Name, ProjectDir: proj.Dir,
+		Dir: dir, Command: command, Env: append(d.paneEnv(), env...), Cols: 120, Rows: 40, Theme: d.currentTheme(), History: history}
 	d.termPrefs().apply(&o)
 	_, err := d.reg.Start(o)
 	d.changed()
@@ -635,6 +636,16 @@ func (d *Daemon) endPane(id string) {
 	d.closeAttachments(id)
 	d.removePane(id)
 	d.changed()
+}
+
+// projectOf is the project of id in st; an empty one for none.
+func projectOf(st *model.State, id string) model.Project {
+	for _, p := range st.Projects {
+		if p.ID == id {
+			return p
+		}
+	}
+	return model.Project{}
 }
 
 func findPane(st *model.State, id string) (*model.Session, *model.Pane) {
@@ -716,7 +727,7 @@ func (d *Daemon) restore() {
 			if pn.URL != "" || d.reg.Get(pn.ID) != nil {
 				continue
 			}
-			if d.restorePane(&s, pn, resume) == nil {
+			if d.restorePane(&st, &s, pn, resume) == nil {
 				n++
 			}
 		}
@@ -741,7 +752,7 @@ func (d *Daemon) restorePrefs() (restore, resume bool) {
 
 // restorePane starts a pane of state.json from its scrollback, its agent
 // resuming its conversation when resume.
-func (d *Daemon) restorePane(s *model.Session, pn model.Pane, resume bool) error {
+func (d *Daemon) restorePane(st *model.State, s *model.Session, pn model.Pane, resume bool) error {
 	dir, err := s.Worktree.PaneDir(pn.Dir)
 	if err != nil {
 		return err
@@ -750,7 +761,7 @@ func (d *Daemon) restorePane(s *model.Session, pn model.Pane, resume bool) error
 	if resume {
 		command = agent.ResumeCommand(pn.Agent)
 	}
-	return d.startPaneWith(s.ID, pn.ID, dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID)))
+	return d.startPaneWith(projectOf(st, s.Project), s.ID, pn.ID, dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID)))
 }
 
 // ForwardedCall is a call of the omaterm command the daemon passes to the

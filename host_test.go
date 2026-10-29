@@ -538,3 +538,27 @@ func TestRestartKeepsEnv(t *testing.T) {
 		}
 	}
 }
+
+// A pane is told the project it runs in.
+func TestProjectEnv(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	var made proto.Created
+	if err := c.Call("create", proto.CreateParams{Name: "dev", Dir: a.workspace,
+		Command: []string{"sh", "-c", "echo P=$OMATERM_PROJECT D=$OMATERM_PROJECT_DIR; sleep 30"}}, &made); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		var out proto.ReadResult
+		if err := c.Call("read", proto.ReadParams{ID: made.Pane}, &out); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.Text, "P=test D="+a.workspace) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("read %q", out.Text)
+		}
+	}
+}

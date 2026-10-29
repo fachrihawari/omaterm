@@ -95,7 +95,7 @@ func (r *Registry) start(o StartOptions) (*Pane, error) {
 	path, args, shell := commandLine(o)
 	proc, err := pty.Start(pty.Options{
 		Path: path, Args: args, Dir: dir,
-		Env:  environment(o.Session, o.ID, shell, o.Env),
+		Env:  environment(o, shell),
 		Cols: o.Cols, Rows: o.Rows,
 	})
 	opts := terminal.Options{

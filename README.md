@@ -221,7 +221,9 @@ omaterm ask fix-login "Is the test green?"  # ask another agent, get its answer
 ```
 
 `omaterm help` lists every command. `omaterm skill setup` teaches Claude
-Code, Codex, Pi and OpenCode to use it.
+Code, Codex, Pi and OpenCode to use it. Every pane knows where it runs:
+`$OMATERM_SESSION`, `$OMATERM_PANE`, `$OMATERM_PROJECT` and
+`$OMATERM_PROJECT_DIR`.
 
 ## Keyboard shortcuts
 

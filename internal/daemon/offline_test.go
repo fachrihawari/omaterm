@@ -454,3 +454,22 @@ func TestBranchDiffWithWindowClosed(t *testing.T) {
 		t.Fatalf("merged into main: %v", err)
 	}
 }
+
+// A pane the daemon starts with the window closed is told its project,
+// as the app tells the panes it starts.
+func TestOfflineProjectEnv(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	made := call[proto.Created](t, c, "create", proto.CreateParams{Name: "dev",
+		Command: []string{"sh", "-c", "echo P=$OMATERM_PROJECT D=$OMATERM_PROJECT_DIR; sleep 30"}})
+	waitFor(t, "the project in the pane's environment", func() bool {
+		return strings.Contains(call[proto.ReadResult](t, c, "read", proto.ReadParams{ID: made.Pane}).Text, "P=proj D="+proj)
+	})
+	if p := d.reg.Get(made.Pane); p == nil || p.Info().Project != "p1" {
+		t.Fatalf("pane of project %q, want p1", p.Info().Project)
+	}
+}
