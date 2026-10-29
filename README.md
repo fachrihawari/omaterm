@@ -214,7 +214,7 @@ Agents and scripts drive your sessions with it:
 omaterm split --down -- go test ./...   # run in a new pane below
 omaterm wait <pane> --exit              # wait for it to finish
 omaterm read <pane>                     # read its screen
-omaterm send <pane> "y" --enter         # type into it
+omaterm send <pane> "y" --enter         # type into it, once you stop typing there
 omaterm diff --turn                     # what the last agent turn changed
 omaterm new --worktree fix-login -- claude  # an agent on a branch of its own
 omaterm ask fix-login "Is the test green?"  # ask another agent, get its answer

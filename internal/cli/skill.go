@@ -86,7 +86,7 @@ Merging into the main checkout is the user's, never yours.
 
     omaterm send <target> "some text" --enter    # type, then press Enter
     omaterm key <target> ctrl+c                  # enter, escape, up, tab, ctrl+d…
-    omaterm prompt <target> "run the tests"      # send + Enter, wait, print screen
+    omaterm prompt <target> "run the tests"      # paste into its prompt + Enter, wait, print screen
     omaterm wait <target> [--for idle,waiting,error,exited] [--timeout 10m]
     omaterm wait <target> --exit                 # until its command ends; exits with its status
     omaterm read <target> [-n 40] [-a]           # the screen, or with scrollback
@@ -143,6 +143,9 @@ Report blocked only when you truly cannot go on without them.
 - Close what you started when it is done: ` + "`omaterm close <target>`" + `.
 - Reach another agent with omaterm ask; type with send, key or prompt only
   into panes you started, unless the user asked.
+- send and prompt wait up to 10 seconds for the user to finish typing in
+  the pane (prompt also for a draft they left there), then fail saying so:
+  try again later.
 - Never merge into the main checkout: the user reviews and merges.
 - Exit status 3 means no such target, 4 that omaterm is not running, or
   that its window is closed for what needs it (focus, browser, do); the

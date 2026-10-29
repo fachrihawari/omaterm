@@ -409,11 +409,9 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := c.Call("send", proto.SendParams{ID: t.pane, Data: strings.Join(f.pos[1:], " ")}, nil); err != nil {
-			return err
-		}
-		time.Sleep(120 * time.Millisecond)
-		if err := c.Call("send", proto.SendParams{ID: t.pane, Data: "\r"}, nil); err != nil {
+		// As a paste, with Enter after it: omaterm waits for the user to
+		// finish typing there, and for a draft they left.
+		if err := c.Call("send", proto.SendParams{ID: t.pane, Data: strings.Join(f.pos[1:], " "), Paste: true}, nil); err != nil {
 			return err
 		}
 		if err := c.Call("wait", proto.WaitParams{ID: t.pane, TimeoutMS: ms}, nil); err != nil {
@@ -1150,8 +1148,9 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
                                          a session in a git worktree on a branch of its own
   omaterm split [target] [--down|--left|--up] [-r ratio] [-w] [--url url] [--any-project] [-- command…]
   omaterm send <target> <text…> [--enter] [-e]
+                                         type into it (waits while the user types there)
   omaterm key <target> <key…>            enter, tab, escape, up, ctrl+c, alt+x…
-  omaterm prompt <target> <text…>        send, Enter, wait, print the screen
+  omaterm prompt <target> <text…>        paste into its prompt, Enter, wait, print the screen
   omaterm read [target] [-n lines] [-a]
   omaterm wait [target…] [--any|--all] [--for idle,waiting,error,exited] [--exit] [-t timeout]
   omaterm status [target] [--json]
