@@ -962,7 +962,7 @@ func (a *appState) openSearchSelection() {
 		return
 	}
 	m := a.searchResults[a.searchSelected]
-	a.openEditorAt(m.Path, m.Line)
+	a.openEditorAt(m.Path, m.Line, 0)
 	a.closeOverlay()
 }
 
@@ -1025,7 +1025,7 @@ func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool
 		})
 	})
 	if e.Clicked() {
-		a.openEditorAt(m.Path, m.Line)
+		a.openEditorAt(m.Path, m.Line, 0)
 		a.closeOverlay()
 	}
 }

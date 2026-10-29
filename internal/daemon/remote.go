@@ -36,7 +36,7 @@ type Remote struct {
 	closeLater []string
 	// TermOptions gives what a pane's terminal in the app looks like: its
 	// font, theme and padding.
-	TermOptions func() session.StartOptions
+	TermOptions func(id string) session.StartOptions
 	// OnLost tells of panes that went with a daemon that stopped: the
 	// Remote has connected to a new one, which runs none of them.
 	OnLost func(ids []string)
@@ -655,7 +655,7 @@ func (p *remotePane) Term() *terminal.Terminal {
 	}
 	o := session.StartOptions{}
 	if p.r.TermOptions != nil {
-		o = p.r.TermOptions()
+		o = p.r.TermOptions(p.id)
 	}
 	var t *terminal.Terminal
 	t, err = terminal.New(terminal.Options{
