@@ -688,6 +688,22 @@ func (p *Pane) fullReset() {
 	}
 	p.reported = false
 	p.progress = ""
+	p.info.Summary = ""
+}
+
+// summarize keeps a report's message as the agent's last word on its
+// turn, when it has one; p.mu is held.
+func (p *Pane) summarize(msg string) {
+	if msg != "" {
+		p.info.Summary = msg
+	}
+}
+
+// worded tells that the lead report says something of itself: the screen
+// has no better word on the turn then. p.mu is held.
+func (p *Pane) worded() bool {
+	lead, ok := p.recs.Lead()
+	return ok && lead.Msg != ""
 }
 
 // fromRecords sets the status from the program's reports, which come
@@ -708,15 +724,18 @@ func (p *Pane) fromRecords() {
 	case "blocked":
 		p.setStatus(Waiting)
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, lead.Kind, lead.Progress
+		p.summarize(lead.Msg)
 		if !viewed {
 			p.info.Unread = true
 		}
 	case "working":
 		p.setStatus(Working)
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, "", lead.Progress
+		p.info.Summary = "" // a turn: its last word is to come
 	case "error":
 		p.setStatus(Failed)
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, "", -1
+		p.summarize(lead.Msg)
 		if !viewed {
 			p.info.Unread = true
 		}
@@ -728,6 +747,7 @@ func (p *Pane) fromRecords() {
 			}
 		}
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, "", -1
+		p.summarize(lead.Msg)
 	default:
 		p.setStatus(Idle)
 		p.info.Message, p.info.Kind, p.info.Progress = "", "", -1
@@ -812,6 +832,7 @@ func (p *Pane) tick(now time.Time) bool {
 			p.fromRecords()
 		}
 		p.progress = ""
+		p.info.Summary = ""
 		if p.info.AgentSession != nil {
 			p.info.AgentSession = nil
 		}
@@ -881,11 +902,19 @@ func (p *Pane) look(now time.Time, screen string) bool {
 	}
 	p.looked = true
 	st, visible := detect.Idle, true
+	changed := false
 	if detect.Known(p.info.Agent) {
 		r := detect.Detect(p.info.Agent, detect.Input{Screen: screen, Title: p.info.Title, Progress: p.progress})
 		p.prompt = r.State == detect.Idle && r.Visible && !r.Skip
+		// At its prompt, the agent's last word on its turn is what its
+		// screen ended on, unless its reports gave one.
+		if p.prompt && !p.worded() {
+			if s := detect.Summary(p.info.Agent, screen); s != "" && s != p.info.Summary {
+				p.info.Summary, changed = s, true
+			}
+		}
 		if r.Skip {
-			return false
+			return changed
 		}
 		st, visible = r.State, r.Visible
 	} else if agent.TitleBusy(p.info.Title) {
@@ -893,7 +922,7 @@ func (p *Pane) look(now time.Time, screen string) bool {
 	}
 	if st == p.seen {
 		p.idleFrom = time.Time{}
-		return false
+		return changed
 	}
 	if st == detect.Idle && !visible && p.info.Status == Working {
 		if p.idleFrom.IsZero() {
@@ -909,7 +938,7 @@ func (p *Pane) look(now time.Time, screen string) bool {
 	switch st {
 	case detect.Working:
 		p.setStatus(Working)
-		p.info.Message = ""
+		p.info.Message, p.info.Summary = "", ""
 	case detect.Blocked:
 		p.needsUser("")
 	default:
@@ -921,7 +950,7 @@ func (p *Pane) look(now time.Time, screen string) bool {
 			}
 		}
 	}
-	return p.info.Status != before
+	return p.info.Status != before || changed
 }
 
 // commandLine is the argv a pane starts: the user's login shell, which

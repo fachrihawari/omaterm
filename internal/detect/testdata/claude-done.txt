@@ -1,0 +1,19 @@
+ ▐▛███▛█   Claude Code v2.1.304
+▝▜██████▀  Opus 5.5 (1M context) with medium effort · Claude Max
+ ▝▝   ▝▝   ~/dev
+
+
+❯ First think briefly, then use the Bash tool to run exactly: date > /tmp/kero-probe-date.txt
+
+⏺ I'll write the date to the probe file.
+
+⏺ Bash(date > /tmp/kero-probe-date.txt)
+  ⎿  (No content)
+
+⏺ Done. The current date is in /tmp/kero-probe-date.txt, as you asked; nothing
+  else was touched.
+
+────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 1 agent

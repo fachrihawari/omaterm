@@ -70,8 +70,12 @@ type Info struct {
 	Unread bool `json:"unread,omitempty"`
 	// Message words the status, as a waiting agent's question; Kind is a
 	// waiting report's kind (permission, question, auth).
-	Message  string       `json:"message,omitempty"`
-	Kind     string       `json:"kind,omitempty"`
+	Message string `json:"message,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	// Summary is an agent's last word on its turn: a report's message,
+	// or the text its screen ended on; it stays while the agent is idle
+	// and goes as a turn starts, where Message goes with the status.
+	Summary  string       `json:"summary,omitempty"`
 	Progress int          `json:"progress"` // -1 when none
 	Records  []osc.Record `json:"records,omitempty"`
 
