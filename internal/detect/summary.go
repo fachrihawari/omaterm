@@ -30,34 +30,54 @@ func Summary(agent, screen string) string {
 	return ""
 }
 
-// claudeToolCall is a tool call as Claude Code prints it after its "⏺"
-// (Bash(date), Read(file.go)…), with its "⎿" result under it.
-var claudeToolCall = regexp.MustCompile(`^\w+\(`)
+// Claude Code's transcript: what it says and the tools it calls start
+// with a bullet at the line's start (● since 2.1, ⏺ before); a tool call
+// is Bash(…), Read(…), with its result under "⎿"; what it says goes on
+// in paragraphs indented two spaces, blank lines between; a line of its
+// own, as "✻ Baked for 4s", ends a turn.
+var (
+	claudeBullet   = regexp.MustCompile(`^[●⏺] `)
+	claudeToolCall = regexp.MustCompile(`^\w+\(`)
+	claudeMark     = regexp.MustCompile(`^[●⏺⎿✻✢✳✶✽*·]`)
+)
 
-// claudeSummary is Claude Code's: the last paragraph it said, marked "⏺"
-// and wrapped under a two-space indent, not a tool call.
+// claudeSummary is the last paragraph of the last thing Claude Code said.
 func claudeSummary(screen string) string {
 	ls := lines(abovePromptBox(screen))
 	for i := len(ls) - 1; i >= 0; i-- {
-		if !strings.HasPrefix(ls[i], "⏺ ") {
+		if !claudeBullet.MatchString(ls[i]) {
 			continue
 		}
-		para := []string{strings.TrimSpace(strings.TrimPrefix(ls[i], "⏺ "))}
-		for j := i + 1; j < len(ls); j++ {
-			l := ls[j]
-			if strings.TrimSpace(l) == "" {
-				break
-			}
-			if !strings.HasPrefix(l, "  ") || strings.HasPrefix(strings.TrimSpace(l), "⎿") {
+		first := strings.TrimSpace(claudeBullet.ReplaceAllString(ls[i], ""))
+		if first == "" || claudeToolCall.MatchString(first) {
+			continue
+		}
+		// The block: this line, then the paragraphs indented under it,
+		// to a line of another kind.
+		paras, para := []string{}, []string{first}
+		for _, l := range ls[i+1:] {
+			t := strings.TrimSpace(l)
+			switch {
+			case t == "":
+				if len(para) > 0 {
+					paras, para = append(paras, strings.Join(para, " ")), nil
+				}
+				continue
+			case !strings.HasPrefix(l, "  ") || claudeMark.MatchString(t):
+				if len(para) > 0 {
+					paras = append(paras, strings.Join(para, " "))
+				}
 				para = nil
-				break
+			default:
+				para = append(para, t)
+				continue
 			}
-			para = append(para, strings.TrimSpace(l))
+			break
 		}
-		if para == nil || para[0] == "" || claudeToolCall.MatchString(para[0]) {
-			continue
+		if len(para) > 0 {
+			paras = append(paras, strings.Join(para, " "))
 		}
-		return clip(strings.Join(strings.Fields(strings.Join(para, " ")), " "))
+		return clip(strings.Join(strings.Fields(paras[len(paras)-1]), " "))
 	}
 	return ""
 }

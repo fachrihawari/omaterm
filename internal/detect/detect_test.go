@@ -101,8 +101,9 @@ func TestCodexHooksReview(t *testing.T) {
 // Claude Code's last word on its turn is the last paragraph it said,
 // not a tool call, and only once it is at its prompt with one.
 func TestClaudeSummary(t *testing.T) {
-	want := "Done. The current date is in /tmp/kero-probe-date.txt, as you asked; nothing else was touched."
-	if got := Summary("claude", screen(t, "claude-done.txt")); got != want {
+	done := screen(t, "claude-done.txt")
+	want := "I made src/a.go containing package a with a function A() that returns 42, where the function name sits at line 3, column 6."
+	if got := Summary("claude", done); got != want {
 		t.Errorf("done: %q, want %q", got, want)
 	}
 	for _, name := range []string{"claude-idle.txt", "claude-working.txt", "claude-blocked.txt"} {
@@ -111,12 +112,11 @@ func TestClaudeSummary(t *testing.T) {
 		}
 	}
 	// A tool call that ended the screen leaves the words before it.
-	s := strings.Replace(screen(t, "claude-done.txt"), "⏺ Done. The current date", "⏺ Read(x.go)\n  ⎿  Read 3 lines\n\n⏺ Bash(ls)\n  ⎿  a\n\n\n⏺ Gone. The current date", 1)
-	s = strings.Replace(s, "\n\n⏺ Gone. The current date is in /tmp/kero-probe-date.txt, as you asked; nothing\n  else was touched.\n", "\n", 1)
-	if got := Summary("claude", s); got != "I'll write the date to the probe file." {
+	cut := strings.Index(done, "● src/a.go:3:6")
+	if got := Summary("claude", done[:cut]); got != "Creating the Go file now." {
 		t.Errorf("after tool calls: %q", got)
 	}
-	long := strings.Replace(screen(t, "claude-done.txt"), "nothing\n  else was touched.", strings.Repeat("word ", 60), 1)
+	long := strings.Replace(done, "column 6.", strings.Repeat("word ", 60), 1)
 	if got := Summary("claude", long); len([]rune(got)) > summaryRunes || !strings.HasSuffix(got, "…") {
 		t.Errorf("long: %d runes, %q", len([]rune(got)), got)
 	}
