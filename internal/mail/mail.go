@@ -356,7 +356,7 @@ func (m *Mailbox) Tick(now time.Time) {
 				held[it.To] = hold
 			default:
 				it.sending, it.at, it.Why = true, now, ""
-				sends = append(sends, send{it: it, p: p, b: paste(m.wrap(it), bracketed)})
+				sends = append(sends, send{it: it, p: p, b: session.Paste(m.wrap(it), bracketed)})
 			}
 		case it.State == proto.MailDelivered && !it.settled():
 			if p == nil {
@@ -483,25 +483,6 @@ func outcome(it *item) string {
 			it.to(), it.ID, strings.TrimRight(it.Screen, "\n"))
 	}
 	return fmt.Sprintf("[omaterm] Your message %s to %s wasn't delivered: %s.", it.ID, it.to(), it.Why)
-}
-
-// paste is text as typed into a prompt: bracketed as a paste, when the
-// program takes those, else on one line, as a newline would send it. No
-// control in it can end the paste, or act.
-func paste(text string, bracketed bool) []byte {
-	text = strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n', r == '\t':
-			return r
-		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
-			return -1
-		}
-		return r
-	}, strings.ReplaceAll(text, "\r\n", "\n"))
-	if !bracketed {
-		return []byte(strings.Join(strings.Fields(text), " "))
-	}
-	return []byte("\x1b[200~" + text + "\x1b[201~")
 }
 
 // IsMethod tells the socket's methods Serve answers.

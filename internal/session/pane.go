@@ -152,11 +152,17 @@ func (p *Pane) changedLocked() {
 	p.reg.changed()
 }
 
-// Write sends input to the program, as typed: the user's, or `omaterm
-// send`'s.
+// Write sends what the user typed to the program: the app's keyboard,
+// the daemon's attach connections, the web page's. The omaterm command's
+// typing goes through Send.
 func (p *Pane) Write(b []byte) error {
 	p.input()
 	p.typing(b)
+	return p.write(b)
+}
+
+// write sends b to the program.
+func (p *Pane) write(b []byte) error {
 	p.mu.Lock()
 	proc := p.proc
 	p.mu.Unlock()
@@ -214,10 +220,8 @@ func (p *Pane) MailHold(now time.Time) (hold string, bracketed bool) {
 		return "it waits for the user", false
 	case i.Status == Working:
 		return "it is working", false
-	case now.Sub(p.typed) < typingHold:
-		return "the user is typing in it", false
-	case !p.typedEnd && now.Sub(p.typed) < draftHold:
-		return "the user left a draft in it", false
+	case p.userHold(now, true) != "":
+		return p.userHold(now, true), false
 	case !p.prompt && detect.ShowsPrompt(i.Agent):
 		// Something else shows over it, as a dialog, which what is typed
 		// would answer.
@@ -228,6 +232,19 @@ func (p *Pane) MailHold(now time.Time) (hold string, bracketed bool) {
 		return "it is starting", false
 	}
 	return "", p.scan.Bracketed
+}
+
+// userHold tells why automated typing waits for the user, "" when it
+// needn't: they typed in the pane just now, or, when draft, left a draft
+// there. p.mu is held.
+func (p *Pane) userHold(now time.Time, draft bool) string {
+	switch {
+	case now.Sub(p.typed) < typingHold:
+		return "the user is typing in it"
+	case draft && !p.typedEnd && now.Sub(p.typed) < draftHold:
+		return "the user left a draft in it"
+	}
+	return ""
 }
 
 // Started is when the pane started.

@@ -562,3 +562,35 @@ func TestProjectEnv(t *testing.T) {
 		}
 	}
 }
+
+// omaterm send waits for the user to finish typing in the pane, and is
+// no typing of theirs.
+func TestSendWaitsForTheUser(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	var made proto.Created
+	if err := c.Call("create", proto.CreateParams{Name: "dev", Dir: a.workspace, Command: []string{"cat"}}, &made); err != nil {
+		t.Fatal(err)
+	}
+	a.panes.Get(made.Pane).Write([]byte("typed-")) // as the keyboard
+	start := time.Now()
+	if err := c.Call("send", proto.SendParams{ID: made.Pane, Data: "sent\r"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) < time.Second {
+		t.Fatal("sent while the user typed")
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		var out proto.ReadResult
+		if err := c.Call("read", proto.ReadParams{ID: made.Pane}, &out); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(out.Text, "typed-sent") >= 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("read %q", out.Text)
+		}
+	}
+}

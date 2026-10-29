@@ -48,10 +48,21 @@ func TestHostContract(t *testing.T) {
 			if p.Term() == nil {
 				t.Fatal("no terminal")
 			}
-			if err := p.Write([]byte("abc\r")); err != nil {
+			// What the user types, then what the omaterm command types:
+			// the latter waits for the former to end.
+			if err := p.Write([]byte("ab")); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			start := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := p.Send(ctx, "c\r", false); err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			if time.Since(start) < 1500*time.Millisecond {
+				t.Fatal("sent while the user typed")
+			}
+			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			info, err := session.Await(ctx, p, nil, true)
 			if err != nil || info.Status != session.Exited || info.ExitCode == nil || *info.ExitCode != 4 {

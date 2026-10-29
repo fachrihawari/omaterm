@@ -193,6 +193,10 @@ type RenameParams struct {
 type SendParams struct {
 	ID   string `json:"id"`
 	Data string `json:"data"`
+	// Paste types Data as a paste into a prompt (bracketed when the
+	// program takes those), then Enter; it waits for a draft the user
+	// left there too.
+	Paste bool `json:"paste,omitempty"`
 }
 
 type ReadParams struct {

@@ -443,6 +443,20 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		if err != nil {
 			return nil, err
 		}
+		err = pn.Send(ctx, p.Data, p.Paste)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		return true, err
+	case "pane.type":
+		// What the user typed, from the app (session.Handle.Write).
+		var p proto.SendParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
 		return true, pn.Write([]byte(p.Data))
 	case "read":
 		var p proto.ReadParams

@@ -705,7 +705,13 @@ func (p *remotePane) detach() {
 }
 
 func (p *remotePane) Write(b []byte) error {
-	return p.r.call("send", proto.SendParams{ID: p.id, Data: string(b)}, nil)
+	return p.r.call("pane.type", proto.SendParams{ID: p.id, Data: string(b)}, nil)
+}
+
+// Send waits for the user as long as ctx allows, longer than a call's
+// usual limit.
+func (p *remotePane) Send(ctx context.Context, data string, paste bool) error {
+	return p.r.client().CallContext(ctx, "send", proto.SendParams{ID: p.id, Data: data, Paste: paste}, nil)
 }
 
 func (p *remotePane) Text(scrollback bool, lines int) string {

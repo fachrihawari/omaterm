@@ -179,7 +179,12 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		if err != nil {
 			return nil, err
 		}
-		return true, pane.Write([]byte(p.Data))
+		err = pane.Send(ctx, p.Data, p.Paste)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		return true, err
 	case "read":
 		p, err := decode[proto.ReadParams](raw)
 		if err != nil {

@@ -241,17 +241,6 @@ func TestHolds(t *testing.T) {
 	}
 }
 
-// What is typed can't end the paste, nor act; without bracketed pastes,
-// it goes on one line.
-func TestPaste(t *testing.T) {
-	if got := string(paste("a\x1b[201~b\x07c\u009bd\r\ne\tf", true)); got != "\x1b[200~a[201~bcd\ne\tf\x1b[201~" {
-		t.Errorf("bracketed %q", got)
-	}
-	if got := string(paste("one\ntwo  three\n", false)); got != "one two three" {
-		t.Errorf("flat %q", got)
-	}
-}
-
 // Bad messages are refused.
 func TestAskRefuses(t *testing.T) {
 	w := newWorld(t)
