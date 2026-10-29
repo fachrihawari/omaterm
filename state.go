@@ -303,7 +303,7 @@ type appState struct {
 	// wsOwner is the project whose workspace a.tabs is. saved are the
 	// sessions state.json had for projects not yet shown, paneDirs the
 	// directories their panes start in, and paneEnv the environment
-	// omaterm new --env gave them, for a restart.
+	// they were created with (CreateParams.Env), for a restart.
 	ws       map[string]*projectWS
 	wsOwner  string
 	saved    map[string][]model.Session
