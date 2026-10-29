@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
 	"omaterm/internal/gitsnap"
+	"omaterm/internal/mail"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
@@ -34,6 +36,10 @@ type localHost struct {
 	subs    map[int]func(proto.Message)
 	nextSub int
 	pending bool
+	// mailbox is the mailbox of the app's own panes (mailFor).
+	mailbox  *mail.Mailbox
+	mailReg  *session.Registry
+	mailStop context.CancelFunc
 }
 
 var _ ctl.Host = (*localHost)(nil)
@@ -95,6 +101,16 @@ func decode[T any](raw json.RawMessage) (T, error) {
 // Handle runs a method.
 func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	a := h.a
+	if mail.IsMethod(method) {
+		return h.mail(ctx, method, raw)
+	}
+	if method == "worktree.merge" {
+		p, err := decode[proto.MergeParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		return h.mergeWorktree(ctx, p)
+	}
 	switch method {
 	case "version":
 		return map[string]any{"app": appVersion(), "proto": proto.Version}, nil
@@ -105,8 +121,15 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		if err != nil {
 			return nil, err
 		}
+		split := method == "split" || p.Split != ""
+		if p.Worktree != nil {
+			if split {
+				return nil, proto.Errorf(proto.CodeUsage, "a split works in its session's folder: --worktree is for new")
+			}
+			return h.createWorktree(ctx, p)
+		}
 		return h.onUI(func() (any, error) {
-			if method == "split" || p.Split != "" {
+			if split {
 				return a.cliSplit(p)
 			}
 			return a.cliCreate(p)
@@ -156,7 +179,12 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		if err != nil {
 			return nil, err
 		}
-		return true, pane.Write([]byte(p.Data))
+		err = pane.Send(ctx, p.Data, p.Paste)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		return true, err
 	case "read":
 		p, err := decode[proto.ReadParams](raw)
 		if err != nil {
@@ -187,6 +215,19 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 			return nil, err
 		}
 		pane.Flag(p.Title, p.Body)
+		return true, nil
+	case "report":
+		p, err := decode[proto.ReportParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		pane, err := h.pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := pane.Report(p.Body); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
 		return true, nil
 	case "pane.agentSession":
 		p, err := decode[proto.AgentSessionParams](raw)
@@ -351,7 +392,8 @@ func (a *appState) protoState(started time.Time) proto.State {
 			if t.Kind != tabTerminal || t.Split == nil {
 				continue
 			}
-			s := proto.Session{ID: t.ID, Project: p.ID, Zoomed: t.Zoomed, Layout: toLayout(t.Split), AgentNamed: t.AgentNamed}
+			s := proto.Session{ID: t.ID, Project: p.ID, Zoomed: t.Zoomed, Layout: toLayout(t.Split), AgentNamed: t.AgentNamed,
+				Worktree: t.Worktree, Parent: t.Parent}
 			for _, id := range t.Split.termIDs() {
 				info, ok := a.status[id]
 				if a.isBrowser(id) {
@@ -377,6 +419,7 @@ func (a *appState) protoState(started time.Time) proto.State {
 			st.Sessions = append(st.Sessions, s)
 		}
 	}
+	proto.DropGoneParents(st.Sessions)
 	return st
 }
 
@@ -463,16 +506,23 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	if name == "" {
 		name = shellcmd.Name(shellcmd.Login())
 	}
+	parent := ""
+	if _, ptabs, pti, ok := a.findPane(p.By); ok && p.By != "" {
+		parent = (*ptabs)[pti].ID
+	}
 	tabs := a.workspaceTabs(proj)
 	paneID := newID()
 	tab := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen, Split: &splitNode{TermID: paneID},
-		Created: nowFunc().UnixMilli()}
-	*tabs = append(*tabs, tab)
+		Created: nowFunc().UnixMilli(), Parent: parent}
+	a.insertTab(proj, tabs, tab)
 	dir := p.Dir
 	if dir == "" {
 		dir = proj.Path
 	}
 	a.paneDirs[paneID] = dir
+	if len(p.Env) > 0 {
+		a.paneEnv[paneID] = p.Env
+	}
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
 	} else if _, err := a.startPane(paneID, tab.ID, dir, p.Command, false, p.Env...); err != nil {
@@ -484,6 +534,28 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 	}
 	a.saveSoon()
 	return proto.Created{Session: tab.ID, Pane: paneID}, nil
+}
+
+// insertTab adds a session to project p's tabs: last, or last under the
+// session that started it, so that the tab bar and the keys go through
+// them as the sidebar shows them.
+func (a *appState) insertTab(p *project, tabs *[]topTab, tab topTab) {
+	at := len(*tabs)
+	if tab.Parent != "" {
+		at = model.TreeInsert(len(*tabs), func(i int) string { return (*tabs)[i].ID },
+			func(i int) string { return (*tabs)[i].Parent }, tab.Parent)
+	}
+	*tabs = slices.Insert(*tabs, at, tab)
+	switch w := a.ws[p.ID]; {
+	case p.ID == a.wsOwner:
+		if at <= a.activeTab && a.activeTab < len(*tabs)-1 {
+			a.activeTab++
+		}
+	case w != nil && &w.tabs == tabs:
+		if at <= w.activeTab && w.activeTab < len(*tabs)-1 {
+			w.activeTab++
+		}
+	}
 }
 
 // findPane finds the project and tab holding a pane, among all projects'.
@@ -590,8 +662,14 @@ func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 		workDir = a.paneDirs[p.Split]
 	}
 	a.paneDirs[paneID] = workDir
+	if len(p.Env) > 0 {
+		a.paneEnv[paneID] = p.Env
+	}
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
+	} else if workDir, err := tab.Worktree.PaneDir(workDir); err != nil {
+		a.paneFailed[paneID] = true
+		return nil, err
 	} else if _, err := a.startPane(paneID, tab.ID, workDir, p.Command, false, p.Env...); err != nil {
 		a.paneFailed[paneID] = true
 		return nil, err
@@ -697,15 +775,22 @@ func (a *appState) cliRestart(id string) error {
 		return proto.Errorf(proto.CodeNotFound, "pane "+id+" is a browser, not a terminal")
 	}
 	info := a.status[id]
+	if p := a.panes.Get(id); p != nil {
+		info = p.Info() // as it is now, not as the UI last saw it
+	}
 	dir := info.Dir
 	if dir == "" {
 		dir = a.paneDirs[id]
 	}
+	dir, err := (*tabs)[ti].Worktree.PaneDir(dir)
+	if err != nil {
+		return err
+	}
 	a.panes.Remove(id)
 	delete(a.paneFailed, id)
-	// The command it started with runs again: a dev server restarts as
-	// itself, not as a bare shell.
-	_, err := a.startPane(id, (*tabs)[ti].ID, dir, info.Command, false)
+	// The command it started with runs again, with its environment: a dev
+	// server restarts as itself, not as a bare shell.
+	_, err = a.startPane(id, (*tabs)[ti].ID, dir, info.Command, false, a.paneEnv[id]...)
 	return err
 }
 
@@ -816,6 +901,16 @@ func (h *localHost) handleGit(ctx context.Context, method string, raw json.RawMe
 	if err != nil {
 		return nil, err, true
 	}
-	v, err := gitsnap.Answer(ctx, method, p, pane.Info())
+	branch := ""
+	if p.Base == gitsnap.BaseBranch {
+		v, _ := h.onUI(func() (any, error) {
+			if _, tabs, ti, ok := h.a.findPane(p.Pane); ok && (*tabs)[ti].Worktree != nil {
+				return (*tabs)[ti].Worktree.Base, nil
+			}
+			return "", nil
+		})
+		branch, _ = v.(string)
+	}
+	v, err := gitsnap.Answer(ctx, method, p, pane.Info(), branch)
 	return v, err, true
 }

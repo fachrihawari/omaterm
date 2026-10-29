@@ -5,6 +5,7 @@ import (
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -177,6 +178,13 @@ func (a *appState) startRestored(id, sessionID, fallback string) (session.Handle
 	if dir == "" {
 		dir = fallback
 	}
+	if _, tabs, ti, ok := a.findSession(sessionID); ok && (*tabs)[ti].Worktree != nil {
+		var err error
+		if dir, err = (*tabs)[ti].Worktree.PaneDir(a.paneDirs[id]); err != nil {
+			a.paneFailed[id] = true
+			return nil, err
+		}
+	}
 	command, exec := a.termCmd, len(a.termCmd) > 0
 	history, resume := a.restoreOptions(id)
 	if resume != nil && !exec {
@@ -206,19 +214,20 @@ func (a *appState) startPaneWith(id, sessionID, dir string, command []string, ex
 	}
 	// What the caller adds (omaterm new --env), after: it may set PATH.
 	env = append(env, extra...)
-	o := a.termStartOptions()
+	o := a.termStartOptions(id)
 	o.ID, o.Session, o.Dir = id, sessionID, dir
 	o.Command, o.Exec, o.Env, o.History = command, exec, env, history
 	if pi, _, _, ok := a.findSession(sessionID); ok {
-		o.Project = a.projects[pi].ID
+		p := &a.projects[pi]
+		o.Project, o.ProjectName, o.ProjectDir = p.ID, p.Name, p.Path
 	}
 	return a.panes.Start(o)
 }
 
 // termStartOptions are a terminal's look and behavior as the settings
 // have them, for the panes the app runs and the terminals that show the
-// session daemon's.
-func (a *appState) termStartOptions() session.StartOptions {
+// session daemon's; id is the pane's, for what a link clicked in it opens.
+func (a *appState) termStartOptions(id string) session.StartOptions {
 	t := a.settings.Terminal
 	o := session.StartOptions{
 		Font:            a.termFontSpec(),
@@ -228,7 +237,7 @@ func (a *appState) termStartOptions() session.StartOptions {
 		NoBlink:         !t.CursorBlink,
 		Scrollback:      t.ScrollbackMB << 20,
 		Shell:           strings.TrimSpace(t.Shell),
-		OpenLink:        a.openTermLink,
+		OpenLink:        func(link string) bool { return a.openTermLink(id, link) },
 		OnZoom: func(z terminal.Zoom) bool {
 			if z.Reset {
 				a.zoomFont(0)
@@ -256,16 +265,47 @@ func (a *appState) termStartOptions() session.StartOptions {
 	return o
 }
 
-// openTermLink opens a web link clicked in a terminal in a browser pane
-// beside it, when the settings say so; the system opens the rest.
-func (a *appState) openTermLink(link string) bool {
-	if a.settings.OpenLinks != "pane" || !(strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://")) {
+// openTermLink opens what was clicked in pane's terminal: a file path,
+// as the program printed it (relative to where it runs, with a line and
+// column after it), in the editor when it is in the project, else in
+// what the system opens it with; a web link in a browser pane beside it,
+// when the settings say so. False leaves the rest to the system.
+func (a *appState) openTermLink(pane, link string) bool {
+	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
+		if a.settings.OpenLinks != "pane" {
+			return false
+		}
+		if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+			return false
+		}
+		a.openBrowser(link)
+		return true
+	}
+	path, line, col := parseFileLink(link)
+	if path == "" {
 		return false
 	}
-	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+	if !filepath.IsAbs(path) {
+		dir := a.status[pane].WorkDir()
+		if dir == "" {
+			dir = a.paneDirs[pane]
+		}
+		if dir == "" {
+			dir = a.workspace
+		}
+		path = filepath.Join(dir, path)
+	}
+	path = filepath.Clean(path)
+	if st, err := os.Stat(path); err != nil || st.IsDir() {
 		return false
 	}
-	a.openBrowser(link)
+	if rel, err := filepath.Rel(a.workspace, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		a.openEditorAt(filepath.ToSlash(rel), line, col)
+		return true
+	}
+	if a.win != nil {
+		mygo.Shell.OpenExternal("file://" + path)
+	}
 	return true
 }
 
@@ -531,5 +571,6 @@ func (a *appState) closePaneRuntime(id string) {
 	delete(a.paneAgents, id)
 	a.dropWeb(id)
 	delete(a.paneDirs, id)
+	delete(a.paneEnv, id)
 	delete(a.paneFailed, id)
 }

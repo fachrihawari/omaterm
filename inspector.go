@@ -413,13 +413,14 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 			a.repoSwitcher(c)
 		}
 
-		// While the focused pane's agent has a turn, a switch shows its
-		// changes alone.
-		if info, ok := a.changesPane(); ok && info.Turn != nil {
+		// While the focused pane's agent has a turn, or its session a
+		// worktree, a switch shows the turn's changes alone, or the
+		// branch's.
+		if info, ok := a.changesPane(); ok && (info.Turn != nil || a.focusedWorktree() != nil) {
 			ui.Box(c).Padding(10, 10, 8, 10).Shrink(0).Children(func() {
-				a.turnSwitch(c)
+				a.turnSwitch(c, info)
 			})
-			if a.changes.lastTurn {
+			if a.changesView(info) != changesAll {
 				a.turnChanges(c, info)
 				return
 			}
@@ -565,13 +566,16 @@ func (a *appState) repoSwitcher(c *ui.Context) {
 				for i := range a.repos {
 					r := &a.repos[i]
 					active := i == a.activeRepo
-					label := r.Name
+					label, icon := r.Name, iconFolderGit
+					if a.isWorktreeRoot(r.Root) {
+						label, icon = r.Branch, iconGitBranch
+					}
 					if n := len(r.Staged) + len(r.Changes); n > 0 {
 						label += " ·" + itoa(n)
 					}
 					e := ui.ButtonBase(c).Key(r.Root).Height(26).Radius(13).Padding(0, 12).Shrink(0).Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-							ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(pal.TextMuted)
+							ui.Icon(c, icon).Width(12).Height(12).TextColor(pal.TextMuted)
 							ui.Text(c, label).FontSize(10).SingleLine().Shrink(0)
 						})
 					})
@@ -581,9 +585,7 @@ func (a *appState) repoSwitcher(c *ui.Context) {
 						e.Border(1, pal.Border)
 					}
 					if e.Clicked() && !active {
-						a.activeRepo = i
-						a.commits = nil
-						a.graphLoaded = false
+						a.selectRepo(i)
 					}
 				}
 			})

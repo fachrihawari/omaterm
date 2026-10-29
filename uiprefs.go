@@ -17,6 +17,13 @@ type uiPrefs struct {
 	AgentSetupAsked  bool    `json:"agentSetupAsked,omitempty"`
 	// SettingsPage is the Settings window's page, where it opens again.
 	SettingsPage string `json:"settingsPage,omitempty"`
+	// The worktree dialogs' last choices: the agent, copying .env files,
+	// and squashing a merge.
+	WorktreeAgent string `json:"worktreeAgent,omitempty"`
+	WorktreeEnv   *bool  `json:"worktreeEnv,omitempty"`
+	MergeSquash   *bool  `json:"mergeSquash,omitempty"`
+	// ReviewAgent is the Ask for Review dialog's last reviewer.
+	ReviewAgent string `json:"reviewAgent,omitempty"`
 	// DiffSplit and FontSize are read once, to move them to settings.json.
 	DiffSplit *bool   `json:"diffSplit,omitempty"`
 	FontSize  float32 `json:"fontSize,omitempty"`
@@ -50,7 +57,7 @@ func (a *appState) loadUIPrefs() {
 		a.inspectorTab = *u.InspectorTab
 	} else if u.InspectorTab != nil && *u.InspectorTab == 3 {
 		// The Changes tab, now the Git tab's Last turn.
-		a.inspectorTab, a.changes.lastTurn = 2, true
+		a.inspectorTab, a.changes.mode = 2, changesTurn
 	}
 	// The text size and the diff layout were kept here before they were
 	// settings: settings.json takes them once, while it has none.
@@ -66,6 +73,13 @@ func (a *appState) loadUIPrefs() {
 	}
 	a.agentSetupAsked = u.AgentSetupAsked
 	a.settingsPage = u.SettingsPage
+	a.wtAgent, a.reviewAgent = u.WorktreeAgent, u.ReviewAgent
+	if u.WorktreeEnv != nil {
+		a.wtEnv = *u.WorktreeEnv
+	}
+	if u.MergeSquash != nil {
+		a.mergeSquash = *u.MergeSquash
+	}
 }
 
 // saveUIPrefs writes ui.json, as the window closes.
@@ -79,6 +93,8 @@ func (a *appState) saveUIPrefs() {
 		InspectorTab:    &a.inspectorTab,
 		AgentSetupAsked: a.agentSetupAsked,
 		SettingsPage:    a.settingsPage,
+		WorktreeAgent:   a.wtAgent, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
+		ReviewAgent: a.reviewAgent,
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {

@@ -59,8 +59,8 @@ func shotChanges(a *appState) {
 		Unread: true, Progress: -1, Dir: dir, Turn: &session.Turn{Tree: "4b825dc", Root: dir, At: at}}
 	a.inspectorVisible, a.inspectorTab = true, 2
 	cs := &a.changes
-	cs.lastTurn = true
-	cs.key = id + "|4b825dc"
+	cs.mode = changesTurn
+	cs.key, cs.filesMode = id+"|4b825dc|", changesTurn
 	cs.stamp = service.GitStamp(service.RepoRoot(dir))
 	cs.loadedAt = nowFunc()
 	cs.pane, cs.root = id, dir

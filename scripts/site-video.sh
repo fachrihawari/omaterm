@@ -5,7 +5,7 @@
 #   scripts/site-video.sh <clip> <format> [out.mp4]
 #
 # clip is launch, status, cli, lastturn, resume, phone, allinone, splits,
-# files, ports or settings.
+# files, ports, settings, worktree or team.
 # format is wide (1920×1080, captions over the app), tall (1080×1350, the
 # 4:5 a phone's feed shows biggest, captions above the app) or site
 # (1920×1200 for the website, no captions, with a poster picture of its

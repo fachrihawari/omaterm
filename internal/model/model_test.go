@@ -35,7 +35,8 @@ func TestRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	in := State{ActiveProject: "p", Projects: []Project{{ID: "p", Name: "p", Dir: "/p", Collapsed: true}},
 		Sessions: []Session{{ID: "s", Project: "p", Layout: &Layout{Row: true, Ratio: 0.4, A: &Layout{Pane: "x"}, B: &Layout{Pane: "y"}},
-			Panes: []Pane{{ID: "x", Dir: "/p"}, {ID: "y", URL: "http://localhost:3000/"}}}}}
+			Panes:    []Pane{{ID: "x", Dir: "/p"}, {ID: "y", URL: "http://localhost:3000/"}},
+			Worktree: &Worktree{Dir: "/p/.worktrees/x", Branch: "x", Base: "main"}}}}
 	if err := Save(path, in); err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +53,9 @@ func TestRoundTrip(t *testing.T) {
 	if got := out.Sessions[0].Layout.Panes(); len(got) != 2 || got[1] != "y" {
 		t.Fatalf("panes %v", got)
 	}
+	if w := out.Sessions[0].Worktree; w == nil || *w != *in.Sessions[0].Worktree {
+		t.Fatalf("worktree %+v", w)
+	}
 }
 
 // A sessions file a newer omaterm wrote is not written over: what only
@@ -64,5 +68,26 @@ func TestSaveKeepsNewerFile(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"version": 99`) {
 		t.Errorf("the newer file was written over: %s", data)
+	}
+}
+
+// A pane of a session in a worktree starts in its folder, else in the
+// worktree; with the worktree gone, nowhere.
+func TestWorktreePaneDir(t *testing.T) {
+	var none *Worktree
+	if dir, err := none.PaneDir("/x"); dir != "/x" || err != nil {
+		t.Fatalf("no worktree: %q %v", dir, err)
+	}
+	w := &Worktree{Dir: t.TempDir(), Branch: "x", Base: "main"}
+	sub := filepath.Join(w.Dir, "sub")
+	os.Mkdir(sub, 0o755)
+	for in, want := range map[string]string{sub: sub, "": w.Dir, filepath.Join(w.Dir, "gone"): w.Dir} {
+		if dir, err := w.PaneDir(in); dir != want || err != nil {
+			t.Errorf("%q: %q %v, want %q", in, dir, err, want)
+		}
+	}
+	os.RemoveAll(w.Dir)
+	if dir, err := w.PaneDir(sub); err == nil || dir != "" || !w.Gone() {
+		t.Fatalf("gone: %q %v", dir, err)
 	}
 }

@@ -66,6 +66,33 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestCreateParams(t *testing.T) {
+	flags := func(args ...string) *flags {
+		f, err := parse(args, map[string]string{"worktree": "worktree", "base": "base", "u": "url", "d": "dir"},
+			map[string]string{"no-env": "no-env"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	p, err := createParams("new", flags("--worktree", "fix-login", "--base", "dev", "--no-env", "-d", "/p", "--", "claude"))
+	if err != nil || p.Dir != "/p" || len(p.Command) != 1 || p.Worktree == nil ||
+		*p.Worktree != (proto.WorktreeParams{Branch: "fix-login", Base: "dev", NoEnv: true}) {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if p, err := createParams("new", flags("--", "claude")); err != nil || p.Worktree != nil || p.Dir == "" {
+		t.Fatalf("no worktree: %+v %v", p, err)
+	}
+	for _, args := range [][]string{{"--base", "dev"}, {"--no-env"}, {"--worktree", "x", "-u", "localhost:3000"}} {
+		if _, err := createParams("new", flags(args...)); err == nil {
+			t.Errorf("%v: no error", args)
+		}
+	}
+	if _, err := createParams("split", flags("--worktree", "x")); err == nil {
+		t.Error("split --worktree: no error")
+	}
+}
+
 func TestExitCodes(t *testing.T) {
 	// Neither the app nor a session daemon answers: not the user's own.
 	t.Setenv("OMATERM_SOCKET", t.TempDir()+"/none.sock")

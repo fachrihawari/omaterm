@@ -1,7 +1,7 @@
 id = "codex"
-version = "2026.10.11.1"
+version = "2026.10.29.1"
 min_engine_version = 3
-updated_at = "2026-10-11T00:00:00Z"
+updated_at = "2026-10-29T00:00:00Z"
 
 [[rules]]
 id = "osc_title_blocked"
@@ -72,6 +72,20 @@ any = [
     { regex = ['(?m)^\s*Update\s+available\s+·'] },
     { regex = ['enter\s+continue\s+·\s+esc\s+skip\s*\z'] },
   ] },
+]
+
+# Hooks that need review before they run (0.163+), shown over the prompt
+# as Codex starts: nothing typed reaches the prompt until the user trusts
+# or closes them.
+[[rules]]
+id = "hooks_review"
+state = "blocked"
+priority = 950
+region = "bottom_non_empty_lines(20)"
+visible_blocker = true
+all = [
+  { regex = ['needs?\s+review\s+before\s+(?:it|they)\s+can\s+run'] },
+  { regex = ['t\s+trust\s+all\s+·\s+enter\s+review\s+·\s+esc\s+close\s*\z'] },
 ]
 
 [[rules]]

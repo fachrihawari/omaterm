@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/model"
 	"omaterm/internal/proto"
 )
 
@@ -67,5 +68,85 @@ func TestPaneWhere(t *testing.T) {
 	}
 	if got := paneWhere(twoProjects(), "gone"); got != "" {
 		t.Fatalf("got %q for no pane", got)
+	}
+}
+
+// The hook tells the agent its session's name, and the worktree it works
+// in, to commit there.
+func TestSessionNotes(t *testing.T) {
+	st := twoProjects()
+	st.Sessions[1].Name = "fix-login"
+	st.Sessions[1].Worktree = &model.Worktree{Dir: "/p/random/.worktrees/fix-login", Branch: "fix-login", Base: "main"}
+	got := sessionNotes(st, "s2")
+	for _, want := range []string{`knows this session as "fix-login"`, "a git worktree", "fix-login, made from main", "merges it into main"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %q", want, got)
+		}
+	}
+	if got := sessionNotes(st, "s1"); got != "" {
+		t.Errorf("s1: %q", got)
+	}
+}
+
+// A session another's agent started is told who, and when it works on a
+// branch made from that agent's, that the agent merges it.
+func TestSessionNotesParent(t *testing.T) {
+	st := twoProjects()
+	st.Sessions[0].Name = "lead"
+	st.Sessions[0].Panes = append([]proto.Pane{{ID: "dev"}}, proto.Pane{ID: "pane1", Agent: "claude"})
+	st.Sessions[0].Worktree = &model.Worktree{Dir: "/p/oterm/.worktrees/feat", Branch: "feat", Base: "main"}
+	st.Sessions[1].Parent = "s1"
+	st.Sessions[1].Worktree = &model.Worktree{Dir: "/p/oterm/.worktrees/w1", Branch: "w1", Base: "feat"}
+	got := sessionNotes(st, "s2")
+	for _, want := range []string{`the agent in session "lead", which started this one, merges it into feat`,
+		`The agent in session "lead" (pane pane1) started this session`, "omaterm reply"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %q", want, got)
+		}
+	}
+	// From another branch than the lead's, the user merges it.
+	st.Sessions[1].Worktree.Base = "main"
+	if got := sessionNotes(st, "s2"); !strings.Contains(got, "the user reviews it and merges it into main") {
+		t.Errorf("%q", got)
+	}
+}
+
+// A wait on a session waits for its agent, not the dev server beside it
+// that has the focus; one on a pane, for that pane.
+func TestWaitTarget(t *testing.T) {
+	st := twoProjects()
+	st.Sessions[0].Focus = "dev"
+	st.Sessions[0].Panes = []proto.Pane{{ID: "dev", Process: "npm"}, {ID: "pane1", Agent: "claude"}}
+	for ref, want := range map[string]string{"s1": "pane1", "dev": "dev", "s2": "pane2"} {
+		tg, err := find(st, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := waitTarget(st, tg); got != want {
+			t.Errorf("%s: waits for %s, want %s", ref, got, want)
+		}
+	}
+}
+
+// A command whose answer comes back to its pane is refused when omaterm
+// can't tell the pane: a Codex whose hook didn't run carries another
+// pane's variables.
+func TestMine(t *testing.T) {
+	st := twoProjects()
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("OMATERM_SESSION", "")
+	t.Setenv("OMATERM_PANE", "pane2")
+	t.Setenv("CODEX_THREAD_ID", "thread-1")
+	if pane, _, err := mine(st); err != nil || pane != "pane2" {
+		t.Fatalf("%q %v", pane, err)
+	}
+	t.Setenv("OMATERM_PANE", "gone")
+	if _, _, err := mine(st); err == nil || !strings.Contains(err.Error(), "approve it in Codex (/hooks)") {
+		t.Fatalf("%v", err)
+	}
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("OMATERM_PANE", "")
+	if pane, _, err := mine(st); err != nil || pane != "" {
+		t.Fatalf("outside omaterm: %q %v", pane, err)
 	}
 }

@@ -111,13 +111,17 @@ func (rs *Records) List() []Record {
 }
 
 // Lead is the report that tells the pane's state: blocked over working
-// over error over done over idle. ok is false with no reports.
+// over error over done over idle, and of a state one that words it, as an
+// agent's own over the bare one its program reports as its turn ends. ok
+// is false with no reports.
 func (rs *Records) Lead() (Record, bool) {
 	recs := rs.List()
 	for _, state := range []string{"blocked", "working", "error", "done", "idle"} {
-		for _, r := range recs {
-			if r.State == state {
-				return r, true
+		for _, worded := range []bool{true, false} {
+			for _, r := range recs {
+				if r.State == state && (r.Msg != "" || !worded) {
+					return r, true
+				}
 			}
 		}
 	}

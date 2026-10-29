@@ -5,6 +5,7 @@ package daemon
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,6 +53,45 @@ func call[T any](t *testing.T, c *client.Client, method string, params any) T {
 		t.Fatalf("%s: %v", method, err)
 	}
 	return out
+}
+
+// With the window closed, omaterm new --worktree makes the worktree and
+// its session in the project, saved for the app.
+func TestWorktreeWithWindowClosed(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"commit", "-q", "--allow-empty", "-m", "first"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = proj
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	p := proto.CreateParams{Dir: proj, Worktree: &proto.WorktreeParams{Branch: "x"}}
+	made := call[proto.Created](t, c, "create", p)
+	dir := filepath.Join(proj, ".worktrees", "x")
+	saved, err := model.Load(d.stateFile())
+	if err != nil || len(saved.Projects) != 1 || len(saved.Sessions) != 1 {
+		t.Fatalf("state.json: %+v, %v", saved, err)
+	}
+	s := saved.Sessions[0]
+	if s.ID != made.Session || s.Project != "p1" || s.Name != "x" || s.Panes[0].Dir != dir ||
+		s.Worktree == nil || *s.Worktree != (model.Worktree{Dir: dir, Branch: "x", Base: "main"}) {
+		t.Fatalf("session %+v, worktree %+v", s, s.Worktree)
+	}
+	if st := call[proto.State](t, c, "state", nil); st.Sessions[0].Worktree == nil {
+		t.Fatal("state doesn't tell the worktree")
+	}
+	if err := c.Call("create", p, nil); err == nil || !strings.Contains(err.Error(), "has a session already") {
+		t.Fatalf("second session: %v", err)
+	}
 }
 
 // With the window closed, the omaterm command makes, splits, drives and
@@ -176,6 +216,34 @@ func TestServiceRestores(t *testing.T) {
 	})
 }
 
+// A session whose worktree was deleted doesn't come back in the home
+// folder; one whose folder in it was, comes back in the worktree.
+func TestRestoreWorktreeGone(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	dir := t.TempDir()
+	gone, kept := filepath.Join(dir, ".worktrees", "gone"), filepath.Join(dir, ".worktrees", "kept")
+	os.MkdirAll(kept, 0o755)
+	st := &model.State{Version: model.Version, Projects: []model.Project{{ID: "p1", Name: "x", Dir: dir}},
+		Sessions: []model.Session{
+			{ID: "s1", Project: "p1", Layout: &model.Layout{Pane: "a1"}, Panes: []model.Pane{{ID: "a1", Dir: gone}},
+				Worktree: &model.Worktree{Dir: gone, Branch: "gone", Base: "main"}},
+			{ID: "s2", Project: "p1", Layout: &model.Layout{Pane: "b1"}, Panes: []model.Pane{{ID: "b1", Dir: filepath.Join(kept, "sub")}},
+				Worktree: &model.Worktree{Dir: kept, Branch: "kept", Base: "main"}},
+		}}
+	d, _, _ := offlineDaemon(t, false, st)
+	d.restore()
+	if d.reg.Get("a1") != nil {
+		t.Fatal("a pane of a deleted worktree started")
+	}
+	p := d.reg.Get("b1")
+	if p == nil {
+		t.Fatal("the kept worktree's pane didn't start")
+	}
+	if got := p.Info().Dir; got != kept {
+		t.Fatalf("started in %q, want %q", got, kept)
+	}
+}
+
 // While an app follows the daemon, the omaterm command's calls that reach
 // the daemon go to the app, as a browser op must: the first app to
 // answer wins, and an app with its control socket off refuses.
@@ -278,8 +346,8 @@ func TestOfflineRestartKeepsCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	cmd := []string{"sh", "-c", "echo again; sleep 30"}
-	made := call[proto.Created](t, c, "create", proto.CreateParams{Name: "dev", Dir: proj, Command: cmd})
+	cmd := []string{"sh", "-c", "echo again env=$PROBE_ENV; sleep 30"}
+	made := call[proto.Created](t, c, "create", proto.CreateParams{Name: "dev", Dir: proj, Command: cmd, Env: []string{"PROBE_ENV=kept"}})
 	call[bool](t, c, "restart", proto.IDParams{ID: made.Pane})
 	p := d.reg.Get(made.Pane)
 	if p == nil {
@@ -287,5 +355,121 @@ func TestOfflineRestartKeepsCommand(t *testing.T) {
 	}
 	if got := p.Info().Command; strings.Join(got, " ") != strings.Join(cmd, " ") {
 		t.Fatalf("restarted with %q, want %q", got, cmd)
+	}
+	// And with the environment it was given.
+	waitFor(t, "the restarted command's output", func() bool {
+		return strings.Contains(call[proto.ReadResult](t, c, "read", proto.ReadParams{ID: made.Pane}).Text, "env=kept")
+	})
+}
+
+// With the window closed, a session made from an agent's pane is its
+// session's child, saved for the app; closing the parent frees it.
+func TestParentWithWindowClosed(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	lead := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Name: "lead"})
+	child := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Name: "w1", By: lead.Pane})
+	saved, err := model.Load(d.stateFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := sessionIndex(&saved, child.Session); i < 0 || saved.Sessions[i].Parent != lead.Session {
+		t.Fatalf("saved %+v", saved.Sessions)
+	}
+	call[bool](t, c, "close", proto.IDParams{ID: lead.Session})
+	for _, s := range call[proto.State](t, c, "state", nil).Sessions {
+		if s.ID == child.Session && s.Parent != "" {
+			t.Fatalf("parent %q after it closed", s.Parent)
+		}
+	}
+}
+
+// With the window closed, a worker's branch diff is what it changed since
+// its lead's branch, which it was made from, and the lead merges it.
+func TestBranchDiffWithWindowClosed(t *testing.T) {
+	_, socket, proj := offlineDaemon(t, false, nil)
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	commit := func(dir, name string) {
+		os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o644)
+		git(dir, "add", name)
+		git(dir, "commit", "-qm", "Add "+name)
+	}
+	git(proj, "init", "-q", "-b", "main")
+	git(proj, "config", "user.name", "t") // the daemon's merge commits
+	git(proj, "config", "user.email", "t@example.com")
+	commit(proj, "first.txt")
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	lead := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Worktree: &proto.WorktreeParams{Branch: "feat"}})
+	leadDir := filepath.Join(proj, ".worktrees", "feat")
+	commit(leadDir, "lead.txt")
+	worker := call[proto.Created](t, c, "create", proto.CreateParams{Dir: leadDir, By: lead.Pane, Worktree: &proto.WorktreeParams{Branch: "w1"}})
+	commit(filepath.Join(proj, ".worktrees", "w1"), "worker.txt")
+	out := call[proto.ReadResult](t, c, "git.diff", proto.GitParams{Pane: worker.Pane, Base: "branch"})
+	if !strings.Contains(out.Text, "worker.txt") || strings.Contains(out.Text, "lead.txt") {
+		t.Fatalf("diff %q", out.Text)
+	}
+	for _, s := range call[proto.State](t, c, "state", nil).Sessions {
+		if s.ID == worker.Session && (s.Parent != lead.Session || s.Worktree == nil || s.Worktree.Base != "feat") {
+			t.Fatalf("worker %+v", s)
+		}
+	}
+
+	// The lead merges it: into its branch, closing it, its worktree gone.
+	merged := call[proto.Merged](t, c, "worktree.merge", proto.MergeParams{By: lead.Pane, Target: worker.Session})
+	if merged.Into != "feat" || !merged.Removed || len(merged.Commits) != 1 {
+		t.Fatalf("merged %+v", merged)
+	}
+	if _, err := os.Stat(filepath.Join(leadDir, "worker.txt")); err != nil {
+		t.Error("the worker's file isn't in the lead's worktree")
+	}
+	if _, err := os.Stat(filepath.Join(proj, ".worktrees", "w1")); err == nil {
+		t.Error("the worker's worktree stays")
+	}
+	for _, s := range call[proto.State](t, c, "state", nil).Sessions {
+		if s.ID == worker.Session {
+			t.Error("the worker's session stays")
+		}
+	}
+	// Not into the main checkout.
+	plain := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Name: "plain"})
+	if err := c.Call("worktree.merge", proto.MergeParams{By: plain.Pane, Target: lead.Session}, nil); err == nil ||
+		!strings.Contains(err.Error(), "merging into main is the user's") {
+		t.Fatalf("merged into main: %v", err)
+	}
+}
+
+// A pane the daemon starts with the window closed is told its project,
+// as the app tells the panes it starts.
+func TestOfflineProjectEnv(t *testing.T) {
+	d, socket, proj := offlineDaemon(t, false, nil)
+	c, err := client.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	made := call[proto.Created](t, c, "create", proto.CreateParams{Name: "dev",
+		Command: []string{"sh", "-c", "echo P=$OMATERM_PROJECT D=$OMATERM_PROJECT_DIR; sleep 30"}})
+	waitFor(t, "the project in the pane's environment", func() bool {
+		return strings.Contains(call[proto.ReadResult](t, c, "read", proto.ReadParams{ID: made.Pane}).Text, "P=proj D="+proj)
+	})
+	if p := d.reg.Get(made.Pane); p == nil || p.Info().Project != "p1" {
+		t.Fatalf("pane of project %q, want p1", p.Info().Project)
 	}
 }

@@ -11,8 +11,10 @@ import (
 )
 
 // Answer answers the socket's git methods for a pane: its changed files
-// (git.changes) or its patch (git.diff), against p's base.
-func Answer(ctx context.Context, method string, p proto.GitParams, info session.Info) (any, error) {
+// (git.changes) or its patch (git.diff), against p's base. branch is the
+// branch a worktree's session merges into, "" for none: its changes are
+// since it, and not since the default branch.
+func Answer(ctx context.Context, method string, p proto.GitParams, info session.Info, branch string) (any, error) {
 	base := p.Base
 	if base == "" {
 		base = BaseHead
@@ -28,6 +30,11 @@ func Answer(ctx context.Context, method string, p proto.GitParams, info session.
 		return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.Pane+" is not in a git repository")
 	}
 	rev, _, err := r.Base(ctx, base, turn)
+	if base == BaseBranch && branch != "" {
+		if mb, berr := r.MergeBase(ctx, branch); berr == nil {
+			rev, err = mb, nil
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

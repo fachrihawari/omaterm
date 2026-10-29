@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
+	"omaterm/internal/worktree"
 )
 
 // While no app follows it, the daemon answers the omaterm command itself:
@@ -78,7 +81,8 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 	if d.appAttached() {
 		switch method {
 		case "state", "create", "split", "close", "restart", "rename", "focus", "select", "wait",
-			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions", "pane.wake":
+			"pane.agentSession", "project.create", "git.changes", "git.diff", "browser", "do", "actions", "pane.wake",
+			"worktree.merge":
 			return d.forward(ctx, method, raw)
 		}
 	}
@@ -93,24 +97,27 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, proto.Errorf(proto.CodeUsage, err.Error())
 		}
-		if method == "split" || p.Split != "" {
+		split := method == "split" || p.Split != ""
+		if p.Worktree != nil {
+			if split {
+				return nil, proto.Errorf(proto.CodeUsage, "a split works in its session's folder: --worktree is for new")
+			}
+			return d.createWorktree(ctx, p)
+		}
+		if split {
 			return d.change(func(st *model.State) (any, error) { return d.split(st, p) })
 		}
 		return d.change(func(st *model.State) (any, error) { return d.create(st, p) })
 	case "close":
 		var p proto.IDParams
 		json.Unmarshal(raw, &p)
-		return d.change(func(st *model.State) (any, error) {
-			i := sessionIndex(st, p.ID)
-			if i < 0 {
-				return nil, proto.Errorf(proto.CodeNotFound, "no session "+p.ID)
-			}
-			for _, pn := range st.Sessions[i].Panes {
-				d.endPane(pn.ID)
-			}
-			st.Sessions = append(st.Sessions[:i], st.Sessions[i+1:]...)
-			return true, nil
-		})
+		return d.change(func(st *model.State) (any, error) { return true, d.closeSession(st, p.ID) })
+	case "worktree.merge":
+		var p proto.MergeParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		return d.mergeWorktree(ctx, p)
 	case "pane.wake":
 		// Web access shows any pane: one of state.json not running yet
 		// starts, as at a restore.
@@ -130,7 +137,7 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			return nil, proto.Errorf(proto.CodeNotFound, "pane "+p.ID+" is a browser, not a terminal")
 		}
 		_, resume := d.restorePrefs()
-		if err := d.restorePane(s.ID, *pn, resume); err != nil && !errors.Is(err, session.ErrExists) {
+		if err := d.restorePane(&st, s, *pn, resume); err != nil && !errors.Is(err, session.ErrExists) {
 			return nil, err // a wake racing another, or a restore, found it starting: it runs
 		}
 		return true, nil
@@ -145,13 +152,18 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			if pn.URL != "" {
 				return nil, errAppClosed("reload a page")
 			}
-			// The command it started with runs again, as the app does.
-			var command []string
+			dir, err := s.Worktree.PaneDir(pn.Dir)
+			if err != nil {
+				return nil, err
+			}
+			// The command it started with runs again, as the app does,
+			// with the environment it was given.
+			var command, env []string
 			if p := d.reg.Get(pn.ID); p != nil {
-				command = p.Info().Command
+				command, env = p.Info().Command, p.Env()
 			}
 			d.endPane(pn.ID)
-			return true, d.startPane(s.ID, pn.ID, pn.Dir, command, nil)
+			return true, d.startPane(projectOf(st, s.Project), s.ID, pn.ID, dir, command, env)
 		})
 	case "rename":
 		var p proto.RenameParams
@@ -228,7 +240,14 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 		if pn == nil {
 			return nil, proto.Errorf(proto.CodeNotFound, "no pane "+p.Pane)
 		}
-		return gitsnap.Answer(ctx, method, p, pn.Info())
+		branch := ""
+		d.stateMu.Lock()
+		st := d.loadState()
+		d.stateMu.Unlock()
+		if s, _ := findPane(&st, p.Pane); s != nil && s.Worktree != nil {
+			branch = s.Worktree.Base
+		}
+		return gitsnap.Answer(ctx, method, p, pn.Info(), branch)
 	}
 	return nil, proto.Errorf(proto.CodeUsage, "no method "+method)
 }
@@ -242,7 +261,8 @@ func (d *Daemon) protoState(st model.State) proto.State {
 		out.Projects = append(out.Projects, proto.Project{ID: p.ID, Name: p.Name, Dir: p.Dir})
 	}
 	for _, s := range st.Sessions {
-		ps := proto.Session{ID: s.ID, Project: s.Project, AgentNamed: s.AgentNamed, Focus: s.Focus, Zoomed: s.Zoomed, Layout: s.Layout}
+		ps := proto.Session{ID: s.ID, Project: s.Project, AgentNamed: s.AgentNamed, Focus: s.Focus, Zoomed: s.Zoomed, Layout: s.Layout,
+			Worktree: s.Worktree, Parent: s.Parent}
 		for _, pn := range s.Panes {
 			info, ok := infos[pn.ID]
 			if !ok {
@@ -258,6 +278,7 @@ func (d *Daemon) protoState(st model.State) proto.State {
 		ps.Name = sessionName(s, ps.Lead)
 		out.Sessions = append(out.Sessions, ps)
 	}
+	proto.DropGoneParents(out.Sessions)
 	return out
 }
 
@@ -283,6 +304,149 @@ func sessionName(s model.Session, lead session.Info) string {
 // create makes a session, in the project p names, else the one holding
 // its folder (or a new one for it), else the active one.
 func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
+	pi, err := findProject(st, p)
+	if err != nil {
+		return nil, err
+	}
+	proj := st.Projects[pi]
+	dir := p.Dir
+	if dir == "" {
+		dir = proj.Dir
+	}
+	name := p.Name
+	if name == "" {
+		name = shellcmd.Name(shellcmd.Login())
+	}
+	parent := ""
+	if s, _ := findPane(st, p.By); s != nil && p.By != "" {
+		parent = s.ID
+	}
+	sid, pid := model.NewID(), model.NewID()
+	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
+	if p.URL != "" {
+		pane.URL = d.browserURL(p.URL) // the app loads it once open
+	} else if err := d.startPane(proj, sid, pid, dir, p.Command, p.Env); err != nil {
+		return nil, err
+	}
+	// Last under the session that started it, as the app shows it.
+	at := model.TreeInsert(len(st.Sessions), func(i int) string { return st.Sessions[i].ID },
+		func(i int) string { return st.Sessions[i].Parent }, parent)
+	st.Sessions = slices.Insert(st.Sessions, at, model.Session{ID: sid, Project: proj.ID, Name: name, Parent: parent,
+		Created: time.Now().UnixMilli(), Focus: pid, Layout: &model.Layout{Pane: pid}, Panes: []model.Pane{pane}})
+	return proto.Created{Session: sid, Pane: pid}, nil
+}
+
+// closeSession ends session id of st, and its panes.
+func (d *Daemon) closeSession(st *model.State, id string) error {
+	i := sessionIndex(st, id)
+	if i < 0 {
+		return proto.Errorf(proto.CodeNotFound, "no session "+id)
+	}
+	for _, pn := range st.Sessions[i].Panes {
+		d.endPane(pn.ID)
+	}
+	st.Sessions = append(st.Sessions[:i], st.Sessions[i+1:]...)
+	return nil
+}
+
+// mergeWorktree merges a worker's worktree into its lead's branch, for
+// omaterm merge with the window closed: as the app does, git's work
+// outside the sessions file's lock.
+func (d *Daemon) mergeWorktree(ctx context.Context, p proto.MergeParams) (any, error) {
+	d.stateMu.Lock()
+	st := d.loadState()
+	d.stateMu.Unlock()
+	lead, _ := findPane(&st, p.By)
+	if lead == nil {
+		return nil, proto.Errorf(proto.CodeUsage, "run omaterm merge in your pane: it merges into your branch")
+	}
+	i := sessionIndex(&st, p.Target)
+	if i < 0 {
+		return nil, proto.Errorf(proto.CodeNotFound, "no session "+p.Target)
+	}
+	t := st.Sessions[i]
+	name := sessionName(t, session.Info{})
+	if err := model.LeadMerge(lead.Worktree, t.Worktree, name); err != nil {
+		return nil, proto.Errorf(proto.CodeUsage, err.Error())
+	}
+	w := *t.Worktree
+	for _, info := range d.reg.Infos() {
+		if info.Status == session.Working && info.Agent != "" && within(info.WorkDir(), w.Dir) {
+			return nil, proto.Errorf(proto.CodeUsage, name+" is working: wait until it stops (omaterm wait "+name+"), then merge")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeTimeout)
+	defer cancel()
+	wt := worktree.Of(w.Dir, w.Branch, w.Base)
+	commits, err := worktree.MergeWork(ctx, wt, p.Message, !p.Commit, p.Keep)
+	if err != nil {
+		return nil, worktree.ForLead(err, name, w.Base)
+	}
+	merged := proto.Merged{Branch: w.Branch, Into: w.Base, Commits: commits}
+	if !p.Keep {
+		if _, err := d.change(func(st *model.State) (any, error) { return nil, d.closeSession(st, t.ID) }); err != nil {
+			return nil, fmt.Errorf("merged, but its session stays: %w", err)
+		}
+		if err := worktree.Remove(ctx, wt); err != nil {
+			return nil, fmt.Errorf("merged, but its worktree stays: %w", err)
+		}
+		merged.Removed = true
+	}
+	return merged, nil
+}
+
+// worktreeTimeout bounds a worktree's git work: a checkout of a large
+// repository, with its hooks, or a merge.
+const worktreeTimeout = 5 * time.Minute
+
+// createWorktree makes a session in a worktree of its own: the worktree
+// is made outside the sessions file's lock, as git may take a while.
+func (d *Daemon) createWorktree(ctx context.Context, p proto.CreateParams) (any, error) {
+	v, err := d.change(func(st *model.State) (any, error) {
+		pi, err := findProject(st, p)
+		if err != nil {
+			return nil, err
+		}
+		return st.Projects[pi], nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	proj := v.(model.Project)
+	from := p.Dir
+	if from == "" {
+		from = proj.Dir
+	}
+	// The command going away doesn't stop git midway through a checkout.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeTimeout)
+	defer cancel()
+	wt, err := worktree.Add(ctx, from, p.Worktree.Branch, p.Worktree.Base, !p.Worktree.NoEnv)
+	if err != nil {
+		return nil, err
+	}
+	p.Project, p.Dir, p.Worktree = proj.ID, wt.Start(), nil
+	if p.Name == "" {
+		p.Name = wt.Branch
+	}
+	return d.change(func(st *model.State) (any, error) {
+		for _, s := range st.Sessions {
+			if s.Worktree != nil && s.Worktree.Dir == wt.Dir {
+				return nil, fmt.Errorf("%s has a session already", wt.Branch)
+			}
+		}
+		v, err := d.create(st, p)
+		if err == nil {
+			i := sessionIndex(st, v.(proto.Created).Session)
+			st.Sessions[i].Worktree = &model.Worktree{Dir: wt.Dir, Branch: wt.Branch, Base: wt.Base}
+		}
+		return v, err
+	})
+}
+
+// findProject finds the project a new session goes in: the one p names,
+// else the one holding its folder (or a new one for it), else the active
+// one.
+func findProject(st *model.State, p proto.CreateParams) (int, error) {
 	pi := -1
 	switch {
 	case p.Project != "":
@@ -292,7 +456,7 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 			}
 		}
 		if pi < 0 {
-			return nil, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
+			return -1, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
 		}
 	case p.Dir != "":
 		best := -1
@@ -305,7 +469,7 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 		if pi < 0 {
 			var err error
 			if pi, err = addProject(st, p.Dir, ""); err != nil {
-				return nil, err
+				return -1, err
 			}
 		}
 	default:
@@ -318,28 +482,10 @@ func (d *Daemon) create(st *model.State, p proto.CreateParams) (any, error) {
 			pi = 0
 		}
 		if pi < 0 {
-			return nil, proto.Errorf(proto.CodeUsage, "no project: give a directory")
+			return -1, proto.Errorf(proto.CodeUsage, "no project: give a directory")
 		}
 	}
-	proj := st.Projects[pi]
-	dir := p.Dir
-	if dir == "" {
-		dir = proj.Dir
-	}
-	name := p.Name
-	if name == "" {
-		name = shellcmd.Name(shellcmd.Login())
-	}
-	sid, pid := model.NewID(), model.NewID()
-	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
-	if p.URL != "" {
-		pane.URL = d.browserURL(p.URL) // the app loads it once open
-	} else if err := d.startPane(sid, pid, dir, p.Command, p.Env); err != nil {
-		return nil, err
-	}
-	st.Sessions = append(st.Sessions, model.Session{ID: sid, Project: proj.ID, Name: name,
-		Created: time.Now().UnixMilli(), Focus: pid, Layout: &model.Layout{Pane: pid}, Panes: []model.Pane{pane}})
-	return proto.Created{Session: sid, Pane: pid}, nil
+	return pi, nil
 }
 
 // split makes a pane beside p.Split, a pane or a session (its focused
@@ -371,11 +517,17 @@ func (d *Daemon) split(st *model.State, p proto.CreateParams) (any, error) {
 			dir = pn.Info().WorkDir()
 		}
 	}
+	if p.URL == "" {
+		var err error
+		if dir, err = s.Worktree.PaneDir(dir); err != nil {
+			return nil, err
+		}
+	}
 	targetID, pid := target.ID, model.NewID()
 	pane := model.Pane{ID: pid, Dir: dir, Created: time.Now().UnixMilli()}
 	if p.URL != "" {
 		pane.URL = d.browserURL(p.URL)
-	} else if err := d.startPane(s.ID, pid, dir, p.Command, p.Env); err != nil {
+	} else if err := d.startPane(projectOf(st, s.Project), s.ID, pid, dir, p.Command, p.Env); err != nil {
 		return nil, err
 	}
 	s.Layout = splitLayout(s.Layout, targetID, pid, p.Direction, ratio)
@@ -453,15 +605,16 @@ func (d *Daemon) closePane(id string) (any, error) {
 	})
 }
 
-// startPane starts a pane's shell in dir, running command first when set.
-func (d *Daemon) startPane(sessionID, id, dir string, command, env []string) error {
-	return d.startPaneWith(sessionID, id, dir, command, env, nil)
+// startPane starts a pane's shell in dir, running command first when set,
+// in a session of project proj.
+func (d *Daemon) startPane(proj model.Project, sessionID, id, dir string, command, env []string) error {
+	return d.startPaneWith(proj, sessionID, id, dir, command, env, nil)
 }
 
 // startPaneWith is startPane with the scrollback a restored pane shows.
-func (d *Daemon) startPaneWith(sessionID, id, dir string, command, env []string, history []byte) error {
-	o := session.StartOptions{ID: id, Session: sessionID, Dir: dir, Command: command,
-		Env: append(d.paneEnv(), env...), Cols: 120, Rows: 40, Theme: d.currentTheme(), History: history}
+func (d *Daemon) startPaneWith(proj model.Project, sessionID, id, dir string, command, env []string, history []byte) error {
+	o := session.StartOptions{ID: id, Session: sessionID, Project: proj.ID, ProjectName: proj.Name, ProjectDir: proj.Dir,
+		Dir: dir, Command: command, Env: append(d.paneEnv(), env...), Cols: 120, Rows: 40, Theme: d.currentTheme(), History: history}
 	d.termPrefs().apply(&o)
 	_, err := d.reg.Start(o)
 	d.changed()
@@ -483,6 +636,16 @@ func (d *Daemon) endPane(id string) {
 	d.closeAttachments(id)
 	d.removePane(id)
 	d.changed()
+}
+
+// projectOf is the project of id in st; an empty one for none.
+func projectOf(st *model.State, id string) model.Project {
+	for _, p := range st.Projects {
+		if p.ID == id {
+			return p
+		}
+	}
+	return model.Project{}
 }
 
 func findPane(st *model.State, id string) (*model.Session, *model.Pane) {
@@ -564,7 +727,7 @@ func (d *Daemon) restore() {
 			if pn.URL != "" || d.reg.Get(pn.ID) != nil {
 				continue
 			}
-			if d.restorePane(s.ID, pn, resume) == nil {
+			if d.restorePane(&st, &s, pn, resume) == nil {
 				n++
 			}
 		}
@@ -589,12 +752,16 @@ func (d *Daemon) restorePrefs() (restore, resume bool) {
 
 // restorePane starts a pane of state.json from its scrollback, its agent
 // resuming its conversation when resume.
-func (d *Daemon) restorePane(sessionID string, pn model.Pane, resume bool) error {
+func (d *Daemon) restorePane(st *model.State, s *model.Session, pn model.Pane, resume bool) error {
+	dir, err := s.Worktree.PaneDir(pn.Dir)
+	if err != nil {
+		return err
+	}
 	var command []string
 	if resume {
 		command = agent.ResumeCommand(pn.Agent)
 	}
-	return d.startPaneWith(sessionID, pn.ID, pn.Dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID)))
+	return d.startPaneWith(projectOf(st, s.Project), s.ID, pn.ID, dir, command, nil, session.RestoredHistory(d.historyPath(pn.ID)))
 }
 
 // ForwardedCall is a call of the omaterm command the daemon passes to the
@@ -628,14 +795,19 @@ func (d *Daemon) forward(ctx context.Context, method string, raw json.RawMessage
 		return m.Result, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(forwardTimeout(method)):
+	case <-time.After(forwardTimeout(method, raw)):
 		return nil, proto.Errorf(proto.CodeTimeout, "the app did not answer")
 	}
 }
 
 // forwardTimeout is how long a call passed to the app may take: a wait
-// as long as the command waits, anything else half a minute.
-func forwardTimeout(method string) time.Duration {
+// as long as the command waits, git's work on a worktree as long as it
+// may take, anything else half a minute.
+func forwardTimeout(method string, raw json.RawMessage) time.Duration {
+	var p struct{ Worktree any }
+	if method == "worktree.merge" || method == "create" && json.Unmarshal(raw, &p) == nil && p.Worktree != nil {
+		return worktreeTimeout
+	}
 	if method == "wait" {
 		return 10 * time.Minute
 	}

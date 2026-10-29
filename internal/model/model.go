@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -55,6 +56,57 @@ type Session struct {
 	Zoomed     string  `json:"zoomed,omitempty"`
 	Layout     *Layout `json:"layout,omitempty"`
 	Panes      []Pane  `json:"panes"`
+	// Worktree is the git worktree the session works in, nil for none.
+	Worktree *Worktree `json:"worktree,omitempty"`
+	// Parent is the session whose agent started this one, "" for none;
+	// Collapsed hides the sessions it started in the sidebar.
+	Parent    string `json:"parent,omitempty"`
+	Collapsed bool   `json:"collapsed,omitempty"`
+}
+
+// Worktree is a git worktree omaterm made for a session (internal/worktree):
+// its folder, its branch, and the branch it merges into.
+type Worktree struct {
+	Dir    string `json:"dir"`
+	Branch string `json:"branch"`
+	Base   string `json:"base"`
+}
+
+// LeadMerge tells why the agent of a session in worktree lead may not
+// merge w, the worktree of session name: only one made from the lead's
+// own branch may be. Merging into the main checkout is the user's.
+func LeadMerge(lead, w *Worktree, name string) error {
+	switch {
+	case w == nil:
+		return fmt.Errorf("%s works in no worktree of its own", name)
+	case lead == nil:
+		return fmt.Errorf("you work in the main checkout, and merging into %s is the user's: they merge %s from omaterm", w.Base, w.Branch)
+	case w.Base != lead.Branch:
+		return fmt.Errorf("%s was made from %s, not from your branch %s: the user merges it", w.Branch, w.Base, lead.Branch)
+	}
+	return nil
+}
+
+// Gone reports whether the worktree's folder was deleted.
+func (w *Worktree) Gone() bool {
+	fi, err := os.Stat(w.Dir)
+	return err != nil || !fi.IsDir()
+}
+
+// PaneDir is the folder a pane of a session in w starts in: dir, else
+// the worktree, never the home folder a missing dir would fall back to,
+// nor the main checkout. With no worktree, it is dir.
+func (w *Worktree) PaneDir(dir string) (string, error) {
+	if w == nil {
+		return dir, nil
+	}
+	if w.Gone() {
+		return "", fmt.Errorf("its worktree is gone (%s)", w.Dir)
+	}
+	if fi, err := os.Stat(dir); dir == "" || err != nil || !fi.IsDir() {
+		return w.Dir, nil
+	}
+	return dir, nil
 }
 
 // Pane is a pane of a session: a shell, or a browser page (URL).

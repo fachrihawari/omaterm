@@ -208,8 +208,12 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 		}
 		dragging = a.paneHeader(c, tab, id, t, multi, focused, hovered)
 		if t == nil {
+			msg := "The shell could not start"
+			if w := tab.Worktree; w != nil && w.Gone() {
+				msg = "This session's worktree is gone (" + shortDir(w.Dir) + "). Close the session."
+			}
 			ui.Box(c).Grow(1).Padding(12).Children(func() {
-				ui.Text(c, "The shell could not start").FontSize(12).TextColor(pal.Bad)
+				ui.Text(c, msg).FontSize(12).TextColor(pal.Bad)
 			})
 		} else {
 			// The innermost clip alone rounds its corners (the GPU cuts

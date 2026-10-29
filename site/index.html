@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>omaterm</title>
-<meta name="description" content="Oh My Terminal: a terminal workspace for running coding agents side by side. A tour of what it does: agent status, sessions and splits, Last turn, Git, an editor, browser panes, sessions that keep running, and your sessions on your phone.">
+<meta name="description" content="Oh My Terminal: a terminal workspace for running coding agents side by side. A tour of what it does: agent status, sessions and splits, Last turn, Git, an editor, browser panes, sessions that keep running, your sessions on your phone, agents on branches of their own, and agents working together.">
 <meta property="og:title" content="omaterm">
 <meta property="og:description" content="Oh My Terminal: a terminal workspace for running coding agents side by side.">
 <meta property="og:image" content="https://fachrihawari.github.io/omaterm/assets/hero.png">
@@ -313,6 +313,8 @@
       <a class="card" href="#themes"><span class="n">10</span><b>Themes</b><span>Dark and light, and Omarchy&rsquo;s.</span></a>
       <a class="card" href="#cli"><span class="n">11</span><b>Agents drive it</b><span>The <code>omaterm</code> command, for agents and scripts.</span></a>
       <a class="card" href="#settings"><span class="n">12</span><b>Settings</b><span>Every preference in one window.</span></a>
+      <a class="card" href="#worktrees"><span class="n">13</span><b>Agents on branches</b><span>Each agent in a worktree of its own, merged from a menu.</span></a>
+      <a class="card" href="#team"><span class="n">14</span><b>Agents working together</b><span>A lead and its workers, messages between them, a reviewer.</span></a>
     </div>
   </div>
 </div>
@@ -551,6 +553,45 @@
     <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/settings.mp4?v=3" poster="assets/video/settings.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="The Settings window going through its pages, then a search for font"></video></div></div>
   </section>
 
+  <section id="worktrees">
+    <div class="wrap feature-head">
+      <div>
+        <p class="label">13 · agents on branches</p>
+        <h2>An agent on a branch of its own</h2>
+        <p><b>New Agent in Worktree&hellip;</b> starts an agent on a new branch, in a git worktree under the repository&rsquo;s <code class="k">.worktrees</code> folder, with your <code class="k">.env</code> files copied in. Run several at once: none touches another&rsquo;s files, or yours. The session shows its branch, and the Git tab follows it, with a <b>Branch</b> view of everything the branch changed.</p>
+      </div>
+      <div>
+        <ul class="how">
+          <li><span>Start one, from the palette or a project&rsquo;s menu</span><kbd>New Agent in Worktree&hellip;</kbd></li>
+          <li class="wide"><span>Or from an agent or a script</span><code class="k">omaterm new --worktree fix-login -- claude</code></li>
+          <li class="wide"><span>When it&rsquo;s done, from the session&rsquo;s menu</span><span>Merge into main&hellip; · Update from main · Push &amp; Create PR · Discard Worktree&hellip;</span></li>
+        </ul>
+        <p class="note">A merge that would conflict isn&rsquo;t made: conflicts are resolved in the worktree, never in your checkout. Closing a session asks before dropping work that isn&rsquo;t in main.</p>
+      </div>
+    </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/worktree.mp4?v=1" poster="assets/video/worktree.jpg?v=1" width="1920" height="1200" muted loop playsinline preload="none" aria-label="New Agent in Worktree, an agent working on its branch beside another, then the Merge into main dialog"></video></div></div>
+  </section>
+
+  <section id="team">
+    <div class="wrap feature-head">
+      <div>
+        <p class="label">14 · agents working together</p>
+        <h2>A lead, its workers, and a reviewer</h2>
+        <p>An agent can lead others. It starts workers in worktrees made from its own branch, which nest under its session, and hands each its part with <code class="k">omaterm ask</code>. omaterm types the message into the worker&rsquo;s prompt once it&rsquo;s free and you aren&rsquo;t typing there, and the answer comes back to the lead, waking it. The lead merges each worker into its own branch; merging into main stays yours.</p>
+      </div>
+      <div>
+        <ul class="how">
+          <li class="wide"><span>Hand a worker its task, and get on with yours</span><code class="k">omaterm ask w1 "Write the parser, with tests" --no-wait</code></li>
+          <li class="wide"><span>Answer the agent that asked</span><code class="k">omaterm reply "Done: 4 tests pass, committed"</code></li>
+          <li class="wide"><span>Take a worker&rsquo;s branch into your own</span><code class="k">omaterm merge w1</code></li>
+          <li><span>Have another agent review a session&rsquo;s work</span><kbd>Ask for Review&hellip;</kbd></li>
+        </ul>
+        <p class="note">The reviewer reads what the session changed, changes nothing itself, sends the agent what to fix for up to three rounds, then tells you its verdict, under its session.</p>
+      </div>
+    </div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/team.mp4?v=1" poster="assets/video/team.jpg?v=1" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A lead agent starting two workers, its message typed into a worker's prompt, the answer waking the lead, which merges the worker, then Ask for Review"></video></div></div>
+  </section>
+
   <section id="more">
     <div class="wrap">
       <p class="label">and more</p>
@@ -558,6 +599,8 @@
       <dl class="more">
         <div><dt>Updates itself</dt><dd>Signed updates arrive inside the app, with release notes written for you.</dd></div>
         <div><dt>Every shortcut</dt><dd><kbd>Ctrl+Shift+/</kbd> lists them all.</dd></div>
+        <div><dt>Click a path</dt><dd><kbd>Ctrl</kbd>+click <code class="k">src/app.go:42:7</code> in any pane, and the editor opens there.</dd></div>
+        <div><dt>The agent&rsquo;s last word</dt><dd>What an agent last said of its turn shows under its session, in the sidebar, the palette and on your phone.</dd></div>
         <div><dt>Notifications</dt><dd>Choose which ones you get: needs you, finished, failed, with or without a sound. Each is a setting.</dd></div>
         <div><dt>Zoom</dt><dd><kbd>Ctrl+=</kbd> and <kbd>Ctrl+-</kbd> scale the whole window; <kbd>Ctrl+0</kbd> resets it.</dd></div>
         <div><dt>Native</dt><dd>A native app written in Go. It runs on Linux first, and on macOS and Windows too.</dd></div>

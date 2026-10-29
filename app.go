@@ -14,6 +14,7 @@ import (
 func (a *appState) view(c *ui.Context) {
 	a.drainPosted()
 	a.trackViewed()
+	a.followWorktreeRepo()
 	c.SetTheme(omaTheme())
 	winW, _ := c.Size()
 	a.fitPanels(winW)
@@ -69,11 +70,18 @@ func (a *appState) view(c *ui.Context) {
 		if confirm == "" {
 			confirm = "Close"
 		}
-		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, "Cancel", confirm)
+		buttons := []string{"Cancel", confirm}
+		if ask.alt != "" {
+			buttons = []string{"Cancel", ask.alt, confirm}
+		}
+		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, buttons...)
 		if result != -1 || !ask.open {
 			a.closeAsk = nil
-			if result == 1 {
+			switch {
+			case result == len(buttons)-1:
 				ask.run()
+			case result == 1:
+				ask.altRun()
 			}
 		}
 	}
@@ -144,6 +152,9 @@ func (a *appState) view(c *ui.Context) {
 	}
 
 	a.webPairDialog(c)
+	a.worktreeDialog(c)
+	a.mergeDialog(c)
+	a.reviewDialog(c)
 
 	// Remove-project confirmation dialog.
 	if a.removeProjectConfirmOpen != nil {
@@ -175,7 +186,7 @@ func (a *appState) view(c *ui.Context) {
 // modalOpen tells whether a dialog of the window waits for an answer.
 func (a *appState) modalOpen() bool {
 	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.overwriteAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
-		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil
+		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil || a.wtNew != nil || a.wtMerge != nil || a.review != nil
 }
 
 // animColor animates e's color to target, or, with Reduce Motion on,

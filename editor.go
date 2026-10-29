@@ -20,11 +20,12 @@ import (
 
 // openEditor opens path (workspace-relative) in an editor tab.
 func (a *appState) openEditor(path string) {
-	a.openEditorAt(path, 0)
+	a.openEditorAt(path, 0, 0)
 }
 
-// openEditorAt opens path and moves the caret to line (1-based, 0 = keep).
-func (a *appState) openEditorAt(path string, line int) {
+// openEditorAt opens path and moves the caret to line and col (1-based;
+// line 0 keeps it, col 0 is the line's start).
+func (a *appState) openEditorAt(path string, line, col int) {
 	if _, ok := a.editors[path]; !ok {
 		abs := filepath.Join(a.workspace, path)
 		if st, err := os.Stat(abs); err == nil && st.Size() > maxEditorSize && !isImagePath(path) {
@@ -77,7 +78,7 @@ func (a *appState) openEditorAt(path string, line int) {
 	}
 	if line > 0 {
 		if doc := a.editors[path]; doc != nil && doc.State != nil {
-			doc.State.GoTo(editor.Pos{Line: line - 1, Col: 0})
+			doc.State.GoTo(editor.Pos{Line: line - 1, Col: max(col-1, 0)})
 		}
 	}
 	if a.win != nil {

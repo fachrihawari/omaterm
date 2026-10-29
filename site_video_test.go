@@ -18,8 +18,10 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 	xdraw "golang.org/x/image/draw"
 
+	"omaterm/internal/model"
 	"omaterm/internal/session"
 	"omaterm/internal/web"
+	"omaterm/internal/worktree"
 	"omaterm/service"
 )
 
@@ -70,6 +72,52 @@ const (
 		"  \x1b[2m└\x1b[0m \x1b[32mok\x1b[0m  omaterm/internal/theme  0.214s\n\n" +
 		"Fixed. The light flag was read before the theme loaded;\n" +
 		"the tests pass in the pane below.\n\n" +
+		"\x1b[1;36m❯\x1b[0m "
+)
+
+// An agent at work on a branch of its own, for the worktree clip.
+const siteWorktreeAgent = "\x1b[1;36m❯\x1b[0m fix the login redirect after sign-in\n\n" +
+	"\x1b[32m●\x1b[0m Read \x1b[1minternal/auth/redirect.go\x1b[0m\n" +
+	"\x1b[32m●\x1b[0m Update \x1b[1minternal/auth/redirect.go\x1b[0m  \x1b[32m+12\x1b[0m \x1b[31m-4\x1b[0m\n" +
+	"\x1b[32m●\x1b[0m Update \x1b[1minternal/auth/redirect_test.go\x1b[0m  \x1b[32m+29\x1b[0m \x1b[31m-2\x1b[0m\n" +
+	"\x1b[32m●\x1b[0m Bash   go test ./internal/auth/...\n" +
+	"  \x1b[2m└\x1b[0m \x1b[32mok\x1b[0m  omaterm/internal/auth  0.318s\n" +
+	"\x1b[32m●\x1b[0m Bash   git commit -am \"Redirect to the page the user came from\"\n" +
+	"  \x1b[2m└\x1b[0m [fix-login 4e1f2a0] Redirect to the page the user came from\n\n" +
+	"Done: after sign-in, the user lands on the page they came from.\n" +
+	"The branch is fix-login; main is untouched.\n\n" +
+	"\x1b[1;36m❯\x1b[0m "
+
+// A lead agent handing its workers their parts, a worker taking its
+// message, and the answer coming back to the lead, for the team clip.
+const (
+	siteLeadScreen = "\x1b[1;36m❯\x1b[0m split the stats work: the parser and the report\n\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm new --worktree w1 -- codex\n" +
+		"  \x1b[2m└\x1b[0m 8e4buc2\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm new --worktree w2 -- opencode\n" +
+		"  \x1b[2m└\x1b[0m kzvkbjj\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm ask w1 \"Write the parser in stats/parse.go, with tests, and commit\" --no-wait\n" +
+		"  \x1b[2m└\x1b[0m m1\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm ask w2 \"Write the report in stats/report.go, with tests, and commit\" --no-wait\n" +
+		"  \x1b[2m└\x1b[0m m2\n\n" +
+		"Both workers have their tasks. Their answers will wake me.\n\n" +
+		"\x1b[1;36m❯\x1b[0m "
+	siteWorkerScreen = "\x1b[1m›\x1b[0m [omaterm] Message m1 from the agent in session \"lead\" (pane 3tumy58), not from the user:\n" +
+		"  Write the parser in stats/parse.go, with tests, and commit\n\n" +
+		"  Answer it with: omaterm reply m1 \"…\" (or --file <path>)\n\n" +
+		"\x1b[2m•\x1b[0m Added \x1b[1mstats/parse.go\x1b[0m \x1b[32m+88\x1b[0m\n" +
+		"\x1b[2m•\x1b[0m Added \x1b[1mstats/parse_test.go\x1b[0m \x1b[32m+41\x1b[0m\n" +
+		"\x1b[2m•\x1b[0m Ran \x1b[1mgo test ./stats/...\x1b[0m\n" +
+		"  \x1b[2m└\x1b[0m \x1b[32mok\x1b[0m\n" +
+		"\x1b[2m•\x1b[0m Ran \x1b[1mgit commit -am \"Parse the stats input\"\x1b[0m\n" +
+		"\x1b[2m•\x1b[0m Ran \x1b[1momaterm reply m1 \"Done: stats/parse.go parses the input; 4 tests pass, committed on w1\"\x1b[0m\n" +
+		"  \x1b[2m└\x1b[0m answered m1 from lead\n"
+	siteLeadAnswer = "\x1b[1;36m❯\x1b[0m [omaterm] w1's answer to your message m1:\n" +
+		"  Done: stats/parse.go parses the input; 4 tests pass, committed on w1\n\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm merge w1\n" +
+		"  \x1b[2m└\x1b[0m merged w1 into feat: 1 commit, 2 files; w1 removed\n\n" +
+		"w1 is merged into feat. w2 is still on the report; I'll merge it\n" +
+		"when its answer comes.\n\n" +
 		"\x1b[1;36m❯\x1b[0m "
 )
 
@@ -488,6 +536,127 @@ func TestSiteVideo(t *testing.T) {
 		v.status(0, session.Info{Status: session.Idle, Agent: "claude", Process: "claude", Unread: true})
 		r.play(int(2.5 * videoFPS))
 
+	case "worktree": // an agent on a branch of its own, merged from the session's menu
+		// One idle shell session, and the New Agent in Worktree dialog
+		// filled in over it.
+		a.tabs = a.tabs[:1]
+		v.tab = &a.tabs[0]
+		v.tab.Split = &splitNode{TermID: v.ids[0]}
+		delete(a.status, v.ids[1])
+		delete(a.status, v.ids[2])
+		v.status(0, session.Info{Status: session.Idle})
+		v.feeds[0]("\x1b[1;34m~/Projects/omaterm\x1b[0m \x1b[35mmain\x1b[0m \x1b[32m❯\x1b[0m ")
+		r.caption("Agent di branch-nya | sendiri.")
+		r.play(12)
+		a.wtNew = &worktreeNew{open: true, project: a.projects[0].ID, name: "omaterm", dir: v.wd,
+			branch: "fix-login", base: "main", bases: []string{"main", "dev"}, agent: "claude", env: true}
+		r.fade(8)
+		r.until(0, 4)
+
+		// Started: the session shows its branch, and the agent works in
+		// its worktree; a second one beside it, on another branch.
+		start := r.n
+		r.caption("Satu worktree, satu agent: | nggak saling ganggu.")
+		a.wtNew = nil
+		v.tab.Label = "fix-login"
+		v.tab.Worktree = v.worktree("fix-login", "main")
+		v.feeds[0]("\x1b[2J\x1b[H")
+		v.status(0, session.Info{Status: session.Working, Agent: "claude", Process: "claude"})
+		other := v.session("new-ui", "", v.worktree("new-ui", "main"),
+			session.Info{Status: session.Working, Agent: "codex", Process: "codex", Progress: 40})
+		r.fade(8)
+		r.lines(v.feeds[0], siteWorktreeAgent, 7)
+		v.status(0, session.Info{Status: session.Idle, Agent: "claude", Process: "claude", Unread: true,
+			Summary: "After sign-in, the user lands on the page they came from."})
+		r.until(start, 6.5)
+
+		// Merge into main, from the session's menu.
+		start = r.n
+		r.caption("Selesai? Merge ke main | dari menu sesi.")
+		a.wtMerge = &worktreeMerge{open: true, session: v.tab.ID, w: *v.tab.Worktree, how: "squash", remove: true,
+			msg: "Fix the login redirect after sign-in",
+			sum: &worktree.Summary{Commits: []string{"Redirect to the page the user came from", "Test the redirect"}, Files: 2, Added: 41, Removed: 6}}
+		r.fade(8)
+		r.until(start, 4)
+
+		start = r.n
+		r.caption("Di-merge, worktree-nya dibersihkan. | main tetap rapi.")
+		a.wtMerge = nil
+		a.toast(nil, "fix-login merged into main")
+		a.tabs = append(a.tabs[:0], a.tabs[1:]...)
+		a.activeTab = 0
+		v.tab = &a.tabs[0]
+		_ = other
+		r.fade(8)
+		r.until(start, 3.5)
+
+	case "team": // a lead agent, its workers, and a reviewer
+		// The lead alone, on its branch, at work.
+		a.tabs = a.tabs[:1]
+		v.tab = &a.tabs[0]
+		v.tab.Split = &splitNode{TermID: v.ids[0]}
+		v.tab.Label = "lead"
+		v.tab.Worktree = v.worktree("feat", "main")
+		delete(a.status, v.ids[1])
+		delete(a.status, v.ids[2])
+		v.status(0, session.Info{Status: session.Working, Agent: "claude", Process: "claude"})
+		r.caption("Satu agent jadi lead, | yang lain pekerja.")
+		r.play(10)
+		first, rest, _ := strings.Cut(siteLeadScreen, "  \x1b[2m└\x1b[0m kzvkbjj\n")
+		r.lines(v.feeds[0], first+"  \x1b[2m└\x1b[0m kzvkbjj\n", 7)
+		// The workers it started nest under it.
+		w1 := v.session("w1", v.tab.ID, v.worktree("w1", "feat"),
+			session.Info{Status: session.Idle, Agent: "codex", Process: "codex"})
+		w2 := v.session("w2", v.tab.ID, v.worktree("w2", "feat"),
+			session.Info{Status: session.Idle, Agent: "opencode", Process: "opencode"})
+		r.fade(8)
+		r.lines(v.feeds[0], rest, 7)
+		v.status(0, session.Info{Status: session.Idle, Agent: "claude", Process: "claude", Asking: w1.Split.TermID})
+		v.statusOf(w1, session.Info{Status: session.Working, Agent: "codex", Process: "codex", Progress: 30})
+		v.statusOf(w2, session.Info{Status: session.Working, Agent: "opencode", Process: "opencode"})
+		r.until(0, 7)
+
+		// The message, typed into the worker's prompt.
+		start := r.n
+		r.caption("Pesannya masuk ke prompt | pekerja begitu dia siap.")
+		a.activateTab(1)
+		r.fade(8)
+		r.lines(v.feed(w1.Split.TermID), siteWorkerScreen, 7)
+		v.statusOf(w1, session.Info{Status: session.Idle, Agent: "codex", Process: "codex", Unread: true,
+			Summary: "Done: stats/parse.go parses the input; 4 tests pass, committed on w1"})
+		r.until(start, 6)
+
+		// The answer wakes the lead, which merges the worker.
+		start = r.n
+		r.caption("Jawabannya balik ke lead | dan membangunkannya.")
+		a.activateTab(0)
+		v.feeds[0]("\x1b[2J\x1b[H")
+		v.status(0, session.Info{Status: session.Working, Agent: "claude", Process: "claude"})
+		r.fade(8)
+		r.lines(v.feeds[0], siteLeadAnswer, 7)
+		a.tabs = append(a.tabs[:1], a.tabs[2:]...) // w1 merged and gone
+		v.tab = &a.tabs[0]
+		v.status(0, session.Info{Status: session.Idle, Agent: "claude", Process: "claude", Unread: true,
+			Summary: "w1 is merged into feat; waiting for w2's report."})
+		r.fade(8)
+		r.until(start, 6)
+
+		// Ask for Review: another agent reads the work and sends back
+		// what to fix; its verdict shows under its session.
+		start = r.n
+		r.caption("Ask for Review: agent lain | me-review kerjaannya.")
+		a.openReviewDialog(*v.tab)
+		r.fade(8)
+		r.until(start, 3.5)
+		start = r.n
+		a.review = nil
+		rev := v.session("review lead", v.tab.ID, nil,
+			session.Info{Status: session.Idle, Agent: "codex", Process: "codex", Unread: true,
+				Summary: "feat approved after 2 rounds: the parser and the report hold up, tests cover the edge cases"})
+		_ = rev
+		r.fade(8)
+		r.until(start, 4)
+
 	case "resume": // sessions outlive the window and a reboot
 		r.caption("Tutup jendelanya...")
 		v.feeds[0](strings.ReplaceAll(siteAgentDone, "\n", "\r\n"))
@@ -769,6 +938,37 @@ func (v *videoScene) paneStatus(id string, info session.Info) {
 		info.Progress = -1
 	}
 	v.a.status[id] = info
+}
+
+// session adds a session to the sidebar: a tab of one pane, the child of
+// parent when given, in worktree wt when given, with its pane's status.
+func (v *videoScene) session(label, parent string, wt *model.Worktree, info session.Info) *topTab {
+	tab := topTab{ID: newID(), Kind: tabTerminal, Label: label, Dot: dotGreen, Split: &splitNode{TermID: randomTermID()},
+		Created: nowFunc().UnixMilli(), Parent: parent, Worktree: wt}
+	v.a.tabs = append(v.a.tabs, tab)
+	t := &v.a.tabs[len(v.a.tabs)-1]
+	v.statusOf(t, info)
+	return t
+}
+
+// worktree is a worktree a session of the clip works in: its folder is
+// made, so the session doesn't show it as gone.
+func (v *videoScene) worktree(branch, base string) *model.Worktree {
+	dir := filepath.Join(v.t.TempDir(), ".worktrees", branch)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		v.t.Fatal(err)
+	}
+	return &model.Worktree{Dir: dir, Branch: branch, Base: base}
+}
+
+// statusOf sets the status of a session's pane.
+func (v *videoScene) statusOf(t *topTab, info session.Info) {
+	info.ID, info.Session, info.Since = t.Split.TermID, t.ID, v.since
+	info.Dir = "/home/you/Projects/omaterm"
+	if info.Progress == 0 {
+		info.Progress = -1
+	}
+	v.a.status[t.Split.TermID] = info
 }
 
 // searchVideo fills global search with this repo's matches of query, and

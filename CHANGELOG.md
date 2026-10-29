@@ -3,6 +3,82 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.10.0
+
+Agents on branches of their own, and agents that work together.
+
+### Agents on branches
+
+- **New Agent in Worktree…**, in the command palette or a project's
+  menu, starts an agent on a new branch, in a git worktree of its own
+  under the repository's `.worktrees` folder, with your `.env` files
+  copied in. Run several at once: none touches another's files, or
+  yours. From an agent or a script: `omaterm new --worktree fix-login
+  -- claude`.
+- **The session shows its branch**, and the Git tab follows it into the
+  worktree, with a **Branch** view of everything the branch changed
+  since it started.
+- **Merge into main…** squashes the branch into one commit, or makes a
+  merge commit, then removes the worktree. A merge that would conflict
+  isn't made: **Update from main** brings main's new commits into the
+  worktree, so conflicts are resolved there, never in your checkout.
+  Your uncommitted files in the main checkout are never overwritten.
+- **Push & Create PR** and **Discard Worktree…** are in the session's
+  menu too. Closing a session asks before it drops work that isn't in
+  main; `omaterm close` always keeps the worktree.
+- **A worktree whose folder is gone** says so in its session, rather
+  than running quietly in your home folder.
+
+### Agents working together
+
+- **An agent can lead others.** It starts workers in worktrees made
+  from its own branch, which nest under its session in the sidebar,
+  collapsible with a count. Closing the lead asks whether to close
+  them too or keep them.
+- **`omaterm ask`, `reply` and `inbox`.** `ask` types a message into
+  another agent's prompt once that agent is at its prompt and you
+  aren't typing there, and waits for the answer; with `--no-wait` the
+  answer comes to the asker later as a message of its own, waking it.
+  An agent that stops without answering sends back the end of its
+  screen. Two agents can't wait on each other forever.
+- **`omaterm merge w1`** takes a worker's branch into the lead's own.
+  Merging into main stays yours; a conflict is sent back to the
+  worker to resolve.
+- **`omaterm wait a b --any|--all`** waits for several sessions at
+  once, and **`omaterm diff --branch`** shows a worker's own changes,
+  without the lead's.
+- **Ask for Review…**, in a session's menu or the palette, starts a
+  second agent beside it, Codex reviewing Claude Code for instance.
+  The reviewer reads what the session changed, changes nothing itself,
+  sends the agent what to fix for up to three rounds, then tells you
+  its verdict, which shows under its session.
+- **The skill teaches all of it** to Claude Code, Codex, Pi and
+  OpenCode; `omaterm skill setup` updates an installed one.
+
+### Smaller things
+
+- **Ctrl+click a path an agent printed**, `src/app.go:42:7`, and the
+  editor opens it at that line and column, taken from the folder the
+  program runs in.
+- **What an agent last said of its turn shows under its session**, in
+  the sidebar, the palette and on your phone: a report's message, or
+  Claude Code's last paragraph.
+- **`omaterm send` and `prompt` wait for you to finish typing** in
+  that pane, and `prompt` pastes its text into the agent's prompt as
+  one piece. Neither counts as your typing anymore, so a lead's
+  message to a worker no longer holds its mail back.
+- **Every pane knows its project:** `$OMATERM_PROJECT` and
+  `$OMATERM_PROJECT_DIR`, beside `$OMATERM_SESSION` and
+  `$OMATERM_PANE`.
+- **`omaterm restart` keeps a pane's environment**, and the command it
+  was started with.
+- **`omaterm report` reaches the sidebar from inside Claude Code and
+  Codex**, and an agent's own report stands over its program's bare
+  one.
+- **Codex's "hooks need review" screen counts as needing you**, so a
+  message isn't typed into it. Approve omaterm's hook once with
+  `/hooks` in Codex.
+
 ## 0.9.9
 
 Shortcuts that fit your Mac, and a window that fits half a screen.

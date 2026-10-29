@@ -88,14 +88,14 @@ func (r *Registry) start(o StartOptions) (*Pane, error) {
 	if st, err := os.Stat(dir); dir == "" || err != nil || !st.IsDir() {
 		dir, _ = os.UserHomeDir()
 	}
-	p := &Pane{reg: r, changed: make(chan struct{}), rows: o.Rows}
+	p := &Pane{reg: r, changed: make(chan struct{}), rows: o.Rows, started: time.Now(), env: o.Env}
 	p.info = Info{ID: o.ID, Session: o.Session, Project: o.Project, Dir: dir, Command: o.Command,
 		Status: Idle, Since: time.Now().UnixMilli(), Progress: -1}
 
 	path, args, shell := commandLine(o)
 	proc, err := pty.Start(pty.Options{
 		Path: path, Args: args, Dir: dir,
-		Env:  environment(o.Session, o.ID, shell, o.Env),
+		Env:  environment(o, shell),
 		Cols: o.Cols, Rows: o.Rows,
 	})
 	opts := terminal.Options{

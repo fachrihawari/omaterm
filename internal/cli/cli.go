@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"omaterm/internal/client"
+	"omaterm/internal/model"
 	"omaterm/internal/osc"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
@@ -29,7 +30,7 @@ import (
 // starts the app.
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
-	"rename", "focus", "close", "kill", "restart", "notify", "report", "skill", "hook", "cli", "do", "actions",
+	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "merge", "skill", "hook", "cli", "do", "actions",
 	"diff", "browser", "daemon", "clients", "web", "settings", "help", "version", "--help", "-h", "--version",
 }
 
@@ -87,6 +88,29 @@ type flags struct {
 	set  map[string]bool
 	pos  []string
 	rest []string // after --
+}
+
+// createParams is what new or split's flags ask to make: in the folder
+// given, else the current one; in a worktree of its own with --worktree.
+func createParams(cmd string, f *flags) (proto.CreateParams, error) {
+	p := proto.CreateParams{Project: f.vals["project"], Name: f.vals["name"], Dir: f.vals["dir"], Command: f.rest,
+		Focus: f.set["focus"], URL: f.vals["url"]}
+	if p.Dir == "" {
+		p.Dir, _ = os.Getwd()
+	} else if abs, err := filepath.Abs(p.Dir); err == nil {
+		p.Dir = abs
+	}
+	switch b := f.vals["worktree"]; {
+	case b != "" && cmd == "split":
+		return p, usageErr("a split works in its session's folder: --worktree is for new")
+	case b != "" && p.URL != "":
+		return p, usageErr("a browser pane has no worktree: --worktree goes without --url")
+	case b != "":
+		p.Worktree = &proto.WorktreeParams{Branch: b, Base: f.vals["base"], NoEnv: f.set["no-env"]}
+	case f.vals["base"] != "" || f.set["no-env"]:
+		return p, usageErr("--base and --no-env go with --worktree")
+	}
+	return p, nil
 }
 
 func parse(args []string, valued, boolean map[string]string) (*flags, error) {
@@ -218,19 +242,17 @@ func run(args []string) error {
 
 	case "new", "split":
 		valued := map[string]string{"p": "project", "project": "project", "n": "name", "name": "name", "d": "dir", "dir": "dir",
-			"t": "timeout", "timeout": "timeout", "r": "ratio", "ratio": "ratio", "u": "url", "url": "url"}
+			"t": "timeout", "timeout": "timeout", "r": "ratio", "ratio": "ratio", "u": "url", "url": "url",
+			"worktree": "worktree", "base": "base"}
 		boolean := map[string]string{"f": "focus", "focus": "focus", "w": "wait", "wait": "wait", "json": "json",
-			"right": "right", "down": "down", "left": "left", "up": "up", "any-project": "any-project"}
+			"right": "right", "down": "down", "left": "left", "up": "up", "any-project": "any-project", "no-env": "no-env"}
 		f, err := parse(args, valued, boolean)
 		if err != nil {
 			return err
 		}
-		p := proto.CreateParams{Project: f.vals["project"], Name: f.vals["name"], Dir: f.vals["dir"], Command: f.rest,
-			Focus: f.set["focus"], URL: f.vals["url"]}
-		if p.Dir == "" {
-			p.Dir, _ = os.Getwd()
-		} else if abs, err := filepath.Abs(p.Dir); err == nil {
-			p.Dir = abs
+		p, err := createParams(cmd, f)
+		if err != nil {
+			return err
 		}
 		if cmd == "split" {
 			st, err := state(c)
@@ -262,20 +284,26 @@ func run(args []string) error {
 				p.Dir = ""
 			}
 		} else if len(f.pos) > 0 {
-			return usageErr("omaterm new [-n name] [-d dir] [-- command…]")
-		} else if p.Project != "" {
+			return usageErr("omaterm new [-n name] [-d dir] [--worktree branch] [-- command…]")
+		} else if p.Project != "" || os.Getenv("OMATERM_PANE") != "" || os.Getenv("OMATERM_SESSION") != "" {
 			st, err := state(c)
 			if err != nil {
 				return err
 			}
-			project := p.Project
-			for _, pr := range st.Projects {
-				if pr.ID == p.Project || strings.EqualFold(pr.Name, p.Project) {
-					project = pr.ID
+			if p.Project != "" {
+				project := p.Project
+				for _, pr := range st.Projects {
+					if pr.ID == p.Project || strings.EqualFold(pr.Name, p.Project) {
+						project = pr.ID
+					}
+				}
+				if err := sameProject(st, project, f.set["any-project"]); err != nil {
+					return err
 				}
 			}
-			if err := sameProject(st, project, f.set["any-project"]); err != nil {
-				return err
+			// Started from a pane: its session is the new one's parent.
+			if t, err := find(st, current(st)); err == nil {
+				p.By = t.pane
 			}
 		}
 		method := "create"
@@ -381,11 +409,9 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := c.Call("send", proto.SendParams{ID: t.pane, Data: strings.Join(f.pos[1:], " ")}, nil); err != nil {
-			return err
-		}
-		time.Sleep(120 * time.Millisecond)
-		if err := c.Call("send", proto.SendParams{ID: t.pane, Data: "\r"}, nil); err != nil {
+		// As a paste, with Enter after it: omaterm waits for the user to
+		// finish typing there, and for a draft they left.
+		if err := c.Call("send", proto.SendParams{ID: t.pane, Data: strings.Join(f.pos[1:], " "), Paste: true}, nil); err != nil {
 			return err
 		}
 		if err := c.Call("wait", proto.WaitParams{ID: t.pane, TimeoutMS: ms}, nil); err != nil {
@@ -426,9 +452,12 @@ func run(args []string) error {
 
 	case "wait":
 		f, err := parse(args, map[string]string{"for": "for", "t": "timeout", "timeout": "timeout"},
-			map[string]string{"x": "exit", "exit": "exit", "json": "json"})
+			map[string]string{"x": "exit", "exit": "exit", "json": "json", "any": "any", "all": "all"})
 		if err != nil {
 			return err
+		}
+		if f.set["any"] && f.set["all"] {
+			return usageErr("wait --any or --all, not both")
 		}
 		st, err := state(c)
 		if err != nil {
@@ -438,14 +467,14 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if f.set["exit"] {
+		if f.set["exit"] && len(f.pos) <= 1 {
 			return waitExit(c, t.pane, f.vals["timeout"])
 		}
 		ms, err := parseTimeout(f.vals["timeout"])
 		if err != nil {
 			return err
 		}
-		p := proto.WaitParams{ID: t.pane, TimeoutMS: ms}
+		p := proto.WaitParams{ID: waitTarget(st, t), TimeoutMS: ms, Exit: f.set["exit"]}
 		if v := f.vals["for"]; v != "" {
 			for _, s := range strings.Split(v, ",") {
 				s = strings.TrimSpace(s)
@@ -454,6 +483,9 @@ func run(args []string) error {
 				}
 				p.Status = append(p.Status, s)
 			}
+		}
+		if len(f.pos) > 1 {
+			return waitMany(c, st, f.pos, p, f.set["any"], f.set["json"])
 		}
 		var info proto.Pane
 		if err := c.Call("wait", p, &info); err != nil {
@@ -581,6 +613,18 @@ func run(args []string) error {
 
 	case "diff":
 		return diffCmd(c, args)
+
+	case "ask":
+		return askCmd(c, args)
+
+	case "reply":
+		return replyCmd(c, args)
+
+	case "inbox":
+		return inboxCmd(c, args)
+
+	case "merge":
+		return mergeCmd(c, args)
 
 	case "browser":
 		return browserCmd(c, args)
@@ -738,9 +782,16 @@ func listSessions(st proto.State) {
 		projects[p.ID] = p.Name
 	}
 	fmt.Printf("%-8s %-8s %-22s %-9s %-14s %s\n", "SESSION", "PANE", "NAME", "STATUS", "PROGRAM", "DIR")
-	for _, s := range st.Sessions {
+	// A session another's agent started comes under it.
+	tree := model.Tree(len(st.Sessions), func(i int) string { return st.Sessions[i].ID },
+		func(i int) string { return st.Sessions[i].Parent })
+	for _, n := range tree {
+		s := st.Sessions[n.Index]
+		name := projects[s.Project] + "/" + s.Name
+		if n.Depth > 0 {
+			name = strings.Repeat("  ", n.Depth-1) + "└ " + s.Name
+		}
 		for _, p := range s.Panes {
-			name := projects[s.Project] + "/" + s.Name
 			fmt.Printf("%-8s %-8s %-22s %-9s %-14s %s\n", s.ID, p.ID, trunc(name, 22), p.Status,
 				trunc(orDash(firstNonEmpty(p.Agent, p.Process)), 14), shortDir(p.WorkDir()))
 		}
@@ -851,6 +902,72 @@ func keyBytes(name string) ([]byte, error) {
 
 // waitExit waits for the command a pane started with to end, and exits
 // with its status: or its shell's, if that ended first.
+// waitTarget is the pane a wait on t waits for: the pane t names, or for
+// a session its agent's, as a session's other panes may run a dev server.
+func waitTarget(st proto.State, t target) string {
+	if t.byPane {
+		return t.pane
+	}
+	if s, ok := sessionByID(st, t.session); ok {
+		return agentPane(s)
+	}
+	return t.pane
+}
+
+// waitMany waits for several targets, as p says, at once: for all of
+// them, or for the first (any). It prints each one's name, as given, and
+// status, as they come.
+func waitMany(c *client.Client, st proto.State, refs []string, p proto.WaitParams, any, asJSON bool) error {
+	type done struct {
+		ref  string
+		info proto.Pane
+		err  error
+	}
+	ch := make(chan done, len(refs))
+	for _, ref := range refs {
+		t, err := find(st, ref)
+		if err != nil {
+			return err
+		}
+		q := p
+		q.ID = waitTarget(st, t)
+		go func() {
+			var info proto.Pane
+			err := c.Call("wait", q, &info)
+			ch <- done{ref, info, err}
+		}()
+	}
+	var infos []proto.Pane
+	for range refs {
+		d := <-ch
+		if d.err != nil {
+			return fmt.Errorf("%s: %w", d.ref, d.err)
+		}
+		infos = append(infos, d.info)
+		switch {
+		case asJSON:
+		case p.Exit:
+			code := 0
+			if d.info.ExitCode != nil {
+				code = *d.info.ExitCode
+			}
+			if d.info.CommandExit != nil {
+				code = *d.info.CommandExit
+			}
+			fmt.Println(d.ref, "exited", code)
+		default:
+			fmt.Println(d.ref, d.info.Status)
+		}
+		if any {
+			break
+		}
+	}
+	if asJSON {
+		return printJSON(infos)
+	}
+	return nil
+}
+
 func waitExit(c *client.Client, pane, timeout string) error {
 	ms, err := parseTimeout(timeout)
 	if err != nil {
@@ -897,8 +1014,25 @@ func report(args []string) error {
 		r.Progress = n
 	}
 	r.Msg = strings.Join(append(f.pos[1:], f.rest...), " ")
+	// In an omaterm pane, to omaterm, for it: an agent's commands run with
+	// no terminal (Claude Code's), or one of the agent's own (Codex's),
+	// where the report would go to the agent. The agent's program may
+	// report too, with no id, which would replace what the agent says: the
+	// agent's has an id of its own.
+	if c, err := connect(); err == nil {
+		defer c.Close()
+		if st, err := state(c); err == nil {
+			if pane, _ := me(st); pane != "" {
+				if r.ID == "" {
+					r.ID = "agent"
+				}
+				body := strings.TrimSuffix(strings.TrimPrefix(osc.Encode(r), "\x1b]7501;"), "\x1b\\")
+				return c.Call("report", proto.ReportParams{ID: pane, Body: body}, nil)
+			}
+		}
+	}
+	// Else to the terminal, even when the output goes elsewhere.
 	seq := osc.Encode(r)
-	// To the terminal, even when the output goes elsewhere.
 	if tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
 		defer tty.Close()
 		_, err = tty.WriteString(seq)
@@ -1010,16 +1144,27 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm ls [--json]                    sessions and their panes
   omaterm projects [--json]
   omaterm new [-n name] [-d dir] [-p project] [-f] [-w] [--any-project] [-- command…]
+  omaterm new --worktree <branch> [--base <branch>] [--no-env] [-- command…]
+                                         a session in a git worktree on a branch of its own
   omaterm split [target] [--down|--left|--up] [-r ratio] [-w] [--url url] [--any-project] [-- command…]
   omaterm send <target> <text…> [--enter] [-e]
+                                         type into it (waits while the user types there)
   omaterm key <target> <key…>            enter, tab, escape, up, ctrl+c, alt+x…
-  omaterm prompt <target> <text…>        send, Enter, wait, print the screen
+  omaterm prompt <target> <text…>        paste into its prompt, Enter, wait, print the screen
   omaterm read [target] [-n lines] [-a]
-  omaterm wait [target] [--for idle,waiting,error,exited] [--exit] [-t timeout]
+  omaterm wait [target…] [--any|--all] [--for idle,waiting,error,exited] [--exit] [-t timeout]
   omaterm status [target] [--json]
   omaterm rename <session> <name…>
   omaterm focus | close | restart <target>
   omaterm notify [message…]
+  omaterm ask <target> <text…> [--no-wait] [-t timeout] [--file path]
+                                         type a message into an agent's prompt once it is
+                                         free, and wait for its answer
+  omaterm reply [id] <text…> [--file path]
+                                         answer a message you were sent
+  omaterm inbox [--json]                 the messages to and from your pane
+  omaterm merge <target> [--squash|--commit] [-m message] [--keep]
+                                         merge a worktree made from your branch into it
   omaterm report <idle|working|done|blocked|error|clear> [message] [--kind] [--progress]
   omaterm diff [target] [--turn|--branch] [path…]
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …
@@ -1036,7 +1181,9 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm version
 
 A target is a session or pane id (a prefix works) or a session's name; in
-an omaterm pane it defaults to the pane itself ($OMATERM_PANE).
+an omaterm pane it defaults to the pane itself ($OMATERM_PANE). A pane
+also has $OMATERM_SESSION, and $OMATERM_PROJECT and $OMATERM_PROJECT_DIR
+for its project's name and folder.
 
 With the window closed, the session daemon answers for the sessions;
 focus, browser and do need the window.

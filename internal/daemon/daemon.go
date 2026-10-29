@@ -32,6 +32,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
+	"omaterm/internal/mail"
 	"omaterm/internal/notice"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
@@ -66,6 +67,7 @@ type Options struct {
 type Daemon struct {
 	opts    Options
 	reg     *session.Registry
+	mailbox *mail.Mailbox
 	srv     *ctl.Server
 	quit    chan struct{}
 	once    sync.Once
@@ -193,6 +195,8 @@ func Start(opts Options) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-d.quit; cancel() }()
 	go d.reg.Run(ctx)
+	d.mailbox = mail.New(d.reg)
+	go d.mailbox.Run(ctx)
 	go d.loop(ctx)
 	if opts.Restore {
 		d.restore()
@@ -354,6 +358,7 @@ func mustJSON(v any) json.RawMessage {
 // StartParams start a pane: the session.StartOptions that travel.
 type StartParams struct {
 	ID, Session, Project, Dir string
+	ProjectName, ProjectDir   string
 	Command                   []string
 	Exec                      bool
 	Env                       []string
@@ -382,6 +387,10 @@ func (d *Daemon) Handle(ctx context.Context, method string, raw json.RawMessage)
 }
 
 func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	if mail.IsMethod(method) {
+		// The daemon's own, as its panes are: never the app's.
+		return d.mailbox.Serve(ctx, method, raw)
+	}
 	pane := func(id string) (*session.Pane, error) {
 		if p := d.reg.Get(id); p != nil {
 			return p, nil
@@ -401,8 +410,8 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		if pn := d.reg.Get(p.ID); pn != nil {
 			return pn.Info(), nil
 		}
-		o := session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, Dir: p.Dir,
-			Command: p.Command, Exec: p.Exec, Env: append(d.envList(), p.Env...), Cols: p.Cols, Rows: p.Rows, History: p.History,
+		o := session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, ProjectName: p.ProjectName, ProjectDir: p.ProjectDir,
+			Dir: p.Dir, Command: p.Command, Exec: p.Exec, Env: append(d.envList(), p.Env...), Cols: p.Cols, Rows: p.Rows, History: p.History,
 			Theme: d.currentTheme()}
 		d.termPrefs().apply(&o)
 		pn, err := d.reg.Start(o)
@@ -434,6 +443,20 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		if err != nil {
 			return nil, err
 		}
+		err = pn.Send(ctx, p.Data, p.Paste)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		return true, err
+	case "pane.type":
+		// What the user typed, from the app (session.Handle.Write).
+		var p proto.SendParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
 		return true, pn.Write([]byte(p.Data))
 	case "read":
 		var p proto.ReadParams
@@ -451,6 +474,17 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		pn.Flag(p.Title, p.Body)
+		return true, nil
+	case "report":
+		var p proto.ReportParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := pn.Report(p.Body); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
 		return true, nil
 	case "pane.setAgentSession":
 		var p struct {

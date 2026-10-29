@@ -139,3 +139,55 @@ func TestScannerUTF8(t *testing.T) {
 		}
 	}
 }
+
+func TestScannerBracketed(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"\x1b[?2004h", true},
+		{"\x1b[?2004h\x1b[?2004l", false},
+		{"\x1b[?1004;2004h", true},                // among other modes
+		{"\x1b[?2004h\x1b[?1049;1004l", true},     // others reset, not it
+		{"\x1b[2004h", false},                     // ANSI mode 2004, not DEC's
+		{"\x1b[?2004h\x1bc", false},               // a full reset
+		{"\x1b[?2004h\x1b[?2004$p", true},         // a query, no change
+		{"\x1b[?20\x1b]0;t\x07\x1b[?2004h", true}, // a CSI cut short
+		{"\x9b?2004h", true},                      // C1 CSI
+		{"Н\x9b?2004h", false},                    // UTF-8, not C1
+	}
+	for _, c := range cases {
+		for _, one := range []bool{false, true} {
+			var s Scanner
+			if one {
+				for i := 0; i < len(c.in); i++ {
+					s.Scan([]byte{c.in[i]}, func([]byte) {}, nil)
+				}
+			} else {
+				s.Scan([]byte(c.in), func([]byte) {}, nil)
+			}
+			if s.Bracketed != c.want {
+				t.Errorf("%q (byte at a time %v): bracketed %v", c.in, one, s.Bracketed)
+			}
+		}
+	}
+	// OSCs are still found around CSIs.
+	if b, _ := scanAll(t, "\x1b[?2004h\x1b]133;A\x07\x1b[0m", false); len(b) != 1 || b[0] != "133;A" {
+		t.Errorf("bodies %q", b)
+	}
+}
+
+// Of reports of a state, one that words it leads: an agent's own, over
+// its program's bare one as its turn ends.
+func TestLeadWorded(t *testing.T) {
+	var rs Records
+	rs.Apply(Record{ID: "agent", State: "done", Msg: "Merged w1", Progress: -1})
+	rs.Apply(Record{State: "done", App: "claude-code", Progress: -1})
+	if r, _ := rs.Lead(); r.Msg != "Merged w1" {
+		t.Fatalf("lead %+v", r)
+	}
+	rs.Apply(Record{State: "working", App: "claude-code", Progress: -1})
+	if r, _ := rs.Lead(); r.State != "working" {
+		t.Fatalf("lead %+v", r)
+	}
+}

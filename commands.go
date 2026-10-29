@@ -138,6 +138,19 @@ var commandRegistry = append([]Command{
 
 	{ID: "terminal.new", Title: "New Terminal Tab", Category: "Terminal",
 		Run: func(a *appState, c *ui.Context) { a.newTerminalTab() }},
+	{ID: "session.newWorktree", Title: "New Agent in Worktree…", Category: "Session",
+		Enabled: func(a *appState) bool { return a.project() != nil && service.RepoRoot(a.workspace) != "" },
+		Run:     func(a *appState, c *ui.Context) { a.openWorktreeDialog(a.active) }},
+	{ID: "session.askReview", Title: "Ask for Review…", Category: "Session",
+		Enabled: func(a *appState) bool {
+			t := a.activeTabRef()
+			if t == nil {
+				return false
+			}
+			_, _, ok := a.agentOf(*t)
+			return ok
+		},
+		Run: func(a *appState, c *ui.Context) { a.openReviewDialog(*a.activeTabRef()) }},
 	{ID: "terminal.splitDown", Title: "Split Terminal Down", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.splitActivePane(c, splitHorizontal) }},
@@ -171,7 +184,7 @@ var commandRegistry = append([]Command{
 		Enabled: func(a *appState) bool { return a.focusedWeb() != nil && a.focusedWeb().view != nil },
 		Run:     func(a *appState, c *ui.Context) { a.focusedWeb().view.Page().OpenDevTools() }},
 	{ID: "view.changes", Title: "Show Last Turn", Category: "View",
-		Run: func(a *appState, c *ui.Context) { a.changes.lastTurn = true; a.showInspectorTab(2) }},
+		Run: func(a *appState, c *ui.Context) { a.changes.mode = changesTurn; a.showInspectorTab(2) }},
 	{ID: "pane.zoom", Title: "Zoom Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.toggleZoom() }},

@@ -108,6 +108,24 @@ type Session struct {
 	Layout     *model.Layout `json:"layout,omitempty"`
 	Panes      []Pane        `json:"panes"`
 	Lead       Pane          `json:"lead"`
+	// Worktree is the git worktree the session works in.
+	Worktree *model.Worktree `json:"worktree,omitempty"`
+	// Parent is the session whose agent started this one.
+	Parent string `json:"parent,omitempty"`
+}
+
+// DropGoneParents forgets the parents that are no more: a session whose
+// parent closed stands on its own.
+func DropGoneParents(sessions []Session) {
+	ids := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		ids[s.ID] = true
+	}
+	for i := range sessions {
+		if !ids[sessions[i].Parent] {
+			sessions[i].Parent = ""
+		}
+	}
 }
 
 // Project is a folder the user works in.
@@ -140,6 +158,20 @@ type CreateParams struct {
 	Split     string  `json:"split,omitempty"`
 	Direction string  `json:"direction,omitempty"`
 	Ratio     float64 `json:"ratio,omitempty"`
+	// Worktree makes the session a git worktree of its own to work in.
+	Worktree *WorktreeParams `json:"worktree,omitempty"`
+	// By is the pane of the agent making the session: its session is the
+	// new one's parent.
+	By string `json:"by,omitempty"`
+}
+
+// WorktreeParams make a session's worktree: on Branch, a new branch from
+// Base (the checkout's own when ""), or one not checked out elsewhere.
+type WorktreeParams struct {
+	Branch string `json:"branch"`
+	Base   string `json:"base,omitempty"`
+	// NoEnv leaves out the checkout's .env files, copied otherwise.
+	NoEnv bool `json:"noEnv,omitempty"`
 }
 
 // Created is what create and split made.
@@ -161,6 +193,10 @@ type RenameParams struct {
 type SendParams struct {
 	ID   string `json:"id"`
 	Data string `json:"data"`
+	// Paste types Data as a paste into a prompt (bracketed when the
+	// program takes those), then Enter; it waits for a draft the user
+	// left there too.
+	Paste bool `json:"paste,omitempty"`
 }
 
 type ReadParams struct {
@@ -180,6 +216,105 @@ type WaitParams struct {
 	Status    []string `json:"status,omitempty"`
 	Exit      bool     `json:"exit,omitempty"`
 	TimeoutMS int64    `json:"timeout,omitempty"`
+}
+
+// Mail is a message between agents, or from omaterm to one, as the
+// mailbox carries it (package mail).
+type Mail struct {
+	ID string `json:"id"`
+	// From is the asking pane, "" for omaterm itself or a command run
+	// outside it; To the pane whose agent the message is for.
+	From     string `json:"from,omitempty"`
+	FromName string `json:"fromName,omitempty"`
+	To       string `json:"to"`
+	ToName   string `json:"toName,omitempty"`
+	Text     string `json:"text"`
+	// Note wants no answer.
+	Note  bool   `json:"note,omitempty"`
+	State string `json:"state"`
+	Reply string `json:"reply,omitempty"`
+	// Screen is the end of the agent's screen when it stopped without
+	// replying; Why why the message waits, or failed.
+	Screen  string `json:"screen,omitempty"`
+	Why     string `json:"why,omitempty"`
+	Created int64  `json:"created"`
+}
+
+// A Mail's states.
+const (
+	MailQueued    = "queued"    // waiting for its agent to be free
+	MailDelivered = "delivered" // typed into its agent's prompt
+	MailReplied   = "replied"
+	MailNoReply   = "noreply" // its agent stopped without replying
+	MailFailed    = "failed"  // it couldn't be delivered
+)
+
+// MailAskParams send a message (mail.ask). Its answer comes to whoever
+// waits for it (mail.await), else, with NoWait or once none waits, to
+// the asker as a message of its own.
+type MailAskParams struct {
+	From     string `json:"from,omitempty"`
+	FromName string `json:"fromName,omitempty"`
+	To       string `json:"to"`
+	ToName   string `json:"toName,omitempty"`
+	Text     string `json:"text"`
+	Note     bool   `json:"note,omitempty"`
+	NoWait   bool   `json:"noWait,omitempty"`
+}
+
+// MailAwaitParams wait for a message's answer (mail.await).
+type MailAwaitParams struct {
+	ID        string `json:"id"`
+	TimeoutMS int64  `json:"timeout,omitempty"`
+}
+
+// MailReplyParams answer a message (mail.reply): ID, else the last one
+// From's agent was asked.
+type MailReplyParams struct {
+	ID   string `json:"id,omitempty"`
+	From string `json:"from,omitempty"`
+	Text string `json:"text"`
+}
+
+// MailLimitParams let pane From ask pane To at most N times more
+// (mail.limit), as a review's rounds.
+type MailLimitParams struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	N    int    `json:"n"`
+}
+
+// MailListParams list the messages to and from a pane (mail.list); all
+// of them for none.
+type MailListParams struct {
+	Pane string `json:"pane,omitempty"`
+}
+
+// MergeParams merge the worktree of session Target into the branch of
+// pane By's session (worktree.merge): squashed, unless Commit; its
+// worktree and session removed after, unless Keep.
+type MergeParams struct {
+	By      string `json:"by"`
+	Target  string `json:"target"`
+	Commit  bool   `json:"commit,omitempty"`
+	Message string `json:"message,omitempty"`
+	Keep    bool   `json:"keep,omitempty"`
+}
+
+// Merged is what worktree.merge did.
+type Merged struct {
+	Branch  string   `json:"branch"`
+	Into    string   `json:"into"`
+	Commits []string `json:"commits,omitempty"`
+	Removed bool     `json:"removed"`
+}
+
+// ReportParams give pane ID a status report (report), as OSC 7501 would:
+// Body is what follows "7501;", for a program with no terminal to write
+// it to, as an agent's commands.
+type ReportParams struct {
+	ID   string `json:"id"`
+	Body string `json:"body"`
 }
 
 type NotifyParams struct {

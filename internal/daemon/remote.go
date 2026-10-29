@@ -36,7 +36,7 @@ type Remote struct {
 	closeLater []string
 	// TermOptions gives what a pane's terminal in the app looks like: its
 	// font, theme and padding.
-	TermOptions func() session.StartOptions
+	TermOptions func(id string) session.StartOptions
 	// OnLost tells of panes that went with a daemon that stopped: the
 	// Remote has connected to a new one, which runs none of them.
 	OnLost func(ids []string)
@@ -157,6 +157,18 @@ func (r *Remote) client() *client.Client {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.c
+}
+
+// Forward passes a call of the omaterm command on to the daemon, for as
+// long as ctx lets it: one the daemon answers, as for its mailbox.
+func (r *Remote) Forward(ctx context.Context, method string, raw json.RawMessage) (json.RawMessage, error) {
+	c := r.client()
+	if c == nil {
+		return nil, proto.Errorf(proto.CodeBusy, "the session daemon is reconnecting: try again")
+	}
+	var out json.RawMessage
+	err := c.CallContext(ctx, method, raw, &out)
+	return out, err
 }
 
 // Version is the daemon's build.
@@ -382,8 +394,8 @@ func sameInfo(a, b session.Info) bool {
 
 // Start starts a pane in the daemon.
 func (r *Remote) Start(o session.StartOptions) (session.Handle, error) {
-	p := StartParams{ID: o.ID, Session: o.Session, Project: o.Project, Dir: o.Dir, Command: o.Command,
-		Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History}
+	p := StartParams{ID: o.ID, Session: o.Session, Project: o.Project, ProjectName: o.ProjectName, ProjectDir: o.ProjectDir,
+		Dir: o.Dir, Command: o.Command, Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History}
 	var info session.Info
 	if err := r.call("pane.start", p, &info); err != nil {
 		return nil, err
@@ -643,7 +655,7 @@ func (p *remotePane) Term() *terminal.Terminal {
 	}
 	o := session.StartOptions{}
 	if p.r.TermOptions != nil {
-		o = p.r.TermOptions()
+		o = p.r.TermOptions(p.id)
 	}
 	var t *terminal.Terminal
 	t, err = terminal.New(terminal.Options{
@@ -693,7 +705,13 @@ func (p *remotePane) detach() {
 }
 
 func (p *remotePane) Write(b []byte) error {
-	return p.r.call("send", proto.SendParams{ID: p.id, Data: string(b)}, nil)
+	return p.r.call("pane.type", proto.SendParams{ID: p.id, Data: string(b)}, nil)
+}
+
+// Send waits for the user as long as ctx allows, longer than a call's
+// usual limit.
+func (p *remotePane) Send(ctx context.Context, data string, paste bool) error {
+	return p.r.client().CallContext(ctx, "send", proto.SendParams{ID: p.id, Data: data, Paste: paste}, nil)
 }
 
 func (p *remotePane) Text(scrollback bool, lines int) string {
@@ -720,6 +738,10 @@ func (p *remotePane) Wait(ctx context.Context, until func(session.Info) bool) (s
 			return info, ctx.Err()
 		}
 	}
+}
+
+func (p *remotePane) Report(body string) error {
+	return p.r.call("report", proto.ReportParams{ID: p.id, Body: body}, nil)
 }
 
 func (p *remotePane) Flag(title, body string) {

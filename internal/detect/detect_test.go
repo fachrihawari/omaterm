@@ -43,6 +43,7 @@ func TestClaude(t *testing.T) {
 		{"thinking", Input{Screen: screen(t, "claude-working.txt"), Title: "⠂ Probe"}, Working},
 		{"thinking, the title not yet turning", Input{Screen: screen(t, "claude-working.txt")}, Working},
 		{"asking to run a command", Input{Screen: screen(t, "claude-blocked.txt"), Title: "✳ Probe"}, Blocked},
+		{"its turn done", Input{Screen: screen(t, "claude-done.txt"), Title: "✳ Claude Code"}, Idle},
 		// The prompt shows, but the title turns: a turn that started.
 		{"title turning", Input{Screen: screen(t, "claude-idle.txt"), Title: "⠐ Probe"}, Working},
 		// A redraw at another width shows the same: still idle.
@@ -80,5 +81,46 @@ func TestProgress(t *testing.T) {
 	}
 	if got := Detect("kiro-cli", Input{Progress: "4;0"}); got.State != Idle {
 		t.Errorf("progress 4;0: %s (rule %q), want idle", got.State, got.Rule)
+	}
+}
+
+// Codex's hooks waiting for review, over its prompt as it starts: the
+// user's to answer, and nothing typed reaches the prompt meanwhile.
+func TestCodexHooksReview(t *testing.T) {
+	in := Input{Screen: screen(t, "codex-hooks-review.txt"), Title: "repo"}
+	if got := Detect("codex", in); got.State != Blocked {
+		t.Fatalf("%s (rule %q), want blocked", got.State, got.Rule)
+	}
+	// Closed, Codex is at its prompt.
+	in.Screen = "  >_ OpenAI Codex (v0.163.0)\n\n› Ask Codex to do anything\n\n  gpt-6 medium · ~/repo\n"
+	if got := Detect("codex", in); got.State != Idle {
+		t.Fatalf("closed: %s (rule %q)", got.State, got.Rule)
+	}
+}
+
+// Claude Code's last word on its turn is the last paragraph it said,
+// not a tool call, and only once it is at its prompt with one.
+func TestClaudeSummary(t *testing.T) {
+	done := screen(t, "claude-done.txt")
+	want := "I made src/a.go containing package a with a function A() that returns 42, where the function name sits at line 3, column 6."
+	if got := Summary("claude", done); got != want {
+		t.Errorf("done: %q, want %q", got, want)
+	}
+	for _, name := range []string{"claude-idle.txt", "claude-working.txt", "claude-blocked.txt"} {
+		if got := Summary("claude", screen(t, name)); got != "" {
+			t.Errorf("%s: %q, want none", name, got)
+		}
+	}
+	// A tool call that ended the screen leaves the words before it.
+	cut := strings.Index(done, "● src/a.go:3:6")
+	if got := Summary("claude", done[:cut]); got != "Creating the Go file now." {
+		t.Errorf("after tool calls: %q", got)
+	}
+	long := strings.Replace(done, "column 6.", strings.Repeat("word ", 60), 1)
+	if got := Summary("claude", long); len([]rune(got)) > summaryRunes || !strings.HasSuffix(got, "…") {
+		t.Errorf("long: %d runes, %q", len([]rune(got)), got)
+	}
+	if got := Summary("codex", screen(t, "claude-done.txt")); got != "" {
+		t.Errorf("codex: %q, want none (not known)", got)
 	}
 }

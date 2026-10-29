@@ -109,6 +109,17 @@ func (r Repo) Base(ctx context.Context, base, turn string) (rev, name string, er
 	return "HEAD", "HEAD", nil
 }
 
+// MergeBase returns where HEAD left the local branch base: what the
+// branch changed since, as a merge into base would bring. Base's commits
+// not pushed yet are base's, unlike against origin's.
+func (r Repo) MergeBase(ctx context.Context, base string) (string, error) {
+	out, err := run(ctx, r.Root, nil, "merge-base", "HEAD", "refs/heads/"+base)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // emptyTree returns the id of the empty tree, of the repository's hash.
 func (r Repo) emptyTree(ctx context.Context) (string, error) {
 	cmd := []string{"hash-object", "-t", "tree", "--stdin"}

@@ -60,6 +60,12 @@ type topTab struct {
 	Created int64
 	// Diff is what a diff tab compares.
 	Diff *diffSource
+	// Worktree is the git worktree a session works in, nil for none.
+	Worktree *model.Worktree
+	// Parent is the session whose agent started this one, "" for none;
+	// Collapsed hides the sessions it started in the sidebar.
+	Parent    string
+	Collapsed bool
 }
 
 const (
@@ -174,6 +180,12 @@ type appState struct {
 	activeRepo int
 	repoJob    service.Job
 	repoErr    string
+	// repoFollow is the session the Git panel last followed, repoMain the
+	// repo it showed before following one into its worktree, and
+	// repoAsked the worktree last searched for.
+	repoFollow string
+	repoMain   int
+	repoAsked  string
 
 	processJob  service.Job
 	processErr  string
@@ -290,11 +302,13 @@ type appState struct {
 	// ws holds the workspaces of projects not shown, by project ID;
 	// wsOwner is the project whose workspace a.tabs is. saved are the
 	// sessions state.json had for projects not yet shown, paneDirs the
-	// directories their panes start in.
+	// directories their panes start in, and paneEnv the environment
+	// they were created with (CreateParams.Env), for a restart.
 	ws       map[string]*projectWS
 	wsOwner  string
 	saved    map[string][]model.Session
 	paneDirs map[string]string
+	paneEnv  map[string][]string
 	// paneAgents are the agent conversations panes ran when saved, which
 	// their restore resumes (Phase 5).
 	paneAgents map[string]*agent.Session
@@ -326,6 +340,17 @@ type appState struct {
 	agentSetupOffer string
 	agentSetupAsked bool
 	hookChecked     map[string]bool
+	// wtNew and wtMerge are the New Agent in Worktree and Merge dialogs,
+	// open while set; wtAgent, wtEnv and mergeSquash their last choices.
+	wtNew       *worktreeNew
+	wtMerge     *worktreeMerge
+	wtAgent     string
+	wtEnv       bool
+	mergeSquash bool
+	// review is the Ask for Review dialog, open while set; reviewAgent its
+	// last choice.
+	review      *reviewAsk
+	reviewAgent string
 	// paneShown is when each pane was last shown: a daemon pane hidden
 	// long lets go of its terminal in the app (detachHidden).
 	paneShown         map[string]time.Time
@@ -521,6 +546,8 @@ func newApp() *appState {
 		editors:          map[string]*openFile{},
 		panes:            session.NewLocalHost(),
 		paneFailed:       map[string]bool{},
+		wtEnv:            true,
+		mergeSquash:      true,
 		paneShown:        map[string]time.Time{},
 		hookChecked:      map[string]bool{},
 		git:              newGitWatch(),
@@ -529,6 +556,7 @@ func newApp() *appState {
 		ws:               map[string]*projectWS{},
 		saved:            map[string][]model.Session{},
 		paneDirs:         map[string]string{},
+		paneEnv:          map[string][]string{},
 		paneAgents:       map[string]*agent.Session{},
 		paneURLs:         map[string]string{},
 		restoring:        map[string]bool{},
@@ -624,6 +652,7 @@ func (a *appState) setProject(i int) {
 	// Reset per-project state.
 	a.repos = nil
 	a.activeRepo = 0
+	a.repoFollow, a.repoMain, a.repoAsked = "", 0, ""
 	a.repoErr = ""
 	a.commits = nil
 	a.graphLoaded = false
@@ -739,8 +768,16 @@ func (a *appState) clearWorkspace() {
 func (a *appState) refreshRepos() {
 	workspace := a.workspace
 	win := a.win
+	worktrees := a.worktreeDirs()
 	a.repoJob.Run(func(ctx context.Context) error {
 		repos := service.DiscoverRepos(workspace, 1)
+		// The worktrees of its sessions, which the panel follows: none is
+		// found in the project's folders, as they are hidden.
+		for _, dir := range worktrees {
+			if r, err := service.RepoStatus(dir, workspace); err == nil {
+				repos = append(repos, *r)
+			}
+		}
 		if win != nil && ctx.Err() == nil {
 			win.Update(func() { a.applyRepos(workspace, repos) })
 		}
@@ -760,9 +797,16 @@ func (a *appState) applyRepos(workspace string, repos []service.Repo) {
 	if a.activeRepo >= len(a.repos) {
 		a.activeRepo = 0
 	}
+	a.repoFollow = "" // a worktree's repo may be here now
 	r, p := a.activeRepoRef(), a.project()
 	if r == nil || p == nil {
 		return
+	}
+	// The project's branch is its checkout's, not a worktree's.
+	for i := 0; a.isWorktreeRoot(r.Root) && i < len(a.repos); i++ {
+		if !a.isWorktreeRoot(a.repos[i].Root) {
+			r = &a.repos[i]
+		}
 	}
 	p.Branch = r.Branch
 	if r.Ahead > 0 || r.Behind > 0 {

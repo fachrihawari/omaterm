@@ -174,7 +174,7 @@ func changesFixture(t *testing.T, status session.Status) (*appState, *ui.Tester,
 	id := a.activeSplitLeaf()
 	info := session.Info{ID: id, Dir: dir, Agent: "claude", Status: status, Progress: -1,
 		Turn: &session.Turn{Tree: tree, Root: r.Root, At: time.Now().UnixMilli()}}
-	a.inspectorVisible, a.inspectorTab, a.changes.lastTurn = true, 2, true
+	a.inspectorVisible, a.inspectorTab, a.changes.mode = true, 2, changesTurn
 	a.termCmd = []string{"sh", "-c", "sleep 30"}
 	view := func(c *ui.Context) {
 		a.status[id] = info // the pane's own status would replace it
@@ -265,10 +265,10 @@ func TestGitTabLastTurnSwitch(t *testing.T) {
 
 	a, tr, _ := changesFixture(t, session.Idle)
 	defer stopTermPanes(a)
-	a.changes.lastTurn = false
+	a.changes.mode = changesAll
 	frameUntil(t, tr, "the switch", func() bool { return tr.HasText("Last turn") })
 	if err := tr.Click("Last turn"); err != nil {
 		t.Fatal(err)
 	}
-	frameUntil(t, tr, "the turn's file", func() bool { return a.changes.lastTurn && tr.HasText("a.txt") })
+	frameUntil(t, tr, "the turn's file", func() bool { return a.changes.mode == changesTurn && tr.HasText("a.txt") })
 }

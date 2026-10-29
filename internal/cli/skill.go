@@ -16,13 +16,14 @@ import (
 // installs, from this binary, so that it follows omaterm's updates.
 const skillGuide = `---
 name: omaterm
-description: Drive terminal sessions in omaterm — start agents and commands in their own sessions or panes, type into them, wait for them, read their screens, and report your own status. Use when running inside omaterm ($OMATERM_PANE is set) and the task needs another terminal, a long-running process, a parallel agent, or the user's attention.
+description: Drive terminal sessions in omaterm — start agents and commands in their own sessions or panes, type into them, wait for them, read their screens, ask other agents and answer them, and report your own status. Use when running inside omaterm ($OMATERM_PANE is set) and the task needs another terminal, a long-running process, a parallel agent, another agent's help or review, or the user's attention.
 ---
 
 # omaterm
 
 You run inside omaterm, a terminal for coding agents whose sessions keep
-running in the background. $OMATERM_SESSION is your session and $OMATERM_PANE your pane; the
+running in the background. $OMATERM_SESSION is your session and $OMATERM_PANE your pane
+($OMATERM_PROJECT and $OMATERM_PROJECT_DIR name your project and its folder); the
 ` + "`omaterm`" + ` command drives them. A target is a session or a pane id (a
 prefix works), or a session's name; a session stands for its focused pane.
 
@@ -36,11 +37,56 @@ prefix works), or a session's name; a session stands for its focused pane.
 What you start stays in your own project: new and split refuse a target in
 another project, unless you pass --any-project because the user asked for it.
 
+## Work on a branch of its own
+
+    omaterm new --worktree fix-login -- claude   # an agent in a git worktree of its own
+
+A worktree session works in .worktrees/<branch> of the repository, on a
+new branch made from yours (--base <branch> picks another), with the
+repository's ignored .env files copied in (--no-env leaves them out).
+Several agents can work in parallel this way without touching each
+other's files, or yours. The user reviews each branch and merges it, or
+discards it, from omaterm; omaterm close ends the session and keeps its
+worktree.
+
+## Work with other agents
+
+    omaterm ask w1 "Does the login keep the session cookie?"   # waits, prints its answer
+    omaterm ask w1 "Fix the login test" --no-wait  # its answer comes to you later
+    omaterm reply "Fixed: the cookie expired"      # answer a message you were sent
+    omaterm reply m7 --file notes.md               # a given message, a long answer
+    omaterm inbox                                  # your messages, and their answers
+
+A message from omaterm ask waits until the other agent is at its prompt,
+then goes in as its prompt, saying who it is from and its id. Answer
+every message you are sent with omaterm reply. An answer to an ask you
+didn't wait for comes to you as a message of its own once you are at
+your prompt: so for work that takes long, ask with --no-wait and end
+your turn, without waiting or polling for it. An agent that stops
+without answering gets you the end of its screen instead.
+
+To split a task between agents, work in a worktree yourself, then:
+
+    omaterm new --worktree w1 -- claude            # each on a branch made from yours
+    omaterm new --worktree w2 -- codex
+    omaterm ask w1 "<its part: what, which files, what to leave alone>" --no-wait
+    omaterm ask w2 "<its part>" --no-wait
+    omaterm wait w1 w2 --all                       # or --any, for the first done
+    omaterm diff w1 --branch                       # what w1 changed
+    omaterm merge w1                               # into your branch; closes w1
+    omaterm merge w2 --commit -m "Add the export"  # a merge commit, not a squash
+
+The sessions you start show under yours. omaterm merge takes only a
+worktree made from your own branch, and squashes it unless --commit;
+--keep leaves its session and worktree. A conflict is for its agent to
+resolve: ask it to merge your branch into its own, then merge again.
+Merging into the main checkout is the user's, never yours.
+
 ## Drive it
 
     omaterm send <target> "some text" --enter    # type, then press Enter
     omaterm key <target> ctrl+c                  # enter, escape, up, tab, ctrl+d…
-    omaterm prompt <target> "run the tests"      # send + Enter, wait, print screen
+    omaterm prompt <target> "run the tests"      # paste into its prompt + Enter, wait, print screen
     omaterm wait <target> [--for idle,waiting,error,exited] [--timeout 10m]
     omaterm wait <target> --exit                 # until its command ends; exits with its status
     omaterm read <target> [-n 40] [-a]           # the screen, or with scrollback
@@ -79,7 +125,7 @@ app open and the palette setting "Let Agents Control the App" on.
 
     omaterm diff --turn                        # what your last turn changed
     omaterm diff                               # uncommitted changes
-    omaterm diff --branch                      # since the default branch
+    omaterm diff --branch                      # since the default branch, or your worktree's base
 
 ## Tell the user
 
@@ -95,7 +141,12 @@ Report blocked only when you truly cannot go on without them.
 ## Etiquette
 
 - Close what you started when it is done: ` + "`omaterm close <target>`" + `.
-- Never type into a pane you did not start unless the user asked.
+- Reach another agent with omaterm ask; type with send, key or prompt only
+  into panes you started, unless the user asked.
+- send and prompt wait up to 10 seconds for the user to finish typing in
+  the pane (prompt also for a draft they left there), then fail saying so:
+  try again later.
+- Never merge into the main checkout: the user reviews and merges.
 - Exit status 3 means no such target, 4 that omaterm is not running, or
   that its window is closed for what needs it (focus, browser, do); the
   sessions keep running, and the rest works, while the window is closed.

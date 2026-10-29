@@ -811,6 +811,10 @@ func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 					a.statusIcon(c, *e.Info, 12)
 				}
 				ui.Text(c, text).FontSize(11.5).TextColor(ink(selected, fg, false)).SingleLine().Shrink(0)
+			} else if e.Info.Summary != "" {
+				// Nothing to say of its status: its last word on its turn.
+				ui.Text(c, e.Info.Summary).FontSize(11.5).TextColor(ink(selected, pal.TextMuted, false)).SingleLine().
+					Shrink(1).MinWidth(0).Ellipsis("…")
 			}
 		} else if keys := keyPrimary(e.ID); keys != "" {
 			keyChipOn(c, keys, selected)
@@ -962,7 +966,7 @@ func (a *appState) openSearchSelection() {
 		return
 	}
 	m := a.searchResults[a.searchSelected]
-	a.openEditorAt(m.Path, m.Line)
+	a.openEditorAt(m.Path, m.Line, 0)
 	a.closeOverlay()
 }
 
@@ -1025,7 +1029,7 @@ func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool
 		})
 	})
 	if e.Clicked() {
-		a.openEditorAt(m.Path, m.Line)
+		a.openEditorAt(m.Path, m.Line, 0)
 		a.closeOverlay()
 	}
 }

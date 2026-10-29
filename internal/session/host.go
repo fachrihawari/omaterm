@@ -25,10 +25,13 @@ type Handle interface {
 	// one (for a daemon pane, an attach connection).
 	TermIfOpen() *terminal.Terminal
 	Write(b []byte) error
+	// Send types for the omaterm command (see Pane.Send).
+	Send(ctx context.Context, data string, paste bool) error
 	Text(scrollback bool, lines int) string
 	History(force bool) []byte
 	Wait(ctx context.Context, until func(Info) bool) (Info, error)
 	Flag(title, body string)
+	Report(body string) error
 	SetAgentSession(s *agent.Session)
 	SetTurn(t *Turn)
 }

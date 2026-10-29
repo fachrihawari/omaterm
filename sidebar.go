@@ -1,6 +1,7 @@
 package main
 
 import (
+	"omaterm/internal/model"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"path/filepath"
@@ -197,6 +198,10 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.switchProject(i)
 			a.newTerminalTab()
 		}
+		if m.Item("New Agent in Worktree…").Chosen() {
+			a.switchProject(i)
+			a.openWorktreeDialog(i)
+		}
 		label := "Collapse"
 		if p.Collapsed {
 			label = "Expand"
@@ -216,12 +221,13 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 		return
 	}
 	n := 0
-	for ti, t := range tabs {
-		if t.Kind != tabTerminal {
-			continue
+	for _, node := range sessionOrder(tabs) {
+		// The session shown stays in sight under a collapsed one.
+		shown := i == a.active && node.index == a.activeTab
+		if t := tabs[node.index]; t.Kind == tabTerminal && (!node.hidden || shown) {
+			n++
+			a.sessionRow(c, i, tabs, node)
 		}
-		n++
-		a.sessionRow(c, i, ti, t)
 	}
 	if n == 0 {
 		ui.Text(c, "No sessions").FontSize(11.5).TextColor(pal.TextFaint).Padding(4, 0, 4, 28)
@@ -239,15 +245,54 @@ func (a *appState) projectLead(tabs []topTab) (session.Info, bool) {
 	return session.Lead(infos)
 }
 
+// sessionNode is a session's place in the sidebar: under the session
+// whose agent started it.
+type sessionNode struct {
+	index, depth int
+	hidden       bool  // under a collapsed session
+	kids         []int // the sessions under it, at any depth
+}
+
+// sessionOrder is the order the sidebar shows a project's tabs in: each
+// session after the one that started it, deeper.
+func sessionOrder(tabs []topTab) []sessionNode {
+	tree := model.Tree(len(tabs), func(i int) string { return tabs[i].ID }, func(i int) string { return tabs[i].Parent })
+	nodes := make([]sessionNode, len(tree))
+	for k, n := range tree {
+		nodes[k] = sessionNode{index: n.Index, depth: n.Depth}
+	}
+	for k := range nodes {
+		for j := k + 1; j < len(nodes) && nodes[j].depth > nodes[k].depth; j++ {
+			nodes[k].kids = append(nodes[k].kids, nodes[j].index)
+			nodes[j].hidden = nodes[j].hidden || tabs[nodes[k].index].Collapsed
+		}
+	}
+	return nodes
+}
+
 // sessionRow is a session in the sidebar: what it runs, its name, the
 // branch when it is not the project's, how long since it changed, and its
-// status.
-func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
+// status; under the session that started it, which can hide it.
+func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node sessionNode) {
 	p := &a.projects[pi]
+	ti, t := node.index, tabs[node.index]
 	info, _ := a.sessionInfo(t)
 	selected := pi == a.active && ti == a.activeTab && a.activeView == tabTerminal
 	unread := info.Unread || info.Status == session.Waiting && !selected
-	row := ui.Row(c.Key("s-"+t.ID)).Height(32).Radius(8).Padding(0, 8, 0, 22).Gap(8).AlignItems(ui.Center).
+	// A parent's chevron takes the room left of its icon.
+	left := 22 + 14*float32(node.depth)
+	if len(node.kids) > 0 {
+		left -= 20
+	}
+	// The agent's last word on its turn, under the name, unless the
+	// sidebar is kept compact.
+	sub, height := info.Summary, float32(32)
+	if sub != "" && a.settings.Density != "compact" {
+		height = 44
+	} else {
+		sub = ""
+	}
+	row := ui.Row(c.Key("s-"+t.ID)).Height(height).Radius(8).Padding(0, 8, 0, left).Gap(8).AlignItems(ui.Center).
 		Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	bg := ui.Color{}
 	switch {
@@ -260,7 +305,24 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 	if selected {
 		chosen(row)
 	}
+	toggled := false
 	row.Children(func() {
+		if len(node.kids) > 0 {
+			chev := ui.Box(c.Key("kids")).Width(12).Height(20).AlignItems(ui.Center).Justify(ui.Center).Cursor(ui.CursorPointer)
+			chev.Children(func() {
+				i := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextFaint)
+				if t.Collapsed {
+					i.Rotate(-90)
+				}
+			})
+			if chev.Clicked() {
+				toggled = true
+				if ptabs := a.projectTabsPtr(p); ptabs != nil && ti < len(*ptabs) {
+					(*ptabs)[ti].Collapsed = !t.Collapsed
+					a.saveSoon()
+				}
+			}
+		}
 		ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 		if a.renaming == t.ID {
 			in := ui.TextInputBase(c.Key("rename"), &a.renameText).FontSize(13).Grow(1).MinWidth(0).AutoFocus()
@@ -279,28 +341,68 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 			}
 			return
 		}
-		name := ui.Text(c, a.sessionName(t, info)).FontSize(13).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-		switch {
-		case unread:
-			name.FontWeight(650).TextColor(pal.TextStrong)
-		case info.Status == session.Exited:
-			name.TextColor(pal.TextMuted)
-		}
-		if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" && g.Branch != p.Branch && !strings.HasPrefix(p.Branch, g.Branch) {
-			ui.Text(c, g.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
-		}
+		// The name and its line take what they need, and give way to the
+		// time and the icon; the spacer takes the rest.
+		ui.Column(c).Shrink(1).MinWidth(0).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				name := ui.Text(c, a.sessionName(t, info)).FontSize(13).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+				switch {
+				case unread:
+					name.FontWeight(650).TextColor(pal.TextStrong)
+				case info.Status == session.Exited:
+					name.TextColor(pal.TextMuted)
+				}
+				if w := t.Worktree; w != nil {
+					// A worktree's branch, from the session: the project's
+					// isn't known until it shows.
+					ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint).Shrink(0)
+					if w.Branch != a.sessionName(t, info) {
+						ui.Text(c, w.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+					}
+				} else if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" && g.Branch != p.Branch && !strings.HasPrefix(p.Branch, g.Branch) {
+					ui.Text(c, g.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+				}
+			})
+			if sub != "" {
+				ui.Text(c, sub).FontSize(11.5).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+			}
+		})
 		ui.Spacer(c)
+		if t.Collapsed && len(node.kids) > 0 {
+			// What it hides: how many, and the one that needs the user most.
+			var infos []session.Info
+			for _, k := range node.kids {
+				if i, ok := a.sessionInfo(tabs[k]); ok {
+					infos = append(infos, i)
+				}
+			}
+			ui.Text(c, "+"+itoa(len(node.kids))).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+			if lead, ok := session.Lead(infos); ok && statusState(lead) != iconNone {
+				a.statusIcon(c, lead, 11)
+			}
+		}
 		if info.Since > 0 {
 			ui.Text(c, ago(nowFunc().Sub(time.UnixMilli(info.Since)))).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
 		a.statusIcon(c, info, 14)
 	})
-	if tip := a.sessionTooltip(info); tip != "" {
+	tip := a.sessionTooltip(info)
+	if w := t.Worktree; w != nil {
+		tip = strings.TrimSpace("Worktree on " + w.Branch + ", from " + w.Base + "\n" + tip)
+	}
+	if t.Parent != "" {
+		for _, pt := range tabs {
+			if pt.ID == t.Parent {
+				tip = strings.TrimSpace("Started by " + a.tabName(pt) + "\n" + tip)
+			}
+		}
+	}
+	if tip != "" {
 		row.Tooltip(tip)
 	}
 	if row.DoubleClicked() {
 		a.renaming, a.renameText = t.ID, t.Label
-	} else if row.Clicked() {
+	} else if row.Clicked() && !toggled {
 		a.focusSession(pi, t.ID)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
@@ -312,11 +414,40 @@ func (a *appState) sessionRow(c *ui.Context, pi, ti int, t topTab) {
 			mygo.Clipboard.WriteText(info.WorkDir())
 			c.Toast("Copied")
 		}
+		if _, _, ok := a.agentOf(t); ok && m.Item("Ask for Review…").Chosen() {
+			a.openReviewDialog(t)
+		}
+		if w := t.Worktree; w != nil {
+			m.Separator()
+			if m.Item("Merge into " + w.Base + "…").Chosen() {
+				a.focusSession(pi, t.ID)
+				a.openMergeDialog(t)
+			}
+			if m.Item("Update from " + w.Base).Chosen() {
+				a.focusSession(pi, t.ID)
+				a.updateWorktree(t)
+			}
+			if m.Item("Push & Create PR").Chosen() {
+				a.focusSession(pi, t.ID)
+				a.pushWorktree(t)
+			}
+			if m.Item("Discard Worktree…").Chosen() {
+				a.focusSession(pi, t.ID)
+				a.discardWorktreeAsking(t)
+			}
+			m.Separator()
+		}
 		if m.Item("Close Session").Chosen() {
 			a.focusSession(pi, t.ID)
 			a.closeTabAsking(a.activeTab)
 		}
 	})
+}
+
+// tabName is what a session is called, as its row shows it.
+func (a *appState) tabName(t topTab) string {
+	info, _ := a.sessionInfo(t)
+	return a.sessionName(t, info)
 }
 
 // sessionName is what a session is called: the name the user gave it, or
@@ -345,6 +476,9 @@ func (a *appState) sessionTooltip(i session.Info) string {
 	if i.Message != "" {
 		lines = append(lines, i.Message)
 	}
+	if i.Summary != "" && i.Summary != i.Message {
+		lines = append(lines, i.Summary)
+	}
 	where := shortDir(i.WorkDir())
 	if prog := programName(i.Process, i.Agent); prog != "" {
 		where = prog + " · " + where
@@ -358,6 +492,21 @@ func (a *appState) sessionTooltip(i session.Info) string {
 			s += " · " + strconv.Itoa(g.Files) + " files +" + strconv.Itoa(g.Added) + " −" + strconv.Itoa(g.Removed)
 		}
 		lines = append(lines, s)
+	}
+	// Messages between agents (package mail).
+	if i.Asking != "" {
+		who := "another agent"
+		if _, tabs, ti, ok := a.findPane(i.Asking); ok {
+			who = a.tabName((*tabs)[ti])
+		}
+		lines = append(lines, "Waiting for "+who+"'s answer")
+	}
+	if i.Inbox > 0 {
+		wait := " wait"
+		if i.Inbox == 1 {
+			wait = " waits"
+		}
+		lines = append(lines, plural(i.Inbox, "message")+wait+": "+i.Held)
 	}
 	return strings.Join(lines, "\n")
 }

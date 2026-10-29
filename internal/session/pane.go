@@ -60,11 +60,26 @@ type Pane struct {
 	rows     int
 	closed   bool
 	dirty    bool // output since History was last taken
+
+	// For the mailbox: typed is when the user last typed in the pane
+	// (keys: not the terminal's answers, nor focus or mouse reports), and
+	// typedEnd whether that ended what they typed (Enter, Ctrl+C, Escape)
+	// or may have left a draft; started is when the pane started; prompt
+	// tells that the screen last showed the agent's prompt outright.
+	typed    time.Time
+	typedEnd bool
+	started  time.Time
+	prompt   bool
+
+	env []string // what the pane was started with, for a restart
 }
 
 // StartOptions are how Registry.Start runs a pane.
 type StartOptions struct {
 	ID, Session, Project string
+	// ProjectName and ProjectDir tell programs the project they run in
+	// (OMATERM_PROJECT, OMATERM_PROJECT_DIR); not set, they aren't told.
+	ProjectName, ProjectDir string
 	// Dir is where the shell starts; the home directory when empty.
 	Dir string
 	// Command runs first, in the user's login shell, which the pane goes
@@ -107,6 +122,12 @@ func (p *Pane) Info() Info {
 	return i
 }
 
+// Env is the environment the pane was started with (StartOptions.Env),
+// for starting it again.
+func (p *Pane) Env() []string {
+	return append([]string(nil), p.env...)
+}
+
 // ID is the pane's id.
 func (p *Pane) ID() string { return p.info.ID }
 
@@ -131,10 +152,17 @@ func (p *Pane) changedLocked() {
 	p.reg.changed()
 }
 
-// Write sends input to the program, as typed: the user's, or `omaterm
-// send`'s.
+// Write sends what the user typed to the program: the app's keyboard,
+// the daemon's attach connections, the web page's. The omaterm command's
+// typing goes through Send.
 func (p *Pane) Write(b []byte) error {
 	p.input()
+	p.typing(b)
+	return p.write(b)
+}
+
+// write sends b to the program.
+func (p *Pane) write(b []byte) error {
 	p.mu.Lock()
 	proc := p.proc
 	p.mu.Unlock()
@@ -143,6 +171,94 @@ func (p *Pane) Write(b []byte) error {
 	}
 	_, err := proc.Write(b)
 	return err
+}
+
+// Deliver types b for the mailbox (package mail). Unlike Write it is no
+// user's typing: it only dismisses the finished reports a new turn makes
+// old.
+func (p *Pane) Deliver(b []byte) error {
+	p.mu.Lock()
+	proc, closed := p.proc, p.closed
+	if !closed && p.recs.Len() > 0 && p.recs.DismissFinished() {
+		p.fromRecords()
+		p.changedLocked()
+	}
+	p.mu.Unlock()
+	if closed || proc == nil {
+		return io.ErrClosedPipe
+	}
+	_, err := proc.Write(b)
+	return err
+}
+
+// The mailbox's holds: the user typed in the pane this recently, or left
+// a draft in it this recently; an agent without its prompt in sight is
+// taken to be at it once its screen stays idle this long.
+const (
+	typingHold = 2 * time.Second
+	draftHold  = time.Minute
+	settleHold = 2 * time.Second
+)
+
+// NoAgent is MailHold's word for a pane that runs no agent.
+const NoAgent = "no agent runs in it"
+
+// MailHold tells why a message for the pane's agent waits, "" when it can
+// go now: an agent is at its prompt, and the user neither types in the
+// pane nor left a draft there. bracketed tells to paste it bracketed.
+func (p *Pane) MailHold(now time.Time) (hold string, bracketed bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	i := p.info
+	since := time.UnixMilli(i.Since)
+	switch {
+	case p.closed || i.Status == Exited:
+		return "it closed", false
+	case !detect.Known(i.Agent):
+		return NoAgent, false
+	case i.Status == Waiting:
+		return "it waits for the user", false
+	case i.Status == Working:
+		return "it is working", false
+	case p.userHold(now, true) != "":
+		return p.userHold(now, true), false
+	case !p.prompt && detect.ShowsPrompt(i.Agent):
+		// Something else shows over it, as a dialog, which what is typed
+		// would answer.
+		return "it isn't at its prompt", false
+	case p.seen != detect.Idle && !p.reported,
+		!p.prompt && !p.reported && now.Sub(since) < settleHold,
+		now.Sub(time.UnixMilli(i.Activity)) < time.Second:
+		return "it is starting", false
+	}
+	return "", p.scan.Bracketed
+}
+
+// userHold tells why automated typing waits for the user, "" when it
+// needn't: they typed in the pane just now, or, when draft, left a draft
+// there. p.mu is held.
+func (p *Pane) userHold(now time.Time, draft bool) string {
+	switch {
+	case now.Sub(p.typed) < typingHold:
+		return "the user is typing in it"
+	case draft && !p.typedEnd && now.Sub(p.typed) < draftHold:
+		return "the user left a draft in it"
+	}
+	return ""
+}
+
+// Started is when the pane started.
+func (p *Pane) Started() time.Time { return p.started }
+
+// SetMail tells what the mailbox holds for the pane (Info.Inbox, Held and
+// Asking).
+func (p *Pane) SetMail(inbox int, held, asking string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.info.Inbox != inbox || p.info.Held != held || p.info.Asking != asking {
+		p.info.Inbox, p.info.Held, p.info.Asking = inbox, held, asking
+		p.changedLocked()
+	}
 }
 
 // Text returns the pane's text: the screen, or with scrollback; the last
@@ -204,6 +320,23 @@ func (p *Pane) Wait(ctx context.Context, until func(Info) bool) (Info, error) {
 			return info, ctx.Err()
 		}
 	}
+}
+
+// Report takes a status report (OSC 7501's body after "7501;") as if the
+// program wrote it to the terminal: from `omaterm report` run with none,
+// as by an agent's commands.
+func (p *Pane) Report(body string) error {
+	rep, ok := osc.ParseStatus(body)
+	if !ok || rep.Query {
+		return errors.New("not a status report")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recs.Apply(rep.Record)
+	p.reported = true
+	p.fromRecords()
+	p.changedLocked()
+	return nil
 }
 
 // Flag marks the pane as needing the user, as `omaterm notify` asks.
@@ -290,6 +423,7 @@ var reply = regexp.MustCompile(`^\x1b(\[[?>=]?[0-9;]*[RcntIO]|\[\?[0-9;]*[u$]|\[
 func (c conn) Write(b []byte) (int, error) {
 	if !reply.Match(b) {
 		c.p.input()
+		c.p.typing(b)
 	}
 	return c.p.proc.Write(b)
 }
@@ -439,6 +573,35 @@ func (p *Pane) input() {
 	}
 }
 
+// mouse tells mouse reports, SGR's and X10's, from what the user types.
+var mouse = regexp.MustCompile(`^\x1b\[(<[0-9;]*[Mm]|M)`)
+
+// typing notes what the user typed, for the mailbox (Pane.typed).
+func (p *Pane) typing(b []byte) {
+	if len(b) == 0 || reply.Match(b) || mouse.Match(b) {
+		return
+	}
+	p.mu.Lock()
+	p.typed, p.typedEnd = time.Now(), endsInput(b)
+	p.mu.Unlock()
+}
+
+// inputEnd is a key that leaves no draft behind, in the Kitty keyboard
+// protocol: Enter (CSI 13 u), Escape (27) and Ctrl+C (99;5).
+var inputEnd = regexp.MustCompile(`\x1b\[(13|27|99;5)[;:0-9]*u$`)
+
+// endsInput tells input after which no draft is left: Enter, Ctrl+C,
+// Ctrl+U or Escape last.
+func endsInput(b []byte) bool {
+	switch b[len(b)-1] {
+	case '\r', '\n', 0x03, 0x15:
+		return true
+	case 0x1b:
+		return len(b) == 1
+	}
+	return inputEnd.Match(b)
+}
+
 func (p *Pane) viewed() bool { return p.reg.isViewed(p.info.Session) }
 
 // needsUser marks the pane waiting for the user; p.mu is held.
@@ -525,6 +688,22 @@ func (p *Pane) fullReset() {
 	}
 	p.reported = false
 	p.progress = ""
+	p.info.Summary = ""
+}
+
+// summarize keeps a report's message as the agent's last word on its
+// turn, when it has one; p.mu is held.
+func (p *Pane) summarize(msg string) {
+	if msg != "" {
+		p.info.Summary = msg
+	}
+}
+
+// worded tells that the lead report says something of itself: the screen
+// has no better word on the turn then. p.mu is held.
+func (p *Pane) worded() bool {
+	lead, ok := p.recs.Lead()
+	return ok && lead.Msg != ""
 }
 
 // fromRecords sets the status from the program's reports, which come
@@ -545,15 +724,18 @@ func (p *Pane) fromRecords() {
 	case "blocked":
 		p.setStatus(Waiting)
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, lead.Kind, lead.Progress
+		p.summarize(lead.Msg)
 		if !viewed {
 			p.info.Unread = true
 		}
 	case "working":
 		p.setStatus(Working)
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, "", lead.Progress
+		p.info.Summary = "" // a turn: its last word is to come
 	case "error":
 		p.setStatus(Failed)
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, "", -1
+		p.summarize(lead.Msg)
 		if !viewed {
 			p.info.Unread = true
 		}
@@ -565,6 +747,7 @@ func (p *Pane) fromRecords() {
 			}
 		}
 		p.info.Message, p.info.Kind, p.info.Progress = lead.Msg, "", -1
+		p.summarize(lead.Msg)
 	default:
 		p.setStatus(Idle)
 		p.info.Message, p.info.Kind, p.info.Progress = "", "", -1
@@ -649,6 +832,7 @@ func (p *Pane) tick(now time.Time) bool {
 			p.fromRecords()
 		}
 		p.progress = ""
+		p.info.Summary = ""
 		if p.info.AgentSession != nil {
 			p.info.AgentSession = nil
 		}
@@ -659,7 +843,7 @@ func (p *Pane) tick(now time.Time) bool {
 			p.progress = ""
 		}
 		p.info.Process, p.info.Agent, p.info.Runtime = proc, ag, runtime
-		p.seen, p.looked = "", false
+		p.seen, p.looked, p.prompt = "", false, false
 		changed = true
 	}
 	if readCwd {
@@ -718,10 +902,19 @@ func (p *Pane) look(now time.Time, screen string) bool {
 	}
 	p.looked = true
 	st, visible := detect.Idle, true
+	changed := false
 	if detect.Known(p.info.Agent) {
 		r := detect.Detect(p.info.Agent, detect.Input{Screen: screen, Title: p.info.Title, Progress: p.progress})
+		p.prompt = r.State == detect.Idle && r.Visible && !r.Skip
+		// At its prompt, the agent's last word on its turn is what its
+		// screen ended on, unless its reports gave one.
+		if p.prompt && !p.worded() {
+			if s := detect.Summary(p.info.Agent, screen); s != "" && s != p.info.Summary {
+				p.info.Summary, changed = s, true
+			}
+		}
 		if r.Skip {
-			return false
+			return changed
 		}
 		st, visible = r.State, r.Visible
 	} else if agent.TitleBusy(p.info.Title) {
@@ -729,7 +922,7 @@ func (p *Pane) look(now time.Time, screen string) bool {
 	}
 	if st == p.seen {
 		p.idleFrom = time.Time{}
-		return false
+		return changed
 	}
 	if st == detect.Idle && !visible && p.info.Status == Working {
 		if p.idleFrom.IsZero() {
@@ -745,7 +938,7 @@ func (p *Pane) look(now time.Time, screen string) bool {
 	switch st {
 	case detect.Working:
 		p.setStatus(Working)
-		p.info.Message = ""
+		p.info.Message, p.info.Summary = "", ""
 	case detect.Blocked:
 		p.needsUser("")
 	default:
@@ -757,7 +950,7 @@ func (p *Pane) look(now time.Time, screen string) bool {
 			}
 		}
 	}
-	return p.info.Status != before
+	return p.info.Status != before || changed
 }
 
 // commandLine is the argv a pane starts: the user's login shell, which
