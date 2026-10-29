@@ -246,7 +246,7 @@ function sessionRow(s, proj, open) {
   const panes = terminals(s);
   const lead = s.lead && s.lead.id && !s.lead.url ? s.lead : panes[0];
   const st = status(lead);
-  const sub = lead.message || [label(lead), where(lead.dir, proj)].filter(Boolean).join(" · ");
+  const sub = lead.message || lead.summary || [label(lead), where(lead.dir, proj)].filter(Boolean).join(" · ");
   const here = panes.some((p) => p.id === open);
   return h("div", { class: "session-group" },
     h("a", {

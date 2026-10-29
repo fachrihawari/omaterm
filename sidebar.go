@@ -284,7 +284,15 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	if len(node.kids) > 0 {
 		left -= 20
 	}
-	row := ui.Row(c.Key("s-"+t.ID)).Height(32).Radius(8).Padding(0, 8, 0, left).Gap(8).AlignItems(ui.Center).
+	// The agent's last word on its turn, under the name, unless the
+	// sidebar is kept compact.
+	sub, height := info.Summary, float32(32)
+	if sub != "" && a.settings.Density != "compact" {
+		height = 44
+	} else {
+		sub = ""
+	}
+	row := ui.Row(c.Key("s-"+t.ID)).Height(height).Radius(8).Padding(0, 8, 0, left).Gap(8).AlignItems(ui.Center).
 		Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	bg := ui.Color{}
 	switch {
@@ -333,23 +341,30 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			}
 			return
 		}
-		name := ui.Text(c, a.sessionName(t, info)).FontSize(13).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-		switch {
-		case unread:
-			name.FontWeight(650).TextColor(pal.TextStrong)
-		case info.Status == session.Exited:
-			name.TextColor(pal.TextMuted)
-		}
-		if w := t.Worktree; w != nil {
-			// A worktree's branch, from the session: the project's isn't
-			// known until it shows.
-			ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint).Shrink(0)
-			if w.Branch != a.sessionName(t, info) {
-				ui.Text(c, w.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				name := ui.Text(c, a.sessionName(t, info)).FontSize(13).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+				switch {
+				case unread:
+					name.FontWeight(650).TextColor(pal.TextStrong)
+				case info.Status == session.Exited:
+					name.TextColor(pal.TextMuted)
+				}
+				if w := t.Worktree; w != nil {
+					// A worktree's branch, from the session: the project's
+					// isn't known until it shows.
+					ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint).Shrink(0)
+					if w.Branch != a.sessionName(t, info) {
+						ui.Text(c, w.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+					}
+				} else if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" && g.Branch != p.Branch && !strings.HasPrefix(p.Branch, g.Branch) {
+					ui.Text(c, g.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+				}
+			})
+			if sub != "" {
+				ui.Text(c, sub).FontSize(11.5).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 			}
-		} else if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" && g.Branch != p.Branch && !strings.HasPrefix(p.Branch, g.Branch) {
-			ui.Text(c, g.Branch).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
-		}
+		})
 		ui.Spacer(c)
 		if t.Collapsed && len(node.kids) > 0 {
 			// What it hides: how many, and the one that needs the user most.
@@ -458,6 +473,9 @@ func (a *appState) sessionTooltip(i session.Info) string {
 	var lines []string
 	if i.Message != "" {
 		lines = append(lines, i.Message)
+	}
+	if i.Summary != "" && i.Summary != i.Message {
+		lines = append(lines, i.Summary)
 	}
 	where := shortDir(i.WorkDir())
 	if prog := programName(i.Process, i.Agent); prog != "" {
