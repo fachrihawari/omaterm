@@ -341,7 +341,9 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			}
 			return
 		}
-		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Children(func() {
+		// The name and its line take what they need, and give way to the
+		// time and the icon; the spacer takes the rest.
+		ui.Column(c).Shrink(1).MinWidth(0).Children(func() {
 			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 				name := ui.Text(c, a.sessionName(t, info)).FontSize(13).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 				switch {
