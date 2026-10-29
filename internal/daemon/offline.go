@@ -156,13 +156,14 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			if err != nil {
 				return nil, err
 			}
-			// The command it started with runs again, as the app does.
-			var command []string
+			// The command it started with runs again, as the app does,
+			// with the environment it was given.
+			var command, env []string
 			if p := d.reg.Get(pn.ID); p != nil {
-				command = p.Info().Command
+				command, env = p.Info().Command, p.Env()
 			}
 			d.endPane(pn.ID)
-			return true, d.startPane(s.ID, pn.ID, dir, command, nil)
+			return true, d.startPane(s.ID, pn.ID, dir, command, env)
 		})
 	case "rename":
 		var p proto.RenameParams

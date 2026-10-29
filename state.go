@@ -302,11 +302,13 @@ type appState struct {
 	// ws holds the workspaces of projects not shown, by project ID;
 	// wsOwner is the project whose workspace a.tabs is. saved are the
 	// sessions state.json had for projects not yet shown, paneDirs the
-	// directories their panes start in.
+	// directories their panes start in, and paneEnv the environment
+	// omaterm new --env gave them, for a restart.
 	ws       map[string]*projectWS
 	wsOwner  string
 	saved    map[string][]model.Session
 	paneDirs map[string]string
+	paneEnv  map[string][]string
 	// paneAgents are the agent conversations panes ran when saved, which
 	// their restore resumes (Phase 5).
 	paneAgents map[string]*agent.Session
@@ -554,6 +556,7 @@ func newApp() *appState {
 		ws:               map[string]*projectWS{},
 		saved:            map[string][]model.Session{},
 		paneDirs:         map[string]string{},
+		paneEnv:          map[string][]string{},
 		paneAgents:       map[string]*agent.Session{},
 		paneURLs:         map[string]string{},
 		restoring:        map[string]bool{},

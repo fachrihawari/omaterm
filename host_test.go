@@ -511,3 +511,30 @@ func TestGitTabBranchView(t *testing.T) {
 		t.Fatal("the main checkout's change shows")
 	}
 }
+
+// A pane started again keeps the environment omaterm new --env gave it.
+func TestRestartKeepsEnv(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	c := dialApp(t, a)
+	var made proto.Created
+	if err := c.Call("create", proto.CreateParams{Name: "dev", Dir: a.workspace, Env: []string{"PROBE_ENV=kept"},
+		Command: []string{"sh", "-c", "echo env=$PROBE_ENV; sleep 30"}}, &made); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call("restart", proto.IDParams{ID: made.Pane}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		var out proto.ReadResult
+		if err := c.Call("read", proto.ReadParams{ID: made.Pane}, &out); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.Text, "env=kept") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after the restart: %q", out.Text)
+		}
+	}
+}

@@ -70,6 +70,8 @@ type Pane struct {
 	typedEnd bool
 	started  time.Time
 	prompt   bool
+
+	env []string // what the pane was started with, for a restart
 }
 
 // StartOptions are how Registry.Start runs a pane.
@@ -115,6 +117,12 @@ func (p *Pane) Info() Info {
 	i := p.info
 	i.Records = append([]osc.Record(nil), i.Records...)
 	return i
+}
+
+// Env is the environment the pane was started with (StartOptions.Env),
+// for starting it again.
+func (p *Pane) Env() []string {
+	return append([]string(nil), p.env...)
 }
 
 // ID is the pane's id.

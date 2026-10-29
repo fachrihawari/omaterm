@@ -538,5 +538,6 @@ func (a *appState) closePaneRuntime(id string) {
 	delete(a.paneAgents, id)
 	a.dropWeb(id)
 	delete(a.paneDirs, id)
+	delete(a.paneEnv, id)
 	delete(a.paneFailed, id)
 }

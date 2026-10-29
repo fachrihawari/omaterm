@@ -346,8 +346,8 @@ func TestOfflineRestartKeepsCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	cmd := []string{"sh", "-c", "echo again; sleep 30"}
-	made := call[proto.Created](t, c, "create", proto.CreateParams{Name: "dev", Dir: proj, Command: cmd})
+	cmd := []string{"sh", "-c", "echo again env=$PROBE_ENV; sleep 30"}
+	made := call[proto.Created](t, c, "create", proto.CreateParams{Name: "dev", Dir: proj, Command: cmd, Env: []string{"PROBE_ENV=kept"}})
 	call[bool](t, c, "restart", proto.IDParams{ID: made.Pane})
 	p := d.reg.Get(made.Pane)
 	if p == nil {
@@ -356,6 +356,10 @@ func TestOfflineRestartKeepsCommand(t *testing.T) {
 	if got := p.Info().Command; strings.Join(got, " ") != strings.Join(cmd, " ") {
 		t.Fatalf("restarted with %q, want %q", got, cmd)
 	}
+	// And with the environment it was given.
+	waitFor(t, "the restarted command's output", func() bool {
+		return strings.Contains(call[proto.ReadResult](t, c, "read", proto.ReadParams{ID: made.Pane}).Text, "env=kept")
+	})
 }
 
 // With the window closed, a session made from an agent's pane is its

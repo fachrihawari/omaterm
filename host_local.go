@@ -515,6 +515,9 @@ func (a *appState) cliCreate(p proto.CreateParams) (any, error) {
 		dir = proj.Path
 	}
 	a.paneDirs[paneID] = dir
+	if len(p.Env) > 0 {
+		a.paneEnv[paneID] = p.Env
+	}
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
 	} else if _, err := a.startPane(paneID, tab.ID, dir, p.Command, false, p.Env...); err != nil {
@@ -654,6 +657,9 @@ func (a *appState) cliSplit(p proto.CreateParams) (any, error) {
 		workDir = a.paneDirs[p.Split]
 	}
 	a.paneDirs[paneID] = workDir
+	if len(p.Env) > 0 {
+		a.paneEnv[paneID] = p.Env
+	}
 	if p.URL != "" {
 		a.paneURLs[paneID] = proto.BrowserURL(p.URL)
 	} else if workDir, err := tab.Worktree.PaneDir(workDir); err != nil {
@@ -764,6 +770,9 @@ func (a *appState) cliRestart(id string) error {
 		return proto.Errorf(proto.CodeNotFound, "pane "+id+" is a browser, not a terminal")
 	}
 	info := a.status[id]
+	if p := a.panes.Get(id); p != nil {
+		info = p.Info() // as it is now, not as the UI last saw it
+	}
 	dir := info.Dir
 	if dir == "" {
 		dir = a.paneDirs[id]
@@ -774,9 +783,9 @@ func (a *appState) cliRestart(id string) error {
 	}
 	a.panes.Remove(id)
 	delete(a.paneFailed, id)
-	// The command it started with runs again: a dev server restarts as
-	// itself, not as a bare shell.
-	_, err = a.startPane(id, (*tabs)[ti].ID, dir, info.Command, false)
+	// The command it started with runs again, with its environment: a dev
+	// server restarts as itself, not as a bare shell.
+	_, err = a.startPane(id, (*tabs)[ti].ID, dir, info.Command, false, a.paneEnv[id]...)
 	return err
 }
 
