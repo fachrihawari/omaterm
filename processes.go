@@ -635,16 +635,23 @@ func processStatusText(status procs.Status) string {
 	}
 }
 
-func (a *appState) processPlaceholder(c *ui.Context, tab topTab) ui.Element {
-	var proc procs.Proc
+// procOfTab is the process a process tab shows, as last listed.
+func (a *appState) procOfTab(tab topTab) (procs.Proc, bool) {
+	if tab.Kind != tabProcess {
+		return procs.Proc{}, false
+	}
 	if pi, ok := a.projectIndexForTab(tab.ID); ok {
 		for _, p := range a.procList[a.projects[pi].ID] {
 			if p.Name == tab.Process {
-				proc = p
-				break
+				return p, true
 			}
 		}
 	}
+	return procs.Proc{}, false
+}
+
+func (a *appState) processPlaceholder(c *ui.Context, tab topTab) ui.Element {
+	proc, _ := a.procOfTab(tab)
 	return ui.Column(c).Fill().Center().Gap(8).Children(func() {
 		ui.Text(c, tab.Process).FontSize(18).TextColor(pal.Text).Bold()
 		ui.Text(c, processStatusText(proc.Status)).FontSize(12).TextColor(pal.TextMuted)

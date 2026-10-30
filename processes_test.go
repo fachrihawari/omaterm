@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -85,8 +86,41 @@ func TestProcessSidebarAndTab(t *testing.T) {
 	if pane := a.panes.Get(a.tabs[a.activeTab].Split.TermID); pane == nil || !strings.Contains(pane.Text(false, 0), "up") {
 		t.Fatal("web process output is missing from its pane")
 	}
-	if len(a.visibleTabIndices()) != before {
-		t.Fatal("the process tab appeared in the tab bar")
+	// The process's tab is a tab like any other: in the tab bar, and on
+	// Next Tab's way.
+	if got := a.visibleTabIndices(); len(got) != before+1 || !slices.Contains(got, a.activeTab) {
+		t.Fatalf("the process tab is not in the tab bar: %v (active %d)", got, a.activeTab)
+	}
+	webTab := a.activeTab
+	a.cycleTab(1)
+	if a.activeTab == webTab || a.activeView != tabTerminal {
+		t.Fatalf("Next Tab stayed on the process tab: view=%v", a.activeView)
+	}
+	for range a.tabs {
+		if a.activeTab == webTab {
+			break
+		}
+		a.cycleTab(1)
+	}
+	if a.activeTab != webTab || a.activeView != tabProcess {
+		t.Fatalf("Next Tab never came back to the process tab: view=%v", a.activeView)
+	}
+	// Its × hides the tab; the process goes on, and the toast says so.
+	a.queuedToasts = nil
+	a.closeTabAsking(webTab)
+	if len(a.visibleTabIndices()) != before || a.procList[projectID][0].Status != procs.Running {
+		t.Fatalf("closing the process tab: tabs=%v status=%v", a.visibleTabIndices(), a.procList[projectID][0].Status)
+	}
+	if !slices.Contains(a.queuedToasts, "web keeps running. Stop it from the sidebar.") {
+		t.Fatalf("closing the process tab said %q", a.queuedToasts)
+	}
+	tr.Frame()
+	if err := tr.Click("web"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.activeView != tabProcess || a.tabs[a.activeTab].Process != "web" {
+		t.Fatal("the sidebar row did not bring the process tab back")
 	}
 	// The untrusted process uses the same Start entry point: the app asks
 	// the user to trust its definition, then starts it.

@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
 
@@ -77,12 +78,13 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 	})
 }
 
+// visibleTabIndices are the tabs the tab bar shows and Next Tab walks:
+// every tab, a process's too, so that what the sidebar opens can be gone
+// back to the way any other tab is.
 func (a *appState) visibleTabIndices() []int {
-	var out []int
-	for i, tab := range a.tabs {
-		if tab.Kind != tabProcess {
-			out = append(out, i)
-		}
+	out := make([]int, len(a.tabs))
+	for i := range a.tabs {
+		out[i] = i
 	}
 	return out
 }
@@ -121,6 +123,14 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			ui.Icon(c, iconGitCompare).Size(13, 13).TextColor(pal.Ok)
 		case tabGraph:
 			ui.Icon(c, iconGitGraph).Size(13, 13).TextColor(pal.ANSI[5])
+		case tabProcess:
+			// Its status, as its sidebar row shows it; a stopped one
+			// shows what it is instead of nothing.
+			if proc, ok := a.procOfTab(*t); ok && proc.Status != procs.Stopped {
+				a.processIcon(c, proc, 12)
+			} else {
+				ui.Icon(c, iconTerminal).Size(13, 13).TextColor(pal.TextFaint)
+			}
 		}
 		label := t.Label
 		if t.Kind == tabTerminal {
@@ -134,6 +144,11 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 		ui.Text(c, label).FontSize(12).TextColor(col).SingleLine().Ellipsis("…").MaxWidth(180)
 		if t.Detail != "" {
 			ui.Text(c, t.Detail).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+		}
+		if t.Kind == tabProcess {
+			if proc, ok := a.procOfTab(*t); ok && proc.Port > 0 {
+				ui.Text(c, ":"+itoa(proc.Port)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+			}
 		}
 		if t.Dirty {
 			ui.Text(c, "M").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
@@ -416,6 +431,14 @@ func (a *appState) closeTabAsking(i int) {
 		open := true
 		a.pendingClosePath = t.Path
 		a.closeTabConfirmOpen = &open
+		return
+	}
+	if t.Kind == tabProcess {
+		// Its tab goes; the process does not: Stop is what ends it.
+		a.closeTab(i)
+		if proc, ok := a.procOfTab(t); ok && (proc.Status == procs.Starting || proc.Status == procs.Running) {
+			a.toast(nil, proc.Name+" keeps running. Stop it from the sidebar.")
+		}
 		return
 	}
 	if t.Kind != tabTerminal || t.Split == nil {
