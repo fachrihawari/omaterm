@@ -1188,7 +1188,7 @@ Project processes, from omaterm.yml and the ones kept in omaterm:
                                          run one; --wait holds until it is up
   omaterm stop <name>                    stop one
   omaterm restart <name> [--wait] [--timeout 60s]
-                                         restart one, as restart does a session
+                                         restart one; restart also takes a session or pane
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …
   omaterm skill setup|status|show|remove [--agent claude|codex|pi|opencode]
   omaterm cli install|uninstall|status

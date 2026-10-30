@@ -35,6 +35,10 @@ an editor and a browser sit next to your shells.
 - **Agents that work together.** An agent splits a task between agents on
   branches made from its own, asks them and gets their answers, and merges
   their work. Another agent can review a session's work, round after round.
+- **Project processes.** A project's dev server, queue worker or watcher is
+  defined once, and omaterm runs it, restarts it when it fails and shows it in
+  the sidebar. You and every agent share it: `omaterm start web` runs the one
+  you have.
 - **Sessions that keep running.** Close the window and they carry on. After a
   reboot, agents resume the same conversation.
 - **On your phone.** Pair a browser with a QR code, then watch and type into
@@ -136,6 +140,87 @@ second agent beside it, Codex reviewing Claude Code for instance. The
 reviewer reads what the session changed, changes nothing itself, and sends
 the agent what to fix, for up to three rounds, then tells you its verdict.
 
+### Project processes
+
+A project's dev server, queue worker or watcher can be a process omaterm runs
+for you. It shows in the sidebar's **Processes** group with its status:
+starting, running, exited, failed, paused after too many restarts, or not
+trusted yet. Start, stop or restart it from its row, or from the row's menu.
+A running process with a port shows the port as a pill: click it to open the
+page. Open the process to see its output in a tab.
+
+To add one, use **Add Process…** in the command palette or a project's menu. Its suggestions come from the project's files: the `dev`, `start`,
+`serve`, `watch`, `preview` and `storybook` scripts in `package.json`,
+`Procfile.dev` and `Procfile`, the `dev`, `serve`, `watch` and `run` targets
+of a `Makefile`, `justfile` or `Taskfile.yml`, `docker-compose.yml` or
+`compose.yml`, the servers of Laravel, Rails, Django and Go projects, and a
+`solo.yml`. Pick one to fill in the form, then change what you need.
+
+A process is defined in `omaterm.yml` at the project root, which you commit
+and share with your team, or locally in omaterm, which keeps it out of the
+repository. The Add or Edit dialog's **Save in omaterm.yml** switch chooses
+between them. It is on by default when the project is a git repository, and
+**Edit…** in a process's menu opens the dialog for either kind.
+
+```yaml
+processes:
+  web:
+    command: pnpm run dev
+    port: 5173
+    autostart: true
+    restart: on-failure     # never | on-failure | always
+    watch: ["src/**", "package.json"]
+    env:
+      NODE_ENV: development
+  worker:
+    command: go run ./cmd/worker
+    dir: services/worker
+```
+
+Each process takes:
+
+- `command`, which your login shell runs. It is required.
+- `dir`, a folder relative to the project. It must stay inside the project.
+  The default is the project's root.
+- `port`, the port that means the process is up. omaterm shows it as a pill,
+  and the process counts as running once the port accepts connections.
+  Without a port, it counts as running two seconds after it starts.
+- `autostart`, which starts the process when omaterm starts, if it is trusted.
+  The default is off.
+- `restart`: `never` (the default), `on-failure` or `always`. A restart waits
+  one second, then doubles the wait each time, up to 30 seconds. After ten
+  restarts in a minute, the process pauses until you start it again.
+- `watch`, a list of globs. A change to a matching file restarts the process.
+  As in `.gitignore`, `*` stays within one folder and `**` crosses folders.
+- `env`, variables added to the environment the process runs in.
+
+A command from `omaterm.yml` runs only after you trust that exact definition.
+Starting an untrusted process opens a sheet that shows its command, folder,
+environment, port, restart and watch settings. **Trust and Start** runs it,
+and omaterm keeps the trust for that definition, in that project folder, on
+this machine. Renaming a process, or turning autostart on or off, keeps the
+trust. Changing the command, folder, environment, port, restart or watch
+settings does not. A changed definition makes a stopped process untrusted
+again, and a running one shows a dot until you restart it.
+
+Processes run in the session daemon, so they keep running after you close the
+window, as sessions do. With the daemon off, or on Windows, omaterm runs them
+itself, and they stop when it quits. When a process fails or its restarts are
+paused, omaterm sends a desktop notification, if **Notify When a Session
+Fails** is on.
+
+From the command line, `omaterm ps` lists the project's processes with their
+status, port, process ID and restarts. `omaterm start web --wait` starts one
+and waits until it is up, or exits with an error if it fails. `omaterm stop`
+and `omaterm restart` do what they say. Each process is a session named after
+it, so `omaterm read web` shows its output and `omaterm wait web` waits on
+it. Agents are taught to use these processes rather than start their own
+dev server, and to ask you before they add or change one.
+
+The idea of defining a project's processes in a committed file comes from
+[Solo](https://soloterm.com) (`solo.yml`), whose files omaterm imports as
+suggestions.
+
 ### Sessions keep running
 
 Sessions run in a session daemon, so they keep going after you close the
@@ -218,6 +303,10 @@ omaterm send <pane> "y" --enter         # type into it, once you stop typing the
 omaterm diff --turn                     # what the last agent turn changed
 omaterm new --worktree fix-login -- claude  # an agent on a branch of its own
 omaterm ask fix-login "Is the test green?"  # ask another agent, get its answer
+omaterm ps                              # the project's processes and their status
+omaterm start web --wait                # run one, and wait until it is up
+omaterm restart web                     # restart one
+omaterm stop web                        # stop one
 ```
 
 `omaterm help` lists every command. `omaterm skill setup` teaches Claude
@@ -291,7 +380,8 @@ And learned from, sharing no code:
 **[Rex](https://superlogical.com)** by Superlogical (card panes, pane headers,
 and OSC 7501, the Program Status Protocol omaterm reads agents' status with),
 **[Tern](https://stencil.so/tern)** by Stencil (how an agent terminal should
-look and feel), **[OpenCode](https://opencode.ai)** (whose web mode inspired
+look and feel), **[Solo](https://soloterm.com)** (the idea of a project's
+processes in a committed file, and its `solo.yml` format), **[OpenCode](https://opencode.ai)** (whose web mode inspired
 web access) and **[Omarchy](https://omarchy.org)** (the desktop omaterm was
 first made for).
 
