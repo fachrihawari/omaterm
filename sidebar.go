@@ -99,9 +99,11 @@ func (a *appState) sidebarHeader(c *ui.Context) {
 			a.sidebarVisible = false
 		}
 		ui.Text(c, "Projects").FontSize(11).FontWeight(600).TextColor(pal.TextFaint).Padding(0, 4).SingleLine().Grow(1)
-		if cmdButton(c, iconPlus, 15, false).Tooltip("New Session (" + keyLabels("terminal.new") + ")").Clicked() {
-			a.newTerminalTab()
-		}
+		// What can be added, in one place: a session, an agent, a
+		// process, a project.
+		cmdButton(c, iconPlus, 15, false).Tooltip("New…").Label("New").Menu(func(m *ui.Menu) {
+			a.addItems(m, a.active, true)
+		})
 		if cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
 			a.openProjectDialog()
 		}
@@ -209,10 +211,9 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			}
 		}
 		if hovered {
-			if cmdButton(c, iconPlus, 13, false).Tooltip("New Session in " + p.Name).Clicked() {
-				a.switchProject(i)
-				a.newTerminalTab()
-			}
+			cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
+				a.addItems(m, i, false)
+			})
 		}
 	})
 	if h.Clicked() {
@@ -224,18 +225,8 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 		}
 	}
 	h.ContextMenu(func(m *ui.Menu) {
-		if m.Item("New Session").Chosen() {
-			a.switchProject(i)
-			a.newTerminalTab()
-		}
-		if m.Item("New Agent in Worktree…").Chosen() {
-			a.switchProject(i)
-			a.openWorktreeDialog(i)
-		}
-		if m.Item("Add Process…").Chosen() {
-			a.switchProject(i)
-			a.openProcessDialog(i, nil)
-		}
+		a.addItems(m, i, false)
+		m.Separator()
 		if len(a.procList[p.ID]) > 0 {
 			if m.Item("Start All Processes").Chosen() {
 				a.startAllProcesses(i)
@@ -272,16 +263,91 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 		}
 	}
 	if n == 0 && len(a.procList[p.ID]) == 0 {
-		ui.Text(c, "No sessions").FontSize(11.5).TextColor(pal.TextFaint).Padding(4, 0, 4, 28)
+		a.emptyProject(c, i)
 	}
 	if len(a.procList[p.ID]) > 0 {
 		a.processGroup(c, i)
 	}
 }
 
+// addItems are what can be added to project pi, as its + and its menu
+// offer them; withProject adds Open Project…, for the sidebar's own +.
+func (a *appState) addItems(m *ui.Menu, pi int, withProject bool) {
+	if pi >= 0 && pi < len(a.projects) {
+		if m.Item("New Session").Chosen() {
+			a.newSessionIn(pi)
+		}
+		if m.Item("New Agent…").Chosen() {
+			a.switchProject(pi)
+			a.openWorktreeDialog(pi)
+		}
+		if m.Item("Add Process…").Chosen() {
+			a.switchProject(pi)
+			a.openProcessDialog(pi, nil)
+		}
+	}
+	if withProject {
+		if pi >= 0 && pi < len(a.projects) {
+			m.Separator()
+		}
+		if m.Item("Open Project…").Chosen() {
+			a.openProjectDialog()
+		}
+	}
+}
+
+// newSessionIn starts a session in project pi. A project that had none
+// gets its first as it opens: that one is the new session, not a second.
+func (a *appState) newSessionIn(pi int) {
+	if pi < 0 || pi >= len(a.projects) {
+		return
+	}
+	if pi != a.active {
+		empty := len(a.projectTabs(a.projects[pi].ID)) == 0
+		a.switchProject(pi)
+		if empty && len(a.tabs) > 0 {
+			return
+		}
+	}
+	a.newTerminalTab()
+}
+
+// emptyProject is what a project with nothing in it shows: the three
+// things it can start, rather than only that there is nothing.
+func (a *appState) emptyProject(c *ui.Context, pi int) {
+	ui.Column(c.Key("empty")).Padding(4, 0, 6, 22).AlignItems(ui.Start).Children(func() {
+		ui.Text(c, "Nothing here yet").FontSize(11.5).TextColor(pal.TextFaint).Padding(0, 0, 2, 6)
+		link := func(icon *ui.SVG, label string, do func(), switches bool) {
+			b := ui.ButtonBase(c.Key("empty-"+label)).Height(24).Radius(6).Padding(0, 6).Gap(7).AlignItems(ui.Center).
+				Cursor(ui.CursorPointer).Label(label)
+			if b.Hovered() {
+				b.Background(pal.Hover)
+			}
+			b.Children(func() {
+				ui.Icon(c, icon).Size(12, 12).TextColor(pal.Accent)
+				ui.Text(c, label).FontSize(11.5).TextColor(pal.Accent).SingleLine()
+			})
+			if b.Clicked() {
+				if switches {
+					a.switchProject(pi)
+				}
+				do()
+			}
+		}
+		link(iconTerminal, "New session", func() { a.newSessionIn(pi) }, false)
+		link(iconBot, "New agent", func() { a.openWorktreeDialog(pi) }, true)
+		link(iconPlus, "Add process", func() { a.openProcessDialog(pi, nil) }, true)
+	})
+}
+
 func (a *appState) processGroup(c *ui.Context, pi int) {
-	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 8, 0, 28).AlignItems(ui.Center).Children(func() {
+	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 4, 0, 28).AlignItems(ui.Center).Children(func() {
 		sectionLabel(c, "Processes")
+		ui.Spacer(c)
+		if cmdButton(c, iconPlus, 11, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
+			a.switchProject(pi)
+			a.openProcessDialog(pi, nil)
+		}
 	})
 	for _, proc := range a.procList[a.projects[pi].ID] {
 		a.processRow(c, pi, proc)
