@@ -3,6 +3,14 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.10.1
+
+- **Windows no longer opens a stream of cmd windows.** Every time
+  omaterm read a repository, for a pane's branch and changes or for the
+  Git tab, Windows gave git a console window of its own, and with an
+  agent at work they kept piling up. git, and the search and Tailscale
+  lookups, now run out of sight.
+
 ## 0.10.0
 
 Agents on branches of their own, and agents that work together.

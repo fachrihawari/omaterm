@@ -70,6 +70,7 @@ func gitCmd(root string, args ...string) (string, error) {
 	if root != "" {
 		cmd.Dir = root
 	}
+	hide(cmd)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimRight(string(out), "\n"), err
 }
@@ -211,6 +212,7 @@ func gitOut(root string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"--no-optional-locks"}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	cmd.Dir = root
+	hide(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		var exit *exec.ExitError
@@ -413,6 +415,7 @@ func ShowBytes(root, rev, path string) ([]byte, error) {
 	if root != "" {
 		cmd.Dir = root
 	}
+	hide(cmd)
 	return cmd.Output()
 }
 

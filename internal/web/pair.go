@@ -51,11 +51,15 @@ func networkIP(host string) string {
 func tailscaleURL(port int) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	serve, err := exec.CommandContext(ctx, "tailscale", "serve", "status", "--json").Output()
+	cmd := exec.CommandContext(ctx, "tailscale", "serve", "status", "--json")
+	hide(cmd)
+	serve, err := cmd.Output()
 	if err != nil || !strings.Contains(string(serve), ":"+strconv.Itoa(port)) {
 		return ""
 	}
-	out, err := exec.CommandContext(ctx, "tailscale", "status", "--json").Output()
+	cmd = exec.CommandContext(ctx, "tailscale", "status", "--json")
+	hide(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

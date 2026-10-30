@@ -57,7 +57,9 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 
 	// CPU% from ps (one call for all processes).
 	cpuMap := map[int]string{}
-	if out, err := exec.Command("ps", "-eo", "pid=,pcpu=").Output(); err == nil {
+	ps := exec.Command("ps", "-eo", "pid=,pcpu=")
+	hide(ps)
+	if out, err := ps.Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) < 2 {
@@ -274,7 +276,9 @@ func ListProjectPorts(processes []Process) ([]Port, error) {
 }
 
 func listPortsViaSS(pidSet map[int]bool, procName map[int]string) ([]Port, error) {
-	out, err := exec.Command("ss", "-tlnp").Output()
+	cmd := exec.Command("ss", "-tlnp")
+	hide(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
