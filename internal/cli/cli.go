@@ -31,7 +31,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "merge", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "daemon", "clients", "web", "settings", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "clients", "web", "settings", "services", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -614,6 +614,9 @@ func run(args []string) error {
 	case "diff":
 		return diffCmd(c, args)
 
+	case "services":
+		return servicesCmd(c, args)
+
 	case "ask":
 		return askCmd(c, args)
 
@@ -1167,6 +1170,8 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
                                          merge a worktree made from your branch into it
   omaterm report <idle|working|done|blocked|error|clear> [message] [--kind] [--progress]
   omaterm diff [target] [--turn|--branch] [path…]
+  omaterm services [--wait <name|port>] [-t timeout] [--json]
+                                         the project's listening ports, or wait for one
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …
   omaterm skill setup|status|show|remove [--agent claude|codex|pi|opencode]
   omaterm cli install|uninstall|status

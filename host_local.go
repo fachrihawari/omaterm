@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -420,6 +421,11 @@ func (a *appState) protoState(started time.Time) proto.State {
 		}
 	}
 	proto.DropGoneParents(st.Sessions)
+	st.Workspace = a.workspace
+	for _, p := range a.ports {
+		st.Ports = append(st.Ports, proto.Port{Port: p.Port, Name: p.Name, Process: p.Process, Pid: p.Pid,
+			URL: fmt.Sprintf("http://localhost:%d", p.Port), Open: p.Open})
+	}
 	return st
 }
 

@@ -142,6 +142,22 @@ type State struct {
 	Sessions []Session `json:"sessions"`
 	Viewed   string    `json:"viewed,omitempty"`
 	Started  int64     `json:"started"`
+	// Workspace is the folder whose processes the app scanned, and Ports
+	// what they listen on. The daemon scans nothing, so a state it answers
+	// has neither: scanning needs the app, and the window it shows.
+	Workspace string `json:"workspace,omitempty"`
+	Ports     []Port `json:"ports,omitempty"`
+}
+
+// Port is a listening port of a process in the workspace: a dev server,
+// whose port the user opens, or a script waits for.
+type Port struct {
+	Port    int    `json:"port"`
+	Name    string `json:"name,omitempty"`    // the process that listens, or the service's name
+	Process string `json:"process,omitempty"` // the process, as ps shows it
+	Pid     int    `json:"pid,omitempty"`
+	URL     string `json:"url,omitempty"` // http://localhost:<port>
+	Open    bool   `json:"open"`          // listening now
 }
 
 // CreateParams make a session (create) or a pane beside one (split).

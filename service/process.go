@@ -344,7 +344,7 @@ func listPortsViaSS(pidSet map[int]bool, procName map[int]string) ([]Port, error
 		}
 		ports = append(ports, Port{
 			Port:    port,
-			Name:    resolvePortName(port, foundName),
+			Name:    portName(port, foundName),
 			Open:    true,
 			Pid:     foundPid,
 			Process: foundName,
@@ -426,7 +426,7 @@ func listPortsViaProc(pidSet map[int]bool, procName map[int]string) ([]Port, err
 		}
 		ports = append(ports, Port{
 			Port:    l.port,
-			Name:    resolvePortName(l.port, name),
+			Name:    portName(l.port, name),
 			Open:    true,
 			Pid:     pid,
 			Process: name,
@@ -448,12 +448,17 @@ func KillProcess(pid int) error {
 	return proc.Signal(syscall.SIGTERM)
 }
 
-// resolvePortName looks up the port in /etc/services, falling back to
-// the process name.
-func resolvePortName(port int, fallback string) string {
+// portName is what a port shows as: the process that listens on it, as
+// "bun" or "vite" tells a user what their dev server is doing, where
+// /etc/services calls 8080 "http-alt". A process omaterm cannot name falls
+// back to the service's own name.
+func portName(port int, process string) string {
+	if process != "" && process != "unknown" {
+		return process
+	}
 	f, err := os.Open("/etc/services")
 	if err != nil {
-		return fallback
+		return process
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -472,7 +477,7 @@ func resolvePortName(port int, fallback string) string {
 		}
 		return fields[0]
 	}
-	return fallback
+	return process
 }
 
 // IsWorkspaceTooBroad reports whether the workspace path is so broad that
