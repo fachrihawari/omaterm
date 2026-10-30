@@ -301,6 +301,13 @@ func TestLoadUpdatesARunningDefinition(t *testing.T) {
 	if p := s.List("p")[0]; p.Status != Running || r.count() != 2 {
 		t.Fatalf("the refused restart changed the run: %+v, %d starts", p, r.count())
 	}
+	// Stopped, it waits for the user's trust, and nothing of the run stays.
+	if err := s.Stop("p", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if p := s.List("p")[0]; p.Status != Untrusted || p.PID != 0 || p.Changed {
+		t.Fatalf("after stopping an untrusted definition: %+v", p)
+	}
 }
 
 // A crash restart runs the definition the process has then, and waits

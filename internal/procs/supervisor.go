@@ -292,7 +292,12 @@ func (s *Supervisor) Stop(projectID, name string) error {
 	w := p.watch
 	p.stop, p.watch = nil, nil
 	p.handle = nil
-	p.proc.Status = Stopped
+	// Nothing runs: no pid, and no run for the definition to differ
+	// from. A definition the user hasn't trusted waits for them.
+	p.proc.Status, p.proc.PID, p.proc.Changed = Stopped, 0, false
+	if !p.proc.Trusted {
+		p.proc.Status = Untrusted
+	}
 	p.proc.Message = ""
 	p.proc.Since = time.Now().UnixMilli()
 	s.mu.Unlock()
@@ -486,6 +491,7 @@ func (s *Supervisor) watch(project, name string, def Def, root string, gen uint6
 	p.stop = nil
 	p.proc.LastExit = code
 	p.proc.PID = 0
+	p.proc.Changed = false
 	if runCancel != nil {
 		defer runCancel()
 	}
