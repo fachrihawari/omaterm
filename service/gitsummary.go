@@ -26,6 +26,7 @@ func safeGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-optional-locks", "-c", "core.quotepath=false", "-c", "color.ui=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
+	hide(cmd)
 	out, err := cmd.Output()
 	return strings.TrimRight(string(out), "\n"), err
 }

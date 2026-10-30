@@ -79,6 +79,7 @@ func searchContentRG(ctx context.Context, root, query string) ([]Match, error) {
 	args = append(args, "--", query)
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = root
+	hide(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
