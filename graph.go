@@ -220,13 +220,20 @@ func (a *appState) graphCompactView(c *ui.Context) ui.Element {
 		})
 	}
 	lanes := computeLanes(a.commits)
-	gutter := graphGutter(lanes)
+	// The panel is narrow: the far lanes of a deep history, which a few
+	// rows need, would take the subjects' room from every row. They are
+	// drawn in the last of a few lanes instead; the Git Graph tab has
+	// them all.
+	gutter := min(graphGutter(lanes), compactLanes)
 	return ui.Column(c).Children(func() {
 		for i := range a.commits {
 			a.graphRowCompact(c, &a.commits[i], lanes[i], gutter)
 		}
 	})
 }
+
+// compactLanes is how many lanes the inspector's graph shows.
+const compactLanes = 4
 
 func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane, gutter int) ui.Element {
 	e := ui.Row(c).Key(cm.Hash).FillWidth().Height(graphRowH).AlignItems(ui.Center).Gap(10).Cursor(ui.CursorPointer).Padding(0, 12)
@@ -357,7 +364,8 @@ func graphGutter(lanes []graphLane) int {
 func (a *appState) graphCanvas(c *ui.Context, lane graphLane, gutter int, rowH float32) ui.Element {
 	w := float32(max(gutter, 1)) * laneWidth
 	return ui.Box(c).Width(w).Height(rowH).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
-		laneX := func(l int) float32 { return r.X + float32(l)*laneWidth + laneWidth/2 }
+		// A lane past the gutter shares its last column.
+		laneX := func(l int) float32 { return r.X + float32(min(l, max(gutter, 1)-1))*laneWidth + laneWidth/2 }
 		midY := r.Y + r.H/2
 
 		for _, e := range lane.Edges {
