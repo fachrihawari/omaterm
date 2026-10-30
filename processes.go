@@ -663,6 +663,21 @@ func (a *appState) processPlaceholder(c *ui.Context, tab topTab) ui.Element {
 	})
 }
 
+// processOnPort names the shown project's running process that gives
+// port, "" for none: the inspector's PORTS says whose a port is.
+func (a *appState) processOnPort(port int) string {
+	p := a.project()
+	if p == nil || port <= 0 {
+		return ""
+	}
+	for _, proc := range a.procList[p.ID] {
+		if proc.Port == port && (proc.Status == procs.Starting || proc.Status == procs.Running) {
+			return proc.Name
+		}
+	}
+	return ""
+}
+
 func (a *appState) projectIndexForTab(id string) (int, bool) {
 	for i, p := range a.projects {
 		if id == procs.SessionID(p.ID, "") || strings.HasPrefix(id, "proc-"+p.ID+"-") {

@@ -127,11 +127,14 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			})
 
-			// PROCESSES and PORTS: with no project open there are none to list.
+			// RUNNING and PORTS: with no project open there are none to list.
+			// RUNNING is what the project's terminals run, as the system
+			// sees it; the sidebar's Processes are the ones the project
+			// defines, so the two never share a name.
 			if a.project() != nil {
 				ui.Column(c).Gap(8).Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Children(func() {
-						sectionLabel(c, "PROCESSES")
+						sectionLabel(c, "RUNNING")
 						ui.Spacer(c)
 						countBadge(c, len(a.processes))
 						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
@@ -153,11 +156,11 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 									if a.processWarn != "" {
 										// The home folder: every process is in it.
 										ui.Text(c, "Not listed for this folder").FontSize(11).TextColor(pal.TextMuted)
-										ui.Text(c, "Open a project folder to see its processes").FontSize(10).TextColor(pal.TextFaint)
+										ui.Text(c, "Open a project folder to see what runs in it").FontSize(10).TextColor(pal.TextFaint)
 										return
 									}
-									ui.Text(c, "No processes in this project").FontSize(11).TextColor(pal.TextMuted)
-									ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(pal.TextFaint)
+									ui.Text(c, "Nothing running in this project's terminals").FontSize(11).TextColor(pal.TextMuted)
+									ui.Text(c, "Commands you run in a terminal show here").FontSize(10).TextColor(pal.TextFaint)
 								})
 							})
 						}
@@ -221,6 +224,9 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								txt(c, itoa(port.Port), 11, pal.Text)
 								mutedTxt2(c, port.Name, 11)
 								ui.Spacer(c)
+								if name := a.processOnPort(port.Port); name != "" {
+									pill(c, name).Tooltip("Port of the process " + name)
+								}
 								if port.Open {
 									// It only said the port; it opens its page now, where
 									// links open (Settings: a browser pane, or yours).
