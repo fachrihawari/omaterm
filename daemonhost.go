@@ -54,7 +54,12 @@ func (a *appState) useDaemon() {
 		return
 	}
 	r.TermOptions = a.termStartOptions
-	r.SetProcessHook(func(event procs.Event) { a.post(a.refreshProcList) })
+	r.SetProcessHook(func(event procs.Event) {
+		a.post(func() {
+			a.processEvent(event)
+			a.refreshProcList()
+		})
+	})
 	// Panes a stopped daemon took with it start again from their saved
 	// scrollback, as after a restart.
 	r.OnLost = func(ids []string) {

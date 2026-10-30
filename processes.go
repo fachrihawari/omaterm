@@ -157,6 +157,8 @@ func (a *appState) useLocalProcHost() {
 	s := procs.New(r, procs.OpenTrust(procs.TrustPath()))
 	l := &localProcs{a: a, s: s, r: r, mtimes: map[string]time.Time{}}
 	s.OnChange = func() { a.post(a.refreshProcList) }
+	// No daemon, so the app is what tells the user a process failed.
+	s.OnEvent = func(event procs.Event) { a.post(func() { a.processEvent(event) }) }
 	a.procHost = l
 	a.procList = map[string][]procs.Proc{}
 	l.load()

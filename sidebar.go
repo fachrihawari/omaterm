@@ -250,6 +250,8 @@ func (a *appState) processGroup(c *ui.Context, pi int) {
 func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	selected := pi == a.active && a.activeTab >= 0 && a.activeTab < len(a.tabs) &&
 		a.tabs[a.activeTab].Kind == tabProcess && a.tabs[a.activeTab].Process == proc.Name
+	// A click on the port opens its page, and does not also open the tab.
+	portClicked := false
 	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 28).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	if selected {
 		row.Background(pal.RowSelected)
@@ -272,7 +274,16 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			pill(c, "untrusted")
 		}
 		if proc.Port > 0 {
-			pill(c, ":"+itoa(proc.Port))
+			port := pill(c, ":"+itoa(proc.Port))
+			active := proc.Status == procs.Starting || proc.Status == procs.Running
+			if active {
+				url := "http://localhost:" + itoa(proc.Port)
+				port.Cursor(ui.CursorPointer).Tooltip("Open " + url)
+				if port.Clicked() {
+					portClicked = true
+					a.openURL(url)
+				}
+			}
 		}
 		ui.Spacer(c)
 		if row.Hovered() {
@@ -303,7 +314,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		tooltip += "\nDefinition changed: restart to apply"
 	}
 	row.Tooltip(tooltip)
-	if row.Clicked() {
+	if row.Clicked() && !portClicked {
 		a.showProcess(pi, proc.Name)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
