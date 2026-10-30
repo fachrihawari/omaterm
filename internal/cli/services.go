@@ -31,6 +31,9 @@ func servicesCmd(c *client.Client, args []string) error {
 	want := f.vals["wait"]
 	if want == "" {
 		if f.set["json"] {
+			if st.Ports == nil {
+				return printJSON([]proto.Port{})
+			}
 			return printJSON(st.Ports)
 		}
 		listPorts(st)
@@ -82,10 +85,17 @@ func fit(s string, n int) string {
 // connection, printing it. It asks the app again on every turn of the
 // wait: a dev server that has not bound yet has no port to list.
 func waitForPort(c *client.Client, want string, timeout time.Duration, asJSON bool) error {
+	num, numbered := portNumber(want)
+	if !numbered {
+		// A name is a process, and only the app sees those: without its
+		// scan, waiting for a name would wait for nothing.
+		if st, err := state(c); err == nil && st.Workspace == "" {
+			return usageErr("no processes to wait for: the app scans for them, and its window is closed (wait for a port number instead)")
+		}
+	}
 	deadline := time.Now().Add(timeout)
 	// A number is a port the caller knows, even before anything listens on
 	// it; a name is a process, which the app only sees once it runs.
-	num, numbered := portNumber(want)
 	for {
 		st, err := state(c)
 		if err != nil {
