@@ -89,7 +89,7 @@ func (r *Registry) start(o StartOptions) (*Pane, error) {
 		dir, _ = os.UserHomeDir()
 	}
 	p := &Pane{reg: r, changed: make(chan struct{}), rows: o.Rows, started: time.Now(), env: o.Env}
-	p.info = Info{ID: o.ID, Session: o.Session, Project: o.Project, Dir: dir, Command: o.Command,
+	p.info = Info{ID: o.ID, Session: o.Session, Project: o.Project, Role: o.Role, Dir: dir, Command: o.Command,
 		Status: Idle, Since: time.Now().UnixMilli(), Progress: -1}
 
 	path, args, shell := commandLine(o)

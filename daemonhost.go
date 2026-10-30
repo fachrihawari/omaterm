@@ -114,8 +114,8 @@ func (a *appState) pruneUnknownPanes(r *daemon.Remote) {
 			known[p.ID] = true
 		}
 	}
-	for id := range r.Infos() {
-		if !known[id] {
+	for id, info := range r.Infos() {
+		if !known[id] && info.Role != "process" {
 			r.Remove(id)
 		}
 	}

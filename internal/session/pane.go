@@ -77,6 +77,9 @@ type Pane struct {
 // StartOptions are how Registry.Start runs a pane.
 type StartOptions struct {
 	ID, Session, Project string
+	// Role is the pane's role: "process" for a supervised project process,
+	// empty for a session's pane.
+	Role string
 	// ProjectName and ProjectDir tell programs the project they run in
 	// (OMATERM_PROJECT, OMATERM_PROJECT_DIR); not set, they aren't told.
 	ProjectName, ProjectDir string

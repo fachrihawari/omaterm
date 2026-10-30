@@ -359,6 +359,7 @@ func mustJSON(v any) json.RawMessage {
 type StartParams struct {
 	ID, Session, Project, Dir string
 	ProjectName, ProjectDir   string
+	Role                      string
 	Command                   []string
 	Exec                      bool
 	Env                       []string
@@ -410,7 +411,7 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		if pn := d.reg.Get(p.ID); pn != nil {
 			return pn.Info(), nil
 		}
-		o := session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, ProjectName: p.ProjectName, ProjectDir: p.ProjectDir,
+		o := session.StartOptions{ID: p.ID, Session: p.Session, Project: p.Project, ProjectName: p.ProjectName, ProjectDir: p.ProjectDir, Role: p.Role,
 			Dir: p.Dir, Command: p.Command, Exec: p.Exec, Env: append(d.envList(), p.Env...), Cols: p.Cols, Rows: p.Rows, History: p.History,
 			Theme: d.currentTheme()}
 		d.termPrefs().apply(&o)

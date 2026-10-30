@@ -164,6 +164,12 @@ func TestEnvironment(t *testing.T) {
 	if env := strings.Join(environment(StartOptions{ID: "p2", Session: "s2"}, ""), "\n"); strings.Contains(env, "OMATERM_PROJECT") {
 		t.Error("told a project it has none of")
 	}
+	if env := strings.Join(environment(StartOptions{ID: "p3", Session: "s3", Role: "process"}, ""), "\n"); !strings.Contains(env, "OMATERM_KIND=process") {
+		t.Error("process pane lacks OMATERM_KIND")
+	}
+	if env := strings.Join(environment(StartOptions{ID: "p4", Session: "s4"}, ""), "\n"); strings.Contains(env, "OMATERM_KIND=") {
+		t.Error("session pane has OMATERM_KIND")
+	}
 }
 
 // What the user types is told from the terminal's answers and mouse

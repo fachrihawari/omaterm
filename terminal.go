@@ -326,6 +326,12 @@ func (a *appState) openURL(url string) {
 // when it was the session's last, in whichever project it is, not only
 // the one shown. UI thread.
 func (a *appState) paneExited(id string) {
+	if a.status[id].Role == "process" {
+		return
+	}
+	if h := a.panes.Get(id); h != nil && h.Info().Role == "process" {
+		return
+	}
 	if a.panes.Get(id) == nil {
 		return
 	}

@@ -52,6 +52,9 @@ func environment(o StartOptions, shell string) []string {
 	}
 	set("OMATERM_SESSION=" + o.Session)
 	set("OMATERM_PANE=" + o.ID)
+	if o.Role == "process" {
+		set("OMATERM_KIND=process")
+	}
 	if o.ProjectName != "" {
 		set("OMATERM_PROJECT=" + o.ProjectName)
 	}

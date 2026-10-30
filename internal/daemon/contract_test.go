@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"omaterm/internal/session"
+	"omaterm/internal/shellcmd"
 )
 
 // The app drives panes through session.Host the same whether they run in
@@ -81,6 +82,18 @@ func TestHostContract(t *testing.T) {
 			}
 			h.Remove("c1")
 			waitFor(t, "removed", func() bool { return h.Get("c1") == nil && h.Len() == 0 })
+
+			process, err := h.Start(session.StartOptions{ID: "c2", Session: "s1", Exec: true, Role: "process",
+				Command: shellcmd.LoginArgs("/bin/sh", "exit 3"), Cols: 80, Rows: 24})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			info, err = session.Await(ctx, process, nil, true)
+			if err != nil || info.Status != session.Exited || info.ExitCode == nil || *info.ExitCode != 3 || process.Info().Role != "process" {
+				t.Fatalf("process await: %+v %v (info %+v)", info, err, process.Info())
+			}
 		})
 	}
 }

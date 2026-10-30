@@ -40,6 +40,7 @@ type Info struct {
 	ID      string `json:"id"`
 	Session string `json:"session"`
 	Project string `json:"project,omitempty"`
+	Role    string `json:"role,omitempty"`
 
 	PID    int `json:"pid,omitempty"`
 	FgPGID int `json:"fgpgid,omitempty"`
