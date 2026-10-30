@@ -3,9 +3,9 @@
 package e2e
 
 // A project's processes over the daemon, with the built binary: the file
-// that defines them, the trust a command needs before it runs, the pane
-// that keeps its last output, a failure that restarts, and a definition
-// that changes and has to be trusted again. This is the feature end to
+// that defines them, the trust a command needs before it runs, the
+// scrollback a restart carries over, a failure that restarts, and a
+// definition that changes and has to be trusted again. This is the feature end to
 // end, as a user meets it, and it needs no window: the daemon serves it.
 
 import (
@@ -95,7 +95,7 @@ func TestProjectProcessesOverTheDaemon(t *testing.T) {
 		t.Fatalf("the restarted pane's scrollback: %q", got)
 	}
 
-	// 6. A stopped process keeps its pane, and the output in it.
+	// 6. A stopped process is stopped, and its pane goes with the run.
 	a.MustCLI("stop", "web")
 	if p := a.proc(t, "web"); p.Status != procs.Stopped {
 		t.Fatalf("after stop: %+v", p)

@@ -9,7 +9,7 @@
 #
 # TestProjectProcessesOverTheDaemon drives a project's processes over the
 # daemon with the built binary: the file that defines them, the trust a
-# command needs, the pane that keeps its last output, a failure that
+# command needs, the scrollback a restart carries over, a failure that
 # restarts, and a changed definition that must be trusted again.
 set -e
 cd "$(dirname "$0")/.."
