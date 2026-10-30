@@ -31,7 +31,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "merge", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "daemon", "clients", "web", "settings", "services", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "clients", "web", "settings", "services", "ps", "start", "stop", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -566,6 +566,9 @@ func run(args []string) error {
 		return c.Call("close", proto.IDParams{ID: t.session}, nil)
 
 	case "restart":
+		if done, err := restartProcess(c, args); done {
+			return err
+		}
 		st, err := state(c)
 		if err != nil {
 			return err
@@ -616,6 +619,12 @@ func run(args []string) error {
 
 	case "services":
 		return servicesCmd(c, args)
+
+	case "ps":
+		return psCmd(c, args)
+
+	case "start", "stop":
+		return processCmd(c, "process."+cmd, args)
 
 	case "ask":
 		return askCmd(c, args)
@@ -1172,6 +1181,14 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm diff [target] [--turn|--branch] [path…]
   omaterm services [--wait <name|port>] [-t timeout] [--json]
                                          the project's listening ports, or wait for one
+
+Project processes, from omaterm.yml and the ones kept in omaterm:
+  omaterm ps [--json]                    the processes, their status, port and restarts
+  omaterm start <name> [--wait] [--timeout 60s]
+                                         run one; --wait holds until it is up
+  omaterm stop <name>                    stop one
+  omaterm restart <name> [--wait] [--timeout 60s]
+                                         restart one, as restart does a session
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …
   omaterm skill setup|status|show|remove [--agent claude|codex|pi|opencode]
   omaterm cli install|uninstall|status

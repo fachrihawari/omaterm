@@ -138,6 +138,18 @@ Reports are OSC 7501 sequences: omaterm shows them in its sidebar, and
 notifies the user when you are blocked or done while they look elsewhere.
 Report blocked only when you truly cannot go on without them.
 
+## Project processes
+
+A project's processes (a dev server, a queue worker, a watcher) are defined in
+omaterm.yml and run by omaterm, shared by the user and every agent. Use them
+rather than starting your own npm run dev:
+
+    omaterm ps                                   # the processes, their status and port
+    omaterm start web --wait                     # run it; exits once it is up
+    omaterm read web / omaterm wait web          # its output, and waiting on it: each runs as a session named after it
+
+omaterm.yml is yours to read, but adding or changing a process is the user's: ask them.
+
 ## Etiquette
 
 - Close what you started when it is done: ` + "`omaterm close <target>`" + `.
