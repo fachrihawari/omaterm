@@ -33,8 +33,10 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
 	"omaterm/internal/mail"
+	"omaterm/internal/model"
 	"omaterm/internal/notice"
 	"omaterm/internal/paths"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/web"
@@ -67,6 +69,7 @@ type Options struct {
 type Daemon struct {
 	opts    Options
 	reg     *session.Registry
+	procs   *procs.Supervisor
 	mailbox *mail.Mailbox
 	srv     *ctl.Server
 	quit    chan struct{}
@@ -77,7 +80,10 @@ type Daemon struct {
 	limit   notice.Limiter
 	// stateMu orders the changes to state.json the daemon makes while no
 	// app runs.
-	stateMu sync.Mutex
+	stateMu      sync.Mutex
+	procMu       sync.Mutex
+	procProjects map[string]model.Project
+	procMtimes   map[string]fileStamp
 	// historyMu orders a pane's close against the writing of its
 	// scrollback, which reads it off the loop goroutine.
 	historyMu sync.Mutex
@@ -163,7 +169,11 @@ func Start(opts Options) (*Daemon, error) {
 	}
 	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
-		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){}}
+		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){},
+		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{}}
+	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
+	d.procs.OnEvent = d.processEvent
+	d.procs.OnChange = d.changed
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(info session.Info, prev session.Status) {
@@ -201,6 +211,7 @@ func Start(opts Options) (*Daemon, error) {
 	if opts.Restore {
 		d.restore()
 	}
+	d.loadProcesses()
 	go d.sweepHistories()
 	go func() {
 		for {
@@ -236,6 +247,7 @@ func (d *Daemon) waitStarted(id string) (*session.Pane, error) {
 func (d *Daemon) Stop() {
 	d.once.Do(func() {
 		log.Printf("stopped, %d panes saved", d.reg.Len())
+		d.procs.Close()
 		d.saveHistories(true)
 		close(d.quit)
 		d.stopWeb()
@@ -262,6 +274,9 @@ func (d *Daemon) loop(ctx context.Context) {
 			if n++; n%10 == 0 {
 				d.saveHistories(false)
 			}
+			if d.processFilesChanged() {
+				d.loadProcesses()
+			}
 			// Web access keeps it: a browser may come for the sessions.
 			serving := d.webServing()
 			d.mu.Lock()
@@ -275,7 +290,7 @@ func (d *Daemon) loop(ctx context.Context) {
 			d.mu.Unlock()
 			if exit {
 				log.Printf("idle: exiting")
-				d.once.Do(func() { close(d.quit); d.stopWeb(); d.srv.Close(); d.lock.Close() })
+				d.once.Do(func() { d.procs.Close(); close(d.quit); d.stopWeb(); d.srv.Close(); d.lock.Close() })
 				return
 			}
 		}
@@ -403,6 +418,8 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		return map[string]any{"app": d.opts.Version, "proto": proto.Version, "pid": os.Getpid()}, nil
 	case "panes":
 		return d.reg.Infos(), nil
+	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync":
+		return d.processCall(method, raw)
 	case "pane.start":
 		var p StartParams
 		if err := json.Unmarshal(raw, &p); err != nil {

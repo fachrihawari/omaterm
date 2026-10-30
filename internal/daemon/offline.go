@@ -278,6 +278,19 @@ func (d *Daemon) protoState(st model.State) proto.State {
 		ps.Name = sessionName(s, ps.Lead)
 		out.Sessions = append(out.Sessions, ps)
 	}
+	for _, project := range st.Projects {
+		for _, process := range d.procs.Sessions(project.ID) {
+			var info session.Info
+			if pane := d.reg.Get(process.Pane); pane != nil {
+				info = pane.Info()
+			} else {
+				info = session.Info{ID: process.Pane, Session: process.Session, Project: project.ID,
+					Role: "process", Status: session.Exited, Progress: -1}
+			}
+			out.Sessions = append(out.Sessions, proto.Session{ID: process.Session, Project: project.ID,
+				Name: process.Name, Process: process.Name, Panes: []proto.Pane{info}, Lead: info})
+		}
+	}
 	proto.DropGoneParents(out.Sessions)
 	return out
 }
