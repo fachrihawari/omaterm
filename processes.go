@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -188,7 +189,28 @@ func (a *appState) refreshProcList() {
 			a.procList[project.ID] = nil
 			continue
 		}
-		a.procList[project.ID] = a.procHost.List(project.ID)
+		list := a.procHost.List(project.ID)
+		locals := make(map[string]bool, len(project.Processes))
+		for _, def := range project.Processes {
+			locals[def.Name] = true
+		}
+		files := map[string]bool{}
+		checkFiles := false
+		for _, proc := range list {
+			checkFiles = checkFiles || locals[proc.Name]
+		}
+		if checkFiles {
+			defs, err := procs.LoadFile(project.Path)
+			if err == nil {
+				for _, def := range defs {
+					files[def.Name] = true
+				}
+			}
+		}
+		for i := range list {
+			list[i].Local = locals[list[i].Name] && !files[list[i].Name]
+		}
+		a.procList[project.ID] = list
 	}
 	for pi := range a.projects {
 		tabs := a.projectTabsPtr(&a.projects[pi])
@@ -303,6 +325,140 @@ func (a *appState) restartProcess(pi int, name string) {
 		return
 	}
 	a.refreshProcList()
+}
+
+func (a *appState) startAllProcesses(pi int) {
+	if a.procHost == nil || pi < 0 || pi >= len(a.projects) {
+		return
+	}
+	projectID := a.projects[pi].ID
+	started, untrusted := 0, 0
+	for _, proc := range a.procList[projectID] {
+		if !proc.Trusted {
+			untrusted++
+			continue
+		}
+		if proc.Status == procs.Starting || proc.Status == procs.Running {
+			continue
+		}
+		if err := a.procHost.Start(projectID, proc.Name); err != nil {
+			a.toast(nil, err.Error())
+			continue
+		}
+		started++
+	}
+	a.refreshProcList()
+	if untrusted > 0 {
+		a.toast(nil, fmt.Sprintf("%d started, %d not trusted: start it to review it", started, untrusted))
+	} else {
+		a.toast(nil, fmt.Sprintf("%d started", started))
+	}
+}
+
+func (a *appState) stopAllProcesses(pi int) {
+	if a.procHost == nil || pi < 0 || pi >= len(a.projects) {
+		return
+	}
+	projectID := a.projects[pi].ID
+	stopped := 0
+	for _, proc := range a.procList[projectID] {
+		if proc.Status != procs.Starting && proc.Status != procs.Running {
+			continue
+		}
+		if err := a.procHost.Stop(projectID, proc.Name); err != nil {
+			a.toast(nil, err.Error())
+			continue
+		}
+		stopped++
+	}
+	a.refreshProcList()
+	a.toast(nil, fmt.Sprintf("%d stopped", stopped))
+}
+
+func (a *appState) moveProcess(pi int, proc procs.Proc) {
+	if pi < 0 || pi >= len(a.projects) {
+		return
+	}
+	shared := proc.Local
+	if err := a.saveProcessDef(pi, proc.Def, shared, proc.Name); err != nil {
+		a.toast(nil, err.Error())
+		return
+	}
+	if err := a.trustAndSyncProcess(a.projects[pi].ID, proc.Name); err != nil {
+		a.toast(nil, err.Error())
+		return
+	}
+	if shared {
+		a.toast(nil, "Moved "+proc.Name+" to omaterm.yml")
+	} else {
+		a.toast(nil, proc.Name+" is now local")
+	}
+}
+
+func (a *appState) askRemoveProcess(pi int, proc procs.Proc) {
+	store := "omaterm.yml"
+	if proc.Local {
+		store = "this project's local processes"
+	}
+	message := fmt.Sprintf("Remove %s? Its definition goes from %s; a running one is stopped.", proc.Name, store)
+	name := proc.Name
+	a.askDanger("Remove Process", message, "Remove", func() { a.removeProcess(pi, name) })
+}
+
+func (a *appState) removeProcess(pi int, name string) {
+	if pi < 0 || pi >= len(a.projects) {
+		return
+	}
+	project := &a.projects[pi]
+	var proc *procs.Proc
+	for _, candidate := range a.procList[project.ID] {
+		if candidate.Name == name {
+			copy := candidate
+			proc = &copy
+			break
+		}
+	}
+	if proc == nil {
+		return
+	}
+	if (proc.Status == procs.Starting || proc.Status == procs.Running) && a.procHost != nil {
+		if err := a.procHost.Stop(project.ID, name); err != nil {
+			a.toast(nil, err.Error())
+			return
+		}
+	}
+	if proc.Local {
+		locals := project.Processes[:0]
+		for _, def := range project.Processes {
+			if def.Name != name {
+				locals = append(locals, def)
+			}
+		}
+		project.Processes = locals
+		a.saveState()
+	} else {
+		defs, err := procs.LoadFile(project.Path)
+		if err != nil {
+			a.toast(nil, err.Error())
+			return
+		}
+		kept := defs[:0]
+		for _, def := range defs {
+			if def.Name != name {
+				kept = append(kept, def)
+			}
+		}
+		if err := procs.SaveFile(project.Path, kept); err != nil {
+			a.toast(nil, err.Error())
+			return
+		}
+	}
+	if a.procHost != nil {
+		a.procHost.Sync()
+	}
+	a.closeTabID(proc.Session)
+	a.refreshProcList()
+	a.toast(nil, "Removed "+name)
 }
 
 func (a *appState) showProcess(pi int, name string) {

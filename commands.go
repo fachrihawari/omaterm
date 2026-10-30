@@ -164,6 +164,36 @@ var commandRegistry = append([]Command{
 				}
 			}
 		}},
+	{ID: "process.startAll", Title: "Start All Processes", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.project() != nil && len(a.procList[a.projects[a.active].ID]) > 0
+		},
+		Run: func(a *appState, c *ui.Context) { a.startAllProcesses(a.active) }},
+	{ID: "process.stopAll", Title: "Stop All Processes", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.project() != nil && len(a.procList[a.projects[a.active].ID]) > 0
+		},
+		Run: func(a *appState, c *ui.Context) { a.stopAllProcesses(a.active) }},
+	{ID: "process.remove", Title: "Remove Process…", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
+		},
+		Run: func(a *appState, c *ui.Context) {
+			if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabProcess {
+				return
+			}
+			tab := a.tabs[a.activeTab]
+			pi, ok := a.projectIndexForTab(tab.ID)
+			if !ok {
+				return
+			}
+			for _, proc := range a.procList[a.projects[pi].ID] {
+				if proc.Name == tab.Process {
+					a.askRemoveProcess(pi, proc)
+					return
+				}
+			}
+		}},
 	{ID: "session.askReview", Title: "Ask for Review…", Category: "Session",
 		Enabled: func(a *appState) bool {
 			t := a.activeTabRef()

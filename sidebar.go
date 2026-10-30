@@ -207,6 +207,14 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.switchProject(i)
 			a.openProcessDialog(i, nil)
 		}
+		if len(a.procList[p.ID]) > 0 {
+			if m.Item("Start All Processes").Chosen() {
+				a.startAllProcesses(i)
+			}
+			if m.Item("Stop All Processes").Chosen() {
+				a.stopAllProcesses(i)
+			}
+		}
 		label := "Collapse"
 		if p.Collapsed {
 			label = "Expand"
@@ -335,6 +343,16 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		if m.Item("Edit…").Chosen() {
 			def := proc.Def
 			a.openProcessDialog(pi, &def)
+		}
+		moveLabel := "Move to omaterm.yml"
+		if !proc.Local {
+			moveLabel = "Keep Local"
+		}
+		if m.Item(moveLabel).Chosen() {
+			a.moveProcess(pi, proc)
+		}
+		if m.Item("Remove Process…").Chosen() {
+			a.askRemoveProcess(pi, proc)
 		}
 	})
 }

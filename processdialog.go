@@ -286,62 +286,77 @@ func (a *appState) saveProcessDialog(st *processDialogState) {
 			break
 		}
 	}
-	if pi < 0 {
-		fail(fmt.Errorf("the project is no longer open"))
-		return
-	}
-	files, err := procs.LoadFile(st.root)
-	if err != nil {
+	if err := a.saveProcessDef(pi, d, st.shared, st.oldName); err != nil {
 		fail(err)
 		return
 	}
-	locals := append([]procs.Def(nil), a.projects[pi].Processes...)
+	shared := st.shared
+	a.processShared = &shared
+	if err := a.trustAndSyncProcess(st.project, d.Name); err != nil {
+		fail(err)
+		return
+	}
+	st.open = false
+	a.toast(nil, "Saved "+d.Name)
+}
+
+// saveProcessDef writes a process to one store and removes its old entry.
+func (a *appState) saveProcessDef(pi int, def procs.Def, shared bool, oldName string) error {
+	if pi < 0 || pi >= len(a.projects) {
+		return fmt.Errorf("the project is no longer open")
+	}
+	project := &a.projects[pi]
+	if err := def.Validate(project.Path); err != nil {
+		return err
+	}
+	files, err := procs.LoadFile(project.Path)
+	if err != nil {
+		return err
+	}
+	locals := append([]procs.Def(nil), project.Processes...)
 	remove := func(defs []procs.Def, name string) []procs.Def {
 		out := defs[:0]
-		for _, def := range defs {
-			if def.Name != name {
-				out = append(out, def)
+		for _, existing := range defs {
+			if existing.Name != name {
+				out = append(out, existing)
 			}
 		}
 		return out
 	}
-	if st.oldName != "" {
-		files, locals = remove(files, st.oldName), remove(locals, st.oldName)
+	if oldName != "" {
+		files, locals = remove(files, oldName), remove(locals, oldName)
 	}
 	for _, defs := range [][]procs.Def{files, locals} {
 		for _, existing := range defs {
-			if existing.Name == d.Name {
-				fail(fmt.Errorf("a process named %q already exists", d.Name))
-				return
+			if existing.Name == def.Name {
+				return fmt.Errorf("a process named %q already exists", def.Name)
 			}
 		}
 	}
-	if st.shared {
-		d.Local = false
-		files = append(files, d)
-		if err := procs.SaveFile(st.root, files); err != nil {
-			fail(err)
-			return
-		}
-		a.projects[pi].Processes = locals
-		a.saveState()
+	if shared {
+		def.Local = false
+		files = append(files, def)
 	} else {
-		d.Local = true
-		locals = append(locals, d)
-		a.projects[pi].Processes = locals
-		a.saveState()
+		def.Local = true
+		locals = append(locals, def)
 	}
-	shared := st.shared
-	a.processShared = &shared
-	if a.procHost != nil {
-		a.procHost.Sync()
-		if err := a.procHost.Trust(st.project, d.Name); err != nil {
-			fail(err)
-			return
-		}
-		a.procHost.Sync()
+	if err := procs.SaveFile(project.Path, files); err != nil {
+		return err
 	}
+	project.Processes = locals
+	a.saveState()
+	return nil
+}
+
+func (a *appState) trustAndSyncProcess(project, name string) error {
+	if a.procHost == nil {
+		return nil
+	}
+	a.procHost.Sync()
+	if err := a.procHost.Trust(project, name); err != nil {
+		return err
+	}
+	a.procHost.Sync()
 	a.refreshProcList()
-	st.open = false
-	a.toast(nil, "Saved "+d.Name)
+	return nil
 }
