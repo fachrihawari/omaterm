@@ -1,16 +1,21 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
+
+	"github.com/egoist/mygo"
 
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/service"
 )
 
 // fileStamp is what tells a file changed: the modification time and
@@ -206,3 +211,37 @@ func (d *Daemon) processEvent(event procs.Event) {
 }
 
 var _ procs.Runner = daemonRunner{}
+
+// watchFolder watches a project's folder for a process that restarts when
+// its files change, and calls changed with the paths of each batch of
+// changes until ctx ends. It lives here because the watcher is mygo's, and
+// the folder's rules are the app's: internal/procs imports neither.
+func watchFolder(ctx context.Context, root string, changed func(paths []string)) error {
+	w, err := mygo.WatchFiles(ctx, root, mygo.FileWatchOptions{
+		Recursive: true,
+		Debounce:  300 * time.Millisecond,
+		Ignore:    service.IgnoreFunc(root),
+	})
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	for {
+		events, err := w.Next(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		paths := make([]string, 0, len(events))
+		for _, e := range events {
+			if e.Op != mygo.FileRemove && e.Path != "." {
+				paths = append(paths, e.Path)
+			}
+		}
+		if len(paths) > 0 {
+			changed(paths)
+		}
+	}
+}

@@ -47,10 +47,12 @@ type Proc struct {
 	PID      int    `json:"pid,omitempty"`
 	Restarts int    `json:"restarts,omitempty"`
 	LastExit int    `json:"lastExit,omitempty"`
-	Since    int64  `json:"since"`
-	Trusted  bool   `json:"trusted"`
-	Changed  bool   `json:"changed,omitempty"`
-	Message  string `json:"message,omitempty"`
+	// LastChange is the file whose change last restarted the process.
+	LastChange string `json:"lastChange,omitempty"`
+	Since      int64  `json:"since"`
+	Trusted    bool   `json:"trusted"`
+	Changed    bool   `json:"changed,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 // EventKind is a process lifecycle event.
@@ -77,12 +79,21 @@ type Supervisor struct {
 	Shell         string
 	MaxRestarts   int
 	RestartWindow time.Duration
+	// Watch watches a project's folder for changes, when a definition asks
+	// for it: the daemon sets it to mygo's, and a supervisor with none
+	// watches nothing. Match tests a changed path against a definition's
+	// globs, and Ignore says what a poll should skip; together they keep
+	// this package free of the app's and the terminal's.
+	Watch  WatchFunc
+	Match  func(pattern, path string) bool
+	Ignore func(path string, isDir bool) bool
 
 	mu       sync.Mutex
 	runner   Runner
 	trust    *Trust
 	projects map[string]*projectState
 	closed   bool
+	watches  sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
@@ -101,6 +112,7 @@ type procState struct {
 	handle     session.Handle
 	generation uint64
 	stop       context.CancelFunc
+	watch      context.CancelFunc
 	stopped    bool
 	restarts   []time.Time
 }
@@ -262,12 +274,16 @@ func (s *Supervisor) Stop(projectID, name string) error {
 	}
 	p.stopped = true
 	h, cancel := p.handle, p.stop
-	p.stop = nil
+	w := p.watch
+	p.stop, p.watch = nil, nil
 	p.handle = nil
 	p.proc.Status = Stopped
 	p.proc.Message = ""
 	p.proc.Since = time.Now().UnixMilli()
 	s.mu.Unlock()
+	if w != nil {
+		w()
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -322,16 +338,20 @@ func (s *Supervisor) Trust(projectID, name string) error {
 	return nil
 }
 
-// Close stops watching process exits without ending their panes.
+// Close stops watching process exits without ending their panes. It waits
+// for the folder watches too: nothing of the supervisor reads its fields
+// after it returns.
 func (s *Supervisor) Close() {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		s.watches.Wait()
 		return
 	}
 	s.closed = true
 	s.mu.Unlock()
 	s.cancel()
+	s.watches.Wait()
 }
 
 func (s *Supervisor) project(id string) *projectState {
@@ -394,6 +414,7 @@ func (s *Supervisor) startRun(project, name string, def Def, root string, gen ui
 	s.emit(Event{Project: project, Name: name, Kind: EventStarted})
 	go s.watch(project, name, def, root, gen, h, ctx, base)
 	go s.ready(project, name, def.Port, gen, h, ctx, aliveDelay, checkPeriod)
+	s.watching(project, name, def, root, gen)
 	return nil
 }
 

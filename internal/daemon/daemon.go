@@ -40,6 +40,7 @@ import (
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/web"
+	"omaterm/service"
 )
 
 // Options are how the daemon runs.
@@ -174,6 +175,8 @@ func Start(opts Options) (*Daemon, error) {
 	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
 	d.procs.OnEvent = d.processEvent
 	d.procs.OnChange = d.changed
+	d.procs.Watch = watchFolder
+	d.procs.Match = service.MatchGlob
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(info session.Info, prev session.Status) {
