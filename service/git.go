@@ -584,3 +584,8 @@ func ListBranches(root string) ([]string, error) {
 func Checkout(root, branch string) (string, error) {
 	return gitCmd(root, "checkout", branch)
 }
+
+// CreateBranch makes a branch at HEAD and switches to it.
+func CreateBranch(root, branch string) (string, error) {
+	return gitCmd(root, "switch", "-c", branch)
+}

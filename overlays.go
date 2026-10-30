@@ -395,12 +395,30 @@ func (a *appState) branchBody(c *ui.Context) {
 		})
 	})
 
+	// A name no branch has is one to make: the last row offers it.
+	create := a.branchToCreate(items)
+	n := len(items)
+	if create != "" {
+		n++
+	}
+	if a.branchSelected >= n {
+		a.branchSelected = max(n-1, 0)
+	}
 	a.branchList.Selected = &a.branchSelected
-	a.branchList.Key = func(i int) any { return items[i].Value }
-	list := ui.List(c, &a.branchList, len(items), func(i int) {
+	a.branchList.Key = func(i int) any {
+		if i == len(items) {
+			return "create:" + create
+		}
+		return items[i].Value
+	}
+	list := ui.List(c, &a.branchList, n, func(i int) {
+		if i == len(items) {
+			a.createBranchRow(c, create, i == a.branchSelected)
+			return
+		}
 		a.branchRow(c, items[i].Value, i == a.branchSelected)
 	}).Grow(1).Padding(6).Children(func() {
-		if len(items) == 0 {
+		if n == 0 {
 			ui.Box(c).Padding(20).Children(func() {
 				ui.Text(c, "No matching branches").FontSize(12).TextColor(pal.TextMuted)
 			})
@@ -410,10 +428,64 @@ func (a *appState) branchBody(c *ui.Context) {
 		submit = true
 	}
 	if submit {
-		a.checkoutBranch(c, items)
+		if create != "" && a.branchSelected == len(items) {
+			a.createBranch(create)
+		} else {
+			a.checkoutBranch(c, items)
+		}
 	}
 
-	a.overlayFooter(c, "↑↓ navigate", "↵ checkout", "esc close")
+	hint := "↵ checkout"
+	if create != "" {
+		hint = "↵ checkout or create"
+	}
+	a.overlayFooter(c, "↑↓ navigate", hint, "esc close")
+}
+
+// branchToCreate is the branch the query names and no branch has, cleaned
+// as git wants a name, or "" when the query is empty or a branch's name.
+func (a *appState) branchToCreate(items []service.FuzzyMatch) string {
+	name := strings.TrimSpace(a.branchQuery)
+	if name == "" || strings.ContainsAny(name, " ~^:?*[\\") || strings.HasPrefix(name, "-") || strings.HasSuffix(name, ".") {
+		return ""
+	}
+	for _, b := range a.branches {
+		if b == name {
+			return ""
+		}
+	}
+	return name
+}
+
+// createBranchRow offers to make the branch the query names.
+func (a *appState) createBranchRow(c *ui.Context, name string, selected bool) {
+	e := ui.Row(c).Key("create:"+name).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if !selected && e.Hovered() {
+		e.Background(pal.Hover)
+	}
+	e.Children(func() {
+		ui.Icon(c, iconPlus).Width(14).Height(14).TextColor(ink(selected, pal.TextMuted, false))
+		ui.Text(c, "Create branch "+name).FontSize(12).TextColor(ink(selected, pal.Text, false)).SingleLine().Grow(1).MinWidth(0)
+		pillOn(c, "from "+a.currentBranch, selected)
+	})
+	if e.Clicked() {
+		a.createBranch(name)
+	}
+}
+
+// createBranch makes the branch at HEAD, switches to it and closes the
+// picker; the Git panel says how it went.
+func (a *appState) createBranch(name string) {
+	if a.activeRepoRef() == nil {
+		return
+	}
+	a.closeOverlay()
+	a.gitOp("Create branch", func(root string) (string, error) { return service.CreateBranch(root, name) }, func() {
+		a.currentBranch = name
+		a.branches = nil
+		a.branchesRepo = ""
+		a.gitMsg = "Created " + name
+	})
 }
 
 // moveBranchSelection moves the branch choice by d and keeps it in view.
