@@ -262,6 +262,15 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		if proc.Status == procs.Exited || proc.Status == procs.Stopped {
 			name.TextColor(pal.TextMuted)
 		}
+		if proc.Changed {
+			// The file changed since the process started: a restart applies it.
+			ui.Box(c).Size(6, 6).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
+				p.FillPath(new(ui.Path).Circle(r.X+r.W/2, r.Y+r.H/2, min(r.W, r.H)/2), pal.Warn)
+			})
+		}
+		if proc.Status == procs.Untrusted {
+			pill(c, "untrusted")
+		}
 		if proc.Port > 0 {
 			pill(c, ":"+itoa(proc.Port))
 		}
@@ -284,13 +293,16 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			}
 		}
 	})
+	tooltip := processStatusText(proc.Status)
 	if proc.Status == procs.Untrusted {
-		row.Tooltip("not trusted yet: Start to review it")
+		tooltip = "not trusted yet: Start to review it"
 	} else if proc.Message != "" {
-		row.Tooltip(proc.Message)
-	} else {
-		row.Tooltip(processStatusText(proc.Status))
+		tooltip = proc.Message
 	}
+	if proc.Changed {
+		tooltip += "\nDefinition changed: restart to apply"
+	}
+	row.Tooltip(tooltip)
 	if row.Clicked() {
 		a.showProcess(pi, proc.Name)
 	}

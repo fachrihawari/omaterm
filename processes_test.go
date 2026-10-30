@@ -88,8 +88,8 @@ func TestProcessSidebarAndTab(t *testing.T) {
 	if len(a.visibleTabIndices()) != before {
 		t.Fatal("the process tab appeared in the tab bar")
 	}
-	// The untrusted process uses the same Start entry point: the app trusts
-	// its definition, then starts it.
+	// The untrusted process uses the same Start entry point: the app asks
+	// the user to trust its definition, then starts it.
 	privateRow, ok := tr.Find("private")
 	if !ok {
 		t.Fatal("private process row is missing")
@@ -97,6 +97,11 @@ func TestProcessSidebarAndTab(t *testing.T) {
 	tr.Move(privateRow.X+40, privateRow.Y+privateRow.H/2)
 	tr.Frame()
 	if err := tr.Click("Start"); err != nil {
+		t.Fatal(err)
+	}
+	// Start opens the trust sheet first; its button trusts, then starts.
+	tr.Frame()
+	if err := tr.Click("Trust and Start"); err != nil {
 		t.Fatal(err)
 	}
 	waitProcessFrame(t, tr, func() bool {

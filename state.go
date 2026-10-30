@@ -135,6 +135,8 @@ type openFile struct {
 type appState struct {
 	win          *mygo.Window
 	processTimer *time.Timer
+	// trustAsk is the trust sheet of an untrusted process, while it is open.
+	trustAsk *trustAsk
 	// historyMu orders a pane's close against saveHistories, which runs
 	// off the UI thread.
 	historyMu  sync.Mutex

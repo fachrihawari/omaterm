@@ -268,10 +268,8 @@ func (a *appState) startProcess(pi int, name string) {
 		}
 	}
 	if proc != nil && !proc.Trusted {
-		if err := a.procHost.Trust(projectID, name); err != nil {
-			a.toast(nil, err.Error())
-			return
-		}
+		a.askTrust(projectID, *proc)
+		return
 	}
 	if err := a.procHost.Start(projectID, name); err != nil {
 		a.toast(nil, err.Error())
