@@ -160,7 +160,9 @@ A process is defined in `omaterm.yml` at the project root, which you commit
 and share with your team, or locally in omaterm, which keeps it out of the
 repository. The Add or Edit dialog's **Save in omaterm.yml** switch chooses
 between them. It is on by default when the project is a git repository, and
-**Edit…** in a process's menu opens the dialog for either kind.
+**Edit…** in a process's menu opens the dialog for either kind. The menu also
+moves a process between the two (**Move to omaterm.yml**, **Keep Local**),
+removes it, and a project's menu starts or stops all of them at once.
 
 ```yaml
 processes:
