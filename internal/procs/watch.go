@@ -243,7 +243,6 @@ func (s *Supervisor) watchRestart(project, name string, gen uint64, path string)
 	s.mu.Unlock()
 	s.runner.Remove(h.ID())
 	s.changed()
-	s.emit(Event{Project: project, Name: name, Kind: EventStarted})
 	_ = s.startRun(project, name, p.def, p.dir, newGen, history, restartBase)
 }
 

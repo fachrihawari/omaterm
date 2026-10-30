@@ -93,9 +93,11 @@ type Supervisor struct {
 	trust    *Trust
 	projects map[string]*projectState
 	closed   bool
-	watches  sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
+	// watches counts the goroutines of the runs and their folder watches,
+	// which Close waits for.
+	watches sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 type projectState struct {
@@ -339,8 +341,8 @@ func (s *Supervisor) Trust(projectID, name string) error {
 }
 
 // Close stops watching process exits without ending their panes. It waits
-// for the folder watches too: nothing of the supervisor reads its fields
-// after it returns.
+// for the runs' goroutines and the folder watches: nothing of the
+// supervisor runs after it returns.
 func (s *Supervisor) Close() {
 	s.mu.Lock()
 	if s.closed {
@@ -409,11 +411,20 @@ func (s *Supervisor) startRun(project, name string, def Def, root string, gen ui
 	}
 	p.handle, p.stop, p.proc.Pane, p.proc.PID = h, cancel, h.ID(), h.Info().PID
 	p.proc.Status, p.proc.Since, p.proc.Message = Starting, time.Now().UnixMilli(), ""
+	// Counted under the lock Close sets closed in, so Close waits for the
+	// run's goroutines, or they never start.
+	s.watches.Add(2)
 	s.mu.Unlock()
 	s.changed()
 	s.emit(Event{Project: project, Name: name, Kind: EventStarted})
-	go s.watch(project, name, def, root, gen, h, ctx, base)
-	go s.ready(project, name, def.Port, gen, h, ctx, aliveDelay, checkPeriod)
+	go func() {
+		defer s.watches.Done()
+		s.watch(project, name, def, root, gen, h, ctx, base)
+	}()
+	go func() {
+		defer s.watches.Done()
+		s.ready(project, name, def.Port, gen, h, ctx, aliveDelay, checkPeriod)
+	}()
 	s.watching(project, name, def, root, gen)
 	return nil
 }
