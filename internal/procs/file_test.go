@@ -118,3 +118,28 @@ func TestSaveFileSkipsLocal(t *testing.T) {
 		t.Errorf("a local def went to the file: %v, %v", defs, err)
 	}
 }
+
+// An entry written by hand that Validate refuses stays as it is through a
+// save of the others: the save is about them, not it.
+func TestSaveFileKeepsAnInvalidEntry(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, FileName), []byte("processes:\n  odd:\n    command: run\n    restart: on-crash\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defs, err := LoadFile(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs = append(defs, Def{Name: "web", Command: "npm run dev"})
+	if err := SaveFile(root, defs); err != nil {
+		t.Fatalf("saving beside an invalid entry: %v", err)
+	}
+	got, err := LoadFile(root)
+	if err != nil || len(got) != 2 || got[0].Restart != "on-crash" || got[1].Name != "web" {
+		t.Fatalf("after the save: %+v, %v", got, err)
+	}
+	// A new invalid entry is still refused.
+	if err := SaveFile(root, append(got, Def{Name: "bad", Command: "x", Restart: "on-crash"})); err == nil {
+		t.Fatal("a new invalid entry was saved")
+	}
+}

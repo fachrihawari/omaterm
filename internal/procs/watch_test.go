@@ -242,3 +242,17 @@ var errNoWatch = errorString("no watch on this system")
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+// A change to a watched file restarts nothing while the definition the
+// process would restart with isn't trusted: the run goes on, and the
+// process says what is wanted of the user.
+func TestWatchRestartWaitsForTrust(t *testing.T) {
+	s, r, w, dir := watchTestSupervisor(t)
+	s.Load("p", dir, []Def{{Name: "web", Command: "echo changed", Watch: []string{"src/**"}}})
+	w.send(t, "src/a.go")
+	time.Sleep(100 * time.Millisecond)
+	p := s.List("p")[0]
+	if r.count() != 1 || p.Status != Running || !contains(p.Message, "trust") {
+		t.Fatalf("an untrusted definition was restarted: %d starts, %+v", r.count(), p)
+	}
+}

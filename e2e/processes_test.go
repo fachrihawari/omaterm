@@ -91,7 +91,7 @@ func TestProjectProcessesOverTheDaemon(t *testing.T) {
 
 	// 5. A restart says why in the scrollback, after what the run printed.
 	a.MustCLI("restart", "web", "--wait")
-	if got := a.MustCLI("read", "web", "-a"); !strings.Contains(got, "restarted (exit") {
+	if got := a.MustCLI("read", "web", "-a"); !strings.Contains(got, "── restarted ──") {
 		t.Fatalf("the restarted pane's scrollback: %q", got)
 	}
 

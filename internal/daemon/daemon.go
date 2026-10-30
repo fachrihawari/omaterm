@@ -177,6 +177,7 @@ func Start(opts Options) (*Daemon, error) {
 	d.procs.OnChange = d.changed
 	d.procs.Watch = WatchFolder
 	d.procs.Match = service.MatchGlob
+	d.procs.Ignore = service.IgnoreFunc
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(info session.Info, prev session.Status) {

@@ -6,13 +6,28 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"omaterm/internal/paths"
 )
 
 // Trust is the user's trust in process definitions, per machine: a variant (Def.Variant) they reviewed, by project folder.
-type Trust struct{ path string } // JSON file: {"version":1,"projects":{"/abs/dir":{"<variant>":"<RFC3339 time>"}}}
+// The file is {"version":1,"projects":{"/abs/dir":{"<variant>":"<RFC3339 time>"}}}; it is read again only when it changed.
+type Trust struct {
+	path string
+
+	mu     sync.Mutex
+	stamp  trustStamp
+	cached trustFile
+	have   bool
+}
+
+// trustStamp tells whether the trust file changed since it was read.
+type trustStamp struct {
+	modified int64
+	size     int64
+}
 
 // trustFile is the JSON that Trust keeps on disk.
 type trustFile struct {
@@ -29,6 +44,8 @@ func TrustPath() string { return filepath.Join(paths.ConfigDir(), "trust.json") 
 // Trusted reports whether the user has trusted the variant in the project at dir.
 // A file that can't be read trusts nothing.
 func (t *Trust) Trusted(dir, variant string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	f, err := t.read()
 	if err != nil {
 		return false
@@ -41,10 +58,13 @@ func (t *Trust) Trusted(dir, variant string) bool {
 // It refuses to write over a trust file it can't read, so a broken file is
 // never replaced without the user seeing it.
 func (t *Trust) Add(dir, variant string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	f, err := t.read()
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	t.have = false
 	f.Version = 1
 	if f.Projects == nil {
 		f.Projects = map[string]map[string]string{}
@@ -65,8 +85,19 @@ func (t *Trust) Add(dir, variant string) error {
 	return writeAtomic(t.path, data, 0o600)
 }
 
-// read loads the trust file. A missing file gives an empty trust with fs.ErrNotExist.
+// read loads the trust file, or gives what it read before when the file
+// is as it was: the supervisor asks for every definition it loads. A
+// missing file gives an empty trust with fs.ErrNotExist. The lock is held.
 func (t *Trust) read() (trustFile, error) {
+	info, err := os.Stat(t.path)
+	if err != nil {
+		t.have = false
+		return trustFile{}, err
+	}
+	stamp := trustStamp{modified: info.ModTime().UnixNano(), size: info.Size()}
+	if t.have && stamp == t.stamp {
+		return t.cached, nil
+	}
 	var f trustFile
 	data, err := os.ReadFile(t.path)
 	if err != nil {
@@ -75,5 +106,6 @@ func (t *Trust) read() (trustFile, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return trustFile{}, err
 	}
+	t.cached, t.stamp, t.have = f, stamp, true
 	return f, nil
 }

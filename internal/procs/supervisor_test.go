@@ -252,3 +252,78 @@ func TestSupervisorTrustUsesDefinitionVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A definition that changes while its process runs is the one the process
+// has from then on: Restart runs it, and an untrusted one is refused with
+// the old run left alone.
+func TestLoadUpdatesARunningDefinition(t *testing.T) {
+	oldAlive := aliveDelay
+	aliveDelay = 10 * time.Millisecond
+	defer func() { aliveDelay = oldAlive }()
+	dir := t.TempDir()
+	def := Def{Name: "web", Command: "run v1"}
+	changed := Def{Name: "web", Command: "run v2"}
+	r := newFakeRunner()
+	trust := trustForTest(t, dir, def, changed)
+	s := New(r, trust)
+	defer s.Close()
+	s.Shell = "/bin/sh"
+	s.Load("p", dir, []Def{def})
+	if err := s.Start("p", "web"); err != nil {
+		t.Fatal(err)
+	}
+	waitProc(t, s, "p", "web", Running)
+
+	s.Load("p", dir, []Def{changed})
+	p := s.List("p")[0]
+	if !p.Changed || p.Command != "run v2" || p.Status != Running {
+		t.Fatalf("after the change: %+v", p)
+	}
+	if err := s.Restart("p", "web"); err != nil {
+		t.Fatal(err)
+	}
+	p = waitProc(t, s, "p", "web", Running)
+	_, o := r.latest()
+	if !strings.Contains(strings.Join(o.Command, " "), "run v2") || p.Changed {
+		t.Fatalf("the restart ran %v, changed %v", o.Command, p.Changed)
+	}
+
+	// A third version nobody trusted: the process keeps running the
+	// second, and a restart is refused rather than stopping it.
+	s.Load("p", dir, []Def{{Name: "web", Command: "run v3"}})
+	p = s.List("p")[0]
+	if p.Trusted || !p.Changed || p.Status != Running {
+		t.Fatalf("after the untrusted change: %+v", p)
+	}
+	if err := s.Restart("p", "web"); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("restart of an untrusted definition: %v", err)
+	}
+	if p := s.List("p")[0]; p.Status != Running || r.count() != 2 {
+		t.Fatalf("the refused restart changed the run: %+v, %d starts", p, r.count())
+	}
+}
+
+// A crash restart runs the definition the process has then, and waits
+// for the user when that one isn't trusted.
+func TestCrashRestartWaitsForTrust(t *testing.T) {
+	oldAlive, oldBase := aliveDelay, restartBase
+	aliveDelay, restartBase = 10*time.Millisecond, 10*time.Millisecond
+	defer func() { aliveDelay, restartBase = oldAlive, oldBase }()
+	dir := t.TempDir()
+	def := Def{Name: "worker", Command: "run", Restart: "always"}
+	r := newFakeRunner()
+	s := New(r, trustForTest(t, dir, def))
+	defer s.Close()
+	s.Load("p", dir, []Def{def})
+	if err := s.Start("p", "worker"); err != nil {
+		t.Fatal(err)
+	}
+	waitProc(t, s, "p", "worker", Running)
+	s.Load("p", dir, []Def{{Name: "worker", Command: "run v2", Restart: "always"}})
+	h, _ := r.latest()
+	h.finish(0)
+	p := waitProc(t, s, "p", "worker", Untrusted)
+	if r.count() != 1 || !strings.Contains(p.Message, "trusted") {
+		t.Fatalf("an untrusted definition was restarted: %d starts, %+v", r.count(), p)
+	}
+}

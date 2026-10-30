@@ -82,11 +82,12 @@ type Supervisor struct {
 	// Watch watches a project's folder for changes, when a definition asks
 	// for it: the daemon sets it to mygo's, and a supervisor with none
 	// watches nothing. Match tests a changed path against a definition's
-	// globs, and Ignore says what a poll should skip; together they keep
-	// this package free of the app's and the terminal's.
+	// globs, and Ignore gives, for a project's folder, what a poll of it
+	// should skip; together they keep this package free of the app's and
+	// the terminal's.
 	Watch  WatchFunc
 	Match  func(pattern, path string) bool
-	Ignore func(path string, isDir bool) bool
+	Ignore func(root string) func(path string, isDir bool) bool
 
 	mu       sync.Mutex
 	runner   Runner
@@ -108,10 +109,13 @@ type projectState struct {
 }
 
 type procState struct {
-	proc       Proc
-	def        Def
-	dir        string
-	handle     session.Handle
+	proc   Proc
+	def    Def
+	dir    string
+	handle session.Handle
+	// running is the variant of the definition the current run started
+	// with: a Load that brings another marks the process Changed.
+	running    string
 	generation uint64
 	stop       context.CancelFunc
 	watch      context.CancelFunc
@@ -159,7 +163,10 @@ func (s *Supervisor) Load(projectID, dir string, defs []Def) {
 			old = &procState{proc: Proc{Def: d, Status: status, Session: SessionID(projectID, d.Name), Since: time.Now().UnixMilli(), Trusted: trusted}, def: d, dir: dir}
 			ps.procs[d.Name] = old
 		} else if old.handle != nil {
-			old.proc.Changed = old.def.Variant() != d.Variant()
+			// The run goes on with what it started with; the definition
+			// the process has, restarts with and is trusted by is this one.
+			old.def, old.dir, old.proc.Def, old.proc.Trusted = d, dir, d, trusted
+			old.proc.Changed = old.running != d.Variant()
 			if old.proc.Changed {
 				old.proc.Message = "definition changed; restart to apply"
 			} else {
@@ -305,14 +312,23 @@ func (s *Supervisor) Stop(projectID, name string) error {
 
 // Restart stops and starts a process without making the stop sticky. The
 // new run shows what the old one printed, under a line that says it was
-// replaced: a restart is how a user reads the run before it.
+// replaced: a restart is how a user reads the run before it. A definition
+// that isn't trusted is refused before anything is stopped.
 func (s *Supervisor) Restart(projectID, name string) error {
 	var history []byte
 	s.mu.Lock()
 	_, p := s.find(projectID, name)
-	if p != nil && p.handle != nil {
+	if p == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("%s: %w", name, ErrNotFound)
+	}
+	if !p.proc.Trusted {
+		s.mu.Unlock()
+		return fmt.Errorf("%s %w", name, ErrUntrusted)
+	}
+	if p.handle != nil {
 		history = p.handle.History(true)
-		history = append(history, []byte("\r\n\x1b[2m── restarted (exit "+strconv.Itoa(p.proc.LastExit)+") ──\x1b[0m\r\n")...)
+		history = append(history, []byte("\r\n\x1b[2m── restarted ──\x1b[0m\r\n")...)
 	}
 	s.mu.Unlock()
 	if err := s.Stop(projectID, name); err != nil {
@@ -427,6 +443,7 @@ func (s *Supervisor) startRun(project, name string, def Def, root string, gen ui
 	}
 	p.handle, p.stop, p.proc.Pane, p.proc.PID = h, cancel, h.ID(), h.Info().PID
 	p.proc.Status, p.proc.Since, p.proc.Message = Starting, time.Now().UnixMilli(), ""
+	p.running, p.proc.Changed = def.Variant(), false
 	// Counted under the lock Close sets closed in, so Close waits for the
 	// run's goroutines, or they never start.
 	s.watches.Add(2)
@@ -462,10 +479,16 @@ func (s *Supervisor) watch(project, name string, def Def, root string, gen uint6
 		s.mu.Unlock()
 		return
 	}
+	// The run's context ends with it: its readiness check stops. The
+	// wait for a restart is on the supervisor's own context below.
+	runCancel := p.stop
 	p.handle = nil
 	p.stop = nil
 	p.proc.LastExit = code
 	p.proc.PID = 0
+	if runCancel != nil {
+		defer runCancel()
+	}
 	restart := def.Restart == "always" || (def.Restart == "on-failure" && code != 0)
 	if !restart {
 		if code == 0 {
@@ -519,7 +542,7 @@ func (s *Supervisor) watch(project, name string, def Def, root string, gen uint6
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
-	case <-ctx.Done():
+	case <-s.ctx.Done():
 		return
 	case <-timer.C:
 	}
@@ -529,6 +552,16 @@ func (s *Supervisor) watch(project, name string, def Def, root string, gen uint6
 		s.mu.Unlock()
 		return
 	}
+	// The restart runs the definition the process has now, which a Load
+	// may have changed since: one the user hasn't trusted waits for them.
+	if !p.proc.Trusted {
+		p.proc.Status, p.proc.Since = Untrusted, time.Now().UnixMilli()
+		p.proc.Message = "the changed definition isn't trusted yet"
+		s.mu.Unlock()
+		s.changed()
+		return
+	}
+	def, root = p.def, p.dir
 	p.generation++
 	newGen := p.generation
 	s.mu.Unlock()

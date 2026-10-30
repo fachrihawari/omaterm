@@ -170,6 +170,10 @@ func (s *Supervisor) matches(globs []string, path string) bool {
 // and skipping what the owner says to skip.
 func (s *Supervisor) pollFiles(globs []string, root string) []string {
 	var out []string
+	ignore := func(string, bool) bool { return false }
+	if s.Ignore != nil {
+		ignore = s.Ignore(root)
+	}
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -183,12 +187,12 @@ func (s *Supervisor) pollFiles(globs []string, root string) []string {
 			return nil
 		}
 		if d.IsDir() {
-			if s.Ignore != nil && s.Ignore(rel, true) {
+			if ignore(rel, true) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if s.Ignore != nil && s.Ignore(rel, false) {
+		if ignore(rel, false) {
 			return nil
 		}
 		if len(out) >= pollLimit {
@@ -215,6 +219,15 @@ func (s *Supervisor) watchRestart(project, name string, gen uint64, path string)
 		s.mu.Unlock()
 		return
 	}
+	// The restart runs the definition the process has now, which a Load
+	// may have changed since the run began: one the user hasn't trusted
+	// keeps the run as it is, and says why.
+	if !p.proc.Trusted {
+		p.proc.Message = "definition changed; trust it in omaterm to apply"
+		s.mu.Unlock()
+		s.changed()
+		return
+	}
 	h := p.handle
 	if p.watch != nil {
 		p.watch()
@@ -237,13 +250,18 @@ func (s *Supervisor) watchRestart(project, name string, gen uint64, path string)
 	// run's exit, and its watch, end their work on a run that is gone.
 	p.generation++
 	newGen := p.generation
+	runCancel := p.stop
 	p.handle, p.stop = nil, nil
 	p.proc.Status = Starting
 	p.proc.Since = time.Now().UnixMilli()
+	def, dir := p.def, p.dir
 	s.mu.Unlock()
+	if runCancel != nil {
+		runCancel()
+	}
 	s.runner.Remove(h.ID())
 	s.changed()
-	_ = s.startRun(project, name, p.def, p.dir, newGen, history, restartBase)
+	_ = s.startRun(project, name, def, dir, newGen, history, restartBase)
 }
 
 // setWatchMessage says what a watch did not manage, on the run it belongs

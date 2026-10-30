@@ -66,13 +66,19 @@ func LoadFile(root string) ([]Def, error) {
 // keeps, and any other top-level key stay as they were. Local defs are not
 // part of the file and are skipped.
 func SaveFile(root string, defs []Def) error {
+	// An entry the file already has, written by hand and invalid, is not
+	// what this save is about: it stays as it is, and the others are saved.
+	var had []Def
+	if existing, err := LoadFile(root); err == nil {
+		had = existing
+	}
 	var shared []Def
 	seen := map[string]bool{}
 	for _, d := range defs {
 		if d.Local {
 			continue
 		}
-		if err := d.Validate(root); err != nil {
+		if err := d.Validate(root); err != nil && !hasDef(had, d) {
 			return fmt.Errorf("the process %q: %w", d.Name, err)
 		}
 		if seen[d.Name] {
@@ -245,4 +251,14 @@ func writeAtomic(path string, data []byte, mode fs.FileMode) error {
 		os.Remove(tmp)
 	}
 	return err
+}
+
+// hasDef tells whether defs holds d as it is, name and all.
+func hasDef(defs []Def, d Def) bool {
+	for _, e := range defs {
+		if e.Name == d.Name && e.Variant() == d.Variant() && e.Autostart == d.Autostart {
+			return true
+		}
+	}
+	return false
 }
