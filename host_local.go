@@ -117,6 +117,10 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		return map[string]any{"app": appVersion(), "proto": proto.Version}, nil
 	case "state":
 		return h.onUI(func() (any, error) { return a.protoState(h.started), nil })
+	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync":
+		// The app's process host answers: the daemon's supervisor through
+		// it, or the app's own when there is no daemon.
+		return h.onUI(func() (any, error) { return a.processCall(method, raw) })
 	case "create", "split":
 		p, err := decode[proto.CreateParams](raw)
 		if err != nil {

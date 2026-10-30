@@ -14,6 +14,7 @@ import (
 	"omaterm/internal/client"
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/worktree"
@@ -592,5 +593,46 @@ func TestSendWaitsForTheUser(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("read %q", out.Text)
 		}
+	}
+}
+
+// The process.* methods work over the app's socket, which the omaterm
+// command talks to while the window is open: here with the app's own
+// host, as without a daemon.
+func TestProcessMethodsOverSocket(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.useLocalProcHost()
+	local := a.procHost.(*localProcs)
+	defer local.Close()
+	web := procs.Def{Name: "web", Command: "sh -c 'echo up; sleep 30'"}
+	if err := os.WriteFile(filepath.Join(a.workspace, procs.FileName), []byte("processes:\n  web:\n    command: \"sh -c 'echo up; sleep 30'\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := dialApp(t, a)
+	project := a.projects[a.active].ID
+	var list []proto.Process
+	if err := c.Call("process.list", proto.ProcessParams{Project: project}, &list); err != nil || len(list) != 1 || list[0].Status != procs.Untrusted {
+		t.Fatalf("list: %+v, %v", list, err)
+	}
+	if err := c.Call("process.start", proto.ProcessParams{Project: project, Name: "web"}, nil); err == nil || !strings.Contains(err.Error(), "isn't trusted") {
+		t.Fatalf("an untrusted start: %v", err)
+	}
+	if err := procs.OpenTrust(procs.TrustPath()).Add(a.workspace, web.Variant()); err != nil {
+		t.Fatal(err)
+	}
+	var proc proto.Process
+	if err := c.Call("process.sync", proto.ProcessParams{Project: a.projects[a.active].Name}, &list); err != nil || len(list) != 1 || !list[0].Trusted {
+		t.Fatalf("sync by name: %+v, %v", list, err)
+	}
+	if err := c.Call("process.start", proto.ProcessParams{Project: project, Name: "web"}, &proc); err != nil || proc.Status != procs.Starting || proc.Pane == "" {
+		t.Fatalf("start: %+v, %v", proc, err)
+	}
+	if err := c.Call("process.stop", proto.ProcessParams{Project: project, Name: "web"}, &proc); err != nil || proc.Status != procs.Stopped {
+		t.Fatalf("stop: %+v, %v", proc, err)
+	}
+	if err := c.Call("process.start", proto.ProcessParams{Project: project, Name: "nope"}, nil); err == nil {
+		t.Fatal("an unknown process started")
 	}
 }

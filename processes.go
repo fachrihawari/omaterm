@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,9 +16,92 @@ import (
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
 	"omaterm/internal/procs"
+	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/service"
 )
+
+// processCall serves the process.* methods on the app's control socket,
+// on the UI thread: the omaterm command reaches the app while its window
+// is open, whichever host runs the processes. A project is named by its
+// id or its name.
+func (a *appState) processCall(method string, raw json.RawMessage) (any, error) {
+	if a.procHost == nil {
+		return nil, proto.Errorf(proto.CodeUsage, "no process host")
+	}
+	var p proto.ProcessParams
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+	}
+	pi := -1
+	for i, project := range a.projects {
+		if project.ID == p.Project || project.Name == p.Project {
+			pi = i
+			break
+		}
+	}
+	if method == "process.sync" {
+		a.procHost.Sync()
+		a.refreshProcList()
+		if pi < 0 {
+			return true, nil
+		}
+		return a.processList(pi), nil
+	}
+	if pi < 0 {
+		return nil, proto.Errorf(proto.CodeNotFound, "no project "+p.Project)
+	}
+	projectID := a.projects[pi].ID
+	if method == "process.list" {
+		// The app's own host rereads a changed omaterm.yml for the list.
+		if local, ok := a.procHost.(*localProcs); ok {
+			local.SyncIfChanged()
+		}
+		a.refreshProcList()
+		return a.processList(pi), nil
+	}
+	var err error
+	switch method {
+	case "process.start":
+		err = a.procHost.Start(projectID, p.Name)
+	case "process.stop":
+		err = a.procHost.Stop(projectID, p.Name)
+	case "process.restart":
+		err = a.procHost.Restart(projectID, p.Name)
+	case "process.trust":
+		err = a.procHost.Trust(projectID, p.Name)
+	}
+	a.refreshProcList()
+	if err != nil {
+		var pe *proto.Error
+		if errors.As(err, &pe) {
+			return nil, err
+		}
+		code := proto.CodeUsage
+		if errors.Is(err, procs.ErrNotFound) {
+			code = proto.CodeNotFound
+		}
+		return nil, proto.Errorf(code, err.Error())
+	}
+	for _, proc := range a.procList[projectID] {
+		if proc.Name == p.Name {
+			return proto.Process(proc), nil
+		}
+	}
+	return nil, proto.Errorf(proto.CodeNotFound, "process "+p.Name)
+}
+
+// processList is a project's processes as the protocol tells them.
+func (a *appState) processList(pi int) []proto.Process {
+	list := a.procList[a.projects[pi].ID]
+	out := make([]proto.Process, len(list))
+	for i, p := range list {
+		out[i] = proto.Process(p)
+	}
+	return out
+}
 
 // procHost runs a project's processes: the session daemon's supervisor
 // over the socket, or the app's own when there is no daemon.
