@@ -212,11 +212,12 @@ func (d *Daemon) processEvent(event procs.Event) {
 
 var _ procs.Runner = daemonRunner{}
 
-// watchFolder watches a project's folder for a process that restarts when
+// WatchFolder watches a project's folder for a process that restarts when
 // its files change, and calls changed with the paths of each batch of
-// changes until ctx ends. It lives here because the watcher is mygo's, and
-// the folder's rules are the app's: internal/procs imports neither.
-func watchFolder(ctx context.Context, root string, changed func(paths []string)) error {
+// changes until ctx ends. It is the supervisor's Watch, in the daemon and
+// in the app alike: the watcher is mygo's, and the folder's rules the
+// app's, which internal/procs imports neither of.
+func WatchFolder(ctx context.Context, root string, changed func(paths []string)) error {
 	w, err := mygo.WatchFiles(ctx, root, mygo.FileWatchOptions{
 		Recursive: true,
 		Debounce:  300 * time.Millisecond,

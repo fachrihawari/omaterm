@@ -14,6 +14,7 @@ import (
 	"omaterm/internal/paths"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
+	"omaterm/service"
 )
 
 // procHost runs a project's processes: the session daemon's supervisor
@@ -159,6 +160,8 @@ func (a *appState) useLocalProcHost() {
 	s.OnChange = func() { a.post(a.refreshProcList) }
 	// No daemon, so the app is what tells the user a process failed.
 	s.OnEvent = func(event procs.Event) { a.post(func() { a.processEvent(event) }) }
+	// Files are watched as the daemon watches them, with the same globs.
+	s.Watch, s.Match = daemon.WatchFolder, service.MatchGlob
 	a.procHost = l
 	a.procList = map[string][]procs.Proc{}
 	l.load()

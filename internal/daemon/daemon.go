@@ -175,7 +175,7 @@ func Start(opts Options) (*Daemon, error) {
 	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
 	d.procs.OnEvent = d.processEvent
 	d.procs.OnChange = d.changed
-	d.procs.Watch = watchFolder
+	d.procs.Watch = WatchFolder
 	d.procs.Match = service.MatchGlob
 	d.reg.OnOutput = d.output
 	d.reg.OnExit = func(id string, code int) { d.changed() }
