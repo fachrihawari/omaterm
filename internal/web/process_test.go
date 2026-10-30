@@ -144,7 +144,7 @@ func TestWebProcessSession(t *testing.T) {
 	ws = f.dial(t, c, "/api/panes/"+stopped.Panes[0].ID+"/attach")
 	_, _, err := ws.Read(ctx)
 	var ce websocket.CloseError
-	const want = "process web is stopped: start it in omaterm"
+	const want = "process web isn't running: start it in omaterm"
 	if !errors.As(err, &ce) || ce.Code != 4410 || ce.Reason != want {
 		t.Fatalf("stopped process: %v, want close 4410 %q", err, want)
 	}

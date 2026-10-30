@@ -32,7 +32,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(1 << 20) // a pasted block
 	// A stopped process has no pane to wake: the page is told which it is.
 	if name := s.stoppedProcess(r.Context(), r.PathValue("id")); name != "" {
-		c.Close(closeStopped, "process "+name+" is stopped: start it in omaterm")
+		c.Close(closeStopped, "process "+name+" isn't running: start it in omaterm")
 		return
 	}
 	// A pane the window has not shown since it opened is not running yet.
@@ -104,8 +104,8 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 }
 
 // stoppedProcess is the name of the process a pane belongs to when that
-// process is stopped, and "" for any other pane. A stopped process keeps its
-// pane, which shows as exited.
+// process isn't running, whether stopped, exited or failed, and "" for any
+// other pane: the state keeps the pane of the last run, as exited.
 func (s *Server) stoppedProcess(ctx context.Context, pane string) string {
 	v, err := s.d.Handle(ctx, "state", nil)
 	if err != nil {

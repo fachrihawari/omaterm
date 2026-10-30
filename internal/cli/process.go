@@ -142,6 +142,10 @@ func waitProcess(c *client.Client, project, name string, timeout time.Duration, 
 				return fmt.Errorf("%s is %s", name, p.Status)
 			}
 			return errors.New(p.Message)
+		case p.Status == procs.Starting && p.Restarts > 0 && p.LastExit != 0:
+			// It exited and is being restarted: waiting through the
+			// backoff would hide the exit the user needs to see.
+			return fmt.Errorf("%s exited (code %d) and is restarting", name, p.LastExit)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%s didn't come up in %s", name, label)

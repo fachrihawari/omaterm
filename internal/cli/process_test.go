@@ -269,3 +269,26 @@ func TestCurrentProject(t *testing.T) {
 		t.Errorf("outside every project: %v", err)
 	}
 }
+
+// A process that exits and is being restarted is not one to wait for: the
+// exit is what the user needs to see.
+func TestStartWaitSeesACrashLoop(t *testing.T) {
+	dir := projectFolder(t)
+	fakeSocket(t, fakeHost{
+		"state": stateOf(dir),
+		"process.start": func(json.RawMessage) (any, error) {
+			return proto.Process{Def: procs.Def{Name: "bad"}, Status: procs.Starting}, nil
+		},
+		"process.list": listOf(proto.Process{Def: procs.Def{Name: "bad"}, Status: procs.Starting, Restarts: 1, LastExit: 1}),
+	})
+	path := os.Getenv("OMATERM_SOCKET")
+	c, err := client.Dial(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	err = processCmd(c, "process.start", []string{"bad", "--wait", "--timeout", "2s"})
+	if err == nil || !strings.Contains(err.Error(), "exited (code 1)") {
+		t.Fatalf("got %v, want the exit code", err)
+	}
+}
