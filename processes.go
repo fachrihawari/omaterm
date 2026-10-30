@@ -21,7 +21,9 @@ import (
 // procHost runs a project's processes: the session daemon's supervisor
 // over the socket, or the app's own when there is no daemon.
 type procHost interface {
-	List(projectID string) []procs.Proc
+	// List is the project's processes; an error means the host couldn't
+	// say, not that there are none.
+	List(projectID string) ([]procs.Proc, error)
 	Start(projectID, name string) error
 	Stop(projectID, name string) error
 	Restart(projectID, name string) error
@@ -32,9 +34,8 @@ type procHost interface {
 
 type remoteProcs struct{ remote *daemon.Remote }
 
-func (p *remoteProcs) List(projectID string) []procs.Proc {
-	list, _ := p.remote.ProcessList(projectID)
-	return list
+func (p *remoteProcs) List(projectID string) ([]procs.Proc, error) {
+	return p.remote.ProcessList(projectID)
 }
 func (p *remoteProcs) Start(projectID, name string) error {
 	return p.remote.ProcessStart(projectID, name)
@@ -58,10 +59,17 @@ type localProcs struct {
 	mtimes map[string]time.Time
 }
 
+// localProcRunner runs the app's own processes in its pane registry. The
+// supervisor calls it from goroutines of its own, so it reads nothing of
+// the app's there: the terminal options and the environment a pane gets
+// are a snapshot the UI thread refreshes, and what a pane's end changes
+// in the app is posted to that thread.
 type localProcRunner struct {
 	a        *appState
 	mu       sync.Mutex
 	projects map[string]project
+	base     session.StartOptions
+	env      []string
 }
 
 func (r *localProcRunner) setProject(projectID, name string, p project) {
@@ -70,32 +78,48 @@ func (r *localProcRunner) setProject(projectID, name string, p project) {
 	r.mu.Unlock()
 }
 
-func (r *localProcRunner) Start(o session.StartOptions) (session.Handle, error) {
-	r.mu.Lock()
-	p := r.projects[o.Session]
-	r.mu.Unlock()
-	opt := r.a.termStartOptions(o.ID)
-	opt.ID, opt.Session, opt.Project, opt.ProjectName, opt.ProjectDir = o.ID, o.Session, p.ID, p.Name, p.Path
-	opt.Role, opt.Dir, opt.Command, opt.Exec = "process", o.Dir, o.Command, true
+// snapshot takes, on the UI thread, what a process pane is started with.
+func (r *localProcRunner) snapshot() {
+	base := r.a.termStartOptions("")
 	env := []string{"PATH=" + paths.BinDir() + string(os.PathListSeparator) + os.Getenv("PATH")}
 	if r.a.ctl != nil {
 		env = append(env, "OMATERM_SOCKET="+r.a.ctl.Path())
 	}
+	r.mu.Lock()
+	r.base, r.env = base, env
+	r.mu.Unlock()
+}
+
+func (r *localProcRunner) Start(o session.StartOptions) (session.Handle, error) {
+	r.mu.Lock()
+	p := r.projects[o.Session]
+	opt, env := r.base, append([]string(nil), r.env...)
+	r.mu.Unlock()
+	a, id := r.a, o.ID
+	opt.OpenLink = func(link string) bool { return a.openTermLink(id, link) }
+	opt.ID, opt.Session, opt.Project, opt.ProjectName, opt.ProjectDir = o.ID, o.Session, p.ID, p.Name, p.Path
+	opt.Role, opt.Dir, opt.Command, opt.Exec = "process", o.Dir, o.Command, true
 	opt.Env, opt.History = append(env, o.Env...), o.History
 	opt.Cols, opt.Rows = o.Cols, o.Rows
 	return r.a.offPanes().Start(opt)
 }
 
 func (r *localProcRunner) Get(id string) session.Handle { return r.a.offPanes().Get(id) }
-func (r *localProcRunner) Remove(id string)             { r.a.closePaneRuntime(id) }
 
-func (p *localProcs) List(projectID string) []procs.Proc   { return p.s.List(projectID) }
-func (p *localProcs) Start(projectID, name string) error   { return p.s.Start(projectID, name) }
-func (p *localProcs) Stop(projectID, name string) error    { return p.s.Stop(projectID, name) }
-func (p *localProcs) Restart(projectID, name string) error { return p.s.Restart(projectID, name) }
-func (p *localProcs) Trust(projectID, name string) error   { return p.s.Trust(projectID, name) }
-func (p *localProcs) Sync()                                { p.load() }
-func (p *localProcs) Close()                               { p.s.Close() }
+// Remove ends the pane now, in the registry, which takes that from any
+// goroutine; what the app keeps about the pane goes on the UI thread.
+func (r *localProcRunner) Remove(id string) {
+	r.a.offPanes().Remove(id)
+	r.a.post(func() { r.a.closePaneRuntime(id) })
+}
+
+func (p *localProcs) List(projectID string) ([]procs.Proc, error) { return p.s.List(projectID), nil }
+func (p *localProcs) Start(projectID, name string) error          { return p.s.Start(projectID, name) }
+func (p *localProcs) Stop(projectID, name string) error           { return p.s.Stop(projectID, name) }
+func (p *localProcs) Restart(projectID, name string) error        { return p.s.Restart(projectID, name) }
+func (p *localProcs) Trust(projectID, name string) error          { return p.s.Trust(projectID, name) }
+func (p *localProcs) Sync()                                       { p.load() }
+func (p *localProcs) Close()                                      { p.s.Close() }
 
 func (p *localProcs) SyncIfChanged() {
 	next := map[string]time.Time{}
@@ -162,9 +186,10 @@ func (a *appState) useLocalProcHost() {
 	// No daemon, so the app is what tells the user a process failed.
 	s.OnEvent = func(event procs.Event) { a.post(func() { a.processEvent(event) }) }
 	// Files are watched as the daemon watches them, with the same globs.
-	s.Watch, s.Match = daemon.WatchFolder, service.MatchGlob
+	s.Watch, s.Match, s.Ignore = daemon.WatchFolder, service.MatchGlob, service.IgnoreFunc
 	a.procHost = l
 	a.procList = map[string][]procs.Proc{}
+	r.snapshot()
 	l.load()
 }
 
@@ -189,7 +214,12 @@ func (a *appState) refreshProcList() {
 			a.procList[project.ID] = nil
 			continue
 		}
-		list := a.procHost.List(project.ID)
+		list, err := a.procHost.List(project.ID)
+		if err != nil {
+			// The host couldn't say: what it said last stands, rather than
+			// an empty list that would close the tabs and hide the group.
+			continue
+		}
 		locals := make(map[string]bool, len(project.Processes))
 		for _, def := range project.Processes {
 			locals[def.Name] = true
@@ -241,6 +271,9 @@ func (a *appState) refreshProcList() {
 	}
 }
 
+// startProcListRefresh keeps the process list fresh once a second while
+// the window is open: the app's own host is asked to reread a changed
+// omaterm.yml then, and the daemon's for the list.
 func (a *appState) startProcListRefresh() {
 	a.stopProcListRefresh()
 	a.refreshProcList()
@@ -248,25 +281,16 @@ func (a *appState) startProcListRefresh() {
 		return
 	}
 	gen := a.procGen
-	a.procTimer = time.AfterFunc(time.Second, func() {
-		a.win.Update(func() {
-			if a.procGen != gen {
-				return
-			}
-			if local, ok := a.procHost.(*localProcs); ok {
-				local.SyncIfChanged()
-			}
-			a.refreshProcList()
-			a.procTimer = time.AfterFunc(time.Second, func() { a.win.Update(func() { a.procTick(gen) }) })
-		})
-	})
+	a.procTimer = time.AfterFunc(time.Second, func() { a.win.Update(func() { a.procTick(gen) }) })
 }
 
+// procTick is one refresh, on the UI thread, and the next one scheduled.
 func (a *appState) procTick(gen int) {
 	if a.procGen != gen {
 		return
 	}
 	if local, ok := a.procHost.(*localProcs); ok {
+		local.r.snapshot()
 		local.SyncIfChanged()
 	}
 	a.refreshProcList()

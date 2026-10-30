@@ -42,7 +42,7 @@ func TestProcessMoveAndRemove(t *testing.T) {
 	if state := a.state(); len(state.Projects[0].Processes) != 1 || state.Projects[0].Processes[0].Name != "web" {
 		t.Fatalf("local definitions after Keep Local = %+v", state.Projects[0].Processes)
 	}
-	if list := a.procHost.List(a.projects[a.active].ID); len(list) != 1 || !list[0].Trusted {
+	if list, _ := a.procHost.List(a.projects[a.active].ID); len(list) != 1 || !list[0].Trusted {
 		t.Fatalf("the moved process lost trust: %+v", list)
 	}
 	if list := a.procList[a.projects[a.active].ID]; list[0].Status != procs.Running || !list[0].Local {
@@ -77,7 +77,7 @@ func TestProcessMoveAndRemove(t *testing.T) {
 	if defs, err := procs.LoadFile(a.workspace); err != nil || len(defs) != 0 {
 		t.Fatalf("file definitions after remove = %+v, err=%v", defs, err)
 	}
-	if len(a.state().Projects[0].Processes) != 0 || len(a.procHost.List(a.projects[a.active].ID)) != 0 {
+	if remaining, _ := a.procHost.List(a.projects[a.active].ID); len(a.state().Projects[0].Processes) != 0 || len(remaining) != 0 {
 		t.Fatal("removed process remains in project state or the process list")
 	}
 	if a.activeView == tabProcess {

@@ -65,7 +65,10 @@ func (a *appState) openProcessDialog(pi int, def *procs.Def) {
 		return
 	}
 	st.oldName, st.name, st.command = def.Name, def.Name, def.Command
-	st.dir, st.port = def.Dir, strconv.Itoa(def.Port)
+	st.dir, st.port = def.Dir, ""
+	if def.Port > 0 {
+		st.port = strconv.Itoa(def.Port)
+	}
 	st.autostart, st.restart, st.shared = def.Autostart, restartLabel(def.Restart), !def.Local
 	st.watch, st.env = strings.Join(def.Watch, "\n"), formatProcessEnv(def.Env)
 	a.procDialog = st
