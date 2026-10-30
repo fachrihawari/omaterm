@@ -21,6 +21,7 @@ import (
 	"omaterm/internal/model"
 	"omaterm/internal/notice"
 	"omaterm/internal/paths"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/service"
@@ -32,6 +33,7 @@ type topTabKind int
 
 const (
 	tabTerminal topTabKind = iota
+	tabProcess
 	tabEditor
 	tabDiff
 	tabGraph
@@ -66,6 +68,7 @@ type topTab struct {
 	// Collapsed hides the sessions it started in the sidebar.
 	Parent    string
 	Collapsed bool
+	Process   string
 }
 
 const (
@@ -143,6 +146,11 @@ type appState struct {
 	activeTab int
 
 	activeView topTabKind
+
+	procHost  procHost
+	procList  map[string][]procs.Proc
+	procTimer *time.Timer
+	procGen   int
 
 	sidebarVisible   bool
 	inspectorVisible bool
@@ -526,6 +534,7 @@ type project struct {
 	Branch    string
 	Active    bool
 	Tabs      []string
+	Processes []procs.Def
 	// ActiveSession is the session to show first, as saved.
 	ActiveSession string
 }
@@ -566,6 +575,7 @@ func newApp() *appState {
 		commitFiles:      map[string][]service.CommitFile{},
 		commitStats:      map[string][2]int{},
 		projects:         []project{},
+		procList:         map[string][]procs.Proc{},
 		settings:         loadSettings(),
 	}
 	a.hookPanes()
@@ -693,6 +703,7 @@ func (a *appState) start() {
 		a.loadProjectData()
 	}
 	a.startSystemStats()
+	a.startProcListRefresh()
 	if a.inspectorTab == 0 && a.inspectorShown {
 		a.startProcessRefresh()
 	}
@@ -702,6 +713,10 @@ func (a *appState) start() {
 // and processes. setProject calls it; so does start, once the window
 // exists, since loads begun before it had no window to report to.
 func (a *appState) loadProjectData() {
+	if a.procHost != nil {
+		a.procHost.Sync()
+		a.refreshProcList()
+	}
 	a.refreshRepos()
 	a.rebuildFileIndex()
 	a.rebuildFileTree()

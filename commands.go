@@ -1,6 +1,8 @@
 package main
 
 import (
+	"slices"
+
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/ui"
@@ -299,11 +301,20 @@ func (a *appState) closeActivePane(c *ui.Context) {
 
 // cycleTab moves the active tab by d, wrapping around.
 func (a *appState) cycleTab(d int) {
-	n := len(a.tabs)
+	indices := a.visibleTabIndices()
+	n := len(indices)
 	if n == 0 {
 		return
 	}
-	a.activateTab((a.activeTab + d + n) % n)
+	current := slices.Index(indices, a.activeTab)
+	if current < 0 {
+		if d < 0 {
+			current = 0
+		} else {
+			current = n - 1
+		}
+	}
+	a.activateTab(indices[(current+d+n)%n])
 }
 
 // fontSizeSteps is the range the zoom keys keep the text in, in DIPs. The

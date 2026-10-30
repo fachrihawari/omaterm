@@ -2,6 +2,7 @@ package main
 
 import (
 	"omaterm/internal/model"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"path/filepath"
@@ -229,15 +230,91 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.sessionRow(c, i, tabs, node)
 		}
 	}
-	if n == 0 {
+	if n == 0 && len(a.procList[p.ID]) == 0 {
 		ui.Text(c, "No sessions").FontSize(11.5).TextColor(pal.TextFaint).Padding(4, 0, 4, 28)
 	}
+	if len(a.procList[p.ID]) > 0 {
+		a.processGroup(c, i)
+	}
+}
+
+func (a *appState) processGroup(c *ui.Context, pi int) {
+	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 8, 0, 28).AlignItems(ui.Center).Children(func() {
+		sectionLabel(c, "Processes")
+	})
+	for _, proc := range a.procList[a.projects[pi].ID] {
+		a.processRow(c, pi, proc)
+	}
+}
+
+func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
+	selected := pi == a.active && a.activeTab >= 0 && a.activeTab < len(a.tabs) &&
+		a.tabs[a.activeTab].Kind == tabProcess && a.tabs[a.activeTab].Process == proc.Name
+	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 28).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	if selected {
+		row.Background(pal.RowSelected)
+	} else if row.Hovered() {
+		row.Background(pal.Hover)
+	}
+	row.Children(func() {
+		a.processIcon(c, proc, 13)
+		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		if proc.Status == procs.Exited || proc.Status == procs.Stopped {
+			name.TextColor(pal.TextMuted)
+		}
+		if proc.Port > 0 {
+			pill(c, ":"+itoa(proc.Port))
+		}
+		ui.Spacer(c)
+		if row.Hovered() {
+			active := proc.Status == procs.Starting || proc.Status == procs.Running
+			icon, label := iconPlus, "Start"
+			if active {
+				icon, label = iconX, "Stop"
+			}
+			if cmdButton(c, icon, 12, false).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
+				if active {
+					a.stopProcess(pi, proc.Name)
+				} else {
+					a.startProcess(pi, proc.Name)
+				}
+			}
+			if cmdButton(c, iconRotate, 12, false).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
+				a.restartProcess(pi, proc.Name)
+			}
+		}
+	})
+	if proc.Status == procs.Untrusted {
+		row.Tooltip("not trusted yet: Start to review it")
+	} else if proc.Message != "" {
+		row.Tooltip(proc.Message)
+	} else {
+		row.Tooltip(processStatusText(proc.Status))
+	}
+	if row.Clicked() {
+		a.showProcess(pi, proc.Name)
+	}
+	row.ContextMenu(func(m *ui.Menu) {
+		if proc.Status == procs.Starting || proc.Status == procs.Running {
+			if m.Item("Stop").Chosen() {
+				a.stopProcess(pi, proc.Name)
+			}
+		} else if m.Item("Start").Chosen() {
+			a.startProcess(pi, proc.Name)
+		}
+		if m.Item("Restart").Chosen() {
+			a.restartProcess(pi, proc.Name)
+		}
+	})
 }
 
 // projectLead is the session of a project that needs the user most.
 func (a *appState) projectLead(tabs []topTab) (session.Info, bool) {
 	var infos []session.Info
 	for _, t := range tabs {
+		if t.Kind != tabTerminal {
+			continue
+		}
 		if i, ok := a.sessionInfo(t); ok {
 			infos = append(infos, i)
 		}

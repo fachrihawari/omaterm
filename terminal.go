@@ -122,7 +122,7 @@ func (a *appState) activeSplit() *splitNode {
 }
 
 func (a *appState) setActiveSplit(n *splitNode) {
-	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabTerminal {
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && (a.tabs[a.activeTab].Kind == tabTerminal || a.tabs[a.activeTab].Kind == tabProcess) {
 		a.tabs[a.activeTab].Split = n
 	}
 }
@@ -156,6 +156,9 @@ func (a *appState) term(id string) *terminal.Terminal {
 	a.paneShown[id] = time.Now()
 	if p := a.panes.Get(id); p != nil {
 		return p.Term()
+	}
+	if tab := a.tabOfPane(id); tab >= 0 && a.tabs[tab].Kind == tabProcess {
+		return nil
 	}
 	if a.paneFailed[id] {
 		return nil
@@ -472,11 +475,15 @@ func (a *appState) removePaneIn(tab int, termID string) {
 // ---------------------------------------------------------------------------
 
 func (a *appState) terminalView(c *ui.Context) ui.Element {
+	processTab := a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
+	if processTab && a.tabs[a.activeTab].Split == nil {
+		return a.processPlaceholder(c, a.tabs[a.activeTab])
+	}
 	// The terminal view shows a session tab. Asked for while an editor or
 	// a diff is the tab (as after discarding a diff's changes), it shows
 	// the first session; a split was once added to that tab, starting a
 	// shell that nothing closed.
-	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || (a.tabs[a.activeTab].Kind != tabTerminal && a.tabs[a.activeTab].Kind != tabProcess) {
 		for i, t := range a.tabs {
 			if t.Kind == tabTerminal {
 				a.activateTab(i)
@@ -484,7 +491,7 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 			}
 		}
 	}
-	if len(a.tabs) == 0 || a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+	if len(a.tabs) == 0 || a.activeTab < 0 || a.activeTab >= len(a.tabs) || (a.tabs[a.activeTab].Kind != tabTerminal && a.tabs[a.activeTab].Kind != tabProcess) {
 		return ui.Column(c).Fill().Background(pal.Card).Center().Gap(12).Children(func() {
 			ui.Box(c).Width(48).Height(48).Radius(12).Border(1, pal.BorderStrong).Background(pal.Raised).Children(func() {
 				ui.Column(c).Fill().Center().Children(func() {

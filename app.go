@@ -306,7 +306,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 }
 
 func (a *appState) content(c *ui.Context) {
-	if a.activeView == tabTerminal {
+	if a.activeView == tabTerminal || a.activeView == tabProcess {
 		a.terminalView(c)
 		return
 	}

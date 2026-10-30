@@ -32,7 +32,7 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 		// edge and "+" were out of reach.
 		ui.ScrollHorizontal(c.Key("tabs")).Shrink(1).MinWidth(0).Height(40).Children(func() {
 			ui.Row(c).Height(40).AlignItems(ui.Center).Gap(4).Children(func() {
-				for i := 0; i < len(a.tabs); i++ {
+				for _, i := range a.visibleTabIndices() {
 					e := a.topTab(c, i)
 					if i == a.activeTab && a.activeTab != a.tabInView {
 						e.ScrollIntoView()
@@ -75,6 +75,16 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 			}
 		})
 	})
+}
+
+func (a *appState) visibleTabIndices() []int {
+	var out []int
+	for i, tab := range a.tabs {
+		if tab.Kind != tabProcess {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // topTab is a tab as a pill: a session with its status, or an editor,
@@ -168,7 +178,7 @@ func (a *appState) activateTab(i int) {
 	case tabDiff:
 		a.showDiffTab(t)
 	}
-	if t.Kind == tabTerminal && t.Split != nil {
+	if (t.Kind == tabTerminal || t.Kind == tabProcess) && t.Split != nil {
 		if t.Focus != "" && t.Split.contains(t.Focus) {
 			a.activePaneTermID = t.Focus
 		} else if ids := t.Split.termIDs(); len(ids) > 0 {
@@ -215,7 +225,7 @@ func (a *appState) closeTab(i int) {
 	if t.Kind == tabEditor && t.Path != "" {
 		delete(a.editors, t.Path)
 	}
-	if t.Split != nil { // any tab a split ever got, so its shells end
+	if t.Kind != tabProcess && t.Split != nil { // any tab a split ever got, so its shells end
 		for _, id := range t.Split.termIDs() {
 			a.closePaneRuntime(id)
 		}
@@ -306,6 +316,10 @@ func (a *appState) projectUnsaved(id string) int {
 func (a *appState) beforeClose(e *mygo.CloseEvent) {
 	if a.quitAnyway || len(a.unsavedEditors()) == 0 && a.quitEndsProgram() == "" {
 		a.quitWant = ""
+		a.stopProcListRefresh()
+		if a.procHost != nil {
+			a.procHost.Close()
+		}
 		return
 	}
 	e.PreventDefault()

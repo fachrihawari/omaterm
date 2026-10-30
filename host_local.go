@@ -419,6 +419,20 @@ func (a *appState) protoState(started time.Time) proto.State {
 			s.Name = a.sessionName(t, s.Lead)
 			st.Sessions = append(st.Sessions, s)
 		}
+		for _, process := range a.procList[p.ID] {
+			if process.Pane == "" {
+				continue
+			}
+			var info session.Info
+			if pane := a.panes.Get(process.Pane); pane != nil {
+				info = pane.Info()
+			} else {
+				info = session.Info{ID: process.Pane, Session: process.Session, Project: p.ID,
+					Role: "process", Status: session.Exited, Progress: -1}
+			}
+			st.Sessions = append(st.Sessions, proto.Session{ID: process.Session, Project: p.ID,
+				Name: process.Name, Process: process.Name, Panes: []proto.Pane{info}, Lead: info})
+		}
 	}
 	proto.DropGoneParents(st.Sessions)
 	st.Workspace = a.workspace
@@ -572,7 +586,7 @@ func (a *appState) findPane(id string) (pi int, tabs *[]topTab, ti int, ok bool)
 			continue
 		}
 		for ti, t := range *tabs {
-			if t.Split != nil && t.Split.contains(id) {
+			if t.Kind == tabTerminal && t.Split != nil && t.Split.contains(id) {
 				return pi, tabs, ti, true
 			}
 		}
@@ -606,7 +620,7 @@ func (a *appState) findSession(id string) (pi int, tabs *[]topTab, ti int, ok bo
 			continue
 		}
 		for ti, t := range *tabs {
-			if t.ID == id {
+			if t.Kind == tabTerminal && t.ID == id {
 				return pi, tabs, ti, true
 			}
 		}
