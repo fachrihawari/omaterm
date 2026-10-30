@@ -1,0 +1,6 @@
+{
+  "name": "shop",
+  "scripts": {
+    "dev": "next dev"
+  }
+}
