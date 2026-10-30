@@ -13,6 +13,7 @@ import (
 	"errors"
 
 	"omaterm/internal/model"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
 
@@ -112,6 +113,20 @@ type Session struct {
 	Worktree *model.Worktree `json:"worktree,omitempty"`
 	// Parent is the session whose agent started this one.
 	Parent string `json:"parent,omitempty"`
+	// Process names the project process the session runs, for a session
+	// that is one: its id is procs.SessionID, and its one pane the
+	// process's current or last run.
+	Process string `json:"process,omitempty"`
+}
+
+// Process is a project process as the process.* methods tell it.
+type Process = procs.Proc
+
+// ProcessParams name a project process for process.start, stop, restart
+// and trust; process.list and process.sync take the project alone.
+type ProcessParams struct {
+	Project string `json:"project"`
+	Name    string `json:"name,omitempty"`
 }
 
 // DropGoneParents forgets the parents that are no more: a session whose
