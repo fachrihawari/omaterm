@@ -27,3 +27,51 @@ func TestSidebarShowsSummary(t *testing.T) {
 		t.Fatal("the compact sidebar shows the summary")
 	}
 }
+
+// Both side panels resize by their edge, within their bounds, and a double
+// click on the edge brings the width back to the default.
+func TestPanelEdgesResize(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.sidebarVisible, a.inspectorVisible = true, true
+	a.sidebarW, a.inspectorW = sidebarDefaultW, inspectorDefaultW
+	// The sidebar's width animates to what it was dragged to; the test
+	// looks for the edge where the width is, not where it is on its way.
+	a.settings.ReduceMotion = true
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	drag := func(x, dx float32) {
+		t.Helper()
+		tr.Press(x, 450)
+		tr.Frame()
+		tr.Move(x+dx, 450)
+		tr.Frame()
+		tr.Release(x+dx, 450)
+		tr.Frame()
+	}
+	drag(a.sidebarWidth()-3, 60)
+	if a.sidebarW != sidebarDefaultW+60 {
+		t.Fatalf("sidebar after a drag: %v", a.sidebarW)
+	}
+	drag(a.sidebarWidth()-3, 1000)
+	if a.sidebarW != sidebarMaxW {
+		t.Fatalf("sidebar past its bound: %v", a.sidebarW)
+	}
+	gap := a.paneGap()
+	edge := func() float32 { return 1440 - gap - a.inspectorWidth() + 3 }
+	drag(edge(), -50)
+	if a.inspectorW != inspectorDefaultW+50 {
+		t.Fatalf("inspector after a drag: %v", a.inspectorW)
+	}
+	drag(edge(), 1000)
+	if a.inspectorW != inspectorMinW {
+		t.Fatalf("inspector past its bound: %v", a.inspectorW)
+	}
+	x := edge()
+	tr.ClickAt(x, 450)
+	tr.ClickAt(x, 450)
+	tr.Frame()
+	if a.inspectorW != inspectorDefaultW {
+		t.Fatalf("inspector after a double click: %v", a.inspectorW)
+	}
+}

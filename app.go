@@ -239,7 +239,7 @@ func (a *appState) fitPanels(w float32) {
 			need += a.sidebarWidth()
 		}
 		if insp {
-			need += a.inspectorW + a.paneGap()
+			need += a.inspectorWidth() + a.paneGap()
 		}
 		if need <= w {
 			break
@@ -299,9 +299,14 @@ func (a *appState) mainColumn(c *ui.Context) {
 				}
 			})
 			if a.inspectorShown {
-				card := ui.Column(c).Width(a.inspectorW).Shrink(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
-				cardEdge(card).Children(func() {
-					a.inspector(c)
+				// The inspector's left edge resizes it, as the sidebar's
+				// right edge does the sidebar.
+				ui.Row(c.Key("inspector")).Width(a.inspectorWidth()).Shrink(0).FillHeight().Children(func() {
+					a.panelEdge(c, "inspector-edge", &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
+					card := ui.Column(c).Grow(1).MinWidth(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
+					cardEdge(card).Children(func() {
+						a.inspector(c)
+					})
 				})
 			}
 		})

@@ -19,8 +19,39 @@ import (
 // The sidebar lists the projects and, under each, its sessions (terminal
 // tabs) with what they are doing, as Kero's and Rex's do.
 
+// The side panels' widths, as the user drags them, stay within these.
+const (
+	sidebarMinW, sidebarMaxW, sidebarDefaultW       = 200, 480, 240
+	inspectorMinW, inspectorMaxW, inspectorDefaultW = 260, 640, 330
+)
+
 func (a *appState) sidebarWidth() float32 {
-	return max(200, min(a.sidebarW, 360))
+	return max(sidebarMinW, min(a.sidebarW, sidebarMaxW))
+}
+
+// inspectorWidth is the inspector's width, within its bounds.
+func (a *appState) inspectorWidth() float32 {
+	return max(inspectorMinW, min(a.inspectorW, inspectorMaxW))
+}
+
+// panelEdge is the edge of a side panel, a few pixels wide: dragged, it
+// resizes the panel between lo and hi, and a double click brings it back
+// to def. A grip shows while the pointer is on it, as the divider between
+// panes has one, so the edge can be found. sign is 1 for a panel that grows
+// as the pointer moves right, -1 for one on the right side.
+func (a *appState) panelEdge(c *ui.Context, key string, w *float32, lo, hi, def, sign float32) {
+	e := ui.Box(c.Key(key)).Width(6).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
+	if e.Hovered() || e.Pressed() {
+		e.Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X + r.W/2 - 1.5, Y: r.Y + r.H/2 - 18, W: 3, H: 36}, pal.TextFaint.Alpha(0.7), 1.5)
+		})
+	}
+	if dx, _, ok := e.Dragged(); ok {
+		*w = max(lo, min(*w+sign*dx, hi))
+	}
+	if e.DoubleClicked() {
+		*w = def
+	}
 }
 
 // sidebar slides in and out; while shown it is resizable by its edge.
@@ -39,7 +70,9 @@ func (a *appState) sidebar(c *ui.Context) {
 		return
 	}
 	box.Children(func() {
-		ui.Column(c).Width(a.sidebarWidth()).Shrink(0).FillHeight().Children(func() {
+		// The column leaves the edge its room, so the edge is in the box
+		// and under the pointer, not clipped off past it.
+		ui.Column(c).Grow(1).MinWidth(0).FillHeight().Children(func() {
 			a.sidebarHeader(c)
 			ui.Scroll(c).Grow(1).Children(func() {
 				ui.Column(c).Padding(2, 6, 8, 8).Children(func() {
@@ -56,11 +89,7 @@ func (a *appState) sidebar(c *ui.Context) {
 			})
 			a.sidebarFooter(c)
 		})
-		// The edge: dragged, it resizes the sidebar.
-		edge := ui.Box(c.Key("edge")).Width(6).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
-		if dx, _, ok := edge.Dragged(); ok {
-			a.sidebarW = max(200, min(a.sidebarW+dx, 360))
-		}
+		a.panelEdge(c, "edge", &a.sidebarW, sidebarMinW, sidebarMaxW, sidebarDefaultW, 1)
 	})
 }
 
