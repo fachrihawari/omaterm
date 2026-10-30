@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
+
+var processSharedMu sync.Mutex
+var processSharedPref *bool
 
 // uiPrefs is ui.json: how the window was laid out, which the app alone
 // owns, apart from state.json, which a session daemon will own.
@@ -22,6 +26,7 @@ type uiPrefs struct {
 	WorktreeAgent string `json:"worktreeAgent,omitempty"`
 	WorktreeEnv   *bool  `json:"worktreeEnv,omitempty"`
 	MergeSquash   *bool  `json:"mergeSquash,omitempty"`
+	ProcessShared *bool  `json:"processShared,omitempty"`
 	// ReviewAgent is the Ask for Review dialog's last reviewer.
 	ReviewAgent string `json:"reviewAgent,omitempty"`
 	// DiffSplit and FontSize are read once, to move them to settings.json.
@@ -33,6 +38,9 @@ func uiPrefsPath() string { return filepath.Join(filepath.Dir(stateFilePath()), 
 
 // loadUIPrefs applies ui.json over the defaults.
 func (a *appState) loadUIPrefs() {
+	processSharedMu.Lock()
+	processSharedPref = nil
+	processSharedMu.Unlock()
 	data, err := os.ReadFile(uiPrefsPath())
 	if err != nil {
 		return
@@ -80,6 +88,14 @@ func (a *appState) loadUIPrefs() {
 	if u.MergeSquash != nil {
 		a.mergeSquash = *u.MergeSquash
 	}
+	processSharedMu.Lock()
+	if u.ProcessShared == nil {
+		processSharedPref = nil
+	} else {
+		value := *u.ProcessShared
+		processSharedPref = &value
+	}
+	processSharedMu.Unlock()
 }
 
 // saveUIPrefs writes ui.json, as the window closes.
@@ -94,7 +110,8 @@ func (a *appState) saveUIPrefs() {
 		AgentSetupAsked: a.agentSetupAsked,
 		SettingsPage:    a.settingsPage,
 		WorktreeAgent:   a.wtAgent, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
-		ReviewAgent: a.reviewAgent,
+		ReviewAgent:   a.reviewAgent,
+		ProcessShared: currentProcessSharedPref(),
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {
@@ -106,4 +123,14 @@ func (a *appState) saveUIPrefs() {
 	if os.WriteFile(tmp, data, 0o600) == nil {
 		os.Rename(tmp, path)
 	}
+}
+
+func currentProcessSharedPref() *bool {
+	processSharedMu.Lock()
+	defer processSharedMu.Unlock()
+	if processSharedPref == nil {
+		return nil
+	}
+	value := *processSharedPref
+	return &value
 }

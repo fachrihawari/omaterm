@@ -143,6 +143,27 @@ var commandRegistry = append([]Command{
 	{ID: "session.newWorktree", Title: "New Agent in Worktree…", Category: "Session",
 		Enabled: func(a *appState) bool { return a.project() != nil && service.RepoRoot(a.workspace) != "" },
 		Run:     func(a *appState, c *ui.Context) { a.openWorktreeDialog(a.active) }},
+	{ID: "process.add", Title: "Add Process…", Category: "Process",
+		Enabled: func(a *appState) bool { return a.project() != nil },
+		Run:     func(a *appState, c *ui.Context) { a.openProcessDialog(a.active, nil) }},
+	{ID: "process.edit", Title: "Edit Process…", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
+		},
+		Run: func(a *appState, c *ui.Context) {
+			if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess {
+				tab := &a.tabs[a.activeTab]
+				if pi, ok := a.projectIndexForTab(tab.ID); ok {
+					for _, proc := range a.procList[a.projects[pi].ID] {
+						if proc.Name == tab.Process {
+							def := proc.Def
+							a.openProcessDialog(pi, &def)
+							return
+						}
+					}
+				}
+			}
+		}},
 	{ID: "session.askReview", Title: "Ask for Review…", Category: "Session",
 		Enabled: func(a *appState) bool {
 			t := a.activeTabRef()

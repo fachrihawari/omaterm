@@ -203,6 +203,10 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.switchProject(i)
 			a.openWorktreeDialog(i)
 		}
+		if m.Item("Add Process…").Chosen() {
+			a.switchProject(i)
+			a.openProcessDialog(i, nil)
+		}
 		label := "Collapse"
 		if p.Collapsed {
 			label = "Expand"
@@ -327,6 +331,10 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		}
 		if m.Item("Restart").Chosen() {
 			a.restartProcess(pi, proc.Name)
+		}
+		if m.Item("Edit…").Chosen() {
+			def := proc.Def
+			a.openProcessDialog(pi, &def)
 		}
 	})
 }
