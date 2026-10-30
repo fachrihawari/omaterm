@@ -71,7 +71,7 @@ func TestProcessDialogSuggestionAndDirectoryValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr.Frame()
-	st := processDialogs[a]
+	st := a.procDialog
 	if st == nil {
 		t.Fatalf("dialog closed after suggestion click: %v", tr.Texts())
 	}
@@ -116,7 +116,7 @@ func TestProcessDialogEditRenamesDef(t *testing.T) {
 	a.openProcessDialog(a.active, &old)
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	st := processDialogs[a]
+	st := a.procDialog
 	if st.name != "old" || st.command != "echo old" || st.oldName != "old" {
 		t.Fatalf("edit form was not filled: %+v", st)
 	}

@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -33,14 +32,9 @@ type processDialogState struct {
 	err         string
 }
 
-var processDialogsMu sync.Mutex
-var processDialogs = map[*appState]*processDialogState{}
-
-func processDialogOpen(a *appState) bool {
-	processDialogsMu.Lock()
-	defer processDialogsMu.Unlock()
-	st := processDialogs[a]
-	return st != nil && st.open
+// processDialogOpen tells whether the Add/Edit Process dialog is open.
+func (a *appState) processDialogOpen() bool {
+	return a.procDialog != nil && a.procDialog.open
 }
 
 // openProcessDialog opens a new or existing process definition.
@@ -50,15 +44,13 @@ func (a *appState) openProcessDialog(pi int, def *procs.Def) {
 	}
 	p := a.projects[pi]
 	shared := service.RepoRoot(p.Path) != ""
-	if pref := currentProcessSharedPref(); pref != nil {
-		shared = *pref
+	if a.processShared != nil {
+		shared = *a.processShared
 	}
 	st := &processDialogState{open: true, project: p.ID, root: p.Path,
 		shared: shared, restart: "Never"}
 	if def == nil {
-		processDialogsMu.Lock()
-		processDialogs[a] = st
-		processDialogsMu.Unlock()
+		a.procDialog = st
 		var suggestions []procs.Def
 		a.worktreeJob(func(ctx context.Context) error {
 			suggestions = procs.Suggest(p.Path)
@@ -76,23 +68,17 @@ func (a *appState) openProcessDialog(pi int, def *procs.Def) {
 	st.dir, st.port = def.Dir, strconv.Itoa(def.Port)
 	st.autostart, st.restart, st.shared = def.Autostart, restartLabel(def.Restart), !def.Local
 	st.watch, st.env = strings.Join(def.Watch, "\n"), formatProcessEnv(def.Env)
-	processDialogsMu.Lock()
-	processDialogs[a] = st
-	processDialogsMu.Unlock()
+	a.procDialog = st
 }
 
 // processDialog draws the Add or Edit Process dialog.
 func (a *appState) processDialog(c *ui.Context) {
-	processDialogsMu.Lock()
-	st := processDialogs[a]
-	processDialogsMu.Unlock()
+	st := a.procDialog
 	if st == nil {
 		return
 	}
 	if !st.open {
-		processDialogsMu.Lock()
-		delete(processDialogs, a)
-		processDialogsMu.Unlock()
+		a.procDialog = nil
 		return
 	}
 	save := false
@@ -184,12 +170,15 @@ func processTextArea(c *ui.Context, key, label string, value *string, placeholde
 	})
 }
 
+// applyProcessSuggestion fills the form from a suggestion: what it has,
+// such as a Solo process's env and watch globs, and nothing it hasn't.
 func applyProcessSuggestion(st *processDialogState, def procs.Def) {
 	st.name, st.command, st.dir = def.Name, def.Command, def.Dir
 	st.port = ""
 	if def.Port > 0 {
 		st.port = strconv.Itoa(def.Port)
 	}
+	st.watch, st.env = strings.Join(def.Watch, "\n"), formatProcessEnv(def.Env)
 }
 
 func restartLabel(policy string) string {
@@ -343,9 +332,7 @@ func (a *appState) saveProcessDialog(st *processDialogState) {
 		a.saveState()
 	}
 	shared := st.shared
-	processSharedMu.Lock()
-	processSharedPref = &shared
-	processSharedMu.Unlock()
+	a.processShared = &shared
 	if a.procHost != nil {
 		a.procHost.Sync()
 		if err := a.procHost.Trust(st.project, d.Name); err != nil {

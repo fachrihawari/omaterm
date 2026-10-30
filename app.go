@@ -189,7 +189,7 @@ func (a *appState) view(c *ui.Context) {
 func (a *appState) modalOpen() bool {
 	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.overwriteAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
 		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil || a.wtNew != nil || a.wtMerge != nil || a.review != nil ||
-		a.trustAsk != nil || processDialogOpen(a)
+		a.trustAsk != nil || a.processDialogOpen()
 }
 
 // animColor animates e's color to target, or, with Reduce Motion on,

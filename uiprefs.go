@@ -4,11 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sync"
 )
-
-var processSharedMu sync.Mutex
-var processSharedPref *bool
 
 // uiPrefs is ui.json: how the window was laid out, which the app alone
 // owns, apart from state.json, which a session daemon will own.
@@ -38,9 +34,7 @@ func uiPrefsPath() string { return filepath.Join(filepath.Dir(stateFilePath()), 
 
 // loadUIPrefs applies ui.json over the defaults.
 func (a *appState) loadUIPrefs() {
-	processSharedMu.Lock()
-	processSharedPref = nil
-	processSharedMu.Unlock()
+	a.processShared = nil
 	data, err := os.ReadFile(uiPrefsPath())
 	if err != nil {
 		return
@@ -88,14 +82,10 @@ func (a *appState) loadUIPrefs() {
 	if u.MergeSquash != nil {
 		a.mergeSquash = *u.MergeSquash
 	}
-	processSharedMu.Lock()
-	if u.ProcessShared == nil {
-		processSharedPref = nil
-	} else {
+	if u.ProcessShared != nil {
 		value := *u.ProcessShared
-		processSharedPref = &value
+		a.processShared = &value
 	}
-	processSharedMu.Unlock()
 }
 
 // saveUIPrefs writes ui.json, as the window closes.
@@ -111,7 +101,7 @@ func (a *appState) saveUIPrefs() {
 		SettingsPage:    a.settingsPage,
 		WorktreeAgent:   a.wtAgent, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
 		ReviewAgent:   a.reviewAgent,
-		ProcessShared: currentProcessSharedPref(),
+		ProcessShared: a.processShared,
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {
@@ -123,14 +113,4 @@ func (a *appState) saveUIPrefs() {
 	if os.WriteFile(tmp, data, 0o600) == nil {
 		os.Rename(tmp, path)
 	}
-}
-
-func currentProcessSharedPref() *bool {
-	processSharedMu.Lock()
-	defer processSharedMu.Unlock()
-	if processSharedPref == nil {
-		return nil
-	}
-	value := *processSharedPref
-	return &value
 }

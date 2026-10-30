@@ -153,6 +153,10 @@ type appState struct {
 	procList  map[string][]procs.Proc
 	procTimer *time.Timer
 	procGen   int
+	// procDialog is the Add/Edit Process dialog while it is open, and
+	// processShared where its "Save in omaterm.yml" switch was left.
+	procDialog    *processDialogState
+	processShared *bool
 
 	sidebarVisible   bool
 	inspectorVisible bool
