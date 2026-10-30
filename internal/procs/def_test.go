@@ -14,6 +14,14 @@ func TestVariant(t *testing.T) {
 			t.Errorf("%+v has another variant than the base", d)
 		}
 	}
+	unset := Def{Command: "make", Restart: ""}
+	never := Def{Command: "make", Restart: "never"}
+	if unset.Variant() != never.Variant() {
+		t.Error("restart unset and never have different variants")
+	}
+	if never.Variant() == (Def{Command: "make", Restart: "always"}).Variant() {
+		t.Error("restart never and always have the same variant")
+	}
 	changed := base
 	changed.Command = "npm start"
 	if changed.Variant() == base.Variant() {

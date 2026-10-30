@@ -51,7 +51,7 @@ func (d Def) Variant() string {
 		Command: d.Command,
 		Dir:     cleanDir(d.Dir),
 		Port:    d.Port,
-		Restart: d.Restart,
+		Restart: restartPolicy(d.Restart),
 	}
 	// An empty env or watch list is the same as none, so it hashes as null.
 	if len(d.Env) > 0 {
@@ -64,6 +64,15 @@ func (d Def) Variant() string {
 	data, _ := json.Marshal(k) // the fields are plain strings, ints and maps: it cannot fail
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// restartPolicy makes the default restart policy and "never" the same, so a
+// def that leaves restart out has the variant of one that says never.
+func restartPolicy(restart string) string {
+	if restart == "" {
+		return "never"
+	}
+	return restart
 }
 
 // cleanDir makes "./web", "web/" and "" the same folder, the project itself
