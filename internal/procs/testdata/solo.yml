@@ -1,0 +1,12 @@
+processes:
+  web:
+    command: npm run dev
+    working_dir: web
+    auto_restart: true
+    restart_when_changed:
+      - src/**
+    env:
+      PORT: "3000"
+  worker:
+    command: go run ./cmd/worker
+    auto_start: false

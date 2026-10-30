@@ -9,6 +9,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/egoist/mygo v0.6.3
 	golang.org/x/image v0.46.0
+	gopkg.in/yaml.v3 v3.0.1
 	rsc.io/qr v0.2.0
 )
 
