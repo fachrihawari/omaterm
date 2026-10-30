@@ -13,12 +13,17 @@ import (
 	"omaterm/internal/session"
 )
 
+// fileStamp is what tells a file changed: the modification time and
+// size it had, and whether it was there.
 type fileStamp struct {
 	modified int64
 	size     int64
 	exists   bool
 }
 
+// daemonRunner runs the panes of the daemon's processes in its registry,
+// with what every pane of the daemon gets: the project, the theme, the
+// terminal prefs and the daemon's environment.
 type daemonRunner struct{ d *Daemon }
 
 func (r daemonRunner) Start(o session.StartOptions) (session.Handle, error) {
@@ -47,6 +52,9 @@ func (r daemonRunner) Get(id string) session.Handle {
 
 func (r daemonRunner) Remove(id string) { r.d.endPane(id) }
 
+// loadProcesses reads every project's process definitions, the omaterm.yml
+// ones first and the local ones from state.json after, and gives them to
+// the supervisor; it remembers the files' stamps for processFilesChanged.
 func (d *Daemon) loadProcesses() {
 	st := d.loadState()
 	mtimes := map[string]fileStamp{d.stateFile(): stamp(d.stateFile())}
@@ -83,6 +91,8 @@ func (d *Daemon) loadProcesses() {
 	}
 }
 
+// processFilesChanged tells whether state.json or a project's omaterm.yml
+// changed since loadProcesses read them.
 func (d *Daemon) processFilesChanged() bool {
 	d.procMu.Lock()
 	paths := make(map[string]fileStamp, len(d.procMtimes))
@@ -98,6 +108,7 @@ func (d *Daemon) processFilesChanged() bool {
 	return false
 }
 
+// stamp is the file's stamp now; a missing file has the zero stamp.
 func stamp(path string) fileStamp {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -106,6 +117,9 @@ func stamp(path string) fileStamp {
 	return fileStamp{modified: info.ModTime().UnixNano(), size: info.Size(), exists: true}
 }
 
+// processCall serves the process.* methods: a project named by id or name,
+// and for all but list and sync the process to act on, answered with the
+// process as it is after.
 func (d *Daemon) processCall(method string, raw json.RawMessage) (any, error) {
 	var p proto.ProcessParams
 	if len(raw) > 0 {
@@ -166,6 +180,7 @@ func (d *Daemon) processCall(method string, raw json.RawMessage) (any, error) {
 	return nil, proto.Errorf(proto.CodeNotFound, "process "+p.Name)
 }
 
+// processList is a project's processes as the protocol tells them.
 func (d *Daemon) processList(project string) []proto.Process {
 	procs := d.procs.List(project)
 	out := make([]proto.Process, len(procs))
@@ -175,6 +190,8 @@ func (d *Daemon) processList(project string) []proto.Process {
 	return out
 }
 
+// processEvent tells attached clients of a process event and, with no app
+// to show it, notifies the desktop of a failure or a paused restart.
 func (d *Daemon) processEvent(event procs.Event) {
 	d.broadcast(proto.Message{Event: "process", Result: mustJSON(event)})
 	if d.appAttached() || !d.notifyPrefs().Error {
