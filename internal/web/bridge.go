@@ -11,7 +11,12 @@ import (
 	"github.com/coder/websocket"
 
 	"omaterm/internal/proto"
+	"omaterm/internal/session"
 )
+
+// closeStopped is the close code of a page whose pane is a stopped process.
+// Its reason is the message to show.
+const closeStopped = 4410
 
 // attach bridges a WebSocket to a pane's attach connection. The page
 // first gets the welcome, as text: the pane's size. Then every binary
@@ -25,6 +30,11 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	defer s.track(c, r)()
 	c.SetReadLimit(1 << 20) // a pasted block
+	// A stopped process has no pane to wake: the page is told which it is.
+	if name := s.stoppedProcess(r.Context(), r.PathValue("id")); name != "" {
+		c.Close(closeStopped, "process "+name+" is stopped: start it in omaterm")
+		return
+	}
 	// A pane the window has not shown since it opened is not running yet.
 	params, _ := json.Marshal(map[string]string{"id": r.PathValue("id")})
 	if _, err := s.d.Handle(r.Context(), "pane.wake", params); err != nil {
@@ -91,4 +101,31 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// stoppedProcess is the name of the process a pane belongs to when that
+// process is stopped, and "" for any other pane. A stopped process keeps its
+// pane, which shows as exited.
+func (s *Server) stoppedProcess(ctx context.Context, pane string) string {
+	v, err := s.d.Handle(ctx, "state", nil)
+	if err != nil {
+		return ""
+	}
+	// The state comes as the daemon has it, or as the app forwards it.
+	raw, _ := json.Marshal(v)
+	var st proto.State
+	if json.Unmarshal(raw, &st) != nil {
+		return ""
+	}
+	for _, sess := range st.Sessions {
+		if sess.Process == "" {
+			continue
+		}
+		for _, p := range sess.Panes {
+			if p.ID == pane && p.Status == session.Exited {
+				return sess.Process
+			}
+		}
+	}
+	return ""
 }
