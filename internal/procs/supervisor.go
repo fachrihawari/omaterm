@@ -234,6 +234,12 @@ func (s *Supervisor) Sessions(projectID string) []Proc {
 
 // Start starts a process, or resumes one paused after repeated restarts.
 func (s *Supervisor) Start(projectID, name string) error {
+	return s.start(projectID, name, nil)
+}
+
+// start is Start, with what the run before it printed to show above this
+// one, as a restart does.
+func (s *Supervisor) start(projectID, name string, history []byte) error {
 	s.mu.Lock()
 	_, p := s.find(projectID, name)
 	if p == nil {
@@ -263,7 +269,7 @@ func (s *Supervisor) Start(projectID, name string) error {
 	if base <= 0 {
 		base = time.Second
 	}
-	return s.startRun(projectID, name, def, dir, gen, nil, base)
+	return s.startRun(projectID, name, def, dir, gen, history, base)
 }
 
 // Stop ends a process and prevents it from restarting automatically.
@@ -297,18 +303,28 @@ func (s *Supervisor) Stop(projectID, name string) error {
 	return nil
 }
 
-// Restart stops and starts a process without making the stop sticky.
+// Restart stops and starts a process without making the stop sticky. The
+// new run shows what the old one printed, under a line that says it was
+// replaced: a restart is how a user reads the run before it.
 func (s *Supervisor) Restart(projectID, name string) error {
+	var history []byte
+	s.mu.Lock()
+	_, p := s.find(projectID, name)
+	if p != nil && p.handle != nil {
+		history = p.handle.History(true)
+		history = append(history, []byte("\r\n\x1b[2m── restarted (exit "+strconv.Itoa(p.proc.LastExit)+") ──\x1b[0m\r\n")...)
+	}
+	s.mu.Unlock()
 	if err := s.Stop(projectID, name); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	_, p := s.find(projectID, name)
+	_, p = s.find(projectID, name)
 	if p != nil {
 		p.stopped = false
 	}
 	s.mu.Unlock()
-	return s.Start(projectID, name)
+	return s.start(projectID, name, history)
 }
 
 // Trust records the current definition's variant as trusted.
