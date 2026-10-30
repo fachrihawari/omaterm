@@ -244,3 +244,37 @@ func TestMailHold(t *testing.T) {
 		t.Fatalf("after Enter: hold %q", hold)
 	}
 }
+
+// An agent that reported working through omaterm report, and ended its
+// turn without reporting done, is idle again once its prompt shows: its
+// mail goes in, rather than waiting for a done that never comes.
+func TestAgentReportEndsAtThePrompt(t *testing.T) {
+	prev := procName
+	procName = func(pid int) string { return "claude" }
+	defer func() { procName = prev }()
+	r := NewRegistry()
+	p := startExec(t, r, "p1", "s1", `set -m; printf '\033[?2004h'; sleep 0.6; printf '\n────────────────────\n❯ \n────────────────────\n'; sleep 5; :`)
+	time.Sleep(200 * time.Millisecond)
+	r.Tick(time.Now())
+	msg := base64.StdEncoding.EncodeToString([]byte("Leading"))
+	if err := p.Report("state=working:id=agent:msg=" + msg + ":progress=90"); err != nil {
+		t.Fatal(err)
+	}
+	if info := p.Info(); info.Status != Working || info.Message != "Leading" {
+		t.Fatalf("after the report: %+v", info)
+	}
+	if hold, _ := p.MailHold(time.Now()); hold != "it is working" {
+		t.Fatalf("hold %q", hold)
+	}
+	// The turn ends: the prompt box shows, and the next look finds it.
+	time.Sleep(700 * time.Millisecond)
+	r.Tick(time.Now())
+	info := p.Info()
+	if info.Status != Idle || info.Summary != "Leading" {
+		t.Fatalf("at the prompt: %+v", info)
+	}
+	later := time.Now().Add(3 * time.Second)
+	if hold, _ := p.MailHold(later); hold != "" {
+		t.Fatalf("hold %q", hold)
+	}
+}

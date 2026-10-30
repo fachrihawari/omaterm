@@ -1036,7 +1036,7 @@ func report(args []string) error {
 		if st, err := state(c); err == nil {
 			if pane, _ := me(st); pane != "" {
 				if r.ID == "" {
-					r.ID = "agent"
+					r.ID = osc.AgentID
 				}
 				body := strings.TrimSuffix(strings.TrimPrefix(osc.Encode(r), "\x1b]7501;"), "\x1b\\")
 				return c.Call("report", proto.ReportParams{ID: pane, Body: body}, nil)
