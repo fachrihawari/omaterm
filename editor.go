@@ -29,7 +29,7 @@ func (a *appState) openEditor(path string) {
 // line 0 keeps it, col 0 is the line's start).
 func (a *appState) openEditorAt(path string, line, col int) {
 	if _, ok := a.editors[path]; !ok {
-		abs := filepath.Join(a.workspace, path)
+		abs := a.docPath(path)
 		if st, err := os.Stat(abs); err == nil && st.Size() > maxEditorSize && !isImagePath(path) {
 			a.editors[path] = &openFile{Path: path, Binary: true, TooLarge: true, Size: st.Size()}
 			a.focusEditorTab(path)
@@ -84,9 +84,18 @@ func (a *appState) openEditorAt(path string, line, col int) {
 		}
 	}
 	if a.win != nil {
-		mygo.App.AddRecentDocument(filepath.Join(a.workspace, path))
+		mygo.App.AddRecentDocument(a.docPath(path))
 	}
 	a.focusEditorTab(path)
+}
+
+// docPath is where an editor's file is: path is the project's, or, for
+// a file opened from outside it, absolute.
+func (a *appState) docPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(a.workspace, path)
 }
 
 // focusEditorTab activates the tab showing path, creating one if needed.
@@ -230,7 +239,7 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 
 // saveEditor writes the buffer back to disk.
 func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
-	abs := filepath.Join(a.workspace, doc.Path)
+	abs := a.docPath(doc.Path)
 	if data, err := os.ReadFile(abs); err == nil && sha256.Sum256(data) != doc.Disk {
 		// Changed on disk since it was opened, an agent's edit perhaps:
 		// saving would overwrite it.
@@ -250,7 +259,7 @@ func (a *appState) writeEditor(doc *openFile, c *ui.Context) {
 		c.Toast("Save failed: " + err.Error())
 		return
 	}
-	if err := writeFileAtomic(filepath.Join(a.workspace, doc.Path), text.Bytes()); err != nil {
+	if err := writeFileAtomic(a.docPath(doc.Path), text.Bytes()); err != nil {
 		c.Toast("Save failed: " + err.Error())
 		return
 	}
@@ -325,7 +334,7 @@ func (a *appState) checkDisk(doc *openFile) {
 		return
 	}
 	doc.checked = time.Now()
-	data, err := os.ReadFile(filepath.Join(a.workspace, doc.Path))
+	data, err := os.ReadFile(a.docPath(doc.Path))
 	if err != nil {
 		return
 	}

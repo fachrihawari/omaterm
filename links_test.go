@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 
 	"omaterm/internal/session"
@@ -64,15 +65,24 @@ func TestTermLinkOpensEditor(t *testing.T) {
 		t.Fatal("a relative path wasn't taken from the pane's directory")
 	}
 
-	// Out of the project: no editor tab (and no window to hand it to the
-	// system).
+	// Out of the project, as a plan under ~/.claude: in the editor too,
+	// by its absolute path, and saved there.
 	outside := filepath.Join(t.TempDir(), "o.txt")
-	os.WriteFile(outside, []byte("x"), 0o644)
-	a.openTermLink(id, outside+":1")
-	for _, tab := range a.tabs {
-		if tab.Kind == tabEditor && tab.Path != "src/a.go" {
-			t.Fatalf("opened %q in the editor", tab.Path)
-		}
+	os.WriteFile(outside, []byte("x\ny\n"), 0o644)
+	if !a.openTermLink(id, outside+":2") || a.tabs[a.activeTab].Path != outside {
+		t.Fatalf("a file out of the project wasn't opened: tab %+v", a.tabs[a.activeTab])
+	}
+	doc := a.editors[outside]
+	if doc == nil || doc.State.CursorPos().Line != 1 {
+		t.Fatal("the file out of the project isn't in the editor at its line")
+	}
+	doc.State.Buffer.Set("zx\ny\n")
+	ui.NewTester(func(c *ui.Context) { a.writeEditor(doc, c) }, 400, 300).Frame()
+	if b, _ := os.ReadFile(outside); string(b) != "zx\ny\n" {
+		t.Fatalf("saved %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(a.workspace, outside)); err == nil {
+		t.Fatal("saved under the project")
 	}
 	if a.openTermLink(id, "nothing/like/this.go:3") {
 		t.Fatal("opened a file that is none")
