@@ -275,8 +275,12 @@ func (d *Daemon) currentWebTheme() web.Theme {
 			return saved
 		}
 	}
-	return web.ThemeOf(theme.BuiltinDark())
+	return fallbackWebTheme()
 }
+
+// fallbackWebTheme is the built-in dark look, derived once: the events
+// socket asks for the theme with every state it sends.
+var fallbackWebTheme = sync.OnceValue(func() web.Theme { return web.ThemeOf(theme.BuiltinDark()) })
 
 // setWebTheme keeps the app's look for the page, and tells the pages,
 // which fetch it again.
