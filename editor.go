@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"os"
@@ -242,13 +243,19 @@ func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
 
 // writeEditor writes the editor's text to its file, whatever is there.
 func (a *appState) writeEditor(doc *openFile, c *ui.Context) {
-	text := []byte(doc.State.Buffer.String())
-	if err := writeFileAtomic(filepath.Join(a.workspace, doc.Path), text); err != nil {
+	// WriteTo writes the file's own line ending: the buffer's text alone
+	// is LF, and a CRLF file saved so had every line rewritten.
+	var text bytes.Buffer
+	if _, err := doc.State.Buffer.WriteTo(&text); err != nil {
+		c.Toast("Save failed: " + err.Error())
+		return
+	}
+	if err := writeFileAtomic(filepath.Join(a.workspace, doc.Path), text.Bytes()); err != nil {
 		c.Toast("Save failed: " + err.Error())
 		return
 	}
 	doc.State.Buffer.MarkSaved()
-	doc.Disk = sha256.Sum256(text)
+	doc.Disk = sha256.Sum256(text.Bytes())
 	c.Toast("Saved " + doc.Path)
 	a.refreshActiveRepo()
 }

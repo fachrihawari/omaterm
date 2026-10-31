@@ -619,6 +619,27 @@ func TestEditorFollowsDisk(t *testing.T) {
 	}
 }
 
+// A CRLF file keeps its line endings when the editor saves it. Writing
+// the buffer's text alone made every line LF, and with Git's autocrlf on
+// Windows every save rewrote the whole file.
+func TestEditorKeepsCRLF(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	path := filepath.Join(a.workspace, "hello.txt")
+	os.WriteFile(path, []byte("one\r\ntwo\r\n"), 0o644)
+	a.openEditor("hello.txt")
+	doc := a.editors["hello.txt"]
+	doc.State.Buffer.Set("one\ntwo\nthree\n")
+	tr := ui.NewTester(func(c *ui.Context) { a.writeEditor(doc, c) }, 400, 300)
+	tr.Frame()
+	if data, _ := os.ReadFile(path); string(data) != "one\r\ntwo\r\nthree\r\n" {
+		t.Errorf("the file holds %q after the save, want its CRLF endings", data)
+	}
+	if doc.State.Buffer.Modified() {
+		t.Error("the editor still shows the file as modified after the save")
+	}
+}
+
 // Discarding a file's changes asks first; and a stash is found by its
 // commit, not where the list showed it: a quick second Drop dropped the
 // stash that had moved into the first one's place.
