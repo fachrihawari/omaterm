@@ -8,6 +8,8 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 )
 
 // Provider is a kind of tunnel.
@@ -48,14 +50,29 @@ type Tunnel interface {
 // is missing, or it is signed out. Start wraps it with the reason.
 var ErrUnavailable = errors.New("tunnel unavailable")
 
-// Start makes the tunnel s asks for, and returns once its URL is known, or
-// fails within 30 seconds. ctx bounds the start, not the tunnel's life.
+// startTimeout is how long Start waits for the tunnel's URL before
+// giving up and ending what it ran. A var, so tests wait less.
+var startTimeout = 30 * time.Second
+
+// Start makes the tunnel s asks for, and returns once its URL is known,
+// or fails within 30 seconds. ctx bounds the start, not the tunnel's
+// life.
 func Start(ctx context.Context, s Spec) (Tunnel, error) {
-	return nil, errors.New("tunnel: not built yet") // w-glm
+	switch s.Provider {
+	case Cloudflare:
+		return startCloudflare(ctx, s)
+	case Tailscale:
+		return startTailscale(ctx, s)
+	}
+	return nil, fmt.Errorf("tunnel: unknown provider %q", s.Provider)
 }
 
 // Available says, by provider, why it can't make a tunnel here: "" when
-// it can.
+// it can. Each answer runs a command of its own, so ask once and keep
+// the answer, not in a loop.
 func Available() map[Provider]string {
-	return map[Provider]string{Tailscale: "not built yet", Cloudflare: "not built yet"}
+	return map[Provider]string{
+		Cloudflare: whyNotCloudflare(),
+		Tailscale:  whyNotTailscale(),
+	}
 }
