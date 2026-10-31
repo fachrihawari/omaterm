@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -181,7 +182,7 @@ var settingsBase Settings
 func loadSettings() Settings {
 	s := defaultSettings()
 	if data, err := os.ReadFile(settingsFilePath()); err == nil {
-		if err := json.Unmarshal(data, &s); err != nil {
+		if err := json.Unmarshal(trimBOM(data), &s); err != nil {
 			var wrong *json.UnmarshalTypeError
 			if errors.As(err, &wrong) {
 				settingsWrongKey = wrong.Field
@@ -211,11 +212,18 @@ func copySettings(s Settings) Settings {
 	return c
 }
 
+// trimBOM drops the UTF-8 byte order mark a Windows editor may write at
+// the file's start, as PowerShell 5's do: the JSON reader refuses it, and
+// the file was then set aside as broken.
+func trimBOM(data []byte) []byte {
+	return bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+}
+
 // settingsFileHas tells whether settings.json has the key at its top.
 func settingsFileHas(key string) bool {
 	var m map[string]json.RawMessage
 	data, err := os.ReadFile(settingsFilePath())
-	if err != nil || json.Unmarshal(data, &m) != nil {
+	if err != nil || json.Unmarshal(trimBOM(data), &m) != nil {
 		return false
 	}
 	_, ok := m[key]
@@ -260,7 +268,7 @@ func (a *appState) saveSettings() {
 func mergeSettings(path string, base, now Settings) ([]byte, error) {
 	disk := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &disk); err != nil {
+		if err := json.Unmarshal(trimBOM(data), &disk); err != nil {
 			if settingsBroken == "" {
 				return nil, err
 			}

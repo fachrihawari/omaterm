@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -554,5 +555,44 @@ func TestOptionAsMetaOnMacOnly(t *testing.T) {
 			}
 		}
 		stopTermPanes(a)
+	}
+}
+
+// settings.json written by PowerShell 5 starts with a UTF-8 BOM: it is
+// read like any other, not set aside as broken, and a change still saves
+// into it.
+func TestSettingsWithBOM(t *testing.T) {
+	setConfigHome(t, t.TempDir())
+	path := settingsFilePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bom := append([]byte("\xef\xbb\xbf"), []byte(`{"theme":"light","terminal":{"fontSize":15}}`)...)
+	if err := os.WriteFile(path, bom, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { settingsBroken, settingsWrongKey = "", "" }()
+	s := loadSettings()
+	if s.Theme != "light" || s.Terminal.FontSize != 15 {
+		t.Fatalf("theme %q, font size %v, want what the file says", s.Theme, s.Terminal.FontSize)
+	}
+	if settingsBroken != "" {
+		t.Errorf("the file was set aside as broken: %s", settingsBroken)
+	}
+	if !settingsFileHas("theme") {
+		t.Error("the file reads as not having theme")
+	}
+	now := copySettings(s)
+	now.Terminal.FontSize = 16
+	data, err := mergeSettings(path, settingsBase, now)
+	if err != nil {
+		t.Fatalf("a change couldn't be merged into the file: %v", err)
+	}
+	var saved Settings
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("the merged file is no JSON: %v", err)
+	}
+	if saved.Theme != "light" || saved.Terminal.FontSize != 16 {
+		t.Errorf("the merged file says theme %q, font size %v, want light and 16", saved.Theme, saved.Terminal.FontSize)
 	}
 }
