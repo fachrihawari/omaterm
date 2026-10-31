@@ -86,6 +86,12 @@ func TestProcessSidebarAndTab(t *testing.T) {
 	if pane := a.panes.Get(a.tabs[a.activeTab].Split.TermID); pane == nil || !strings.Contains(pane.Text(false, 0), "up") {
 		t.Fatal("web process output is missing from its pane")
 	}
+	// Its pane's header names the process and its command, not the shell
+	// running it.
+	tr.Frame()
+	if !tr.HasText("sh -c 'echo up; sleep 30'") {
+		t.Fatalf("the process pane's header lacks its command: %q", tr.Texts())
+	}
 	// The process's tab is a tab like any other: in the tab bar, and on
 	// Next Tab's way.
 	if got := a.visibleTabIndices(); len(got) != before+1 || !slices.Contains(got, a.activeTab) {
