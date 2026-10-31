@@ -8,16 +8,20 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"omaterm/internal/session"
 	"omaterm/service"
 )
 
-// The right inspector: Info / Files / Git panels behind a segmented
-// control, the control omaterm uses wherever one of a few views is chosen.
+// The right inspector: Info / Files / Git panels behind a tab strip.
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
 	return ui.Column(c).Fill().Children(func() {
-		a.inspectorTabs(c)
+		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
+			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
+			a.inspectorTabButton(c, 1, iconFolder, "Files", 0)
+			a.inspectorTabButton(c, 2, iconGitBranch, "Git", a.gitCount())
+			ui.Spacer(c)
+		})
+
 		switch a.inspectorTab {
 		case 1:
 			a.filesPanel(c)
@@ -29,40 +33,36 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 	})
 }
 
-// inspectorTabs is the segmented control over the inspector: Info, Files
-// and Git, as wide as the panel, Git with its count of changes.
-func (a *appState) inspectorTabs(c *ui.Context) {
-	labels := []string{"Info", "Files", "Git"}
-	i := a.inspectorTab
-	ui.Row(c.Key("insp-tabs")).Padding(10, 12, 6, 12).Shrink(0).Children(func() {
-		seg := ui.SegmentedBase(c.Key("insp-seg"), &i, len(labels))
-		seg.Track.Grow(1).Padding(2).Gap(2).Radius(8).Background(pal.Chip).Children(func() {
-			for j, label := range labels {
-				s := seg.Segment(j).Grow(1).Basis(0).Height(26).Radius(6).Gap(6).Justify(ui.Center).AlignItems(ui.Center).Label(label)
-				fg := pal.TextMuted
-				if j == a.inspectorTab {
-					s.Background(pal.Raised).Shadow(0, 0.5, 2, 0, black.Alpha(0.15))
-					fg = pal.Text
-				} else if s.Hovered() {
-					fg = pal.TextSoft
-				}
-				s.Children(func() {
-					t := ui.Text(c, label).FontSize(12).TextColor(fg).SingleLine()
-					if j == a.inspectorTab {
-						t.FontWeight(600)
-					}
-					if j == 2 {
-						if n := a.gitCount(); n > 0 {
-							countBadge(c, n)
-						}
-					}
-				})
+func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, label string, badge int) ui.Element {
+	active := a.inspectorTab == idx
+	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0).Label(label)
+	e.Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+			// The tab shown reads as chosen: its text in full and bold,
+			// its icon in the accent, as its underline.
+			col, iconCol := pal.TextMuted, pal.TextFaint
+			if active {
+				col, iconCol = pal.Text, pal.Accent
+			} else if e.Hovered() {
+				col = pal.TextSoft
+			}
+			ui.Icon(c, icon).Width(14).Height(14).TextColor(iconCol)
+			t := ui.Text(c, label).FontSize(12.5).TextColor(col).SingleLine().Shrink(0)
+			if active {
+				t.FontWeight(600)
+			}
+			if badge > 0 {
+				countBadge(c, badge)
 			}
 		})
 	})
-	if i != a.inspectorTab {
-		a.showInspectorTab(i)
+	if active {
+		e.BorderWidth(0, 0, 2, 0).BorderColor(pal.Accent)
 	}
+	if e.Clicked() {
+		a.showInspectorTab(idx)
+	}
+	return e
 }
 
 // showInspectorTab switches the inspector to Info (0), Files (1) or Git
@@ -97,177 +97,166 @@ func (a *appState) showInspectorTab(idx int) {
 
 // INFO
 
-// infoPanel is what the shown project is and what runs in it: the project
-// as a card of facts, then the processes its terminals run and the ports
-// they listen on, as rows like the sidebar's.
 func (a *appState) infoPanel(c *ui.Context) ui.Element {
 	return ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Padding(6, 12, 12, 12).Gap(14).Children(func() {
-			p := a.project()
-			if p == nil {
-				ui.Column(c).Padding(24, 0).AlignItems(ui.Center).Gap(4).Children(func() {
-					ui.Text(c, "No project open").FontSize(12).TextColor(pal.TextMuted)
-					ui.Text(c, keyLabels("app.openProject")+" to open a folder").FontSize(11).TextColor(pal.TextFaint)
+		ui.Column(c).Padding(12).Gap(16).Children(func() {
+			ui.Column(c).Gap(8).Children(func() {
+				sectionLabel(c, "PROJECT")
+				ui.Row(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Padding(12).Gap(8).AlignItems(ui.Center).ClipX().Children(func() {
+					ui.Box(c).Width(28).Height(28).Radius(6).Border(1, pal.BorderStrong).Background(pal.Input).Shrink(0).Children(func() {
+						ui.Column(c).Fill().Center().Children(func() {
+							ui.Icon(c, iconFolderGit).Width(16).Height(16).TextColor(pal.Accent)
+						})
+					})
+					ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
+						if p := a.project(); p != nil {
+							// The branch chip shares the name's line, so a
+							// long branch can only squeeze the name, never
+							// the path below it.
+							ui.Row(c).Gap(6).AlignItems(ui.Center).ClipX().Children(func() {
+								// The name keeps a few letters; the branch
+								// takes the rest of the room before it
+								// ellipsizes, not just under half the line.
+								ui.Text(c, p.Name).FontSize(12).TextColor(pal.Text).
+									SingleLine().Ellipsis("…").Shrink(0.25).MinWidth(min(96, float32(len(p.Name))*8))
+								ui.Spacer(c)
+								if p.Branch != "" {
+									pillShrink(c, p.Branch).Shrink(1).MinWidth(0).MaxWidthPercent(100)
+								}
+							})
+							ui.Text(c, p.Path).FontSize(10).TextColor(pal.TextMuted).
+								SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(p.Path)
+						} else {
+							txt(c, "No project open", 12, pal.Text)
+							txt(c, keyLabels("app.openProject")+" to open a folder", 10, pal.TextMuted)
+						}
+					})
 				})
-				a.updateSection(c)
-				return
+			})
+
+			// RUNNING and PORTS: with no project open there are none to list.
+			// RUNNING is what the project's terminals run, as the system
+			// sees it; the sidebar's Processes are the ones the project
+			// defines, so the two never share a name.
+			if a.project() != nil {
+				ui.Column(c).Gap(8).Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Children(func() {
+						sectionLabel(c, "RUNNING")
+						ui.Spacer(c)
+						countBadge(c, len(a.processes))
+						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
+							a.refreshProcesses()
+						}
+					})
+					if a.processErr != "" {
+						ui.Text(c, a.processErr).FontSize(10).TextColor(pal.Bad).Padding(4, 0)
+					}
+					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+						if a.processes == nil {
+							ui.Box(c).Padding(16).Children(func() {
+								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
+							})
+						} else if len(a.processes) == 0 {
+							ui.Box(c).Padding(20).Children(func() {
+								ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+									ui.Icon(c, iconTerminal).Width(20).Height(20).TextColor(pal.TextFaint)
+									if a.processWarn != "" {
+										// The home folder: every process is in it.
+										ui.Text(c, "Not listed for this folder").FontSize(11).TextColor(pal.TextMuted)
+										ui.Text(c, "Open a project folder to see what runs in it").FontSize(10).TextColor(pal.TextFaint)
+										return
+									}
+									ui.Text(c, "Nothing running in this project's terminals").FontSize(11).TextColor(pal.TextMuted)
+									ui.Text(c, "Commands you run in a terminal show here").FontSize(10).TextColor(pal.TextFaint)
+								})
+							})
+						}
+						for i, p := range a.processes {
+							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							if i > 0 {
+								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
+							}
+							proc := p
+							row.Children(func() {
+								dot(c, dotGreen, 6)
+								// A long name gives way, so the row's numbers
+								// and its kill button stay in it.
+								ui.Text(c, proc.Name).FontSize(11).TextColor(pal.Text).SingleLine().Ellipsis("…").
+									Shrink(1).MinWidth(min(48, float32(len(proc.Name))*7)).Tooltip(proc.Name)
+								mutedTxt2(c, itoa(proc.Pid), 11).Shrink(2).MinWidth(0).Ellipsis("…")
+								// Started by one of the project's processes:
+								// named for it.
+								if owner := a.processOfRoot(proc.Root); owner != "" {
+									pill(c, owner)
+								}
+								ui.Spacer(c)
+								mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
+								if proc.Pid != 1 && proc.Pid != os.Getpid() {
+									if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
+										a.pendingKillPid = proc.Pid
+										a.pendingKillName = proc.Name
+										open := true
+										a.killConfirmOpen = &open
+									}
+								}
+							})
+						}
+					})
+				})
+
+				// PORTS
+				ui.Column(c).Gap(8).Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Children(func() {
+						sectionLabel(c, "PORTS")
+						ui.Spacer(c)
+						countBadge(c, len(a.ports))
+						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
+							a.refreshProcesses()
+						}
+					})
+					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+						if a.processes == nil {
+							ui.Box(c).Padding(16).Children(func() {
+								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
+							})
+						} else if len(a.ports) == 0 {
+							ui.Box(c).Padding(20).Children(func() {
+								ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+									ui.Icon(c, iconGlobe).Width(20).Height(20).TextColor(pal.TextFaint)
+									ui.Text(c, "No listening ports").FontSize(11).TextColor(pal.TextMuted)
+									ui.Text(c, "Start a dev server to see its port here").FontSize(10).TextColor(pal.TextFaint)
+								})
+							})
+						}
+						for i, p := range a.ports {
+							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							if i > 0 {
+								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
+							}
+							port := p
+							row.Children(func() {
+								ui.Icon(c, iconGlobe).Width(14).Height(14).TextColor(pal.Accent)
+								txt(c, itoa(port.Port), 11, pal.Text)
+								mutedTxt2(c, port.Name, 11)
+								ui.Spacer(c)
+								if name := a.processOnPort(port.Port); name != "" {
+									pill(c, name).Tooltip("Port of the process " + name)
+								}
+								if port.Open {
+									// It only said the port; it opens its page now, where
+									// links open (Settings: a browser pane, or yours).
+									if cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Open http://localhost:" + itoa(port.Port)).Clicked() {
+										a.openURL("http://localhost:" + itoa(port.Port))
+									}
+								}
+							})
+						}
+					})
+				})
 			}
-			a.projectFacts(c, p)
-			a.runningSection(c)
-			a.portsSection(c)
+
 			a.updateSection(c)
 		})
-	})
-}
-
-// inspectorSection is a section of the Info panel: its heading, with a
-// count when it has one, then its body.
-func inspectorSection(c *ui.Context, key, title string, count int, body func()) {
-	ui.Column(c.Key("sect-" + key)).Gap(6).Children(func() {
-		ui.Row(c).Height(18).Padding(0, 2).AlignItems(ui.Center).Children(func() {
-			sectionLabel(c, title)
-			ui.Spacer(c)
-			if count >= 0 {
-				countBadge(c, count)
-			}
-		})
-		body()
-	})
-}
-
-// projectFacts is the project as label and value: its name, folder,
-// branch (with what it is ahead and behind) and sessions.
-func (a *appState) projectFacts(c *ui.Context, p *project) {
-	sessions, waiting := 0, 0
-	for _, t := range a.tabs {
-		if t.Kind != tabTerminal {
-			continue
-		}
-		sessions++
-		if info, ok := a.sessionInfo(t); ok && info.Status == session.Waiting {
-			waiting++
-		}
-	}
-	branch := p.Branch
-	if r := a.activeRepoRef(); r != nil {
-		if r.Branch != "" {
-			branch = r.Branch
-		}
-		if r.Ahead > 0 {
-			branch += " ↑" + itoa(r.Ahead)
-		}
-		if r.Behind > 0 {
-			branch += " ↓" + itoa(r.Behind)
-		}
-	}
-	count := itoa(sessions)
-	if waiting > 0 {
-		count += " · " + itoa(waiting) + " needs you"
-	}
-	inspectorSection(c, "project", "Project", -1, func() {
-		ui.Column(c).Radius(8).Border(1, pal.Border).Background(pal.Input).Padding(10, 12).Gap(6).Children(func() {
-			fact := func(label, value string, mono bool) {
-				ui.Row(c.Key("fact-" + label)).Gap(10).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, label).FontSize(12).TextColor(pal.TextFaint).Width(64).Shrink(0).SingleLine()
-					v := ui.Text(c, value).FontSize(12).TextColor(pal.Text).SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(value)
-					if mono {
-						v.Font(monoFont).FontSize(11)
-					}
-				})
-			}
-			fact("Name", p.Name, false)
-			fact("Path", shortDir(p.Path), true)
-			if branch != "" {
-				fact("Branch", branch, false)
-			}
-			fact("Sessions", count, false)
-		})
-	})
-}
-
-// listRow is a row of the Info panel's lists, as the sidebar draws its
-// rows: no box, a hover, its actions shown while hovered.
-func listRow(c *ui.Context, key string, body func(hovered bool)) ui.Element {
-	row := ui.Row(c.Key(key)).Height(28).Radius(6).Padding(0, 6).Gap(8).AlignItems(ui.Center).ClipX()
-	hovered := row.Hovered()
-	if hovered {
-		row.Background(pal.Hover)
-	}
-	row.Children(func() { body(hovered) })
-	return row
-}
-
-// listNote is what an empty list of the Info panel says instead.
-func listNote(c *ui.Context, text string) {
-	ui.Text(c, text).FontSize(11.5).TextColor(pal.TextFaint).Padding(2, 6).Wrap()
-}
-
-// runningSection lists what the project's terminals and processes run.
-func (a *appState) runningSection(c *ui.Context) {
-	inspectorSection(c, "running", "Running", len(a.processes), func() {
-		if a.processErr != "" {
-			ui.Text(c, a.processErr).FontSize(11).TextColor(pal.Bad).Padding(2, 6).Wrap()
-		}
-		switch {
-		case a.processes == nil:
-			listNote(c, "Loading…")
-		case len(a.processes) == 0 && a.processWarn != "":
-			// The home folder: every process is in it.
-			listNote(c, "Not listed for this folder: open a project folder to see what runs in it.")
-		case len(a.processes) == 0:
-			listNote(c, "Nothing runs in this project's terminals.")
-		}
-		for _, p := range a.processes {
-			proc := p
-			listRow(c, "run-"+itoa(proc.Pid), func(hovered bool) {
-				dot(c, dotGreen, 6)
-				ui.Text(c, proc.Name).FontSize(12).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).
-					Tooltip(proc.Cmd + "\npid " + itoa(proc.Pid))
-				if owner := a.processOfRoot(proc.Root); owner != "" {
-					pill(c, owner)
-				}
-				ui.Spacer(c)
-				ui.Text(c, proc.CPU+" · "+proc.Mem).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
-				if hovered && proc.Pid != 1 && proc.Pid != os.Getpid() {
-					if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill " + proc.Name).Label("Kill " + proc.Name).Clicked() {
-						a.pendingKillPid = proc.Pid
-						a.pendingKillName = proc.Name
-						open := true
-						a.killConfirmOpen = &open
-					}
-				}
-			})
-		}
-	})
-}
-
-// portsSection lists the ports what runs listens on, with the process of
-// the project that gives each.
-func (a *appState) portsSection(c *ui.Context) {
-	inspectorSection(c, "ports", "Ports", len(a.ports), func() {
-		if a.processes != nil && len(a.ports) == 0 {
-			listNote(c, "No listening ports.")
-		}
-		for _, p := range a.ports {
-			port := p
-			listRow(c, "port-"+itoa(port.Port), func(hovered bool) {
-				ui.Icon(c, iconGlobe).Size(13, 13).TextColor(pal.TextFaint)
-				ui.Text(c, ":"+itoa(port.Port)).Font(monoFont).FontSize(11.5).TextColor(pal.Text).SingleLine().Shrink(0)
-				if name := a.processOnPort(port.Port); name != "" {
-					pill(c, name).Tooltip("Port of the process " + name)
-				}
-				ui.Spacer(c)
-				ui.Text(c, firstNonEmpty(port.Process, port.Name)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(1).MinWidth(0)
-				if port.Open {
-					// It opens its page where links open (Settings: a
-					// browser pane, or yours).
-					url := "http://localhost:" + itoa(port.Port)
-					if cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Open " + url).Label("Open " + url).Clicked() {
-						a.openURL(url)
-					}
-				}
-			})
-		}
 	})
 }
 
@@ -276,9 +265,9 @@ func (a *appState) portsSection(c *ui.Context) {
 // none of. It also says when this build cannot update itself, as a
 // development build cannot.
 func (a *appState) updateSection(c *ui.Context) {
-	ui.Column(c).Gap(6).Children(func() {
-		ui.Row(c).Height(18).Padding(0, 2).AlignItems(ui.Center).Children(func() { sectionLabel(c, "Updates") })
-		ui.Row(c).Radius(8).Border(1, pal.Border).Background(pal.Input).Padding(10, 12).Gap(10).AlignItems(ui.Center).Children(func() {
+	ui.Column(c).Gap(8).Children(func() {
+		sectionLabel(c, "UPDATES")
+		ui.Row(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Padding(12).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, iconRefresh).Width(14).Height(14).TextColor(pal.TextMuted)
 			ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
 				label := "omaterm"
@@ -536,7 +525,7 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				if commit.Clicked() && ready {
 					a.gitCommit(c)
 				}
-				// Stashing lives in the Stashes section, where its message
+				// Stashing lives in the STASHES section, where its message
 				// field is; an icon here read as a second trash can.
 			})
 			if a.gitBusy != "" || a.gitMsg != "" {
@@ -558,13 +547,13 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 		// the space.
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Children(func() {
-				a.gitSection(c, "Staged Changes", len(r.Staged), true)
+				a.gitSection(c, "STAGED CHANGES", len(r.Staged), true)
 				if !a.stagedCollapsed {
 					for i := range r.Staged {
 						a.gitFileRow(c, &r.Staged[i], true)
 					}
 				}
-				a.gitSection(c, "Changes", len(r.Changes), false)
+				a.gitSection(c, "CHANGES", len(r.Changes), false)
 				if !a.changesCollapsed {
 					for i := range r.Changes {
 						a.gitFileRow(c, &r.Changes[i], false)
@@ -671,7 +660,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 	}
 	e.Children(func() {
 		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
-		sectionLabel(c, label)
+		txt(c, label, 10, pal.TextMuted).LetterSpacing(1.0)
 		countBadge(c, count)
 		ui.Spacer(c)
 		r := a.activeRepoRef()
@@ -710,7 +699,7 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
 		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
-		sectionLabel(c, "Graph")
+		txt(c, "GIT GRAPH", 10, pal.TextMuted).LetterSpacing(1.0)
 		// No count until the history is in: a dash read as a broken badge.
 		if a.graphLoaded {
 			countBadge(c, len(a.commits))
@@ -818,7 +807,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 	return e
 }
 
-// stashSection renders the Stashes section, collapsible like the others,
+// stashSection renders the STASHES section, collapsible like the others,
 // with its create form and list in the panel's normal scroll.
 func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
 	icon := iconChevronRight
@@ -828,7 +817,7 @@ func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
 		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
-		sectionLabel(c, "Stashes")
+		txt(c, "STASHES", 10, pal.TextMuted).LetterSpacing(1.0)
 		countBadge(c, len(r.Stashes))
 		ui.Spacer(c)
 	})
