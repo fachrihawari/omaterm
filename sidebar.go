@@ -202,35 +202,11 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 		h.Background(pal.Hover)
 	}
 	empty := a.projectEmpty(p.ID, tabs)
-	// The chevron and the + are buttons of their own: a click on them is
-	// not the header's, which would show the project.
+	// The + is a button of its own: a click on it is not the header's,
+	// which shows the project.
 	inner := false
 	h.Children(func() {
-		chev := ui.ButtonBase(c.Key("chev")).Size(20, 20).Radius(5).Margin(0, -4, 0, -4).Center().Shrink(0).
-			Label(map[bool]string{true: "Expand", false: "Collapse"}[p.Collapsed])
-		if chev.Hovered() {
-			chev.Background(pal.Hover)
-			inner = true
-		}
-		chev.Children(func() {
-			icon := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextFaint)
-			if p.Collapsed {
-				icon.Rotate(-90)
-			}
-		})
-		if chev.Clicked() {
-			// Open or closed, the project shown stays the one shown.
-			p.Collapsed = !p.Collapsed
-			a.saveSoon()
-		}
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-		if p.Collapsed {
-			if lead, ok := a.projectLead(tabs); ok && statusState(lead) != iconNone {
-				a.statusIcon(c, lead, 11)
-			} else if empty && !hovered {
-				ui.Text(c, "empty").FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
-			}
-		}
 		if hovered {
 			plus := cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
@@ -238,13 +214,8 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			inner = inner || plus.Hovered()
 		}
 	})
-	if h.Clicked() && !inner {
-		if i == a.active {
-			p.Collapsed = !p.Collapsed
-			a.saveSoon()
-		} else {
-			a.switchProject(i)
-		}
+	if h.Clicked() && !inner && i != a.active {
+		a.switchProject(i)
 	}
 	h.ContextMenu(func(m *ui.Menu) {
 		a.addItems(m, i, false)
@@ -257,14 +228,6 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 				a.stopAllProcesses(i)
 			}
 		}
-		label := "Collapse"
-		if p.Collapsed {
-			label = "Expand"
-		}
-		if m.Item(label).Chosen() {
-			p.Collapsed = !p.Collapsed
-			a.saveSoon()
-		}
 		if m.Item("Remove Project…").Chosen() {
 			a.pendingRemoveProjectID = p.ID
 			a.pendingRemoveProjectName = p.Name
@@ -272,9 +235,6 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.removeProjectConfirmOpen = &open
 		}
 	})
-	if p.Collapsed {
-		return
-	}
 	n := 0
 	for _, node := range sessionOrder(tabs) {
 		// The session shown stays in sight under a collapsed one.
@@ -537,20 +497,6 @@ func processPortTip(proc procs.Proc, url string) string {
 		return "Set up Dev URLs in Settings to serve it at https://" + procs.Host(proc.URL)
 	}
 	return "Open " + url
-}
-
-// projectLead is the session of a project that needs the user most.
-func (a *appState) projectLead(tabs []topTab) (session.Info, bool) {
-	var infos []session.Info
-	for _, t := range tabs {
-		if t.Kind != tabTerminal {
-			continue
-		}
-		if i, ok := a.sessionInfo(t); ok {
-			infos = append(infos, i)
-		}
-	}
-	return session.Lead(infos)
 }
 
 // sessionNode is a session's place in the sidebar: under the session

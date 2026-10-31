@@ -120,8 +120,7 @@ func TestSidebarAddMenu(t *testing.T) {
 }
 
 // A project with nothing in it says so in one line, and nothing starts
-// there by itself: its chevron opens and closes it without showing it,
-// and shown, it offers what can start there.
+// there by itself: shown, it offers what can start there.
 func TestEmptyProject(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -130,25 +129,6 @@ func TestEmptyProject(t *testing.T) {
 	tr.Frame()
 	if !tr.HasText("No sessions") {
 		t.Fatal("the empty project doesn't say it has no sessions")
-	}
-	head, ok := tr.Find("quiet")
-	if !ok {
-		t.Fatal("no header for the empty project")
-	}
-	// Its chevron, at the header's left: closes it, the project shown
-	// stays the one shown, and no session starts.
-	tr.ClickAt(head.X-14, head.Y+head.H/2)
-	tr.Frame()
-	if a.projects[a.active].ID == "empty-project" || !a.projects[1].Collapsed {
-		t.Fatalf("the chevron: active=%q collapsed=%v", a.projects[a.active].ID, a.projects[1].Collapsed)
-	}
-	tr.Move(700, 700) // off the header, whose + shows while it is hovered
-	tr.Frame()
-	if !tr.HasText("empty") || tr.HasText("No sessions") {
-		t.Fatal("the closed empty project doesn't say it is empty")
-	}
-	if n := len(a.projectTabs("empty-project")); n != 0 {
-		t.Fatalf("closing the empty project started %d sessions", n)
 	}
 	// Its name shows it: no session starts, the main area offers them.
 	if err := tr.Click("quiet"); err != nil {
@@ -207,5 +187,26 @@ func TestProcessNameBesidePills(t *testing.T) {
 	}
 	if got := trustDetails(procs.Def{Command: "x", URL: "shop"}); got[3][1] == "none" {
 		t.Fatalf("a URL process's port reads none: %v", got[3])
+	}
+}
+
+// Many projects scroll in the sidebar, down to the last one; no project
+// folds away, so each shows its sessions.
+func TestSidebarScrollsManyProjects(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	for i := 0; i < 20; i++ {
+		a.projects = append(a.projects, project{ID: "p" + itoa(i), Name: "many-" + itoa(i), Path: t.TempDir()})
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if r, ok := tr.Find("many-19"); ok && r.Y+r.H < 840 {
+		t.Fatalf("the last project fits without scrolling: %+v", r)
+	}
+	tr.Scroll(100, 400, 0, 5000)
+	tr.Frame()
+	r, ok := tr.Find("many-19")
+	if !ok || r.Y < 0 || r.Y+r.H > 860 {
+		t.Fatalf("the last project isn't in sight after scrolling: %+v %v", r, ok)
 	}
 }
