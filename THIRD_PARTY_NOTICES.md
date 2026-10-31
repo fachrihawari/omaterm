@@ -305,7 +305,7 @@ The program logos in icons/programs/, mostly through Kero. Released under CC0 1.
 
 https://github.com/egoist/mygo
 
-The application framework omaterm is built with.
+The application framework omaterm is built with. The Windows pseudo-console in internal/pty/pty_windows.go is adapted from its plugins/terminal/internal/pty/pty_windows.go.
 
 ```
 MIT License

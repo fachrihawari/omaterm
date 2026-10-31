@@ -1,4 +1,4 @@
-//go:build !darwin && !linux
+//go:build !darwin && !linux && !windows
 
 package pty
 
@@ -9,7 +9,7 @@ import (
 )
 
 // ErrUnsupported is Start's error where the app does not own terminals
-// (Windows): the terminal plugin runs the program itself there.
+// (neither Unix nor Windows): the terminal plugin runs the program itself.
 var ErrUnsupported = errors.New("pty: not supported on this system")
 
 type Proc struct{}
