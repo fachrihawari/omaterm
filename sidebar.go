@@ -199,24 +199,44 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	if hovered {
 		h.Background(pal.Hover)
 	}
+	empty := a.projectEmpty(p.ID, tabs)
+	// The chevron and the + are buttons of their own: a click on them is
+	// not the header's, which would show the project.
+	inner := false
 	h.Children(func() {
-		chev := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextFaint)
-		if p.Collapsed {
-			chev.Rotate(-90)
+		chev := ui.ButtonBase(c.Key("chev")).Size(20, 20).Radius(5).Margin(0, -4, 0, -4).Center().Shrink(0).
+			Label(map[bool]string{true: "Expand", false: "Collapse"}[p.Collapsed])
+		if chev.Hovered() {
+			chev.Background(pal.Hover)
+			inner = true
+		}
+		chev.Children(func() {
+			icon := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextFaint)
+			if p.Collapsed {
+				icon.Rotate(-90)
+			}
+		})
+		if chev.Clicked() {
+			// Open or closed, the project shown stays the one shown.
+			p.Collapsed = !p.Collapsed
+			a.saveSoon()
 		}
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		if p.Collapsed {
 			if lead, ok := a.projectLead(tabs); ok && statusState(lead) != iconNone {
 				a.statusIcon(c, lead, 11)
+			} else if empty && !hovered {
+				ui.Text(c, "empty").FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 			}
 		}
 		if hovered {
-			cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
+			plus := cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
 			})
+			inner = inner || plus.Hovered()
 		}
 	})
-	if h.Clicked() {
+	if h.Clicked() && !inner {
 		if i == a.active {
 			p.Collapsed = !p.Collapsed
 			a.saveSoon()
@@ -262,8 +282,8 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.sessionRow(c, i, tabs, node)
 		}
 	}
-	if n == 0 && len(a.procList[p.ID]) == 0 {
-		a.emptyProject(c, i)
+	if empty {
+		ui.Text(c, "No sessions").FontSize(11.5).TextColor(pal.TextFaint).Padding(4, 0, 4, 28)
 	}
 	if len(a.procList[p.ID]) > 0 {
 		a.processGroup(c, i)
@@ -296,48 +316,23 @@ func (a *appState) addItems(m *ui.Menu, pi int, withProject bool) {
 	}
 }
 
-// newSessionIn starts a session in project pi. A project that had none
-// gets its first as it opens: that one is the new session, not a second.
+// newSessionIn starts a session in project pi, showing it.
 func (a *appState) newSessionIn(pi int) {
 	if pi < 0 || pi >= len(a.projects) {
 		return
 	}
-	if pi != a.active {
-		empty := len(a.projectTabs(a.projects[pi].ID)) == 0
-		a.switchProject(pi)
-		if empty && len(a.tabs) > 0 {
-			return
-		}
-	}
+	a.switchProject(pi)
 	a.newTerminalTab()
 }
 
-// emptyProject is what a project with nothing in it shows: the three
-// things it can start, rather than only that there is nothing.
-func (a *appState) emptyProject(c *ui.Context, pi int) {
-	ui.Column(c.Key("empty")).Padding(4, 0, 6, 22).AlignItems(ui.Start).Children(func() {
-		ui.Text(c, "Nothing here yet").FontSize(11.5).TextColor(pal.TextFaint).Padding(0, 0, 2, 6)
-		link := func(icon *ui.SVG, label string, do func(), switches bool) {
-			b := ui.ButtonBase(c.Key("empty-"+label)).Height(24).Radius(6).Padding(0, 6).Gap(7).AlignItems(ui.Center).
-				Cursor(ui.CursorPointer).Label(label)
-			if b.Hovered() {
-				b.Background(pal.Hover)
-			}
-			b.Children(func() {
-				ui.Icon(c, icon).Size(12, 12).TextColor(pal.Accent)
-				ui.Text(c, label).FontSize(11.5).TextColor(pal.Accent).SingleLine()
-			})
-			if b.Clicked() {
-				if switches {
-					a.switchProject(pi)
-				}
-				do()
-			}
+// projectEmpty tells a project with no session and no process.
+func (a *appState) projectEmpty(id string, tabs []topTab) bool {
+	for _, t := range tabs {
+		if t.Kind == tabTerminal {
+			return false
 		}
-		link(iconTerminal, "New session", func() { a.newSessionIn(pi) }, false)
-		link(iconBot, "New agent", func() { a.openWorktreeDialog(pi) }, true)
-		link(iconPlus, "Add process", func() { a.openProcessDialog(pi, nil) }, true)
-	})
+	}
+	return len(a.procList[id]) == 0
 }
 
 func (a *appState) processGroup(c *ui.Context, pi int) {
@@ -919,6 +914,8 @@ func (a *appState) openProjectDialog() {
 				Path: dir,
 			})
 			a.setProject(len(a.projects) - 1)
+			// Opening a folder asks for it: it starts with a session.
+			a.newTerminalTab()
 		})
 	}()
 }

@@ -115,17 +115,76 @@ func TestSidebarAddMenu(t *testing.T) {
 	}
 	tr.CloseMenu()
 
-	for _, link := range []string{"Nothing here yet", "New session", "New agent", "Add process"} {
-		if !tr.HasText(link) {
-			t.Fatalf("the empty project does not offer %q", link)
-		}
+	tr.Frame()
+}
+
+// A project with nothing in it says so in one line, and nothing starts
+// there by itself: its chevron opens and closes it without showing it,
+// and shown, it offers what can start there.
+func TestEmptyProject(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.projects = append(a.projects, project{ID: "empty-project", Name: "quiet", Path: t.TempDir()})
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("No sessions") {
+		t.Fatal("the empty project doesn't say it has no sessions")
 	}
-	tabs := len(a.projectTabs("empty-project"))
-	if err := tr.Click("New session"); err != nil {
+	head, ok := tr.Find("quiet")
+	if !ok {
+		t.Fatal("no header for the empty project")
+	}
+	// Its chevron, at the header's left: closes it, the project shown
+	// stays the one shown, and no session starts.
+	tr.ClickAt(head.X-14, head.Y+head.H/2)
+	tr.Frame()
+	if a.projects[a.active].ID == "empty-project" || !a.projects[1].Collapsed {
+		t.Fatalf("the chevron: active=%q collapsed=%v", a.projects[a.active].ID, a.projects[1].Collapsed)
+	}
+	tr.Move(700, 700) // off the header, whose + shows while it is hovered
+	tr.Frame()
+	if !tr.HasText("empty") || tr.HasText("No sessions") {
+		t.Fatal("the closed empty project doesn't say it is empty")
+	}
+	if n := len(a.projectTabs("empty-project")); n != 0 {
+		t.Fatalf("closing the empty project started %d sessions", n)
+	}
+	// Its name shows it: no session starts, the main area offers them.
+	if err := tr.Click("quiet"); err != nil {
 		t.Fatal(err)
 	}
 	tr.Frame()
-	if a.projects[a.active].ID != "empty-project" || len(a.tabs) != tabs+1 {
-		t.Fatalf("New session in the empty project: active=%q tabs=%d", a.projects[a.active].ID, len(a.tabs))
+	if a.projects[a.active].ID != "empty-project" || len(a.tabs) != 0 {
+		t.Fatalf("showing the empty project: active=%q tabs=%d", a.projects[a.active].ID, len(a.tabs))
+	}
+	for _, text := range []string{"Nothing runs in quiet yet", "New Session", "New Agent…", "Add Process…"} {
+		if !tr.HasText(text) {
+			t.Fatalf("the empty project's main area lacks %q", text)
+		}
+	}
+	if err := tr.Click("New Session"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if len(a.tabs) != 1 || a.tabs[0].Kind != tabTerminal {
+		t.Fatalf("New Session made %d tabs", len(a.tabs))
+	}
+}
+
+// A folder opened for the first time starts with a session, as asked;
+// opened again, it shows what it has.
+func TestOpenFolderStartsASession(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	dir := t.TempDir()
+	a.openFromArgs([]string{dir}, "")
+	if p := a.project(); p == nil || p.Path != dir || len(a.tabs) != 1 || a.tabs[0].Kind != tabTerminal {
+		t.Fatalf("opened %v with %d tabs", a.project(), len(a.tabs))
+	}
+	a.closeTab(0)
+	a.switchProject(0)
+	a.openFromArgs([]string{dir}, "")
+	if len(a.tabs) != 0 {
+		t.Fatalf("opening a known folder again started %d sessions", len(a.tabs))
 	}
 }

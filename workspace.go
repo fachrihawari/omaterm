@@ -9,7 +9,6 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/model"
 	"omaterm/internal/procs"
-	"omaterm/internal/shellcmd"
 )
 
 // projectWS is a project's workspace while another project shows: its
@@ -86,12 +85,11 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 			w.tabs = append(w.tabs, t)
 		}
 	}
+	// With none saved, the tab names it starts with, if any; else none: a
+	// project shown with nothing in it says what can start there, and
+	// starts nothing itself (opening a new folder makes its first).
 	if len(w.tabs) == 0 {
-		names := p.Tabs
-		if len(names) == 0 {
-			names = []string{shellcmd.Name(shellcmd.Login())}
-		}
-		for _, name := range names {
+		for _, name := range p.Tabs {
 			t := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen,
 				Split: &splitNode{TermID: randomTermID()}}
 			if name == "tests" {
