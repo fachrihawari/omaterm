@@ -209,6 +209,10 @@ try {
 
   await go(`${base}/#/pane/${pane}`);
   await shot("web-phone");
+  await sleep(500);
+  await cdp("Runtime.evaluate", { expression: "document.querySelector('.btn-compose')?.click()" });
+  await sleep(500);
+  await shot("web-phone-compose");
 
   // Light theme screenshots
   const daemonSock = join(env.XDG_RUNTIME_DIR, "omaterm", "omaterm-daemon.sock");
@@ -228,6 +232,10 @@ try {
 
     await go(`${base}/#/pane/${pane}`);
     await shot("web-phone-light");
+    await sleep(500);
+    await cdp("Runtime.evaluate", { expression: "document.querySelector('.btn-compose')?.click()" });
+    await sleep(500);
+    await shot("web-phone-compose-light");
   } catch (err) {
     console.error("error taking light theme shots:", err);
   }

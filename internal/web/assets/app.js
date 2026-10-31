@@ -781,11 +781,11 @@ function showTerm(id) {
   const tabsRow = h("div", { class: "card-tabs", hidden: true });
   const statusChipEl = h("div", { class: "schip-wrap" });
 
+  let composeBox = null;
   const composeBtn = h("button", {
     class: "ib btn-compose", hidden: true, title: "Compose prompt", "aria-label": "Compose prompt",
     onclick: () => {
-      const composeBox = document.querySelector(".compose-slot textarea, .compose-slot input");
-      if (composeBox) { composeBox.focus(); }
+      composeBox?.open();
     },
   }, icon("compose", "s14"));
 
@@ -884,8 +884,16 @@ function showTerm(id) {
   };
 
   let ctrl = false;
+  let keyBar = null;
   xt.onData((d) => {
-    if (ctrl && d.length === 1) {
+    if (keyBar && d.length === 1) {
+      const m = keyBar.takeModifiers();
+      if (m.ctrl) {
+        const c = d.toUpperCase().charCodeAt(0);
+        if (c >= 64 && c < 96) d = String.fromCharCode(c & 0x1f);
+      }
+      if (m.alt) d = "\x1b" + d;
+    } else if (ctrl && d.length === 1) {
       const c = d.toUpperCase().charCodeAt(0);
       if (c >= 64 && c < 96) d = String.fromCharCode(c & 0x1f);
       ctrl = false;
@@ -933,14 +941,14 @@ function showTerm(id) {
   keysPromise.then((mod) => {
     if (mod?.mountKeyBar && keybarSlot.isConnected) {
       keybarSlot.replaceChildren();
-      mod.mountKeyBar(keybarSlot, { sendKey, sendText, appCursor });
+      keyBar = mod.mountKeyBar(keybarSlot, { sendKey, sendText, appCursor });
     }
   });
 
   composePromise.then((mod) => {
     if (mod?.mountCompose && composeSlot.isConnected) {
       composeSlot.replaceChildren();
-      mod.mountCompose(composeSlot, { sendPaste, sendKey });
+      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey });
       composeBtn.hidden = false;
     }
   });
@@ -1011,6 +1019,8 @@ function showTerm(id) {
       observer.disconnect();
       clearTimeout(resizeTimer);
       document.removeEventListener("visibilitychange", onVisible);
+      keyBar?.destroy();
+      composeBox?.destroy();
       if (ws) { ws.onclose = null; ws.close(); }
       xt.dispose();
     },
