@@ -335,3 +335,19 @@ echo "$*" >> '` + log + `'
 		t.Fatalf("the list wasn't emptied: %s", b)
 	}
 }
+
+// A daemon that leaves for being idle ends its shares too, as Stop does.
+func TestIdleExitStopsShares(t *testing.T) {
+	d, _ := startDaemon(t, 100*time.Millisecond)
+	tun := &fakeTunnel{url: "https://x.example.net", done: make(chan struct{})}
+	d.shareMu.Lock()
+	d.shares[procKey{"p1", "web"}] = &share{via: tunnel.Cloudflare, tun: tun, port: 1234}
+	d.shareMu.Unlock()
+	select {
+	case <-d.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the idle daemon did not exit")
+	}
+	// Done closes first, as the exit goes on to stop what it has.
+	waitFor(t, "the share to stop", tun.isStopped)
+}

@@ -350,6 +350,7 @@ func (d *Daemon) loop(ctx context.Context) {
 					close(d.quit)
 					d.stopWeb()
 					d.stopProxy()
+					d.stopShares()
 					d.srv.Close()
 					d.lock.Close()
 				})
