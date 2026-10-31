@@ -43,7 +43,7 @@ type Port struct {
 // end every session. Processes are read as panes read them (Linux's /proc,
 // macOS's libSystem), their CPU and memory from ps.
 func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		return nil, nil
 	}
 	if strings.TrimSpace(workspace) == "" {
@@ -67,7 +67,7 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 	if len(all) == 0 {
 		return nil, fmt.Errorf("could not list the system's processes")
 	}
-	usage := psUsage()
+	usage := processUsage(all)
 
 	// The project's panes and what they started, wherever it went.
 	pidSet := map[int]bool{}
@@ -89,7 +89,9 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 	var procs []Process
 	for _, pid := range all {
 		cwd := pty.ProcCwd(pid)
-		if cwd == "" {
+		// Windows tells no process's directory: there, a pane's processes
+		// are listed without one.
+		if cwd == "" && !(runtime.GOOS == "windows" && pidSet[pid]) {
 			continue // gone, or not the user's
 		}
 		resolvedCwd := cwd
@@ -132,7 +134,7 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 		}
 
 		u, ok := usage[pid]
-		if !ok {
+		if !ok && runtime.GOOS != "windows" {
 			u.cpu = "0%"
 		}
 		procs = append(procs, Process{
@@ -248,7 +250,7 @@ func descendants(children map[int][]int, pid int) []int {
 
 // ListProjectPorts returns listening TCP ports owned by the given processes.
 func ListProjectPorts(processes []Process) ([]Port, error) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		return nil, nil
 	}
 	pidSet := map[int]bool{}
@@ -256,6 +258,9 @@ func ListProjectPorts(processes []Process) ([]Port, error) {
 	for _, p := range processes {
 		pidSet[p.Pid] = true
 		procName[p.Pid] = p.Name
+	}
+	if runtime.GOOS == "windows" {
+		return listPortsWindows(pidSet, procName)
 	}
 	if runtime.GOOS == "darwin" {
 		return listPortsViaLsof(pidSet, procName)
@@ -493,14 +498,15 @@ func listPortsViaProc(pidSet map[int]bool, procName map[int]string) ([]Port, err
 	return ports, nil
 }
 
-// KillProcess sends SIGTERM to the given PID.
+// KillProcess sends SIGTERM to the given PID. Windows has no signal to
+// ask a process to end: it is ended.
 func KillProcess(pid int) error {
-	if runtime.GOOS == "windows" {
-		return fmt.Errorf("not supported on this platform")
-	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows" {
+		return proc.Kill()
 	}
 	return proc.Signal(syscall.SIGTERM)
 }

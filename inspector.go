@@ -190,7 +190,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 									pill(c, owner)
 								}
 								ui.Spacer(c)
-								mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
+								mutedTxt2(c, strings.Trim(proc.CPU+" · "+proc.Mem, " ·"), 11)
 								if proc.Pid != 1 && proc.Pid != os.Getpid() {
 									if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
 										a.pendingKillPid = proc.Pid
