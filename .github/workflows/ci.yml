@@ -41,9 +41,12 @@ jobs:
         run: go vet ./...
 
       # go build skips test files, so only vet catches a test that doesn't
-      # compile for macOS.
+      # compile for macOS or Windows.
       - name: go vet for macOS
         run: GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+
+      - name: go vet for Windows
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
 
       # The terminal plugin binds libghostty-vt, a plain shared library: under
       # go test it downloads into the user's cache on first use, checking its
