@@ -1,9 +1,15 @@
 package daemon
 
 import (
+	"context"
+	"errors"
+	"time"
+
 	"fmt"
 	"log"
 	"net"
+	"omaterm/internal/client"
+	"omaterm/internal/paths"
 	"path/filepath"
 	"strconv"
 
@@ -25,6 +31,9 @@ type ProxyStatus struct {
 	Addr    string         `json:"addr"`
 	Error   string         `json:"error"`
 	Routes  []devurl.Route `json:"routes"`
+	// Checks are what Dev URLs needs and whether it is so: proxy.status and
+	// proxy.reload fill them, which runs the browsers' tools.
+	Checks []devurl.Check `json:"checks"`
 }
 
 // procKey names a process across projects.
@@ -36,6 +45,10 @@ type devView struct {
 	links map[procKey]string
 	notes map[procKey]string
 }
+
+// defaultSetupEnv is the system the checks look at: a variable so that the
+// tests look at a temporary one, not the developer's.
+var defaultSetupEnv = devurl.DefaultEnv
 
 func (d *Daemon) proxyListenAddr() string {
 	if d.opts.ProxyAddr != "" {
@@ -69,11 +82,20 @@ func (d *Daemon) reloadProxy() ProxyStatus {
 	return st
 }
 
-// proxyStatus tells how the proxy is.
+// proxyStatus tells how the proxy is, and what of Dev URLs works.
 func (d *Daemon) proxyStatus() ProxyStatus {
 	d.devMu.Lock()
-	defer d.devMu.Unlock()
-	return d.proxyStatusLocked()
+	st := d.proxyStatusLocked()
+	d.devMu.Unlock()
+	return d.withChecks(st)
+}
+
+// withChecks adds the checks to a status. It runs outside devMu: the checks
+// run the browsers' tools.
+func (d *Daemon) withChecks(st ProxyStatus) ProxyStatus {
+	st.Checks = devurl.Checks(defaultSetupEnv(filepath.Join(d.opts.StateDir, "devurl")),
+		devurl.ProxyState{Running: st.Running, Addr: st.Addr, Error: st.Error})
+	return st
 }
 
 func (d *Daemon) proxyStatusLocked() ProxyStatus {
@@ -173,4 +195,29 @@ func (d *Daemon) decorateProc(project string, p *procs.Proc) {
 	if note := view.notes[key]; note != "" && p.Message == "" {
 		p.Message = note
 	}
+}
+
+// CallProxy asks the session daemon for proxy.status or proxy.reload,
+// starting the daemon when asked and none runs.
+func CallProxy(method string, start bool) (ProxyStatus, error) {
+	c, err := client.Dial(paths.DaemonSocketPath())
+	if errors.Is(err, client.ErrUnreachable) && start {
+		if err := StartProcess(); err != nil {
+			return ProxyStatus{}, err
+		}
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if c, err = client.Dial(paths.DaemonSocketPath()); err == nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		return ProxyStatus{}, err
+	}
+	defer c.Close()
+	var st ProxyStatus
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err = c.CallContext(ctx, method, nil, &st)
+	return st, err
 }

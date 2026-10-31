@@ -598,7 +598,7 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 	case "proxy.status":
 		return d.proxyStatus(), nil
 	case "proxy.reload":
-		return d.reloadProxy(), nil
+		return d.withChecks(d.reloadProxy()), nil
 	case "web.reload":
 		return d.reloadWeb()
 	case "web.theme":

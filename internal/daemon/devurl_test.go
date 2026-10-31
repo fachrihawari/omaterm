@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"omaterm/internal/devurl"
 	"omaterm/internal/model"
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
@@ -45,6 +46,15 @@ func proxyGet(t *testing.T, d *Daemon, addr, host string) (int, string) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
+}
+
+func checkOf(st ProxyStatus, name string) *devurl.Check {
+	for i := range st.Checks {
+		if st.Checks[i].Name == name {
+			return &st.Checks[i]
+		}
+	}
+	return nil
 }
 
 func procByName(list []proto.Process, name string) proto.Process {
@@ -166,12 +176,24 @@ func TestDaemonProxyThatCannotBind(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "devurl")); !os.IsNotExist(err) {
 		t.Fatalf("a CA was made without a proxy: %v", err)
 	}
+	if c := checkOf(st, "Proxy serving"); c == nil || c.OK || c.Detail != st.Error {
+		t.Fatalf("proxy check: %+v, status error %q", c, st.Error)
+	}
+	if c := checkOf(st, "Certificate authority made"); c == nil || c.OK {
+		t.Fatalf("CA check: %+v", c)
+	}
 
 	// Once the address is free, a reload binds it and the links appear.
 	taken.Close()
 	st = call[ProxyStatus](t, c, "proxy.reload", nil)
 	if !st.Running || st.Error != "" {
 		t.Fatalf("after the reload: %+v", st)
+	}
+	if c := checkOf(st, "Proxy serving"); c == nil || !c.OK || c.Detail != st.Addr {
+		t.Fatalf("proxy check after the reload: %+v", c)
+	}
+	if c := checkOf(call[ProxyStatus](t, c, "proxy.status", nil), "Certificate authority made"); c == nil || !c.OK {
+		t.Fatalf("CA check after the reload: %+v", c)
 	}
 	if got := procByName(call[[]proto.Process](t, c, "process.list", proto.ProcessParams{Project: "p1"}), "web"); got.Link == "" {
 		t.Fatal("no link after the proxy runs")

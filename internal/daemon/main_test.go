@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"omaterm/internal/devurl"
 )
 
 // TestMain gives the tests an empty config directory: a daemon with no
@@ -25,6 +28,12 @@ func TestMain(m *testing.M) {
 	cfg, err := os.MkdirTemp("", "omaterm-test-config-")
 	if err != nil {
 		panic(err)
+	}
+	// The Dev URLs checks look at a machine with nothing on it, not at the
+	// developer's browsers.
+	defaultSetupEnv = func(caDir string) devurl.Env {
+		return devurl.Env{OS: "linux", Home: filepath.Join(cfg, "home"), Root: filepath.Join(cfg, "root"), CADir: caDir,
+			Geteuid: func() int { return 1000 }}
 	}
 	os.Setenv("XDG_CONFIG_HOME", cfg)
 	code := m.Run()
