@@ -27,6 +27,9 @@ var iconFileCodeSVG []byte
 //go:embed icons/file-text.svg
 var iconFileTextSVG []byte
 
+//go:embed icons/file-plus.svg
+var iconFilePlusSVG []byte
+
 //go:embed icons/image.svg
 var iconImageSVG []byte
 
@@ -158,6 +161,7 @@ var (
 	iconExternalLink   = ui.MustParseSVG(iconExternalLinkSVG)
 	iconFileCode       = ui.MustParseSVG(iconFileCodeSVG)
 	iconFileText       = ui.MustParseSVG(iconFileTextSVG)
+	iconFilePlus       = ui.MustParseSVG(iconFilePlusSVG)
 	iconImage          = ui.MustParseSVG(iconImageSVG)
 	iconKeyboard       = ui.MustParseSVG(iconKeyboardSVG)
 	iconFolder         = ui.MustParseSVG(iconFolderSVG)
