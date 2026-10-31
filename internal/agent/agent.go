@@ -19,6 +19,7 @@ import (
 var Names = []string{
 	"claude", "codex", "gemini", "opencode", "amp", "aider", "cursor-agent", "droid",
 	"qwen", "goose", "crush", "copilot", "kiro-cli", "cline", "auggie", "kimi", "pi",
+	"agy",
 }
 
 // Detect returns the agent a process is, from its name and first
@@ -60,7 +61,7 @@ var displayNames = map[string]string{
 	"claude": "Claude Code", "codex": "Codex", "gemini": "Gemini", "opencode": "OpenCode",
 	"amp": "Amp", "aider": "Aider", "cursor-agent": "Cursor", "droid": "Droid", "qwen": "Qwen Code",
 	"goose": "Goose", "crush": "Crush", "copilot": "Copilot", "kiro-cli": "Kiro", "cline": "Cline",
-	"auggie": "Auggie", "kimi": "Kimi", "pi": "Pi",
+	"auggie": "Auggie", "kimi": "Kimi", "pi": "Pi", "agy": "Antigravity",
 }
 
 // DisplayName is an agent's name as people write it.

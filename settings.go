@@ -395,7 +395,7 @@ var settingDefs = func() []settingDef {
 		row("notify-test", "notifications", "Send test notification", "", "try"),
 
 		// Agents
-		row("integration", "agents", "Agent integration", "", "hook skill claude codex pi opencode"),
+		row("integration", "agents", "Agent integration", "", "hook skill claude codex pi opencode antigravity"),
 		sw(boolDef("agentcontrol", "agents", "Let agents control the app", "The omaterm command may run the app’s commands and drive browser panes, not only sessions.",
 			func(s *Settings) *bool { return &s.RemoteControl }), "Let Agents Control the App", false, "remote control automation"),
 		sw(boolDef("socket", "agents", "Allow the omaterm command", "Turning this off leaves agents without omaterm.",

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -201,5 +202,58 @@ func TestWriteThroughLink(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(target); string(data) != `{"hooks": {}}` {
 		t.Errorf("the target holds %q", data)
+	}
+}
+
+// Antigravity reads skills from a folder of its own: setup puts omaterm's
+// there once Antigravity is installed, Settings shows it as an agent with
+// a skill and no hook, and removing it takes the skill away.
+func TestAntigravitySkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	for _, env := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"} {
+		t.Setenv(env, "")
+	}
+	dir := filepath.Join(home, ".gemini", "config", "skills", "omaterm")
+	if _, ok := skillDirs("")["agy"]; ok || slices.Contains(SkillGroups(), "agy") {
+		t.Fatal("Antigravity's skill offered where Antigravity isn't installed")
+	}
+	if it := Integration("agy"); it.Present || it.Installed() || it.HookPath != "" {
+		t.Fatalf("not installed: %+v", it)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".gemini", "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := skillDirs("")["agy"]; got != dir {
+		t.Fatalf("Antigravity's skill dir = %q, want %q", got, dir)
+	}
+	if got := skillDirs(agentArg("Antigravity")); len(got) != 1 || got["agy"] != dir {
+		t.Fatalf("--agent antigravity: %v", got)
+	}
+	if err := SetupAgent("agy"); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err != nil || string(b) != skillGuide {
+		t.Fatalf("skill not written: %v", err)
+	}
+	it := Integration("agy")
+	if !it.Present || !it.Installed() || !it.Current() || it.HookState != "" {
+		t.Fatalf("after setup: %+v", it)
+	}
+	var found bool
+	for _, st := range SkillStates() {
+		if st.Agent == "agy" && st.State == "current" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("skill status lacks Antigravity: %+v", SkillStates())
+	}
+	if err := RemoveAgent("agy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("the skill stayed after removing the integration")
 	}
 }

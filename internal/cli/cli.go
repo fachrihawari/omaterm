@@ -1190,7 +1190,7 @@ Project processes, from omaterm.yml and the ones kept in omaterm:
   omaterm restart <name> [--wait] [--timeout 60s]
                                          restart one; restart also takes a session or pane
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …
-  omaterm skill setup|status|show|remove [--agent claude|codex|pi|opencode]
+  omaterm skill setup|status|show|remove [--agent claude|codex|pi|opencode|antigravity]
   omaterm cli install|uninstall|status
   omaterm daemon status|stop|restart|install-service|uninstall-service
   omaterm clients [--json]               who the session daemon serves

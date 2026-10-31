@@ -109,11 +109,11 @@ header to move it.
 ### Agents on branches of their own
 
 **New Agent…**, from the sidebar's **+**, a project's menu or the command
-palette, starts Claude Code, Codex, OpenCode or Pi in a session of its
-own. With **Work in a worktree** on, it works on a new branch, in a git
-worktree of its own under the repository's `.worktrees` folder, with your
-`.env` files copied in. Run several at once: none touches another's files,
-or yours.
+palette, starts Claude Code, Codex, OpenCode, Pi or Antigravity in a
+session of its own. With **Work in a worktree** on, it works on a new
+branch, in a git worktree of its own under the repository's `.worktrees`
+folder, with your `.env` files copied in. Run several at once: none touches
+another's files, or yours.
 
 The Git tab follows the session into its worktree, and its **Branch** view
 shows everything the branch changed since it started. From the session's
@@ -318,7 +318,7 @@ omaterm stop web                        # stop one
 ```
 
 `omaterm help` lists every command. `omaterm skill setup` teaches Claude
-Code, Codex, Pi and OpenCode to use it. Every pane knows where it runs:
+Code, Codex, Pi, OpenCode and Antigravity to use it. Every pane knows where it runs:
 `$OMATERM_SESSION`, `$OMATERM_PANE`, `$OMATERM_PROJECT` and
 `$OMATERM_PROJECT_DIR`.
 

@@ -19,11 +19,18 @@ func TestDetect(t *testing.T) {
 		{"pi", nil, "pi"},
 		{"zsh", []string{"-zsh"}, ""},
 		{"gemini-cli", nil, "gemini"},
+		{"agy", []string{"agy"}, "agy"},
 	}
 	for _, c := range cases {
 		if got := Detect(c.name, c.args); got != c.want {
 			t.Errorf("Detect(%q, %q) = %q, want %q", c.name, c.args, got, c.want)
 		}
+	}
+}
+
+func TestAntigravityName(t *testing.T) {
+	if got := DisplayName("agy"); got != "Antigravity" {
+		t.Fatalf("DisplayName(agy) = %q", got)
 	}
 }
 

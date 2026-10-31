@@ -113,7 +113,7 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	d.service = daemon.ServiceInstalled()
 	d.scrollCount, d.scrollBytes = savedScrollback(a.livePanes())
 	d.agents = map[string]cli.AgentIntegration{}
-	for _, name := range cli.HookAgents {
+	for _, name := range cli.IntegrationAgents {
 		d.agents[name] = cli.Integration(name)
 	}
 	store := webStore()
@@ -632,13 +632,15 @@ func (a *appState) settingsAgents(c *ui.Context) {
 	}
 	foot := "omaterm also recognizes " + strings.Join(others, ", ") + " by their process, without a hook."
 	a.settingsGroup(c, "integration", "Integration", foot, func() {
-		for _, name := range cli.HookAgents {
+		for _, name := range cli.IntegrationAgents {
 			it := d.agents[name]
 			sub, on := "Not set up", false
 			switch {
-			case it.HookState == "current" && it.SkillState == "current":
+			case it.Current() && it.HookPath == "":
+				sub, on = "Skill installed", true
+			case it.Current():
 				sub, on = "Hook and skill installed", true
-			case it.HookState != "missing" || it.SkillState != "missing":
+			case it.Installed() || it.SkillState != "missing":
 				sub = "Needs an update"
 			case !it.Present:
 				sub = "Not installed on this computer"
@@ -689,16 +691,22 @@ func (a *appState) settingsAgent(c *ui.Context) {
 		note = "Sessions started before setup pick it up after they restart."
 	}
 	a.settingsGroup(c, "agent", "", note, func() {
-		a.settingsRow(c, hook, settingsRowOpts{sub: cli.ShortPath(it.HookPath), mono: true}, func() { state(it.HookState) })
+		if it.HookPath != "" {
+			a.settingsRow(c, hook, settingsRowOpts{sub: cli.ShortPath(it.HookPath), mono: true}, func() { state(it.HookState) })
+		}
 		a.settingsRow(c, "Skill", settingsRowOpts{sub: cli.ShortPath(it.SkillDir), mono: true}, func() { state(it.SkillState) })
 	})
 	settingsActions(c, func() {
-		installed := it.HookState != "missing"
+		installed := it.Installed()
+		gone := "omaterm stops learning this agent's conversation, so a restart can only continue the folder's last one."
+		if it.HookPath == "" {
+			gone = "Its sessions no longer learn the omaterm command from the skill."
+		}
 		if installed && settingsButton(c, "Remove Integration", false, true, false) {
 			a.settingsUI.sheet = &settingsSheet{
 				title:   "Remove the " + agent.DisplayName(name) + " integration?",
 				danger:  true,
-				text:    "omaterm stops learning this agent's conversation, so a restart can only continue the folder's last one.",
+				text:    gone,
 				confirm: "Remove",
 				run: func(c *ui.Context) {
 					if err := cli.RemoveAgent(name); err != nil {
@@ -710,7 +718,7 @@ func (a *appState) settingsAgent(c *ui.Context) {
 			}
 		}
 		label := "Set Up"
-		if installed && (it.HookState != "current" || it.SkillState != "current") {
+		if installed && !it.Current() {
 			label = "Update"
 		}
 		if (!installed || label == "Update") && settingsButton(c, label, true, false, false) {

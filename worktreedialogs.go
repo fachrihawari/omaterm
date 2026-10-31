@@ -21,9 +21,9 @@ import (
 	"omaterm/service"
 )
 
-// worktreeAgents are the agents a worktree session starts, those that
-// resume their conversation after a restart, then "shell" for none.
-var worktreeAgents = []string{"claude", "codex", "opencode", "pi", "shell"}
+// worktreeAgents are the agents New Agent starts: those that resume their
+// conversation after a restart, then Antigravity, then "shell" for none.
+var worktreeAgents = []string{"claude", "codex", "opencode", "pi", "agy", "shell"}
 
 // worktreeNew is the New Agent dialog.
 type worktreeNew struct {
