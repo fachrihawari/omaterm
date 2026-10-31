@@ -95,6 +95,11 @@ type Supervisor struct {
 	Watch  WatchFunc
 	Match  func(pattern, path string) bool
 	Ignore func(root string) func(path string, isDir bool) bool
+	// Decorate adds to a process what the supervisor doesn't know, as the
+	// link its Dev URL gives it: the daemon sets it, and a supervisor
+	// with none, as the app's, gives none. It is called with the
+	// supervisor's lock held, so it must not call back into it.
+	Decorate func(project string, p *Proc)
 
 	mu       sync.Mutex
 	runner   Runner
@@ -126,8 +131,11 @@ type procState struct {
 	generation uint64
 	stop       context.CancelFunc
 	watch      context.CancelFunc
-	stopped    bool
-	restarts   []time.Time
+	// port is the free port the current run was given, for a process with
+	// a url and no port of its own.
+	port     int
+	stopped  bool
+	restarts []time.Time
 }
 
 var (
@@ -173,6 +181,9 @@ func (s *Supervisor) Load(projectID, dir string, defs []Def) {
 			// The run goes on with what it started with; the definition
 			// the process has, restarts with and is trusted by is this one.
 			old.def, old.dir, old.proc.Def, old.proc.Trusted = d, dir, d, trusted
+			if old.port > 0 && d.Port == 0 && d.URL != "" {
+				old.proc.Port = old.port
+			}
 			old.proc.Changed = old.running != d.Variant()
 			if old.proc.Changed {
 				old.proc.Message = "definition changed; restart to apply"
@@ -228,7 +239,40 @@ func (s *Supervisor) List(projectID string) []Proc {
 	out := make([]Proc, 0, len(ps.order))
 	for _, name := range ps.order {
 		if p := ps.procs[name]; p != nil {
-			out = append(out, p.proc)
+			proc := p.proc
+			if s.Decorate != nil {
+				s.Decorate(projectID, &proc)
+			}
+			out = append(out, proc)
+		}
+	}
+	return out
+}
+
+// Routed is a process with the project it belongs to.
+type Routed struct {
+	Project string
+	Proc
+}
+
+// All returns every project's processes, the projects in the order of
+// their ids and each project's in definition order, as the supervisor has
+// them, without what Decorate adds.
+func (s *Supervisor) All() []Routed {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.projects))
+	for id := range s.projects {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var out []Routed
+	for _, id := range ids {
+		ps := s.projects[id]
+		for _, name := range ps.order {
+			if p := ps.procs[name]; p != nil {
+				out = append(out, Routed{Project: id, Proc: p.proc})
+			}
 		}
 	}
 	return out
@@ -299,6 +343,7 @@ func (s *Supervisor) Stop(projectID, name string) error {
 	w := p.watch
 	p.stop, p.watch = nil, nil
 	p.handle = nil
+	p.port, p.proc.Port = 0, p.def.Port
 	// Nothing runs: no pid, and no run for the definition to differ
 	// from. A definition the user hasn't trusted waits for them.
 	p.proc.Status, p.proc.PID, p.proc.Changed = Stopped, 0, false
@@ -423,7 +468,8 @@ func (s *Supervisor) startRun(project, name string, def Def, root string, gen ui
 		shell = shellcmd.Login()
 	}
 	id := paneID(name)
-	env := make([]string, 0, len(def.Env))
+	port := runPort(def)
+	env := make([]string, 0, len(def.Env)+1)
 	keys := make([]string, 0, len(def.Env))
 	for k := range def.Env {
 		keys = append(keys, k)
@@ -431,6 +477,9 @@ func (s *Supervisor) startRun(project, name string, def Def, root string, gen ui
 	sort.Strings(keys)
 	for _, k := range keys {
 		env = append(env, k+"="+def.Env[k])
+	}
+	if _, set := def.Env["PORT"]; !set && port > 0 {
+		env = append(env, "PORT="+strconv.Itoa(port))
 	}
 	dir := root
 	if def.Dir != "" {
@@ -454,6 +503,10 @@ func (s *Supervisor) startRun(project, name string, def Def, root string, gen ui
 		return nil
 	}
 	p.handle, p.stop, p.proc.Pane, p.proc.PID = h, cancel, h.ID(), h.Info().PID
+	p.port, p.proc.Port = 0, def.Port
+	if def.Port == 0 && port > 0 {
+		p.port, p.proc.Port = port, port
+	}
 	p.proc.Status, p.proc.Since, p.proc.Message = Starting, time.Now().UnixMilli(), ""
 	p.running, p.proc.Changed = def.Variant(), false
 	// Counted under the lock Close sets closed in, so Close waits for the
@@ -468,7 +521,7 @@ func (s *Supervisor) startRun(project, name string, def Def, root string, gen ui
 	}()
 	go func() {
 		defer s.watches.Done()
-		s.ready(project, name, def.Port, gen, h, ctx, aliveDelay, checkPeriod)
+		s.ready(project, name, port, gen, h, ctx, aliveDelay, checkPeriod)
 	}()
 	s.watching(project, name, def, root, gen)
 	return nil
@@ -644,6 +697,37 @@ func (s *Supervisor) emit(e Event) {
 	if s.OnEvent != nil {
 		s.OnEvent(e)
 	}
+}
+
+// runPort is the port a run of def listens on, which the proxy and the
+// readiness check use: the def's own, and for a process with a url the
+// PORT its env sets, else a free one. 0 when nothing says.
+func runPort(def Def) int {
+	if def.Port > 0 {
+		return def.Port
+	}
+	if def.URL == "" {
+		return 0
+	}
+	if v, ok := def.Env["PORT"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 65536 {
+			return n
+		}
+		return 0
+	}
+	return freePort()
+}
+
+// freePort asks the system for a port nothing listens on, which it hands
+// out one after the other: another program could take it before the
+// process does, a rare enough miss for a dev server.
+func freePort() int {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 func paneID(name string) string {
