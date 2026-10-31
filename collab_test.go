@@ -215,14 +215,16 @@ func TestWaitMany(t *testing.T) {
 	t.Setenv("OMATERM_SOCKET", a.ctl.Path())
 	t.Setenv("OMATERM_PANE", "")
 	t.Setenv("OMATERM_SESSION", "")
-	for _, s := range []struct{ name, cmd string }{{"fast", "sleep 0.2; exit 3"}, {"slow", "sleep 1.5"}, {"never", "sleep 60"}} {
+	for _, s := range []struct{ name, cmd string }{{"fast", "sleep 0.2; exit 3"}, {"slow", "sleep 3"}, {"never", "sleep 60"}} {
 		if _, err := a.cliCreate(proto.CreateParams{Name: s.name, Dir: a.workspace, Command: []string{"sh", "-c", s.cmd}}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// --any returns with fast, well before slow ends: the margin is wide,
+	// for slow runners.
 	start := time.Now()
 	out, code := runCLI(t, "wait", "slow", "fast", "--any", "--exit", "-t", "10s")
-	if code != 0 || out != "fast exited 3\n" || time.Since(start) > time.Second {
+	if code != 0 || out != "fast exited 3\n" || time.Since(start) > 2500*time.Millisecond {
 		t.Fatalf("--any: %q, status %d, after %v", out, code, time.Since(start))
 	}
 	out, code = runCLI(t, "wait", "slow", "fast", "--exit", "-t", "10s")
