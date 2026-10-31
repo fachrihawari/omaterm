@@ -624,13 +624,10 @@ func newApp() *appState {
 func stateFilePath() string { return paths.StateFile() }
 
 // legacyStateFilePath is where the app kept the project list while it was
-// called oterm. Renaming the app must not lose it.
+// called oterm, beside omaterm's own config folder. Renaming the app must
+// not lose it.
 func legacyStateFilePath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		dir = os.ExpandEnv("$HOME/.config")
-	}
-	return filepath.Join(dir, "oterm", "state.json")
+	return filepath.Join(filepath.Dir(paths.ConfigDir()), "oterm", "state.json")
 }
 
 func (a *appState) project() *project {
