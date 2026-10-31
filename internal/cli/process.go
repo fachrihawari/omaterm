@@ -45,10 +45,10 @@ func psCmd(c *client.Client, args []string) error {
 		fmt.Fprintln(os.Stderr, "no processes defined: add one in omaterm (Processes → Add)")
 		return nil
 	}
-	fmt.Printf("%-16s %-10s %-6s %-7s %-9s %s\n", "NAME", "STATUS", "PORT", "PID", "RESTARTS", "MESSAGE")
+	fmt.Printf("%-16s %-10s %-6s %-7s %-9s %-28s %s\n", "NAME", "STATUS", "PORT", "PID", "RESTARTS", "URL", "MESSAGE")
 	for _, p := range list {
-		fmt.Printf("%-16s %-10s %-6s %-7s %-9s %s\n", fit(p.Name, 16), p.Status,
-			dashInt(p.Port), dashInt(p.PID), dashInt(p.Restarts), dash(p.Message))
+		fmt.Printf("%-16s %-10s %-6s %-7s %-9s %-28s %s\n", fit(p.Name, 16), p.Status,
+			dashInt(p.Port), dashInt(p.PID), dashInt(p.Restarts), fit(dash(processAddress(p)), 28), dash(p.Message))
 	}
 	return nil
 }
@@ -240,4 +240,13 @@ func dashInt(n int) string {
 		return "-"
 	}
 	return strconv.Itoa(n)
+}
+
+// processAddress is where a process is reached: its Dev URL while routed,
+// else its share, else "".
+func processAddress(p proto.Process) string {
+	if p.Link != "" {
+		return p.Link
+	}
+	return p.Share
 }

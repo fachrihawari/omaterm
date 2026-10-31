@@ -87,7 +87,8 @@ func listOf(list ...proto.Process) func(json.RawMessage) (any, error) {
 }
 
 var fixture = []proto.Process{
-	{Def: procs.Def{Name: "web", Command: "npm run dev", Port: 3000}, Status: procs.Running, PID: 4321},
+	{Def: procs.Def{Name: "web", Command: "npm run dev", Port: 3000, URL: "shop"}, Status: procs.Running, PID: 4321,
+		Link: "https://shop.localhost"},
 	{Def: procs.Def{Name: "worker", Command: "go run ./cmd/worker"}, Status: procs.Untrusted,
 		Message: "worker isn't trusted yet: review it in omaterm"},
 	{Def: procs.Def{Name: "queue", Command: "redis-server"}, Status: procs.Failed, Restarts: 2,
@@ -107,9 +108,9 @@ func TestPs(t *testing.T) {
 		t.Fatalf("got %q", out)
 	}
 	want := []string{
-		"web running 3000 4321 - -",
-		"worker untrusted - - - worker isn't trusted yet: review it in omaterm",
-		"queue failed - - 2 exited (code 1)",
+		"web running 3000 4321 - https://shop.localhost -",
+		"worker untrusted - - - - worker isn't trusted yet: review it in omaterm",
+		"queue failed - - 2 - exited (code 1)",
 	}
 	for i, w := range want {
 		if got := strings.Join(strings.Fields(lines[i+1]), " "); got != w {

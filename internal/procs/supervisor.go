@@ -53,6 +53,13 @@ type Proc struct {
 	Trusted    bool   `json:"trusted"`
 	Changed    bool   `json:"changed,omitempty"`
 	Message    string `json:"message,omitempty"`
+	// Link is the address its Dev URL serves it at, https://shop.localhost,
+	// while the proxy routes it; "" otherwise.
+	Link string `json:"link,omitempty"`
+	// Share is the address it is shared at, and ShareVia the tunnel
+	// ("tailscale" or "cloudflare"), while it is shared.
+	Share    string `json:"share,omitempty"`
+	ShareVia string `json:"shareVia,omitempty"`
 }
 
 // EventKind is a process lifecycle event.

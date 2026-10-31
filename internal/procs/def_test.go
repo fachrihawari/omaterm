@@ -59,3 +59,35 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+// A def without a URL keeps the variant it had in 0.11.0, so the trust a
+// user gave it stays; a URL changes it, so an edited URL is saved and is
+// trusted anew.
+func TestVariantKeepsTrustWithoutURL(t *testing.T) {
+	d := Def{Name: "web", Command: "npm run dev", Port: 5173}
+	// sha256 of {"command":"npm run dev","dir":"","env":null,"port":5173,"restart":"never","watch":null}
+	const before = "8c1d2760524a069774a866211617cf549f3b4e3550491865938a51919e6a5528"
+	if got := d.Variant(); got != before {
+		t.Fatalf("variant %s, want 0.11.0's %s", got, before)
+	}
+	d.URL = "shop"
+	if d.Variant() == before {
+		t.Fatal("a URL leaves the variant as it was")
+	}
+}
+
+func TestValidURL(t *testing.T) {
+	for _, ok := range []string{"shop", "api.shop", "a-b.c.d", "x1"} {
+		if err := ValidURL(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "Shop", "a..b", "-a", "a-", "a.b.c.d", "shop.localhost", "a_b", "a b"} {
+		if ValidURL(bad) == nil {
+			t.Errorf("%q passed", bad)
+		}
+	}
+	if err := (Def{Name: "web", Command: "x", URL: "Bad"}).Validate(t.TempDir()); err == nil {
+		t.Error("Validate took a bad url")
+	}
+}

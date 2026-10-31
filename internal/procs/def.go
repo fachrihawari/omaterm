@@ -26,11 +26,17 @@ type Def struct {
 	Autostart bool              `yaml:"autostart,omitempty" json:"autostart,omitempty"`
 	Restart   string            `yaml:"restart,omitempty" json:"restart,omitempty"` // never (default) | on-failure | always
 	Watch     []string          `yaml:"watch,omitempty" json:"watch,omitempty"`     // globs; a change restarts it
-	Local     bool              `yaml:"-" json:"-"`                                 // kept in omaterm's state, not in the file
+	// URL is the name it is served at, before ".localhost": "shop" is
+	// https://shop.localhost, through omaterm's Dev URLs proxy.
+	URL   string `yaml:"url,omitempty" json:"url,omitempty"`
+	Local bool   `yaml:"-" json:"-"` // kept in omaterm's state, not in the file
 }
 
 // nameRE is what a process is called: short, lowercase, and safe in a file name.
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// labelRE is one label of a URL's name: a DNS label, lowercase.
+var labelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // variantKey is what a Variant hashes. Its fields are in a fixed order, and
 // encoding/json sorts the env keys, so the JSON is the same for the same def.
@@ -41,6 +47,9 @@ type variantKey struct {
 	Port    int               `json:"port"`
 	Restart string            `json:"restart"`
 	Watch   []string          `json:"watch"`
+	// URL is left out when empty, so that a def without one keeps the
+	// variant, and the trust, it had before URLs.
+	URL string `json:"url,omitempty"`
 }
 
 // Variant is a hash of what the process runs, so that trust follows the
@@ -52,6 +61,7 @@ func (d Def) Variant() string {
 		Dir:     cleanDir(d.Dir),
 		Port:    d.Port,
 		Restart: restartPolicy(d.Restart),
+		URL:     d.URL,
 	}
 	// An empty env or watch list is the same as none, so it hashes as null.
 	if len(d.Env) > 0 {
@@ -116,5 +126,31 @@ func (d Def) Validate(root string) error {
 	default:
 		return fmt.Errorf("the restart %q must be never, on-failure or always", d.Restart)
 	}
+	if d.URL != "" {
+		if err := ValidURL(d.URL); err != nil {
+			return err
+		}
+	}
 	return nil
 }
+
+// ValidURL reports whether name can be a URL's name: one to three DNS
+// labels, lowercase, before ".localhost", as "shop" or "api.shop".
+func ValidURL(name string) error {
+	labels := strings.Split(name, ".")
+	if len(labels) > 3 {
+		return fmt.Errorf("the url %q has more than three parts", name)
+	}
+	for _, l := range labels {
+		if !labelRE.MatchString(l) {
+			return fmt.Errorf("the url %q must be parts of a-z, 0-9 and -, joined by dots, as shop or api.shop", name)
+		}
+	}
+	if labels[len(labels)-1] == "localhost" {
+		return fmt.Errorf("the url %q leaves out .localhost: omaterm adds it", name)
+	}
+	return nil
+}
+
+// Host is the host a URL's name is served at.
+func Host(name string) string { return name + ".localhost" }
