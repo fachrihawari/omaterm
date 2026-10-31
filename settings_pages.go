@@ -242,17 +242,19 @@ func (a *appState) openSettingsFile() {
 
 func (a *appState) settingsGeneral(c *ui.Context) {
 	d := &a.settingsUI.data
-	a.settingsGroup(c, "daemon", "", "Changing the daemon applies after you restart omaterm.", func() {
-		a.settingSwitchRow(c, "daemon", runtime.GOOS == "windows")
-		if runtime.GOOS == "linux" {
-			on := d.service
-			a.settingDefRow(c, "loginStart", func() {
-				if settingsSwitch(c, "loginStart", &on, d.busy == "service") {
-					a.askService(on)
-				}
-			})
-		}
-	})
+	if !onWindows {
+		a.settingsGroup(c, "daemon", "", "Changing the daemon applies after you restart omaterm.", func() {
+			a.settingSwitchRow(c, "daemon", false)
+			if runtime.GOOS == "linux" {
+				on := d.service
+				a.settingDefRow(c, "loginStart", func() {
+					if settingsSwitch(c, "loginStart", &on, d.busy == "service") {
+						a.askService(on)
+					}
+				})
+			}
+		})
+	}
 	a.settingsGroup(c, "sessions", "Sessions", "", func() {
 		a.settingSwitchRow(c, "restore", false)
 		a.settingSwitchRow(c, "resume", !a.settings.RestoreSessions)
@@ -453,7 +455,7 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 		if !hasOmarchy() {
 			// Named by what renders: on a Mac, SF Mono unless JetBrains
 			// Mono is installed.
-			followLabel = "Default (" + defaultFontName(termFontFamily(), installedFonts(), onMac) + ")"
+			followLabel = "Default (" + defaultFontName(termFontFamily(), installedFonts(), runtime.GOOS) + ")"
 		}
 		a.settingDefRow(c, "font", func() {
 			if settingsPopup(c, "font", &mode, [][2]string{{"follow", followLabel}, {"custom", "Custom…"}}) {
@@ -556,7 +558,11 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 		if mb == "0" {
 			mb = "10"
 		}
-		a.settingsRow(c, "Scrollback", settingsRowOpts{id: "scrollbackSize", sub: "Per pane, kept by the session daemon."}, func() {
+		sub := "Per pane, kept by the session daemon."
+		if onWindows {
+			sub = "Per pane, kept by omaterm."
+		}
+		a.settingsRow(c, "Scrollback", settingsRowOpts{id: "scrollbackSize", sub: sub}, func() {
 			if settingsPopup(c, "scrollbackSize", &mb, [][2]string{{"2", "2 MB"}, {"10", "10 MB"}, {"50", "50 MB"}, {"100", "100 MB"}}) {
 				t.ScrollbackMB, _ = strconv.Atoi(mb)
 				if t.ScrollbackMB == 10 {
@@ -801,6 +807,10 @@ func (a *appState) settingsAgent(c *ui.Context) {
 // --- Web Access ---
 
 func (a *appState) settingsWeb(c *ui.Context) {
+	if onWindows {
+		a.settingsNotOnWindows(c, "web", "Web access isn't available on Windows yet", "The sessions are served by the session daemon, which doesn't run on Windows yet.")
+		return
+	}
 	d := &a.settingsUI.data
 	foot := "Tunnels carry web access beyond this computer: Tailscale to your own devices, Cloudflare as a public link. Either way, only devices you pair get in."
 	if a.webOn && a.webNetwork && d.web.URL == "" {
@@ -921,6 +931,14 @@ func (a *appState) settingsWeb(c *ui.Context) {
 	})
 }
 
+// settingsNotOnWindows is the one row of a page for a feature Windows
+// doesn't have yet, in place of its controls.
+func (a *appState) settingsNotOnWindows(c *ui.Context, id, title, sub string) {
+	a.settingsGroup(c, id+"-off", "", "", func() {
+		a.settingsRow(c, title, settingsRowOpts{id: id + "-off", sub: sub}, nil)
+	})
+}
+
 // webTunnelNote is the live line under the tunnel choice: where the
 // tunnel serves, why it isn't running, why it couldn't run here at all,
 // or that it is starting.
@@ -962,6 +980,10 @@ func (a *appState) revokeSheet(id, name string) {
 // settingsPair shows a pairing code: the QR code a phone's camera opens,
 // the code to type, and the link.
 func (a *appState) settingsPair(c *ui.Context) {
+	if onWindows {
+		a.settingsNotOnWindows(c, "pair", "Pairing isn't available on Windows yet", "A device pairs with the web access, which Windows doesn't serve yet.")
+		return
+	}
 	d := &a.settingsUI.data
 	if !a.webOn {
 		a.settingsGroup(c, "pair-off", "", "", func() {
@@ -1175,7 +1197,9 @@ func (a *appState) settingsAbout(c *ui.Context) {
 		{"Web access", web.StorePath(paths.ConfigDir())},
 		{"Saved scrollback", filepath.Join(paths.StateDir(), "sessions")},
 		{"Crash reports", crash.LogPath(paths.StateDir(), "app")},
-		{"Session daemon's crash reports", crash.LogPath(paths.StateDir(), "daemon")},
+	}
+	if !onWindows {
+		files = append(files, [2]string{"Session daemon's crash reports", crash.LogPath(paths.StateDir(), "daemon")})
 	}
 	if runtime.GOOS == "linux" {
 		files = append(files, [2]string{"Session daemon service", daemon.UnitPath()})

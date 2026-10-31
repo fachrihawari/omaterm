@@ -110,6 +110,29 @@ func TestPaneTitle(t *testing.T) {
 	}
 }
 
+// A Windows console titles its shell with the program's path or the
+// window's name, which says no more than the folder the header shows.
+func TestWindowsShellTitles(t *testing.T) {
+	for _, title := range []string{
+		`C:\Program Files\PowerShell\7\pwsh.exe`,
+		`C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		`C:\WINDOWS\system32\cmd.exe`,
+		"Administrator: Windows PowerShell",
+		"Windows PowerShell",
+		"Command Prompt",
+	} {
+		if !shellTitle(title, session.Info{Dir: "/srv/api"}) {
+			t.Errorf("%q is not a shell title", title)
+		}
+	}
+	if got := paneTitle(session.Info{Title: `C:\WINDOWS\system32\cmd.exe`, Dir: "/srv/api"}, nil); got != "api" {
+		t.Errorf("cmd title: %q", got)
+	}
+	if shellTitle(`C:\tools\node.exe`, session.Info{}) {
+		t.Error("a program's path is a shell title")
+	}
+}
+
 // The palette puts the session needing you first, and "> " keeps to
 // commands.
 func TestPaletteRanking(t *testing.T) {

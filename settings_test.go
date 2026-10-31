@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/theme"
+	"omaterm/internal/tunnel"
 )
 
 // newSettingsTester builds the Settings window's view on a page.
@@ -445,6 +446,69 @@ func TestKeyboardShowsKeyRuns(t *testing.T) {
 		return
 	}
 	t.Fatal("no row with more than two keys")
+}
+
+// Windows has no session daemon, so the features that need it leave the
+// settings, the palette and search, and their pages say so in one row.
+func TestWindowsHidesDaemonFeatures(t *testing.T) {
+	was := onWindows
+	defer func() { onWindows = was }()
+	for _, win := range []bool{false, true} {
+		onWindows = win
+		a, tr := newSettingsTester(t, "general")
+		tr.SetSize(settingsWidth, 4000)
+		tr.Frame()
+		if got := tr.HasText("Keep sessions running when the window closes"); got == win {
+			t.Errorf("windows=%v: daemon switch shown %v", win, got)
+		}
+		a.settingsUI.query = "keep sessions running"
+		if found := len(a.settingsNavItems()) > 0; found == win {
+			t.Errorf("windows=%v: search finds the daemon %v", win, found)
+		}
+		a.settingsUI.query = ""
+		inPalette := false
+		for _, e := range a.paletteSources() {
+			inPalette = inPalette || e.ID == "setting:daemon" || e.ID == "setting:web"
+		}
+		if inPalette == win {
+			t.Errorf("windows=%v: palette lists a daemon feature %v", win, inPalette)
+		}
+		stopTermPanes(a)
+
+		for _, page := range []struct{ id, row string }{
+			{"web", "Web access isn't available on Windows yet"},
+			{"devurls", "Dev URLs aren't available on Windows yet"},
+		} {
+			pa, ptr := newSettingsTester(t, page.id)
+			ptr.SetSize(settingsWidth, 4000)
+			ptr.Frame()
+			if got := ptr.HasText(page.row); got != win {
+				t.Errorf("windows=%v %s: the one row shown %v", win, page.id, got)
+			}
+			stopTermPanes(pa)
+		}
+	}
+}
+
+// Sharing a process needs the session daemon, so on Windows both tunnels
+// are unavailable with the reason, and no tunnel's command runs.
+func TestWindowsShareUnavailable(t *testing.T) {
+	was := onWindows
+	defer func() { onWindows = was }()
+	onWindows = true
+	prev := shareAvailable
+	shareAvailable = func() map[tunnel.Provider]string {
+		t.Error("the tunnels were asked on Windows")
+		return nil
+	}
+	defer func() { shareAvailable = prev }()
+	a := &appState{}
+	avail := a.shareAvailability()
+	for _, via := range []tunnel.Provider{tunnel.Tailscale, tunnel.Cloudflare} {
+		if avail[via] != notOnWindows {
+			t.Errorf("%s: %q, want %q", via, avail[via], notOnWindows)
+		}
+	}
 }
 
 // Option as Meta is a macOS setting: its row, its search hit and its

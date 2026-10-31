@@ -159,12 +159,30 @@ func paneTitle(i session.Info, t *terminal.Terminal) string {
 }
 
 // shellTitle tells the title a shell sets at its prompt, as
-// "user@host:~/dir", which says no more than the directory.
+// "user@host:~/dir", which says no more than the directory, or the title
+// a Windows console gives its shell: the program's path, or the window's name.
 func shellTitle(title string, i session.Info) bool {
 	if i.Process != "" {
 		return false
 	}
-	return title == i.Shell || strings.Contains(title, "@") && strings.Contains(title, ":") || strings.HasPrefix(title, "~") || strings.HasPrefix(title, "/")
+	return title == i.Shell || strings.Contains(title, "@") && strings.Contains(title, ":") || strings.HasPrefix(title, "~") || strings.HasPrefix(title, "/") || windowsShellTitle(title)
+}
+
+// windowsShellTitle tells the title of a Windows console's shell: the path
+// of its program, as C:\…\pwsh.exe, or the name of its window.
+func windowsShellTitle(title string) bool {
+	if i := strings.LastIndexByte(title, '\\'); i >= 0 {
+		switch strings.ToLower(title[i+1:]) {
+		case "pwsh.exe", "powershell.exe", "cmd.exe":
+			return true
+		}
+		return false
+	}
+	switch strings.ToLower(strings.TrimPrefix(title, "Administrator: ")) {
+	case "windows powershell", "command prompt", "pwsh":
+		return true
+	}
+	return false
 }
 
 // shortDir writes a directory with the home directory as "~".

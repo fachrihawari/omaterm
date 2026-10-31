@@ -158,6 +158,10 @@ func devurlLink(host, addr string) string {
 
 func (a *appState) settingsDevurls(c *ui.Context) {
 	d := &a.settingsUI.data.devurls
+	if onWindows {
+		a.settingsNotOnWindows(c, "devurlSetup", "Dev URLs aren't available on Windows yet", "")
+		return
+	}
 	if !devurlTools.available(a) {
 		a.settingsGroup(c, "devurlSetup", "", "", func() {
 			a.settingsRow(c, "Needs the session daemon", settingsRowOpts{id: "devurlSetup",

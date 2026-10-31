@@ -630,10 +630,12 @@ func (a *appState) paletteSources() []paletteEntry {
 		s.Background = map[bool]string{true: "plain", false: "wash"}[s.Background != "plain"]
 	})
 	// Web access lives in web.json, which the omaterm command changes too.
-	out = append(out, paletteEntry{Setting: true, On: a.webOn, Command: Command{ID: "setting:web", Category: "Setting", Title: "Web Access",
-		Run: func(a *appState, c *ui.Context) { a.setWeb(c, !a.webOn) }}})
-	out = append(out, paletteEntry{Setting: true, On: a.webOn && a.webNetwork, Command: Command{ID: "setting:webnetwork", Category: "Setting",
-		Title: "Web Access on Your Network", Run: func(a *appState, c *ui.Context) { a.setWebNetwork(c, !(a.webOn && a.webNetwork)) }}})
+	if !onWindows {
+		out = append(out, paletteEntry{Setting: true, On: a.webOn, Command: Command{ID: "setting:web", Category: "Setting", Title: "Web Access",
+			Run: func(a *appState, c *ui.Context) { a.setWeb(c, !a.webOn) }}})
+		out = append(out, paletteEntry{Setting: true, On: a.webOn && a.webNetwork, Command: Command{ID: "setting:webnetwork", Category: "Setting",
+			Title: "Web Access on Your Network", Run: func(a *appState, c *ui.Context) { a.setWebNetwork(c, !(a.webOn && a.webNetwork)) }}})
+	}
 	return out
 }
 

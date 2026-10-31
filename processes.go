@@ -833,7 +833,13 @@ func (a *appState) readShareAvailability() {
 		return
 	}
 	a.shareAvailBusy = true
-	read := func() map[tunnel.Provider]string { return shareAvailable() }
+	read := func() map[tunnel.Provider]string {
+		if onWindows {
+			// Sharing is served by the session daemon, which Windows doesn't run yet.
+			return map[tunnel.Provider]string{tunnel.Tailscale: notOnWindows, tunnel.Cloudflare: notOnWindows}
+		}
+		return shareAvailable()
+	}
 	if a.win == nil {
 		// No window, as in a test: there is no frame to wait for.
 		a.shareAvail, a.shareAvailAt, a.shareAvailBusy = read(), nowFunc(), false

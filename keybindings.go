@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -37,6 +38,10 @@ func combo(mods ui.Modifiers, key ui.Key) keyCombo {
 
 // onMac tells whether the keys follow macOS, where ⌘ is the command key.
 var onMac = ui.Cmd == ui.Super
+
+// onWindows tells whether this is Windows, where the session daemon doesn't
+// run yet, so the features that need it are left out.
+var onWindows = runtime.GOOS == "windows"
 
 // Label writes the combo as the UI shows it: "Ctrl+Shift+P" on Linux,
 // "⇧⌘P" on macOS, where the modifiers are glyphs and ⌘ comes first.
