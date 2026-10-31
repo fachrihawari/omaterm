@@ -131,6 +131,7 @@ type Daemon struct {
 	devMu     sync.Mutex
 	dev       *devurl.Server
 	devErr    string // why the proxy doesn't run
+	devRetry  bool   // the address was refused, so binding it again may work
 	devRouter *devurl.Router
 	devViewMu sync.Mutex
 	devView   *devView
@@ -301,6 +302,9 @@ func (d *Daemon) loop(ctx context.Context) {
 		case now := <-t.C:
 			if n++; n%10 == 0 {
 				d.saveHistories(false)
+			}
+			if n%proxyRetryTicks == 0 {
+				d.retryProxy()
 			}
 			if d.processFilesChanged() {
 				d.loadProcesses()

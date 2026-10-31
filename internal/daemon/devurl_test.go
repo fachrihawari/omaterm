@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"omaterm/internal/client"
 	"omaterm/internal/devurl"
 	"omaterm/internal/model"
 	"omaterm/internal/procs"
@@ -99,6 +100,16 @@ func TestDaemonServesAProcessAtItsURL(t *testing.T) {
 	})
 	if proc.Port == 0 || proc.Link != link {
 		t.Fatalf("process: port %d link %q", proc.Port, proc.Link)
+	}
+	// The state's session for the process carries it, link and port too.
+	var sessionProc *proto.Process
+	for _, sn := range call[proto.State](t, c, "state", nil).Sessions {
+		if sn.Process == "web" {
+			sessionProc = sn.Proc
+		}
+	}
+	if sessionProc == nil || sessionProc.Link != link || sessionProc.Port != proc.Port || sessionProc.Status != procs.Running {
+		t.Fatalf("the state's process: %+v", sessionProc)
 	}
 	st = call[ProxyStatus](t, c, "proxy.status", nil)
 	rt := st.Routes[0]
@@ -204,5 +215,107 @@ func TestDaemonProxyThatCannotBind(t *testing.T) {
 	// A reload while it runs moves nothing wrong: it rebinds.
 	if st = call[ProxyStatus](t, c, "proxy.reload", nil); !st.Running {
 		t.Fatalf("second reload: %+v", st)
+	}
+}
+
+// startWithProxyAt starts a daemon whose proxy is asked for addr, with a
+// project that has a process with a URL.
+func startWithProxyAt(t *testing.T, addr string) (*Daemon, *client.Client) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "omd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	proj := filepath.Join(dir, "proj")
+	os.Mkdir(proj, 0o700)
+	writeProcesses(t, proj, "processes:\n  web:\n    command: sleep 30\n    url: shop\n")
+	stateFile := filepath.Join(dir, "state.json")
+	if err := model.Save(stateFile, model.State{Version: model.Version, ActiveProject: "p1",
+		Projects: []model.Project{{ID: "p1", Name: "proj", Dir: proj}}}); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "d.sock")
+	d, err := Start(Options{Socket: socket, StateDir: dir, StateFile: stateFile, IdleExit: time.Minute, Version: "test", ProxyAddr: addr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	c := processClient(t, socket)
+	call[[]proto.Process](t, c, "process.sync", proto.ProcessParams{Project: "p1"})
+	return d, c
+}
+
+func (d *Daemon) proxyServing() bool {
+	d.devMu.Lock()
+	defer d.devMu.Unlock()
+	return d.dev != nil
+}
+
+// A proxy refused its address binds once it is free, with no reload: a
+// status call tries, and so does a timer.
+func TestDaemonProxyBindsByItselfOnceTheAddressIsFree(t *testing.T) {
+	old := proxyRetryTicks
+	proxyRetryTicks = 1
+	defer func() { proxyRetryTicks = old }()
+
+	// By the timer: nobody asks anything.
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := taken.Addr().String()
+	d, c := startWithProxyAt(t, addr)
+	if d.proxyServing() {
+		t.Fatal("bound a taken address")
+	}
+	taken.Close()
+	waitFor(t, "the proxy to bind by itself", d.proxyServing)
+	st := call[ProxyStatus](t, c, "proxy.status", nil)
+	if !st.Running || st.Error != "" || st.Addr != addr {
+		t.Fatalf("status: %+v", st)
+	}
+	if got := procByName(call[[]proto.Process](t, c, "process.list", proto.ProcessParams{Project: "p1"}), "web"); !strings.HasPrefix(got.Link, "https://shop.localhost:") {
+		t.Fatalf("no link once it binds: %q", got.Link)
+	}
+
+	// By a status call: the timer is out of the way.
+	proxyRetryTicks = 1 << 30
+	taken, err = net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, c2 := startWithProxyAt(t, taken.Addr().String())
+	if st := call[ProxyStatus](t, c2, "proxy.status", nil); st.Running || st.Error == "" {
+		t.Fatalf("while taken: %+v", st)
+	}
+	taken.Close()
+	if st := call[ProxyStatus](t, c2, "proxy.status", nil); !st.Running || st.Error != "" {
+		t.Fatalf("after it is free: %+v", st)
+	}
+	if !d2.proxyServing() {
+		t.Fatal("not serving")
+	}
+}
+
+// A refusal that waiting won't mend isn't retried.
+func TestDaemonProxyDoesNotRetryAnAuthorityThatFails(t *testing.T) {
+	d, _ := startWithProxyAt(t, "127.0.0.1:0")
+	d.stopProxy()
+	// A file where the authority's folder should be.
+	dir := filepath.Join(d.opts.StateDir, "devurl")
+	os.RemoveAll(dir)
+	if err := os.WriteFile(dir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.reloadProxy()
+	if d.proxyServing() || d.proxyStatus().Error == "" {
+		t.Fatalf("bound with a broken authority folder")
+	}
+	d.devMu.Lock()
+	retry := d.devRetry
+	d.devMu.Unlock()
+	if retry {
+		t.Fatal("a failing authority is retried")
 	}
 }

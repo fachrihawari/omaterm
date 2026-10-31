@@ -10,6 +10,7 @@ import (
 	"net"
 	"omaterm/internal/client"
 	"omaterm/internal/paths"
+	"os"
 	"path/filepath"
 	"strconv"
 
@@ -50,12 +51,23 @@ type devView struct {
 // tests look at a temporary one, not the developer's.
 var defaultSetupEnv = devurl.DefaultEnv
 
+// proxyAddrEnv names the address of the proxy for the end-to-end tests,
+// whose daemon can't bind 443. It is not a setting: nobody else sets it.
+const proxyAddrEnv = "OMATERM_PROXY_ADDR"
+
 func (d *Daemon) proxyListenAddr() string {
 	if d.opts.ProxyAddr != "" {
 		return d.opts.ProxyAddr
 	}
+	if addr := os.Getenv(proxyAddrEnv); addr != "" {
+		return addr
+	}
 	return defaultProxyAddr
 }
+
+// proxyRetryTicks is how many of the daemon's one-second ticks pass between
+// tries to bind a proxy that doesn't run: a variable for the tests.
+var proxyRetryTicks = 10
 
 // reloadProxy (re)binds the proxy: it closes the one that runs and listens
 // again, and the routes and links are made anew for the outcome.
@@ -65,16 +77,7 @@ func (d *Daemon) reloadProxy() ProxyStatus {
 		d.dev.Close()
 		d.dev = nil
 	}
-	d.devErr = ""
-	addr := d.proxyListenAddr()
-	s, err := devurl.Listen(addr, filepath.Join(d.opts.StateDir, "devurl"), d.devRouter)
-	if err != nil {
-		d.devErr = err.Error()
-		log.Printf("dev urls: %v", err)
-	} else {
-		d.dev = s
-		log.Printf("dev urls: https://%s", s.Addr())
-	}
+	d.bindProxyLocked(true)
 	d.rebuildRoutesLocked()
 	st := d.proxyStatusLocked()
 	d.devMu.Unlock()
@@ -82,8 +85,47 @@ func (d *Daemon) reloadProxy() ProxyStatus {
 	return st
 }
 
+// bindProxyLocked tries to bind the proxy, with devMu held, and keeps why
+// it could not; loud says to log the failure, which a retry of one that
+// keeps failing does not, every few seconds.
+func (d *Daemon) bindProxyLocked(loud bool) {
+	s, err := devurl.Listen(d.proxyListenAddr(), filepath.Join(d.opts.StateDir, "devurl"), d.devRouter)
+	if err != nil {
+		var caErr *devurl.CAError
+		d.devErr, d.devRetry = err.Error(), !errors.As(err, &caErr)
+		if loud {
+			log.Printf("dev urls: %v", err)
+		}
+		return
+	}
+	d.dev, d.devErr, d.devRetry = s, "", false
+	log.Printf("dev urls: https://%s", s.Addr())
+}
+
+// retryProxy binds a proxy that doesn't run, when the address was refused:
+// the setup's step may have since opened the port, or a program let go of
+// it. It is cheap (one failed listen), so proxy.status and a slow timer both
+// call it, and the links appear without the user asking.
+func (d *Daemon) retryProxy() {
+	d.devMu.Lock()
+	if d.dev != nil || !d.devRetry {
+		d.devMu.Unlock()
+		return
+	}
+	d.bindProxyLocked(false)
+	bound := d.dev != nil
+	if bound {
+		d.rebuildRoutesLocked()
+	}
+	d.devMu.Unlock()
+	if bound {
+		d.changed()
+	}
+}
+
 // proxyStatus tells how the proxy is, and what of Dev URLs works.
 func (d *Daemon) proxyStatus() ProxyStatus {
+	d.retryProxy()
 	d.devMu.Lock()
 	st := d.proxyStatusLocked()
 	d.devMu.Unlock()

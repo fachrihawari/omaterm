@@ -21,6 +21,13 @@ type Server struct {
 	once   sync.Once
 }
 
+// CAError is Listen failing on the authority, not on the address: waiting
+// for the address to be free won't mend it.
+type CAError struct{ Err error }
+
+func (e *CAError) Error() string { return "certificate authority: " + e.Err.Error() }
+func (e *CAError) Unwrap() error { return e.Err }
+
 // Listen starts the proxy on addr. The authority kept in caDir is loaded,
 // or made, once the address is bound, so that a machine that cannot bind it
 // gets no authority it has no use for.
@@ -32,7 +39,7 @@ func Listen(addr, caDir string, router *Router) (*Server, error) {
 	ca, err := LoadOrCreate(caDir)
 	if err != nil {
 		ln.Close()
-		return nil, err
+		return nil, &CAError{err}
 	}
 	s := &Server{ca: ca, router: router, ln: ln, done: make(chan struct{})}
 	s.srv = &http.Server{
