@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"omaterm/internal/client"
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
+	"omaterm/internal/tunnel"
 	"omaterm/internal/web"
 )
 
@@ -23,8 +25,12 @@ func webCmd(args []string) error {
 	store := web.OpenStore(web.StorePath(paths.ConfigDir()))
 	switch sub {
 	case "on":
-		f, err := parse(args, map[string]string{"port": "port", "p": "port", "url": "url", "host": "host"},
+		f, err := parse(args, map[string]string{"port": "port", "p": "port", "url": "url", "host": "host", "tunnel": "tunnel"},
 			map[string]string{"network": "network", "local": "local"})
+		if err != nil {
+			return err
+		}
+		via, err := tunnelOf(f)
 		if err != nil {
 			return err
 		}
@@ -50,6 +56,9 @@ func webCmd(args []string) error {
 			if u, ok := f.vals["url"]; ok {
 				c.URL = u
 			}
+			if _, ok := f.vals["tunnel"]; ok {
+				c.Tunnel = via
+			}
 		})
 		if err != nil {
 			return err
@@ -58,15 +67,16 @@ func webCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("web access on: %s (listening on %s)\n", web.BaseURL(cfg, ""), st.Addr)
+		fmt.Printf("web access on: %s (listening on %s)\n", web.BaseURL(cfg, st.TunnelURL), st.Addr)
+		sayTunnel(cfg.Tunnel, st)
 		if cfg.OnNetwork() {
 			fmt.Println(networkWarning)
 		}
 		if devices, _ := store.Devices(); len(devices) == 0 {
 			fmt.Println("pair a browser: omaterm web pair")
 		}
-		if cfg.URL == "" && !cfg.OnNetwork() {
-			fmt.Println("reach it from other devices: omaterm web tunnel, or omaterm web on --network")
+		if cfg.URL == "" && cfg.Tunnel == "" && !cfg.OnNetwork() {
+			fmt.Println("reach it from other devices: omaterm web on --tunnel tailscale|cloudflare, or omaterm web on --network")
 		}
 		return nil
 	case "off":
@@ -96,10 +106,11 @@ func webCmd(args []string) error {
 		default:
 			fmt.Printf("web access on, listening on %s\n", st.Addr)
 		}
+		sayTunnel(cfg.Tunnel, st)
 		if cfg.OnNetwork() {
 			fmt.Println(networkWarning)
 		}
-		fmt.Printf("devices reach it at %s\n", web.BaseURL(cfg, ""))
+		fmt.Printf("devices reach it at %s\n", web.BaseURL(cfg, st.TunnelURL))
 		devices, _ := store.Devices()
 		fmt.Printf("%d paired %s (omaterm web devices)\n", len(devices), plural(len(devices), "device", "devices"))
 		return nil
@@ -112,7 +123,10 @@ func webCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		link := web.PairLink(web.BaseURL(cfg, ""), code)
+		// The tunnel the daemon runs, when one does, says where the link
+		// lands; without a daemon the config alone tells.
+		st, _ := daemon.StatusWeb()
+		link := web.PairLink(web.BaseURL(cfg, st.TunnelURL), code)
 		if rows, err := web.QR(link); err == nil && isTerminal(os.Stdout) {
 			fmt.Print(web.QRText(rows))
 		}
@@ -151,25 +165,68 @@ func webCmd(args []string) error {
 		return nil
 	case "tunnel":
 		cfg, _ := store.Config()
-		port := cfg.ListenPort()
-		fmt.Printf(`omaterm serves web access on 127.0.0.1:%d. Carry it with one of:
+		avail := tunnel.Available()
+		fmt.Printf(`omaterm carries web access, served on 127.0.0.1:%d, through a tunnel it runs itself:
 
   Tailscale, to your own devices on your tailnet:
-    tailscale serve --bg %d
-  then pair from https://<this machine>.<tailnet>.ts.net
+    omaterm web on --tunnel tailscale
+    then pair from https://<this machine>.<tailnet>.ts.net%s
 
-  Cloudflare, a public https URL (anyone can reach the page; only paired
-  browsers get past it):
-    cloudflared tunnel --url http://127.0.0.1:%d
-  then: omaterm web on --url https://<the URL it prints>
+  Cloudflare, a public https URL anyone can open:
+    omaterm web on --tunnel cloudflare
+    the page still asks a paired browser for its code
 
-  Or, without a tunnel, to devices on the same network (plain HTTP):
-    omaterm web on --network
+  Or run a tunnel yourself (tailscale serve, cloudflared), or keep web
+  access to this machine:
+    omaterm web on --url https://<the URL it prints>
+    omaterm web on --local
 
-`, port, port, port)
+`, cfg.ListenPort(), offTunnel(avail))
 		return nil
 	}
-	return usageErr("omaterm web on [--network|--local|--host addr] [--port N] [--url U]|off|status|pair|devices|revoke|tunnel")
+	return usageErr("omaterm web on [--network|--local|--host addr] [--port N] [--url U] [--tunnel tailscale|cloudflare|none]|off|status|pair|devices|revoke|tunnel")
+}
+
+// offTunnel says why a tunnel can't be run here, when one can't.
+func offTunnel(avail map[tunnel.Provider]string) string {
+	var why []string
+	for _, p := range []tunnel.Provider{tunnel.Tailscale, tunnel.Cloudflare} {
+		if r := avail[p]; r != "" {
+			why = append(why, fmt.Sprintf("\n    (%s: %s)", p, r))
+		}
+	}
+	return strings.Join(why, "")
+}
+
+// tunnelOf reads --tunnel's choice: tailscale, cloudflare, or none for
+// no tunnel at all.
+func tunnelOf(f *flags) (string, error) {
+	v, ok := f.vals["tunnel"]
+	if !ok {
+		return "", nil
+	}
+	switch v {
+	case "tailscale", "cloudflare":
+		return v, nil
+	case "none", "":
+		return "", nil
+	}
+	return "", usageErr("--tunnel takes tailscale, cloudflare or none")
+}
+
+// sayTunnel reports the tunnel web access runs, or why it doesn't.
+func sayTunnel(provider string, st web.Status) {
+	if provider == "" {
+		return
+	}
+	switch {
+	case st.TunnelURL != "":
+		fmt.Printf("tunnel (%s): %s\n", provider, st.TunnelURL)
+	case st.TunnelError != "":
+		fmt.Printf("tunnel (%s): %s\n", provider, st.TunnelError)
+	default:
+		fmt.Printf("tunnel (%s): still starting — omaterm web status\n", provider)
+	}
 }
 
 // networkWarning goes with web access on the network, which is plain HTTP.

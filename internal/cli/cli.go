@@ -1168,7 +1168,7 @@ Project processes, from omaterm.yml and the ones kept in omaterm:
   omaterm cli install|uninstall|status
   omaterm daemon status|stop|restart|install-service|uninstall-service
   omaterm clients [--json]               who the session daemon serves
-  omaterm web on [--network]|off|status|pair|devices|revoke|tunnel
+  omaterm web on [--network] [--tunnel tailscale|cloudflare]|off|status|pair|devices|revoke|tunnel
                                          sessions in a browser, through a tunnel or the network
   omaterm proxy status [--json]          Dev URLs: what works, and the routes
   omaterm proxy setup [--dry-run]        make https://<name>.localhost open: trusts omaterm's
