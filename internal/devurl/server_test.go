@@ -98,6 +98,26 @@ func TestProxyForwardsToTheBackend(t *testing.T) {
 	}
 }
 
+// TestProxyReachesABackendOnIPv6Loopback: on macOS "localhost" is ::1
+// first, and a dev server that listens on localhost, as Vite does by
+// default, listens there only.
+func TestProxyReachesABackendOnIPv6Loopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skip("no IPv6 loopback:", err)
+	}
+	backend := &httptest.Server{Listener: ln, Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "vite on ::1")
+	})}}
+	backend.Start()
+	t.Cleanup(backend.Close)
+	f := newProxyFixture(t, http.NotFoundHandler())
+	f.router.Set([]Route{{Host: "shop.localhost", Project: "x", Process: "web", Port: ln.Addr().(*net.TCPAddr).Port, Running: true}})
+	if resp, body := f.get(t, "shop.localhost"); resp.StatusCode != 200 || body != "vite on ::1" {
+		t.Fatalf("%d %q", resp.StatusCode, body)
+	}
+}
+
 func TestProxyCarriesWebSockets(t *testing.T) {
 	f := newProxyFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)

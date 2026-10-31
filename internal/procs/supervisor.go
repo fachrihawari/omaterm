@@ -640,13 +640,9 @@ func (s *Supervisor) ready(project, name string, port int, gen uint64, h session
 	deadline := time.NewTimer(alive)
 	defer deadline.Stop()
 	for {
-		if port > 0 {
-			c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 100*time.Millisecond)
-			if err == nil {
-				c.Close()
-				s.setRunning(project, name, gen, h)
-				return
-			}
+		if port > 0 && listening(port) {
+			s.setRunning(project, name, gen, h)
+			return
 		}
 		select {
 		case <-ctx.Done():
@@ -660,6 +656,19 @@ func (s *Supervisor) ready(project, name string, port int, gen uint64, h session
 			}
 		}
 	}
+}
+
+// listening reports whether something answers on port, on 127.0.0.1 or
+// on ::1: on macOS "localhost" is ::1 first, and a server that listens on
+// localhost, as Vite does by default, listens there only.
+func listening(port int) bool {
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		if c, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 100*time.Millisecond); err == nil {
+			c.Close()
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Supervisor) setRunning(project, name string, gen uint64, h session.Handle) {
