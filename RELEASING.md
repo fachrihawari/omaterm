@@ -23,6 +23,9 @@ Releases are cut from a tag:
    scripts/e2e.sh
    ```
 
+   Check that the web page's keys reach a program, in headless Chromium
+   (needs `chromium`): `node scripts/web-check.mjs`.
+
 2. Commit and push, then tag and push the tag:
 
    ```sh
