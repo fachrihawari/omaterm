@@ -868,9 +868,13 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 	if found == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 	}
-	found.SetAgentSession(&agent.Session{Agent: p.Agent, ID: p.Session})
 	info := found.Info()
-	a.post(a.saveSoon)
+	// Told again each turn (Antigravity's hook), the same conversation
+	// changes nothing.
+	if cur := info.AgentSession; cur == nil || cur.Agent != p.Agent || cur.ID != p.Session {
+		found.SetAgentSession(&agent.Session{Agent: p.Agent, ID: p.Session})
+		a.post(a.saveSoon)
+	}
 	return proto.AgentSessionResult{Pane: info.ID, Session: info.Session, Away: away}, nil
 }
 

@@ -129,7 +129,8 @@ var SessionIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 // ResumeCommand is the command that resumes an agent's conversation, nil
 // for none. Without its id (the agent's hook never told it, or it is no
 // id), the agent continues the last conversation in the pane's folder,
-// which the command runs in.
+// which the command runs in; Antigravity, whose last conversation may be
+// another folder's, starts anew.
 func ResumeCommand(s *Session) []string {
 	if s == nil {
 		return nil
@@ -142,6 +143,8 @@ func ResumeCommand(s *Session) []string {
 			return []string{"codex", "resume", s.ID}
 		case "pi", "opencode":
 			return []string{s.Agent, "--session", s.ID}
+		case "agy":
+			return []string{"agy", "--conversation", s.ID}
 		}
 		return nil
 	}

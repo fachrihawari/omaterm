@@ -37,6 +37,9 @@ func hookCmd(args []string) error {
 	if agent == "context" && len(args) >= 3 {
 		return contextCmd(args[1], args[2], len(args) > 3 && args[3] == "wait")
 	}
+	if agent == "agy" {
+		return agyHookCmd(args[1:])
+	}
 	pane := os.Getenv("OMATERM_PANE")
 	var in struct {
 		Event   string `json:"hook_event_name"`
@@ -53,7 +56,7 @@ func hookCmd(args []string) error {
 		return nil // a Codex run by another agent in this pane, not the pane's
 	}
 	sid, away := os.Getenv("OMATERM_SESSION"), false
-	c, err := client.Connect()
+	c, err := connect()
 	if err != nil {
 		c = nil
 	} else {
@@ -79,6 +82,52 @@ func hookCmd(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(out)
 }
 
+// agyHookCmd is what Antigravity runs (its hooks.json, see agyHook):
+// SessionStart as a conversation starts, PreInvocation before each call of
+// its model. At a turn's start both tell omaterm the pane's conversation,
+// since a resumed one starts no session; SessionStart also tells the agent
+// where it runs. It always answers with a JSON object, as Antigravity's
+// hooks must, and never fails the agent.
+func agyHookCmd(args []string) error {
+	event := ""
+	if len(args) > 0 {
+		event = args[0]
+	}
+	var in struct {
+		Conversation string   `json:"conversationId"`
+		Workspaces   []string `json:"workspacePaths"`
+		Invocation   int      `json:"invocationNum"` // 0 at a turn's start
+	}
+	json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&in)
+	out := map[string]any{}
+	defer func() { json.NewEncoder(os.Stdout).Encode(out) }()
+	pane := os.Getenv("OMATERM_PANE")
+	if pane == "" || in.Conversation == "" || event == "PreInvocation" && in.Invocation != 0 {
+		return nil
+	}
+	c, err := connect()
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	dir := ""
+	if len(in.Workspaces) > 0 {
+		dir = in.Workspaces[0]
+	}
+	var r proto.AgentSessionResult
+	if c.Call("pane.agentSession", proto.AgentSessionParams{PID: os.Getpid(), Agent: "agy", Session: in.Conversation, Dir: dir}, &r) != nil {
+		return nil
+	}
+	if event != "SessionStart" {
+		return nil
+	}
+	forgetAgentName(c, r.Pane, r.Session)
+	out["injectSteps"] = []any{map[string]any{
+		"systemMessage": map[string]string{"systemMessage": hookContext(c, r.Pane, r.Session, r.Away)},
+	}}
+	return nil
+}
+
 // forgetAgentName drops the name an agent gave session sid, as a new
 // conversation starts in its first pane, the one the name came from: the
 // session shows the pane's title again.
@@ -99,7 +148,7 @@ func forgetAgentName(c *client.Client, pane, sid string) {
 // service: nothing when no pane runs that session. wait gives a pane that
 // runs the agent a moment to tell its session.
 func contextCmd(agent, session string, wait bool) error {
-	c, err := client.Connect()
+	c, err := connect()
 	if err != nil {
 		return nil
 	}
@@ -496,9 +545,103 @@ func (p agentPlugin) remove() error {
 	return nil
 }
 
+// agyHook is omaterm's hook in Antigravity's hooks.json, whose top-level
+// keys name hooks: "omaterm", running `omaterm hook agy` as a conversation
+// starts (SessionStart) and before each model call (PreInvocation), since
+// a resumed conversation starts no session.
+type agyHook struct {
+	file string // ~/.gemini/config/hooks.json
+}
+
+// agyHookName is omaterm's key in hooks.json.
+const agyHookName = "omaterm"
+
+func (h agyHook) name() string { return "agy" }
+func (h agyHook) path() string { return h.file }
+
+// spec is omaterm's entry, as it should be.
+func (h agyHook) spec() json.RawMessage {
+	handlers := func(event string) json.RawMessage {
+		cmd := agentHook{agent: "agy"}.command() + " " + event
+		return marshal([]object{{{"type", marshal("command")}, {"command", marshal(cmd)}, {"timeout", marshal(10)}}})
+	}
+	return object{{"SessionStart", handlers("SessionStart")}, {"PreInvocation", handlers("PreInvocation")}}.marshal()
+}
+
+func (h agyHook) read() (object, []byte, error) {
+	b, err := os.ReadFile(h.file)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return object{}, b, nil
+	}
+	hooks, err := parseObject(b)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", shortDir(h.file), err)
+	}
+	return hooks, b, nil
+}
+
+// state is "current", "outdated" (omaterm's entry, of another command
+// line) or "missing".
+func (h agyHook) state() string {
+	hooks, _, err := h.read()
+	if err != nil {
+		return "missing"
+	}
+	raw := hooks.get(agyHookName)
+	if raw == nil {
+		return "missing"
+	}
+	var have, want bytes.Buffer
+	if json.Compact(&have, raw) != nil || json.Compact(&want, h.spec()) != nil || have.String() != want.String() {
+		return "outdated"
+	}
+	return "current"
+}
+
+func (h agyHook) install() error {
+	linkCLI()
+	return h.edit(true)
+}
+
+func (h agyHook) remove() error {
+	if _, err := os.Stat(h.file); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return h.edit(false)
+}
+
+// edit puts omaterm's entry in hooks.json, or takes it out, keeping the
+// user's other hooks as they are.
+func (h agyHook) edit(add bool) error {
+	hooks, b, err := h.read()
+	if err != nil {
+		return err
+	}
+	if add {
+		hooks = hooks.set(agyHookName, h.spec())
+	} else {
+		hooks = hooks.del(agyHookName)
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, hooks.marshal(), "", "  "); err != nil {
+		return err
+	}
+	pretty.WriteByte('\n')
+	if bytes.Equal(pretty.Bytes(), b) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(h.file), 0o755); err != nil {
+		return err
+	}
+	return writeFileAtomic(h.file, pretty.Bytes())
+}
+
 // agentHooks returns what omaterm installs to hook agents into omaterm: for
-// Claude Code, and for Codex, Pi and OpenCode when they are installed (or
-// named).
+// Claude Code, and for Codex, Pi, OpenCode and Antigravity when they are
+// installed (or named).
 func agentHooks(agent string) []integration {
 	home := paths.Home()
 	dirOf := func(env string, def ...string) string {
@@ -511,6 +654,7 @@ func agentHooks(agent string) []integration {
 	codex := dirOf("CODEX_HOME", ".codex")
 	pi := dirOf("PI_CODING_AGENT_DIR", ".pi", "agent")
 	opencode := filepath.Join(dirOf("XDG_CONFIG_HOME", ".config"), "opencode")
+	agy := antigravityConfig()
 	installed := func(dir string) bool {
 		st, err := os.Stat(dir)
 		return err == nil && st.IsDir()
@@ -525,13 +669,15 @@ func agentHooks(agent string) []integration {
 		{"opencode", opencode, agentPlugin{agent: "opencode", dir: filepath.Join(opencode, "plugins", "omaterm"), own: true, files: map[string]string{
 			"package.json": "agents/opencode/package.json", "index.js": "agents/opencode/index.js", "tui.js": "agents/opencode/tui.js",
 		}}},
+		{"agy", agy, agyHook{file: filepath.Join(agy, "hooks.json")}},
 	}
 	var out []integration
 	for _, a := range all {
 		switch {
 		case agent == a.agent,
 			a.agent == "claude" && agent == "",
-			a.agent != "claude" && (agent == "" || agent == "agents") && installed(a.dir):
+			// The shared skill's agents: Antigravity reads a skill of its own.
+			a.agent != "claude" && (agent == "" || agent == "agents" && a.agent != "agy") && installed(a.dir):
 			out = append(out, a.it)
 		}
 	}

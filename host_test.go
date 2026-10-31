@@ -143,6 +143,16 @@ func TestAgentSessionByPID(t *testing.T) {
 	if _, err := a.agentSession(proto.AgentSessionParams{PID: pid, Agent: "claude", Session: "bad;id"}); err == nil {
 		t.Fatal("accepted a bad id")
 	}
+	// Told each turn, as Antigravity's hook does: the same changes nothing,
+	// another conversation replaces it.
+	for _, sid := range []string{"abc-123", "def-456"} {
+		if _, err := a.agentSession(proto.AgentSessionParams{PID: pid, Agent: "agy", Session: sid}); err != nil {
+			t.Fatal(err)
+		}
+		if s := a.panes.Get(id).Info().AgentSession; s == nil || s.Agent != "agy" || s.ID != sid {
+			t.Fatalf("session %+v, want agy %s", s, sid)
+		}
+	}
 }
 
 // Web access wakes a pane the window has not shown since it opened, which

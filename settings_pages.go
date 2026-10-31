@@ -113,7 +113,7 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	d.service = daemon.ServiceInstalled()
 	d.scrollCount, d.scrollBytes = savedScrollback(a.livePanes())
 	d.agents = map[string]cli.AgentIntegration{}
-	for _, name := range cli.IntegrationAgents {
+	for _, name := range cli.HookAgents {
 		d.agents[name] = cli.Integration(name)
 	}
 	store := webStore()
@@ -632,12 +632,10 @@ func (a *appState) settingsAgents(c *ui.Context) {
 	}
 	foot := "omaterm also recognizes " + strings.Join(others, ", ") + " by their process, without a hook."
 	a.settingsGroup(c, "integration", "Integration", foot, func() {
-		for _, name := range cli.IntegrationAgents {
+		for _, name := range cli.HookAgents {
 			it := d.agents[name]
 			sub, on := "Not set up", false
 			switch {
-			case it.Current() && it.HookPath == "":
-				sub, on = "Skill installed", true
 			case it.Current():
 				sub, on = "Hook and skill installed", true
 			case it.Installed() || it.SkillState != "missing":
@@ -691,22 +689,16 @@ func (a *appState) settingsAgent(c *ui.Context) {
 		note = "Sessions started before setup pick it up after they restart."
 	}
 	a.settingsGroup(c, "agent", "", note, func() {
-		if it.HookPath != "" {
-			a.settingsRow(c, hook, settingsRowOpts{sub: cli.ShortPath(it.HookPath), mono: true}, func() { state(it.HookState) })
-		}
+		a.settingsRow(c, hook, settingsRowOpts{sub: cli.ShortPath(it.HookPath), mono: true}, func() { state(it.HookState) })
 		a.settingsRow(c, "Skill", settingsRowOpts{sub: cli.ShortPath(it.SkillDir), mono: true}, func() { state(it.SkillState) })
 	})
 	settingsActions(c, func() {
 		installed := it.Installed()
-		gone := "omaterm stops learning this agent's conversation, so a restart can only continue the folder's last one."
-		if it.HookPath == "" {
-			gone = "Its sessions no longer learn the omaterm command from the skill."
-		}
 		if installed && settingsButton(c, "Remove Integration", false, true, false) {
 			a.settingsUI.sheet = &settingsSheet{
 				title:   "Remove the " + agent.DisplayName(name) + " integration?",
 				danger:  true,
-				text:    gone,
+				text:    "omaterm stops learning this agent's conversation, so a restart can't resume it.",
 				confirm: "Remove",
 				run: func(c *ui.Context) {
 					if err := cli.RemoveAgent(name); err != nil {

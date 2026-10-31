@@ -213,14 +213,18 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 		}
 		as := &agent.Session{Agent: p.Agent, ID: p.Session}
-		found.SetAgentSession(as)
 		info := found.Info()
-		d.change(func(st *model.State) (any, error) {
-			if _, pn := findPane(st, info.ID); pn != nil {
-				pn.Agent = as
-			}
-			return nil, nil
-		})
+		// Told again each turn (Antigravity's hook), the same conversation
+		// changes nothing.
+		if cur := info.AgentSession; cur == nil || *cur != *as {
+			found.SetAgentSession(as)
+			d.change(func(st *model.State) (any, error) {
+				if _, pn := findPane(st, info.ID); pn != nil {
+					pn.Agent = as
+				}
+				return nil, nil
+			})
+		}
 		return proto.AgentSessionResult{Pane: info.ID, Session: info.Session, Away: away}, nil
 	case "project.create":
 		var p proto.ProjectParams

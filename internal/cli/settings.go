@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
@@ -77,17 +76,12 @@ func settingsCmd(args []string) error {
 }
 
 // HookAgents are the agents omaterm has a hook or plugin for.
-var HookAgents = []string{"claude", "codex", "pi", "opencode"}
-
-// IntegrationAgents are the agents Settings sets up: those with a hook,
-// then those that only read omaterm's skill.
-var IntegrationAgents = append(slices.Clone(HookAgents), "agy")
+var HookAgents = []string{"claude", "codex", "pi", "opencode", "agy"}
 
 // AgentIntegration is what omaterm installed in one agent: its hook or
 // plugin, and the skill it reads, each "current", "outdated" or
-// "missing". An agent omaterm has no hook for has no HookPath. Present
-// says the agent is installed here, or that it is Claude Code, which is
-// always offered.
+// "missing". Present says the agent is installed here, or that it is
+// Claude Code, which is always offered.
 type AgentIntegration struct {
 	Agent                string
 	HookPath, HookState  string
@@ -110,10 +104,6 @@ func Integration(agent string) AgentIntegration {
 			it.Present = true
 		}
 	}
-	if !slices.Contains(HookAgents, agent) {
-		it.HookState = ""
-		it.Present = agent == "agy" && antigravityInstalled()
-	}
 	group := skillGroup(agent)
 	it.SkillDir = skillDirs(group)[group]
 	it.SkillState = skillState(it.SkillDir)
@@ -121,16 +111,11 @@ func Integration(agent string) AgentIntegration {
 }
 
 // Installed tells whether omaterm's integration is in the agent at all.
-func (it AgentIntegration) Installed() bool {
-	if it.HookPath == "" {
-		return it.SkillState != "missing"
-	}
-	return it.HookState != "missing"
-}
+func (it AgentIntegration) Installed() bool { return it.HookState != "missing" }
 
 // Current tells whether all of the integration is installed and current.
 func (it AgentIntegration) Current() bool {
-	return (it.HookPath == "" || it.HookState == "current") && it.SkillState == "current"
+	return it.HookState == "current" && it.SkillState == "current"
 }
 
 // skillGroup is the skill an agent reads: Claude Code's own,
@@ -153,9 +138,6 @@ func SetupAgent(agent string) error {
 		if h.name() == agent {
 			return h.install()
 		}
-	}
-	if agent == "agy" {
-		return nil // the skill is all it has
 	}
 	return errors.New("no integration for " + agent)
 }

@@ -272,10 +272,10 @@ func writeSkill(dir string) error {
 }
 
 // hooksFor returns the hooks that go with an --agent: Codex's, Pi's and
-// OpenCode's with the skill they share.
+// OpenCode's with the skill they share, Antigravity's with its own.
 func hooksFor(agent string) []integration {
 	switch agent {
-	case "", "claude", "codex", "pi", "opencode", "agents":
+	case "", "claude", "codex", "pi", "opencode", "agents", "agy":
 		return agentHooks(agent)
 	}
 	return nil
@@ -336,7 +336,7 @@ var HookNotes = map[string]string{
 	"claude":   "Claude Code runs hooks only in folders you trust.",
 	"codex":    "Codex asks you to approve a new hook: run /hooks in it.",
 	"opencode": "OpenCode's background service loads plugins as it starts: run `opencode service restart` when no session is busy.",
-	"agy":      "Antigravity reads the skill in sessions started from now on. It has no status hook yet, so omaterm shows it as a program and a restart starts it anew.",
+	"agy":      "Antigravity picks up the hook and the skill in sessions started from now on.",
 }
 
 // HookInstalled tells whether an agent's hook, which tells omaterm the
@@ -344,7 +344,7 @@ var HookNotes = map[string]string{
 // omaterm has no hook for.
 func HookInstalled(agent string) bool {
 	switch agent {
-	case "claude", "codex", "pi", "opencode":
+	case "claude", "codex", "pi", "opencode", "agy":
 	default:
 		return true
 	}

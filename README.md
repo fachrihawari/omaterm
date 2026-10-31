@@ -233,8 +233,9 @@ suggestions.
 
 Sessions run in a session daemon, so they keep going after you close the
 window and are back when you open it. (Not on Windows, which has no daemon
-yet: there omaterm asks before quitting ends a running agent.) After a reboot, Claude Code, Codex,
-OpenCode and Pi resume the same conversation.
+yet: there omaterm asks before quitting ends a running agent.) After a
+reboot, Claude Code, Codex, OpenCode, Pi and Antigravity resume the same
+conversation.
 `omaterm daemon install-service` runs the daemon as a systemd user service,
 so your sessions come back when you log in.
 

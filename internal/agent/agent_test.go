@@ -67,6 +67,14 @@ func TestResumeCommand(t *testing.T) {
 	if got := ResumeCommand(&Session{"opencode", "ses_9"}); strings.Join(got, " ") != "opencode --session ses_9" {
 		t.Errorf("opencode: %q", got)
 	}
+	// Antigravity by its conversation; with none it starts anew, its last
+	// conversation being maybe another folder's.
+	if got := ResumeCommand(&Session{"agy", "1fb8bf09-f856-487f-bfae-67288362eb5b"}); strings.Join(got, " ") != "agy --conversation 1fb8bf09-f856-487f-bfae-67288362eb5b" {
+		t.Errorf("agy: %q", got)
+	}
+	if got := ResumeCommand(&Session{Agent: "agy"}); got != nil {
+		t.Errorf("agy without an id: %q", got)
+	}
 	if ResumeCommand(&Session{"aider", "abc"}) != nil || ResumeCommand(&Session{Agent: "aider"}) != nil || ResumeCommand(nil) != nil {
 		t.Error("no resume for unknown agents")
 	}
