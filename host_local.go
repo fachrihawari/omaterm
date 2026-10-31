@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -532,7 +531,7 @@ func (a *appState) addProject(dir, name string) int {
 		return -1
 	}
 	if name == "" {
-		name = filepath.Base(dir)
+		name = ospath.Base(runtime.GOOS, dir)
 	}
 	a.projects = append(a.projects, project{ID: newID(), Name: name, Path: dir})
 	a.saveSoon()

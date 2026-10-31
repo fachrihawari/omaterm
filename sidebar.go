@@ -2,11 +2,12 @@ package main
 
 import (
 	"omaterm/internal/model"
+	"omaterm/internal/ospath"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"omaterm/internal/tunnel"
-	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -1001,7 +1002,7 @@ func (a *appState) openProjectDialog() {
 			}
 			a.projects = append(a.projects, project{
 				ID:   newID(),
-				Name: filepath.Base(dir),
+				Name: ospath.Base(runtime.GOOS, dir),
 				Path: dir,
 			})
 			a.setProject(len(a.projects) - 1)

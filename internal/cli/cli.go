@@ -25,6 +25,7 @@ import (
 	"omaterm/internal/keys"
 	"omaterm/internal/model"
 	"omaterm/internal/osc"
+	"omaterm/internal/ospath"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
 )
@@ -849,14 +850,7 @@ func orDash(s string) string {
 }
 
 func shortDir(d string) string {
-	home := paths.Home()
-	if d == home {
-		return "~"
-	}
-	if rest, ok := strings.CutPrefix(d, home+"/"); ok {
-		return "~/" + rest
-	}
-	return d
+	return ospath.ShortHome(runtime.GOOS, paths.Home(), d)
 }
 
 func parseTimeout(s string) (int64, error) {

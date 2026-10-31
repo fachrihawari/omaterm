@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/ospath"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
@@ -185,20 +187,17 @@ func windowsShellTitle(title string) bool {
 	return false
 }
 
-// shortDir writes a directory with the home directory as "~".
+// shortDir writes a directory with the home directory as "~", with the
+// separator the OS writes: ~/src on Unix, ~\src on Windows.
 func shortDir(d string) string {
 	if d == "" {
 		return ""
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if d == home {
-			return "~"
-		}
-		if rest, ok := strings.CutPrefix(d, home+"/"); ok {
-			return "~/" + rest
-		}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return d
 	}
-	return d
+	return ospath.ShortHome(runtime.GOOS, home, d)
 }
 
 func firstNonEmpty(s ...string) string {
