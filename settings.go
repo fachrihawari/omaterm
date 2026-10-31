@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"runtime"
 	"time"
+
+	"omaterm/internal/atomicfile"
 )
 
 // Settings are the user's preferences, in settings.json beside state.json.
@@ -247,7 +249,7 @@ func (a *appState) saveSettings() {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return
 	}
-	if os.Rename(tmp, path) == nil {
+	if atomicfile.Rename(tmp, path) == nil {
 		settingsBase = copySettings(a.settings)
 	}
 }

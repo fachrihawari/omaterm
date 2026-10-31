@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"omaterm/internal/atomicfile"
 )
 
 // uiPrefs is ui.json: how the window was laid out, which the app alone
@@ -115,6 +117,6 @@ func (a *appState) saveUIPrefs() {
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	tmp := path + ".tmp"
 	if os.WriteFile(tmp, data, 0o600) == nil {
-		os.Rename(tmp, path)
+		atomicfile.Rename(tmp, path)
 	}
 }

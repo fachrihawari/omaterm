@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"omaterm/internal/atomicfile"
 	"omaterm/internal/client"
 	"omaterm/internal/clilink"
 	"omaterm/internal/paths"
@@ -818,5 +819,5 @@ func writeFileAtomic(path string, b []byte) error {
 	if err := os.Chmod(tmp.Name(), mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Rename(tmp.Name(), path)
 }

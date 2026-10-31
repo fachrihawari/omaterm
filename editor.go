@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
 
+	"omaterm/internal/atomicfile"
 	"omaterm/service"
 )
 
@@ -301,7 +302,7 @@ func writeFileAtomic(path string, data []byte) error {
 		err = os.Chmod(tmp, mode)
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = atomicfile.Rename(tmp, path)
 	}
 	if err != nil {
 		os.Remove(tmp)
