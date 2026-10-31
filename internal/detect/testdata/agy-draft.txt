@@ -1,0 +1,40 @@
+
+
+      ▄▀▀▄
+     ▀▀▀▀▀▀
+    ▀▀▀▀▀▀▀▀
+   ▄▀▀    ▀▀▄
+  ▄▀▀      ▀▀▄
+
+  Antigravity CLI 1.4.11
+  you@example.com (Google AI Plus)
+  Claude Sonnet 4.6 (Thinking)
+  ~/code/shop
+
+
+ ┃ Verbosity now defaults to medium
+ ┃ Verbosity is now medium by default, so tool calls and thoughts roll up into summaries. You can change your
+ ┃ preferred verbosity anytime in /config > Verbosity.
+ ┃ esc to dismiss
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> Reply with exactly the word: pong
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                            Claude Sonnet 4.6 (Thinking)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

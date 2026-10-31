@@ -1,0 +1,40 @@
+      ▄▀▀▄
+     ▀▀▀▀▀▀
+    ▀▀▀▀▀▀▀▀
+   ▄▀▀    ▀▀▄
+  ▄▀▀      ▀▀▄
+
+  Antigravity CLI 1.4.11
+  you@example.com (Google AI Plus)
+  Claude Sonnet 4.6 (Thinking)
+  ~/code/shop
+
+────────────────────────────────────────────────────────────
+> Reply with exactly the word: pong
+
+▸ Thought for 2s
+
+  pong
+
+────────────────────────────────────────────────────────────
+> Run the shell command: touch made-by-agy.txt   then reply done
+
+○ Thought for 3.9s (Let me run the shell command.)
+● Ran (touch ~/code/shop/...) (ctrl+o to expand)
+
+Command
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Requesting permission for:
+   touch
+~/code/shop/
+made-by-agy.txt
+
+Run this command?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation for commands that start with 'touch'
+  3. Yes, and always allow for commands that start with 'touch' (Persist to settings.json)
+  4. No, cancel
+
+  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+esc to cancel                                                                               Claude Sonnet 4.6 (Thinking)

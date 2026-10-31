@@ -15,6 +15,7 @@ const summaryRunes = 200
 // summaries tells, by agent, how to read its last word off its screen.
 var summaries = map[string]func(screen string) string{
 	"claude": claudeSummary,
+	"agy":    agySummary,
 }
 
 // Summary is what the agent's screen ended on: its last word on its
@@ -78,6 +79,57 @@ func claudeSummary(screen string) string {
 			paras = append(paras, strings.Join(para, " "))
 		}
 		return clip(strings.Join(strings.Fields(paras[len(paras)-1]), " "))
+	}
+	return ""
+}
+
+// Antigravity CLI's transcript: the user's prompt as "> …" at the line's
+// start, then lines of its own at the start ("▸ Thought for 2s", "● Ran
+// (…)"), and what it says in paragraphs indented two spaces, blank lines
+// between.
+
+// agySummary is the last paragraph Antigravity said on its last turn: the
+// indented lines at the end of the transcript, after the last prompt.
+func agySummary(screen string) string {
+	// Only under its prompt box, which ends the screen: a dialog in its
+	// place, as a permission's, leaves no last word to read.
+	all := lines(screen)
+	top := promptBoxTop(all)
+	if top < 0 {
+		return ""
+	}
+	rules, rest := 0, 0
+	for _, l := range all[top:] {
+		switch {
+		case horizontalRule(l):
+			rules++
+		case rules == 2 && strings.TrimSpace(l) != "":
+			rest++
+		}
+	}
+	if rest > 1 {
+		return ""
+	}
+	ls := all[:top]
+	end := len(ls)
+	for end > 0 && strings.TrimSpace(ls[end-1]) == "" {
+		end--
+	}
+	start := end
+	for start > 0 && strings.HasPrefix(ls[start-1], "  ") && strings.TrimSpace(ls[start-1]) != "" {
+		start--
+	}
+	if start == end {
+		return "" // the screen ends on a mark of its own, as a tool call
+	}
+	// Words of this turn: a prompt of the user's is above them.
+	for i := start - 1; i >= 0; i-- {
+		if strings.HasPrefix(ls[i], "> ") {
+			return clip(strings.Join(strings.Fields(strings.Join(ls[start:end], " ")), " "))
+		}
+		if horizontalRule(ls[i]) {
+			break
+		}
 	}
 	return ""
 }

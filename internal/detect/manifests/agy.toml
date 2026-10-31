@@ -1,0 +1,43 @@
+# omaterm's own, not herdr's: Antigravity CLI (agy) 1.4, read off real
+# screens (testdata/agy-*.txt). Its title never changes, so the screen
+# tells everything: a braille spinner above the prompt box while it works
+# ("⣽  Generating...", "⣯  Running command..."), a numbered dialog with
+# "↑/↓ Navigate" while it asks, "? for shortcuts" under an empty prompt.
+# "esc to cancel" alone tells nothing: the slash menu shows it too.
+id = "agy"
+version = "2026.10.31.1"
+min_engine_version = 1
+updated_at = "2026-10-31T00:00:00Z"
+aliases = ["antigravity"]
+
+[[rules]]
+id = "permission_or_trust"
+state = "blocked"
+priority = 300
+region = "bottom_non_empty_lines(16)"
+visible_blocker = true
+any = [
+  { line_regex = ['^Requesting permission for:'] },
+  { line_regex = ['^Run this command\?\s*$'] },
+  { contains = ["Do you trust the contents of this project?"] },
+  { all = [
+    { line_regex = ['^\s*(>\s+)?\d\.\s+(Yes|No|Allow|Deny)\b'] },
+    { contains = ["↑/↓ Navigate"] },
+  ] },
+]
+
+[[rules]]
+id = "spinner_working"
+state = "working"
+priority = 100
+region = "last_non_empty_above_prompt_box"
+visible_working = true
+line_regex = ['^[\x{2800}-\x{28FF}]\s+\S.*\.\.\.\s*$']
+
+[[rules]]
+id = "empty_prompt_idle"
+state = "idle"
+priority = 50
+region = "bottom_non_empty_lines(1)"
+visible_idle = true
+line_regex = ['^\? for shortcuts(\s|$)']

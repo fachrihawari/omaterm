@@ -124,3 +124,48 @@ func TestClaudeSummary(t *testing.T) {
 		t.Errorf("codex: %q, want none (not known)", got)
 	}
 }
+
+// Antigravity CLI's screens, captured from agy 1.4.11: its title never
+// changes, so the screen alone tells.
+func TestAntigravity(t *testing.T) {
+	idle := screen(t, "agy-idle.txt")
+	cases := []struct {
+		name    string
+		screen  string
+		state   State
+		visible bool
+	}{
+		{"at its prompt", idle, Idle, true},
+		{"its turn done", screen(t, "agy-done.txt"), Idle, true},
+		{"a draft typed", screen(t, "agy-draft.txt"), Idle, false},
+		{"generating", screen(t, "agy-working.txt"), Working, true},
+		{"running a command", screen(t, "agy-running.txt"), Working, true},
+		{"asking to run a command", screen(t, "agy-blocked.txt"), Blocked, true},
+		{"asking to trust the folder", screen(t, "agy-trust.txt"), Blocked, true},
+		// The slash menu shows "esc to cancel" as a turn does, with no
+		// spinner: not working.
+		{"slash menu", strings.Replace(idle, "? for shortcuts", "esc to cancel", 1), Idle, false},
+	}
+	for _, c := range cases {
+		got := Detect("agy", Input{Screen: c.screen, Title: "thinkpad"})
+		if got.State != c.state || got.Visible != c.visible {
+			t.Errorf("%s: %s visible=%v (rule %q), want %s visible=%v", c.name, got.State, got.Visible, got.Rule, c.state, c.visible)
+		}
+	}
+	if !ShowsPrompt("agy") {
+		t.Error("agy's prompt doesn't show outright")
+	}
+}
+
+// Antigravity's last word on its turn is the last paragraph it said.
+func TestAntigravitySummary(t *testing.T) {
+	want := "Beyond the overview, a README usually provides practical guidance: how to install dependencies, configure the environment, run the code, and contribute. It reduces friction for new users and collabor…"
+	if got := Summary("agy", screen(t, "agy-done.txt")); got != want {
+		t.Errorf("done: %q, want %q", got, want)
+	}
+	for _, name := range []string{"agy-idle.txt", "agy-working.txt", "agy-running.txt", "agy-blocked.txt", "agy-trust.txt"} {
+		if got := Summary("agy", screen(t, name)); got != "" {
+			t.Errorf("%s: %q, want none", name, got)
+		}
+	}
+}
