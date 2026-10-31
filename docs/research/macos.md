@@ -96,7 +96,7 @@ This file only collects findings. No code changes.
 
 ## 3. Cosmetic
 
-**3.1 Bundle identifier `com.example.omaterm`** (`mygo.json:3`, verified). macOS keys notification permission, preferences and the Keychain on it, so changing it later loses them. Choose the real ID before the next macOS-facing release. The user's decision.
+**3.1 Bundle identifier `com.example.omaterm`** (changed to `id.my.fhwr.omaterm` on 2026-10-31) (`mygo.json:3`, verified). macOS keys notification permission, preferences and the Keychain on it, so changing it later loses them. Choose the real ID before the next macOS-facing release. The user's decision.
 
 **3.2 Menu bar** (`main.go:36-40`, verified). It is mygo's default app menu. There is no "Settings…" item for ⌘, (HIG), no "Check for Updates…" and no Help menu. The Window menu has only Minimize, Zoom and Bring All to Front.
 
