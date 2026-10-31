@@ -32,7 +32,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "merge", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "daemon", "clients", "web", "proxy", "settings", "services", "ps", "start", "stop", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "clients", "web", "proxy", "settings", "services", "ps", "start", "stop", "share", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -635,6 +635,9 @@ func run(args []string) error {
 	case "start", "stop":
 		return processCmd(c, "process."+cmd, args)
 
+	case "share":
+		return shareCmd(c, args)
+
 	case "ask":
 		return askCmd(c, args)
 
@@ -1161,6 +1164,9 @@ Project processes, from omaterm.yml and the ones kept in omaterm:
   omaterm start <name> [--wait] [--timeout 60s]
                                          run one; --wait holds until it is up
   omaterm stop <name>                    stop one
+  omaterm share <name> [--tailscale|--cloudflare] | --off
+                                         reach a process from elsewhere: your own devices
+                                         (Tailscale), or anyone with the link (Cloudflare)
   omaterm restart <name> [--wait] [--timeout 60s]
                                          restart one; restart also takes a session or pane
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …

@@ -294,10 +294,24 @@ away. To remove it from Settings, choose **Remove…** on the same page. It
 removes the trust, the sysctl file (ports below 1024 close again at the next
 boot) and the certificate authority.
 
+**Sharing a process.** A `.localhost` name only works on your computer. To
+open a running process from your phone, or to show it to someone, share it:
+`omaterm share web` prints an address. It goes through Tailscale when you have
+it (only your own devices on your tailnet can open it), else through a
+Cloudflare quick tunnel (`omaterm share web --cloudflare`). Choose with
+`--tailscale` or `--cloudflare`, and end it with `omaterm share web --off`.
+**A Cloudflare link is public: anyone who has it can open your dev server.**
+The share follows the process: it ends when the process stops, and comes back
+on the new port when the process does, until you turn it off. `omaterm ps`
+shows the address, and a share that fails says why in the process's message.
+A dev server that checks the `Host` header, like Vite's `server.allowedHosts`,
+refuses a shared address until you allow its host there. Each share needs the
+tool installed: `tailscale` (signed in) or `cloudflared`.
+
 The proxy runs in the session daemon, so Dev URLs need it on, and work on
 Linux and macOS: Windows isn't supported yet. A `.localhost` name only means
 something on the computer that runs omaterm, so you can't open a Dev URL from
-your phone. Sharing a process outside your computer is coming.
+your phone: share the process, as above.
 
 ### Sessions keep running
 
