@@ -654,7 +654,12 @@ func (a *appState) paletteCommands() []paletteEntry {
 		}
 	}
 	if !onlySessions {
+		omarchy := hasOmarchy()
 		for _, cmd := range commandRegistry {
+			// Following Omarchy needs Omarchy, as its theme tile does.
+			if cmd.ID == "theme.omarchy" && !omarchy {
+				continue
+			}
 			pool = append(pool, paletteEntry{Command: cmd})
 		}
 	}

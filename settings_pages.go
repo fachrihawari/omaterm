@@ -346,7 +346,11 @@ func (a *appState) setService(on bool) {
 // --- Appearance ---
 
 func (a *appState) settingsAppearance(c *ui.Context) {
-	a.settingsGroup(c, "theme", "Theme", "Omarchy follows your Omarchy theme as it changes. System follows light or dark mode.", func() {
+	caption := "System follows light or dark mode."
+	if hasOmarchy() {
+		caption = "Omarchy follows your Omarchy theme as it changes. " + caption
+	}
+	a.settingsGroup(c, "theme", "Theme", caption, func() {
 		a.settingsUI.rowN++
 		ui.Row(c.Key("tiles")).FillWidth().Gap(12).Padding(12).Children(func() {
 			if hasOmarchy() {
@@ -437,8 +441,14 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 			mode = "custom"
 		}
 		follow := strings.TrimSpace(strings.Split(termFontFamily(), ",")[0])
+		followLabel := "Follow Omarchy (" + follow + ")"
+		if !hasOmarchy() {
+			// Named by what renders: on a Mac, SF Mono unless JetBrains
+			// Mono is installed.
+			followLabel = "Default (" + defaultFontName(termFontFamily(), installedFonts(), onMac) + ")"
+		}
 		a.settingDefRow(c, "font", func() {
-			if settingsPopup(c, "font", &mode, [][2]string{{"follow", "Follow Omarchy (" + follow + ")"}, {"custom", "Custom…"}}) {
+			if settingsPopup(c, "font", &mode, [][2]string{{"follow", followLabel}, {"custom", "Custom…"}}) {
 				if mode == "follow" {
 					t.FontFamily, d.customFont = "", ""
 					a.applySettings()

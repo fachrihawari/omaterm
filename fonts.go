@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -44,13 +46,32 @@ func (a *appState) editorFont(size float32) ui.Font {
 func termFontFamily() string {
 	const fallback = "JetBrainsMono Nerd Font, JetBrains Mono, monospace"
 	dir := os.Getenv("XDG_CONFIG_HOME")
+	home, _ := os.UserHomeDir()
 	if dir == "" {
-		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".config")
 	}
-	f, err := os.Open(filepath.Join(dir, "ghostty", "config"))
-	if err != nil {
+	configs := []string{filepath.Join(dir, "ghostty", "config")}
+	if runtime.GOOS == "darwin" {
+		// Ghostty reads this one on macOS too, after the other.
+		configs = append(configs, filepath.Join(home, "Library", "Application Support", "com.mitchellh.ghostty", "config"))
+	}
+	family := ""
+	for _, path := range configs {
+		if f := ghosttyFont(path); f != "" {
+			family = f
+		}
+	}
+	if family == "" {
 		return fallback
+	}
+	return family + ", " + fallback
+}
+
+// ghosttyFont is the last font-family a Ghostty config sets, if any.
+func ghosttyFont(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
 	}
 	defer f.Close()
 	family := ""
@@ -61,8 +82,33 @@ func termFontFamily() string {
 			family = strings.Trim(strings.TrimSpace(v), `"`)
 		}
 	}
-	if family == "" {
-		return fallback
-	}
-	return family + ", " + fallback
+	return family
 }
+
+// defaultFontName is the family the terminals' default font renders in,
+// for the font popup to name where Omarchy's isn't what it follows: the
+// first family of the list that is installed, else the system's
+// monospace, which is SF Mono on a Mac.
+func defaultFontName(families string, installed map[string]bool, mac bool) string {
+	for _, f := range strings.Split(families, ",") {
+		if f = strings.TrimSpace(f); f == "monospace" {
+			break
+		} else if installed[strings.ToLower(f)] {
+			return f
+		}
+	}
+	if mac {
+		return "SF Mono"
+	}
+	return "the system's monospace"
+}
+
+// installedFonts are the system's font families, lowercased, read once:
+// ui.FontFamilies keeps its list until a restart anyway.
+var installedFonts = sync.OnceValue(func() map[string]bool {
+	m := map[string]bool{}
+	for _, f := range ui.FontFamilies() {
+		m[strings.ToLower(f.Name)] = true
+	}
+	return m
+})
