@@ -1,13 +1,16 @@
-//go:build linux
+//go:build linux || darwin
 
 package pty
 
 import (
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -90,7 +93,8 @@ func TestKill(t *testing.T) {
 }
 
 func TestNoFDLeak(t *testing.T) {
-	count := func() int { e, _ := os.ReadDir("/proc/self/fd"); return len(e) }
+	// /dev/fd lists this process's descriptors on Linux and macOS alike.
+	count := func() int { e, _ := os.ReadDir("/dev/fd"); return len(e) }
 	before := count()
 	for i := 0; i < 5; i++ {
 		p := start(t, "true")
@@ -104,11 +108,15 @@ func TestNoFDLeak(t *testing.T) {
 }
 
 // gone tells whether a process has ended, within a moment: one that is a
-// zombie, not yet reaped, has ended too.
+// zombie, not yet reaped, has ended too. ps reads the state, as macOS has
+// no /proc.
 func gone(pid int) bool {
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-		if err != nil || strings.Contains(string(b), ") Z ") {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return true
+		}
+		out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		if err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
 			return true
 		}
 	}

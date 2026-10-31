@@ -60,8 +60,8 @@ func TestFindAgentPaneGuessStaysInItsFolder(t *testing.T) {
 // session does, is found by the process in the pane that names it, as
 // `claude attach <id>`.
 func TestFindAgentPaneByConversation(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("process lookups are Linux's")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("process lookups are Linux's and macOS's")
 	}
 	cmd := exec.Command("sh", "-c", "sleep 30; true", "8f0d0898")
 	if err := cmd.Start(); err != nil {
