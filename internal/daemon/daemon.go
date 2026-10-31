@@ -32,6 +32,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
+	"omaterm/internal/devurl"
 	"omaterm/internal/mail"
 	"omaterm/internal/model"
 	"omaterm/internal/notice"
@@ -64,6 +65,9 @@ type Options struct {
 	// Restore starts the sessions of state.json at once, from their
 	// scrollback, as a service does at login: no app is there to.
 	Restore bool
+	// ProxyAddr is where the Dev URLs proxy listens: 127.0.0.1:443 when
+	// empty (tests give a free port).
+	ProxyAddr string
 }
 
 // Daemon is the running daemon.
@@ -120,6 +124,16 @@ type Daemon struct {
 	// webTheme is the app's look for the web page, as it last sent it;
 	// nil until one is sent or read back from web-theme.json.
 	webTheme *web.Theme
+
+	// devMu orders what the Dev URLs proxy is and the routes it has; devView
+	// is what the processes show of them, under its own lock so that the
+	// supervisor can read it while it holds its own.
+	devMu     sync.Mutex
+	dev       *devurl.Server
+	devErr    string // why the proxy doesn't run
+	devRouter *devurl.Router
+	devViewMu sync.Mutex
+	devView   *devView
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -174,10 +188,15 @@ func Start(opts Options) (*Daemon, error) {
 	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
 		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){},
-		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{}}
+		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{},
+		devRouter: devurl.NewRouter()}
 	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
 	d.procs.OnEvent = d.processEvent
-	d.procs.OnChange = d.changed
+	d.procs.OnChange = func() {
+		d.rebuildRoutes()
+		d.changed()
+	}
+	d.procs.Decorate = d.decorateProc
 	d.procs.Watch = WatchFolder
 	d.procs.Match = service.MatchGlob
 	d.procs.Ignore = service.IgnoreFunc
@@ -233,6 +252,7 @@ func Start(opts Options) (*Daemon, error) {
 	if _, err := d.reloadWeb(); err != nil {
 		log.Printf("web access: %v", err)
 	}
+	d.reloadProxy()
 	log.Printf("omaterm daemon %s started, pid %d, %s", opts.Version, os.Getpid(), opts.Socket)
 	for _, path := range paths.RemoveLegacy(opts.StateDir) {
 		log.Printf("removed %s, left by the first omaterm", path)
@@ -258,6 +278,7 @@ func (d *Daemon) Stop() {
 		d.saveHistories(true)
 		close(d.quit)
 		d.stopWeb()
+		d.stopProxy()
 		d.srv.Close()
 		d.reg.CloseAll()
 		d.lock.Close()
@@ -297,7 +318,14 @@ func (d *Daemon) loop(ctx context.Context) {
 			d.mu.Unlock()
 			if exit {
 				log.Printf("idle: exiting")
-				d.once.Do(func() { d.procs.Close(); close(d.quit); d.stopWeb(); d.srv.Close(); d.lock.Close() })
+				d.once.Do(func() {
+					d.procs.Close()
+					close(d.quit)
+					d.stopWeb()
+					d.stopProxy()
+					d.srv.Close()
+					d.lock.Close()
+				})
 				return
 			}
 		}
@@ -567,6 +595,10 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 			ch <- m
 		}
 		return true, nil
+	case "proxy.status":
+		return d.proxyStatus(), nil
+	case "proxy.reload":
+		return d.reloadProxy(), nil
 	case "web.reload":
 		return d.reloadWeb()
 	case "web.theme":
