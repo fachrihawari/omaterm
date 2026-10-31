@@ -230,6 +230,13 @@ type SendParams struct {
 	Paste bool `json:"paste,omitempty"`
 }
 
+// KeyParams sends keys by name to a pane, which encodes each with the
+// keyboard modes its program asked for.
+type KeyParams struct {
+	ID   string   `json:"id"`
+	Keys []string `json:"keys"`
+}
+
 type ReadParams struct {
 	ID         string `json:"id"`
 	Scrollback bool   `json:"scrollback,omitempty"`

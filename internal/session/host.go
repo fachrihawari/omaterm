@@ -25,6 +25,9 @@ type Handle interface {
 	// one (for a daemon pane, an attach connection).
 	TermIfOpen() *terminal.Terminal
 	Write(b []byte) error
+	// Key sends a key by name, as the program asked keys to be sent (see
+	// Pane.Key).
+	Key(name string) error
 	// Send types for the omaterm command (see Pane.Send).
 	Send(ctx context.Context, data string, paste bool) error
 	Text(scrollback bool, lines int) string

@@ -37,18 +37,6 @@ func TestFind(t *testing.T) {
 	}
 }
 
-func TestKeyBytes(t *testing.T) {
-	for k, want := range map[string]string{"enter": "\r", "ctrl+c": "\x03", "alt+x": "\x1bx", "up": "\x1b[A", "q": "q"} {
-		got, err := keyBytes(k)
-		if err != nil || string(got) != want {
-			t.Errorf("%s: %q %v", k, got, err)
-		}
-	}
-	if _, err := keyBytes("nosuchkey"); err == nil {
-		t.Error("unknown key")
-	}
-}
-
 func TestUnescape(t *testing.T) {
 	if got := unescape(`a\nb\x41\e`); got != "a\nbA\x1b" {
 		t.Errorf("%q", got)

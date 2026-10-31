@@ -216,6 +216,72 @@ func TestWebAttach(t *testing.T) {
 	}
 }
 
+// A page's key and paste frames reach the pane as its program asked: a
+// key by name encoded with the keyboard modes, and text pasted bracketed
+// when the program takes those.
+func TestWebKeysAndPaste(t *testing.T) {
+	f := newFixture(t)
+	c := f.paired(t)
+	log := filepath.Join(f.dir, "keys.log")
+	// Raw and quiet, so the program gets exactly the bytes sent; it asks
+	// for bracketed pastes as a prompt does.
+	script := `stty raw -echo; printf 'ready\n' >> ` + log + `; printf '\033[?2004h'; printf 'mode\n' >> ` + log + `; exec cat >> ` + log
+	params, _ := json.Marshal(daemon.StartParams{ID: "k1", Command: []string{"sh", "-c", script}, Exec: true, Cols: 80, Rows: 24})
+	if _, err := f.d.Handle(context.Background(), "pane.start", params); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "mode") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the pane never asked for bracketed pastes")
+		}
+	}
+	ws := f.dial(t, c, "/api/panes/k1/attach")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { // keep reading, as a page does
+		for {
+			if _, _, err := ws.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+	ws.Write(ctx, websocket.MessageBinary, proto.AppendFrame(nil, proto.FrameKey, []byte("shift+tab")))
+	waitLog := func(want string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			b, _ := os.ReadFile(log)
+			if strings.HasSuffix(string(b), want) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the program got %q, want it to end with %q", b, want)
+			}
+		}
+	}
+	waitLog("\x1b[Z")
+	ws.Write(ctx, websocket.MessageBinary, proto.AppendFrame(nil, proto.FramePaste, []byte("hi\nthere")))
+	waitLog("\x1b[200~hi\nthere\x1b[201~")
+}
+
+// The page's modules are served from the binary, beside the page.
+func TestWebModulesServed(t *testing.T) {
+	f := newFixture(t)
+	c := f.client(t)
+	for _, path := range []string{"/keys.js", "/keys.css", "/compose.js", "/keys-demo.html"} {
+		res, err := c.Get(f.base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") == "" {
+			t.Errorf("%s: %s, CSP %q", path, res.Status, res.Header.Get("Content-Security-Policy"))
+		}
+	}
+}
+
 func TestWebUnknownPane(t *testing.T) {
 	f := newFixture(t)
 	c := f.paired(t)

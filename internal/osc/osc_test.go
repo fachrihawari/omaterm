@@ -177,6 +177,52 @@ func TestScannerBracketed(t *testing.T) {
 	}
 }
 
+// A program's keyboard modes are followed from its output: the kitty
+// protocol's pushed, popped and set flags, and modifyOtherKeys' level.
+func TestScannerKeyboardModes(t *testing.T) {
+	cases := []struct {
+		in         string
+		kitty, mok int
+	}{
+		{"\x1b[>1u", 1, 0},
+		{"\x1b[>1u\x1b[>5u", 5, 0},         // pushed, the last current
+		{"\x1b[>1u\x1b[<u", 0, 0},          // popped, one when none is given
+		{"\x1b[>1u\x1b[>5u\x1b[<2u", 0, 0}, // popped two
+		{"\x1b[>1u\x1b[>5u\x1b[<3u", 0, 0}, // popping more than was pushed
+		{"\x1b[>1u\x1b[=3u", 3, 0},         // set
+		{"\x1b[>1u\x1b[=4;2u", 5, 0},       // add
+		{"\x1b[>7u\x1b[=1;3u", 6, 0},       // clear
+		{"\x1b[=2u", 2, 0},                 // set with nothing pushed
+		{"\x1b[>1u\x1b[?u", 1, 0},          // a query changes nothing
+		{"\x1b[>1u\x1b[?1u", 1, 0},
+		{"\x1b[1u", 0, 0},                       // restore cursor, not flags
+		{"\x1b[>1u\x1bc", 0, 0},                 // a full reset
+		{"\x1b[>4;2m", 0, 2},                    // modifyOtherKeys
+		{"\x1b[>4;2m\x1b[>4m", 0, 0},            // reset
+		{"\x1b[>4;2m\x1b[>4;0m", 0, 0},          // reset, with 0
+		{"\x1b[>4;2m\x1bc", 0, 0},               // a full reset
+		{"\x1b[>1;2m", 0, 0},                    // another key's option
+		{"\x1b[0m\x1b[>4;1m", 0, 1},             // SGR, then the level
+		{"\x1b[?2004h\x1b[>1u\x1b[>4;2m", 1, 2}, // with bracketed paste
+	}
+	for _, c := range cases {
+		for _, one := range []bool{false, true} {
+			var s Scanner
+			if one {
+				for i := 0; i < len(c.in); i++ {
+					s.Scan([]byte{c.in[i]}, func([]byte) {}, nil)
+				}
+			} else {
+				s.Scan([]byte(c.in), func([]byte) {}, nil)
+			}
+			if s.Kitty != c.kitty || s.ModifyOtherKeys != c.mok {
+				t.Errorf("%q (byte at a time %v): kitty %d, modifyOtherKeys %d, want %d, %d",
+					c.in, one, s.Kitty, s.ModifyOtherKeys, c.kitty, c.mok)
+			}
+		}
+	}
+}
+
 // Of reports of a state, one that words it leads: an agent's own, over
 // its program's bare one as its turn ends.
 func TestLeadWorded(t *testing.T) {

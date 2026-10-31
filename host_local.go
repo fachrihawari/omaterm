@@ -190,6 +190,21 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
 		}
 		return true, err
+	case "key":
+		p, err := decode[proto.KeyParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		pane, err := h.pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range p.Keys {
+			if err := pane.Key(k); err != nil {
+				return nil, proto.Errorf(proto.CodeUsage, err.Error())
+			}
+		}
+		return true, nil
 	case "read":
 		p, err := decode[proto.ReadParams](raw)
 		if err != nil {

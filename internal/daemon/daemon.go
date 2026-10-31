@@ -502,6 +502,19 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
 		}
 		return true, err
+	case "key":
+		var p proto.KeyParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range p.Keys {
+			if err := pn.Key(k); err != nil {
+				return nil, proto.Errorf(proto.CodeUsage, err.Error())
+			}
+		}
+		return true, nil
 	case "pane.type":
 		// What the user typed, from the app (session.Handle.Write).
 		var p proto.SendParams
@@ -845,6 +858,12 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 		switch kind {
 		case proto.FrameInput:
 			p.Write(payload)
+		case proto.FrameKey:
+			// A key by name, encoded as the program asked keys to be.
+			p.Key(string(payload))
+		case proto.FramePaste:
+			// The user's paste: bracketed when the program takes those.
+			p.PasteText(string(payload))
 		case proto.FrameResize:
 			if v, ok := proto.ParseUint16s(payload, 4); ok && v[0] > 0 && v[1] > 0 {
 				d.mu.Lock()

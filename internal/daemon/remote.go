@@ -764,6 +764,12 @@ func (p *remotePane) Write(b []byte) error {
 	return p.r.call("pane.type", proto.SendParams{ID: p.id, Data: string(b)}, nil)
 }
 
+// Key sends a key by name through the daemon, which encodes it with the
+// pane's keyboard modes.
+func (p *remotePane) Key(name string) error {
+	return p.r.call("key", proto.KeyParams{ID: p.id, Keys: []string{name}}, nil)
+}
+
 // Send waits for the user as long as ctx allows, longer than a call's
 // usual limit.
 func (p *remotePane) Send(ctx context.Context, data string, paste bool) error {
