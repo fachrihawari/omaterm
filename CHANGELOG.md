@@ -3,6 +3,56 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.12.0
+
+omaterm from your phone, and clean https URLs for your dev servers.
+
+### On your phone
+
+- **The web page looks like omaterm** and follows its theme, light or
+  dark: the sidebar with each session's status and its agent's last
+  word, the project's processes with their status and address, and the
+  terminal as a card.
+- **A key bar you can arrange:** Esc, Tab, ⇧Tab, Ctrl and Alt (tap once
+  for the next key, twice to hold), the arrows, ⌃C, ⌃⏎ and Enter. Edit
+  it to add Home, End, F1–F12, ⌃D, ⌃Z or a text of your own, and order
+  the keys; it is kept per browser.
+- **A compose box** for writing a prompt with the phone's keyboard:
+  Send pastes it and presses Enter, Insert only pastes. A draft survives
+  a reload, and a prompt isn't lost when the connection drops.
+- **Keys arrive as the program asked for them,** so Ctrl+Enter,
+  Shift+Enter and Shift+Tab do what they do in an agent. `omaterm key`
+  takes the new names too.
+- **omaterm runs the tunnel for you:** Settings → Web Access → Reach it
+  from elsewhere, or `omaterm web on --tunnel tailscale|cloudflare`.
+  Tailscale reaches your own devices; Cloudflare gives a public link,
+  still protected by pairing. The link and QR code follow it.
+
+### Dev URLs
+
+- **A process with `url: shop` is served at `https://shop.localhost`**:
+  no port to remember and no certificate warning. omaterm picks a free
+  port and tells it to the process as `PORT`.
+- **Set it up once** in Settings → Dev URLs. It lists what it changes
+  before it asks for your password: omaterm's own certificate
+  authority, which signs for `.localhost` names only, trusted by the
+  system and your browsers, and on Linux ports 443 and up opened to
+  programs. `omaterm proxy setup`, `status` and `uninstall` do the same.
+- **The address shows** in the sidebar, the tab, the process's Edit
+  dialog (a URL field) and `omaterm ps`, and agents are taught to use it.
+- **Share a process** with your devices through Tailscale, or with
+  anyone through a Cloudflare link, from its menu or with
+  `omaterm share`. omaterm leaves the Tailscale serves you made alone.
+
+### Also
+
+- **A project process's program ends with it.** Stopping a process, or
+  the session daemon, could leave its server running.
+- **`omaterm key` waits while you type** in the pane, as `send` does.
+- **A process's name stays readable** beside its address in the
+  sidebar.
+- **A process with a `port` is told it as `PORT`** too.
+
 ## 0.11.0
 
 Project processes, one place to add things, and Antigravity.
