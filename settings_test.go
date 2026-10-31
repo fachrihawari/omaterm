@@ -396,6 +396,39 @@ func TestSettingsFieldsBehave(t *testing.T) {
 	}
 }
 
+// An installed command whose folder isn't on PATH says what to add, under
+// the row. SETTINGS_SHOTS=dir also draws it, light.
+func TestCLIPathHintShows(t *testing.T) {
+	a, tr := newSettingsTester(t, "general")
+	const hint = `~/.local/bin is not on your PATH, so other terminals don't find omaterm. Add this line to ~/.zprofile: export PATH="$HOME/.local/bin:$PATH"`
+	if tr.HasText(hint) {
+		t.Fatal("a hint before one is due")
+	}
+	// The data is read again only after two seconds of the tester's clock,
+	// which stands still.
+	d := &a.settingsUI.data
+	d.cliWhere, d.cliOn, d.cliHint = "~/.local/bin/omaterm", true, hint
+	if dir := os.Getenv("SETTINGS_SHOTS"); dir != "" {
+		defer setPalette(theme.BuiltinDark())
+		a.setThemeMode("light")
+		tr.SetSize(settingsWidth, 760) // down to the group's footer
+	}
+	tr.Frame()
+	tr.Frame()
+	if !tr.HasText(hint) {
+		t.Errorf("no hint in %v", tr.Texts())
+	}
+	if dir := os.Getenv("SETTINGS_SHOTS"); dir != "" {
+		f, err := os.Create(filepath.Join(dir, "settings-light-general-clihint.png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		png.Encode(f, tr.Image())
+		f.Close()
+	}
+	stopTermPanes(a)
+}
+
 // A command with a run of keys (Alt+1 to Alt+9) shows the whole run: cut
 // at two, the Keyboard page showed only Alt+1 and Alt+2.
 func TestKeyboardShowsKeyRuns(t *testing.T) {

@@ -1117,6 +1117,9 @@ func cliCmd(args []string) error {
 			return err
 		}
 		fmt.Printf("installed %s\n", where)
+		if hint := CLIPathHint(); hint != "" {
+			fmt.Println(hint)
+		}
 		return nil
 	case "uninstall":
 		if st, err := os.Lstat(link); err == nil && st.Mode()&os.ModeSymlink != 0 {

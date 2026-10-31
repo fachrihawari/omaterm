@@ -79,6 +79,7 @@ func settingsPageList() []settingsPageDef {
 type settingsData struct {
 	cliWhere     string
 	cliOn        bool
+	cliHint      string // what to add to the profile when the command's folder isn't on PATH
 	service      bool
 	scrollCount  int
 	scrollBytes  int64
@@ -124,6 +125,13 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	u.dataAt = c.Now()
 	d := &u.data
 	d.cliWhere, d.cliOn = cli.CLIStatus()
+	// On a Mac, PATH is the login shell's (see loginenv), which has no
+	// ~/.local/bin unless the user added it. Elsewhere the app's PATH is
+	// the desktop's, which may differ from the shell's: no hint there.
+	d.cliHint = ""
+	if d.cliOn && runtime.GOOS == "darwin" {
+		d.cliHint = cli.CLIPathHint()
+	}
 	d.omarchy = nil
 	if src, err := theme.LoadOmarchy(); err == nil {
 		d.omarchy = &src
@@ -251,7 +259,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 		a.settingSwitchRow(c, "snapshot", false)
 		a.settingSwitchRow(c, "confirmClose", false)
 	})
-	a.settingsGroup(c, "links", "Links and tools", "", func() {
+	a.settingsGroup(c, "links", "Links and tools", d.cliHint, func() {
 		a.settingDefRow(c, "openLinks", func() {
 			if settingsPopup(c, "openLinks", &a.settings.OpenLinks, [][2]string{{"pane", "A browser pane"}, {"system", "Your browser"}}) {
 				a.applySettings()
