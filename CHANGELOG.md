@@ -3,6 +3,59 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.12.1
+
+omaterm on a Mac: what 0.12.0 left broken there, and a Mac's own ways.
+
+### Fixed on macOS
+
+- **The Info panel shows a session's processes and ports,** and a
+  pane's program is named again. Both read Linux's `/proc`, which a Mac
+  doesn't have.
+- **Dev URLs start.** macOS lets an ordinary user listen on port 443 on
+  every address but not on 127.0.0.1 alone, so the proxy never came up.
+  It now listens on every address and closes anything that isn't from
+  the Mac itself. The checklist says whether it can.
+- **A dev server on `::1`, as Vite is, is reached** by its Dev URL, and
+  its process shows as up. This was true on Linux too.
+- **Opened from the Dock, omaterm has your shell's environment:** the
+  `PATH` from your profile, so `node` from nvm, Homebrew's tools and
+  agents installed in your home are found. A shell is found without
+  `$SHELL` too.
+- **Notifications arrive while the window is closed,** from the session
+  daemon.
+- **The status bar's CPU and Memory show.**
+- **The password dialog for Dev URLs says it is omaterm,** Cancel says
+  Cancelled, and Remove takes omaterm's certificate out of the keychain.
+- **A file path clicked in a terminal opens** with a space, `%` or `#`
+  in it.
+- **Settings speaks of the Mac:** no Omarchy where there is none,
+  Ghostty's config where a Mac keeps it, and the line to add to
+  `~/.zprofile` when `omaterm` isn't on `PATH`. `omaterm cli install`
+  says it too.
+- **Tailscale's Mac app is used** when no `tailscale` is on `PATH`, and
+  without the Command Line Tools the git panel and worktrees run no git
+  rather than a dialog asking to install them.
+
+### New on macOS
+
+- **⌘←, ⌘→ and ⌘⌫** go to the line's start and end, and delete it, in a
+  terminal.
+- **Use Option as Meta,** in Settings → Terminal, for ⌥B, ⌥F and ⌥D in
+  shells and agents. It is off by default, since many keyboard layouts
+  type letters with Option.
+- **The Dock counts the sessions that need you,** and the app menu has
+  Settings… (⌘,).
+- **The Info panel names native Claude Code,** and a Python script by
+  its own name.
+
+### Also
+
+- **The app's identifier is `id.my.fhwr.omaterm`,** not a placeholder.
+  On Windows a fresh install adds a second entry to Installed apps;
+  updating doesn't.
+- **A socket's other end is checked to be you** on macOS, as on Linux.
+
 ## 0.12.0
 
 omaterm from your phone, and clean https URLs for your dev servers.
