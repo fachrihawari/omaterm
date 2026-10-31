@@ -63,8 +63,9 @@ func TestResize(t *testing.T) {
 func TestForegroundAndProc(t *testing.T) {
 	p := start(t, "exec sleep 5")
 	defer p.Kill()
+	// The name changes during exec a moment before the arguments do.
 	deadline := time.Now().Add(2 * time.Second)
-	for ProcName(p.PID()) != "sleep" && time.Now().Before(deadline) {
+	for (ProcName(p.PID()) != "sleep" || len(ProcArgs(p.PID())) != 2) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if fg := p.Foreground(); fg != p.PID() {

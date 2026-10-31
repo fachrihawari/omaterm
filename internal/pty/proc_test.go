@@ -23,8 +23,13 @@ func TestProcLookups(t *testing.T) {
 	}
 	defer func() { cmd.Process.Kill(); cmd.Wait() }()
 	pid := cmd.Process.Pid
+	// Linux renames a process during exec a moment before its new
+	// arguments and environment are readable: wait for both.
 	deadline := time.Now().Add(2 * time.Second)
-	for ProcName(pid) != "sleep" && time.Now().Before(deadline) {
+	ready := func() bool {
+		return ProcName(pid) == "sleep" && len(ProcArgs(pid)) == 2 && slices.Contains(ProcEnv(pid), "OMATERM_PROC_TEST=1")
+	}
+	for !ready() && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
