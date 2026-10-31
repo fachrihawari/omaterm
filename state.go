@@ -354,11 +354,12 @@ type appState struct {
 	agentSetupOffer string
 	agentSetupAsked bool
 	hookChecked     map[string]bool
-	// wtNew and wtMerge are the New Agent in Worktree and Merge dialogs,
-	// open while set; wtAgent, wtEnv and mergeSquash their last choices.
+	// wtNew and wtMerge are the New Agent and Merge dialogs, open while
+	// set; wtAgent, wtUse, wtEnv and mergeSquash their last choices.
 	wtNew       *worktreeNew
 	wtMerge     *worktreeMerge
 	wtAgent     string
+	wtUse       bool
 	wtEnv       bool
 	mergeSquash bool
 	// review is the Ask for Review dialog, open while set; reviewAgent its
@@ -562,6 +563,7 @@ func newApp() *appState {
 		panes:            session.NewLocalHost(),
 		paneFailed:       map[string]bool{},
 		wtEnv:            true,
+		wtUse:            true,
 		mergeSquash:      true,
 		paneShown:        map[string]time.Time{},
 		hookChecked:      map[string]bool{},

@@ -17,9 +17,10 @@ type uiPrefs struct {
 	AgentSetupAsked  bool    `json:"agentSetupAsked,omitempty"`
 	// SettingsPage is the Settings window's page, where it opens again.
 	SettingsPage string `json:"settingsPage,omitempty"`
-	// The worktree dialogs' last choices: the agent, copying .env files,
-	// and squashing a merge.
+	// The agent and worktree dialogs' last choices: the agent, working in
+	// a worktree, copying .env files, and squashing a merge.
 	WorktreeAgent string `json:"worktreeAgent,omitempty"`
+	WorktreeUse   *bool  `json:"worktreeUse,omitempty"`
 	WorktreeEnv   *bool  `json:"worktreeEnv,omitempty"`
 	MergeSquash   *bool  `json:"mergeSquash,omitempty"`
 	ProcessShared *bool  `json:"processShared,omitempty"`
@@ -76,6 +77,9 @@ func (a *appState) loadUIPrefs() {
 	a.agentSetupAsked = u.AgentSetupAsked
 	a.settingsPage = u.SettingsPage
 	a.wtAgent, a.reviewAgent = u.WorktreeAgent, u.ReviewAgent
+	if u.WorktreeUse != nil {
+		a.wtUse = *u.WorktreeUse
+	}
 	if u.WorktreeEnv != nil {
 		a.wtEnv = *u.WorktreeEnv
 	}
@@ -99,7 +103,7 @@ func (a *appState) saveUIPrefs() {
 		InspectorTab:    &a.inspectorTab,
 		AgentSetupAsked: a.agentSetupAsked,
 		SettingsPage:    a.settingsPage,
-		WorktreeAgent:   a.wtAgent, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
+		WorktreeAgent:   a.wtAgent, WorktreeUse: &a.wtUse, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
 		ReviewAgent:   a.reviewAgent,
 		ProcessShared: a.processShared,
 	}

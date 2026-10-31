@@ -292,8 +292,8 @@ func TestGitPanelFollowsWorktree(t *testing.T) {
 	}
 }
 
-// New Agent in Worktree says what is wrong with a branch's name, and with
-// a good one makes the worktree and its session, in the project.
+// New Agent, in a worktree, says what is wrong with a branch's name, and
+// with a good one makes the worktree and its session, in the project.
 func TestNewWorktreeDialog(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -304,8 +304,8 @@ func TestNewWorktreeDialog(t *testing.T) {
 	}
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	if !tr.HasText("New Agent in Worktree") {
-		t.Fatal("no dialog")
+	if !tr.HasText("New Agent") || !a.wtNew.worktree {
+		t.Fatal("no dialog, or not in a worktree")
 	}
 	tr.Type("a b")
 	tr.Frame()
@@ -328,6 +328,61 @@ func TestNewWorktreeDialog(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// New Agent with Work in a worktree off starts the agent in the project's
+// own folder, makes no worktree, and remembers the choice; in a folder git
+// doesn't know, the switch is off and can't be turned on.
+func TestNewAgentWithoutWorktree(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.wtAgent = "shell"
+	a.openWorktreeDialog(a.active)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("Branch") {
+		t.Fatal("in a git repository, the dialog starts in a worktree, as last time")
+	}
+	if err := tr.Click("wt-use"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.wtNew.worktree || tr.HasText("Branch") {
+		t.Fatal("the switch did not turn the worktree off")
+	}
+	sessions := len(a.tabs)
+	if err := tr.Click("Start"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.wtNew != nil || len(a.tabs) != sessions+1 {
+		t.Fatalf("no new session: dialog=%+v tabs=%d", a.wtNew, len(a.tabs))
+	}
+	tab := a.tabs[a.activeTab]
+	if tab.Kind != tabTerminal || tab.Worktree != nil || a.paneDirs[tab.Split.TermID] != a.workspace {
+		t.Fatalf("the agent's session: %+v in %q", tab, a.paneDirs[tab.Split.TermID])
+	}
+	if _, err := os.Stat(filepath.Join(a.workspace, ".worktrees")); err == nil {
+		t.Fatal("a worktree was made")
+	}
+	if a.wtUse {
+		t.Fatal("the choice of no worktree was not remembered")
+	}
+
+	a.projects = append(a.projects, project{ID: "plain", Name: "plain", Path: t.TempDir()})
+	a.wtUse = true
+	a.openWorktreeDialog(len(a.projects) - 1)
+	tr.Frame()
+	if a.wtNew == nil || a.wtNew.git || a.wtNew.worktree || !tr.HasText("plain isn't in a git repository, which a worktree needs.") {
+		t.Fatalf("outside git: %+v", a.wtNew)
+	}
+	if err := tr.Click("wt-use"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.wtNew.worktree {
+		t.Fatal("the worktree switch turned on outside git")
 	}
 }
 

@@ -108,10 +108,12 @@ header to move it.
 
 ### Agents on branches of their own
 
-**New Agent in Worktree…**, in the command palette or a project's menu,
-starts an agent on a new branch, in a git worktree of its own under the
-repository's `.worktrees` folder, with your `.env` files copied in. Run
-several at once: none touches another's files, or yours.
+**New Agent…**, from the sidebar's **+**, a project's menu or the command
+palette, starts Claude Code, Codex, OpenCode or Pi in a session of its
+own. With **Work in a worktree** on, it works on a new branch, in a git
+worktree of its own under the repository's `.worktrees` folder, with your
+`.env` files copied in. Run several at once: none touches another's files,
+or yours.
 
 The Git tab follows the session into its worktree, and its **Branch** view
 shows everything the branch changed since it started. From the session's
@@ -147,10 +149,14 @@ for you. It shows in the sidebar's **Processes** group with its status:
 starting, running, exited, failed, paused after too many restarts, or not
 trusted yet. Start, stop or restart it from its row, or from the row's menu.
 A running process with a port shows the port as a pill: click it to open the
-page. Open the process to see its output in a tab.
+page. Click a process to see its output in a tab beside your sessions,
+which the tab keys reach like any other; closing the tab leaves the process
+running.
 
-To add one, use **Add Process…** in the command palette or a project's menu. Its suggestions come from the project's files: the `dev`, `start`,
-`serve`, `watch`, `preview` and `storybook` scripts in `package.json`,
+To add one, use **Add Process…** from the sidebar's **+**, a project's menu
+or the command palette. Its suggestions come from the project's files: the
+`dev`, `start`, `serve`, `watch`, `preview` and `storybook` scripts in
+`package.json`,
 `Procfile.dev` and `Procfile`, the `dev`, `serve`, `watch` and `run` targets
 of a `Makefile`, `justfile` or `Taskfile.yml`, `docker-compose.yml` or
 `compose.yml`, the servers of Laravel, Rails, Django and Go projects, and a

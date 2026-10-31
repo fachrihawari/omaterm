@@ -1,7 +1,7 @@
 package main
 
-// What the user does with sessions in a worktree: New Agent in Worktree,
-// Merge, Update from the base, Push & Create PR.
+// What the user does with agents and sessions in a worktree: New Agent
+// (in a worktree or not), Merge, Update from the base, Push & Create PR.
 
 import (
 	"context"
@@ -25,11 +25,13 @@ import (
 // resume their conversation after a restart, then "shell" for none.
 var worktreeAgents = []string{"claude", "codex", "opencode", "pi", "shell"}
 
-// worktreeNew is the New Agent in Worktree dialog.
+// worktreeNew is the New Agent dialog.
 type worktreeNew struct {
 	open          bool
 	project, name string // the project's ID and name
 	dir           string // its folder
+	git           bool   // the folder is in a git repository
+	worktree      bool   // the agent works in a worktree of its own
 	branch        string
 	base          string
 	bases         []string // its branches, nil until listed
@@ -39,22 +41,24 @@ type worktreeNew struct {
 	err           string
 }
 
-// openWorktreeDialog asks for a branch to start an agent on in a worktree
-// of project pi.
+// openWorktreeDialog asks which agent to start in project pi, and whether
+// it works in a worktree of its own, on which branch.
 func (a *appState) openWorktreeDialog(pi int) {
 	if pi < 0 || pi >= len(a.projects) {
 		return
 	}
 	p := a.projects[pi]
-	if service.RepoRoot(p.Path) == "" {
-		a.toast(nil, p.Name+" isn't in a git repository, which a worktree needs")
-		return
-	}
-	st := &worktreeNew{open: true, project: p.ID, name: p.Name, dir: p.Path, agent: a.wtAgent, env: a.wtEnv}
+	git := service.RepoRoot(p.Path) != ""
+	st := &worktreeNew{open: true, project: p.ID, name: p.Name, dir: p.Path, git: git, worktree: git && a.wtUse,
+		agent: a.wtAgent, env: a.wtEnv}
 	if !slices.Contains(worktreeAgents, st.agent) {
 		st.agent = defaultWorktreeAgent()
 	}
 	a.wtNew = st
+	if !git {
+		st.bases = []string{}
+		return
+	}
 	list := func() {
 		bs, _ := service.ListBranches(p.Path)
 		cur := service.CurrentBranch(p.Path)
@@ -94,7 +98,7 @@ func defaultWorktreeAgent() string {
 	return "claude"
 }
 
-// worktreeDialog is the New Agent in Worktree dialog, while open.
+// worktreeDialog is the New Agent dialog, while open.
 func (a *appState) worktreeDialog(c *ui.Context) {
 	st := a.wtNew
 	if st == nil {
@@ -107,39 +111,12 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 	submitted := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
 		dialogFrame(c, backdrop, panel)
-		dialogTitle(c, "New Agent in Worktree", false)
-		ui.Text(c, "It works on a branch of its own, in "+st.name+"/"+worktree.Folder+", beside your other sessions.").
-			FontSize(12.5).TextColor(pal.TextMuted).Wrap()
-		dialogField(c, "Branch", func() {
-			f := ui.Row(c.Key("wt-branch")).Height(28).Grow(1).Padding(0, 8).Radius(6).AlignItems(ui.Center).
-				Background(pal.Input).Border(1, pal.BorderStrong)
-			f.Children(func() {
-				in := ui.TextInputBase(c, &st.branch).Placeholder("fix-login").FontSize(12.5).Grow(1).MinWidth(0).
-					AutoFocus().Label("Branch")
-				if in.Focused() {
-					f.Border(1, pal.Accent)
-				}
-				submitted = in.Submitted()
-			})
-		})
-		if name := strings.TrimSpace(st.branch); name != "" {
-			if err := worktree.ValidBranch(name); err != nil {
-				dialogNote(c, sentence(err.Error()), true)
-			} else if slices.Contains(st.bases, name) {
-				dialogNote(c, "The branch exists: the agent goes on with it.", false)
-			}
+		dialogTitle(c, "New Agent", false)
+		about := "It starts in a session of its own, in " + st.name + ", beside your other sessions."
+		if st.worktree {
+			about = "It works on a branch of its own, in " + st.name + "/" + worktree.Folder + ", beside your other sessions."
 		}
-		dialogField(c, "From", func() {
-			if st.bases == nil {
-				ui.Text(c, "…").FontSize(12).TextColor(pal.TextMuted)
-				return
-			}
-			opts := make([][2]string, len(st.bases))
-			for i, b := range st.bases {
-				opts[i] = [2]string{b, b}
-			}
-			settingsPopup(c, "wt-base", &st.base, opts)
-		})
+		ui.Text(c, about).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
 		dialogField(c, "Agent", func() {
 			opts := make([][2]string, len(worktreeAgents))
 			for i, name := range worktreeAgents {
@@ -148,9 +125,47 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 			opts[len(opts)-1][1] = "Shell only"
 			settingsPopup(c, "wt-agent", &st.agent, opts)
 		})
-		dialogField(c, "Copy .env files", func() {
-			settingsSwitch(c, "wt-env", &st.env, false)
+		dialogField(c, "Work in a worktree", func() {
+			settingsSwitch(c, "wt-use", &st.worktree, !st.git || st.busy)
 		})
+		if !st.git {
+			dialogNote(c, st.name+" isn't in a git repository, which a worktree needs.", false)
+		}
+		if st.worktree {
+			dialogField(c, "Branch", func() {
+				f := ui.Row(c.Key("wt-branch")).Height(28).Grow(1).Padding(0, 8).Radius(6).AlignItems(ui.Center).
+					Background(pal.Input).Border(1, pal.BorderStrong)
+				f.Children(func() {
+					in := ui.TextInputBase(c, &st.branch).Placeholder("fix-login").FontSize(12.5).Grow(1).MinWidth(0).
+						AutoFocus().Label("Branch")
+					if in.Focused() {
+						f.Border(1, pal.Accent)
+					}
+					submitted = in.Submitted()
+				})
+			})
+			if name := strings.TrimSpace(st.branch); name != "" {
+				if err := worktree.ValidBranch(name); err != nil {
+					dialogNote(c, sentence(err.Error()), true)
+				} else if slices.Contains(st.bases, name) {
+					dialogNote(c, "The branch exists: the agent goes on with it.", false)
+				}
+			}
+			dialogField(c, "From", func() {
+				if st.bases == nil {
+					ui.Text(c, "…").FontSize(12).TextColor(pal.TextMuted)
+					return
+				}
+				opts := make([][2]string, len(st.bases))
+				for i, b := range st.bases {
+					opts[i] = [2]string{b, b}
+				}
+				settingsPopup(c, "wt-base", &st.base, opts)
+			})
+			dialogField(c, "Copy .env files", func() {
+				settingsSwitch(c, "wt-env", &st.env, false)
+			})
+		}
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
@@ -158,9 +173,9 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 			if dialogButton(c, "Cancel", false, false) && !st.busy {
 				st.open = false
 			}
-			label := "Create"
+			label := "Start"
 			if st.busy {
-				label = "Creating…"
+				label = "Starting…"
 			}
 			if dialogButton(c, label, true, false) {
 				submitted = true
@@ -172,7 +187,31 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 		st.open = true
 	}
 	if submitted && !st.busy {
-		a.createWorktreeFromDialog(st)
+		if st.worktree {
+			a.createWorktreeFromDialog(st)
+		} else {
+			a.startAgentFromDialog(st)
+		}
+	}
+}
+
+// startAgentFromDialog starts the dialog's agent in a session of its own,
+// in the project's folder.
+func (a *appState) startAgentFromDialog(st *worktreeNew) {
+	var command []string
+	if st.agent != "shell" {
+		command = []string{st.agent}
+	}
+	if _, err := a.cliCreate(proto.CreateParams{Project: st.project, Command: command, Focus: true}); err != nil {
+		st.err = "Couldn't start it: " + err.Error()
+		return
+	}
+	a.wtAgent = st.agent
+	if st.git {
+		a.wtUse = false
+	}
+	if a.wtNew == st {
+		a.wtNew = nil
 	}
 }
 
@@ -186,7 +225,7 @@ func (a *appState) createWorktreeFromDialog(st *worktreeNew) {
 		return
 	}
 	st.busy, st.err = true, ""
-	a.wtAgent, a.wtEnv = st.agent, st.env
+	a.wtAgent, a.wtEnv, a.wtUse = st.agent, st.env, true
 	var wt worktree.Info
 	a.worktreeJob(func(ctx context.Context) (err error) {
 		wt, err = worktree.Add(ctx, st.dir, branch, st.base, st.env)

@@ -140,8 +140,10 @@ var commandRegistry = append([]Command{
 
 	{ID: "terminal.new", Title: "New Terminal Tab", Category: "Terminal",
 		Run: func(a *appState, c *ui.Context) { a.newTerminalTab() }},
-	{ID: "session.newWorktree", Title: "New Agent in Worktree…", Category: "Session",
-		Enabled: func(a *appState) bool { return a.project() != nil && service.RepoRoot(a.workspace) != "" },
+	// Its ID is the one it had as New Agent in Worktree…, which keybinding
+	// files may name.
+	{ID: "session.newWorktree", Title: "New Agent…", Category: "Session",
+		Enabled: func(a *appState) bool { return a.project() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.openWorktreeDialog(a.active) }},
 	{ID: "process.add", Title: "Add Process…", Category: "Process",
 		Enabled: func(a *appState) bool { return a.project() != nil },
