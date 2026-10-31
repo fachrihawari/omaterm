@@ -144,3 +144,25 @@ func TestStoresTakeTurns(t *testing.T) {
 		t.Fatal("the other store never got its turn")
 	}
 }
+
+// The tunnel web access asks for is kept in web.json with the rest of
+// its config, and reads back as it was written.
+func TestConfigTunnelRoundTrip(t *testing.T) {
+	s, _ := testStore(t)
+	if _, err := s.SetConfig(func(c *Config) {
+		c.Enabled, c.Tunnel = true, "cloudflare"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := s.Config()
+	if err != nil || cfg.Tunnel != "cloudflare" {
+		t.Fatalf("tunnel round trip: %+v %v", cfg, err)
+	}
+	if _, err := s.SetConfig(func(c *Config) { c.Tunnel = "" }); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(s.path)
+	if strings.Contains(string(b), "tunnel") {
+		t.Fatalf("an empty tunnel is still on disk: %s", b)
+	}
+}

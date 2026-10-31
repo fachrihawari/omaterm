@@ -6,13 +6,19 @@ import (
 )
 
 func TestBaseURL(t *testing.T) {
-	if got := BaseURL(Config{URL: "https://abc.trycloudflare.com/"}); got != "https://abc.trycloudflare.com" {
+	if got := BaseURL(Config{URL: "https://abc.trycloudflare.com/"}, ""); got != "https://abc.trycloudflare.com" {
 		t.Fatalf("configured URL: %q", got)
 	}
-	if got := BaseURL(Config{Host: "192.168.1.20", Port: 7400}); got != "http://192.168.1.20:7400" {
+	if got := BaseURL(Config{URL: "https://mine.example.com/"}, "https://live.trycloudflare.com"); got != "https://mine.example.com" {
+		t.Fatalf("the configured URL wins: %q", got)
+	}
+	if got := BaseURL(Config{Port: 7400}, "https://box.tailnet.ts.net/"); got != "https://box.tailnet.ts.net" {
+		t.Fatalf("the live tunnel's URL: %q", got)
+	}
+	if got := BaseURL(Config{Host: "192.168.1.20", Port: 7400}, ""); got != "http://192.168.1.20:7400" {
 		t.Fatalf("on the network: %q", got)
 	}
-	if got := BaseURL(Config{Port: 7400}); got != "http://127.0.0.1:7400" {
+	if got := BaseURL(Config{Port: 7400}, ""); got != "http://127.0.0.1:7400" {
 		t.Fatalf("on the loopback: %q", got)
 	}
 	if got := PairLink("https://x.ts.net", "ABCD-EFGH"); got != "https://x.ts.net/#code=ABCD-EFGH" {

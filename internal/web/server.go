@@ -442,4 +442,8 @@ type Status struct {
 	On    bool   `json:"on"`
 	Addr  string `json:"addr,omitempty"`
 	Error string `json:"error,omitempty"`
+	// TunnelURL is where the running tunnel reaches it, when one does.
+	TunnelURL string `json:"tunnelURL,omitempty"`
+	// TunnelError is why the wanted tunnel isn't running.
+	TunnelError string `json:"tunnelError,omitempty"`
 }

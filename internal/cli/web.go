@@ -58,7 +58,7 @@ func webCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("web access on: %s (listening on %s)\n", web.BaseURL(cfg), st.Addr)
+		fmt.Printf("web access on: %s (listening on %s)\n", web.BaseURL(cfg, ""), st.Addr)
 		if cfg.OnNetwork() {
 			fmt.Println(networkWarning)
 		}
@@ -99,7 +99,7 @@ func webCmd(args []string) error {
 		if cfg.OnNetwork() {
 			fmt.Println(networkWarning)
 		}
-		fmt.Printf("devices reach it at %s\n", web.BaseURL(cfg))
+		fmt.Printf("devices reach it at %s\n", web.BaseURL(cfg, ""))
 		devices, _ := store.Devices()
 		fmt.Printf("%d paired %s (omaterm web devices)\n", len(devices), plural(len(devices), "device", "devices"))
 		return nil
@@ -112,7 +112,7 @@ func webCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		link := web.PairLink(web.BaseURL(cfg), code)
+		link := web.PairLink(web.BaseURL(cfg, ""), code)
 		if rows, err := web.QR(link); err == nil && isTerminal(os.Stdout) {
 			fmt.Print(web.QRText(rows))
 		}

@@ -24,7 +24,11 @@ func startDaemon(t *testing.T, idle time.Duration) (*Daemon, string) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "d.sock")
-	d, err := Start(Options{Socket: socket, StateDir: dir, IdleExit: idle, Version: "test"})
+	// StateFile names the temp dir's state.json: without it the daemon
+	// falls back to the user's real one, whose web.json its tests would
+	// change — and a daemon started after one of those could run a real
+	// tunnel.
+	d, err := Start(Options{Socket: socket, StateDir: dir, StateFile: filepath.Join(dir, "state.json"), IdleExit: idle, Version: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}

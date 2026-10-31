@@ -136,7 +136,7 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 		d.webLinkAsked, d.webLinkFor = true, d.web
 		cfg := d.web
 		go func() {
-			link := web.BaseURL(cfg)
+			link := web.BaseURL(cfg, "")
 			a.post(func() {
 				if a.settingsUI.data.webLinkFor == cfg {
 					a.settingsUI.data.webLink = link

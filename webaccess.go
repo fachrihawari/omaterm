@@ -139,7 +139,7 @@ func (a *appState) startPairing() *webPairing {
 		if err == nil {
 			code, expires, err = store.NewCode()
 		}
-		base := web.BaseURL(cfg)
+		base := web.BaseURL(cfg, "")
 		link := web.PairLink(base, code)
 		rows, qerr := web.QR(link)
 		a.post(func() {

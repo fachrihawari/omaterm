@@ -121,6 +121,9 @@ type Daemon struct {
 	webMu   sync.Mutex
 	web     *web.Server
 	webAddr string // the address asked of web
+	// webTunnel carries web access beyond this machine while it serves;
+	// nil when none is wanted.
+	webTunnel *webTunnel
 	// webTheme is the app's look for the web page, as it last sent it;
 	// nil until one is sent or read back from web-theme.json.
 	webTheme *web.Theme
@@ -618,6 +621,8 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		return d.withChecks(d.reloadProxy()), nil
 	case "web.reload":
 		return d.reloadWeb()
+	case "web.status":
+		return d.webStatus(), nil
 	case "web.theme":
 		return d.currentWebTheme(), nil
 	case "web.setTheme":
