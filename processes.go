@@ -702,16 +702,24 @@ func (a *appState) processOfRoot(root int) string {
 // processOnPort names the shown project's running process that gives
 // port, "" for none: the inspector's PORTS says whose a port is.
 func (a *appState) processOnPort(port int) string {
+	if proc, ok := a.processOnPortIn(port); ok {
+		return proc.Name
+	}
+	return ""
+}
+
+// processOnPortIn is the running process that listens on a port.
+func (a *appState) processOnPortIn(port int) (procs.Proc, bool) {
 	p := a.project()
 	if p == nil || port <= 0 {
-		return ""
+		return procs.Proc{}, false
 	}
 	for _, proc := range a.procList[p.ID] {
 		if proc.Port == port && (proc.Status == procs.Starting || proc.Status == procs.Running) {
-			return proc.Name
+			return proc, true
 		}
 	}
-	return ""
+	return procs.Proc{}, false
 }
 
 func (a *appState) projectIndexForTab(id string) (int, bool) {

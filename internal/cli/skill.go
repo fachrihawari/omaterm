@@ -148,6 +148,9 @@ rather than starting your own npm run dev:
     omaterm start web --wait                     # run it; exits once it is up
     omaterm read web / omaterm wait web          # its output, and waiting on it: each runs as a session named after it
 
+A process with a URL has a link in ` + "`omaterm ps --json`" + `, https://shop.localhost:
+open that rather than a localhost port.
+
 omaterm.yml is yours to read, but adding or changing a process is the user's: ask them.
 
 ## Etiquette

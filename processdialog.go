@@ -17,12 +17,17 @@ import (
 type processDialogState struct {
 	open        bool
 	project     string
+	projectName string
 	root        string
 	oldName     string
 	name        string
 	command     string
 	dir         string
 	port        string
+	url         string
+	// autoURL is the URL the dialog filled in itself, which a later
+	// suggestion may replace: one the user typed stays.
+	autoURL     string
 	autostart   bool
 	restart     string
 	watch       string
@@ -47,7 +52,7 @@ func (a *appState) openProcessDialog(pi int, def *procs.Def) {
 	if a.processShared != nil {
 		shared = *a.processShared
 	}
-	st := &processDialogState{open: true, project: p.ID, root: p.Path,
+	st := &processDialogState{open: true, project: p.ID, projectName: p.Name, root: p.Path,
 		shared: shared, restart: "Never"}
 	if def == nil {
 		a.procDialog = st
@@ -65,7 +70,7 @@ func (a *appState) openProcessDialog(pi int, def *procs.Def) {
 		return
 	}
 	st.oldName, st.name, st.command = def.Name, def.Name, def.Command
-	st.dir, st.port = def.Dir, ""
+	st.dir, st.port, st.url = def.Dir, "", def.URL
 	if def.Port > 0 {
 		st.port = strconv.Itoa(def.Port)
 	}
@@ -107,7 +112,7 @@ func (a *appState) processDialog(c *ui.Context) {
 							}
 						})
 						if row.Clicked() {
-							applyProcessSuggestion(st, suggestion)
+							a.applyProcessSuggestion(st, suggestion)
 						}
 					}
 				})
@@ -119,6 +124,14 @@ func (a *appState) processDialog(c *ui.Context) {
 				dialogNote(c, err, true)
 			}
 			dialogField(c, "Port", func() { processTextInput(c, "proc-port", &st.port, "5173", "Port input", false) })
+			dialogField(c, "URL", func() {
+				processURLInput(c, "proc-url", &st.url, processURLPlaceholder(st), "URL input")
+			})
+			if err := processURLError(st); err != "" {
+				dialogNote(c, err, true)
+			} else if strings.TrimSpace(st.url) != "" && strings.TrimSpace(st.port) == "" {
+				dialogNote(c, "omaterm picks a free port and tells it to the process as PORT.", false)
+			}
 			dialogField(c, "Autostart", func() { settingsSwitch(c, "proc-autostart", &st.autostart, false) })
 			dialogField(c, "Restart", func() {
 				settingsSegmented(c, "proc-restart", &st.restart, []string{"Never", "On failure", "Always"})
@@ -173,15 +186,94 @@ func processTextArea(c *ui.Context, key, label string, value *string, placeholde
 	})
 }
 
+// processURLInput is a text input with ".localhost" after it, the part of
+// the address omaterm adds.
+func processURLInput(c *ui.Context, key string, value *string, placeholder, label string) {
+	f := ui.Row(c.Key(key)).Height(28).Grow(1).Padding(0, 8).Radius(6).AlignItems(ui.Center).Gap(2).
+		Background(pal.Input).Border(1, pal.BorderStrong)
+	f.Children(func() {
+		in := ui.TextInputBase(c, value).Placeholder(placeholder).FontSize(12.5).Grow(1).MinWidth(0).Label(label)
+		if in.Focused() {
+			f.Border(1, pal.Accent)
+		}
+		ui.Text(c, ".localhost").FontSize(12.5).TextColor(pal.TextFaint).Shrink(0)
+	})
+}
+
+// processURLPlaceholder is the URL name the field suggests: a process
+// named for the server itself (web, dev, start, serve) is served at the
+// project's name, as a shop's dev server is shop.localhost; any other is
+// served at its own.
+func processURLPlaceholder(st *processDialogState) string {
+	name := urlName(st.name)
+	switch name {
+	case "", "web", "dev", "start", "serve":
+		return urlName(st.projectName)
+	}
+	return name
+}
+
+// urlName makes a URL name out of a process's or project's name: what a
+// name may hold, lowercased, with the rest turned into hyphens.
+func urlName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// processURLError is what is wrong with the URL typed, if anything.
+func processURLError(st *processDialogState) string {
+	name := strings.TrimSpace(st.url)
+	if name == "" {
+		return ""
+	}
+	if err := procs.ValidURL(strings.ToLower(name)); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 // applyProcessSuggestion fills the form from a suggestion: what it has,
-// such as a Solo process's env and watch globs, and nothing it hasn't.
-func applyProcessSuggestion(st *processDialogState, def procs.Def) {
+// such as a Solo process's env and watch globs, and nothing it hasn't. A
+// suggestion that serves HTTP is given the project's name as its URL, so
+// that it is reachable as https://<project>.localhost, unless the user
+// typed a URL of their own.
+func (a *appState) applyProcessSuggestion(st *processDialogState, def procs.Def) {
 	st.name, st.command, st.dir = def.Name, def.Command, def.Dir
 	st.port = ""
 	if def.Port > 0 {
 		st.port = strconv.Itoa(def.Port)
 	}
 	st.watch, st.env = strings.Join(def.Watch, "\n"), formatProcessEnv(def.Env)
+	if !servesHTTP(def) {
+		return
+	}
+	if strings.TrimSpace(st.url) != "" && st.url != st.autoURL {
+		return
+	}
+	if name := urlName(st.projectName); name != "" {
+		st.url, st.autoURL = name, name
+	}
+}
+
+// servesHTTP tells whether a suggested process is a server: one with a
+// port, or one named for a server script, as a dev or start script is.
+func servesHTTP(def procs.Def) bool {
+	if def.Port > 0 {
+		return true
+	}
+	switch def.Name {
+	case "dev", "start", "serve", "preview", "storybook", "rails", "django", "go", "compose":
+		return true
+	}
+	return false
 }
 
 func restartLabel(policy string) string {
@@ -255,7 +347,7 @@ func processDefFromDialog(st *processDialogState) (procs.Def, error) {
 		}
 	}
 	return procs.Def{Name: strings.TrimSpace(st.name), Command: strings.TrimSpace(st.command), Dir: strings.TrimSpace(st.dir),
-		Port: port, Autostart: st.autostart, Restart: restartValue(st.restart), Watch: watch, Env: env}, nil
+		Port: port, URL: strings.ToLower(strings.TrimSpace(st.url)), Autostart: st.autostart, Restart: restartValue(st.restart), Watch: watch, Env: env}, nil
 }
 
 func processDirectoryError(st *processDialogState) string {

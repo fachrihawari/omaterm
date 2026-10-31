@@ -1160,7 +1160,7 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
                                          the project's listening ports, or wait for one
 
 Project processes, from omaterm.yml and the ones kept in omaterm:
-  omaterm ps [--json]                    the processes, their status, port and restarts
+  omaterm ps [--json]                    the processes, their status, port, link and restarts
   omaterm start <name> [--wait] [--timeout 60s]
                                          run one; --wait holds until it is up
   omaterm stop <name>                    stop one

@@ -239,14 +239,28 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								txt(c, itoa(port.Port), 11, pal.Text)
 								mutedTxt2(c, port.Name, 11)
 								ui.Spacer(c)
-								if name := a.processOnPort(port.Port); name != "" {
-									pill(c, name).Tooltip("Port of the process " + name)
-								}
-								if port.Open {
-									// It only said the port; it opens its page now, where
-									// links open (Settings: a browser pane, or yours).
-									if cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Open http://localhost:" + itoa(port.Port)).Clicked() {
-										a.openURL("http://localhost:" + itoa(port.Port))
+								if proc, ok := a.processOnPortIn(port.Port); ok && proc.Link != "" {
+									// Served at its Dev URL: the row names that, and
+									// opens it.
+									pill(c, procLinkHost(proc.Link)).Tooltip("Dev URL of the process " + proc.Name)
+									if port.Open {
+										if cmdButton(c, iconExternalLink, iconBtn, false).Label("Open " + proc.Link).
+											Tooltip("Open " + proc.Link).Clicked() {
+											a.openURL(proc.Link)
+										}
+									}
+								} else {
+									if ok {
+										pill(c, proc.Name).Tooltip("Port of the process " + proc.Name)
+									}
+									if port.Open {
+										// It only said the port; it opens its page now, where
+										// links open (Settings: a browser pane, or yours).
+										url := "http://localhost:" + itoa(port.Port)
+										if cmdButton(c, iconExternalLink, iconBtn, false).Label("Open " + url).
+											Tooltip("Open " + url).Clicked() {
+											a.openURL(url)
+										}
 									}
 								}
 							})

@@ -97,6 +97,9 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	}
 	t := &a.tabs[i]
 	active := i == a.activeTab
+	// A click on the process's Dev URL opens it, and does not also
+	// activate the tab.
+	linkClicked := false
 	e := ui.ButtonBase(c.Key(i)).Height(26).Radius(13).Padding(0, 6, 0, 10).Gap(6).Shrink(0).AlignItems(ui.Center)
 	switch {
 	case active:
@@ -146,8 +149,19 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			ui.Text(c, t.Detail).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
 		if t.Kind == tabProcess {
-			if proc, ok := a.procOfTab(*t); ok && proc.Port > 0 {
-				ui.Text(c, ":"+itoa(proc.Port)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+			if proc, ok := a.procOfTab(*t); ok {
+				switch {
+				case proc.Link != "":
+					// Served at its Dev URL: the host, which opens it.
+					link := ui.Text(c, procLinkHost(proc.Link)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0).
+						Cursor(ui.CursorPointer).Tooltip("Open " + proc.Link)
+					if link.Clicked() {
+						linkClicked = true
+						a.openURL(proc.Link)
+					}
+				case proc.Port > 0:
+					ui.Text(c, ":"+itoa(proc.Port)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+				}
 			}
 		}
 		if t.Dirty {
@@ -172,7 +186,7 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			a.closingTab = i + 1 // after the row is built: closed in it, the next tab was skipped
 		}
 	})
-	if e.Clicked() {
+	if e.Clicked() && !linkClicked {
 		a.activateTab(i)
 	}
 	return e

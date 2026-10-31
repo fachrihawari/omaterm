@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/egoist/mygo"
 )
 
 // readFileAbs reads root/rel from disk.
@@ -16,6 +18,11 @@ func readFileAbs(root, rel string) (string, error) {
 // nowFunc is time.Now, replaced by the screenshot suite so relative
 // labels ("3h ago") are stable in its goldens.
 var nowFunc = time.Now
+
+// copyText puts text on the clipboard. It is a variable because the
+// clipboard waits on the app's main loop, which a test has none of: a
+// test replaces it and reads what would have been copied.
+var copyText = mygo.Clipboard.WriteText
 
 // relativeTime renders t as "3h ago" style text.
 func relativeTime(t time.Time) string {

@@ -108,6 +108,11 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 			if sub != "" && sub != title {
 				ui.Text(c, sub).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
 			}
+			if isProc && proc.Link != "" && !narrow {
+				// Where the process is served, after what it runs.
+				ui.Text(c, procLinkHost(proc.Link)).FontSize(12).TextColor(pal.TextFaint).SingleLine().
+					Shrink(0).Tooltip("Served at " + proc.Link)
+			}
 		})
 		if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" {
 			a.gitChip(c, g.Branch, g.Added, g.Removed)
