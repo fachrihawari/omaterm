@@ -45,6 +45,9 @@ func startTailscale(ctx context.Context, s Spec) (Tunnel, error) {
 	if port == 0 {
 		port = 443
 	}
+	if err := checkServePort(port, s.Target); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, serveTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, tailscaleBin, "serve", "--bg", "--https="+strconv.Itoa(port), s.Target)
@@ -59,6 +62,7 @@ func startTailscale(ctx context.Context, s Spec) (Tunnel, error) {
 		}
 		return nil, fmt.Errorf("tailscale serve: %w", err)
 	}
+	trackServe(port, true)
 	u := "https://" + name
 	if port != 443 {
 		u += ":" + strconv.Itoa(port)
@@ -79,23 +83,29 @@ func (t *tailscale) Stop() error {
 	var err error
 	t.once.Do(func() {
 		defer close(t.done)
-		ctx, cancel := context.WithTimeout(context.Background(), offTimeout)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, tailscaleBin, "serve", "--https="+strconv.Itoa(t.port), "off")
-		hide(cmd)
-		out, werr := cmd.CombinedOutput()
-		if werr == nil {
-			return
+		if err = serveOff(t.port); err == nil {
+			trackServe(t.port, false)
 		}
-		if ctx.Err() == nil {
-			if msg := firstLine(string(out)); msg != "" {
-				err = fmt.Errorf("tailscale serve off: %s", msg)
-				return
-			}
-		}
-		err = fmt.Errorf("tailscale serve off: %w", werr)
 	})
 	return err
+}
+
+// serveOff turns off the serve on an https port.
+func serveOff(port int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), offTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, tailscaleBin, "serve", "--https="+strconv.Itoa(port), "off")
+	hide(cmd)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() == nil {
+		if msg := firstLine(string(out)); msg != "" {
+			return fmt.Errorf("tailscale serve off: %s", msg)
+		}
+	}
+	return fmt.Errorf("tailscale serve off: %w", err)
 }
 
 // tailscaleName is this machine's name on its tailnet, without the

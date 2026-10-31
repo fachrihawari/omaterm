@@ -40,6 +40,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/tunnel"
 	"omaterm/internal/web"
 	"omaterm/service"
 )
@@ -263,6 +264,14 @@ func Start(opts Options) (*Daemon, error) {
 			}
 		}
 	}()
+	// Tailscale serves a daemon that crashed left are turned off before this
+	// one makes its own.
+	tunnel.TrackServes(filepath.Join(opts.StateDir, "tailscale-serves.json"))
+	if off, err := tunnel.CleanupServes(); err != nil {
+		log.Printf("tailscale serves left behind: %v", err)
+	} else if len(off) > 0 {
+		log.Printf("turned off the Tailscale serves a daemon left behind, on ports %v", off)
+	}
 	if _, err := d.reloadWeb(); err != nil {
 		log.Printf("web access: %v", err)
 	}

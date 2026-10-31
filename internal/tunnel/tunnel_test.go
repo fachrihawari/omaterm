@@ -41,6 +41,11 @@ const fakeTailscale = `if [ "$1" = status ]; then
 	printf '%s' "$TS_STATUS"
 	exit 0
 fi
+if [ "$1" = serve ] && [ "$2" = status ]; then
+	if [ "$TS_SERVE_FAIL" = 1 ]; then exit 1; fi
+	printf '%s' "${TS_SERVE:-{\}}"
+	exit 0
+fi
 printf '%s\n' "$*" >> "$TS_LOG"
 exit 0`
 

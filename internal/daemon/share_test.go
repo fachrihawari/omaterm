@@ -72,6 +72,10 @@ func shareFixture(t *testing.T) (*Daemon, *client.Client, *sharer) {
 	}
 	s := &sharer{}
 	t.Cleanup(swapStartTunnel(s.start))
+	// No test asks the real tailscale what it serves.
+	oldServe := tailscaleServe
+	tailscaleServe = func() (map[int][]string, error) { return nil, nil }
+	t.Cleanup(func() { tailscaleServe = oldServe })
 	return d, c, s
 }
 
@@ -244,7 +248,7 @@ func TestSharesStopWithTheDaemonAndTakeOwnTailscalePorts(t *testing.T) {
 	}
 	d.shareMu.Lock()
 	d.shares = map[procKey]*share{{"p1", "a"}: {tsPort: 8443}, {"p1", "b"}: {tsPort: 10000}}
-	got := d.freeSharePortLocked()
+	got := d.freeSharePortLocked(nil)
 	d.shareMu.Unlock()
 	if got != 10001 {
 		t.Fatalf("free port %d, want 10001", got)
@@ -270,5 +274,64 @@ func TestShareThroughAFakeCloudflared(t *testing.T) {
 	call[proto.Process](t, c, "process.unshare", proto.ProcessParams{Project: "p1", Name: "web"})
 	if p := procState(t, c, "web"); p.Share != "" {
 		t.Fatalf("after unshare: %+v", p)
+	}
+}
+
+// A share leaves alone the https ports Tailscale already serves.
+func TestShareSkipsTheTailscalePortsInUse(t *testing.T) {
+	_, c, s := shareFixture(t)
+	tailscaleServe = func() (map[int][]string, error) {
+		return map[int][]string{443: {"http://127.0.0.1:7370"}, 8443: nil, 10000: {"http://127.0.0.1:3000"}}, nil
+	}
+	startWeb(t, c)
+	call[proto.Process](t, c, "process.share", shareParams("web", "tailscale"))
+	if spec, _ := s.last(); spec.Port != 10001 {
+		t.Fatalf("the share took port %d, want 10001", spec.Port)
+	}
+	// A read error is no reason not to share.
+	call[proto.Process](t, c, "process.unshare", proto.ProcessParams{Project: "p1", Name: "web"})
+	tailscaleServe = func() (map[int][]string, error) { return nil, errors.New("tailscale serve status: boom") }
+	call[proto.Process](t, c, "process.share", shareParams("web", "tailscale"))
+	if spec, _ := s.last(); spec.Port != 8443 {
+		t.Fatalf("after a read error the share took port %d, want 8443", spec.Port)
+	}
+}
+
+// A daemon that crashed left its Tailscale serves listed: the next one turns
+// off the ports that still serve omaterm's addresses, and empties the list.
+func TestDaemonStartTurnsOffServesACrashLeft(t *testing.T) {
+	dir, err := os.MkdirTemp("", "omd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	bin := t.TempDir()
+	log := filepath.Join(dir, "tailscale.log")
+	script := `#!/bin/sh
+if [ "$1" = serve ] && [ "$2" = status ]; then
+	printf '%s' '{"TCP":{"443":{},"8443":{}},"Web":{"x.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7370"}}},"x.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000/mine"}}}}}'
+	exit 0
+fi
+echo "$*" >> '` + log + `'
+`
+	if err := os.WriteFile(filepath.Join(bin, "tailscale"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	list := filepath.Join(dir, "tailscale-serves.json")
+	if err := os.WriteFile(list, []byte(`{"Ports":[443,8443]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := Start(Options{Socket: filepath.Join(dir, "d.sock"), StateDir: dir, IdleExit: time.Minute, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	got, _ := os.ReadFile(log)
+	if string(got) != "serve --https=443 off\n" {
+		t.Fatalf("tailscale ran %q: only the serve of omaterm's own address goes", got)
+	}
+	if b, _ := os.ReadFile(list); strings.Contains(string(b), "443") {
+		t.Fatalf("the list wasn't emptied: %s", b)
 	}
 }

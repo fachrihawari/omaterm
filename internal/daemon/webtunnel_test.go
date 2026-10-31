@@ -253,3 +253,21 @@ func TestWebTunnelFollowsTheSetting(t *testing.T) {
 		t.Fatal("web access stopped with its tunnel")
 	}
 }
+
+// Tailscale already serving something else on 443 keeps web access's tunnel
+// from replacing it: web access stays on, and the status says what to do.
+func TestWebTunnelRefusesAPortTheUserServes(t *testing.T) {
+	d, _ := startDaemon(t, time.Minute)
+	undoBackoff := setWebTunnelBackoff(time.Hour)
+	defer undoBackoff()
+	undoStart := swapStartTunnel(func(ctx context.Context, s tunnel.Spec) (tunnel.Tunnel, error) {
+		return nil, &tunnel.PortInUseError{Port: 443}
+	})
+	defer undoStart()
+	d.webStore().SetConfig(func(c *web.Config) { c.Enabled, c.Port, c.Tunnel = true, freePort(), "tailscale" })
+	st := reload(t, d)
+	want := "Tailscale already serves another address on 443: free it, or use the Public URL"
+	if !st.On || st.TunnelError != want {
+		t.Fatalf("status %+v, want the error %q", st, want)
+	}
+}

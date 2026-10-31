@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -159,6 +160,10 @@ func (r *webTunnel) loop() {
 		if err != nil {
 			// Web access stays on without its tunnel; it says why here,
 			// and is tried again.
+			var inUse *tunnel.PortInUseError
+			if errors.As(err, &inUse) {
+				err = fmt.Errorf("%w, or use the Public URL", err)
+			}
 			r.report("", err)
 			log.Printf("%s: tunnel failed: %v", r.spec.Name, err)
 			if !r.wait(backoff) {

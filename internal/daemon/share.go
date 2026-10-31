@@ -98,6 +98,15 @@ func (d *Daemon) findProc(project, name string) (procs.Proc, bool) {
 // itself ends the share, with a note saying why. It returns why it could
 // not make one; the share is gone then, and its process says so.
 func (d *Daemon) startShare(key procKey, sh *share, port int) error {
+	// The ports Tailscale already serves are the user's, or web access's:
+	// read before the lock, as it runs a command.
+	var served map[int][]string
+	if sh.via == tunnel.Tailscale {
+		var err error
+		if served, err = tailscaleServe(); err != nil {
+			log.Printf("share %s: %v: assuming no port is served", key.name, err)
+		}
+	}
 	d.shareMu.Lock()
 	if d.shares[key] != sh || sh.starting || sh.tun != nil {
 		d.shareMu.Unlock()
@@ -106,7 +115,7 @@ func (d *Daemon) startShare(key procKey, sh *share, port int) error {
 	sh.starting = true
 	spec := tunnel.Spec{Provider: sh.via, Target: fmt.Sprintf("http://127.0.0.1:%d", port), Name: key.name}
 	if sh.via == tunnel.Tailscale {
-		sh.tsPort = d.freeSharePortLocked()
+		sh.tsPort = d.freeSharePortLocked(served)
 		spec.Port = sh.tsPort
 	}
 	d.shareMu.Unlock()
@@ -164,9 +173,16 @@ func (d *Daemon) watchShare(key procKey, sh *share, tun tunnel.Tunnel) {
 	d.changed()
 }
 
-// freeSharePortLocked is the lowest https port no share of ours holds.
-func (d *Daemon) freeSharePortLocked() int {
+// tailscaleServe is tunnel.TailscaleServe, apart so tests can fake it.
+var tailscaleServe = tunnel.TailscaleServe
+
+// freeSharePortLocked is the lowest https port neither a share of ours nor
+// anything else on Tailscale (served) holds.
+func (d *Daemon) freeSharePortLocked(served map[int][]string) int {
 	held := map[int]bool{}
+	for port := range served {
+		held[port] = true
+	}
 	for _, sh := range d.shares {
 		if sh.tsPort != 0 {
 			held[sh.tsPort] = true
