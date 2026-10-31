@@ -58,6 +58,9 @@ func settingsPageList() []settingsPageDef {
 			Hero:     "Use your sessions from a phone or another computer, in a browser. Only devices you pair can open it.",
 			HeroLink: "https://fachrihawari.github.io/omaterm/#web"},
 		{ID: "pair", Parent: "web", Title: "Pair a Device", Icon: iconSmartphone, Body: (*appState).settingsPair},
+		{ID: "devurls", Title: "Dev URLs", Icon: iconGlobeLock, Group: 1, Body: (*appState).settingsDevurls,
+			Hero:     "A process with a URL is served at https://<name>.localhost, with no port and no certificate warning. omaterm’s own certificate authority signs for .localhost names only.",
+			HeroLink: "https://fachrihawari.github.io/omaterm/#dev-urls"},
 		{ID: "browser", Title: "Browser", Icon: iconGlobe, Group: 1, Body: (*appState).settingsBrowser,
 			Restore: func(s *Settings, d Settings) { s.SearchEngine = d.SearchEngine }},
 		{ID: "keyboard", Title: "Keyboard", Icon: iconKeyboard, Group: 1, Body: (*appState).settingsKeyboard},
@@ -94,6 +97,8 @@ type settingsData struct {
 	searchCustom bool
 	// omarchy is Omarchy's theme, for its tile.
 	omarchy *theme.Source
+	// devurls is the Dev URLs page's: the proxy's checks and routes.
+	devurls devurlData
 }
 
 // refreshSettingsData reads what the pages show, at most every two
@@ -139,6 +144,9 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 				a.invalidateWindows()
 			})
 		}()
+	}
+	if a.settingsCurrent() == "devurls" && d.devurls.known {
+		a.fetchDevurls()
 	}
 	// The window wakes to read them again.
 	c.After(2 * time.Second)

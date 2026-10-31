@@ -409,6 +409,9 @@ var settingDefs = func() []settingDef {
 		row("webPort", "web", "Port", "", "7370"),
 		row("webURL", "web", "Public URL", "", "tailscale tunnel"),
 
+		// Dev URLs (the proxy's, drawn by its page)
+		row("devurlSetup", "devurls", "Dev URLs setup", "", "https proxy localhost certificate ssl tls portless routes trust"),
+
 		// Browser
 		row("searchEngine", "browser", "Search with", "", "google duckduckgo kagi brave"),
 		row("clearData", "browser", "Browsing data", "", "cookies cache clear"),
