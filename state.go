@@ -876,7 +876,8 @@ func listProcesses(workspace string, roots []int) ([]service.Process, error) {
 	return procs, err
 }
 
-// paneShells returns the PIDs of the shown project's pane shells.
+// paneShells returns the PIDs of the shown project's pane shells, its
+// processes' too.
 func (a *appState) paneShells() []int {
 	p := a.project()
 	if p == nil {
@@ -891,6 +892,13 @@ func (a *appState) paneShells() []int {
 			if pid := a.status[id].PID; pid > 0 {
 				pids = append(pids, pid)
 			}
+		}
+	}
+	// The project's processes run in panes of their own: what they start
+	// is listed too, and named for them.
+	for _, proc := range a.procList[p.ID] {
+		if proc.PID > 0 {
+			pids = append(pids, proc.PID)
 		}
 	}
 	return pids

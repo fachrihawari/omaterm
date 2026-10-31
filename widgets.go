@@ -122,7 +122,9 @@ func ink(selected bool, col ui.Color, faint bool) ui.Color {
 
 // sectionLabel is the uppercase muted label above inspector sections.
 func sectionLabel(c *ui.Context, text string) ui.Element {
-	return ui.Text(c, text).FontSize(10).TextColor(pal.TextMuted).LetterSpacing(1.2).SingleLine().Shrink(0)
+	// One heading everywhere: the sidebar's "Projects", its "Processes",
+	// the inspector's sections, Settings' groups.
+	return ui.Text(c, text).FontSize(11).FontWeight(600).TextColor(pal.TextFaint).LetterSpacing(0.3).SingleLine().Shrink(0)
 }
 
 // countBadge is the small rounded count next to section labels.

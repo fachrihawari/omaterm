@@ -670,6 +670,21 @@ func (a *appState) processPlaceholder(c *ui.Context, tab topTab) ui.Element {
 	})
 }
 
+// processOfRoot names the shown project's running process whose pane's
+// shell pid is root: what a listed process descends from.
+func (a *appState) processOfRoot(root int) string {
+	p := a.project()
+	if p == nil || root <= 0 {
+		return ""
+	}
+	for _, proc := range a.procList[p.ID] {
+		if proc.PID == root && (proc.Status == procs.Starting || proc.Status == procs.Running) {
+			return proc.Name
+		}
+	}
+	return ""
+}
+
 // processOnPort names the shown project's running process that gives
 // port, "" for none: the inspector's PORTS says whose a port is.
 func (a *appState) processOnPort(port int) string {

@@ -22,6 +22,7 @@ type Process struct {
 	Mem  string // RSS in MB, e.g. "42 MB"
 	Cwd  string // resolved working directory
 	Cmd  string // full command line (truncated)
+	Root int    // the root (a pane's shell) it is or descends from, 0 for none
 }
 
 // Port is a listening TCP port owned by a project process.
@@ -75,11 +76,18 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 
 	// The project's panes and what they started, wherever it went.
 	pidSet := map[int]bool{}
+	rootOf := map[int]int{}
 	children := childrenMap()
 	for _, root := range roots {
 		pidSet[root] = true
+		if rootOf[root] == 0 {
+			rootOf[root] = root
+		}
 		for _, desc := range descendants(children, root) {
 			pidSet[desc] = true
+			if rootOf[desc] == 0 {
+				rootOf[desc] = root
+			}
 		}
 	}
 
@@ -179,6 +187,7 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 			Mem:  memStr,
 			Cwd:  resolvedCwd,
 			Cmd:  cmdLine,
+			Root: rootOf[pid],
 		})
 	}
 

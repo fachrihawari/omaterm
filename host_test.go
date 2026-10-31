@@ -351,14 +351,14 @@ func TestNewAgentWithoutWorktree(t *testing.T) {
 	a.openWorktreeDialog(a.active)
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	if !tr.HasText("Branch") {
+	if !a.wtNew.worktree || !tr.HasText("Copy .env files") {
 		t.Fatal("in a git repository, the dialog starts in a worktree, as last time")
 	}
 	if err := tr.Click("wt-use"); err != nil {
 		t.Fatal(err)
 	}
 	tr.Frame()
-	if a.wtNew.worktree || tr.HasText("Branch") {
+	if a.wtNew.worktree || tr.HasText("Copy .env files") {
 		t.Fatal("the switch did not turn the worktree off")
 	}
 	sessions := len(a.tabs)

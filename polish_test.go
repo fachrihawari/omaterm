@@ -442,7 +442,7 @@ func TestGraphCountUnknown(t *testing.T) {
 	if tr.HasText("—") {
 		t.Error("graph count shows a dash before it is known")
 	}
-	if tr.HasText("GIT GRAPH") == false {
+	if tr.HasText("Graph") == false {
 		t.Error("graph section header missing")
 	}
 }
@@ -894,8 +894,8 @@ func TestInspectorRunningAndProcessPort(t *testing.T) {
 	}}
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	if !tr.HasText("RUNNING") || tr.HasText("PROCESSES") {
-		t.Fatal("the inspector still calls what runs PROCESSES")
+	if !tr.HasText("Running") || tr.HasText("PROCESSES") {
+		t.Fatal("the inspector doesn't call what runs Running")
 	}
 	// "dev" shows elsewhere too (the sidebar's row); the port's pill is
 	// the one that goes when the process stops.
@@ -910,12 +910,52 @@ func TestInspectorRunningAndProcessPort(t *testing.T) {
 	}
 	running := count()
 	texts := tr.Texts()
-	if i := slices.Index(texts, "5173"); i < 0 || !slices.Contains(texts[i:], "dev") {
+	if i := slices.Index(texts, ":5173"); i < 0 || !slices.Contains(texts[i:], "dev") {
 		t.Fatalf("port 5173 does not name the process dev: %q", texts)
 	}
 	a.procList[projectID][0].Status = procs.Stopped
 	tr.Frame()
 	if count() != running-1 {
 		t.Fatal("a stopped process still claims the port")
+	}
+}
+
+// The inspector's views are a segmented control: a click on a segment
+// shows its view. What a project's process started is named for it.
+func TestInspectorSegmentsAndOwners(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.showInspectorTab(0)
+	a.stopProcessRefresh()
+	projectID := a.projects[a.active].ID
+	a.procList = map[string][]procs.Proc{projectID: {
+		{Def: procs.Def{Name: "web", Command: "npm run dev"}, Status: procs.Running, PID: 4000},
+	}}
+	a.processes = []service.Process{{Name: "node", Pid: 4010, CPU: "1.0%", Mem: "89 MB", Root: 4000}}
+	a.ports = nil
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	texts := tr.Texts()
+	if i := slices.Index(texts, "node"); i < 0 || i+1 >= len(texts) || texts[i+1] != "web" {
+		t.Fatalf("node, started by the process web, isn't named for it: %q", texts)
+	}
+	for _, want := range []string{"Project", "Name", "Path", "Sessions", "Running", "Ports"} {
+		if !tr.HasText(want) {
+			t.Fatalf("the Info panel lacks %q", want)
+		}
+	}
+	if err := tr.Click("Git"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.inspectorTab != 2 {
+		t.Fatalf("the Git segment showed view %d", a.inspectorTab)
+	}
+	if err := tr.Click("Files"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.inspectorTab != 1 {
+		t.Fatalf("the Files segment showed view %d", a.inspectorTab)
 	}
 }

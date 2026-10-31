@@ -18,11 +18,11 @@ func TestUpdateSection(t *testing.T) {
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
 
-	if !tr.HasText("UPDATES") {
-		t.Error("the Info panel has no UPDATES section")
+	if !tr.HasText("Updates") {
+		t.Error("the Info panel has no Updates section")
 	}
-	if !tr.HasText("UPDATES") || !tr.HasText("omaterm") {
-		t.Error("the UPDATES section does not name the app")
+	if !tr.HasText("Updates") || !tr.HasText("omaterm") {
+		t.Error("the Updates section does not name the app")
 	}
 	if err := tr.Click("Check"); err != nil {
 		t.Fatalf("no Check button: %v", err)
