@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
 
@@ -41,6 +42,9 @@ type Project struct {
 	Collapsed bool   `json:"collapsed,omitempty"`
 	// ActiveSession is the session it showed last.
 	ActiveSession string `json:"activeSession,omitempty"`
+	// Processes are the project's local processes: the ones kept here
+	// rather than in its omaterm.yml.
+	Processes []procs.Def `json:"processes,omitempty"`
 }
 
 // Session is a terminal tab of a project.

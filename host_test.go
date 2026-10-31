@@ -14,6 +14,7 @@ import (
 	"omaterm/internal/client"
 	"omaterm/internal/ctl"
 	"omaterm/internal/model"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/worktree"
@@ -141,6 +142,16 @@ func TestAgentSessionByPID(t *testing.T) {
 	}
 	if _, err := a.agentSession(proto.AgentSessionParams{PID: pid, Agent: "claude", Session: "bad;id"}); err == nil {
 		t.Fatal("accepted a bad id")
+	}
+	// Told each turn, as Antigravity's hook does: the same changes nothing,
+	// another conversation replaces it.
+	for _, sid := range []string{"abc-123", "def-456"} {
+		if _, err := a.agentSession(proto.AgentSessionParams{PID: pid, Agent: "agy", Session: sid}); err != nil {
+			t.Fatal(err)
+		}
+		if s := a.panes.Get(id).Info().AgentSession; s == nil || s.Agent != "agy" || s.ID != sid {
+			t.Fatalf("session %+v, want agy %s", s, sid)
+		}
 	}
 }
 
@@ -291,8 +302,8 @@ func TestGitPanelFollowsWorktree(t *testing.T) {
 	}
 }
 
-// New Agent in Worktree says what is wrong with a branch's name, and with
-// a good one makes the worktree and its session, in the project.
+// New Agent, in a worktree, says what is wrong with a branch's name, and
+// with a good one makes the worktree and its session, in the project.
 func TestNewWorktreeDialog(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -303,8 +314,8 @@ func TestNewWorktreeDialog(t *testing.T) {
 	}
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	if !tr.HasText("New Agent in Worktree") {
-		t.Fatal("no dialog")
+	if !tr.HasText("New Agent") || !a.wtNew.worktree {
+		t.Fatal("no dialog, or not in a worktree")
 	}
 	tr.Type("a b")
 	tr.Frame()
@@ -327,6 +338,61 @@ func TestNewWorktreeDialog(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// New Agent with Work in a worktree off starts the agent in the project's
+// own folder, makes no worktree, and remembers the choice; in a folder git
+// doesn't know, the switch is off and can't be turned on.
+func TestNewAgentWithoutWorktree(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.wtAgent = "shell"
+	a.openWorktreeDialog(a.active)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !a.wtNew.worktree || !tr.HasText("Copy .env files") {
+		t.Fatal("in a git repository, the dialog starts in a worktree, as last time")
+	}
+	if err := tr.Click("wt-use"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.wtNew.worktree || tr.HasText("Copy .env files") {
+		t.Fatal("the switch did not turn the worktree off")
+	}
+	sessions := len(a.tabs)
+	if err := tr.Click("Start"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.wtNew != nil || len(a.tabs) != sessions+1 {
+		t.Fatalf("no new session: dialog=%+v tabs=%d", a.wtNew, len(a.tabs))
+	}
+	tab := a.tabs[a.activeTab]
+	if tab.Kind != tabTerminal || tab.Worktree != nil || a.paneDirs[tab.Split.TermID] != a.workspace {
+		t.Fatalf("the agent's session: %+v in %q", tab, a.paneDirs[tab.Split.TermID])
+	}
+	if _, err := os.Stat(filepath.Join(a.workspace, ".worktrees")); err == nil {
+		t.Fatal("a worktree was made")
+	}
+	if a.wtUse {
+		t.Fatal("the choice of no worktree was not remembered")
+	}
+
+	a.projects = append(a.projects, project{ID: "plain", Name: "plain", Path: t.TempDir()})
+	a.wtUse = true
+	a.openWorktreeDialog(len(a.projects) - 1)
+	tr.Frame()
+	if a.wtNew == nil || a.wtNew.git || a.wtNew.worktree || !tr.HasText("plain isn't in a git repository, which a worktree needs.") {
+		t.Fatalf("outside git: %+v", a.wtNew)
+	}
+	if err := tr.Click("wt-use"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.wtNew.worktree {
+		t.Fatal("the worktree switch turned on outside git")
 	}
 }
 
@@ -592,5 +658,46 @@ func TestSendWaitsForTheUser(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("read %q", out.Text)
 		}
+	}
+}
+
+// The process.* methods work over the app's socket, which the omaterm
+// command talks to while the window is open: here with the app's own
+// host, as without a daemon.
+func TestProcessMethodsOverSocket(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.useLocalProcHost()
+	local := a.procHost.(*localProcs)
+	defer local.Close()
+	web := procs.Def{Name: "web", Command: "sh -c 'echo up; sleep 30'"}
+	if err := os.WriteFile(filepath.Join(a.workspace, procs.FileName), []byte("processes:\n  web:\n    command: \"sh -c 'echo up; sleep 30'\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := dialApp(t, a)
+	project := a.projects[a.active].ID
+	var list []proto.Process
+	if err := c.Call("process.list", proto.ProcessParams{Project: project}, &list); err != nil || len(list) != 1 || list[0].Status != procs.Untrusted {
+		t.Fatalf("list: %+v, %v", list, err)
+	}
+	if err := c.Call("process.start", proto.ProcessParams{Project: project, Name: "web"}, nil); err == nil || !strings.Contains(err.Error(), "isn't trusted") {
+		t.Fatalf("an untrusted start: %v", err)
+	}
+	if err := procs.OpenTrust(procs.TrustPath()).Add(a.workspace, web.Variant()); err != nil {
+		t.Fatal(err)
+	}
+	var proc proto.Process
+	if err := c.Call("process.sync", proto.ProcessParams{Project: a.projects[a.active].Name}, &list); err != nil || len(list) != 1 || !list[0].Trusted {
+		t.Fatalf("sync by name: %+v, %v", list, err)
+	}
+	if err := c.Call("process.start", proto.ProcessParams{Project: project, Name: "web"}, &proc); err != nil || proc.Status != procs.Starting || proc.Pane == "" {
+		t.Fatalf("start: %+v, %v", proc, err)
+	}
+	if err := c.Call("process.stop", proto.ProcessParams{Project: project, Name: "web"}, &proc); err != nil || proc.Status != procs.Stopped {
+		t.Fatalf("stop: %+v, %v", proc, err)
+	}
+	if err := c.Call("process.start", proto.ProcessParams{Project: project, Name: "nope"}, nil); err == nil {
+		t.Fatal("an unknown process started")
 	}
 }

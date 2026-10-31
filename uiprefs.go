@@ -17,11 +17,13 @@ type uiPrefs struct {
 	AgentSetupAsked  bool    `json:"agentSetupAsked,omitempty"`
 	// SettingsPage is the Settings window's page, where it opens again.
 	SettingsPage string `json:"settingsPage,omitempty"`
-	// The worktree dialogs' last choices: the agent, copying .env files,
-	// and squashing a merge.
+	// The agent and worktree dialogs' last choices: the agent, working in
+	// a worktree, copying .env files, and squashing a merge.
 	WorktreeAgent string `json:"worktreeAgent,omitempty"`
+	WorktreeUse   *bool  `json:"worktreeUse,omitempty"`
 	WorktreeEnv   *bool  `json:"worktreeEnv,omitempty"`
 	MergeSquash   *bool  `json:"mergeSquash,omitempty"`
+	ProcessShared *bool  `json:"processShared,omitempty"`
 	// ReviewAgent is the Ask for Review dialog's last reviewer.
 	ReviewAgent string `json:"reviewAgent,omitempty"`
 	// DiffSplit and FontSize are read once, to move them to settings.json.
@@ -33,6 +35,7 @@ func uiPrefsPath() string { return filepath.Join(filepath.Dir(stateFilePath()), 
 
 // loadUIPrefs applies ui.json over the defaults.
 func (a *appState) loadUIPrefs() {
+	a.processShared = nil
 	data, err := os.ReadFile(uiPrefsPath())
 	if err != nil {
 		return
@@ -74,11 +77,18 @@ func (a *appState) loadUIPrefs() {
 	a.agentSetupAsked = u.AgentSetupAsked
 	a.settingsPage = u.SettingsPage
 	a.wtAgent, a.reviewAgent = u.WorktreeAgent, u.ReviewAgent
+	if u.WorktreeUse != nil {
+		a.wtUse = *u.WorktreeUse
+	}
 	if u.WorktreeEnv != nil {
 		a.wtEnv = *u.WorktreeEnv
 	}
 	if u.MergeSquash != nil {
 		a.mergeSquash = *u.MergeSquash
+	}
+	if u.ProcessShared != nil {
+		value := *u.ProcessShared
+		a.processShared = &value
 	}
 }
 
@@ -93,8 +103,9 @@ func (a *appState) saveUIPrefs() {
 		InspectorTab:    &a.inspectorTab,
 		AgentSetupAsked: a.agentSetupAsked,
 		SettingsPage:    a.settingsPage,
-		WorktreeAgent:   a.wtAgent, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
-		ReviewAgent: a.reviewAgent,
+		WorktreeAgent:   a.wtAgent, WorktreeUse: &a.wtUse, WorktreeEnv: &a.wtEnv, MergeSquash: &a.mergeSquash,
+		ReviewAgent:   a.reviewAgent,
+		ProcessShared: a.processShared,
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {

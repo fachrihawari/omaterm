@@ -8,16 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/procs"
 	"omaterm/internal/theme"
 	"omaterm/service"
 )
 
-// The status bar said "1 processes" and carried invented CPU/MEM numbers.
+// The status bar said "1 processes" and carried invented CPU/MEM numbers;
+// it now counts what runs, as the inspector's RUNNING lists it.
 func TestStatusBarCountsAndNoMockStats(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -28,24 +31,16 @@ func TestStatusBarCountsAndNoMockStats(t *testing.T) {
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
 
-	if !tr.HasText("1 process") {
-		t.Error("singular process count missing")
-	}
-	if tr.HasText("1 processes") {
-		t.Error("process count is not pluralized")
+	if !tr.HasText("1 running") {
+		t.Error("running count missing")
 	}
 	if !tr.HasText("0 ports") {
 		t.Error("port count missing")
 	}
-	// A noun already ending in s takes "es", not another s: the live
-	// status bar read "11 processs".
 	a.processes = append(a.processes, service.Process{Name: "two", Pid: 3})
 	tr.Frame()
-	if !tr.HasText("2 processes") {
-		t.Error("plural of a noun ending in s is wrong")
-	}
-	if tr.HasText("processs") {
-		t.Error("doubled s in the plural")
+	if !tr.HasText("2 running") {
+		t.Error("running count did not follow the list")
 	}
 	for _, mock := range []string{"CPU 3%", "MEM 1.3 GB"} {
 		if tr.HasText(mock) {
@@ -881,5 +876,67 @@ func TestLightCardEdge(t *testing.T) {
 	}
 	if d, l := title(true), title(false); d != l {
 		t.Errorf("pane title at y=%.0f dark, %.0f light", d, l)
+	}
+}
+
+// The inspector's list of what runs is RUNNING, so "Processes" means only
+// the processes a project defines; a port one of them gives says whose.
+func TestInspectorRunningAndProcessPort(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.showInspectorTab(0)
+	a.stopProcessRefresh()
+	a.processes = []service.Process{{Name: "node", Pid: 4242, CPU: "1.0%", Mem: "89 MB"}}
+	a.ports = []service.Port{{Port: 5173, Name: "http", Open: true, Pid: 4242, Process: "node"}}
+	projectID := a.projects[a.active].ID
+	a.procList = map[string][]procs.Proc{projectID: {
+		{Def: procs.Def{Name: "dev", Command: "npm run dev", Port: 5173}, Status: procs.Running},
+	}}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("RUNNING") || tr.HasText("PROCESSES") {
+		t.Fatal("the inspector still calls what runs PROCESSES")
+	}
+	// "dev" shows elsewhere too (the sidebar's row); the port's pill is
+	// the one that goes when the process stops.
+	count := func() int {
+		n := 0
+		for _, s := range tr.Texts() {
+			if s == "dev" {
+				n++
+			}
+		}
+		return n
+	}
+	running := count()
+	texts := tr.Texts()
+	if i := slices.Index(texts, "5173"); i < 0 || !slices.Contains(texts[i:], "dev") {
+		t.Fatalf("port 5173 does not name the process dev: %q", texts)
+	}
+	a.procList[projectID][0].Status = procs.Stopped
+	tr.Frame()
+	if count() != running-1 {
+		t.Fatal("a stopped process still claims the port")
+	}
+}
+
+// What one of the project's processes started is named for it in the
+// inspector's list of what runs.
+func TestInspectorNamesProcessOwners(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.showInspectorTab(0)
+	a.stopProcessRefresh()
+	projectID := a.projects[a.active].ID
+	a.procList = map[string][]procs.Proc{projectID: {
+		{Def: procs.Def{Name: "web", Command: "npm run dev"}, Status: procs.Running, PID: 4000},
+	}}
+	a.processes = []service.Process{{Name: "node", Pid: 4010, CPU: "1.0%", Mem: "89 MB", Root: 4000}}
+	a.ports = nil
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	texts := tr.Texts()
+	if i := slices.Index(texts, "4010"); i < 0 || i+1 >= len(texts) || texts[i+1] != "web" {
+		t.Fatalf("node, started by the process web, isn't named for it: %q", texts)
 	}
 }

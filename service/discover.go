@@ -152,6 +152,46 @@ func IndexFiles(workspace string, maxFiles int) []string {
 	return files
 }
 
+// MatchGlob matches a gitignore-style pattern against a path: * stays
+// within one path segment, ** crosses segments. It is what the folder
+// watcher tests a changed file against, so a watch's globs read the same
+// as the .gitignore beside them.
+func MatchGlob(pattern, path string) bool {
+	return matchGitGlob(pattern, path)
+}
+
+// IgnoreFunc returns what a folder watch should skip: .git, the heavy
+// folders skipDirs names, and what the root's .gitignore ignores. It suits
+// mygo.FileWatchOptions.Ignore, which is given a path relative to root
+// with forward slashes and asked about directories as well as files.
+//
+// The .gitignore is read once, here: a watch asks the function about every
+// entry it finds, on a goroutine of its own, where reading a file would
+// not do.
+func IgnoreFunc(root string) func(path string, isDir bool) bool {
+	ig := loadGitIgnore(root)
+	return func(path string, isDir bool) bool {
+		rel := strings.TrimPrefix(filepath.ToSlash(path), "./")
+		if rel == "" || rel == "." {
+			return false
+		}
+		segs := strings.Split(rel, "/")
+		for _, s := range segs {
+			// A file in an ignored folder is ignored with it.
+			if s == ".git" || skipDirs[s] {
+				return true
+			}
+		}
+		if ig == nil {
+			return false
+		}
+		if isDir {
+			rel += "/"
+		}
+		return ig.matches(rel)
+	}
+}
+
 // gitIgnore is a minimal .gitignore matcher supporting the common cases:
 // comments, blank lines, dir-only patterns (trailing /), leading-anchored
 // patterns (leading /), and * wildcards. No negation/character classes.

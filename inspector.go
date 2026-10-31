@@ -35,15 +35,22 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 
 func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, label string, badge int) ui.Element {
 	active := a.inspectorTab == idx
-	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0)
+	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0).Label(label)
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-			col := pal.TextMuted
+			// The tab shown reads as chosen: its text in full and bold,
+			// its icon in the accent, as its underline.
+			col, iconCol := pal.TextMuted, pal.TextFaint
 			if active {
+				col, iconCol = pal.Text, pal.Accent
+			} else if e.Hovered() {
 				col = pal.TextSoft
 			}
-			ui.Icon(c, icon).Width(14).Height(14).TextColor(col)
-			ui.Text(c, label).FontSize(11).TextColor(col).SingleLine().Shrink(0)
+			ui.Icon(c, icon).Width(14).Height(14).TextColor(iconCol)
+			t := ui.Text(c, label).FontSize(12.5).TextColor(col).SingleLine().Shrink(0)
+			if active {
+				t.FontWeight(600)
+			}
 			if badge > 0 {
 				countBadge(c, badge)
 			}
@@ -127,11 +134,14 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			})
 
-			// PROCESSES and PORTS: with no project open there are none to list.
+			// RUNNING and PORTS: with no project open there are none to list.
+			// RUNNING is what the project's terminals run, as the system
+			// sees it; the sidebar's Processes are the ones the project
+			// defines, so the two never share a name.
 			if a.project() != nil {
 				ui.Column(c).Gap(8).Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Children(func() {
-						sectionLabel(c, "PROCESSES")
+						sectionLabel(c, "RUNNING")
 						ui.Spacer(c)
 						countBadge(c, len(a.processes))
 						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
@@ -153,11 +163,11 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 									if a.processWarn != "" {
 										// The home folder: every process is in it.
 										ui.Text(c, "Not listed for this folder").FontSize(11).TextColor(pal.TextMuted)
-										ui.Text(c, "Open a project folder to see its processes").FontSize(10).TextColor(pal.TextFaint)
+										ui.Text(c, "Open a project folder to see what runs in it").FontSize(10).TextColor(pal.TextFaint)
 										return
 									}
-									ui.Text(c, "No processes in this project").FontSize(11).TextColor(pal.TextMuted)
-									ui.Text(c, "Run a command in the terminal to see it here").FontSize(10).TextColor(pal.TextFaint)
+									ui.Text(c, "Nothing running in this project's terminals").FontSize(11).TextColor(pal.TextMuted)
+									ui.Text(c, "Commands you run in a terminal show here").FontSize(10).TextColor(pal.TextFaint)
 								})
 							})
 						}
@@ -169,8 +179,16 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							proc := p
 							row.Children(func() {
 								dot(c, dotGreen, 6)
-								txt(c, proc.Name, 11, pal.Text)
-								mutedTxt2(c, itoa(proc.Pid), 11)
+								// A long name gives way, so the row's numbers
+								// and its kill button stay in it.
+								ui.Text(c, proc.Name).FontSize(11).TextColor(pal.Text).SingleLine().Ellipsis("…").
+									Shrink(1).MinWidth(min(48, float32(len(proc.Name))*7)).Tooltip(proc.Name)
+								mutedTxt2(c, itoa(proc.Pid), 11).Shrink(2).MinWidth(0).Ellipsis("…")
+								// Started by one of the project's processes:
+								// named for it.
+								if owner := a.processOfRoot(proc.Root); owner != "" {
+									pill(c, owner)
+								}
 								ui.Spacer(c)
 								mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
 								if proc.Pid != 1 && proc.Pid != os.Getpid() {
@@ -221,6 +239,9 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								txt(c, itoa(port.Port), 11, pal.Text)
 								mutedTxt2(c, port.Name, 11)
 								ui.Spacer(c)
+								if name := a.processOnPort(port.Port); name != "" {
+									pill(c, name).Tooltip("Port of the process " + name)
+								}
 								if port.Open {
 									// It only said the port; it opens its page now, where
 									// links open (Settings: a browser pane, or yours).

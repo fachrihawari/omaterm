@@ -537,7 +537,7 @@ func TestSiteVideo(t *testing.T) {
 		r.play(int(2.5 * videoFPS))
 
 	case "worktree": // an agent on a branch of its own, merged from the session's menu
-		// One idle shell session, and the New Agent in Worktree dialog
+		// One idle shell session, and the New Agent dialog, in a worktree,
 		// filled in over it.
 		a.tabs = a.tabs[:1]
 		v.tab = &a.tabs[0]
@@ -548,7 +548,7 @@ func TestSiteVideo(t *testing.T) {
 		v.feeds[0]("\x1b[1;34m~/Projects/omaterm\x1b[0m \x1b[35mmain\x1b[0m \x1b[32m❯\x1b[0m ")
 		r.caption("Agent di branch-nya | sendiri.")
 		r.play(12)
-		a.wtNew = &worktreeNew{open: true, project: a.projects[0].ID, name: "omaterm", dir: v.wd,
+		a.wtNew = &worktreeNew{open: true, project: a.projects[0].ID, name: "omaterm", dir: v.wd, git: true, worktree: true,
 			branch: "fix-login", base: "main", bases: []string{"main", "dev"}, agent: "claude", env: true}
 		r.fade(8)
 		r.until(0, 4)

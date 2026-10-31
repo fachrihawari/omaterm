@@ -63,7 +63,7 @@ func (a *appState) answerAgentSetup() {
 // setupAgents installs omaterm's skill and the agents' hooks, as `omaterm
 // skill setup` does, and says what is left to do for the agent named.
 func (a *appState) setupAgents(c *ui.Context, name string) {
-	for _, k := range []string{"claude", "agents"} {
+	for _, k := range cli.SkillGroups() {
 		if err := cli.InstallSkill(k); err != nil {
 			toast(c, "Agent setup failed: "+err.Error())
 			return

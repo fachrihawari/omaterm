@@ -2,6 +2,7 @@ package main
 
 import (
 	"omaterm/internal/model"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
 	"path/filepath"
@@ -18,8 +19,39 @@ import (
 // The sidebar lists the projects and, under each, its sessions (terminal
 // tabs) with what they are doing, as Kero's and Rex's do.
 
+// The side panels' widths, as the user drags them, stay within these.
+const (
+	sidebarMinW, sidebarMaxW, sidebarDefaultW       = 200, 480, 240
+	inspectorMinW, inspectorMaxW, inspectorDefaultW = 260, 640, 330
+)
+
 func (a *appState) sidebarWidth() float32 {
-	return max(200, min(a.sidebarW, 360))
+	return max(sidebarMinW, min(a.sidebarW, sidebarMaxW))
+}
+
+// inspectorWidth is the inspector's width, within its bounds.
+func (a *appState) inspectorWidth() float32 {
+	return max(inspectorMinW, min(a.inspectorW, inspectorMaxW))
+}
+
+// panelEdge is the edge of a side panel, a few pixels wide: dragged, it
+// resizes the panel between lo and hi, and a double click brings it back
+// to def. A grip shows while the pointer is on it, as the divider between
+// panes has one, so the edge can be found. sign is 1 for a panel that grows
+// as the pointer moves right, -1 for one on the right side.
+func (a *appState) panelEdge(c *ui.Context, key string, w *float32, lo, hi, def, sign float32) {
+	e := ui.Box(c.Key(key)).Width(6).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
+	if e.Hovered() || e.Pressed() {
+		e.Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X + r.W/2 - 1.5, Y: r.Y + r.H/2 - 18, W: 3, H: 36}, pal.TextFaint.Alpha(0.7), 1.5)
+		})
+	}
+	if dx, _, ok := e.Dragged(); ok {
+		*w = max(lo, min(*w+sign*dx, hi))
+	}
+	if e.DoubleClicked() {
+		*w = def
+	}
 }
 
 // sidebar slides in and out; while shown it is resizable by its edge.
@@ -38,7 +70,9 @@ func (a *appState) sidebar(c *ui.Context) {
 		return
 	}
 	box.Children(func() {
-		ui.Column(c).Width(a.sidebarWidth()).Shrink(0).FillHeight().Children(func() {
+		// The column leaves the edge its room, so the edge is in the box
+		// and under the pointer, not clipped off past it.
+		ui.Column(c).Grow(1).MinWidth(0).FillHeight().Children(func() {
 			a.sidebarHeader(c)
 			ui.Scroll(c).Grow(1).Children(func() {
 				ui.Column(c).Padding(2, 6, 8, 8).Children(func() {
@@ -55,11 +89,7 @@ func (a *appState) sidebar(c *ui.Context) {
 			})
 			a.sidebarFooter(c)
 		})
-		// The edge: dragged, it resizes the sidebar.
-		edge := ui.Box(c.Key("edge")).Width(6).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
-		if dx, _, ok := edge.Dragged(); ok {
-			a.sidebarW = max(200, min(a.sidebarW+dx, 360))
-		}
+		a.panelEdge(c, "edge", &a.sidebarW, sidebarMinW, sidebarMaxW, sidebarDefaultW, 1)
 	})
 }
 
@@ -69,9 +99,11 @@ func (a *appState) sidebarHeader(c *ui.Context) {
 			a.sidebarVisible = false
 		}
 		ui.Text(c, "Projects").FontSize(11).FontWeight(600).TextColor(pal.TextFaint).Padding(0, 4).SingleLine().Grow(1)
-		if cmdButton(c, iconPlus, 15, false).Tooltip("New Session (" + keyLabels("terminal.new") + ")").Clicked() {
-			a.newTerminalTab()
-		}
+		// What can be added, in one place: a session, an agent, a
+		// process, a project.
+		cmdButton(c, iconPlus, 15, false).Tooltip("New…").Label("New").Menu(func(m *ui.Menu) {
+			a.addItems(m, a.active, true)
+		})
 		if cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
 			a.openProjectDialog()
 		}
@@ -167,25 +199,44 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	if hovered {
 		h.Background(pal.Hover)
 	}
+	empty := a.projectEmpty(p.ID, tabs)
+	// The chevron and the + are buttons of their own: a click on them is
+	// not the header's, which would show the project.
+	inner := false
 	h.Children(func() {
-		chev := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextFaint)
-		if p.Collapsed {
-			chev.Rotate(-90)
+		chev := ui.ButtonBase(c.Key("chev")).Size(20, 20).Radius(5).Margin(0, -4, 0, -4).Center().Shrink(0).
+			Label(map[bool]string{true: "Expand", false: "Collapse"}[p.Collapsed])
+		if chev.Hovered() {
+			chev.Background(pal.Hover)
+			inner = true
+		}
+		chev.Children(func() {
+			icon := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextFaint)
+			if p.Collapsed {
+				icon.Rotate(-90)
+			}
+		})
+		if chev.Clicked() {
+			// Open or closed, the project shown stays the one shown.
+			p.Collapsed = !p.Collapsed
+			a.saveSoon()
 		}
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		if p.Collapsed {
 			if lead, ok := a.projectLead(tabs); ok && statusState(lead) != iconNone {
 				a.statusIcon(c, lead, 11)
+			} else if empty && !hovered {
+				ui.Text(c, "empty").FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 			}
 		}
 		if hovered {
-			if cmdButton(c, iconPlus, 13, false).Tooltip("New Session in " + p.Name).Clicked() {
-				a.switchProject(i)
-				a.newTerminalTab()
-			}
+			plus := cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
+				a.addItems(m, i, false)
+			})
+			inner = inner || plus.Hovered()
 		}
 	})
-	if h.Clicked() {
+	if h.Clicked() && !inner {
 		if i == a.active {
 			p.Collapsed = !p.Collapsed
 			a.saveSoon()
@@ -194,13 +245,15 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 		}
 	}
 	h.ContextMenu(func(m *ui.Menu) {
-		if m.Item("New Session").Chosen() {
-			a.switchProject(i)
-			a.newTerminalTab()
-		}
-		if m.Item("New Agent in Worktree…").Chosen() {
-			a.switchProject(i)
-			a.openWorktreeDialog(i)
+		a.addItems(m, i, false)
+		m.Separator()
+		if len(a.procList[p.ID]) > 0 {
+			if m.Item("Start All Processes").Chosen() {
+				a.startAllProcesses(i)
+			}
+			if m.Item("Stop All Processes").Chosen() {
+				a.stopAllProcesses(i)
+			}
 		}
 		label := "Collapse"
 		if p.Collapsed {
@@ -229,15 +282,178 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			a.sessionRow(c, i, tabs, node)
 		}
 	}
-	if n == 0 {
+	if empty {
 		ui.Text(c, "No sessions").FontSize(11.5).TextColor(pal.TextFaint).Padding(4, 0, 4, 28)
 	}
+	if len(a.procList[p.ID]) > 0 {
+		a.processGroup(c, i)
+	}
+}
+
+// addItems are what can be added to project pi, as its + and its menu
+// offer them; withProject adds Open Project…, for the sidebar's own +.
+func (a *appState) addItems(m *ui.Menu, pi int, withProject bool) {
+	if pi >= 0 && pi < len(a.projects) {
+		if m.Item("New Session").Chosen() {
+			a.newSessionIn(pi)
+		}
+		if m.Item("New Agent…").Chosen() {
+			a.switchProject(pi)
+			a.openWorktreeDialog(pi)
+		}
+		if m.Item("Add Process…").Chosen() {
+			a.switchProject(pi)
+			a.openProcessDialog(pi, nil)
+		}
+	}
+	if withProject {
+		if pi >= 0 && pi < len(a.projects) {
+			m.Separator()
+		}
+		if m.Item("Open Project…").Chosen() {
+			a.openProjectDialog()
+		}
+	}
+}
+
+// newSessionIn starts a session in project pi, showing it.
+func (a *appState) newSessionIn(pi int) {
+	if pi < 0 || pi >= len(a.projects) {
+		return
+	}
+	a.switchProject(pi)
+	a.newTerminalTab()
+}
+
+// projectEmpty tells a project with no session and no process.
+func (a *appState) projectEmpty(id string, tabs []topTab) bool {
+	for _, t := range tabs {
+		if t.Kind == tabTerminal {
+			return false
+		}
+	}
+	return len(a.procList[id]) == 0
+}
+
+func (a *appState) processGroup(c *ui.Context, pi int) {
+	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 4, 0, 28).AlignItems(ui.Center).Children(func() {
+		sectionLabel(c, "Processes")
+		ui.Spacer(c)
+		if cmdButton(c, iconPlus, 11, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
+			a.switchProject(pi)
+			a.openProcessDialog(pi, nil)
+		}
+	})
+	for _, proc := range a.procList[a.projects[pi].ID] {
+		a.processRow(c, pi, proc)
+	}
+}
+
+func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
+	selected := pi == a.active && a.activeTab >= 0 && a.activeTab < len(a.tabs) &&
+		a.tabs[a.activeTab].Kind == tabProcess && a.tabs[a.activeTab].Process == proc.Name
+	// A click on the port opens its page, and does not also open the tab.
+	portClicked := false
+	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 28).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	if selected {
+		row.Background(pal.RowSelected)
+	} else if row.Hovered() {
+		row.Background(pal.Hover)
+	}
+	row.Children(func() {
+		a.processIcon(c, proc, 13)
+		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		if proc.Status == procs.Exited || proc.Status == procs.Stopped {
+			name.TextColor(pal.TextMuted)
+		}
+		if proc.Changed {
+			// The file changed since the process started: a restart applies it.
+			ui.Box(c).Size(6, 6).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
+				p.FillPath(new(ui.Path).Circle(r.X+r.W/2, r.Y+r.H/2, min(r.W, r.H)/2), pal.Warn)
+			})
+		}
+		if proc.Status == procs.Untrusted {
+			pill(c, "untrusted")
+		}
+		if proc.Port > 0 {
+			port := pill(c, ":"+itoa(proc.Port))
+			active := proc.Status == procs.Starting || proc.Status == procs.Running
+			if active {
+				url := "http://localhost:" + itoa(proc.Port)
+				port.Cursor(ui.CursorPointer).Tooltip("Open " + url)
+				if port.Clicked() {
+					portClicked = true
+					a.openURL(url)
+				}
+			}
+		}
+		ui.Spacer(c)
+		if row.Hovered() {
+			active := proc.Status == procs.Starting || proc.Status == procs.Running
+			icon, label := iconPlus, "Start"
+			if active {
+				icon, label = iconX, "Stop"
+			}
+			if cmdButton(c, icon, 12, false).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
+				if active {
+					a.stopProcess(pi, proc.Name)
+				} else {
+					a.startProcess(pi, proc.Name)
+				}
+			}
+			if cmdButton(c, iconRotate, 12, false).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
+				a.restartProcess(pi, proc.Name)
+			}
+		}
+	})
+	tooltip := processStatusText(proc.Status)
+	if proc.Status == procs.Untrusted {
+		tooltip = "not trusted yet: Start to review it"
+	} else if proc.Message != "" {
+		tooltip = proc.Message
+	}
+	if proc.Changed {
+		tooltip += "\nDefinition changed: restart to apply"
+	}
+	row.Tooltip(tooltip)
+	if row.Clicked() && !portClicked {
+		a.showProcess(pi, proc.Name)
+	}
+	row.ContextMenu(func(m *ui.Menu) {
+		if proc.Status == procs.Starting || proc.Status == procs.Running {
+			if m.Item("Stop").Chosen() {
+				a.stopProcess(pi, proc.Name)
+			}
+		} else if m.Item("Start").Chosen() {
+			a.startProcess(pi, proc.Name)
+		}
+		if m.Item("Restart").Chosen() {
+			a.restartProcess(pi, proc.Name)
+		}
+		if m.Item("Edit…").Chosen() {
+			def := proc.Def
+			a.openProcessDialog(pi, &def)
+		}
+		moveLabel := "Move to omaterm.yml"
+		if !proc.Local {
+			moveLabel = "Keep Local"
+		}
+		if m.Item(moveLabel).Chosen() {
+			a.moveProcess(pi, proc)
+		}
+		if m.Item("Remove Process…").Chosen() {
+			a.askRemoveProcess(pi, proc)
+		}
+	})
 }
 
 // projectLead is the session of a project that needs the user most.
 func (a *appState) projectLead(tabs []topTab) (session.Info, bool) {
 	var infos []session.Info
 	for _, t := range tabs {
+		if t.Kind != tabTerminal {
+			continue
+		}
 		if i, ok := a.sessionInfo(t); ok {
 			infos = append(infos, i)
 		}
@@ -698,6 +914,8 @@ func (a *appState) openProjectDialog() {
 				Path: dir,
 			})
 			a.setProject(len(a.projects) - 1)
+			// Opening a folder asks for it: it starts with a session.
+			a.newTerminalTab()
 		})
 	}()
 }

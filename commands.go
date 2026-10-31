@@ -1,6 +1,8 @@
 package main
 
 import (
+	"slices"
+
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
 	"github.com/egoist/mygo/ui"
@@ -138,9 +140,62 @@ var commandRegistry = append([]Command{
 
 	{ID: "terminal.new", Title: "New Terminal Tab", Category: "Terminal",
 		Run: func(a *appState, c *ui.Context) { a.newTerminalTab() }},
-	{ID: "session.newWorktree", Title: "New Agent in Worktree…", Category: "Session",
-		Enabled: func(a *appState) bool { return a.project() != nil && service.RepoRoot(a.workspace) != "" },
+	// Its ID is the one it had as New Agent in Worktree…, which keybinding
+	// files may name.
+	{ID: "session.newWorktree", Title: "New Agent…", Category: "Session",
+		Enabled: func(a *appState) bool { return a.project() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.openWorktreeDialog(a.active) }},
+	{ID: "process.add", Title: "Add Process…", Category: "Process",
+		Enabled: func(a *appState) bool { return a.project() != nil },
+		Run:     func(a *appState, c *ui.Context) { a.openProcessDialog(a.active, nil) }},
+	{ID: "process.edit", Title: "Edit Process…", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
+		},
+		Run: func(a *appState, c *ui.Context) {
+			if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess {
+				tab := &a.tabs[a.activeTab]
+				if pi, ok := a.projectIndexForTab(tab.ID); ok {
+					for _, proc := range a.procList[a.projects[pi].ID] {
+						if proc.Name == tab.Process {
+							def := proc.Def
+							a.openProcessDialog(pi, &def)
+							return
+						}
+					}
+				}
+			}
+		}},
+	{ID: "process.startAll", Title: "Start All Processes", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.project() != nil && len(a.procList[a.projects[a.active].ID]) > 0
+		},
+		Run: func(a *appState, c *ui.Context) { a.startAllProcesses(a.active) }},
+	{ID: "process.stopAll", Title: "Stop All Processes", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.project() != nil && len(a.procList[a.projects[a.active].ID]) > 0
+		},
+		Run: func(a *appState, c *ui.Context) { a.stopAllProcesses(a.active) }},
+	{ID: "process.remove", Title: "Remove Process…", Category: "Process",
+		Enabled: func(a *appState) bool {
+			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
+		},
+		Run: func(a *appState, c *ui.Context) {
+			if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabProcess {
+				return
+			}
+			tab := a.tabs[a.activeTab]
+			pi, ok := a.projectIndexForTab(tab.ID)
+			if !ok {
+				return
+			}
+			for _, proc := range a.procList[a.projects[pi].ID] {
+				if proc.Name == tab.Process {
+					a.askRemoveProcess(pi, proc)
+					return
+				}
+			}
+		}},
 	{ID: "session.askReview", Title: "Ask for Review…", Category: "Session",
 		Enabled: func(a *appState) bool {
 			t := a.activeTabRef()
@@ -299,11 +354,20 @@ func (a *appState) closeActivePane(c *ui.Context) {
 
 // cycleTab moves the active tab by d, wrapping around.
 func (a *appState) cycleTab(d int) {
-	n := len(a.tabs)
+	indices := a.visibleTabIndices()
+	n := len(indices)
 	if n == 0 {
 		return
 	}
-	a.activateTab((a.activeTab + d + n) % n)
+	current := slices.Index(indices, a.activeTab)
+	if current < 0 {
+		if d < 0 {
+			current = 0
+		} else {
+			current = n - 1
+		}
+	}
+	a.activateTab(indices[(current+d+n)%n])
 }
 
 // fontSizeSteps is the range the zoom keys keep the text in, in DIPs. The

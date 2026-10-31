@@ -71,3 +71,25 @@ func TestStatusNames(t *testing.T) {
 		t.Errorf("staging a name with a space: %v", err)
 	}
 }
+
+// CreateBranch makes the branch at HEAD and switches to it; a name a
+// branch has already is refused.
+func TestCreateBranch(t *testing.T) {
+	root := t.TempDir()
+	gitIn(t, root, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "add", "a.txt")
+	gitIn(t, root, "commit", "-q", "-m", "a")
+	if _, err := CreateBranch(root, "feature/x"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := gitCmdIn(root, "branch", "--show-current").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "feature/x" {
+		t.Fatalf("on %q, %v", out, err)
+	}
+	if _, err := CreateBranch(root, "main"); err == nil {
+		t.Fatal("a branch that exists was created again")
+	}
+}

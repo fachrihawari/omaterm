@@ -18,6 +18,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/client"
 	"omaterm/internal/paths"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 )
@@ -45,6 +46,8 @@ type Remote struct {
 	// OnCall answers a call of the omaterm command the daemon forwarded,
 	// as the app's control socket would.
 	OnCall func(method string, params json.RawMessage) (any, error)
+	// OnProcess tells of a project process lifecycle event.
+	OnProcess func(procs.Event)
 	// OnConnection tells that the connection to the daemon went
 	// (reconnecting) or came back.
 	OnConnection func(reconnecting bool)
@@ -329,8 +332,55 @@ func (r *Remote) events(c *client.Client) {
 			if json.Unmarshal(m.Result, &n) == nil && onNotice != nil {
 				go onNotice(n.Pane, n.Title, n.Body)
 			}
+		case "process":
+			var event procs.Event
+			r.mu.Lock()
+			onProcess := r.OnProcess
+			r.mu.Unlock()
+			if json.Unmarshal(m.Result, &event) == nil && onProcess != nil {
+				go onProcess(event)
+			}
 		}
 	}
+}
+
+// ProcessList returns the project's supervised processes.
+func (r *Remote) ProcessList(project string) ([]procs.Proc, error) {
+	var out []procs.Proc
+	err := r.call("process.list", proto.ProcessParams{Project: project}, &out)
+	return out, err
+}
+
+// ProcessStart starts a supervised process.
+func (r *Remote) ProcessStart(project, name string) error {
+	return r.call("process.start", proto.ProcessParams{Project: project, Name: name}, nil)
+}
+
+// ProcessStop stops a supervised process.
+func (r *Remote) ProcessStop(project, name string) error {
+	return r.call("process.stop", proto.ProcessParams{Project: project, Name: name}, nil)
+}
+
+// ProcessRestart restarts a supervised process.
+func (r *Remote) ProcessRestart(project, name string) error {
+	return r.call("process.restart", proto.ProcessParams{Project: project, Name: name}, nil)
+}
+
+// ProcessTrust trusts the current definition of a process.
+func (r *Remote) ProcessTrust(project, name string) error {
+	return r.call("process.trust", proto.ProcessParams{Project: project, Name: name}, nil)
+}
+
+// ProcessSync reloads process definitions from the project state.
+func (r *Remote) ProcessSync(project string) error {
+	return r.call("process.sync", proto.ProcessParams{Project: project}, nil)
+}
+
+// SetProcessHook sets the callback for process lifecycle events.
+func (r *Remote) SetProcessHook(fn func(procs.Event)) {
+	r.mu.Lock()
+	r.OnProcess = fn
+	r.mu.Unlock()
 }
 
 // update takes the daemon's panes, telling the hooks of what changed.
@@ -395,7 +445,7 @@ func sameInfo(a, b session.Info) bool {
 // Start starts a pane in the daemon.
 func (r *Remote) Start(o session.StartOptions) (session.Handle, error) {
 	p := StartParams{ID: o.ID, Session: o.Session, Project: o.Project, ProjectName: o.ProjectName, ProjectDir: o.ProjectDir,
-		Dir: o.Dir, Command: o.Command, Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History}
+		Dir: o.Dir, Command: o.Command, Exec: o.Exec, Env: o.Env, Cols: o.Cols, Rows: o.Rows, History: o.History, Role: o.Role}
 	var info session.Info
 	if err := r.call("pane.start", p, &info); err != nil {
 		return nil, err

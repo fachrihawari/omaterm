@@ -6,6 +6,7 @@ import (
 	"omaterm/internal/shellcmd"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -122,7 +123,7 @@ func (a *appState) activeSplit() *splitNode {
 }
 
 func (a *appState) setActiveSplit(n *splitNode) {
-	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabTerminal {
+	if a.activeTab >= 0 && a.activeTab < len(a.tabs) && (a.tabs[a.activeTab].Kind == tabTerminal || a.tabs[a.activeTab].Kind == tabProcess) {
 		a.tabs[a.activeTab].Split = n
 	}
 }
@@ -156,6 +157,9 @@ func (a *appState) term(id string) *terminal.Terminal {
 	a.paneShown[id] = time.Now()
 	if p := a.panes.Get(id); p != nil {
 		return p.Term()
+	}
+	if tab := a.tabOfPane(id); tab >= 0 && a.tabs[tab].Kind == tabProcess {
+		return nil
 	}
 	if a.paneFailed[id] {
 		return nil
@@ -326,6 +330,12 @@ func (a *appState) openURL(url string) {
 // when it was the session's last, in whichever project it is, not only
 // the one shown. UI thread.
 func (a *appState) paneExited(id string) {
+	if a.status[id].Role == "process" {
+		return
+	}
+	if h := a.panes.Get(id); h != nil && h.Info().Role == "process" {
+		return
+	}
 	if a.panes.Get(id) == nil {
 		return
 	}
@@ -466,11 +476,15 @@ func (a *appState) removePaneIn(tab int, termID string) {
 // ---------------------------------------------------------------------------
 
 func (a *appState) terminalView(c *ui.Context) ui.Element {
+	processTab := a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
+	if processTab && a.tabs[a.activeTab].Split == nil {
+		return a.processPlaceholder(c, a.tabs[a.activeTab])
+	}
 	// The terminal view shows a session tab. Asked for while an editor or
 	// a diff is the tab (as after discarding a diff's changes), it shows
 	// the first session; a split was once added to that tab, starting a
 	// shell that nothing closed.
-	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || (a.tabs[a.activeTab].Kind != tabTerminal && a.tabs[a.activeTab].Kind != tabProcess) {
 		for i, t := range a.tabs {
 			if t.Kind == tabTerminal {
 				a.activateTab(i)
@@ -478,7 +492,10 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 			}
 		}
 	}
-	if len(a.tabs) == 0 || a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+	if len(a.tabs) == 0 || a.activeTab < 0 || a.activeTab >= len(a.tabs) || (a.tabs[a.activeTab].Kind != tabTerminal && a.tabs[a.activeTab].Kind != tabProcess) {
+		if p := a.project(); p != nil && !slices.ContainsFunc(a.tabs, func(t topTab) bool { return t.Kind == tabTerminal }) {
+			return a.projectStart(c, p)
+		}
 		return ui.Column(c).Fill().Background(pal.Card).Center().Gap(12).Children(func() {
 			ui.Box(c).Width(48).Height(48).Radius(12).Border(1, pal.BorderStrong).Background(pal.Raised).Children(func() {
 				ui.Column(c).Fill().Center().Children(func() {
@@ -529,6 +546,53 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 	}
 	return ui.Column(c).Fill().MinHeight(0).Children(func() {
 		a.renderPanes(c)
+	})
+}
+
+// projectStart is what a project with no session shows: what can start in
+// it, as its + offers, each with a word on what it is.
+func (a *appState) projectStart(c *ui.Context, p *project) ui.Element {
+	pi := a.active
+	title, about := "Nothing runs in "+p.Name+" yet", "Start a shell, an agent, or one of the project's processes."
+	if len(a.procList[p.ID]) > 0 {
+		title, about = "No sessions in "+p.Name, "Start a shell or an agent; its processes are in the sidebar."
+	}
+	return ui.Column(c.Key("project-start")).Fill().Background(pal.Card).Center().Gap(10).Children(func() {
+		ui.Box(c).Size(44, 44).Radius(12).Border(1, pal.BorderStrong).Background(pal.Raised).Children(func() {
+			ui.Column(c).Fill().Center().Children(func() {
+				ui.Icon(c, iconFolder).Size(22, 22).TextColor(pal.Accent)
+			})
+		})
+		ui.Text(c, title).FontSize(15).FontWeight(600).TextColor(pal.Text).Margin(2, 0, 0, 0)
+		ui.Text(c, about).FontSize(12.5).TextColor(pal.TextMuted)
+		ui.Column(c).Width(300).Gap(6).Margin(6, 0, 0, 0).Children(func() {
+			action := func(icon *ui.SVG, label, sub, keys string, first bool, do func()) {
+				b := ui.ButtonBase(c.Key("start-"+label)).Height(40).Radius(8).Padding(0, 12).Gap(10).AlignItems(ui.Center).
+					Border(1, pal.BorderStrong).Background(pal.Raised).Label(label)
+				if first {
+					b.Border(1, pal.Accent.Alpha(0.55))
+				}
+				if b.Hovered() {
+					b.Background(pal.Hover.Over(pal.Raised))
+				}
+				b.Children(func() {
+					ui.Icon(c, icon).Size(15, 15).TextColor(pal.TextMuted)
+					ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+						ui.Text(c, label).FontSize(12.5).FontWeight(550).TextColor(pal.Text).SingleLine()
+						ui.Text(c, sub).FontSize(11).TextColor(pal.TextFaint).SingleLine().Ellipsis("…")
+					})
+					if keys != "" {
+						ui.Text(c, keys).FontSize(10.5).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+					}
+				})
+				if b.Clicked() {
+					do()
+				}
+			}
+			action(iconTerminal, "New Session", "A shell in "+p.Name, keyLabels("terminal.new"), true, a.newTerminalTab)
+			action(iconBot, "New Agent…", "Claude Code, Codex, Antigravity…", "", false, func() { a.openWorktreeDialog(pi) })
+			action(iconPlus, "Add Process…", "A dev server or watcher, kept running", "", false, func() { a.openProcessDialog(pi, nil) })
+		})
 	})
 }
 

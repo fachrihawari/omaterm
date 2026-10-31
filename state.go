@@ -21,6 +21,7 @@ import (
 	"omaterm/internal/model"
 	"omaterm/internal/notice"
 	"omaterm/internal/paths"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/service"
@@ -32,6 +33,7 @@ type topTabKind int
 
 const (
 	tabTerminal topTabKind = iota
+	tabProcess
 	tabEditor
 	tabDiff
 	tabGraph
@@ -66,6 +68,7 @@ type topTab struct {
 	// Collapsed hides the sessions it started in the sidebar.
 	Parent    string
 	Collapsed bool
+	Process   string
 }
 
 const (
@@ -132,6 +135,8 @@ type openFile struct {
 type appState struct {
 	win          *mygo.Window
 	processTimer *time.Timer
+	// trustAsk is the trust sheet of an untrusted process, while it is open.
+	trustAsk *trustAsk
 	// historyMu orders a pane's close against saveHistories, which runs
 	// off the UI thread.
 	historyMu  sync.Mutex
@@ -143,6 +148,15 @@ type appState struct {
 	activeTab int
 
 	activeView topTabKind
+
+	procHost  procHost
+	procList  map[string][]procs.Proc
+	procTimer *time.Timer
+	procGen   int
+	// procDialog is the Add/Edit Process dialog while it is open, and
+	// processShared where its "Save in omaterm.yml" switch was left.
+	procDialog    *processDialogState
+	processShared *bool
 
 	sidebarVisible   bool
 	inspectorVisible bool
@@ -340,11 +354,12 @@ type appState struct {
 	agentSetupOffer string
 	agentSetupAsked bool
 	hookChecked     map[string]bool
-	// wtNew and wtMerge are the New Agent in Worktree and Merge dialogs,
-	// open while set; wtAgent, wtEnv and mergeSquash their last choices.
+	// wtNew and wtMerge are the New Agent and Merge dialogs, open while
+	// set; wtAgent, wtUse, wtEnv and mergeSquash their last choices.
 	wtNew       *worktreeNew
 	wtMerge     *worktreeMerge
 	wtAgent     string
+	wtUse       bool
 	wtEnv       bool
 	mergeSquash bool
 	// review is the Ask for Review dialog, open while set; reviewAgent its
@@ -526,6 +541,7 @@ type project struct {
 	Branch    string
 	Active    bool
 	Tabs      []string
+	Processes []procs.Def
 	// ActiveSession is the session to show first, as saved.
 	ActiveSession string
 }
@@ -547,6 +563,7 @@ func newApp() *appState {
 		panes:            session.NewLocalHost(),
 		paneFailed:       map[string]bool{},
 		wtEnv:            true,
+		wtUse:            true,
 		mergeSquash:      true,
 		paneShown:        map[string]time.Time{},
 		hookChecked:      map[string]bool{},
@@ -566,6 +583,7 @@ func newApp() *appState {
 		commitFiles:      map[string][]service.CommitFile{},
 		commitStats:      map[string][2]int{},
 		projects:         []project{},
+		procList:         map[string][]procs.Proc{},
 		settings:         loadSettings(),
 	}
 	a.hookPanes()
@@ -693,6 +711,7 @@ func (a *appState) start() {
 		a.loadProjectData()
 	}
 	a.startSystemStats()
+	a.startProcListRefresh()
 	if a.inspectorTab == 0 && a.inspectorShown {
 		a.startProcessRefresh()
 	}
@@ -702,6 +721,10 @@ func (a *appState) start() {
 // and processes. setProject calls it; so does start, once the window
 // exists, since loads begun before it had no window to report to.
 func (a *appState) loadProjectData() {
+	if a.procHost != nil {
+		a.procHost.Sync()
+		a.refreshProcList()
+	}
 	a.refreshRepos()
 	a.rebuildFileIndex()
 	a.rebuildFileTree()
@@ -853,7 +876,8 @@ func listProcesses(workspace string, roots []int) ([]service.Process, error) {
 	return procs, err
 }
 
-// paneShells returns the PIDs of the shown project's pane shells.
+// paneShells returns the PIDs of the shown project's pane shells, its
+// processes' too.
 func (a *appState) paneShells() []int {
 	p := a.project()
 	if p == nil {
@@ -868,6 +892,13 @@ func (a *appState) paneShells() []int {
 			if pid := a.status[id].PID; pid > 0 {
 				pids = append(pids, pid)
 			}
+		}
+	}
+	// The project's processes run in panes of their own: what they start
+	// is listed too, and named for them.
+	for _, proc := range a.procList[p.ID] {
+		if proc.PID > 0 {
+			pids = append(pids, proc.PID)
 		}
 	}
 	return pids

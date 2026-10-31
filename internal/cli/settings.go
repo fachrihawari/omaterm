@@ -76,7 +76,7 @@ func settingsCmd(args []string) error {
 }
 
 // HookAgents are the agents omaterm has a hook or plugin for.
-var HookAgents = []string{"claude", "codex", "pi", "opencode"}
+var HookAgents = []string{"claude", "codex", "pi", "opencode", "agy"}
 
 // AgentIntegration is what omaterm installed in one agent: its hook or
 // plugin, and the skill it reads, each "current", "outdated" or
@@ -110,11 +110,20 @@ func Integration(agent string) AgentIntegration {
 	return it
 }
 
-// skillGroup is the skill an agent reads: Claude Code's own, or the one
-// Codex, OpenCode and Pi share.
+// Installed tells whether omaterm's integration is in the agent at all.
+func (it AgentIntegration) Installed() bool { return it.HookState != "missing" }
+
+// Current tells whether all of the integration is installed and current.
+func (it AgentIntegration) Current() bool {
+	return it.HookState == "current" && it.SkillState == "current"
+}
+
+// skillGroup is the skill an agent reads: Claude Code's own,
+// Antigravity's own, or the one Codex, OpenCode and Pi share.
 func skillGroup(agent string) string {
-	if agent == "claude" {
-		return "claude"
+	switch agent {
+	case "claude", "agy":
+		return agent
 	}
 	return "agents"
 }

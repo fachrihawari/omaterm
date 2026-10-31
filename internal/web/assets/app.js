@@ -257,6 +257,7 @@ function sessionRow(s, proj, open) {
       h("span", { class: "body" },
         h("span", { class: "top" },
           h("span", { class: "name" }, s.name || label(lead)),
+          s.process ? h("span", { class: "chip" }, "process") : null,
           h("span", { class: `status ${st.cls}` }, st.text + (lead.since ? ` · ${ago(lead.since)}` : "")),
         ),
         sub ? h("span", { class: "sub" }, sub) : null,
@@ -535,6 +536,7 @@ function showTerm(id) {
       if (ws !== sock || closed) return;
       ws = null;
       if (e.code === 4401) { showPair("This browser was signed out."); return; }
+      if (e.code === 4410) { setNote(e.reason); return; }
       if (e.code === 4404 || gone) { setNote(gone ? "This session has ended." : "This session is gone."); return; }
       setNote(welcomed ? "Reconnecting…" : "Connecting…");
       setTimeout(async () => {

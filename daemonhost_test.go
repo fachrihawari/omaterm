@@ -13,6 +13,35 @@ import (
 	"omaterm/internal/session"
 )
 
+func TestPruneKeepsProcessPane(t *testing.T) {
+	dir, err := os.MkdirTemp("", "omh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "d.sock")
+	d, err := daemon.Start(daemon.Options{Socket: socket, StateDir: dir, StateFile: filepath.Join(dir, "state.json"), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Stop()
+	r, err := daemon.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Start(session.StartOptions{ID: "process1", Role: "process", Exec: true,
+		Command: []string{"sh", "-c", "exec cat"}, Cols: 80, Rows: 24}); err != nil {
+		t.Fatal(err)
+	}
+	a := newApp()
+	a.setPanes(r)
+	a.pruneUnknownPanes(r)
+	if r.Get("process1") == nil {
+		t.Fatal("pruned process pane")
+	}
+}
+
 // A daemon pane not shown for long lets go of the app's terminal, and one
 // shown keeps it; showing it again attaches anew, its screen intact.
 func TestDetachHiddenDaemonPanes(t *testing.T) {

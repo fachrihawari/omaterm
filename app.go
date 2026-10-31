@@ -153,6 +153,8 @@ func (a *appState) view(c *ui.Context) {
 
 	a.webPairDialog(c)
 	a.worktreeDialog(c)
+	a.processDialog(c)
+	a.trustDialog(c)
 	a.mergeDialog(c)
 	a.reviewDialog(c)
 
@@ -186,7 +188,8 @@ func (a *appState) view(c *ui.Context) {
 // modalOpen tells whether a dialog of the window waits for an answer.
 func (a *appState) modalOpen() bool {
 	return a.closeTabConfirmOpen != nil || a.quitAsk != nil || a.overwriteAsk != nil || a.killConfirmOpen != nil || a.removeProjectConfirmOpen != nil ||
-		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil || a.wtNew != nil || a.wtMerge != nil || a.review != nil
+		a.closeAsk != nil || a.webPairOpen != nil || a.daemonRefusedOpen != nil || a.wtNew != nil || a.wtMerge != nil || a.review != nil ||
+		a.trustAsk != nil || a.processDialogOpen()
 }
 
 // animColor animates e's color to target, or, with Reduce Motion on,
@@ -236,7 +239,7 @@ func (a *appState) fitPanels(w float32) {
 			need += a.sidebarWidth()
 		}
 		if insp {
-			need += a.inspectorW + a.paneGap()
+			need += a.inspectorWidth() + a.paneGap()
 		}
 		if need <= w {
 			break
@@ -296,9 +299,14 @@ func (a *appState) mainColumn(c *ui.Context) {
 				}
 			})
 			if a.inspectorShown {
-				card := ui.Column(c).Width(a.inspectorW).Shrink(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
-				cardEdge(card).Children(func() {
-					a.inspector(c)
+				// The inspector's left edge resizes it, as the sidebar's
+				// right edge does the sidebar.
+				ui.Row(c.Key("inspector")).Width(a.inspectorWidth()).Shrink(0).FillHeight().Children(func() {
+					a.panelEdge(c, "inspector-edge", &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
+					card := ui.Column(c).Grow(1).MinWidth(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
+					cardEdge(card).Children(func() {
+						a.inspector(c)
+					})
 				})
 			}
 		})
@@ -306,7 +314,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 }
 
 func (a *appState) content(c *ui.Context) {
-	if a.activeView == tabTerminal {
+	if a.activeView == tabTerminal || a.activeView == tabProcess {
 		a.terminalView(c)
 		return
 	}

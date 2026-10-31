@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
 
@@ -74,13 +75,22 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				grip.Background(pal.Hover).Cursor(ui.CursorGrab)
 			}
 		}
+		// A process's pane is named for the process, with its command: the
+		// shell that runs the command is no name for it.
+		proc, isProc := a.procOfTab(*tab)
 		grip.Children(func() {
-			if statusState(info) != iconNone {
+			switch {
+			case isProc && proc.Status != procs.Stopped:
+				a.processIcon(c, proc, 13)
+			case statusState(info) != iconNone:
 				a.statusIcon(c, info, 13)
-			} else {
+			default:
 				ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 			}
 			title := paneTitle(info, t)
+			if isProc {
+				title = proc.Name
+			}
 			name := ui.Text(c, title).FontSize(12.5).FontWeight(600).TextColor(pal.Text).SingleLine().Ellipsis("…").
 				Shrink(0.5).MinWidth(min(90, float32(len(title))*7)).MaxWidth(260)
 			if narrow {
@@ -91,8 +101,12 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 			if multi && !focused && !dragging {
 				name.TextColor(pal.TextMuted)
 			}
-			if dir := shortDir(info.WorkDir()); dir != "" && dir != title {
-				ui.Text(c, dir).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+			sub := shortDir(info.WorkDir())
+			if isProc {
+				sub = proc.Command
+			}
+			if sub != "" && sub != title {
+				ui.Text(c, sub).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
 			}
 		})
 		if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" {
@@ -274,7 +288,9 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 	if !show || w > 0 && w < 170 {
 		return
 	}
-	splits := w == 0 || w >= 260
+	// A process's pane is the process alone: a shell split into its tab
+	// would go when the process restarts.
+	splits := (w == 0 || w >= 260) && tab.Kind != tabProcess
 	row := ui.Row(c.Key("ctl")).Gap(2).AlignItems(ui.Center).Shrink(0)
 	row.Opacity(row.Animate("show", 1, 120*time.Millisecond))
 	row.Children(func() {

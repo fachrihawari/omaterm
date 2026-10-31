@@ -77,6 +77,9 @@ type Pane struct {
 // StartOptions are how Registry.Start runs a pane.
 type StartOptions struct {
 	ID, Session, Project string
+	// Role is the pane's role: "process" for a supervised project process,
+	// empty for a session's pane.
+	Role string
 	// ProjectName and ProjectDir tell programs the project they run in
 	// (OMATERM_PROJECT, OMATERM_PROJECT_DIR); not set, they aren't told.
 	ProjectName, ProjectDir string
@@ -891,6 +894,17 @@ func (p *Pane) screen() string {
 // which turns as a spinner while it works. Only a change of what shows
 // changes the status, so that a redraw changes nothing; p.mu is held.
 func (p *Pane) look(now time.Time, screen string) bool {
+	if p.recs.AgentWorking() && detect.Known(p.info.Agent) {
+		// The agent said it works, through omaterm report, and never
+		// said it was done: at its prompt, its turn is over, and so is
+		// the work. Left as it was, the pane would show working for good,
+		// and no message would reach the agent.
+		r := detect.Detect(p.info.Agent, detect.Input{Screen: screen, Title: p.info.Title, Progress: p.progress})
+		if r.State == detect.Idle && r.Visible && !r.Skip && p.recs.EndTurn(now.UnixMilli()) {
+			p.fromRecords()
+			p.changedLocked()
+		}
+	}
 	if p.recs.Declared() {
 		// What the program declares stands; once it ends, the screen
 		// tells again.

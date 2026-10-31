@@ -1,0 +1,18 @@
+# The processes every teammate runs for this project.
+name: myapp
+processes:
+  # The dev server, restarted when the source changes.
+  web:
+    command: npm run dev
+    port: 3000
+    autostart: true
+    watch:
+      - src/**
+  # Runs the jobs off the queue.
+  worker:
+    command: go run ./cmd/worker
+    restart: on-failure
+  # Keep this one as it is.
+  queue:
+    command: redis-server
+    port: 6379

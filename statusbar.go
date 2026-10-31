@@ -42,8 +42,8 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 		// Both open the Info tab, which lists them.
 		if statusSegment(c, func() {
 			ui.Text(c, "●").FontSize(8).TextColor(pal.Ok)
-			ui.Text(c, plural(len(a.processes), "process")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
-		}).Tooltip("Show processes (" + keyLabels("view.info") + ")").Clicked() {
+			ui.Text(c, itoa(len(a.processes))+" running").FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
+		}).Tooltip("Show what runs in this project (" + keyLabels("view.info") + ")").Clicked() {
 			a.setInspector(true)
 			a.showInspectorTab(0)
 		}

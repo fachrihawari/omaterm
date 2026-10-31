@@ -213,14 +213,18 @@ func (d *Daemon) handleOffline(ctx context.Context, method string, raw json.RawM
 			return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 		}
 		as := &agent.Session{Agent: p.Agent, ID: p.Session}
-		found.SetAgentSession(as)
 		info := found.Info()
-		d.change(func(st *model.State) (any, error) {
-			if _, pn := findPane(st, info.ID); pn != nil {
-				pn.Agent = as
-			}
-			return nil, nil
-		})
+		// Told again each turn (Antigravity's hook), the same conversation
+		// changes nothing.
+		if cur := info.AgentSession; cur == nil || *cur != *as {
+			found.SetAgentSession(as)
+			d.change(func(st *model.State) (any, error) {
+				if _, pn := findPane(st, info.ID); pn != nil {
+					pn.Agent = as
+				}
+				return nil, nil
+			})
+		}
 		return proto.AgentSessionResult{Pane: info.ID, Session: info.Session, Away: away}, nil
 	case "project.create":
 		var p proto.ProjectParams
@@ -277,6 +281,19 @@ func (d *Daemon) protoState(st model.State) proto.State {
 		ps.Lead, _ = session.Lead(ps.Panes)
 		ps.Name = sessionName(s, ps.Lead)
 		out.Sessions = append(out.Sessions, ps)
+	}
+	for _, project := range st.Projects {
+		for _, process := range d.procs.Sessions(project.ID) {
+			var info session.Info
+			if pane := d.reg.Get(process.Pane); pane != nil {
+				info = pane.Info()
+			} else {
+				info = session.Info{ID: process.Pane, Session: process.Session, Project: project.ID,
+					Role: "process", Status: session.Exited, Progress: -1}
+			}
+			out.Sessions = append(out.Sessions, proto.Session{ID: process.Session, Project: project.ID,
+				Name: process.Name, Process: process.Name, Panes: []proto.Pane{info}, Lead: info})
+		}
 	}
 	proto.DropGoneParents(out.Sessions)
 	return out

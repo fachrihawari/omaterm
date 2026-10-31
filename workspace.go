@@ -8,7 +8,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/model"
-	"omaterm/internal/shellcmd"
+	"omaterm/internal/procs"
 )
 
 // projectWS is a project's workspace while another project shows: its
@@ -85,12 +85,11 @@ func (a *appState) buildWorkspace(p *project) *projectWS {
 			w.tabs = append(w.tabs, t)
 		}
 	}
+	// With none saved, the tab names it starts with, if any; else none: a
+	// project shown with nothing in it says what can start there, and
+	// starts nothing itself (opening a new folder makes its first).
 	if len(w.tabs) == 0 {
-		names := p.Tabs
-		if len(names) == 0 {
-			names = []string{shellcmd.Name(shellcmd.Login())}
-		}
-		for _, name := range names {
+		for _, name := range p.Tabs {
 			t := topTab{ID: newID(), Kind: tabTerminal, Label: name, Dot: dotGreen,
 				Split: &splitNode{TermID: randomTermID()}}
 			if name == "tests" {
@@ -314,7 +313,7 @@ func (a *appState) loadState() int {
 			active = len(a.projects)
 		}
 		a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: abs, Collapsed: p.Collapsed,
-			ActiveSession: p.ActiveSession})
+			ActiveSession: p.ActiveSession, Processes: append([]procs.Def(nil), p.Processes...)})
 	}
 	for _, s := range st.Sessions {
 		a.saved[s.Project] = append(a.saved[s.Project], s)
@@ -352,7 +351,8 @@ func (a *appState) state() model.State {
 		if err != nil {
 			abs = p.Path
 		}
-		mp := model.Project{ID: p.ID, Name: p.Name, Dir: abs, Collapsed: p.Collapsed, ActiveSession: p.ActiveSession}
+		mp := model.Project{ID: p.ID, Name: p.Name, Dir: abs, Collapsed: p.Collapsed, ActiveSession: p.ActiveSession,
+			Processes: append([]procs.Def(nil), p.Processes...)}
 		tabs := a.projectTabs(p.ID)
 		if tabs == nil {
 			// Never shown this run: its sessions as they were saved.

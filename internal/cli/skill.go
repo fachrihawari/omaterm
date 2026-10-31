@@ -138,6 +138,18 @@ Reports are OSC 7501 sequences: omaterm shows them in its sidebar, and
 notifies the user when you are blocked or done while they look elsewhere.
 Report blocked only when you truly cannot go on without them.
 
+## Project processes
+
+A project's processes (a dev server, a queue worker, a watcher) are defined in
+omaterm.yml and run by omaterm, shared by the user and every agent. Use them
+rather than starting your own npm run dev:
+
+    omaterm ps                                   # the processes, their status and port
+    omaterm start web --wait                     # run it; exits once it is up
+    omaterm read web / omaterm wait web          # its output, and waiting on it: each runs as a session named after it
+
+omaterm.yml is yours to read, but adding or changing a process is the user's: ask them.
+
 ## Etiquette
 
 - Close what you started when it is done: ` + "`omaterm close <target>`" + `.
@@ -161,7 +173,7 @@ func skillCmd(args []string) error {
 	if len(f.pos) > 0 {
 		sub = f.pos[0]
 	}
-	agent := strings.ToLower(f.vals["agent"])
+	agent := agentArg(f.vals["agent"])
 	dirs, hooks := skillDirs(agent), hooksFor(agent)
 	switch sub {
 	case "show":
@@ -219,7 +231,17 @@ func skillCmd(args []string) error {
 		}
 		return nil
 	}
-	return usageErr("omaterm skill setup|show|status|remove [--agent claude|codex|pi|opencode|agents] [--dry-run]")
+	return usageErr("omaterm skill setup|show|status|remove [--agent claude|codex|pi|opencode|antigravity|agents] [--dry-run]")
+}
+
+// agentArg is an --agent as the commands take it: Antigravity by its
+// name or its command's.
+func agentArg(s string) string {
+	s = strings.ToLower(s)
+	if s == "antigravity" {
+		return "agy"
+	}
+	return s
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -250,17 +272,18 @@ func writeSkill(dir string) error {
 }
 
 // hooksFor returns the hooks that go with an --agent: Codex's, Pi's and
-// OpenCode's with the skill they share.
+// OpenCode's with the skill they share, Antigravity's with its own.
 func hooksFor(agent string) []integration {
 	switch agent {
-	case "", "claude", "codex", "pi", "opencode", "agents":
+	case "", "claude", "codex", "pi", "opencode", "agents", "agy":
 		return agentHooks(agent)
 	}
 	return nil
 }
 
-// skillDirs returns where agents read skills: Claude Code's, and the
-// shared one of Codex, OpenCode and others.
+// skillDirs returns where agents read skills: Claude Code's, the shared
+// one of Codex, OpenCode and others, and Antigravity's own when it is
+// installed (or named).
 func skillDirs(agent string) map[string]string {
 	home := paths.Home()
 	claude := os.Getenv("CLAUDE_CONFIG_DIR")
@@ -270,6 +293,7 @@ func skillDirs(agent string) map[string]string {
 	all := map[string]string{
 		"claude": filepath.Join(claude, "skills", "omaterm"),
 		"agents": filepath.Join(home, ".agents", "skills", "omaterm"),
+		"agy":    filepath.Join(antigravityConfig(), "skills", "omaterm"),
 	}
 	if agent = strings.ToLower(agent); agent != "" {
 		if d, ok := all[agent]; ok {
@@ -279,13 +303,30 @@ func skillDirs(agent string) map[string]string {
 			return map[string]string{"agents": all["agents"]}
 		}
 	}
+	if !antigravityInstalled() {
+		delete(all, "agy")
+	}
 	return all
+}
+
+// antigravityConfig is the folder Antigravity reads its global skills
+// from, as <it>/skills/<name>/SKILL.md; it shares no folder with the
+// others.
+func antigravityConfig() string {
+	return filepath.Join(paths.Home(), ".gemini", "config")
+}
+
+// antigravityInstalled tells whether Antigravity has run here: it made its
+// config folder.
+func antigravityInstalled() bool {
+	st, err := os.Stat(antigravityConfig())
+	return err == nil && st.IsDir()
 }
 
 // SkillState is where a skill for agents is, and whether it is current,
 // with the hooks that go with it.
 type SkillState struct {
-	Agent string // "claude", or "agents" (Codex, OpenCode, Pi…)
+	Agent string // "claude", "agents" (Codex, OpenCode, Pi…) or "agy" (Antigravity)
 	Dir   string
 	State string // "current", "outdated" (or partly installed) or "missing"
 }
@@ -295,6 +336,7 @@ var HookNotes = map[string]string{
 	"claude":   "Claude Code runs hooks only in folders you trust.",
 	"codex":    "Codex asks you to approve a new hook: run /hooks in it.",
 	"opencode": "OpenCode's background service loads plugins as it starts: run `opencode service restart` when no session is busy.",
+	"agy":      "Antigravity picks up the hook and the skill in sessions started from now on.",
 }
 
 // HookInstalled tells whether an agent's hook, which tells omaterm the
@@ -302,7 +344,7 @@ var HookNotes = map[string]string{
 // omaterm has no hook for.
 func HookInstalled(agent string) bool {
 	switch agent {
-	case "claude", "codex", "pi", "opencode":
+	case "claude", "codex", "pi", "opencode", "agy":
 	default:
 		return true
 	}
@@ -318,7 +360,7 @@ func HookInstalled(agent string) bool {
 // of agent.
 func SkillStates() []SkillState {
 	var out []SkillState
-	for _, agent := range []string{"claude", "agents"} {
+	for _, agent := range SkillGroups() {
 		dir := skillDirs(agent)[agent]
 		states := []string{skillState(dir)}
 		for _, h := range hooksFor(agent) {
@@ -334,6 +376,16 @@ func SkillStates() []SkillState {
 		out = append(out, SkillState{Agent: agent, Dir: dir, State: st})
 	}
 	return out
+}
+
+// SkillGroups are the skills omaterm installs here: Claude Code's, the
+// shared one, and Antigravity's when it is installed.
+func SkillGroups() []string {
+	groups := []string{"claude", "agents"}
+	if antigravityInstalled() {
+		groups = append(groups, "agy")
+	}
+	return groups
 }
 
 // InstallSkill installs, or updates, omaterm's skill and hooks for a kind of

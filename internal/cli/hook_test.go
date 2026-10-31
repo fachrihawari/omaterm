@@ -5,8 +5,10 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -202,4 +204,143 @@ func TestWriteThroughLink(t *testing.T) {
 	if data, _ := os.ReadFile(target); string(data) != `{"hooks": {}}` {
 		t.Errorf("the target holds %q", data)
 	}
+}
+
+// Antigravity reads skills and hooks from a folder of its own: setup puts
+// omaterm's skill there and omaterm's entry in its hooks.json, beside the
+// user's own hooks, once Antigravity is installed; removing it takes only
+// omaterm's away.
+func TestAntigravityIntegration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	for _, env := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"} {
+		t.Setenv(env, "")
+	}
+	config := filepath.Join(home, ".gemini", "config")
+	dir := filepath.Join(config, "skills", "omaterm")
+	hooksFile := filepath.Join(config, "hooks.json")
+	if _, ok := skillDirs("")["agy"]; ok || slices.Contains(SkillGroups(), "agy") {
+		t.Fatal("Antigravity's skill offered where Antigravity isn't installed")
+	}
+	if it := Integration("agy"); it.Present || it.Installed() {
+		t.Fatalf("not installed: %+v", it)
+	}
+	if err := os.MkdirAll(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mine := `{
+  "lint": {
+    "PostToolUse": [{"matcher": "run_command", "hooks": [{"command": "./lint.sh"}]}]
+  }
+}
+`
+	if err := os.WriteFile(hooksFile, []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := skillDirs(agentArg("Antigravity")); len(got) != 1 || got["agy"] != dir {
+		t.Fatalf("--agent antigravity: %v", got)
+	}
+	for _, h := range hooksFor("agents") {
+		if h.name() == "agy" {
+			t.Fatal("the shared skill's setup takes Antigravity's hook along")
+		}
+	}
+	if err := SetupAgent("agy"); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "SKILL.md")); err != nil || string(b) != skillGuide {
+		t.Fatalf("skill not written: %v", err)
+	}
+	b, _ := os.ReadFile(hooksFile)
+	var hooks map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(b, &hooks); err != nil {
+		t.Fatalf("hooks.json: %v\n%s", err, b)
+	}
+	if hooks["lint"] == nil || hooks["omaterm"]["SessionStart"] == nil || hooks["omaterm"]["PreInvocation"] == nil {
+		t.Fatalf("hooks.json after setup:\n%s", b)
+	}
+	var handlers []struct{ Type, Command string }
+	json.Unmarshal(hooks["omaterm"]["SessionStart"], &handlers)
+	if len(handlers) != 1 || handlers[0].Type != "command" || !strings.HasSuffix(handlers[0].Command, " hook agy SessionStart") {
+		t.Fatalf("SessionStart handlers: %+v", handlers)
+	}
+	it := Integration("agy")
+	if !it.Present || !it.Current() {
+		t.Fatalf("after setup: %+v", it)
+	}
+	// Set up again: nothing changes.
+	if err := SetupAgent("agy"); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := os.ReadFile(hooksFile); string(again) != string(b) {
+		t.Fatalf("a second setup changed hooks.json:\n%s", again)
+	}
+	// Another omaterm's command line is outdated.
+	os.WriteFile(hooksFile, []byte(strings.ReplaceAll(string(b), "omaterm' hook", "omaterm-old' hook")), 0o644)
+	if st := (agyHook{file: hooksFile}).state(); st != "outdated" {
+		t.Fatalf("another command line: %s", st)
+	}
+	if err := RemoveAgent("agy"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(hooksFile)
+	hooks = nil
+	json.Unmarshal(b, &hooks)
+	if hooks["omaterm"] != nil || hooks["lint"] == nil {
+		t.Fatalf("hooks.json after remove:\n%s", b)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("the skill stayed after removing the integration")
+	}
+}
+
+// Antigravity's hook always answers with a JSON object, as its hooks
+// must, and says nothing outside omaterm.
+func TestAgyHookOutsideOmaterm(t *testing.T) {
+	t.Setenv("OMATERM_PANE", "")
+	for _, event := range []string{"SessionStart", "PreInvocation"} {
+		out := captureStdout(t, func() {
+			withStdin(t, `{"conversationId":"1fb8bf09-f856-487f-bfae-67288362eb5b","invocationNum":0}`, func() {
+				if err := hookCmd([]string{"agy", event}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		})
+		if strings.TrimSpace(out) != "{}" {
+			t.Fatalf("%s outside omaterm printed %q", event, out)
+		}
+	}
+}
+
+// withStdin runs fn with in as the process's standard input.
+func withStdin(t *testing.T, in string, fn func()) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteString(in)
+	w.Close()
+	old := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = old; r.Close() }()
+	fn()
+}
+
+// captureStdout is what fn writes to the standard output.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	fn()
+	os.Stdout = old
+	w.Close()
+	b, _ := io.ReadAll(r)
+	r.Close()
+	return string(b)
 }

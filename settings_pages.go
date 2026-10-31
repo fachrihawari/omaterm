@@ -636,9 +636,9 @@ func (a *appState) settingsAgents(c *ui.Context) {
 			it := d.agents[name]
 			sub, on := "Not set up", false
 			switch {
-			case it.HookState == "current" && it.SkillState == "current":
+			case it.Current():
 				sub, on = "Hook and skill installed", true
-			case it.HookState != "missing" || it.SkillState != "missing":
+			case it.Installed() || it.SkillState != "missing":
 				sub = "Needs an update"
 			case !it.Present:
 				sub = "Not installed on this computer"
@@ -693,12 +693,12 @@ func (a *appState) settingsAgent(c *ui.Context) {
 		a.settingsRow(c, "Skill", settingsRowOpts{sub: cli.ShortPath(it.SkillDir), mono: true}, func() { state(it.SkillState) })
 	})
 	settingsActions(c, func() {
-		installed := it.HookState != "missing"
+		installed := it.Installed()
 		if installed && settingsButton(c, "Remove Integration", false, true, false) {
 			a.settingsUI.sheet = &settingsSheet{
 				title:   "Remove the " + agent.DisplayName(name) + " integration?",
 				danger:  true,
-				text:    "omaterm stops learning this agent's conversation, so a restart can only continue the folder's last one.",
+				text:    "omaterm stops learning this agent's conversation, so a restart can't resume it.",
 				confirm: "Remove",
 				run: func(c *ui.Context) {
 					if err := cli.RemoveAgent(name); err != nil {
@@ -710,7 +710,7 @@ func (a *appState) settingsAgent(c *ui.Context) {
 			}
 		}
 		label := "Set Up"
-		if installed && (it.HookState != "current" || it.SkillState != "current") {
+		if installed && !it.Current() {
 			label = "Update"
 		}
 		if (!installed || label == "Update") && settingsButton(c, label, true, false, false) {

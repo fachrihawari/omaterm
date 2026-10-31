@@ -35,6 +35,11 @@ func (rs *Records) Apply(r Record) {
 		}
 		return
 	}
+	if r.ID == "" && (r.State == "done" || r.State == "idle") {
+		// The program's turn ended: what the agent in it said it was
+		// doing is over too, whether or not it said so.
+		rs.EndTurn(r.Updated)
+	}
 	if _, ok := rs.m[r.ID]; !ok && len(rs.m) >= MaxRecords {
 		oldest := ""
 		first := true
@@ -71,6 +76,35 @@ func (rs *Records) drop(states ...string) bool {
 		}
 	}
 	return changed
+}
+
+// AgentID is the id of the reports the omaterm command makes from inside
+// an agent's pane, apart from its program's, which have none.
+const AgentID = "agent"
+
+// EndTurn ends what the agent reported it was working on: its program's
+// turn is over, so the work is done, and its last word stays as the
+// pane's. It reports whether any report changed.
+func (rs *Records) EndTurn(at int64) bool {
+	changed := false
+	for id, r := range rs.m {
+		if r.State == "working" && (id == AgentID || strings.HasPrefix(id, AgentID+"/")) {
+			r.State, r.Progress, r.Updated = "done", -1, at
+			rs.m[id] = r
+			changed = true
+		}
+	}
+	return changed
+}
+
+// AgentWorking reports whether the agent, not its program, says it works.
+func (rs *Records) AgentWorking() bool {
+	for id, r := range rs.m {
+		if r.State == "working" && (id == AgentID || strings.HasPrefix(id, AgentID+"/")) {
+			return true
+		}
+	}
+	return false
 }
 
 // Declared reports whether a program declared it works or waits, which

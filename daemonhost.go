@@ -18,6 +18,7 @@ import (
 	"omaterm/internal/crash"
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 )
@@ -34,6 +35,7 @@ func (a *appState) useDaemon() {
 		if !a.settings.Daemon && runtime.GOOS == "linux" && daemon.ServiceInstalled() {
 			a.serviceConflict = true
 		}
+		a.useLocalProcHost()
 		return
 	}
 	r, err := daemon.Connect(true)
@@ -43,13 +45,21 @@ func (a *appState) useDaemon() {
 		// before restarting it, and shows no pane until then.
 		open := true
 		a.daemonRefusedOpen, a.daemonRefusedPID = &open, refused.Welcome.PID
+		a.useLocalProcHost()
 		return
 	}
 	if err != nil {
 		log.Printf("session daemon: %v; panes run in the app", err)
+		a.useLocalProcHost()
 		return
 	}
 	r.TermOptions = a.termStartOptions
+	r.SetProcessHook(func(event procs.Event) {
+		a.post(func() {
+			a.processEvent(event)
+			a.refreshProcList()
+		})
+	})
 	// Panes a stopped daemon took with it start again from their saved
 	// scrollback, as after a restart.
 	r.OnLost = func(ids []string) {
@@ -84,6 +94,7 @@ func (a *appState) useDaemon() {
 				// And end the panes of sessions closed while it was away,
 				// as at launch: they ran on unseen.
 				a.pruneUnknownPanes(r)
+				a.refreshProcList()
 				if a.saveDeferred {
 					a.saveDeferred = false
 					a.saveState()
@@ -93,6 +104,7 @@ func (a *appState) useDaemon() {
 	}
 	a.setPanes(r)
 	a.hookPanes()
+	a.setProcHost(&remoteProcs{remote: r})
 
 	a.pruneUnknownPanes(r)
 	// Another build, even of this version: its sessions run older code.
@@ -114,8 +126,8 @@ func (a *appState) pruneUnknownPanes(r *daemon.Remote) {
 			known[p.ID] = true
 		}
 	}
-	for id := range r.Infos() {
-		if !known[id] {
+	for id, info := range r.Infos() {
+		if !known[id] && info.Role != "process" {
 			r.Remove(id)
 		}
 	}

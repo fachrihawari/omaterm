@@ -18,7 +18,8 @@ func twoProjectApp(t *testing.T) *appState {
 	a.wsOwner = ""
 	a.ws = map[string]*projectWS{}
 	a.termCmd = []string{"sleep", "30"}
-	a.projects = []project{{ID: "pa", Name: "a", Path: t.TempDir()}, {ID: "pb", Name: "b", Path: t.TempDir()}}
+	// Each starts with a session, as a project opened from a folder does.
+	a.projects = []project{{ID: "pa", Name: "a", Path: t.TempDir(), Tabs: []string{"sh"}}, {ID: "pb", Name: "b", Path: t.TempDir(), Tabs: []string{"sh"}}}
 	a.active = -1
 	a.setProject(0)
 	return a
@@ -103,9 +104,10 @@ func TestSessionsRoundTrip(t *testing.T) {
 	if got := b.tabs[0].Split.termIDs(); len(got) != 2 || got[0] != first {
 		t.Fatalf("split %v", got)
 	}
-	// Project b was never shown: its sessions come back as saved.
+	// Project b was never shown, so it saved no session: shown, it starts
+	// none by itself.
 	b.switchProject(1)
-	if len(b.tabs) != 1 {
+	if len(b.tabs) != 0 {
 		t.Fatalf("project b tabs %+v", b.tabs)
 	}
 }
@@ -159,6 +161,7 @@ func TestFirstSessionNamedAfterShell(t *testing.T) {
 	a.win = nil
 	a.projects = []project{{Name: "test", Path: t.TempDir()}}
 	a.setProject(0)
+	a.newTerminalTab()
 	if len(a.tabs) != 1 || a.tabs[0].Label != shellcmd.Name(shellcmd.Login()) || !autoLabel(a.tabs[0].Label) {
 		t.Fatalf("tabs %+v: want one named after the shell", a.tabs)
 	}

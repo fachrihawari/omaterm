@@ -67,6 +67,15 @@ func Args(shell string, command []string) []string {
 	return []string{name, "-l", "-i", "-c", script}
 }
 
+// LoginArgs is the argv that runs a command in the user's non-interactive
+// login shell, whose exit status is the command's.
+func LoginArgs(shell, cmd string) []string {
+	if Name(shell) == "fish" {
+		cmd = "status job-control full; " + cmd
+	}
+	return []string{shell, "-l", "-c", cmd}
+}
+
 // Quote quotes an argument for a shell's command line.
 func Quote(shell, s string) string {
 	if s != "" && strings.IndexFunc(s, func(r rune) bool {

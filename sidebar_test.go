@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -25,5 +26,165 @@ func TestSidebarShowsSummary(t *testing.T) {
 	tr.Frame()
 	if tr.HasText("All tests pass now") {
 		t.Fatal("the compact sidebar shows the summary")
+	}
+}
+
+// Both side panels resize by their edge, within their bounds, and a double
+// click on the edge brings the width back to the default.
+func TestPanelEdgesResize(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.sidebarVisible, a.inspectorVisible = true, true
+	a.sidebarW, a.inspectorW = sidebarDefaultW, inspectorDefaultW
+	// The sidebar's width animates to what it was dragged to; the test
+	// looks for the edge where the width is, not where it is on its way.
+	a.settings.ReduceMotion = true
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	drag := func(x, dx float32) {
+		t.Helper()
+		tr.Press(x, 450)
+		tr.Frame()
+		tr.Move(x+dx, 450)
+		tr.Frame()
+		tr.Release(x+dx, 450)
+		tr.Frame()
+	}
+	drag(a.sidebarWidth()-3, 60)
+	if a.sidebarW != sidebarDefaultW+60 {
+		t.Fatalf("sidebar after a drag: %v", a.sidebarW)
+	}
+	drag(a.sidebarWidth()-3, 1000)
+	if a.sidebarW != sidebarMaxW {
+		t.Fatalf("sidebar past its bound: %v", a.sidebarW)
+	}
+	gap := a.paneGap()
+	edge := func() float32 { return 1440 - gap - a.inspectorWidth() + 3 }
+	drag(edge(), -50)
+	if a.inspectorW != inspectorDefaultW+50 {
+		t.Fatalf("inspector after a drag: %v", a.inspectorW)
+	}
+	drag(edge(), 1000)
+	if a.inspectorW != inspectorMinW {
+		t.Fatalf("inspector past its bound: %v", a.inspectorW)
+	}
+	x := edge()
+	tr.ClickAt(x, 450)
+	tr.ClickAt(x, 450)
+	tr.Frame()
+	if a.inspectorW != inspectorDefaultW {
+		t.Fatalf("inspector after a double click: %v", a.inspectorW)
+	}
+}
+
+// What can be added is one + away: the sidebar's + lists a session, an
+// agent, a process and a project; a project's own menu starts with the
+// first three; an empty project offers them as links.
+func TestSidebarAddMenu(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.projects = append(a.projects, project{ID: "empty-project", Name: "quiet", Path: t.TempDir()})
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if err := tr.Click("New"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	want := []string{"New Session", "New Agent…", "Add Process…", "-", "Open Project…"}
+	if got := tr.Menu(); !slices.Equal(got, want) {
+		t.Fatalf("the + menu lists %q, want %q", tr.Menu(), want)
+	}
+	if err := tr.ChooseMenuItem("Add Process…"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.procDialog == nil || !a.procDialog.open {
+		t.Fatal("Add Process… from the + menu did not open the process dialog")
+	}
+	a.procDialog = nil
+	tr.Frame()
+
+	head, ok := tr.Find("test")
+	if !ok {
+		t.Fatal("project header is missing")
+	}
+	tr.RightClickAt(head.X+head.W/2, head.Y+head.H/2)
+	tr.Frame()
+	if menu := tr.Menu(); len(menu) < 3 || !slices.Equal(menu[:3], want[:3]) {
+		t.Fatalf("the project's menu starts with %q", menu)
+	}
+	tr.CloseMenu()
+
+	tr.Frame()
+}
+
+// A project with nothing in it says so in one line, and nothing starts
+// there by itself: its chevron opens and closes it without showing it,
+// and shown, it offers what can start there.
+func TestEmptyProject(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.projects = append(a.projects, project{ID: "empty-project", Name: "quiet", Path: t.TempDir()})
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if !tr.HasText("No sessions") {
+		t.Fatal("the empty project doesn't say it has no sessions")
+	}
+	head, ok := tr.Find("quiet")
+	if !ok {
+		t.Fatal("no header for the empty project")
+	}
+	// Its chevron, at the header's left: closes it, the project shown
+	// stays the one shown, and no session starts.
+	tr.ClickAt(head.X-14, head.Y+head.H/2)
+	tr.Frame()
+	if a.projects[a.active].ID == "empty-project" || !a.projects[1].Collapsed {
+		t.Fatalf("the chevron: active=%q collapsed=%v", a.projects[a.active].ID, a.projects[1].Collapsed)
+	}
+	tr.Move(700, 700) // off the header, whose + shows while it is hovered
+	tr.Frame()
+	if !tr.HasText("empty") || tr.HasText("No sessions") {
+		t.Fatal("the closed empty project doesn't say it is empty")
+	}
+	if n := len(a.projectTabs("empty-project")); n != 0 {
+		t.Fatalf("closing the empty project started %d sessions", n)
+	}
+	// Its name shows it: no session starts, the main area offers them.
+	if err := tr.Click("quiet"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.projects[a.active].ID != "empty-project" || len(a.tabs) != 0 {
+		t.Fatalf("showing the empty project: active=%q tabs=%d", a.projects[a.active].ID, len(a.tabs))
+	}
+	for _, text := range []string{"Nothing runs in quiet yet", "New Session", "New Agent…", "Add Process…"} {
+		if !tr.HasText(text) {
+			t.Fatalf("the empty project's main area lacks %q", text)
+		}
+	}
+	if err := tr.Click("New Session"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if len(a.tabs) != 1 || a.tabs[0].Kind != tabTerminal {
+		t.Fatalf("New Session made %d tabs", len(a.tabs))
+	}
+}
+
+// A folder opened for the first time starts with a session, as asked;
+// opened again, it shows what it has.
+func TestOpenFolderStartsASession(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	dir := t.TempDir()
+	a.openFromArgs([]string{dir}, "")
+	if p := a.project(); p == nil || p.Path != dir || len(a.tabs) != 1 || a.tabs[0].Kind != tabTerminal {
+		t.Fatalf("opened %v with %d tabs", a.project(), len(a.tabs))
+	}
+	a.closeTab(0)
+	a.switchProject(0)
+	a.openFromArgs([]string{dir}, "")
+	if len(a.tabs) != 0 {
+		t.Fatalf("opening a known folder again started %d sessions", len(a.tabs))
 	}
 }

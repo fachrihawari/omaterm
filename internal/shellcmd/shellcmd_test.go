@@ -2,6 +2,7 @@ package shellcmd
 
 import (
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,15 @@ func TestArgs(t *testing.T) {
 	}
 	if !strings.HasPrefix(Args("/usr/bin/fish", []string{"ls"})[4], "status job-control full; ") {
 		t.Error("fish job control")
+	}
+}
+
+func TestLoginArgs(t *testing.T) {
+	if got := LoginArgs("/bin/sh", "exit 3"); !slices.Equal(got, []string{"/bin/sh", "-l", "-c", "exit 3"}) {
+		t.Errorf("sh: %q", got)
+	}
+	if got := LoginArgs("/usr/bin/fish", "exit 3"); !slices.Equal(got, []string{"/usr/bin/fish", "-l", "-c", "status job-control full; exit 3"}) {
+		t.Errorf("fish: %q", got)
 	}
 }
 

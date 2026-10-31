@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -116,6 +117,10 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		return map[string]any{"app": appVersion(), "proto": proto.Version}, nil
 	case "state":
 		return h.onUI(func() (any, error) { return a.protoState(h.started), nil })
+	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync":
+		// The app's process host answers: the daemon's supervisor through
+		// it, or the app's own when there is no daemon.
+		return h.onUI(func() (any, error) { return a.processCall(method, raw) })
 	case "create", "split":
 		p, err := decode[proto.CreateParams](raw)
 		if err != nil {
@@ -418,8 +423,27 @@ func (a *appState) protoState(started time.Time) proto.State {
 			s.Name = a.sessionName(t, s.Lead)
 			st.Sessions = append(st.Sessions, s)
 		}
+		for _, process := range a.procList[p.ID] {
+			if process.Pane == "" {
+				continue
+			}
+			var info session.Info
+			if pane := a.panes.Get(process.Pane); pane != nil {
+				info = pane.Info()
+			} else {
+				info = session.Info{ID: process.Pane, Session: process.Session, Project: p.ID,
+					Role: "process", Status: session.Exited, Progress: -1}
+			}
+			st.Sessions = append(st.Sessions, proto.Session{ID: process.Session, Project: p.ID,
+				Name: process.Name, Process: process.Name, Panes: []proto.Pane{info}, Lead: info})
+		}
 	}
 	proto.DropGoneParents(st.Sessions)
+	st.Workspace = a.workspace
+	for _, p := range a.ports {
+		st.Ports = append(st.Ports, proto.Port{Port: p.Port, Name: p.Name, Process: p.Process, Pid: p.Pid,
+			URL: fmt.Sprintf("http://localhost:%d", p.Port), Open: p.Open})
+	}
 	return st
 }
 
@@ -566,7 +590,7 @@ func (a *appState) findPane(id string) (pi int, tabs *[]topTab, ti int, ok bool)
 			continue
 		}
 		for ti, t := range *tabs {
-			if t.Split != nil && t.Split.contains(id) {
+			if t.Kind == tabTerminal && t.Split != nil && t.Split.contains(id) {
 				return pi, tabs, ti, true
 			}
 		}
@@ -600,7 +624,7 @@ func (a *appState) findSession(id string) (pi int, tabs *[]topTab, ti int, ok bo
 			continue
 		}
 		for ti, t := range *tabs {
-			if t.ID == id {
+			if t.Kind == tabTerminal && t.ID == id {
 				return pi, tabs, ti, true
 			}
 		}
@@ -844,9 +868,13 @@ func (a *appState) agentSession(p proto.AgentSessionParams) (any, error) {
 	if found == nil {
 		return nil, proto.Errorf(proto.CodeNotFound, "no pane runs that agent")
 	}
-	found.SetAgentSession(&agent.Session{Agent: p.Agent, ID: p.Session})
 	info := found.Info()
-	a.post(a.saveSoon)
+	// Told again each turn (Antigravity's hook), the same conversation
+	// changes nothing.
+	if cur := info.AgentSession; cur == nil || cur.Agent != p.Agent || cur.ID != p.Session {
+		found.SetAgentSession(&agent.Session{Agent: p.Agent, ID: p.Session})
+		a.post(a.saveSoon)
+	}
 	return proto.AgentSessionResult{Pane: info.ID, Session: info.Session, Away: away}, nil
 }
 

@@ -89,7 +89,13 @@ func (a *appState) openFromArgs(args []string, wd string) {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return
 	}
+	known := len(a.projects)
 	a.switchProject(a.addProject(dir, ""))
+	// A folder opened for the first time starts with a session, as Open
+	// Project… makes it.
+	if len(a.projects) > known && len(a.tabs) == 0 {
+		a.newTerminalTab()
+	}
 }
 
 func main() {
