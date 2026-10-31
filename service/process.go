@@ -565,6 +565,35 @@ func IsWorkspaceTooBroad(workspace string) bool {
 			home = h
 		}
 	}
+	return workspaceTooBroad(runtime.GOOS, abs, home)
+}
+
+// workspaceTooBroad is IsWorkspaceTooBroad on one OS's paths, so that a
+// test on Linux can ask about Windows ones.
+func workspaceTooBroad(goos, abs, home string) bool {
+	if goos == "windows" {
+		// Windows has no one path under the root: D:\app is a project.
+		// A drive's root and Windows' own folders hold too much, though.
+		//
+		// filepath.VolumeName and friends read the host's paths, so the
+		// Windows form is taken apart here.
+		p := strings.TrimRight(strings.ReplaceAll(abs, "/", `\`), `\`)
+		vol := windowsVolume(p)
+		rest := strings.Trim(p[len(vol):], `\`)
+		if rest == "" {
+			return true
+		}
+		if home != "" && strings.EqualFold(p, strings.TrimRight(strings.ReplaceAll(home, "/", `\`), `\`)) {
+			return true
+		}
+		if !strings.Contains(rest, `\`) {
+			switch strings.ToLower(rest) {
+			case "users", "windows", "program files", "program files (x86)":
+				return true
+			}
+		}
+		return false
+	}
 	broad := []string{"/", "/home", "/usr", "/tmp", "/var", "/opt", "/etc"}
 	for _, b := range broad {
 		if abs == b {
@@ -580,4 +609,25 @@ func IsWorkspaceTooBroad(workspace string) bool {
 		return true
 	}
 	return false
+}
+
+// windowsVolume is Windows' filepath.VolumeName: "C:" for a drive, and
+// \\host\share for a UNC path, as paths arrive with \ separators.
+func windowsVolume(p string) string {
+	if len(p) >= 2 && p[1] == ':' && ('a' <= p[0] && p[0] <= 'z' || 'A' <= p[0] && p[0] <= 'Z') {
+		return p[:2]
+	}
+	if len(p) >= 2 && p[0] == '\\' && p[1] == '\\' {
+		s := p[2:]
+		i := strings.IndexByte(s, '\\')
+		if i < 0 {
+			return p
+		}
+		j := strings.IndexByte(s[i+1:], '\\')
+		if j < 0 {
+			return p
+		}
+		return p[:2+i+1+j]
+	}
+	return ""
 }
