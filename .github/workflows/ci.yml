@@ -105,6 +105,11 @@ jobs:
             ./internal/worktree ./internal/tunnel ./internal/devurl ./internal/web \
             ./internal/session ./internal/peer ./service
 
+      # What macOS lets a user bind on port 443, which Dev URLs depend on:
+      # the test logs it, and -v shows the log.
+      - name: Dev URLs on port 443
+        run: go test -count=1 -v -run 'TestListenTCPOnThisMac' ./internal/devurl
+
       # The session daemon and the omaterm command start real daemons and
       # processes, timed for Linux. They don't block a push until they have
       # proved steady on a Mac.

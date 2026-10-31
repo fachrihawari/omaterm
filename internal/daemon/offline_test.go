@@ -76,7 +76,13 @@ func TestWorktreeWithWindowClosed(t *testing.T) {
 
 	p := proto.CreateParams{Dir: proj, Worktree: &proto.WorktreeParams{Branch: "x"}}
 	made := call[proto.Created](t, c, "create", p)
-	dir := filepath.Join(proj, ".worktrees", "x")
+	// git names the repository by its real path: macOS's temporary folder,
+	// /var/folders, is a link into /private.
+	real, err := filepath.EvalSymlinks(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(real, ".worktrees", "x")
 	saved, err := model.Load(d.stateFile())
 	if err != nil || len(saved.Projects) != 1 || len(saved.Sessions) != 1 {
 		t.Fatalf("state.json: %+v, %v", saved, err)
