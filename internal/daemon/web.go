@@ -59,16 +59,22 @@ func (d *Daemon) reloadWeb() (web.Status, error) {
 		log.Printf("web access: stopped")
 	}
 	// The tunnel follows the server: none while web access is off, and a
-	// new one when it moves or the setting changes.
+	// new one when it moves or the setting changes. It is taken out under
+	// the lock and stopped after it: stopping can take seconds, and the
+	// daemon's loop waits for the lock.
+	var old *webTunnel
 	if d.webTunnel != nil && (!cfg.Enabled || want == "" ||
 		d.webTunnel.spec.Provider != want || d.webTunnel.spec.Target != target) {
-		d.webTunnel.stop()
-		d.webTunnel = nil
+		old, d.webTunnel = d.webTunnel, nil
+	}
+	d.webMu.Unlock()
+	if old != nil {
+		old.stop()
 	}
 	if !cfg.Enabled {
-		d.webMu.Unlock()
 		return web.Status{}, nil
 	}
+	d.webMu.Lock()
 	if d.web == nil {
 		s, err := web.Listen(addr, d, store)
 		if err != nil {
@@ -309,14 +315,16 @@ func (d *Daemon) webServing() bool {
 
 func (d *Daemon) stopWeb() {
 	d.webMu.Lock()
-	defer d.webMu.Unlock()
 	if d.web != nil {
 		d.web.Close()
 		d.web = nil
 	}
-	if d.webTunnel != nil {
-		d.webTunnel.stop()
-		d.webTunnel = nil
+	// Stopped past the lock, as in reloadWeb.
+	old := d.webTunnel
+	d.webTunnel = nil
+	d.webMu.Unlock()
+	if old != nil {
+		old.stop()
 	}
 }
 

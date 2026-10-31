@@ -271,3 +271,62 @@ func TestWebTunnelRefusesAPortTheUserServes(t *testing.T) {
 		t.Fatalf("status %+v, want the error %q", st, want)
 	}
 }
+
+// slowTunnel is a tunnel whose Stop takes as long as the test lets it, as
+// tailscale serve off can.
+type slowTunnel struct {
+	fakeTunnel
+	stopping chan struct{} // closed when Stop was called
+	release  chan struct{} // Stop returns when it closes
+}
+
+func (s *slowTunnel) Stop() error {
+	close(s.stopping)
+	<-s.release
+	return s.fakeTunnel.Stop()
+}
+
+// A tunnel that is slow to stop does not hold the lock the daemon's loop
+// takes: webServing answers while web access is being turned off.
+func TestWebSlowTunnelStopDoesNotBlockTheDaemon(t *testing.T) {
+	d, _ := startDaemon(t, time.Minute)
+	slow := &slowTunnel{
+		fakeTunnel: fakeTunnel{url: "https://box.tailnet.ts.net", done: make(chan struct{})},
+		stopping:   make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	undoStart := swapStartTunnel(func(ctx context.Context, s tunnel.Spec) (tunnel.Tunnel, error) {
+		return slow, nil
+	})
+	defer undoStart()
+
+	d.webStore().SetConfig(func(c *web.Config) { c.Enabled, c.Port, c.Tunnel = true, freePort(), "tailscale" })
+	reload(t, d)
+
+	d.webStore().SetConfig(func(c *web.Config) { c.Enabled = false })
+	reloaded := make(chan struct{})
+	go func() {
+		defer close(reloaded)
+		d.Handle(context.Background(), "web.reload", nil)
+	}()
+	select {
+	case <-slow.stopping:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tunnel was not stopped")
+	}
+
+	answered := make(chan bool, 1)
+	go func() { answered <- d.webServing() }()
+	select {
+	case <-answered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("webServing waited for the tunnel to stop")
+	}
+
+	close(slow.release)
+	select {
+	case <-reloaded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reload did not finish")
+	}
+}
