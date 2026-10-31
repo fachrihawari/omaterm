@@ -994,7 +994,7 @@ func (a *appState) openProjectDialog() {
 		a.win.Update(func() {
 			// Switch to it when already in the list.
 			for i, p := range a.projects {
-				if p.Path == dir {
+				if samePath(p.Path, dir) {
 					a.setProject(i)
 					return
 				}

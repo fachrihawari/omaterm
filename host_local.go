@@ -511,13 +511,19 @@ func within(dir, root string) bool {
 	return ospath.Contains(runtime.GOOS, root, dir)
 }
 
+// samePath reports whether a and b name the same folder or file: c:\proj
+// and C:\Proj do on Windows, where the names are the same.
+func samePath(a, b string) bool {
+	return ospath.Same(runtime.GOOS, a, b)
+}
+
 // addProject adds a folder as a project, unless it is one; it returns its
 // index, -1 when projects can't be added: while the sessions file can't be
 // read, nothing is saved, and the sessions of a project added then were
 // ended as unknown at the next launch.
 func (a *appState) addProject(dir, name string) int {
 	for i, p := range a.projects {
-		if p.Path == dir {
+		if samePath(p.Path, dir) {
 			return i
 		}
 	}
