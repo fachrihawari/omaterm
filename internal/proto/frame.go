@@ -19,6 +19,13 @@ const (
 	FrameResized byte = 'z' // daemon → app: the pane took cols, rows (uint16s)
 	FrameClosed  byte = 'c' // daemon → app: the pane is gone
 	FrameTheme   byte = 't' // app → daemon: the colors shown (19 RGBA)
+	// FrameKey: page → daemon, a key by name ("shift+tab", "ctrl+enter",
+	// "esc", "up", "ctrl+c", "f5"), which the daemon encodes as the pane's
+	// program asked keys to be (its keyboard modes).
+	FrameKey byte = 'k'
+	// FramePaste: page → daemon, text to paste, bracketed when the pane's
+	// program takes pastes so; what the user typed, so no hold applies.
+	FramePaste byte = 'p'
 )
 
 const maxFrame = 16 << 20
