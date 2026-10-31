@@ -49,6 +49,26 @@ func command() string {
 	return gitPath
 }
 
+// Command is git with args, for the packages that run it themselves: the
+// git command picks. When that is none because git is only macOS's stub,
+// the command's Start fails with ErrNoGit, and no dialog asks to install
+// the tools; without any git it fails as exec's lookup does.
+func Command(ctx context.Context, args ...string) *exec.Cmd {
+	return commandWith(ctx, command(), args...)
+}
+
+// commandWith is Command with git as command picked it.
+func commandWith(ctx context.Context, git string, args ...string) *exec.Cmd {
+	if git == "" {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		if cmd.Err == nil {
+			cmd.Err = ErrNoGit
+		}
+		return cmd
+	}
+	return exec.CommandContext(ctx, git, args...)
+}
+
 // run runs git in dir, with env added, and returns its output.
 func run(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
 	git := command()

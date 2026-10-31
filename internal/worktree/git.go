@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"omaterm/internal/gitsnap"
 )
 
 // command is git in dir, set up as omaterm runs it: it never takes the
 // index's optional lock, and never asks for a password.
 func command(ctx context.Context, dir string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-optional-locks", "-c", "core.quotepath=false", "-c", "color.ui=false"}, args...)...)
+	cmd := gitsnap.Command(ctx, append([]string{"--no-optional-locks", "-c", "core.quotepath=false", "-c", "color.ui=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	hide(cmd)

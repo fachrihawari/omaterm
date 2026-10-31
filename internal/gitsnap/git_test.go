@@ -5,12 +5,32 @@ package gitsnap
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// A git found only as macOS's stub runs nothing: the command fails with
+// ErrNoGit. Without git at all it fails as exec's lookup does.
+func TestCommandWithoutGit(t *testing.T) {
+	if command() == "" {
+		t.Skip("no git")
+	}
+	out, err := Command(context.Background(), "version").Output()
+	if err != nil || !strings.HasPrefix(string(out), "git version") {
+		t.Errorf("git version: %q %v", out, err)
+	}
+	if err := commandWith(context.Background(), "", "version").Run(); !errors.Is(err, ErrNoGit) {
+		t.Errorf("stub: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if err := commandWith(context.Background(), "", "version").Run(); !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("none: %v", err)
+	}
+}
 
 // repo makes a repository with a first commit of files, and returns it.
 func repo(t *testing.T, files map[string]string) Repo {
