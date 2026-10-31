@@ -69,14 +69,8 @@ func RuntimeDir() string {
 	return ConfigDir()
 }
 
-// DaemonSocketPath is the session daemon's socket, beside the app's:
-// $OMATERM_DAEMON_SOCKET, else the runtime directory's. Panes are given the
-// variable, so a shell whose own XDG_RUNTIME_DIR differs from the app's
-// still finds the daemon the app uses.
+// DaemonSocketPath is the session daemon's socket, beside the app's.
 func DaemonSocketPath() string {
-	if p := os.Getenv("OMATERM_DAEMON_SOCKET"); p != "" {
-		return p
-	}
 	p := filepath.Join(RuntimeDir(), Name()+"-daemon.sock")
 	if len(p) > 100 {
 		h := fnv.New32a()

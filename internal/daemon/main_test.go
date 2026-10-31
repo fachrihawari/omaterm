@@ -38,8 +38,6 @@ func TestMain(m *testing.M) {
 	// macOS ignores XDG_CONFIG_HOME: OMATERM_CONFIG_HOME isolates it there.
 	os.Setenv("XDG_CONFIG_HOME", cfg)
 	os.Setenv("OMATERM_CONFIG_HOME", cfg)
-	// A pane's daemon socket would lead the tests to the developer's daemon.
-	os.Unsetenv("OMATERM_DAEMON_SOCKET")
 	code := m.Run()
 	os.RemoveAll(cfg)
 	os.Exit(code)

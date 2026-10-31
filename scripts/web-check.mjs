@@ -34,7 +34,7 @@ const env = {
   XDG_STATE_HOME: join(tmp, "state"),
   XDG_RUNTIME_DIR: join(tmp, "run"),
 };
-for (const k of ["OMATERM_PANE", "OMATERM_SESSION", "OMATERM_SOCKET", "OMATERM_DAEMON_SOCKET"]) delete env[k];
+for (const k of ["OMATERM_PANE", "OMATERM_SESSION", "OMATERM_SOCKET"]) delete env[k];
 mkdirSync(env.XDG_RUNTIME_DIR);
 chmodSync(env.XDG_RUNTIME_DIR, 0o700);
 

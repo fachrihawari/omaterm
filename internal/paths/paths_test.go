@@ -22,18 +22,3 @@ func TestConfigHome(t *testing.T) {
 		t.Errorf("a development build's ConfigDir() = %s, want %s", got, want)
 	}
 }
-
-// OMATERM_DAEMON_SOCKET, which panes get, names the daemon's socket whatever
-// the runtime directory is; unset, the runtime directory's is used.
-func TestDaemonSocketOverride(t *testing.T) {
-	run := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", run)
-	t.Setenv("OMATERM_DAEMON_SOCKET", "")
-	if p := DaemonSocketPath(); filepath.Dir(filepath.Dir(p)) != run {
-		t.Fatalf("without the variable the socket is %s, want one in %s", p, run)
-	}
-	t.Setenv("OMATERM_DAEMON_SOCKET", "/elsewhere/d.sock")
-	if p := DaemonSocketPath(); p != "/elsewhere/d.sock" {
-		t.Errorf("DaemonSocketPath() = %s, want the variable's", p)
-	}
-}
