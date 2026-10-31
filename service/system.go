@@ -11,22 +11,22 @@ type SystemStats struct {
 	CPUPercent float64 // -1 until a second sample gives a delta
 	MemUsed    uint64  // bytes
 	MemTotal   uint64  // bytes
-	OK         bool    // false when /proc could not be read
+	OK         bool    // false when the system could not be read
 }
 
-// SystemSampler samples system CPU and memory from /proc. CPU is the
-// busy share between two calls, so keep one sampler across samples: the
-// first call only primes it.
+// SystemSampler samples system CPU and memory: from /proc on Linux, from
+// mach's statistics on macOS. CPU is the busy share between two calls, so
+// keep one sampler across samples: the first call only primes it.
 type SystemSampler struct {
 	prevTotal, prevIdle uint64
 	primed              bool
 }
 
-// Sample reads /proc/stat and /proc/meminfo. On non-Linux systems, or
-// when /proc is unavailable, it returns OK false.
+// Sample reads /proc/stat and /proc/meminfo, or macOS's counterparts.
+// Elsewhere, or when they can't be read, it returns OK false.
 func (s *SystemSampler) Sample() SystemStats {
 	st := SystemStats{CPUPercent: -1}
-	total, idle, ok := readCPUTimes()
+	total, idle, ok := cpuTimes()
 	if ok {
 		if s.primed && total > s.prevTotal {
 			busy := (total - s.prevTotal) - (idle - s.prevIdle)
@@ -40,7 +40,7 @@ func (s *SystemSampler) Sample() SystemStats {
 		s.prevTotal, s.prevIdle = total, idle
 		s.primed = true
 	}
-	if used, all, ok := readMemInfo(); ok {
+	if used, all, ok := memUsage(); ok {
 		st.MemUsed, st.MemTotal = used, all
 	}
 	st.OK = ok
