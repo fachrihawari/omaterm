@@ -122,9 +122,11 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 		if ownProcess(pid, name) {
 			continue
 		}
+		args := pty.ProcArgs(pid)
+		name = displayName(name, args)
 
 		// The full command line, truncated.
-		cmdLine := strings.TrimSpace(strings.Join(pty.ProcArgs(pid), " "))
+		cmdLine := strings.TrimSpace(strings.Join(args, " "))
 		if r := []rune(cmdLine); len(r) > 60 {
 			cmdLine = string(r[:57]) + "..." // whole characters: cut by bytes, one broke
 		}
@@ -184,6 +186,28 @@ func parsePSUsage(out string) map[int]usage {
 		m[pid] = u
 	}
 	return m
+}
+
+// displayName is what the Info panel calls a process: its name, unless
+// that is a version, as native Claude Code's executable is named
+// (~/.local/share/claude/versions/2.1.3), when the command it was run as
+// says more: "claude".
+func displayName(name string, args []string) string {
+	if len(args) == 0 || !isVersion(name) {
+		return name
+	}
+	if base := filepath.Base(args[0]); base != "" && base != "." && !isVersion(base) {
+		return base
+	}
+	return name
+}
+
+// isVersion tells whether s is digits and dots, as 2.1.3.
+func isVersion(s string) bool {
+	if s == "" || s[0] < '0' || s[0] > '9' {
+		return false
+	}
+	return strings.Trim(s, "0123456789.") == ""
 }
 
 // ownProcess reports whether a process is omaterm's own: the app, its

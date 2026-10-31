@@ -68,3 +68,23 @@ func TestWaitEndsWithPane(t *testing.T) {
 		t.Fatal("the wait goes on after the pane closed")
 	}
 }
+
+// A script is named by itself, its runtime apart, whatever the runtime's
+// case: Homebrew's Python on macOS runs as "Python".
+func TestScriptName(t *testing.T) {
+	for _, c := range []struct {
+		proc          string
+		args          []string
+		name, runtime string
+	}{
+		{"node", []string{"node", "/usr/lib/node_modules/codex/bin/codex.js"}, "codex", "node"},
+		{"python3", []string{"python3", "manage.py", "runserver"}, "manage", "python"},
+		{"Python", []string{"/opt/homebrew/bin/python3", "serve.py"}, "serve", "python"},
+		{"Python", []string{"python3"}, "Python", ""},
+		{"vim", []string{"vim", "main.go"}, "vim", ""},
+	} {
+		if name, runtime := scriptName(c.proc, c.args); name != c.name || runtime != c.runtime {
+			t.Errorf("%s %q: %q, %q; want %q, %q", c.proc, c.args, name, runtime, c.name, c.runtime)
+		}
+	}
+}

@@ -156,3 +156,24 @@ func TestParseLsofListen(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// Native Claude Code's executable is named by its version; the Info panel
+// names it by the command it was run as.
+func TestDisplayName(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"2.1.3", []string{"claude", "--resume"}, "claude"},
+		{"2.1.3", []string{"/Users/me/.local/bin/claude"}, "claude"},
+		{"2.1.3", nil, "2.1.3"},
+		{"2.1.3", []string{"/Users/me/.local/share/claude/versions/2.1.3"}, "2.1.3"},
+		{"node", []string{"node", "server.js"}, "node"},
+		{"1password", []string{"op"}, "1password"},
+	} {
+		if got := displayName(c.name, c.args); got != c.want {
+			t.Errorf("%q %q: %q, want %q", c.name, c.args, got, c.want)
+		}
+	}
+}

@@ -777,6 +777,19 @@ var (
 	procCwd  = pty.ProcCwd
 )
 
+// scriptName names a program that runs a script by the script, as "codex",
+// not "node", with the runtime apart. Homebrew's and the framework's
+// Python on macOS run as "Python": the runtimes are matched in any case.
+func scriptName(proc string, args []string) (name, runtime string) {
+	switch lower := strings.ToLower(proc); lower {
+	case "node", "bun", "python", "python3", "deno":
+		if len(args) > 1 {
+			return strings.TrimSuffix(filepath.Base(args[1]), filepath.Ext(args[1])), strings.TrimSuffix(lower, "3")
+		}
+	}
+	return proc, ""
+}
+
 // tick follows the foreground program and the shell's directory, and reads
 // the screen of a pane that changed. It reports whether Info changed.
 func (p *Pane) tick(now time.Time) bool {
@@ -796,13 +809,7 @@ func (p *Pane) tick(now time.Time) bool {
 		proc = procName(pg)
 		args := procArgs(pg)
 		ag = agent.Detect(proc, args)
-		if proc == "node" || proc == "bun" || proc == "python" || proc == "python3" || proc == "deno" {
-			// A script: name it by the script, as "codex", not "node".
-			if len(args) > 1 {
-				runtime = strings.TrimSuffix(proc, "3")
-				proc = strings.TrimSuffix(filepath.Base(args[1]), filepath.Ext(args[1]))
-			}
-		}
+		proc, runtime = scriptName(proc, args)
 		if ag != "" {
 			proc = ag
 		}
