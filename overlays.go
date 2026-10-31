@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -148,10 +149,12 @@ func (a *appState) quickOpenItems() []service.FuzzyMatch {
 		// Recent documents first, then everything else.
 		var recents []string
 		if a.win != nil {
-			prefix := a.workspace + "/"
+			// Recent documents come in the OS's form; the index and the
+			// open tabs name a file with /, so it is compared that way.
+			prefix := filepath.ToSlash(a.workspace) + "/"
 			for _, p := range mygo.App.RecentDocuments() {
-				if strings.HasPrefix(p, prefix) {
-					recents = append(recents, strings.TrimPrefix(p, prefix))
+				if r, ok := strings.CutPrefix(filepath.ToSlash(p), prefix); ok {
+					recents = append(recents, r)
 				}
 			}
 		}

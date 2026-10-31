@@ -143,7 +143,7 @@ func IndexFiles(workspace string, maxFiles int) []string {
 		if ig != nil && ig.matches(rel) {
 			return nil
 		}
-		files = append(files, rel)
+		files = append(files, filepath.ToSlash(rel))
 		if maxFiles > 0 && len(files) >= maxFiles {
 			return filepath.SkipAll
 		}
