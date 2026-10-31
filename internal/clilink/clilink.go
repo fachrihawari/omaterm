@@ -54,7 +54,20 @@ func linkExe(exe, link string) error {
 			return err
 		}
 	}
-	return os.Rename(tmp, link)
+	if err := os.Rename(tmp, link); err != nil {
+		// Windows won't replace an executable that runs, as a hook or an
+		// omaterm wait in a pane does, but it moves one: the old file goes
+		// aside, to be removed once nothing runs it.
+		old := link + ".old"
+		os.Remove(old)
+		if os.Rename(link, old) != nil {
+			os.Remove(tmp)
+			return err
+		}
+		return os.Rename(tmp, link)
+	}
+	os.Remove(link + ".old")
+	return nil
 }
 
 // same tells whether a and b are the same file.

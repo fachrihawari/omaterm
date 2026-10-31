@@ -143,7 +143,7 @@ jobs:
           ./internal/model ./internal/keys ./internal/notice ./internal/crash
           ./internal/theme ./internal/paths ./internal/client ./internal/ctl
           ./internal/gitsnap ./internal/worktree ./internal/tunnel ./internal/web
-          ./internal/cli
+          ./internal/cli ./internal/clilink ./internal/pty ./internal/shellcmd
 
   # The real app in a headless sway, driven by keys and the omaterm
   # command (e2e/). It doesn't block a push until it has proved steady on

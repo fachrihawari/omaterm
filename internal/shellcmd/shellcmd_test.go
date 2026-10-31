@@ -2,6 +2,7 @@ package shellcmd
 
 import (
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -40,6 +41,9 @@ func TestLoginArgs(t *testing.T) {
 
 // The command's exit status reaches the terminal as OSC 133;D.
 func TestArgsReportsExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no /bin/sh: windows_run_test.go runs PowerShell's")
+	}
 	args := Args("/bin/sh", []string{"sh", "-c", "exit 7"})
 	// Replace the trailing exec of a login shell, which would wait for
 	// input, with nothing.
