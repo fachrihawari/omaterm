@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/procs"
+	"omaterm/internal/proto"
 )
 
 func TestProcessSidebarAndTab(t *testing.T) {
@@ -176,4 +178,41 @@ func waitProcessFrame(t *testing.T, tr *ui.Tester, ready func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("process did not reach the expected state")
+}
+
+// A process's session in the state carries the process: its status, port,
+// link and message, so a client of the state needs no second call.
+func TestProtoStateProcessSessionCarriesItsProcess(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	projectID := a.projects[a.active].ID
+	def := procs.Def{Name: "web", Command: "serve", URL: "shop", Port: 4001}
+	a.procList = map[string][]procs.Proc{projectID: {
+		{Def: def, Status: procs.Running, Pane: "proc-web-1", Session: procs.SessionID(projectID, "web"), Trusted: true, Link: "https://shop.localhost", Message: "hello"},
+		{Def: procs.Def{Name: "idle", Command: "x"}, Status: procs.Stopped, Session: procs.SessionID(projectID, "idle")}, // no pane: no session
+	}}
+	var found *proto.Session
+	st := a.protoState(time.Now())
+	for i := range st.Sessions {
+		if st.Sessions[i].Process == "web" {
+			found = &st.Sessions[i]
+		}
+	}
+	if found == nil || found.Proc == nil {
+		t.Fatalf("no process session with its process: %+v", st.Sessions)
+	}
+	p := found.Proc
+	if p.Status != procs.Running || p.Port != 4001 || p.Link != "https://shop.localhost" || p.Message != "hello" || !p.Trusted || p.URL != "shop" {
+		t.Fatalf("proc %+v", p)
+	}
+	b, _ := json.Marshal(found)
+	if !strings.Contains(string(b), `"proc":{`) || !strings.Contains(string(b), `"link":"https://shop.localhost"`) {
+		t.Fatalf("json: %s", b)
+	}
+	// A session that isn't a process has none.
+	for _, s := range st.Sessions {
+		if s.Process == "" && s.Proc != nil {
+			t.Fatalf("a plain session has a proc: %+v", s)
+		}
+	}
 }

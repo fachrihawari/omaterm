@@ -449,8 +449,9 @@ func (a *appState) protoState(started time.Time) proto.State {
 				info = session.Info{ID: process.Pane, Session: process.Session, Project: p.ID,
 					Role: "process", Status: session.Exited, Progress: -1}
 			}
+			proc := process
 			st.Sessions = append(st.Sessions, proto.Session{ID: process.Session, Project: p.ID,
-				Name: process.Name, Process: process.Name, Panes: []proto.Pane{info}, Lead: info})
+				Name: process.Name, Process: process.Name, Proc: &proc, Panes: []proto.Pane{info}, Lead: info})
 		}
 	}
 	proto.DropGoneParents(st.Sessions)

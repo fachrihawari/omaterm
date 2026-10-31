@@ -117,6 +117,10 @@ type Session struct {
 	// that is one: its id is procs.SessionID, and its one pane the
 	// process's current or last run.
 	Process string `json:"process,omitempty"`
+	// Proc is that process as the process.* methods tell it (its status,
+	// port, link, message), so that a client of the state needs no second
+	// call to show it.
+	Proc *Process `json:"proc,omitempty"`
 }
 
 // Process is a project process as the process.* methods tell it.
