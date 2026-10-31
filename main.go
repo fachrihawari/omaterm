@@ -16,6 +16,7 @@ import (
 	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
 	"omaterm/internal/daemon"
+	"omaterm/internal/loginenv"
 	"omaterm/internal/paths"
 	"omaterm/internal/theme"
 )
@@ -150,6 +151,10 @@ func main() {
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
+	// Opened from Finder or the Dock on macOS, the app has launchd's bare
+	// PATH: take the login shell's before anything looks a tool up or
+	// starts the daemon, which inherits it.
+	loginenv.Import(runtime.GOOS)
 	// A crash prints its report and is gone: keep it, and tell the user
 	// of the ones past runs left.
 	crashes := crash.Unseen(paths.StateDir())
