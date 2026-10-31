@@ -117,9 +117,33 @@ func TestDevURLServesAProcessOverHTTPS(t *testing.T) {
 		t.Fatalf("proxy status: %v\n%s", err, out)
 	}
 
-	// Stopped, the name answers with the page that says so.
+	// Stopped, the name answers with the page that says so, and the server
+	// is gone: a process's program doesn't outlive its stop.
 	a.MustCLI("stop", "web")
+	if !programEnded(p.PID) {
+		t.Fatalf("the server (pid %d) still runs after stop", p.PID)
+	}
 	if code, body := get("shop.localhost"); code != http.StatusBadGateway || !strings.Contains(body, "web isn't running") {
 		t.Fatalf("after stop: %d %q", code, body)
 	}
+
+	// Nor does it outlive the daemon: started again, then the daemon stops.
+	a.MustCLI("start", "web", "--wait")
+	again := a.proc(t, "web")
+	if again.PID == 0 || again.PID == p.PID {
+		t.Fatalf("after the second start: %+v", again)
+	}
+	a.MustCLI("daemon", "stop")
+	if !programEnded(again.PID) {
+		t.Fatalf("the server (pid %d) outlived the daemon", again.PID)
+	}
+}
+
+// programEnded waits a moment for a program to end: a zombie not yet reaped
+// has ended too.
+func programEnded(pid int) bool {
+	return poll(3*time.Second, func() bool {
+		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		return err != nil || strings.Contains(string(b), ") Z ")
+	})
 }
