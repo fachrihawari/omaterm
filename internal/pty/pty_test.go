@@ -147,7 +147,9 @@ func TestStopEndsTheWholeGroup(t *testing.T) {
 	}{
 		{"a child ignoring the hangup", `trap "" HUP; sleep 300 & echo $! > FILE; wait`, 0},
 		{"a program and child ignoring terminate", `trap "" HUP TERM; sleep 300 & echo $! > FILE; wait`, 300 * time.Millisecond},
-		{"a child left after the program exited", `(trap "" HUP TERM; exec sleep 300) & echo $! > FILE`, 300 * time.Millisecond},
+		// The child inherits the ignored signals: a trap of its own would
+		// race the hangup that the program's exit sends it.
+		{"a child left after the program exited", `trap "" HUP TERM; sleep 300 & echo $! > FILE`, 300 * time.Millisecond},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "pid")
