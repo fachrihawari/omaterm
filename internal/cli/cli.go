@@ -31,7 +31,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "merge", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "daemon", "clients", "web", "settings", "services", "ps", "start", "stop", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "clients", "web", "proxy", "settings", "services", "ps", "start", "stop", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -197,6 +197,8 @@ func run(args []string) error {
 		return clientsCmd(args)
 	case "web":
 		return webCmd(args)
+	case "proxy":
+		return proxyCmd(args)
 	case "settings":
 		return settingsCmd(args)
 	}
@@ -1196,6 +1198,10 @@ Project processes, from omaterm.yml and the ones kept in omaterm:
   omaterm clients [--json]               who the session daemon serves
   omaterm web on [--network]|off|status|pair|devices|revoke|tunnel
                                          sessions in a browser, through a tunnel or the network
+  omaterm proxy status [--json]          Dev URLs: what works, and the routes
+  omaterm proxy setup [--dry-run]        make https://<name>.localhost open: trusts omaterm's
+                                         authority, opens port 443 (asks for your password)
+  omaterm proxy uninstall                undo it
   omaterm settings [page]                open the Settings window: general, appearance,
                                          terminal, editor, notifications, agents, web,
                                          browser, keyboard, about
