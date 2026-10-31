@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"omaterm/internal/gitsnap"
 	"omaterm/internal/mail"
 	"omaterm/internal/model"
+	"omaterm/internal/ospath"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
@@ -502,8 +504,11 @@ func (a *appState) projectFor(ref, dir string) int {
 	return 0
 }
 
+// within reports whether dir is root, or inside it: /home/a holds
+// /home/a/src and not /home/ab, on Windows too, where a \ separates and
+// case is no matter.
 func within(dir, root string) bool {
-	return dir == root || strings.HasPrefix(dir, strings.TrimSuffix(root, "/")+"/")
+	return ospath.Contains(runtime.GOOS, root, dir)
 }
 
 // addProject adds a folder as a project, unless it is one; it returns its

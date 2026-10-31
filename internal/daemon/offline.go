@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/gitsnap"
 	"omaterm/internal/model"
+	"omaterm/internal/ospath"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
@@ -709,8 +711,7 @@ func addProject(st *model.State, dir, name string) (int, error) {
 }
 
 func within(dir, root string) bool {
-	rel, err := filepath.Rel(root, dir)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+	return ospath.Contains(runtime.GOOS, root, dir)
 }
 
 // SharedEnv are the variables the app gives the daemon's new panes
