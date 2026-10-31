@@ -44,7 +44,8 @@ an editor and a browser sit next to your shells.
 - **Sessions that keep running.** Close the window and they carry on. After a
   reboot, agents resume the same conversation.
 - **On your phone.** Pair a browser with a QR code, then watch and type into
-  any session.
+  any session, in the app's own look, with a key bar and a box for writing
+  prompts. omaterm can run the Tailscale or Cloudflare tunnel for you.
 - **Everything next to the terminal.** A Git panel, commit graph, diffs, a
   file tree, an editor and browser panes.
 - **Scriptable.** The `omaterm` command lets agents and scripts open panes,
@@ -340,16 +341,30 @@ editor with syntax highlighting and Markdown preview.
 <img src="site/assets/web-phone.png" width="240" align="right" alt="A session on a phone, with a key bar for Esc, Tab, Ctrl and the arrows">
 
 **Web access** shows your sessions in a browser: which agents are working or
-need you, and any pane as a live terminal you can type into, with a key bar
-for Esc, Ctrl and the arrows on a phone.
+need you, your project's processes with their status and address, and any
+pane as a live terminal you can type into. The page looks like the app and
+follows its theme, light or dark, on a desktop browser and on a phone.
 
 Turn it on in Settings, or with `omaterm web on`. It serves on
-`127.0.0.1:7370`; reach it through a tunnel you already trust:
+`127.0.0.1:7370`, which only this computer can open. To reach it from your
+phone or another computer, let omaterm run a tunnel:
+**Settings → Web Access → Reach it from elsewhere**, or
 
 ```sh
-tailscale serve --bg 7370                       # your tailnet only
-cloudflared tunnel --url http://127.0.0.1:7370  # a public https URL
+omaterm web on --tunnel tailscale    # your own devices on your tailnet
+omaterm web on --tunnel cloudflare   # a public https link
+omaterm web on --tunnel none         # no tunnel
 ```
+
+omaterm starts the tunnel with web access, starts it again if it ends, stops
+it when you turn web access off, and puts its address in the link and the QR
+code. Each needs its tool installed: `tailscale` (signed in) or `cloudflared`.
+**Tailscale** reaches only your devices. **Cloudflare** makes a public link
+that anyone who has it can open, though the page still shows nothing until a
+browser is paired. `omaterm web status` shows the tunnel's address, or why it
+isn't running, and `omaterm web tunnel` explains the choices. If you run a
+tunnel yourself, put its address in **Public URL** (or `--url`), which
+overrides the tunnel omaterm runs.
 
 `omaterm web on --network` serves it on your local network instead. That is
 plain HTTP, so use it only on networks you trust.
@@ -357,6 +372,15 @@ plain HTTP, so use it only on networks you trust.
 A browser sees nothing until you pair it: **Pair a Device** in Settings, or
 `omaterm web pair`, shows a QR code that works once, for ten minutes. Revoke
 a device in Settings or with `omaterm web revoke`.
+
+**On a phone**, a key bar sits under the terminal: Esc, Tab, ⇧Tab, Ctrl and
+Alt, the arrows, ⌃C and ⌃⏎, and Enter. Tap Ctrl or Alt once to apply it to
+the next key, twice to hold it until you tap it again. **Edit** chooses which
+keys the bar has, and in what order; omaterm keeps that for each browser. The
+**compose** button opens a box for writing a prompt with the phone's own
+keyboard: **Send** pastes it and presses Enter, **Insert** only pastes it.
+Keys reach the program as it asked for them, so Ctrl+Enter and Shift+Tab work
+in agents that take them.
 
 <br clear="right">
 
@@ -393,6 +417,7 @@ omaterm split --down -- go test ./...   # run in a new pane below
 omaterm wait <pane> --exit              # wait for it to finish
 omaterm read <pane>                     # read its screen
 omaterm send <pane> "y" --enter         # type into it, once you stop typing there
+omaterm key <pane> ctrl+enter           # press a key: enter, esc, shift+tab, f1…f12, alt+x
 omaterm diff --turn                     # what the last agent turn changed
 omaterm new --worktree fix-login -- claude  # an agent on a branch of its own
 omaterm ask fix-login "Is the test green?"  # ask another agent, get its answer
