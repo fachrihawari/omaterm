@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -65,6 +66,15 @@ func newProxyFixture(t *testing.T, pkexecExit int) *proxyFixture {
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
+// throughPkexec skips a test of the system step's elevation off Linux:
+// macOS elevates through osascript, which the fixture doesn't fake.
+func throughPkexec(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("the system step goes through pkexec on Linux only")
+	}
+}
+
 func (f *proxyFixture) logged() string {
 	b, _ := os.ReadFile(f.log)
 	return string(b)
@@ -91,6 +101,7 @@ func TestProxySetupDryRunChangesNothing(t *testing.T) {
 }
 
 func TestProxySetupRunsTheSystemStepThroughPkexecThenReloads(t *testing.T) {
+	throughPkexec(t)
 	f := newProxyFixture(t, 0)
 	out := stdout(t, func() {
 		if err := proxySetup(f.env, nil); err != nil {
@@ -113,6 +124,7 @@ func TestProxySetupRunsTheSystemStepThroughPkexecThenReloads(t *testing.T) {
 }
 
 func TestProxySetupWithoutAPolkitAgentSaysWhatToRun(t *testing.T) {
+	throughPkexec(t)
 	f := newProxyFixture(t, 127)
 	var err error
 	stdout(t, func() { err = proxySetup(f.env, nil) })
@@ -127,6 +139,7 @@ func TestProxySetupWithoutAPolkitAgentSaysWhatToRun(t *testing.T) {
 }
 
 func TestProxySetupCancelled(t *testing.T) {
+	throughPkexec(t)
 	f := newProxyFixture(t, 126)
 	var err error
 	stdout(t, func() { err = proxySetup(f.env, nil) })
@@ -149,6 +162,7 @@ func TestProxySystemStepNeedsRootAndACertificate(t *testing.T) {
 }
 
 func TestProxyUninstallThroughPkexecThenRemovesTheFiles(t *testing.T) {
+	throughPkexec(t)
 	f := newProxyFixture(t, 0)
 	stdout(t, func() {
 		if err := proxySetup(f.env, nil); err != nil {
@@ -178,6 +192,7 @@ func TestProxyUninstallThroughPkexecThenRemovesTheFiles(t *testing.T) {
 }
 
 func TestProxyUninstallKeepsTheAuthorityWhenTheSystemStepFails(t *testing.T) {
+	throughPkexec(t)
 	f := newProxyFixture(t, 127)
 	stdout(t, func() { _ = proxySetup(f.env, nil) }) // makes the authority, then no agent
 	anchor := filepath.Join(f.env.Root, "usr/local/share/ca-certificates/omaterm-dev-ca.crt")

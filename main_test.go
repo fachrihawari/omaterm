@@ -32,3 +32,15 @@ func setConfigHome(t *testing.T, dir string) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("OMATERM_CONFIG_HOME", dir)
 }
+
+// socketDir is a short folder for a test's socket: macOS allows 103 bytes
+// for its path, and t.TempDir() there, with a long test's name, is longer.
+func socketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "oms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
