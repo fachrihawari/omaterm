@@ -35,7 +35,7 @@ func (e *PortInUseError) Error() string {
 func TailscaleServe() (map[int][]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, tailscaleBin, "serve", "status", "--json")
+	cmd := exec.CommandContext(ctx, TailscaleBin(), "serve", "status", "--json")
 	hide(cmd)
 	out, err := cmd.Output()
 	if err != nil {

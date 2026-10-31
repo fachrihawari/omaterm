@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,8 +14,35 @@ import (
 	"time"
 )
 
-// tailscaleBin is the command that serves on the tailnet.
-const tailscaleBin = "tailscale"
+// tailscaleApp is the command line inside Tailscale's Mac app, from the
+// App Store or the standalone download, which puts no tailscale on PATH.
+var tailscaleApp = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+
+// TailscaleBin is the command that serves on the tailnet: tailscale on
+// PATH, else on macOS the app's own. With neither it is the bare name,
+// which fails to start as not installed.
+func TailscaleBin() string {
+	return tailscaleBinFor(runtime.GOOS, exec.LookPath, func(p string) bool {
+		st, err := os.Stat(p)
+		return err == nil && !st.IsDir()
+	})
+}
+
+func tailscaleBinFor(goos string, lookPath func(string) (string, error), exists func(string) bool) string {
+	if p, err := lookPath("tailscale"); err == nil {
+		return p
+	}
+	if goos == "darwin" && exists(tailscaleApp) {
+		return tailscaleApp
+	}
+	return "tailscale"
+}
+
+// tailscaleInstalled tells whether there is a tailscale to run.
+func tailscaleInstalled() bool {
+	_, err := exec.LookPath(TailscaleBin())
+	return err == nil
+}
 
 // statusTimeout bounds asking Tailscale about itself: it can be slow to
 // answer only when it isn't there.
@@ -59,7 +88,7 @@ func startTailscale(ctx context.Context, s Spec) (Tunnel, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, serveTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, tailscaleBin, "serve", "--bg", "--https="+strconv.Itoa(port), s.Target)
+	cmd := exec.CommandContext(ctx, TailscaleBin(), "serve", "--bg", "--https="+strconv.Itoa(port), s.Target)
 	hide(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -139,7 +168,7 @@ func (t *tailscale) Stop() error {
 func serveOff(port int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), offTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, tailscaleBin, "serve", "--https="+strconv.Itoa(port), "off")
+	cmd := exec.CommandContext(ctx, TailscaleBin(), "serve", "--https="+strconv.Itoa(port), "off")
 	hide(cmd)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -156,12 +185,12 @@ func serveOff(port int) error {
 // tailscaleName is this machine's name on its tailnet, without the
 // trailing dot, when Tailscale is signed in and running.
 func tailscaleName() (string, error) {
-	if _, err := exec.LookPath(tailscaleBin); err != nil {
+	if !tailscaleInstalled() {
 		return "", fmt.Errorf("%w: tailscale is not installed", ErrUnavailable)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, tailscaleBin, "status", "--json")
+	cmd := exec.CommandContext(ctx, TailscaleBin(), "status", "--json")
 	hide(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -179,7 +208,7 @@ func tailscaleName() (string, error) {
 
 // whyNotTailscale says what keeps a serve from being made here.
 func whyNotTailscale() string {
-	if _, err := exec.LookPath(tailscaleBin); err != nil {
+	if !tailscaleInstalled() {
 		return "tailscale is not installed"
 	}
 	if _, err := tailscaleName(); err != nil {
