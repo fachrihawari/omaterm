@@ -117,6 +117,34 @@ jobs:
         continue-on-error: true
         run: go test -count=1 -timeout 15m ./internal/daemon ./internal/cli
 
+  # The packages that can run on Windows, on one. Nothing has run on Windows
+  # yet, so the packages that start a shell, a daemon or the app are left
+  # out (see docs/research/windows.md, §4), and the job doesn't block a push
+  # until it has proved steady there.
+  windows:
+    runs-on: windows-latest
+    steps:
+      # Git on Windows converts line endings on checkout, which breaks the
+      # tests that compare git's output.
+      - name: Keep line endings as checked in
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test
+        continue-on-error: true
+        run: >-
+          go test -count=1 -timeout 15m
+          ./internal/agent ./internal/detect ./internal/osc ./internal/proto
+          ./internal/model ./internal/keys ./internal/notice ./internal/crash
+          ./internal/theme ./internal/paths ./internal/client ./internal/ctl
+          ./internal/gitsnap ./internal/worktree ./internal/tunnel ./internal/web
+          ./internal/cli
+
   # The real app in a headless sway, driven by keys and the omaterm
   # command (e2e/). It doesn't block a push until it has proved steady on
   # the runners.

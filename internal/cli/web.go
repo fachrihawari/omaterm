@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,11 @@ func webCmd(args []string) error {
 	store := web.OpenStore(web.StorePath(paths.ConfigDir()))
 	switch sub {
 	case "on":
+		// Refused before the config is saved, so web access isn't left on
+		// with no daemon to serve it.
+		if runtime.GOOS == "windows" {
+			return daemon.ErrNoDaemon
+		}
 		f, err := parse(args, map[string]string{"port": "port", "p": "port", "url": "url", "host": "host", "tunnel": "tunnel"},
 			map[string]string{"network": "network", "local": "local"})
 		if err != nil {

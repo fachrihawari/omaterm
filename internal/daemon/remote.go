@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -254,6 +255,10 @@ func (r *Remote) reconnect() {
 	}
 }
 
+// ErrNoDaemon is what starting the session daemon says on Windows, which
+// has none yet: its panes have no terminal to show.
+var ErrNoDaemon = errors.New("The session daemon isn't available on Windows yet")
+
 // StartProcess starts the daemon: its service, when installed, else this
 // executable with __daemon, in a session of its own, so it outlives the
 // app.
@@ -264,6 +269,9 @@ func StartProcess() error {
 // startProcess starts the daemon; a takeover waits for the one before to
 // let go of the lock.
 func startProcess(takeover bool) error {
+	if runtime.GOOS == "windows" {
+		return ErrNoDaemon
+	}
 	if ServiceInstalled() && systemctl("start", ServiceName()) == nil {
 		return nil
 	}

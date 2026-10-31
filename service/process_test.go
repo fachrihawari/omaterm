@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
 )
 
 func TestListProjectProcesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	dir := t.TempDir()
 	// Start a child process with CWD in dir.
 	cmd := exec.Command("sleep", "60")
@@ -55,6 +59,9 @@ func TestListProjectProcesses(t *testing.T) {
 }
 
 func TestListProjectPorts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	dir := t.TempDir()
 	// Start a listener in the project dir.
 	cmd := exec.Command("python3", "-c", "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(5); time.sleep(10)")
@@ -78,6 +85,9 @@ func TestListProjectPorts(t *testing.T) {
 }
 
 func TestKillProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -93,6 +103,9 @@ func TestKillProcess(t *testing.T) {
 // A project lists its panes' shells and what they start, wherever that
 // runs, and nothing from outside it.
 func TestListProjectProcessesRoots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	workspace, elsewhere := t.TempDir(), t.TempDir()
 	start := func() *exec.Cmd {
 		cmd := exec.Command("sleep", "30")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -57,7 +58,8 @@ func serve(t *testing.T) (*Server, *fakeHost) {
 
 func TestCalls(t *testing.T) {
 	s, _ := serve(t)
-	if st, _ := os.Stat(s.Path()); st.Mode().Perm() != 0o600 {
+	// Windows keeps no Unix modes to check.
+	if st, _ := os.Stat(s.Path()); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Errorf("socket mode %v", st.Mode().Perm())
 	}
 	c, err := client.Dial(s.Path())
