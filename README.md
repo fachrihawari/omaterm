@@ -262,10 +262,11 @@ processes ask for the same one, the first gets it and the second says so. Set
 the name in the process's Edit dialog (its **URL** field), or write `url:` in
 `omaterm.yml`.
 
-A process with a URL shows its address in `omaterm ps` and in
-**Settings → Dev URLs**, which lists every route with **Open** and **Copy**.
-If the process isn't running, its address shows a page that says so, and
-which project to start it in.
+A process with a URL shows its address as a pill in the sidebar, in its tab
+and in `omaterm ps`, and in **Settings → Dev URLs**, which lists every route
+with **Open** and **Copy**. Click the pill to open it. If the process isn't
+running, its address shows a page that says so, and which project to start it
+in.
 
 **Setting it up** takes one step, once. Open **Settings → Dev URLs** and choose
 **Set Up…**. It lists exactly what will change before it asks for anything:
@@ -296,11 +297,14 @@ removes the trust, the sysctl file (ports below 1024 close again at the next
 boot) and the certificate authority.
 
 **Sharing a process.** A `.localhost` name only works on your computer. To
-open a running process from your phone, or to show it to someone, share it:
-`omaterm share web` prints an address. It goes through Tailscale when you have
-it (only your own devices on your tailnet can open it), else through a
-Cloudflare quick tunnel (`omaterm share web --cloudflare`). Choose with
-`--tailscale` or `--cloudflare`, and end it with `omaterm share web --off`.
+open a running process from your phone, or to show it to someone, share it
+from the process's menu in the sidebar (**Share**), or from the command line:
+`omaterm share web` prints an address. A shared process shows a globe beside
+its pill, which opens the shared address. It goes through Tailscale when you
+have it (only your own devices on your tailnet can open it), else through a
+Cloudflare quick tunnel. Choose the tunnel in the menu or with `--tailscale`
+and `--cloudflare`, and end the share with **Stop Sharing** or
+`omaterm share web --off`.
 **A Cloudflare link is public: anyone who has it can open your dev server.**
 The share follows the process: it ends when the process stops, and comes back
 on the new port when the process does, until you turn it off. `omaterm ps`

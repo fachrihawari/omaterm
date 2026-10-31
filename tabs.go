@@ -162,6 +162,11 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 				case proc.Port > 0:
 					ui.Text(c, ":"+itoa(proc.Port)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 				}
+				if proc.Share != "" {
+					// The pill is a button of its own: it takes the press,
+					// so the tab does not also activate.
+					pillShare(c, proc, func() { a.openURL(proc.Share) })
+				}
 			}
 		}
 		if t.Dirty {
@@ -548,6 +553,13 @@ func (a *appState) closeTabID(id string) {
 	}
 }
 
+// askConfirm asks a question whose answer changes something the user can
+// change back, as sharing a process: its last button runs run. Unlike
+// askDanger, the sheet is no warning.
+func (a *appState) askConfirm(title, text, confirm string, run func()) {
+	a.closeAsk = &closeAsk{open: true, title: title, text: text, confirm: confirm, run: run, plain: true}
+}
+
 // closeAsk is a close waiting for the user to confirm it.
 type closeAsk struct {
 	open        bool
@@ -557,6 +569,9 @@ type closeAsk struct {
 	// alt is a button between Cancel and confirm, which runs altRun.
 	alt    string
 	altRun func()
+	// plain tells that the sheet warns of nothing that can't be undone:
+	// its confirm button is the accent, not the danger color.
+	plain bool
 }
 
 // askDanger runs run once the user confirms a step that can't be undone,

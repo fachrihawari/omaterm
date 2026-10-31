@@ -5,6 +5,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
+	"omaterm/internal/tunnel"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -401,6 +402,12 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 				port.Tooltip(processPortTip(proc, ""))
 			}
 		}
+		if proc.Share != "" {
+			pillShare(c, proc, func() {
+				linkClicked = true
+				a.openURL(proc.Share)
+			})
+		}
 		ui.Spacer(c)
 		if row.Hovered() {
 			active := proc.Status == procs.Starting || proc.Status == procs.Running
@@ -444,6 +451,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		if m.Item("Restart").Chosen() {
 			a.restartProcess(pi, proc.Name)
 		}
+		a.shareMenu(m, a.projects[pi].ID, proc)
 		if proc.Link != "" {
 			if m.Item("Open " + procLinkHost(proc.Link)).Chosen() {
 				a.openURL(proc.Link)
@@ -453,6 +461,12 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			if m.Item("Copy URL").Chosen() {
 				copyText(addr)
 				a.toast(nil, "Copied "+addr)
+			}
+		}
+		if proc.Share != "" {
+			if m.Item("Copy Share Link").Chosen() {
+				copyText(proc.Share)
+				a.toast(nil, "Copied "+proc.Share)
 			}
 		}
 		if m.Item("Edit…").Chosen() {
@@ -476,6 +490,27 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 func procLinkHost(link string) string {
 	host, _ := strings.CutPrefix(link, "https://")
 	return host
+}
+
+// pillShare is a process's share beside its address: a globe, in the
+// color of who can open it, whose tip says the address and the audience.
+// A row has no room for either, so the globe is all it shows.
+func pillShare(c *ui.Context, proc procs.Proc, open func()) ui.Element {
+	fg := pal.Accent
+	if proc.ShareVia == string(tunnel.Cloudflare) {
+		// A public link: anyone who has it can open what is behind it.
+		fg = pal.Warn
+	}
+	e := ui.ButtonBase(c.Key("share-"+proc.Name)).Size(20, 18).Radius(9).Shrink(0).
+		AlignItems(ui.Center).Justify(ui.Center).Border(1, pal.Border).Tooltip(proc.Share + "\n" + shareAudience(proc)).
+		Label("Share " + proc.Share)
+	e.Children(func() {
+		ui.Icon(c, iconGlobe).Width(11).Height(11).TextColor(fg)
+	})
+	if e.Clicked() {
+		open()
+	}
+	return e
 }
 
 // processAddress is where a process opens: its Dev URL, or its localhost

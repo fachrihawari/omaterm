@@ -15,6 +15,7 @@ import (
 
 	"omaterm/internal/procs"
 	"omaterm/internal/theme"
+	"omaterm/internal/tunnel"
 	"omaterm/service"
 )
 
@@ -23,6 +24,12 @@ func TestDevURLsShot(t *testing.T) {
 	if dir == "" {
 		t.Skip("DEVURLS_SHOT_DIR is not set")
 	}
+	// Both tunnels work, as on a machine with them installed and signed in.
+	prevAvail := shareAvailable
+	shareAvailable = func() map[tunnel.Provider]string {
+		return map[tunnel.Provider]string{tunnel.Tailscale: "", tunnel.Cloudflare: ""}
+	}
+	defer func() { shareAvailable = prevAvail }()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	a := newTestApp(t)
 	setPalette(theme.BuiltinLight())
@@ -70,6 +77,8 @@ func TestDevURLsShot(t *testing.T) {
 			a.procList[projectID][i].Port = 5173
 			a.procList[projectID][i].URL = "shop"
 			a.procList[projectID][i].Link = "https://shop.localhost"
+			a.procList[projectID][i].Share = "https://box.tailnet.ts.net:8443"
+			a.procList[projectID][i].ShareVia = string(tunnel.Tailscale)
 		case "api":
 			a.procList[projectID][i].Port = 3001
 		}
@@ -88,6 +97,18 @@ func TestDevURLsShot(t *testing.T) {
 		}
 	}
 	shot("sidebar")
+
+	// The row's menu is the platform's, so no picture of it: its items are
+	// the check.
+	row, ok := tr.Find("web")
+	if !ok {
+		t.Fatal("the process row is missing")
+	}
+	tr.RightClickAt(row.X+row.W/2, row.Y+row.H/2)
+	tr.Frame()
+	t.Logf("menu: %q", tr.Menu())
+	tr.CloseMenu()
+	tr.Frame()
 
 	// The process tab, with the link beside its name and in its header.
 	a.showProcess(a.active, "web")

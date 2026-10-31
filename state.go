@@ -24,6 +24,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/tunnel"
 	"omaterm/service"
 )
 
@@ -153,6 +154,15 @@ type appState struct {
 	procList  map[string][]procs.Proc
 	procTimer *time.Timer
 	procGen   int
+	// shareAvail says which tunnels work here, as read in the background,
+	// and shareAvailAt when; asking runs their commands, so it is kept a
+	// minute. shareAvailBusy is a read on its way.
+	shareAvail     map[tunnel.Provider]string
+	shareAvailAt   time.Time
+	shareAvailBusy bool
+	// cloudflareAsked marks the processes the user let share through
+	// Cloudflare, whose link anyone can open: asked once a run.
+	cloudflareAsked map[string]bool
 	// procDialog is the Add/Edit Process dialog while it is open, and
 	// processShared where its "Save in omaterm.yml" switch was left.
 	procDialog    *processDialogState
@@ -584,6 +594,7 @@ func newApp() *appState {
 		commitStats:      map[string][2]int{},
 		projects:         []project{},
 		procList:         map[string][]procs.Proc{},
+		cloudflareAsked:  map[string]bool{},
 		settings:         loadSettings(),
 	}
 	a.hookPanes()

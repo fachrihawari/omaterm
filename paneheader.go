@@ -113,6 +113,9 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				ui.Text(c, procLinkHost(proc.Link)).FontSize(12).TextColor(pal.TextFaint).SingleLine().
 					Shrink(0).Tooltip("Served at " + proc.Link)
 			}
+			if isProc && proc.Share != "" {
+				pillShare(c, proc, func() { a.openURL(proc.Share) })
+			}
 		})
 		if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" {
 			a.gitChip(c, g.Branch, g.Added, g.Removed)

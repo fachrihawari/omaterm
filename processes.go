@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/tunnel"
 	"omaterm/service"
 )
 
@@ -766,3 +768,153 @@ func (a *appState) processIcon(c *ui.Context, proc procs.Proc, size float32) {
 
 var _ procHost = (*localProcs)(nil)
 var _ procHost = (*remoteProcs)(nil)
+
+// --- sharing a process ----------------------------------------------------
+
+// shareMenu is a process row's Share submenu: the tunnels that work here,
+// and ending the share of a shared process.
+func (a *appState) shareMenu(m *ui.Menu, projectID string, proc procs.Proc) {
+	avail := a.shareAvailability()
+	m.Submenu("Share", func(s *ui.Menu) {
+		providers := []struct {
+			via   tunnel.Provider
+			label string
+		}{
+			{tunnel.Tailscale, "Your Devices (Tailscale)"},
+			{tunnel.Cloudflare, "Anyone with the Link (Cloudflare)"},
+		}
+		for _, p := range providers {
+			label, reason := p.label, avail[p.via]
+			if reason != "" {
+				// A menu item has no tip: why it can't work goes in its name.
+				label += ": " + reason
+			}
+			if s.Item(label).Disabled(reason != "").Chosen() {
+				a.shareVia(projectID, proc, p.via)
+			}
+		}
+		if proc.Share != "" {
+			s.Separator()
+			if s.Item("Stop Sharing").Chosen() {
+				a.unshare(projectID, proc)
+			}
+		}
+	})
+}
+
+// shareAvailable says which tunnels work here, as tunnel.Available does:
+// it runs their commands, so a test replaces it to say what is installed.
+var shareAvailable = tunnel.Available
+
+// shareAudience says who can open a process's share.
+func shareAudience(proc procs.Proc) string {
+	if proc.ShareVia == string(tunnel.Tailscale) {
+		return "Your devices on your tailnet"
+	}
+	return "Anyone with this link"
+}
+
+// shareAvailability is which tunnels work here: asking runs their
+// commands, which can take a moment, so a stale answer is read again in
+// the background, and the answer kept for a minute. It may be nil, the
+// first time, before an answer comes: then both are offered, and one that
+// can't work says why when it is asked to share.
+func (a *appState) shareAvailability() map[tunnel.Provider]string {
+	if a.shareAvail == nil || nowFunc().Sub(a.shareAvailAt) > time.Minute {
+		a.readShareAvailability()
+	}
+	return a.shareAvail
+}
+
+// readShareAvailability asks tunnel.Available in the background, once at
+// a time.
+func (a *appState) readShareAvailability() {
+	if a.shareAvailBusy {
+		return
+	}
+	a.shareAvailBusy = true
+	read := func() map[tunnel.Provider]string { return shareAvailable() }
+	if a.win == nil {
+		// No window, as in a test: there is no frame to wait for.
+		a.shareAvail, a.shareAvailAt, a.shareAvailBusy = read(), nowFunc(), false
+		return
+	}
+	go func() {
+		avail := read()
+		a.post(func() {
+			a.shareAvail, a.shareAvailAt, a.shareAvailBusy = avail, nowFunc(), false
+		})
+	}()
+}
+
+// shareProviderName is a tunnel as the user knows it.
+func shareProviderName(via tunnel.Provider) string {
+	if via == tunnel.Tailscale {
+		return "Tailscale"
+	}
+	return "Cloudflare"
+}
+
+// shareVia shares a process with the tunnel via asks for. A Cloudflare
+// link is public, so it is asked about once a run, the first time.
+func (a *appState) shareVia(projectID string, proc procs.Proc, via tunnel.Provider) {
+	key := projectID + "/" + proc.Name
+	if via == tunnel.Cloudflare && !a.cloudflareAsked[key] {
+		a.cloudflareAsked[key] = true
+		a.askConfirm("Share over Cloudflare?", "Anyone with the link can open "+proc.Name+". "+
+			"It stays shared while "+proc.Name+" runs.", "Share", func() {
+			a.doShare(projectID, proc, via)
+		})
+		return
+	}
+	a.doShare(projectID, proc, via)
+}
+
+// doShare shares a process off the UI thread: making a tunnel can take a
+// while, and the row shows its address once the list is read again.
+func (a *appState) doShare(projectID string, proc procs.Proc, via tunnel.Provider) {
+	a.worktreeJob(func(context.Context) error {
+		if a.procHost == nil {
+			return errors.New("no process host")
+		}
+		return a.procHost.Share(projectID, proc.Name, string(via))
+	}, func(err error) {
+		if err != nil {
+			a.toast(nil, "Sharing "+proc.Name+" failed: "+err.Error())
+			return
+		}
+		a.refreshProcList()
+		if shared, ok := a.procNamed(projectID, proc.Name); ok && shared.Share != "" {
+			a.toast(nil, "Shared "+proc.Name+" at "+shared.Share)
+			return
+		}
+		a.toast(nil, "Shared "+proc.Name+" over "+shareProviderName(via))
+	})
+}
+
+// unshare ends a process's share off the UI thread.
+func (a *appState) unshare(projectID string, proc procs.Proc) {
+	a.worktreeJob(func(context.Context) error {
+		if a.procHost == nil {
+			return errors.New("no process host")
+		}
+		return a.procHost.Unshare(projectID, proc.Name)
+	}, func(err error) {
+		if err != nil {
+			a.toast(nil, "Stopping the share of "+proc.Name+" failed: "+err.Error())
+			return
+		}
+		a.refreshProcList()
+		a.toast(nil, "Stopped sharing "+proc.Name)
+	})
+}
+
+// procNamed is a project's process by name.
+func (a *appState) procNamed(projectID, name string) (procs.Proc, bool) {
+	for _, proc := range a.procList[projectID] {
+		if proc.Name == name {
+			return proc, true
+		}
+	}
+	return procs.Proc{}, false
+}
