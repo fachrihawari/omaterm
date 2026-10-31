@@ -237,3 +237,16 @@ func TestLeadWorded(t *testing.T) {
 		t.Fatalf("lead %+v", r)
 	}
 }
+
+// A program pushing kitty keyboard flags without end keeps the stack
+// bounded; the flags in force are its last push.
+func TestKittyStackBounded(t *testing.T) {
+	var o Scanner
+	for i := 0; i < 1000; i++ {
+		o.Scan([]byte("\x1b[>1u"), nil, nil)
+	}
+	o.Scan([]byte("\x1b[>3u"), nil, nil)
+	if len(o.kitty) > maxKittyStack || o.Kitty != 3 {
+		t.Fatalf("stack %d, flags %d", len(o.kitty), o.Kitty)
+	}
+}

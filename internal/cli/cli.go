@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"omaterm/internal/client"
+	"omaterm/internal/keys"
 	"omaterm/internal/model"
 	"omaterm/internal/osc"
 	"omaterm/internal/paths"
@@ -381,7 +382,21 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return c.Call("key", proto.KeyParams{ID: t.pane, Keys: args[1:]}, nil)
+		err = c.Call("key", proto.KeyParams{ID: t.pane, Keys: args[1:]}, nil)
+		if err != nil && strings.Contains(err.Error(), "no method key") {
+			// An omaterm from before keys went by name: the bytes, as a
+			// program that asked nothing special takes them.
+			var data []byte
+			for _, k := range args[1:] {
+				b, err := keys.Bytes(k, keys.Modes{})
+				if err != nil {
+					return usageErr("%v", err)
+				}
+				data = append(data, b...)
+			}
+			return c.Call("send", proto.SendParams{ID: t.pane, Data: string(data)}, nil)
+		}
+		return err
 
 	case "prompt":
 		f, err := parse(args, map[string]string{"t": "timeout", "timeout": "timeout"}, nil)

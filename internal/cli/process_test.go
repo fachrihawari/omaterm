@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -291,5 +292,24 @@ func TestStartWaitSeesACrashLoop(t *testing.T) {
 	err = processCmd(c, "process.start", []string{"bad", "--wait", "--timeout", "2s"})
 	if err == nil || !strings.Contains(err.Error(), "exited (code 1)") {
 		t.Fatalf("got %v, want the exit code", err)
+	}
+}
+
+// omaterm key against an omaterm from before keys went by name sends the
+// keys' plain bytes, as it did then.
+func TestKeyFallsBackToBytes(t *testing.T) {
+	var sent proto.SendParams
+	fakeSocket(t, fakeHost{
+		"state": func(json.RawMessage) (any, error) {
+			return proto.State{Sessions: []proto.Session{{ID: "s1", Name: "w", Panes: []proto.Pane{{ID: "pa"}}}}}, nil
+		},
+		"key":  func(json.RawMessage) (any, error) { return nil, errors.New("no method key") },
+		"send": func(p json.RawMessage) (any, error) { json.Unmarshal(p, &sent); return true, nil },
+	})
+	if code := Run([]string{"key", "w", "shift+tab", "enter"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if sent.ID != "pa" || sent.Data != "\x1b[Z\r" {
+		t.Fatalf("sent %+v", sent)
 	}
 }

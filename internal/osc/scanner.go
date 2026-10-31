@@ -35,6 +35,9 @@ type Scanner struct {
 	csi             []byte // a CSI's parameters and intermediates, so far
 }
 
+// maxKittyStack is how many kitty keyboard flags are kept pushed.
+const maxKittyStack = 64
+
 // MaxLen is the longest sequence kept, OSC 7501's limit.
 const MaxLen = 4096
 
@@ -160,6 +163,11 @@ func (o *Scanner) keyboard() {
 	}
 	switch o.csi[0] {
 	case '>':
+		// The stack is bounded, as kitty bounds it: a program pushing
+		// without end drops its oldest entries, not the daemon's memory.
+		if len(o.kitty) >= maxKittyStack {
+			o.kitty = append(o.kitty[:0], o.kitty[1:]...)
+		}
 		o.kitty = append(o.kitty, num(0))
 	case '<':
 		n := num(0)
