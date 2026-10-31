@@ -84,8 +84,11 @@ func trustDetails(d procs.Def) [][2]string {
 		dir = "the project"
 	}
 	port := "none"
-	if d.Port > 0 {
+	switch {
+	case d.Port > 0:
 		port = strconv.Itoa(d.Port)
+	case d.URL != "":
+		port = "a free one, picked as it starts (PORT)"
 	}
 	restart := d.Restart
 	if restart == "" {

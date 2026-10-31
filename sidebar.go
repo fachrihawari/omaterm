@@ -364,7 +364,10 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	}
 	row.Children(func() {
 		a.processIcon(c, proc, 13)
-		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		// The name stays readable: its pills give way first, their text
+		// ellipsized, rather than the name going to "…".
+		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(0.2).
+			MinWidth(min(72, float32(len(proc.Name))*9+2))
 		if proc.Status == procs.Exited || proc.Status == procs.Stopped {
 			name.TextColor(pal.TextMuted)
 		}
@@ -381,7 +384,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		switch {
 		case proc.Link != "":
 			// Served at its Dev URL: the pill is that address, not the port.
-			link := pill(c, procLinkHost(proc.Link))
+			link := pillShrink(c, procLinkHost(proc.Link)).Shrink(1).MinWidth(32)
 			if active {
 				link.Cursor(ui.CursorPointer).Tooltip("Open " + proc.Link)
 				if link.Clicked() {
