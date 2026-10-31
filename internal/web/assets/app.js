@@ -132,7 +132,12 @@ function applyTheme(t) {
   if (term?.xt) {
     term.xt.options.theme = termColors(t);
   }
+  try { localStorage.setItem("omaterm.theme", JSON.stringify(t)); } catch {}
 }
+
+// The page starts in the theme it last had, so the pairing page and the
+// first paint already wear it; the daemon's answer replaces it.
+try { applyTheme(JSON.parse(localStorage.getItem("omaterm.theme"))); } catch {}
 
 function termColors(t) {
   const term = t?.terminal;
@@ -547,18 +552,28 @@ function sessionRow(s, proj, open) {
   );
 }
 
+// linkHost is the host of a process's link, as the pill shows it.
+function linkHost(link) {
+  try { return new URL(link).host; } catch { return link; }
+}
+
 function processRow(s, proj, open) {
   const panes = terminals(s);
   const lead = (s.lead && s.lead.id) ? s.lead : panes[0];
   const here = panes.some((p) => p.id === open);
-  const pst = processState(lead);
+  const proc = s.proc;
+  const pst = processState(proc ? { status: proc.status } : lead);
 
-  let portOrUrl = "";
-  if (s.port || lead.port) portOrUrl = `:${s.port || lead.port}`;
-  else if (s.link || s.url || lead.url) portOrUrl = s.link || s.url || lead.url;
-  else if (lead.message && /:\d+/.test(lead.message)) {
-    const m = lead.message.match(/:\d+/);
-    if (m) portOrUrl = m[0];
+  const link = proc?.share || proc?.link || "";
+  const port = proc?.port || lead.port;
+  let pill = null;
+  if (link) {
+    pill = h("a", {
+      class: "pill mono link", href: link, target: "_blank", rel: "noopener noreferrer",
+      title: link, onclick: (e) => e.stopPropagation(),
+    }, linkHost(link));
+  } else if (port) {
+    pill = h("span", { class: "pill mono" }, `:${port}`);
   }
 
   let statusEl = null;
@@ -577,8 +592,9 @@ function processRow(s, proj, open) {
       h("div", { class: "top" },
         h("span", { class: "nm" }, s.name || s.process),
       ),
+      proc?.message ? h("span", { class: "sub" }, proc.message) : null,
     ),
-    portOrUrl ? h("span", { class: "pill mono" }, portOrUrl) : null,
+    pill,
   );
 }
 
@@ -780,6 +796,7 @@ function showTerm(id) {
   const branchChip = h("div", { class: "gchip", hidden: true });
   const tabsRow = h("div", { class: "card-tabs", hidden: true });
   const statusChipEl = h("div", { class: "schip-wrap" });
+  const modChip = h("div", { class: "schip mods", hidden: true });
 
   let composeBox = null;
   const composeBtn = h("button", {
@@ -792,6 +809,7 @@ function showTerm(id) {
   const header = h("header", { class: "ph" },
     backBtn, grip, branchChip, tabsRow,
     h("span", { class: "sp" }),
+    modChip,
     statusChipEl,
     composeBtn,
   );
@@ -941,7 +959,16 @@ function showTerm(id) {
   keysPromise.then((mod) => {
     if (mod?.mountKeyBar && keybarSlot.isConnected) {
       keybarSlot.replaceChildren();
-      keyBar = mod.mountKeyBar(keybarSlot, { sendKey, sendText, appCursor });
+      keyBar = mod.mountKeyBar(keybarSlot, {
+        sendKey, sendText, appCursor,
+        onModifiers: (m) => {
+          const on = [];
+          if (m.ctrl) on.push(m.ctrlLocked ? "Ctrl locked" : "Ctrl");
+          if (m.alt) on.push(m.altLocked ? "Alt locked" : "Alt");
+          modChip.hidden = !on.length;
+          modChip.textContent = on.join(" · ");
+        },
+      });
     }
   });
 
