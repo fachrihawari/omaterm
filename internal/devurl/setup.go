@@ -116,7 +116,7 @@ func Plan(e Env) ([]Change, error) {
 		}
 		c := Change{ID: "nss:" + db.Dir, Text: fmt.Sprintf("Trust it in %s (%s)", db.Label, e.short(db.Dir))}
 		if haveCertutil != nil {
-			c.Blocked = "certutil isn't installed (the nss package; libnss3-tools on Debian)"
+			c.Blocked = e.certutilMissing()
 		}
 		plan = append(plan, c)
 	}
@@ -136,6 +136,14 @@ func Plan(e Env) ([]Change, error) {
 			firstPort, sysctlFile, sysctlKey, firstPort, firstPort)})
 	}
 	return plan, nil
+}
+
+// certutilMissing says certutil isn't there, and where it comes from.
+func (e Env) certutilMissing() string {
+	if e.OS == "darwin" {
+		return "certutil isn't installed (brew install nss)"
+	}
+	return "certutil isn't installed (the nss package; libnss3-tools on Debian)"
 }
 
 // ApplyUser does the changes of plan that need no password: making the

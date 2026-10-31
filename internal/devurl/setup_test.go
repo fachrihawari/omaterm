@@ -215,6 +215,23 @@ func TestPlanOnMacOSAndWindows(t *testing.T) {
 	if err != nil || strings.Join(ids(plan), "|") != "ca|trust" || !strings.Contains(plan[1].Text, "System keychain") {
 		t.Fatalf("%+v %v", plan, err)
 	}
+	// Firefox's databases, without certutil: the hint is Homebrew's, and
+	// the check names Firefox alone.
+	ff := filepath.Join(e.Home, "Library/Application Support/Firefox/Profiles/abc.default")
+	putFile(t, filepath.Join(ff, "cert9.db"), "")
+	putFile(t, filepath.Join(e.Home, ".pki/nssdb/cert9.db"), "")
+	plan, _ = Plan(e)
+	if len(plan) != 3 || plan[1].ID != "nss:"+ff || plan[1].Blocked != "certutil isn't installed (brew install nss)" {
+		t.Fatalf("with Firefox: %+v", plan)
+	}
+	checks := Checks(e, ProxyState{Running: true, Addr: "[::]:443"})
+	if checkNamed(checks, "Trusted by Firefox") == nil || checkNamed(checks, "Trusted by Chrome and Firefox") != nil {
+		t.Errorf("checks %+v", checks)
+	}
+	if err := ApplySystem(Env{OS: "darwin", Geteuid: func() int { return 501 }}, "x"); err == nil ||
+		strings.Contains(err.Error(), "pkexec") || !strings.Contains(err.Error(), "password dialog") {
+		t.Errorf("not root: %v", err)
+	}
 	e.OS = "windows"
 	if _, err := Plan(e); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("windows: %v", err)

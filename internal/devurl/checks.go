@@ -57,9 +57,13 @@ func Checks(e Env, proxy ProxyState) []Check {
 	checks = append(checks, trusted)
 
 	// The browsers' databases are checked where there are any: a machine
-	// with none has no browser that keeps its own.
+	// with none has no browser that keeps its own. On macOS only Firefox
+	// keeps one: Chrome and Safari trust what the System keychain does.
 	if dbs := NSSDBs(e); len(dbs) > 0 {
 		c := Check{Name: "Trusted by Chrome and Firefox"}
+		if e.OS == "darwin" {
+			c.Name = "Trusted by Firefox"
+		}
 		var missing []string
 		_, certutilErr := exec.LookPath("certutil")
 		for _, db := range dbs {
