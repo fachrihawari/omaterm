@@ -308,8 +308,10 @@ func (a *appState) openTermLink(pane, link string) bool {
 		a.openEditorAt(filepath.ToSlash(rel), line, col)
 		return true
 	}
+	// OpenPath makes the file URL itself: "file://" + path, unescaped,
+	// was no URL to macOS with a space, % or # in the path.
 	if a.win != nil {
-		mygo.Shell.OpenExternal("file://" + path)
+		mygo.Shell.OpenPath(path)
 	}
 	return true
 }
