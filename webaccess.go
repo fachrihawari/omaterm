@@ -64,6 +64,25 @@ func (a *appState) setWebNetwork(c *ui.Context, on bool) {
 	}, "", nil)
 }
 
+// setWebTunnel picks how omaterm carries web access beyond this machine,
+// turning it on: "" for no tunnel, "tailscale" or "cloudflare".
+func (a *appState) setWebTunnel(c *ui.Context, provider string) {
+	if provider != "" && !a.webAvailable() {
+		toast(c, "Web access needs the session daemon, which is off")
+		return
+	}
+	said := ""
+	if provider == "" {
+		said = "The tunnel is off"
+	}
+	a.changeWebSaying(c, func(cfg *web.Config) {
+		if provider != "" {
+			cfg.Enabled = true
+		}
+		cfg.Tunnel = provider
+	}, said, nil)
+}
+
 // changeWebSaying changes web access's config and has the daemon follow,
 // telling said once it took rather than whether web access is on (for a
 // change of its port or URL), and running then. The daemon is asked off
@@ -101,6 +120,10 @@ func (a *appState) changeWebSaying(c *ui.Context, change func(*web.Config), said
 				say(said)
 			case cfg.OnNetwork():
 				say("Web access on your network, over plain HTTP: use it on networks you trust")
+			case st.TunnelURL != "":
+				say("Web access on: " + st.TunnelURL)
+			case cfg.Tunnel != "" && st.TunnelError != "":
+				say("Web access on: http://" + st.Addr + " — the tunnel isn't running: " + st.TunnelError)
 			case cfg.Enabled:
 				say("Web access on: http://" + st.Addr)
 			default:
@@ -139,7 +162,10 @@ func (a *appState) startPairing() *webPairing {
 		if err == nil {
 			code, expires, err = store.NewCode()
 		}
-		base := web.BaseURL(cfg, "")
+		// The tunnel the daemon runs, when one does, says where the link
+		// lands; without a daemon the config alone tells.
+		st, _ := daemon.StatusWeb()
+		base := web.BaseURL(cfg, st.TunnelURL)
 		link := web.PairLink(base, code)
 		rows, qerr := web.QR(link)
 		a.post(func() {
@@ -213,7 +239,7 @@ func (a *appState) webPairBody(c *ui.Context, p *webPairing) {
 		})
 		note := "Works once, until " + p.expires.Format("15:04") + "."
 		if p.local {
-			note += " Only this computer can open it: turn on Web Access on Your Network, or run omaterm web tunnel."
+			note += " Only this computer can open it: turn on Web Access on Your Network, or pick a tunnel under Reach It from Elsewhere."
 		}
 		ui.Text(c, note).FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
 	}

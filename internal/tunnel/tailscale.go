@@ -21,7 +21,7 @@ const statusTimeout = 5 * time.Second
 
 // serveTimeout bounds a tailscale serve call, which returns once it has
 // set what tailscaled serves.
-var serveTimeout = 30 * time.Second
+const serveTimeout = 30 * time.Second
 
 // offTimeout bounds turning a serve off.
 const offTimeout = 10 * time.Second
