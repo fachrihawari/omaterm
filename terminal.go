@@ -6,6 +6,7 @@ import (
 	"omaterm/internal/shellcmd"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -298,7 +299,7 @@ func (a *appState) openTermLink(pane, link string) bool {
 		if dir == "" {
 			dir = a.workspace
 		}
-		path = filepath.Join(dir, path)
+		path = termLinkPath(runtime.GOOS, dir, path)
 	}
 	path = filepath.Clean(path)
 	if st, err := os.Stat(path); err != nil || st.IsDir() {
