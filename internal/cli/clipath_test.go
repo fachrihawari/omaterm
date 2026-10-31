@@ -31,3 +31,15 @@ func TestCLIPathHint(t *testing.T) {
 		}
 	}
 }
+
+// On Windows the hint is the pwsh line that adds omaterm's folder to the
+// user PATH, with the folder quoted for pwsh. (PATH is split by the host's
+// separator, so the on-PATH case is left to TestCLIPathHint.)
+func TestCLIPathHintWindows(t *testing.T) {
+	dir := `C:\Users\it's me\.local\state\omaterm\bin`
+	got := cliPathHint(dir, `C:\Windows`, "", "windows")
+	want := `[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";" + 'C:\Users\it''s me\.local\state\omaterm\bin', "User")`
+	if !strings.Contains(got, want) || strings.Contains(got, "~/.profile") {
+		t.Errorf("hint = %q", got)
+	}
+}

@@ -126,10 +126,11 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	d := &u.data
 	d.cliWhere, d.cliOn = cli.CLIStatus()
 	// On a Mac, PATH is the login shell's (see loginenv), which has no
-	// ~/.local/bin unless the user added it. Elsewhere the app's PATH is
-	// the desktop's, which may differ from the shell's: no hint there.
+	// ~/.local/bin unless the user added it; on Windows, omaterm's folder is
+	// on no PATH until the user adds it. Elsewhere the app's PATH is the
+	// desktop's, which may differ from the shell's: no hint there.
 	d.cliHint = ""
-	if d.cliOn && runtime.GOOS == "darwin" {
+	if d.cliOn && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
 		d.cliHint = cli.CLIPathHint()
 	}
 	d.omarchy = nil
@@ -270,7 +271,9 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 		a.settingsRow(c, "Command-line tool", settingsRowOpts{id: "cliTool", sub: d.cliWhere, mono: true}, func() {
 			if d.cliOn {
 				settingsPill(c, "Installed", pillOk)
-				if settingsButton(c, "Remove", false, false, false) {
+				// Windows keeps omaterm.exe for the app's own panes and hooks,
+				// so there is nothing to remove.
+				if runtime.GOOS != "windows" && settingsButton(c, "Remove", false, false, false) {
 					if err := cli.UninstallCLI(); err != nil {
 						toast(c, "Could not remove: "+err.Error())
 					}
