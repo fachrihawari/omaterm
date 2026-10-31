@@ -1,20 +1,23 @@
 // Renders the website's web access pictures: the browser page at desktop
 // and phone sizes, showing sample sessions of an omaterm of its own.
 //
-//   node scripts/site-web-shots.mjs
+//   node scripts/site-web-shots.mjs [out-dir]
 //
 // It builds omaterm, runs it with config, state and runtime folders of its
 // own and web access on port 7398 (your omaterm is never touched), and
 // drives headless Chromium (on the PATH as chromium, or $CHROMIUM) through
-// the DevTools protocol. The pictures go to site/assets/web-*.png.
+// the DevTools protocol. The pictures go to site/assets/ (or out-dir).
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, symlinkSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const repo = resolve(import.meta.dirname, "..");
-const out = join(repo, "site", "assets");
+const out = process.argv[2] ? resolve(process.argv[2]) : join(repo, "site", "assets");
+mkdirSync(out, { recursive: true });
+
 const port = 7398;
 const debugPort = 9337;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -78,6 +81,78 @@ function session(dir, name, screen, program, report) {
   return omaterm("new", "-n", name, "-d", dir, "--", "sh", "-c", `cat '${file}'; ${rep}exec '${prog}' >/dev/null`);
 }
 
+const lightTheme = {
+  dark: false,
+  tokens: {
+    accent: "#0969da",
+    accentText: "#ffffff",
+    attention: "#9a6700",
+    attentionSoft: "rgba(154, 103, 0, 0.141)",
+    bad: "#cf222e",
+    border: "rgba(36, 41, 47, 0.0706)",
+    borderStrong: "rgba(36, 41, 47, 0.122)",
+    card: "#fafafa",
+    chip: "rgba(36, 41, 47, 0.051)",
+    done: "#24292f",
+    hover: "rgba(36, 41, 47, 0.0431)",
+    info: "#0969da",
+    input: "#fdfdfd",
+    ok: "#1a7f37",
+    popover: "#fdfdfd",
+    raised: "#fdfdfd",
+    rowSelected: "#fdfdfd",
+    scrim: "rgba(0, 0, 0, 0.122)",
+    selection: "#cfe3fb",
+    sidebar: "#ededee",
+    text: "#24292f",
+    textFaint: "#8e9093",
+    textMuted: "#6f7276",
+    textSoft: "#44484d",
+    textStrong: "#000000",
+    warn: "#9a6700",
+    wash: "#ededee",
+  },
+  terminal: {
+    foreground: "#24292f",
+    background: "#fafafa",
+    cursor: "#000000",
+    selection: "#cfe3fb",
+    ansi: [
+      "#fafafa", "#cf222e", "#1a7f37", "#9a6700",
+      "#0969da", "#8250df", "#1b7c83", "#24292f",
+      "#8c959f", "#a40e26", "#2da44e", "#bf8700",
+      "#218bff", "#a475f9", "#3192aa", "#000000",
+    ],
+  },
+  stamp: "baacb32bfcadf62b",
+};
+
+function setDaemonTheme(sockPath, themeObj) {
+  return new Promise((resolve, reject) => {
+    const s = createConnection(sockPath);
+    let buf = "";
+    s.on("connect", () => {
+      s.write(JSON.stringify({ kind: "control", version: 1, client: "shots" }) + "\n");
+    });
+    s.on("data", (chunk) => {
+      buf += chunk.toString();
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.kind === "control" || msg.process || msg.version !== undefined) {
+          s.write(JSON.stringify({ id: 1, method: "web.setTheme", params: themeObj }) + "\n");
+        } else if (msg.id === 1) {
+          s.end();
+          resolve(msg.result);
+        }
+      }
+    });
+    s.on("error", reject);
+  });
+}
+
 let chrome = null;
 try {
   execFileSync("go", ["build", "-o", bin, "."], { cwd: repo, stdio: "inherit" });
@@ -117,20 +192,45 @@ try {
   const shot = async (name) => {
     const png = await cdp("Page.captureScreenshot", {});
     writeFileSync(join(out, name + ".png"), Buffer.from(png.data, "base64"));
-    console.log("wrote site/assets/" + name + ".png");
+    console.log("wrote " + join(out, name + ".png"));
   };
 
+  // Dark theme screenshots
   await size(1440, 900, 2, false);
   await go(`${base}/#code=${code}`);
   await go(`${base}/#/pane/${pane}`);
   await shot("web-desktop");
+
   await size(390, 844, 3, true);
   await go(`${base}/#`);
   await cdp("Page.reload", {});
   await sleep(2500);
   await shot("web-phone-list");
+
   await go(`${base}/#/pane/${pane}`);
   await shot("web-phone");
+
+  // Light theme screenshots
+  const daemonSock = join(env.XDG_RUNTIME_DIR, "omaterm", "omaterm-daemon.sock");
+  try {
+    await setDaemonTheme(daemonSock, lightTheme);
+    await sleep(1500);
+
+    await size(1440, 900, 2, false);
+    await go(`${base}/#/pane/${pane}`);
+    await shot("web-desktop-light");
+
+    await size(390, 844, 3, true);
+    await go(`${base}/#`);
+    await cdp("Page.reload", {});
+    await sleep(2500);
+    await shot("web-phone-list-light");
+
+    await go(`${base}/#/pane/${pane}`);
+    await shot("web-phone-light");
+  } catch (err) {
+    console.error("error taking light theme shots:", err);
+  }
 } finally {
   chrome?.kill();
   try { omaterm("daemon", "stop"); } catch {}
