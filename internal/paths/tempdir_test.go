@@ -16,6 +16,7 @@ import (
 func TestPrivateTempDir(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
+	t.Setenv("OMATERM_DAEMON_SOCKET", "")
 	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(tmp, strings.Repeat("long", 30)))
 	taken := filepath.Join(tmp, Name()+"-"+strconv.Itoa(os.Getuid()))
 	os.WriteFile(taken, nil, 0o644)

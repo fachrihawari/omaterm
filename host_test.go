@@ -665,7 +665,7 @@ func TestSendWaitsForTheUser(t *testing.T) {
 // command talks to while the window is open: here with the app's own
 // host, as without a daemon.
 func TestProcessMethodsOverSocket(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()

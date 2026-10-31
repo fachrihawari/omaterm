@@ -35,6 +35,7 @@ func newProcessFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	t.Setenv("HOME", dir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("OMATERM_CONFIG_HOME", filepath.Join(dir, "config")) // macOS ignores XDG's
 
 	project := filepath.Join(dir, "app")
 	if err := os.MkdirAll(project, 0o755); err != nil {

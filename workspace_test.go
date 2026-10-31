@@ -72,7 +72,7 @@ func TestRemoveProjectClosesOnlyItsPanes(t *testing.T) {
 // app shows.
 func TestSessionsRoundTrip(t *testing.T) {
 	cfg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", cfg)
+	setConfigHome(t, cfg)
 	a := twoProjectApp(t)
 	defer stopTermPanes(a)
 	first := a.activeSplitLeaf()
@@ -131,7 +131,7 @@ func TestLayoutConversion(t *testing.T) {
 // A pane running an agent whose hook never told its conversation saves
 // the agent, so a restart continues the folder's last conversation.
 func TestStateSavesAgentWithoutSession(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newApp()
 	a.win = nil
 	a.projects = []project{{Name: "test", Path: t.TempDir(), Tabs: []string{"dev"}}}

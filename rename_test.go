@@ -11,7 +11,7 @@ import (
 // name. Renaming it must not lose the list.
 func TestLegacyStateIsRead(t *testing.T) {
 	config := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", config)
+	setConfigHome(t, config)
 
 	// A project directory that exists, since loading drops paths that do not.
 	projectDir := t.TempDir()

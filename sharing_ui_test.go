@@ -172,7 +172,7 @@ func TestShareCloudflareAsksOnce(t *testing.T) {
 
 // A shared process's row, tab and header show the share, which opens it.
 func TestSharePillShows(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	projectID, tr := runProcesses(t, a)
@@ -261,7 +261,7 @@ func TestShareCopyLink(t *testing.T) {
 // Without the session daemon, sharing is refused, and the refusal shows as
 // a toast.
 func TestShareNeedsTheDaemon(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	prev := shareAvailable
 	shareAvailable = func() map[tunnel.Provider]string { return map[tunnel.Provider]string{} }
 	t.Cleanup(func() { shareAvailable = prev })

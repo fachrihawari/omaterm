@@ -47,7 +47,7 @@ func runProcesses(t *testing.T, a *appState) (projectID string, tr *ui.Tester) {
 // The dialog's URL field is saved with the definition, and a name a Dev
 // URL can't take is refused with a note.
 func TestProcessDialogURL(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()
@@ -103,7 +103,7 @@ func TestProcessDialogURL(t *testing.T) {
 // A suggestion for a server fills the URL with the project's name, and
 // leaves a URL the user typed.
 func TestProcessDialogSuggestionFillsURL(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()
@@ -148,7 +148,7 @@ func TestProcessDialogSuggestionFillsURL(t *testing.T) {
 // it; one whose URL the proxy isn't serving keeps its port, with a note on
 // where to set Dev URLs up.
 func TestProcessRowDevURL(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	projectID, tr := runProcesses(t, a)
@@ -232,7 +232,7 @@ func TestProcessCopyURL(t *testing.T) {
 	copyText = func(text string) { copied = append(copied, text) }
 	t.Cleanup(func() { copyText = prev })
 
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	projectID, tr := runProcesses(t, a)

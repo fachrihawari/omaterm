@@ -10,7 +10,7 @@ import (
 )
 
 func TestProcessMoveAndRemove(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()
@@ -89,7 +89,7 @@ func TestProcessMoveAndRemove(t *testing.T) {
 }
 
 func TestProcessStartAllAndStopAll(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()
