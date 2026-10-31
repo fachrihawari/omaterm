@@ -68,6 +68,9 @@ type Pane struct {
 	// tells that the screen last showed the agent's prompt outright.
 	typed    time.Time
 	typedEnd bool
+	// pastedAt is when the user last pasted: an Enter right after waits
+	// out pasteGap, so that the program reads the paste first.
+	pastedAt time.Time
 	started  time.Time
 	prompt   bool
 

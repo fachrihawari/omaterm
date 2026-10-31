@@ -775,10 +775,16 @@ func (p *remotePane) Write(b []byte) error {
 	return p.r.call("pane.type", proto.SendParams{ID: p.id, Data: string(b)}, nil)
 }
 
-// Key sends a key by name through the daemon, which encodes it with the
-// pane's keyboard modes.
+// Key sends a key by name as the user's, through the daemon, which encodes
+// it with the pane's keyboard modes.
 func (p *remotePane) Key(name string) error {
-	return p.r.call("key", proto.KeyParams{ID: p.id, Keys: []string{name}}, nil)
+	return p.r.call("pane.key", proto.KeyParams{ID: p.id, Keys: []string{name}}, nil)
+}
+
+// SendKeys sends keys for the omaterm command, which wait for the user as
+// long as ctx allows, longer than a call's usual limit.
+func (p *remotePane) SendKeys(ctx context.Context, names []string) error {
+	return p.r.client().CallContext(ctx, "key", proto.KeyParams{ID: p.id, Keys: names}, nil)
 }
 
 // Send waits for the user as long as ctx allows, longer than a call's

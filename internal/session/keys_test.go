@@ -1,6 +1,8 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,7 +78,7 @@ func TestPasteText(t *testing.T) {
 		name, seq, want string
 	}{
 		{"bracketed", `printf '\033[?2004h'; `, "\x1b[200~hi\nthere\x1b[201~"},
-		{"plain", "", "hi there"},
+		{"plain", "", "hi\rthere"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -100,5 +102,113 @@ func TestPasteText(t *testing.T) {
 			}
 			waitInput(t, p, log, c.want)
 		})
+	}
+}
+
+// The omaterm command's keys wait while the user types, fail saying so, and
+// are no user's typing; the user's own keys go at once, and count.
+func TestKeysForAgentsWaitAndAreNotTyping(t *testing.T) {
+	r := NewRegistry()
+	p := startExec(t, r, "p1", "s1", `sleep 5`)
+	p.Write([]byte("hel"))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	var held HoldError
+	if err := p.SendKeys(ctx, []string{"enter"}); !errors.As(err, &held) || !strings.Contains(err.Error(), "typing") {
+		t.Fatalf("keys sent while the user typed: %v", err)
+	}
+
+	// A pane nobody types in: the keys go at once and leave no mark.
+	q := startExec(t, r, "p2", "s2", `sleep 5`)
+	if err := q.SendKeys(context.Background(), []string{"down", "tab"}); err != nil {
+		t.Fatal(err)
+	}
+	q.mu.Lock()
+	typed := q.typed
+	q.mu.Unlock()
+	if !typed.IsZero() {
+		t.Fatal("keys for the omaterm command counted as the user typing")
+	}
+	// A bad name sends nothing, and says so.
+	if err := q.SendKeys(context.Background(), []string{"enter", "nonsense-key"}); err == nil {
+		t.Fatal("a bad key name was sent")
+	}
+
+	// The user's key is not held, and is their typing: the next send waits.
+	start := time.Now()
+	if err := p.Key("down"); err != nil || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("the user's key: %v after %v", err, time.Since(start))
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	if err := q.Key("down"); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Send(ctx2, "x", false); !errors.As(err, &held) {
+		t.Fatalf("a send right after the user's key: %v", err)
+	}
+}
+
+// The agents' keys encode with the program's modes too.
+func TestSendKeysUseTheProgramsModes(t *testing.T) {
+	r := NewRegistry()
+	log := filepath.Join(t.TempDir(), "in.log")
+	p := startExec(t, r, "p1", "s1", `stty raw -echo; printf 'ready\n' >> `+log+`; printf '\033[>1u'; exec cat >> `+log)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "ready") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the program never started")
+		}
+	}
+	waitFor(t, p, "kitty on", func(Info) bool { p.mu.Lock(); defer p.mu.Unlock(); return p.scan.Kitty == 1 })
+	if err := p.SendKeys(context.Background(), []string{"ctrl+enter"}); err != nil {
+		t.Fatal(err)
+	}
+	waitInput(t, p, log, "\x1b[13;5u")
+}
+
+// An Enter right after a paste waits out the rest of the gap, so the program
+// reads the paste first; an Enter with no paste before it, or with a
+// modifier, does not wait.
+func TestEnterAfterPasteWaits(t *testing.T) {
+	r := NewRegistry()
+	log := filepath.Join(t.TempDir(), "in.log")
+	p := startExec(t, r, "p1", "s1", `stty raw -echo; printf 'ready\n' >> `+log+`; exec cat >> `+log)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "ready") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the program never started")
+		}
+	}
+	timed := func(name string) time.Duration {
+		start := time.Now()
+		if err := p.Key(name); err != nil {
+			t.Fatal(err)
+		}
+		return time.Since(start)
+	}
+	if d := timed("enter"); d > pasteGap/2 {
+		t.Fatalf("an Enter with no paste before it took %v", d)
+	}
+	if err := p.PasteText("echo hi"); err != nil {
+		t.Fatal(err)
+	}
+	if d := timed("ctrl+enter"); d > pasteGap/2 {
+		t.Fatalf("Ctrl+Enter waited %v", d)
+	}
+	if err := p.PasteText("echo hi"); err != nil {
+		t.Fatal(err)
+	}
+	if d := timed("Enter"); d < pasteGap*2/3 || d > 3*pasteGap {
+		t.Fatalf("an Enter right after a paste took %v, want about %v", d, pasteGap)
+	}
+	// Much later, no wait.
+	time.Sleep(pasteGap + 50*time.Millisecond)
+	if d := timed("enter"); d > pasteGap/2 {
+		t.Fatalf("an Enter long after a paste took %v", d)
 	}
 }

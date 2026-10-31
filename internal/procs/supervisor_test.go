@@ -59,6 +59,7 @@ func (h *fakeHandle) Term() *terminal.Terminal                 { return nil }
 func (h *fakeHandle) TermIfOpen() *terminal.Terminal           { return nil }
 func (h *fakeHandle) Write([]byte) error                       { return nil }
 func (h *fakeHandle) Key(string) error                         { return nil }
+func (h *fakeHandle) SendKeys(context.Context, []string) error { return nil }
 func (h *fakeHandle) Send(context.Context, string, bool) error { return nil }
 func (h *fakeHandle) Text(bool, int) string                    { return "" }
 func (h *fakeHandle) History(bool) []byte                      { return append([]byte(nil), h.history...) }

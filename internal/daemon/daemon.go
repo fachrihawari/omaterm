@@ -531,6 +531,25 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		}
 		return true, err
 	case "key":
+		// The omaterm command's keys: no user's typing, so they wait for
+		// the user as send does.
+		var p proto.KeyParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		err = pn.SendKeys(ctx, p.Keys)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		if err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		return true, nil
+	case "pane.key":
+		// Keys the user pressed, from the app (session.Handle.Key).
 		var p proto.KeyParams
 		json.Unmarshal(raw, &p)
 		pn, err := pane(p.ID)

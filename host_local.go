@@ -191,6 +191,7 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		}
 		return true, err
 	case "key":
+		// The omaterm command's keys: they wait for the user, as send does.
 		p, err := decode[proto.KeyParams](raw)
 		if err != nil {
 			return nil, err
@@ -199,10 +200,13 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 		if err != nil {
 			return nil, err
 		}
-		for _, k := range p.Keys {
-			if err := pane.Key(k); err != nil {
-				return nil, proto.Errorf(proto.CodeUsage, err.Error())
-			}
+		err = pane.SendKeys(ctx, p.Keys)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		if err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
 		}
 		return true, nil
 	case "read":

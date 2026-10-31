@@ -257,3 +257,42 @@ func TestClipboardReadsRefusedUnlessAsked(t *testing.T) {
 		t.Fatalf("asked %v, want forward", o.ClipboardRead)
 	}
 }
+
+// The user's keys from the app (pane.key) go at once and count as typing;
+// the omaterm command's (key) wait for the user and are no typing.
+func TestKeysUserAndCommandOverTheDaemon(t *testing.T) {
+	_, socket := startDaemon(t, time.Minute)
+	r, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	h, err := r.Start(session.StartOptions{ID: "k1", Session: "s1", Command: []string{"sh", "-c", "stty raw -echo; exec cat"},
+		Exec: true, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The command's keys, with no user typing: they go, and are no typing.
+	if err := h.SendKeys(context.Background(), []string{"x", "enter"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	if err := h.SendKeys(ctx, []string{"y"}); err != nil {
+		t.Fatalf("the command's keys were held with nobody typing: %v", err)
+	}
+	// The user's key goes at once, and holds the command's.
+	if err := h.Key("z"); err != nil {
+		t.Fatal(err)
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel2()
+	// Held: the call is still waiting when the caller's time is up.
+	err = h.SendKeys(ctx2, []string{"q"})
+	if err == nil {
+		t.Fatal("the command's keys went at once after the user's")
+	}
+	if err := h.SendKeys(context.Background(), []string{"nonsense-key"}); err == nil {
+		t.Fatal("a bad key name was accepted")
+	}
+}

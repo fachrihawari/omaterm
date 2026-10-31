@@ -28,19 +28,35 @@ func (e HoldError) Error() string { return string(e) }
 // program takes those, else on one line, as a newline would send it. No
 // control in it can end the paste, or act.
 func Paste(text string, bracketed bool) []byte {
-	text = strings.Map(func(r rune) rune {
+	text = stripControls(text, true)
+	if !bracketed {
+		return []byte(strings.Join(strings.Fields(text), " "))
+	}
+	return []byte("\x1b[200~" + text + "\x1b[201~")
+}
+
+// UserPaste is text the user pastes: bracketed when the program takes
+// those, else with its lines kept, separated by CR as a terminal sends them
+// (the agents' Paste puts them on one line). No other control is in it.
+func UserPaste(text string, bracketed bool) []byte {
+	if bracketed {
+		return Paste(text, true)
+	}
+	return []byte(strings.ReplaceAll(stripControls(text, false), "\n", "\r"))
+}
+
+// stripControls takes out every control character but a newline (and a tab,
+// with keepTab), after turning CRLF into a newline.
+func stripControls(text string, keepTab bool) string {
+	return strings.Map(func(r rune) rune {
 		switch {
-		case r == '\n', r == '\t':
+		case r == '\n', r == '\t' && keepTab:
 			return r
 		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
 			return -1
 		}
 		return r
 	}, strings.ReplaceAll(text, "\r\n", "\n"))
-	if !bracketed {
-		return []byte(strings.Join(strings.Fields(text), " "))
-	}
-	return []byte("\x1b[200~" + text + "\x1b[201~")
 }
 
 // Send types data into the program for the omaterm command: keys as they
