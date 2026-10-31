@@ -112,3 +112,26 @@ func TestSendPasteBracketed(t *testing.T) {
 		}
 	}
 }
+
+// A user's paste keeps its lines, as a terminal sends them (CR), when the
+// program didn't ask for bracketed pastes; every other control is out. The
+// agents' Paste still flattens.
+func TestUserPaste(t *testing.T) {
+	for _, tt := range []struct {
+		name, in  string
+		bracketed bool
+		want      string
+	}{
+		{"lines kept", "a\nb\r\nc\n", false, "a\rb\rc\r"},
+		{"controls and tabs out", "x\ty\x1b[31m\x07z\u009b", false, "xy[31mz"},
+		{"indent kept", "if x:\n    y\n", false, "if x:\r    y\r"},
+		{"bracketed is as before", "a\x1b[201~b\nc\td", true, "\x1b[200~a[201~b\nc\td\x1b[201~"},
+	} {
+		if got := string(UserPaste(tt.in, tt.bracketed)); got != tt.want {
+			t.Errorf("%s: %q, want %q", tt.name, got, tt.want)
+		}
+	}
+	if got := string(Paste("a\nb  c\n", false)); got != "a b c" {
+		t.Errorf("the agents' paste: %q", got)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"omaterm/internal/client"
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
+	"omaterm/internal/tunnel"
 )
 
 // processTimeout is how long start --wait and restart --wait hold by default.
@@ -45,10 +46,10 @@ func psCmd(c *client.Client, args []string) error {
 		fmt.Fprintln(os.Stderr, "no processes defined: add one in omaterm (Processes → Add)")
 		return nil
 	}
-	fmt.Printf("%-16s %-10s %-6s %-7s %-9s %s\n", "NAME", "STATUS", "PORT", "PID", "RESTARTS", "MESSAGE")
+	fmt.Printf("%-16s %-10s %-6s %-7s %-9s %-28s %s\n", "NAME", "STATUS", "PORT", "PID", "RESTARTS", "URL", "MESSAGE")
 	for _, p := range list {
-		fmt.Printf("%-16s %-10s %-6s %-7s %-9s %s\n", fit(p.Name, 16), p.Status,
-			dashInt(p.Port), dashInt(p.PID), dashInt(p.Restarts), dash(p.Message))
+		fmt.Printf("%-16s %-10s %-6s %-7s %-9s %-28s %s\n", fit(p.Name, 16), p.Status,
+			dashInt(p.Port), dashInt(p.PID), dashInt(p.Restarts), fit(dash(processAddress(p)), 28), dash(p.Message))
 	}
 	return nil
 }
@@ -240,4 +241,82 @@ func dashInt(n int) string {
 		return "-"
 	}
 	return strconv.Itoa(n)
+}
+
+// processAddress is where a process is reached: its Dev URL while routed,
+// else its share, else "".
+func processAddress(p proto.Process) string {
+	if p.Link != "" {
+		return p.Link
+	}
+	return p.Share
+}
+
+// availableTunnels asks which tunnels this machine can make: a variable for
+// the tests.
+var availableTunnels = tunnel.Available
+
+// shareCmd makes a process reachable through a tunnel, or ends that:
+// Tailscale for your own devices, a Cloudflare quick tunnel for anyone with
+// the link.
+func shareCmd(c *client.Client, args []string) error {
+	f, err := parse(args, nil, map[string]string{"tailscale": "tailscale", "cloudflare": "cloudflare", "off": "off"})
+	if err != nil {
+		return err
+	}
+	const usage = "omaterm share <name> [--tailscale|--cloudflare] | omaterm share <name> --off"
+	if len(f.pos) != 1 || f.set["tailscale"] && f.set["cloudflare"] || f.set["off"] && (f.set["tailscale"] || f.set["cloudflare"]) {
+		return usageErr("%s", usage)
+	}
+	project, err := projectNow(c)
+	if err != nil {
+		return err
+	}
+	name := f.pos[0]
+	if f.set["off"] {
+		if err := c.Call("process.unshare", proto.ProcessParams{Project: project, Name: name}, nil); err != nil {
+			return err
+		}
+		fmt.Printf("%s is no longer shared\n", name)
+		return nil
+	}
+	via, err := chooseTunnel(f)
+	if err != nil {
+		return err
+	}
+	var p proto.Process
+	if err := c.Call("process.share", proto.ProcessParams{Project: project, Name: name, Via: string(via)}, &p); err != nil {
+		return err
+	}
+	if p.Share == "" {
+		fmt.Printf("%s will be shared through %s once it is running\n", name, via)
+		return nil
+	}
+	fmt.Println(p.Share)
+	if via == tunnel.Cloudflare {
+		fmt.Fprintf(os.Stderr, "anyone with this link can open %s: omaterm share %s --off ends it\n", name, name)
+	} else {
+		fmt.Fprintf(os.Stderr, "your devices on your tailnet can open %s: omaterm share %s --off ends it\n", name, name)
+	}
+	return nil
+}
+
+// chooseTunnel is the tunnel the flags name, else Tailscale when it is
+// there, else Cloudflare; an error says why the one wanted can't be made.
+func chooseTunnel(f *flags) (tunnel.Provider, error) {
+	avail := availableTunnels()
+	for _, want := range []tunnel.Provider{tunnel.Tailscale, tunnel.Cloudflare} {
+		if f.set[string(want)] {
+			if why := avail[want]; why != "" {
+				return "", fmt.Errorf("can't share through %s: %s", want, why)
+			}
+			return want, nil
+		}
+	}
+	for _, p := range []tunnel.Provider{tunnel.Tailscale, tunnel.Cloudflare} {
+		if avail[p] == "" {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("nothing to share through: Tailscale (%s) or Cloudflare (%s)", avail[tunnel.Tailscale], avail[tunnel.Cloudflare])
 }

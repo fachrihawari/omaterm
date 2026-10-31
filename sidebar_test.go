@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
 
@@ -186,5 +187,25 @@ func TestOpenFolderStartsASession(t *testing.T) {
 	a.openFromArgs([]string{dir}, "")
 	if len(a.tabs) != 0 {
 		t.Fatalf("opening a known folder again started %d sessions", len(a.tabs))
+	}
+}
+
+// A process's name stays readable beside its pills: an untrusted process
+// with a long Dev URL showed its name as "…".
+func TestProcessNameBesidePills(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	pid := a.projects[a.active].ID
+	a.procList = map[string][]procs.Proc{pid: {
+		{Def: procs.Def{Name: "web", Command: "x", URL: "stories.shop"}, Status: procs.Untrusted, Link: "https://stories.shop.localhost:8443"},
+	}}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	r, ok := tr.Find("web")
+	if !ok || r.W < 26 {
+		t.Fatalf("the name is squeezed: %+v %v", r, ok)
+	}
+	if got := trustDetails(procs.Def{Command: "x", URL: "shop"}); got[3][1] == "none" {
+		t.Fatalf("a URL process's port reads none: %v", got[3])
 	}
 }

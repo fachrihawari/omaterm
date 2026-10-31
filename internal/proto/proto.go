@@ -117,6 +117,10 @@ type Session struct {
 	// that is one: its id is procs.SessionID, and its one pane the
 	// process's current or last run.
 	Process string `json:"process,omitempty"`
+	// Proc is that process as the process.* methods tell it (its status,
+	// port, link, message), so that a client of the state needs no second
+	// call to show it.
+	Proc *Process `json:"proc,omitempty"`
 }
 
 // Process is a project process as the process.* methods tell it.
@@ -127,6 +131,8 @@ type Process = procs.Proc
 type ProcessParams struct {
 	Project string `json:"project"`
 	Name    string `json:"name,omitempty"`
+	// Via is the tunnel process.share uses: "tailscale" or "cloudflare".
+	Via string `json:"via,omitempty"`
 }
 
 // DropGoneParents forgets the parents that are no more: a session whose
@@ -228,6 +234,13 @@ type SendParams struct {
 	// program takes those), then Enter; it waits for a draft the user
 	// left there too.
 	Paste bool `json:"paste,omitempty"`
+}
+
+// KeyParams sends keys by name to a pane, which encodes each with the
+// keyboard modes its program asked for.
+type KeyParams struct {
+	ID   string   `json:"id"`
+	Keys []string `json:"keys"`
 }
 
 type ReadParams struct {

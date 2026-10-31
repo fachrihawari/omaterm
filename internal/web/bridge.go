@@ -20,8 +20,9 @@ const closeStopped = 4410
 
 // attach bridges a WebSocket to a pane's attach connection. The page
 // first gets the welcome, as text: the pane's size. Then every binary
-// message is one frame, as the attach socket has them. The page may only
-// type and resize: a theme frame would recolor every pane.
+// message is one frame, as the attach socket has them. The page may type,
+// send keys and pastes, and resize: a theme frame would recolor every
+// pane.
 func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true}) // secure checked the origin
 	if err != nil {
@@ -93,7 +94,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		kind, payload, err := proto.ReadFrame(bytes.NewReader(msg))
-		if err != nil || (kind != proto.FrameInput && kind != proto.FrameResize) {
+		if err != nil || (kind != proto.FrameInput && kind != proto.FrameKey && kind != proto.FramePaste && kind != proto.FrameResize) {
 			continue
 		}
 		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))

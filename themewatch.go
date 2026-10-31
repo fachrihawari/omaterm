@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,8 +10,10 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"omaterm/internal/daemon"
 	"omaterm/internal/session"
 	"omaterm/internal/theme"
+	"omaterm/internal/web"
 )
 
 // Theme modes: follow the active Omarchy theme, or one of the built-in
@@ -68,6 +71,22 @@ func (a *appState) applyTheme(src theme.Source) {
 		a.diffDs.Theme = editTheme
 	}
 	a.themeStamp = themeNameStamp()
+	a.pushWebTheme()
+}
+
+// pushWebTheme tells the session daemon the app's look, for the web page
+// to take; off the UI thread, as the daemon may be slow to answer.
+func (a *appState) pushWebTheme() {
+	r, ok := a.panes.(*daemon.Remote)
+	if !ok || themeSrc.Background.A == 0 { // no daemon, or no theme yet
+		return
+	}
+	t := web.ThemeOf(themeSrc)
+	go func() {
+		if err := r.SetWebTheme(t); err != nil {
+			log.Printf("web access: sending the theme: %v", err)
+		}
+	}()
 }
 
 // setThemeMode switches between following Omarchy, following the

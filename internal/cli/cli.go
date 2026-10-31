@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"omaterm/internal/client"
+	"omaterm/internal/keys"
 	"omaterm/internal/model"
 	"omaterm/internal/osc"
 	"omaterm/internal/paths"
@@ -31,7 +32,7 @@ import (
 var Commands = []string{
 	"ls", "list", "projects", "new", "split", "send", "key", "prompt", "read", "capture", "wait", "status",
 	"rename", "focus", "close", "kill", "restart", "notify", "report", "ask", "reply", "inbox", "merge", "skill", "hook", "cli", "do", "actions",
-	"diff", "browser", "daemon", "clients", "web", "settings", "services", "ps", "start", "stop", "help", "version", "--help", "-h", "--version",
+	"diff", "browser", "daemon", "clients", "web", "proxy", "settings", "services", "ps", "start", "stop", "share", "help", "version", "--help", "-h", "--version",
 }
 
 // IsCommand tells a subcommand from a path to open.
@@ -197,6 +198,8 @@ func run(args []string) error {
 		return clientsCmd(args)
 	case "web":
 		return webCmd(args)
+	case "proxy":
+		return proxyCmd(args)
 	case "settings":
 		return settingsCmd(args)
 	}
@@ -369,7 +372,7 @@ func run(args []string) error {
 
 	case "key":
 		if len(args) < 2 {
-			return usageErr("omaterm key <target> <key…>  (enter, tab, escape, up, ctrl+c, alt+x…)")
+			return usageErr("omaterm key <target> <key…>  (enter, tab, escape, up, ctrl+c, shift+tab, f1…)")
 		}
 		st, err := state(c)
 		if err != nil {
@@ -379,15 +382,21 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		var data []byte
-		for _, k := range args[1:] {
-			b, err := keyBytes(k)
-			if err != nil {
-				return err
+		err = c.Call("key", proto.KeyParams{ID: t.pane, Keys: args[1:]}, nil)
+		if err != nil && strings.Contains(err.Error(), "no method key") {
+			// An omaterm from before keys went by name: the bytes, as a
+			// program that asked nothing special takes them.
+			var data []byte
+			for _, k := range args[1:] {
+				b, err := keys.Bytes(k, keys.Modes{})
+				if err != nil {
+					return usageErr("%v", err)
+				}
+				data = append(data, b...)
 			}
-			data = append(data, b...)
+			return c.Call("send", proto.SendParams{ID: t.pane, Data: string(data)}, nil)
 		}
-		return c.Call("send", proto.SendParams{ID: t.pane, Data: string(data)}, nil)
+		return err
 
 	case "prompt":
 		f, err := parse(args, map[string]string{"t": "timeout", "timeout": "timeout"}, nil)
@@ -625,6 +634,9 @@ func run(args []string) error {
 
 	case "start", "stop":
 		return processCmd(c, "process."+cmd, args)
+
+	case "share":
+		return shareCmd(c, args)
 
 	case "ask":
 		return askCmd(c, args)
@@ -877,41 +889,6 @@ func readStdin() (string, error) {
 	}
 }
 
-// keys are the names omaterm key takes, as the bytes a terminal sends.
-var keys = map[string]string{
-	"enter": "\r", "return": "\r", "tab": "\t", "escape": "\x1b", "esc": "\x1b", "space": " ",
-	"backspace": "\x7f", "delete": "\x1b[3~", "up": "\x1b[A", "down": "\x1b[B", "right": "\x1b[C",
-	"left": "\x1b[D", "home": "\x1b[H", "end": "\x1b[F", "pageup": "\x1b[5~", "pagedown": "\x1b[6~",
-	"shift+tab": "\x1b[Z",
-}
-
-func keyBytes(name string) ([]byte, error) {
-	n := strings.ToLower(name)
-	if b, ok := keys[n]; ok {
-		return []byte(b), nil
-	}
-	if rest, ok := strings.CutPrefix(n, "ctrl+"); ok && len(rest) == 1 {
-		c := rest[0]
-		switch {
-		case c >= 'a' && c <= 'z':
-			return []byte{c - 'a' + 1}, nil
-		case c >= '@' && c <= '_':
-			return []byte{c - '@'}, nil
-		}
-	}
-	if rest, ok := strings.CutPrefix(n, "alt+"); ok {
-		b, err := keyBytes(rest)
-		if err != nil {
-			return nil, err
-		}
-		return append([]byte{0x1b}, b...), nil
-	}
-	if len([]rune(name)) == 1 {
-		return []byte(name), nil
-	}
-	return nil, usageErr("unknown key %q", name)
-}
-
 // waitExit waits for the command a pane started with to end, and exits
 // with its status: or its shell's, if that ended first.
 // waitTarget is the pane a wait on t waits for: the pane t names, or for
@@ -1161,7 +1138,7 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
   omaterm split [target] [--down|--left|--up] [-r ratio] [-w] [--url url] [--any-project] [-- command…]
   omaterm send <target> <text…> [--enter] [-e]
                                          type into it (waits while the user types there)
-  omaterm key <target> <key…>            enter, tab, escape, up, ctrl+c, alt+x…
+  omaterm key <target> <key…>            enter, tab, escape, up, ctrl+c, shift+tab, f1…
   omaterm prompt <target> <text…>        paste into its prompt, Enter, wait, print the screen
   omaterm read [target] [-n lines] [-a]
   omaterm wait [target…] [--any|--all] [--for idle,waiting,error,exited] [--exit] [-t timeout]
@@ -1183,10 +1160,13 @@ const helpText = `omaterm — drive the sessions of the running omaterm app
                                          the project's listening ports, or wait for one
 
 Project processes, from omaterm.yml and the ones kept in omaterm:
-  omaterm ps [--json]                    the processes, their status, port and restarts
+  omaterm ps [--json]                    the processes, their status, port, link and restarts
   omaterm start <name> [--wait] [--timeout 60s]
                                          run one; --wait holds until it is up
   omaterm stop <name>                    stop one
+  omaterm share <name> [--tailscale|--cloudflare] | --off
+                                         reach a process from elsewhere: your own devices
+                                         (Tailscale), or anyone with the link (Cloudflare)
   omaterm restart <name> [--wait] [--timeout 60s]
                                          restart one; restart also takes a session or pane
   omaterm browser [target] <open|text|html|click|type|wait|eval|screenshot|back|forward|reload|url|title> …
@@ -1194,8 +1174,12 @@ Project processes, from omaterm.yml and the ones kept in omaterm:
   omaterm cli install|uninstall|status
   omaterm daemon status|stop|restart|install-service|uninstall-service
   omaterm clients [--json]               who the session daemon serves
-  omaterm web on [--network]|off|status|pair|devices|revoke|tunnel
+  omaterm web on [--network] [--tunnel tailscale|cloudflare]|off|status|pair|devices|revoke|tunnel
                                          sessions in a browser, through a tunnel or the network
+  omaterm proxy status [--json]          Dev URLs: what works, and the routes
+  omaterm proxy setup [--dry-run]        make https://<name>.localhost open: trusts omaterm's
+                                         authority, opens port 443 (asks for your password)
+  omaterm proxy uninstall                undo it
   omaterm settings [page]                open the Settings window: general, appearance,
                                          terminal, editor, notifications, agents, web,
                                          browser, keyboard, about

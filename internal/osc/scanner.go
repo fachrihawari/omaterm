@@ -8,7 +8,10 @@
 // the emulator, and with them whether the program takes bracketed pastes.
 package osc
 
-import "bytes"
+import (
+	"bytes"
+	"strconv"
+)
 
 // Scanner finds OSC 7501, 133 and 9;4 in a program's output, and full
 // resets (RIS), across reads. Its zero value is ready.
@@ -22,8 +25,23 @@ type Scanner struct {
 	// Bracketed tells that the program asked for bracketed pastes (mode
 	// 2004), until it asks no more or a full reset.
 	Bracketed bool
-	csi       []byte // a CSI's parameters and intermediates, so far
+	// Kitty is the kitty keyboard protocol's flags, which decide whether
+	// keys with modifiers are sent as CSI u; 0 when off. The program
+	// pushes and pops them (CSI > n u, CSI < n u) and may set them.
+	Kitty int
+	// ModifyOtherKeys is xterm's modifyOtherKeys level, 0 when off.
+	ModifyOtherKeys int
+	// kitty are the flags pushed, the last current, one stack for each
+	// screen: the program's alternate screen has its own, dropped as it
+	// leaves it, so a program that quits without popping leaves the main
+	// screen's flags as they were.
+	kitty [2][]int
+	alt   bool   // the alternate screen is shown
+	csi   []byte // a CSI's parameters and intermediates, so far
 }
+
+// maxKittyStack is how many kitty keyboard flags are kept pushed.
+const maxKittyStack = 64
 
 // MaxLen is the longest sequence kept, OSC 7501's limit.
 const MaxLen = 4096
@@ -53,6 +71,7 @@ func (o *Scanner) Scan(p []byte, fn func(body []byte), reset func()) {
 				o.state = 0
 				if b == 'c' {
 					o.Bracketed = false
+					o.Kitty, o.kitty, o.alt, o.ModifyOtherKeys = 0, [2][]int{}, false, 0
 					if reset != nil {
 						reset()
 					}
@@ -106,17 +125,136 @@ func (o *Scanner) Scan(p []byte, fn func(body []byte), reset func()) {
 
 func (o *Scanner) begin() { o.state, o.buf = 2, o.buf[:0] }
 
-// mode follows a CSI that ended with final: DECSET and DECRST ("CSI ? …
-// h" and "l") of mode 2004, among the modes they set.
+// mode follows a CSI that ended with final: the modes that tell how the
+// program wants pastes and keys.
 func (o *Scanner) mode(final byte) {
-	if final != 'h' && final != 'l' || len(o.csi) < 2 || o.csi[0] != '?' {
+	switch final {
+	case 'h', 'l':
+		o.decMode(final)
+	case 'u':
+		o.keyboard()
+	case 'm':
+		o.modifyOtherKeys()
+	}
+}
+
+// decMode follows DECSET and DECRST ("CSI ? … h" and "l") of mode 2004,
+// among the modes they set.
+func (o *Scanner) decMode(final byte) {
+	if len(o.csi) < 2 || o.csi[0] != '?' {
 		return
 	}
 	for _, m := range bytes.Split(o.csi[1:], []byte(";")) {
-		if string(m) == "2004" {
+		switch string(m) {
+		case "2004":
 			o.Bracketed = final == 'h'
+		case "47", "1047", "1049":
+			o.screen(final == 'h')
 		}
 	}
+}
+
+// screen follows the program showing its alternate screen (on) or the main
+// one: each has its own kitty flags, and the alternate's start empty.
+func (o *Scanner) screen(on bool) {
+	if on == o.alt {
+		return
+	}
+	o.alt = on
+	o.kitty[1] = nil
+	o.setKitty()
+}
+
+// stack is the kitty flags pushed on the screen shown.
+func (o *Scanner) stack() *[]int {
+	if o.alt {
+		return &o.kitty[1]
+	}
+	return &o.kitty[0]
+}
+
+// setKitty makes Kitty the flags on top of the screen's stack.
+func (o *Scanner) setKitty() {
+	o.Kitty = 0
+	if st := *o.stack(); len(st) > 0 {
+		o.Kitty = st[len(st)-1]
+	}
+}
+
+// keyboard follows the kitty keyboard protocol's flags: CSI > n u pushes
+// n, CSI < n u pops n (one when none is given), and CSI = n ; m u sets
+// them, or adds or clears bits with mode 2 or 3.
+func (o *Scanner) keyboard() {
+	if len(o.csi) == 0 {
+		return
+	}
+	params := bytes.Split(o.csi[1:], []byte(";"))
+	num := func(i int) int {
+		if i >= len(params) {
+			return 0
+		}
+		n, _ := strconv.Atoi(string(params[i]))
+		return n
+	}
+	st := o.stack()
+	switch o.csi[0] {
+	case '>':
+		// The stack is bounded, as kitty bounds it: a program pushing
+		// without end drops its oldest entries, not the daemon's memory.
+		if len(*st) >= maxKittyStack {
+			*st = append((*st)[:0], (*st)[1:]...)
+		}
+		*st = append(*st, num(0))
+	case '<':
+		n := num(0)
+		if n < 1 {
+			n = 1
+		}
+		if n > len(*st) {
+			n = len(*st)
+		}
+		*st = (*st)[:len(*st)-n]
+	case '=':
+		if len(*st) == 0 {
+			*st = append(*st, 0)
+		}
+		flags, mode := num(0), num(1)
+		cur := (*st)[len(*st)-1]
+		switch mode {
+		case 2: // add
+			cur |= flags
+		case 3: // clear
+			cur &^= flags
+		default: // set
+			cur = flags
+		}
+		(*st)[len(*st)-1] = cur
+	default:
+		return // a query, CSI ? u: the program asks, it does not say
+	}
+	o.setKitty()
+}
+
+// modifyOtherKeys follows xterm's "CSI > 4 ; n m", which sets the level,
+// and "CSI > 4 m", which turns it off. Other "m" sequences (SGR's) are
+// not its business.
+func (o *Scanner) modifyOtherKeys() {
+	if len(o.csi) < 2 || o.csi[0] != '>' {
+		return
+	}
+	params := bytes.Split(o.csi[1:], []byte(";"))
+	if string(params[0]) != "4" {
+		return
+	}
+	if len(params) == 1 {
+		o.ModifyOtherKeys = 0
+		return
+	}
+	n, err := strconv.Atoi(string(params[1]))
+	if err != nil {
+		return
+	}
+	o.ModifyOtherKeys = n
 }
 
 func (o *Scanner) end(fn func([]byte)) {

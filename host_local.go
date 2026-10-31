@@ -190,6 +190,25 @@ func (h *localHost) Handle(ctx context.Context, method string, raw json.RawMessa
 			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
 		}
 		return true, err
+	case "key":
+		// The omaterm command's keys: they wait for the user, as send does.
+		p, err := decode[proto.KeyParams](raw)
+		if err != nil {
+			return nil, err
+		}
+		pane, err := h.pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		err = pane.SendKeys(ctx, p.Keys)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		if err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		return true, nil
 	case "read":
 		p, err := decode[proto.ReadParams](raw)
 		if err != nil {
@@ -434,8 +453,9 @@ func (a *appState) protoState(started time.Time) proto.State {
 				info = session.Info{ID: process.Pane, Session: process.Session, Project: p.ID,
 					Role: "process", Status: session.Exited, Progress: -1}
 			}
+			proc := process
 			st.Sessions = append(st.Sessions, proto.Session{ID: process.Session, Project: p.ID,
-				Name: process.Name, Process: process.Name, Panes: []proto.Pane{info}, Lead: info})
+				Name: process.Name, Process: process.Name, Proc: &proc, Panes: []proto.Pane{info}, Lead: info})
 		}
 	}
 	proto.DropGoneParents(st.Sessions)

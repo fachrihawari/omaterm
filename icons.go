@@ -54,6 +54,9 @@ var iconGitCompareSVG []byte
 //go:embed icons/globe-2.svg
 var iconGlobeSVG []byte
 
+//go:embed icons/globe-lock.svg
+var iconGlobeLockSVG []byte
+
 //go:embed icons/info.svg
 var iconInfoSVG []byte
 
@@ -164,6 +167,7 @@ var (
 	iconGitBranch      = ui.MustParseSVG(iconGitBranchSVG)
 	iconGitCompare     = ui.MustParseSVG(iconGitCompareSVG)
 	iconGlobe          = ui.MustParseSVG(iconGlobeSVG)
+	iconGlobeLock      = ui.MustParseSVG(iconGlobeLockSVG)
 	iconInfo           = ui.MustParseSVG(iconInfoSVG)
 	iconMinus          = ui.MustParseSVG(iconMinusSVG)
 	iconOpenInNew      = ui.MustParseSVG(iconOpenInNewSVG)

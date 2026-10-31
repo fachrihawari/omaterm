@@ -9,7 +9,13 @@ The code:
 - `settings.go`: the model and the `settingDefs` the palette shares.
 
 Differences from the design below:
-- **Dev URLs** is not built. It comes with the proxy, in a plan of its own, so the page is left out.
+- **Dev URLs** is built (0.12.0), in `settings_devurls.go`, with the proxy in `internal/devurl` (solo.md 6.2b). Where it differs from the design below:
+  - the checklist has six rows: the authority, the proxy, system trust, Chrome and Firefox (only where a certificate database exists), `*.localhost` names, and port 443;
+  - **Set Up…** lists the plan (`devurl.Plan`) with the changes that ask for the password marked, and the ones that can't be done here shown with why;
+  - **Try Again** restarts the proxy when only it is down. The daemon also tries by itself every ten seconds;
+  - the CA's name constraint is `.localhost`, and the privileged step refuses any other certificate;
+  - Linux and macOS: Windows has no Dev URLs yet;
+  - **Open** uses the Open Links setting, and the ⓘ sheet is not built: the setup sheet lists the changes instead.
 - **Notification sound** is a switch: Linux notifications sound or stay silent, with no choice of sound.
 - **Open settings file** opens `settings.json` with the system's editor for it.
 - **Terminal options without a setter in mygo** (cursor, blink, right click, clipboard reads, scrollback) apply as terminals are made. A session daemon's panes get theirs again at once: the app lets go of their terminals and shows them anew. Panes that run in the app get them in new sessions.

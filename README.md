@@ -39,10 +39,13 @@ an editor and a browser sit next to your shells.
   defined once, and omaterm runs it, restarts it when it fails and shows it in
   the sidebar. You and every agent share it: `omaterm start web` runs the one
   you have.
+- **Dev URLs.** A process with `url: shop` is served at `https://shop.localhost`:
+  no port to remember and no certificate warning.
 - **Sessions that keep running.** Close the window and they carry on. After a
   reboot, agents resume the same conversation.
 - **On your phone.** Pair a browser with a QR code, then watch and type into
-  any session.
+  any session, in the app's own look, with a key bar and a box for writing
+  prompts. omaterm can run the Tailscale or Cloudflare tunnel for you.
 - **Everything next to the terminal.** A Git panel, commit graph, diffs, a
   file tree, an editor and browser panes.
 - **Scriptable.** The `omaterm` command lets agents and scripts open panes,
@@ -201,6 +204,8 @@ Each process takes:
 - `watch`, a list of globs. A change to a matching file restarts the process.
   As in `.gitignore`, `*` stays within one folder and `**` crosses folders.
 - `env`, variables added to the environment the process runs in.
+- `url`, a name that serves the process at `https://<name>.localhost`. See
+  [Dev URLs](#dev-urls).
 
 A command from `omaterm.yml` runs only after you trust that exact definition.
 Starting an untrusted process opens a sheet that shows its command, folder,
@@ -229,6 +234,90 @@ The idea of defining a project's processes in a committed file comes from
 [Solo](https://soloterm.com) (`solo.yml`), whose files omaterm imports as
 suggestions.
 
+### Dev URLs
+
+Give a process a name, and omaterm serves it at `https://<name>.localhost`:
+`https://shop.localhost` instead of `http://localhost:5173`. There is no port
+to remember and no certificate warning, and every project can use the
+same ports without clashing. Names also keep browser cookies and storage apart
+between your projects.
+
+```yaml
+processes:
+  web:
+    command: pnpm run dev
+    url: shop               # https://shop.localhost
+```
+
+Your dev server is told which port to listen on in the `PORT` environment
+variable: omaterm picks a free one each time it starts the process, so the
+command must use it. Most frameworks do. If yours takes a flag instead, pass
+it in the command, as `vite --port $PORT`. A process that has a `port` is told
+that port as `PORT` too, unless its `env` sets `PORT` itself. A `url` is
+part of what you trust: changing it asks you to trust the process again.
+
+A name is one to three parts of lowercase letters, digits and `-`, joined by
+dots (`shop` or `api.shop`), and each name belongs to one process. If two
+processes ask for the same one, the first gets it and the second says so. Set
+the name in the process's Edit dialog (its **URL** field), or write `url:` in
+`omaterm.yml`.
+
+A process with a URL shows its address as a pill in the sidebar, in its tab
+and in `omaterm ps`, and in **Settings → Dev URLs**, which lists every route
+with **Open** and **Copy**. Click the pill to open it. If the process isn't
+running, its address shows a page that says so, and which project to start it
+in.
+
+**Setting it up** takes one step, once. Open **Settings → Dev URLs** and choose
+**Set Up…**. It lists exactly what will change before it asks for anything:
+
+- omaterm makes its own certificate authority, a small certificate that lives
+  in your omaterm folder. It signs for `.localhost` names only, so a browser
+  that trusts it trusts it for nothing else.
+- It is trusted in Chrome, Chromium and each Firefox profile, as you.
+- It is trusted system-wide, which curl and other programs read. This asks for
+  your password.
+- Linux only: omaterm lets programs listen on ports 443 and up
+  (`/etc/sysctl.d/50-omaterm.conf` sets `net.ipv4.ip_unprivileged_port_start`
+  to 443), so that the address needs no port. This asks for your password
+  too, in the same dialog. **Any program you run can then use ports
+  443 to 1023**, not only omaterm.
+
+The password step is one small command, `omaterm proxy setup --system`, that
+runs through your desktop's own password dialog (`pkexec`, or the system's
+dialog on macOS). It installs only omaterm's certificate and writes that one
+file, and uses no network. Where there is no password dialog, the page offers
+**Run in a Terminal**, which runs the same command with `sudo`.
+
+The same steps are in the terminal: `omaterm proxy setup` prints what it
+will change and does it (`--dry-run` only prints), `omaterm proxy status`
+shows what works and the routes, and `omaterm proxy uninstall` takes it all
+away. To remove it from Settings, choose **Remove…** on the same page. It
+removes the trust, the sysctl file (ports below 1024 close again at the next
+boot) and the certificate authority.
+
+**Sharing a process.** A `.localhost` name only works on your computer. To
+open a running process from your phone, or to show it to someone, share it
+from the process's menu in the sidebar (**Share**), or from the command line:
+`omaterm share web` prints an address. A shared process shows a globe beside
+its pill, which opens the shared address. It goes through Tailscale when you
+have it (only your own devices on your tailnet can open it), else through a
+Cloudflare quick tunnel. Choose the tunnel in the menu or with `--tailscale`
+and `--cloudflare`, and end the share with **Stop Sharing** or
+`omaterm share web --off`.
+**A Cloudflare link is public: anyone who has it can open your dev server.**
+The share follows the process: it ends when the process stops, and comes back
+on the new port when the process does, until you turn it off. `omaterm ps`
+shows the address, and a share that fails says why in the process's message.
+A dev server that checks the `Host` header, like Vite's `server.allowedHosts`,
+refuses a shared address until you allow its host there. Each share needs the
+tool installed: `tailscale` (signed in) or `cloudflared`.
+
+The proxy runs in the session daemon, so Dev URLs need it on, and work on
+Linux and macOS: Windows isn't supported yet. A `.localhost` name only means
+something on the computer that runs omaterm, so you can't open a Dev URL from
+your phone: share the process, as above.
+
 ### Sessions keep running
 
 Sessions run in a session daemon, so they keep going after you close the
@@ -256,16 +345,30 @@ editor with syntax highlighting and Markdown preview.
 <img src="site/assets/web-phone.png" width="240" align="right" alt="A session on a phone, with a key bar for Esc, Tab, Ctrl and the arrows">
 
 **Web access** shows your sessions in a browser: which agents are working or
-need you, and any pane as a live terminal you can type into, with a key bar
-for Esc, Ctrl and the arrows on a phone.
+need you, your project's processes with their status and address, and any
+pane as a live terminal you can type into. The page looks like the app and
+follows its theme, light or dark, on a desktop browser and on a phone.
 
 Turn it on in Settings, or with `omaterm web on`. It serves on
-`127.0.0.1:7370`; reach it through a tunnel you already trust:
+`127.0.0.1:7370`, which only this computer can open. To reach it from your
+phone or another computer, let omaterm run a tunnel:
+**Settings → Web Access → Reach it from elsewhere**, or
 
 ```sh
-tailscale serve --bg 7370                       # your tailnet only
-cloudflared tunnel --url http://127.0.0.1:7370  # a public https URL
+omaterm web on --tunnel tailscale    # your own devices on your tailnet
+omaterm web on --tunnel cloudflare   # a public https link
+omaterm web on --tunnel none         # no tunnel
 ```
+
+omaterm starts the tunnel with web access, starts it again if it ends, stops
+it when you turn web access off, and puts its address in the link and the QR
+code. Each needs its tool installed: `tailscale` (signed in) or `cloudflared`.
+**Tailscale** reaches only your devices. **Cloudflare** makes a public link
+that anyone who has it can open, though the page still shows nothing until a
+browser is paired. `omaterm web status` shows the tunnel's address, or why it
+isn't running, and `omaterm web tunnel` explains the choices. If you run a
+tunnel yourself, put its address in **Public URL** (or `--url`), which
+overrides the tunnel omaterm runs.
 
 `omaterm web on --network` serves it on your local network instead. That is
 plain HTTP, so use it only on networks you trust.
@@ -273,6 +376,15 @@ plain HTTP, so use it only on networks you trust.
 A browser sees nothing until you pair it: **Pair a Device** in Settings, or
 `omaterm web pair`, shows a QR code that works once, for ten minutes. Revoke
 a device in Settings or with `omaterm web revoke`.
+
+**On a phone**, a key bar sits under the terminal: Esc, Tab, ⇧Tab, Ctrl and
+Alt, the arrows, ⌃C and ⌃⏎, and Enter. Tap Ctrl or Alt once to apply it to
+the next key, twice to hold it until you tap it again. **Edit** chooses which
+keys the bar has, and in what order; omaterm keeps that for each browser. The
+**compose** button opens a box for writing a prompt with the phone's own
+keyboard: **Send** pastes it and presses Enter, **Insert** only pastes it.
+Keys reach the program as it asked for them, so Ctrl+Enter and Shift+Tab work
+in agents that take them.
 
 <br clear="right">
 
@@ -309,6 +421,7 @@ omaterm split --down -- go test ./...   # run in a new pane below
 omaterm wait <pane> --exit              # wait for it to finish
 omaterm read <pane>                     # read its screen
 omaterm send <pane> "y" --enter         # type into it, once you stop typing there
+omaterm key <pane> ctrl+enter           # press a key: enter, esc, shift+tab, f1…f12, alt+x
 omaterm diff --turn                     # what the last agent turn changed
 omaterm new --worktree fix-login -- claude  # an agent on a branch of its own
 omaterm ask fix-login "Is the test green?"  # ask another agent, get its answer
@@ -316,9 +429,11 @@ omaterm ps                              # the project's processes and their stat
 omaterm start web --wait                # run one, and wait until it is up
 omaterm restart web                     # restart one
 omaterm stop web                        # stop one
+omaterm proxy status                    # what Dev URLs needs, and its routes
 ```
 
-`omaterm help` lists every command. `omaterm skill setup` teaches Claude
+`omaterm proxy setup` and `omaterm proxy uninstall` set Dev URLs up and take
+it away. `omaterm help` lists every command. `omaterm skill setup` teaches Claude
 Code, Codex, Pi, OpenCode and Antigravity to use it. Every pane knows where it runs:
 `$OMATERM_SESSION`, `$OMATERM_PANE`, `$OMATERM_PROJECT` and
 `$OMATERM_PROJECT_DIR`.

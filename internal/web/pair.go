@@ -13,12 +13,17 @@ import (
 )
 
 // BaseURL is where devices reach web access: the configured URL, else
-// this machine's Tailscale name when tailscale serve forwards to the
-// port, else its address on the network when it listens there, else the
-// loopback address, which only this machine can open.
-func BaseURL(cfg Config) string {
+// the live tunnel's, else this machine's Tailscale name when tailscale
+// serve forwards to the port, else its address on the network when it
+// listens there, else the loopback address, which only this machine can
+// open. The tunnel URL is what the daemon's status says, so a link lands
+// where the tunnel really serves.
+func BaseURL(cfg Config, tunnelURL string) string {
 	if cfg.URL != "" {
 		return strings.TrimRight(cfg.URL, "/")
+	}
+	if tunnelURL != "" {
+		return strings.TrimRight(tunnelURL, "/")
 	}
 	if u := tailscaleURL(cfg.ListenPort()); u != "" {
 		return u

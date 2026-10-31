@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"omaterm/internal/ctl"
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
+	"omaterm/internal/tunnel"
 )
 
 // fakeHost answers the control socket with one handler per method.
@@ -87,7 +89,8 @@ func listOf(list ...proto.Process) func(json.RawMessage) (any, error) {
 }
 
 var fixture = []proto.Process{
-	{Def: procs.Def{Name: "web", Command: "npm run dev", Port: 3000}, Status: procs.Running, PID: 4321},
+	{Def: procs.Def{Name: "web", Command: "npm run dev", Port: 3000, URL: "shop"}, Status: procs.Running, PID: 4321,
+		Link: "https://shop.localhost"},
 	{Def: procs.Def{Name: "worker", Command: "go run ./cmd/worker"}, Status: procs.Untrusted,
 		Message: "worker isn't trusted yet: review it in omaterm"},
 	{Def: procs.Def{Name: "queue", Command: "redis-server"}, Status: procs.Failed, Restarts: 2,
@@ -107,9 +110,9 @@ func TestPs(t *testing.T) {
 		t.Fatalf("got %q", out)
 	}
 	want := []string{
-		"web running 3000 4321 - -",
-		"worker untrusted - - - worker isn't trusted yet: review it in omaterm",
-		"queue failed - - 2 exited (code 1)",
+		"web running 3000 4321 - https://shop.localhost -",
+		"worker untrusted - - - - worker isn't trusted yet: review it in omaterm",
+		"queue failed - - 2 - exited (code 1)",
 	}
 	for i, w := range want {
 		if got := strings.Join(strings.Fields(lines[i+1]), " "); got != w {
@@ -290,5 +293,123 @@ func TestStartWaitSeesACrashLoop(t *testing.T) {
 	err = processCmd(c, "process.start", []string{"bad", "--wait", "--timeout", "2s"})
 	if err == nil || !strings.Contains(err.Error(), "exited (code 1)") {
 		t.Fatalf("got %v, want the exit code", err)
+	}
+}
+
+// omaterm key against an omaterm from before keys went by name sends the
+// keys' plain bytes, as it did then.
+func TestKeyFallsBackToBytes(t *testing.T) {
+	var sent proto.SendParams
+	fakeSocket(t, fakeHost{
+		"state": func(json.RawMessage) (any, error) {
+			return proto.State{Sessions: []proto.Session{{ID: "s1", Name: "w", Panes: []proto.Pane{{ID: "pa"}}}}}, nil
+		},
+		"key":  func(json.RawMessage) (any, error) { return nil, errors.New("no method key") },
+		"send": func(p json.RawMessage) (any, error) { json.Unmarshal(p, &sent); return true, nil },
+	})
+	if code := Run([]string{"key", "w", "shift+tab", "enter"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if sent.ID != "pa" || sent.Data != "\x1b[Z\r" {
+		t.Fatalf("sent %+v", sent)
+	}
+}
+
+// Tailscale and Cloudflare as a test says they are, by the reason each
+// can't be made, "" for one that can.
+func withTunnels(t *testing.T, tailscale, cloudflare string) {
+	t.Helper()
+	old := availableTunnels
+	availableTunnels = func() map[tunnel.Provider]string {
+		return map[tunnel.Provider]string{tunnel.Tailscale: tailscale, tunnel.Cloudflare: cloudflare}
+	}
+	t.Cleanup(func() { availableTunnels = old })
+}
+
+// shareHost answers process.share with a process shared at url, and notes
+// what it was asked.
+func shareHost(dir, url string, asked *proto.ProcessParams) fakeHost {
+	return fakeHost{"state": stateOf(dir),
+		"process.share": func(raw json.RawMessage) (any, error) {
+			json.Unmarshal(raw, asked)
+			return proto.Process{Def: procs.Def{Name: asked.Name}, Share: url, ShareVia: asked.Via, Status: procs.Running}, nil
+		},
+		"process.unshare": func(raw json.RawMessage) (any, error) {
+			json.Unmarshal(raw, asked)
+			return proto.Process{}, nil
+		}}
+}
+
+func TestShareChoosesTailscaleThenCloudflare(t *testing.T) {
+	for _, tt := range []struct {
+		name, tailscale, cloudflare string
+		args                        []string
+		via                         string // "" for an error
+	}{
+		{"both there", "", "", []string{"share", "web"}, "tailscale"},
+		{"only cloudflare", "signed out", "", []string{"share", "web"}, "cloudflare"},
+		{"asked for cloudflare", "", "", []string{"share", "web", "--cloudflare"}, "cloudflare"},
+		{"asked for tailscale", "", "", []string{"share", "web", "--tailscale"}, "tailscale"},
+		{"asked for what is missing", "signed out", "", []string{"share", "web", "--tailscale"}, ""},
+		{"neither", "signed out", "not installed", []string{"share", "web"}, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := projectFolder(t)
+			withTunnels(t, tt.tailscale, tt.cloudflare)
+			var asked proto.ProcessParams
+			fakeSocket(t, shareHost(dir, "https://x.example.net", &asked))
+			var code int
+			out := stdout(t, func() { code = Run(tt.args) })
+			if tt.via == "" {
+				if code == 0 || asked.Via != "" {
+					t.Fatalf("exit %d, asked %+v", code, asked)
+				}
+				return
+			}
+			if code != 0 || asked.Via != tt.via || asked.Name != "web" || asked.Project != "p1" || strings.TrimSpace(out) != "https://x.example.net" {
+				t.Fatalf("exit %d, asked %+v, out %q", code, asked, out)
+			}
+		})
+	}
+}
+
+func TestShareOffAndUsage(t *testing.T) {
+	dir := projectFolder(t)
+	withTunnels(t, "", "")
+	var asked proto.ProcessParams
+	fakeSocket(t, shareHost(dir, "https://x.example.net", &asked))
+	var code int
+	out := stdout(t, func() { code = Run([]string{"share", "web", "--off"}) })
+	if code != 0 || asked.Name != "web" || !strings.Contains(out, "no longer shared") {
+		t.Fatalf("exit %d, asked %+v, out %q", code, asked, out)
+	}
+	for _, args := range [][]string{{"share"}, {"share", "a", "b"}, {"share", "web", "--tailscale", "--cloudflare"}, {"share", "web", "--off", "--cloudflare"}} {
+		if code := Run(args); code == 0 {
+			t.Errorf("%v was accepted", args)
+		}
+	}
+}
+
+func TestShareOfAProcessThatIsNotUp(t *testing.T) {
+	dir := projectFolder(t)
+	withTunnels(t, "", "")
+	fakeSocket(t, fakeHost{"state": stateOf(dir), "process.share": func(json.RawMessage) (any, error) { return proto.Process{}, nil }})
+	out := stdout(t, func() { Run([]string{"share", "web"}) })
+	if !strings.Contains(out, "once it is running") {
+		t.Fatalf("out %q", out)
+	}
+}
+
+func TestPsShowsTheShareWhereThereIsNoLink(t *testing.T) {
+	dir := projectFolder(t)
+	list := []proto.Process{{Def: procs.Def{Name: "api", Command: "x", Port: 3000}, Status: procs.Running, Share: "https://api.example.net", ShareVia: "cloudflare"}}
+	fakeSocket(t, fakeHost{"state": stateOf(dir), "process.list": listOf(list...)})
+	out := stdout(t, func() { Run([]string{"ps"}) })
+	if !strings.Contains(out, "https://api.example.net") {
+		t.Fatalf("ps: %q", out)
+	}
+	out = stdout(t, func() { Run([]string{"ps", "--json"}) })
+	if !strings.Contains(out, `"share": "https://api.example.net"`) && !strings.Contains(out, `"share":"https://api.example.net"`) || !strings.Contains(out, "cloudflare") {
+		t.Fatalf("ps --json: %q", out)
 	}
 }

@@ -32,6 +32,7 @@ import (
 
 	"omaterm/internal/agent"
 	"omaterm/internal/ctl"
+	"omaterm/internal/devurl"
 	"omaterm/internal/mail"
 	"omaterm/internal/model"
 	"omaterm/internal/notice"
@@ -39,6 +40,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/tunnel"
 	"omaterm/internal/web"
 	"omaterm/service"
 )
@@ -64,6 +66,9 @@ type Options struct {
 	// Restore starts the sessions of state.json at once, from their
 	// scrollback, as a service does at login: no app is there to.
 	Restore bool
+	// ProxyAddr is where the Dev URLs proxy listens: 127.0.0.1:443 when
+	// empty (tests give a free port).
+	ProxyAddr string
 }
 
 // Daemon is the running daemon.
@@ -117,6 +122,29 @@ type Daemon struct {
 	webMu   sync.Mutex
 	web     *web.Server
 	webAddr string // the address asked of web
+	// webTunnel carries web access beyond this machine while it serves;
+	// nil when none is wanted.
+	webTunnel *webTunnel
+	// webTheme is the app's look for the web page, as it last sent it;
+	// nil until one is sent or read back from web-theme.json.
+	webTheme *web.Theme
+
+	// devMu orders what the Dev URLs proxy is and the routes it has; devView
+	// is what the processes show of them, under its own lock so that the
+	// supervisor can read it while it holds its own.
+	devMu     sync.Mutex
+	dev       *devurl.Server
+	devErr    string // why the proxy doesn't run
+	devRetry  bool   // the address was refused, so binding it again may work
+	devRouter *devurl.Router
+	devViewMu sync.Mutex
+	devView   *devView
+
+	// shares are the processes shared through a tunnel, and shareNotes why
+	// a share of one ended; shareMu orders both.
+	shareMu    sync.Mutex
+	shares     map[procKey]*share
+	shareNotes map[procKey]string
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -142,9 +170,7 @@ func Run(opts Options) error {
 	if err != nil {
 		return err
 	}
-	sigs := make(chan os.Signal, 1)
-	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	sigs := notifySignals()
 	select {
 	case sig := <-sigs:
 		log.Printf("stopping: %v", sig)
@@ -152,6 +178,22 @@ func Run(opts Options) error {
 	}
 	d.Stop()
 	return nil
+}
+
+// notifySignals has the daemon take SIGHUP and SIGPIPE without acting, and
+// tells of SIGTERM and SIGINT. They are caught, not ignored: an ignored
+// signal stays ignored in every program the daemon starts, and a process
+// that never gets its hangup is left running when its pane is closed.
+func notifySignals() <-chan os.Signal {
+	quiet := make(chan os.Signal, 8)
+	signal.Notify(quiet, syscall.SIGHUP, syscall.SIGPIPE)
+	go func() {
+		for range quiet {
+		}
+	}()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	return sigs
 }
 
 // Start starts the daemon and returns it running.
@@ -171,10 +213,19 @@ func Start(opts Options) (*Daemon, error) {
 	d := &Daemon{opts: opts, reg: session.NewRegistry(), quit: make(chan struct{}),
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
 		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){},
-		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{}}
+		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{},
+		devRouter: devurl.NewRouter(), shares: map[procKey]*share{}, shareNotes: map[procKey]string{}}
 	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
 	d.procs.OnEvent = d.processEvent
-	d.procs.OnChange = d.changed
+	d.procs.OnChange = func() {
+		d.rebuildRoutes()
+		d.reconcileShares()
+		d.changed()
+	}
+	d.procs.Decorate = func(project string, p *procs.Proc) {
+		d.decorateProc(project, p)
+		d.decorateShare(project, p)
+	}
 	d.procs.Watch = WatchFolder
 	d.procs.Match = service.MatchGlob
 	d.procs.Ignore = service.IgnoreFunc
@@ -227,9 +278,18 @@ func Start(opts Options) (*Daemon, error) {
 			}
 		}
 	}()
+	// Tailscale serves a daemon that crashed left are turned off before this
+	// one makes its own.
+	tunnel.TrackServes(filepath.Join(opts.StateDir, "tailscale-serves.json"))
+	if off, err := tunnel.CleanupServes(); err != nil {
+		log.Printf("tailscale serves left behind: %v", err)
+	} else if len(off) > 0 {
+		log.Printf("turned off the Tailscale serves a daemon left behind, on ports %v", off)
+	}
 	if _, err := d.reloadWeb(); err != nil {
 		log.Printf("web access: %v", err)
 	}
+	d.reloadProxy()
 	log.Printf("omaterm daemon %s started, pid %d, %s", opts.Version, os.Getpid(), opts.Socket)
 	for _, path := range paths.RemoveLegacy(opts.StateDir) {
 		log.Printf("removed %s, left by the first omaterm", path)
@@ -255,6 +315,8 @@ func (d *Daemon) Stop() {
 		d.saveHistories(true)
 		close(d.quit)
 		d.stopWeb()
+		d.stopProxy()
+		d.stopShares()
 		d.srv.Close()
 		d.reg.CloseAll()
 		d.lock.Close()
@@ -278,6 +340,9 @@ func (d *Daemon) loop(ctx context.Context) {
 			if n++; n%10 == 0 {
 				d.saveHistories(false)
 			}
+			if n%proxyRetryTicks == 0 {
+				d.retryProxy()
+			}
 			if d.processFilesChanged() {
 				d.loadProcesses()
 			}
@@ -294,7 +359,15 @@ func (d *Daemon) loop(ctx context.Context) {
 			d.mu.Unlock()
 			if exit {
 				log.Printf("idle: exiting")
-				d.once.Do(func() { d.procs.Close(); close(d.quit); d.stopWeb(); d.srv.Close(); d.lock.Close() })
+				d.once.Do(func() {
+					d.procs.Close()
+					close(d.quit)
+					d.stopWeb()
+					d.stopProxy()
+					d.stopShares()
+					d.srv.Close()
+					d.lock.Close()
+				})
 				return
 			}
 		}
@@ -422,7 +495,7 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		return map[string]any{"app": d.opts.Version, "proto": proto.Version, "pid": os.Getpid()}, nil
 	case "panes":
 		return d.reg.Infos(), nil
-	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync":
+	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync", "process.share", "process.unshare":
 		return d.processCall(method, raw)
 	case "pane.start":
 		var p StartParams
@@ -471,6 +544,38 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
 		}
 		return true, err
+	case "key":
+		// The omaterm command's keys: no user's typing, so they wait for
+		// the user as send does.
+		var p proto.KeyParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		err = pn.SendKeys(ctx, p.Keys)
+		var held session.HoldError
+		if errors.As(err, &held) {
+			return nil, proto.Errorf(proto.CodeBusy, "pane "+p.ID+": "+err.Error())
+		}
+		if err != nil {
+			return nil, proto.Errorf(proto.CodeUsage, err.Error())
+		}
+		return true, nil
+	case "pane.key":
+		// Keys the user pressed, from the app (session.Handle.Key).
+		var p proto.KeyParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range p.Keys {
+			if err := pn.Key(k); err != nil {
+				return nil, proto.Errorf(proto.CodeUsage, err.Error())
+			}
+		}
+		return true, nil
 	case "pane.type":
 		// What the user typed, from the app (session.Handle.Write).
 		var p proto.SendParams
@@ -564,8 +669,23 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 			ch <- m
 		}
 		return true, nil
+	case "proxy.status":
+		return d.proxyStatus(), nil
+	case "proxy.reload":
+		return d.withChecks(d.reloadProxy()), nil
 	case "web.reload":
 		return d.reloadWeb()
+	case "web.status":
+		return d.webStatus(), nil
+	case "web.theme":
+		return d.currentWebTheme(), nil
+	case "web.setTheme":
+		var t web.Theme
+		if err := json.Unmarshal(raw, &t); err != nil || len(t.Tokens) == 0 {
+			return nil, proto.Errorf(proto.CodeUsage, "bad theme")
+		}
+		d.setWebTheme(t)
+		return true, nil
 	case "clients":
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -801,6 +921,12 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 		switch kind {
 		case proto.FrameInput:
 			p.Write(payload)
+		case proto.FrameKey:
+			// A key by name, encoded as the program asked keys to be.
+			p.Key(string(payload))
+		case proto.FramePaste:
+			// The user's paste: bracketed when the program takes those.
+			p.PasteText(string(payload))
 		case proto.FrameResize:
 			if v, ok := proto.ParseUint16s(payload, 4); ok && v[0] > 0 && v[1] > 0 {
 				d.mu.Lock()

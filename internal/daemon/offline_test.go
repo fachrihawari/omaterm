@@ -129,6 +129,11 @@ func TestCLIWithWindowClosed(t *testing.T) {
 	waitFor(t, "echo", func() bool {
 		return strings.Count(call[proto.ReadResult](t, c, "read", proto.ReadParams{ID: made.Pane}).Text, "typed-offline") >= 2
 	})
+	// Keys go by name, through the daemon, which encodes them.
+	call[bool](t, c, "key", proto.KeyParams{ID: made.Pane, Keys: []string{"k", "e", "y", "e", "d", "enter"}})
+	waitFor(t, "key", func() bool {
+		return strings.Contains(call[proto.ReadResult](t, c, "read", proto.ReadParams{ID: made.Pane}).Text, "keyed")
+	})
 
 	// The app reads it all at its next launch.
 	saved, err := model.Load(d.stateFile())

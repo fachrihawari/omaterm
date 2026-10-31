@@ -21,9 +21,14 @@ import (
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/theme"
+	"omaterm/internal/tunnel"
 	"omaterm/internal/web"
 	"omaterm/service"
 )
+
+// availEvery is how long the Settings page keeps a tunnel provider's
+// why-not-available answer, which runs a command or two to know.
+const availEvery = 30 * time.Second
 
 // settingsPages are the Settings window's pages, in the sidebar's order.
 // init sets them: their views refer back to them.
@@ -58,6 +63,9 @@ func settingsPageList() []settingsPageDef {
 			Hero:     "Use your sessions from a phone or another computer, in a browser. Only devices you pair can open it.",
 			HeroLink: "https://fachrihawari.github.io/omaterm/#web"},
 		{ID: "pair", Parent: "web", Title: "Pair a Device", Icon: iconSmartphone, Body: (*appState).settingsPair},
+		{ID: "devurls", Title: "Dev URLs", Icon: iconGlobeLock, Group: 1, Body: (*appState).settingsDevurls,
+			Hero:     "A process with a URL is served at https://<name>.localhost, with no port and no certificate warning. omaterm’s own certificate authority signs for .localhost names only.",
+			HeroLink: "https://fachrihawari.github.io/omaterm/#dev-urls"},
 		{ID: "browser", Title: "Browser", Icon: iconGlobe, Group: 1, Body: (*appState).settingsBrowser,
 			Restore: func(s *Settings, d Settings) { s.SearchEngine = d.SearchEngine }},
 		{ID: "keyboard", Title: "Keyboard", Icon: iconKeyboard, Group: 1, Body: (*appState).settingsKeyboard},
@@ -80,7 +88,15 @@ type settingsData struct {
 	webLink      string
 	webLinkFor   web.Config
 	webLinkAsked bool
-	pair         *webPairing
+	// webTunnelURL and webTunnelErr are the live tunnel, as the daemon
+	// reports it; webTunnelWhy is what keeps the chosen one from running
+	// at all, when nothing live says (not installed, signed out).
+	webTunnelURL, webTunnelErr, webTunnelWhy string
+	// availFor and availAt remember what the why was asked of, and when,
+	// so it isn't asked of every refresh.
+	availFor string
+	availAt  time.Time
+	pair     *webPairing
 	// busy names a change running in the background, as installing the
 	// service, so its control waits.
 	busy string
@@ -94,6 +110,8 @@ type settingsData struct {
 	searchCustom bool
 	// omarchy is Omarchy's theme, for its tile.
 	omarchy *theme.Source
+	// devurls is the Dev URLs page's: the proxy's checks and routes.
+	devurls devurlData
 }
 
 // refreshSettingsData reads what the pages show, at most every two
@@ -127,18 +145,41 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 		}
 		d.web = cfg
 	}
-	if !d.webLinkAsked || d.webLinkFor != d.web {
-		d.webLinkAsked, d.webLinkFor = true, d.web
-		cfg := d.web
+	// The link, and the live tunnel behind it, come from the daemon in
+	// the background: the tunnel's URL arrives after it starts, and the
+	// window must not wait for any of it.
+	cfg := d.web
+	if !d.webLinkAsked || d.webLinkFor != cfg || cfg.Tunnel != "" {
+		d.webLinkAsked, d.webLinkFor = true, cfg
+		// The why-not-available answer runs a command or two of its own,
+		// so it is asked of at most every half minute.
+		askWhy := cfg.Tunnel != "" && (d.availFor != cfg.Tunnel || c.Now().Sub(d.availAt) > availEvery)
 		go func() {
-			link := web.BaseURL(cfg)
+			st, err := daemon.StatusWeb()
+			if err != nil {
+				st = web.Status{}
+			}
+			var why string
+			if askWhy && st.TunnelURL == "" && st.TunnelError == "" {
+				why = tunnel.Available()[tunnel.Provider(cfg.Tunnel)]
+			}
+			link := web.BaseURL(cfg, st.TunnelURL)
 			a.post(func() {
-				if a.settingsUI.data.webLinkFor == cfg {
-					a.settingsUI.data.webLink = link
+				dd := &a.settingsUI.data
+				if dd.webLinkFor != cfg {
+					return
+				}
+				dd.webLink = link
+				dd.webTunnelURL, dd.webTunnelErr = st.TunnelURL, st.TunnelError
+				if askWhy {
+					dd.webTunnelWhy, dd.availFor, dd.availAt = why, cfg.Tunnel, time.Now()
 				}
 				a.invalidateWindows()
 			})
 		}()
+	}
+	if a.settingsCurrent() == "devurls" && d.devurls.known {
+		a.fetchDevurls()
 	}
 	// The window wakes to read them again.
 	c.After(2 * time.Second)
@@ -738,9 +779,9 @@ func (a *appState) settingsAgent(c *ui.Context) {
 
 func (a *appState) settingsWeb(c *ui.Context) {
 	d := &a.settingsUI.data
-	foot := "Reach it from elsewhere with Tailscale or a tunnel (omaterm web tunnel)."
+	foot := "Tunnels carry web access beyond this computer: Tailscale to your own devices, Cloudflare as a public link. Either way, only devices you pair get in."
 	if a.webOn && a.webNetwork && d.web.URL == "" {
-		foot = "Plain HTTP on your network: use it on networks you trust, or Tailscale or a tunnel from elsewhere."
+		foot = "Plain HTTP on your network: use it on networks you trust, or a tunnel from elsewhere."
 	}
 	a.settingsGroup(c, "web", "", foot, func() {
 		on := a.webOn
@@ -748,6 +789,23 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			if settingsSwitch(c, "web", &on, false) {
 				a.setWeb(c, on)
 				a.settingsUI.dataAt = time.Time{}
+			}
+		})
+		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: true}, func() {
+			v := d.web.Tunnel
+			if settingsPopup(c, "webTunnel", &v, [][2]string{
+				{"", "Off"},
+				{string(tunnel.Tailscale), "Tailscale (your devices)"},
+				{string(tunnel.Cloudflare), "Cloudflare (public link)"},
+			}) {
+				a.setWebTunnel(c, v)
+				a.settingsUI.dataAt = time.Time{}
+			}
+			if d.webTunnelURL != "" {
+				if settingsButton(c, "Copy", false, false, false) {
+					mygo.Clipboard.WriteText(d.webTunnelURL)
+					toast(c, "Copied the tunnel's link")
+				}
 			}
 		})
 		net := a.webOn && a.webNetwork
@@ -824,7 +882,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				}
 			}
 		})
-		a.settingsRow(c, "Public URL", settingsRowOpts{id: "webURL", sub: "A Tailscale or tunnel address, for the link and QR code."}, func() {
+		a.settingsRow(c, "Public URL", settingsRowOpts{id: "webURL", sub: "A tunnel you run yourself. It overrides the tunnel omaterm runs, for the link and QR code."}, func() {
 			if a.settingsTextField(c, "webURL", &d.url, "https://…", 200, true) {
 				url := strings.TrimSpace(d.url)
 				if url != d.web.URL {
@@ -838,6 +896,27 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			}
 		})
 	})
+}
+
+// webTunnelNote is the live line under the tunnel choice: where the
+// tunnel serves, why it isn't running, why it couldn't run here at all,
+// or that it is starting.
+func (a *appState) webTunnelNote() string {
+	d := &a.settingsUI.data
+	if d.web.Tunnel == "" {
+		return ""
+	}
+	switch {
+	case d.webTunnelURL != "":
+		return d.webTunnelURL
+	case d.webTunnelErr != "":
+		return d.webTunnelErr
+	case d.webTunnelWhy != "":
+		return d.webTunnelWhy
+	case a.webOn:
+		return "Starting…"
+	}
+	return ""
 }
 
 // revokeSheet asks before signing a device, or every one, out.
@@ -879,7 +958,7 @@ func (a *appState) settingsPair(c *ui.Context) {
 	if p.ready && p.err == "" {
 		foot += " It works once, until " + p.expires.Format("15:04") + "."
 		if p.local {
-			foot += " Only this computer can open it: turn on On your network, or use a tunnel."
+			foot += " Only this computer can open it: turn on On your network, or pick a tunnel under Reach It from Elsewhere."
 		}
 	}
 	a.settingsGroup(c, "pair", "", foot, func() {

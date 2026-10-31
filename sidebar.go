@@ -5,6 +5,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
+	"omaterm/internal/tunnel"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -352,8 +353,9 @@ func (a *appState) processGroup(c *ui.Context, pi int) {
 func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	selected := pi == a.active && a.activeTab >= 0 && a.activeTab < len(a.tabs) &&
 		a.tabs[a.activeTab].Kind == tabProcess && a.tabs[a.activeTab].Process == proc.Name
-	// A click on the port opens its page, and does not also open the tab.
-	portClicked := false
+	// A click on the port or the URL opens its page, and does not also
+	// open the tab.
+	linkClicked := false
 	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 28).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	if selected {
 		row.Background(pal.RowSelected)
@@ -362,7 +364,10 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	}
 	row.Children(func() {
 		a.processIcon(c, proc, 13)
-		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		// The name stays readable: its pills give way first, their text
+		// ellipsized, rather than the name going to "…".
+		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(0.2).
+			MinWidth(min(72, float32(len(proc.Name))*9+2))
 		if proc.Status == procs.Exited || proc.Status == procs.Stopped {
 			name.TextColor(pal.TextMuted)
 		}
@@ -375,17 +380,36 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		if proc.Status == procs.Untrusted {
 			pill(c, "untrusted")
 		}
-		if proc.Port > 0 {
-			port := pill(c, ":"+itoa(proc.Port))
-			active := proc.Status == procs.Starting || proc.Status == procs.Running
+		active := proc.Status == procs.Starting || proc.Status == procs.Running
+		switch {
+		case proc.Link != "":
+			// Served at its Dev URL: the pill is that address, not the port.
+			link := pillShrink(c, procLinkHost(proc.Link)).Shrink(1).MinWidth(32)
 			if active {
-				url := "http://localhost:" + itoa(proc.Port)
-				port.Cursor(ui.CursorPointer).Tooltip("Open " + url)
-				if port.Clicked() {
-					portClicked = true
-					a.openURL(url)
+				link.Cursor(ui.CursorPointer).Tooltip("Open " + proc.Link)
+				if link.Clicked() {
+					linkClicked = true
+					a.openURL(proc.Link)
 				}
 			}
+		case proc.Port > 0:
+			port := pill(c, ":"+itoa(proc.Port))
+			if active {
+				url := "http://localhost:" + itoa(proc.Port)
+				port.Cursor(ui.CursorPointer).Tooltip(processPortTip(proc, url))
+				if port.Clicked() {
+					linkClicked = true
+					a.openURL(url)
+				}
+			} else if proc.URL != "" {
+				port.Tooltip(processPortTip(proc, ""))
+			}
+		}
+		if proc.Share != "" {
+			pillShare(c, proc, func() {
+				linkClicked = true
+				a.openURL(proc.Share)
+			})
 		}
 		ui.Spacer(c)
 		if row.Hovered() {
@@ -416,7 +440,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		tooltip += "\nDefinition changed: restart to apply"
 	}
 	row.Tooltip(tooltip)
-	if row.Clicked() && !portClicked {
+	if row.Clicked() && !linkClicked {
 		a.showProcess(pi, proc.Name)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
@@ -429,6 +453,24 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		}
 		if m.Item("Restart").Chosen() {
 			a.restartProcess(pi, proc.Name)
+		}
+		a.shareMenu(m, a.projects[pi].ID, proc)
+		if proc.Link != "" {
+			if m.Item("Open " + procLinkHost(proc.Link)).Chosen() {
+				a.openURL(proc.Link)
+			}
+		}
+		if addr := processAddress(proc); addr != "" {
+			if m.Item("Copy URL").Chosen() {
+				copyText(addr)
+				a.toast(nil, "Copied "+addr)
+			}
+		}
+		if proc.Share != "" {
+			if m.Item("Copy Share Link").Chosen() {
+				copyText(proc.Share)
+				a.toast(nil, "Copied "+proc.Share)
+			}
 		}
 		if m.Item("Edit…").Chosen() {
 			def := proc.Def
@@ -445,6 +487,55 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			a.askRemoveProcess(pi, proc)
 		}
 	})
+}
+
+// procLinkHost is a Dev URL without its scheme: the host a pill shows.
+func procLinkHost(link string) string {
+	host, _ := strings.CutPrefix(link, "https://")
+	return host
+}
+
+// pillShare is a process's share beside its address: a globe, in the
+// color of who can open it, whose tip says the address and the audience.
+// A row has no room for either, so the globe is all it shows.
+func pillShare(c *ui.Context, proc procs.Proc, open func()) ui.Element {
+	fg := pal.Accent
+	if proc.ShareVia == string(tunnel.Cloudflare) {
+		// A public link: anyone who has it can open what is behind it.
+		fg = pal.Warn
+	}
+	e := ui.ButtonBase(c.Key("share-"+proc.Name)).Size(20, 18).Radius(9).Shrink(0).
+		AlignItems(ui.Center).Justify(ui.Center).Border(1, pal.Border).Tooltip(proc.Share + "\n" + shareAudience(proc)).
+		Label("Share " + proc.Share)
+	e.Children(func() {
+		ui.Icon(c, iconGlobe).Width(11).Height(11).TextColor(fg)
+	})
+	if e.Clicked() {
+		open()
+	}
+	return e
+}
+
+// processAddress is where a process opens: its Dev URL, or its localhost
+// port, and nothing for one that serves neither.
+func processAddress(proc procs.Proc) string {
+	if proc.Link != "" {
+		return proc.Link
+	}
+	if proc.Port > 0 {
+		return "http://localhost:" + itoa(proc.Port)
+	}
+	return ""
+}
+
+// processPortTip is what a port pill says: where it opens, or, for a
+// process whose URL the proxy isn't serving yet, how to have it served
+// there.
+func processPortTip(proc procs.Proc, url string) string {
+	if proc.URL != "" {
+		return "Set up Dev URLs in Settings to serve it at https://" + procs.Host(proc.URL)
+	}
+	return "Open " + url
 }
 
 // projectLead is the session of a project that needs the user most.

@@ -22,6 +22,7 @@ import (
 	"omaterm/internal/daemon"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
+	"omaterm/internal/theme"
 	"omaterm/internal/web"
 )
 
@@ -215,6 +216,72 @@ func TestWebAttach(t *testing.T) {
 	}
 }
 
+// A page's key and paste frames reach the pane as its program asked: a
+// key by name encoded with the keyboard modes, and text pasted bracketed
+// when the program takes those.
+func TestWebKeysAndPaste(t *testing.T) {
+	f := newFixture(t)
+	c := f.paired(t)
+	log := filepath.Join(f.dir, "keys.log")
+	// Raw and quiet, so the program gets exactly the bytes sent; it asks
+	// for bracketed pastes as a prompt does.
+	script := `stty raw -echo; printf 'ready\n' >> ` + log + `; printf '\033[?2004h'; printf 'mode\n' >> ` + log + `; exec cat >> ` + log
+	params, _ := json.Marshal(daemon.StartParams{ID: "k1", Command: []string{"sh", "-c", script}, Exec: true, Cols: 80, Rows: 24})
+	if _, err := f.d.Handle(context.Background(), "pane.start", params); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "mode") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the pane never asked for bracketed pastes")
+		}
+	}
+	ws := f.dial(t, c, "/api/panes/k1/attach")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { // keep reading, as a page does
+		for {
+			if _, _, err := ws.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+	ws.Write(ctx, websocket.MessageBinary, proto.AppendFrame(nil, proto.FrameKey, []byte("shift+tab")))
+	waitLog := func(want string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			b, _ := os.ReadFile(log)
+			if strings.HasSuffix(string(b), want) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the program got %q, want it to end with %q", b, want)
+			}
+		}
+	}
+	waitLog("\x1b[Z")
+	ws.Write(ctx, websocket.MessageBinary, proto.AppendFrame(nil, proto.FramePaste, []byte("hi\nthere")))
+	waitLog("\x1b[200~hi\nthere\x1b[201~")
+}
+
+// The page's modules are served from the binary, beside the page.
+func TestWebModulesServed(t *testing.T) {
+	f := newFixture(t)
+	c := f.client(t)
+	for _, path := range []string{"/keys.js", "/keys.css", "/compose.js"} {
+		res, err := c.Get(f.base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 200 || res.Header.Get("Content-Security-Policy") == "" {
+			t.Errorf("%s: %s, CSP %q", path, res.Status, res.Header.Get("Content-Security-Policy"))
+		}
+	}
+}
+
 func TestWebUnknownPane(t *testing.T) {
 	f := newFixture(t)
 	c := f.paired(t)
@@ -310,5 +377,67 @@ func TestWebWakesPane(t *testing.T) {
 	}
 	if typ, msg, err := ws.Read(ctx); err != nil || typ != websocket.MessageBinary || msg[0] != proto.FrameOutput {
 		t.Fatalf("first frame: %v %v", typ, err)
+	}
+}
+
+// The page takes the app's look: the built-in dark one until the app sends
+// its own, which the events announce with a new stamp, and which a
+// restarted daemon still has.
+func TestWebTheme(t *testing.T) {
+	f := newFixture(t)
+	c := f.paired(t)
+	get := func() web.Theme {
+		t.Helper()
+		res, err := c.Get(f.base + "/api/theme")
+		if err != nil || res.StatusCode != 200 {
+			t.Fatalf("theme: %v %v", res.Status, err)
+		}
+		var th web.Theme
+		if err := json.NewDecoder(res.Body).Decode(&th); err != nil {
+			t.Fatal(err)
+		}
+		return th
+	}
+	dark := get()
+	if !dark.Dark || dark.Tokens["accent"] == "" || dark.Terminal.ANSI[1] == "" || dark.Stamp == "" {
+		t.Fatalf("default theme: %+v", dark)
+	}
+	ws := f.dial(t, c, "/api/events")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	read := func() (ev struct {
+		Type  string          `json:"type"`
+		State json.RawMessage `json:"state"`
+		Theme string          `json:"theme"`
+	}) {
+		t.Helper()
+		_, msg, err := ws.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(msg, &ev); err != nil {
+			t.Fatal(err)
+		}
+		return ev
+	}
+	if ev := read(); ev.Type != "state" || ev.Theme != dark.Stamp || len(ev.State) == 0 {
+		t.Fatalf("first event: %+v", ev)
+	}
+	light := web.ThemeOf(theme.BuiltinLight())
+	params, _ := json.Marshal(light)
+	if _, err := f.d.Handle(ctx, "web.setTheme", params); err != nil {
+		t.Fatal(err)
+	}
+	if ev := read(); ev.Theme != light.Stamp {
+		t.Fatalf("the event after a new theme carries %q, want %q", ev.Theme, light.Stamp)
+	}
+	if got := get(); got.Dark || got.Stamp != light.Stamp {
+		t.Fatalf("theme after the app sent a light one: %+v", got)
+	}
+	if _, err := f.d.Handle(ctx, "web.setTheme", []byte(`{"dark":true}`)); err == nil {
+		t.Fatal("a theme without colors was taken")
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, "web-theme.json")); err != nil {
+		t.Fatalf("the theme isn't kept: %v", err)
 	}
 }

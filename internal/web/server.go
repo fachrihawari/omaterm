@@ -42,10 +42,11 @@ type Server struct {
 	srv   *http.Server
 	ln    net.Listener
 
-	// pairs limits pairing attempts, for everyone at once: behind a
-	// tunnel every request comes from the loopback.
-	mu    sync.Mutex
-	pairs []time.Time
+	// pairs limits pairing attempts: each client has its own count
+	// (see pairClient), and all of them together a ceiling.
+	mu       sync.Mutex
+	pairs    map[string][]time.Time
+	pairsAll []time.Time
 	// conns are the open WebSockets and the devices they serve: closing
 	// the server or signing a device out ends them, which http.Server
 	// does not do for a connection it has handed over.
@@ -61,8 +62,12 @@ var sweepEvery = 5 * time.Second
 // signed out.
 const closeSignedOut = 4401
 
-// pairLimit is how many pairing attempts a minute are heard.
-const pairLimit = 10
+// pairLimit is how many pairing attempts a minute are heard from one
+// client, and pairLimitAll from all of them together.
+const (
+	pairLimit    = 10
+	pairLimitAll = 60
+)
 
 // Listen serves on addr: the loopback, unless the config says the
 // network.
@@ -173,6 +178,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("POST /api/pair", s.pair)
 	mux.HandleFunc("GET /api/state", s.auth(s.state))
+	mux.HandleFunc("GET /api/theme", s.auth(s.theme))
 	mux.HandleFunc("GET /api/events", s.auth(s.events))
 	mux.HandleFunc("POST /api/sessions", s.auth(s.create))
 	mux.HandleFunc("GET /api/panes/{id}/attach", s.auth(s.attach))
@@ -257,26 +263,71 @@ func overTLS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-func (s *Server) allowPair() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	kept := s.pairs[:0]
-	for _, t := range s.pairs {
+// pairClient tells who a pairing attempt comes from, to count tries per
+// client. A tunnel's requests all arrive from the loopback, and say who
+// they carry in a header: Cloudflare's CF-Connecting-IP, else the last
+// hop of X-Forwarded-For, which is the one the tunnel itself added. Those
+// headers are believed only on a request from the loopback: from a network
+// peer they are the peer's own claim.
+func pairClient(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return host
+	}
+	if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))); ip != nil {
+		return ip.String()
+	}
+	if hops := strings.Split(r.Header.Get("X-Forwarded-For"), ","); len(hops) > 0 {
+		if ip := net.ParseIP(strings.TrimSpace(hops[len(hops)-1])); ip != nil {
+			return ip.String()
+		}
+	}
+	return host
+}
+
+// recent keeps the times that are within the last minute.
+func recent(times []time.Time, now time.Time) []time.Time {
+	kept := times[:0]
+	for _, t := range times {
 		if now.Sub(t) < time.Minute {
 			kept = append(kept, t)
 		}
 	}
-	s.pairs = kept
-	if len(s.pairs) >= pairLimit {
+	return kept
+}
+
+// allowPair tells whether a pairing attempt is heard: one client may try
+// pairLimit times a minute, so that one cannot lock the others out, and all
+// together pairLimitAll.
+func (s *Server) allowPair(r *http.Request) bool {
+	client := pairClient(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if s.pairs == nil {
+		s.pairs = map[string][]time.Time{}
+	}
+	for c, times := range s.pairs {
+		if times = recent(times, now); len(times) == 0 {
+			delete(s.pairs, c)
+		} else {
+			s.pairs[c] = times
+		}
+	}
+	s.pairsAll = recent(s.pairsAll, now)
+	if len(s.pairs[client]) >= pairLimit || len(s.pairsAll) >= pairLimitAll {
 		return false
 	}
-	s.pairs = append(s.pairs, now)
+	s.pairs[client] = append(s.pairs[client], now)
+	s.pairsAll = append(s.pairsAll, now)
 	return true
 }
 
 func (s *Server) pair(w http.ResponseWriter, r *http.Request) {
-	if !s.allowPair() {
+	if !s.allowPair(r) {
 		http.Error(w, "too many tries: wait a minute", http.StatusTooManyRequests)
 		return
 	}
@@ -318,6 +369,24 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, st)
 }
 
+// theme is the app's look, for the page to take: see Theme.
+func (s *Server) theme(w http.ResponseWriter, r *http.Request) {
+	t, err := s.d.Handle(r.Context(), "web.theme", nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, t)
+}
+
+// event is what the events socket sends: the state, and the stamp of the
+// theme, which the page fetches again when it is new.
+type event struct {
+	Type  string `json:"type"` // "state"
+	State any    `json:"state"`
+	Theme string `json:"theme,omitempty"`
+}
+
 // events sends the state as it changes, settled for a quarter second.
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true}) // secure checked the origin
@@ -340,7 +409,13 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		b, _ := json.Marshal(st)
+		ev := event{Type: "state", State: st}
+		if t, err := s.d.Handle(ctx, "web.theme", nil); err == nil {
+			if th, ok := t.(Theme); ok {
+				ev.Theme = th.Stamp
+			}
+		}
+		b, _ := json.Marshal(ev)
 		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		return c.Write(wctx, websocket.MessageText, b)
@@ -417,4 +492,8 @@ type Status struct {
 	On    bool   `json:"on"`
 	Addr  string `json:"addr,omitempty"`
 	Error string `json:"error,omitempty"`
+	// TunnelURL is where the running tunnel reaches it, when one does.
+	TunnelURL string `json:"tunnelURL,omitempty"`
+	// TunnelError is why the wanted tunnel isn't running.
+	TunnelError string `json:"tunnelError,omitempty"`
 }

@@ -21,6 +21,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/web"
 )
 
 // Remote is the app's hold on the daemon's panes: a session.Host whose
@@ -371,6 +372,17 @@ func (r *Remote) ProcessTrust(project, name string) error {
 	return r.call("process.trust", proto.ProcessParams{Project: project, Name: name}, nil)
 }
 
+// ProcessShare shares a process's port through a tunnel: via is "tailscale"
+// or "cloudflare".
+func (r *Remote) ProcessShare(project, name, via string) error {
+	return r.call("process.share", proto.ProcessParams{Project: project, Name: name, Via: via}, nil)
+}
+
+// ProcessUnshare ends a process's share.
+func (r *Remote) ProcessUnshare(project, name string) error {
+	return r.call("process.unshare", proto.ProcessParams{Project: project, Name: name}, nil)
+}
+
 // ProcessSync reloads process definitions from the project state.
 func (r *Remote) ProcessSync(project string) error {
 	return r.call("process.sync", proto.ProcessParams{Project: project}, nil)
@@ -685,6 +697,11 @@ func (p *remotePane) Changed() <-chan struct{} {
 var uiCallTimeout = 5 * time.Second
 
 // call calls the daemon, giving up after uiCallTimeout.
+// SetWebTheme sends the app's look to the daemon, for web access's page.
+func (r *Remote) SetWebTheme(t web.Theme) error {
+	return r.call("web.setTheme", t, nil)
+}
+
 func (r *Remote) call(method string, params, out any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), uiCallTimeout)
 	defer cancel()
@@ -756,6 +773,18 @@ func (p *remotePane) detach() {
 
 func (p *remotePane) Write(b []byte) error {
 	return p.r.call("pane.type", proto.SendParams{ID: p.id, Data: string(b)}, nil)
+}
+
+// Key sends a key by name as the user's, through the daemon, which encodes
+// it with the pane's keyboard modes.
+func (p *remotePane) Key(name string) error {
+	return p.r.call("pane.key", proto.KeyParams{ID: p.id, Keys: []string{name}}, nil)
+}
+
+// SendKeys sends keys for the omaterm command, which wait for the user as
+// long as ctx allows, longer than a call's usual limit.
+func (p *remotePane) SendKeys(ctx context.Context, names []string) error {
+	return p.r.client().CallContext(ctx, "key", proto.KeyParams{ID: p.id, Keys: names}, nil)
 }
 
 // Send waits for the user as long as ctx allows, longer than a call's

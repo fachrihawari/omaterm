@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -117,6 +118,32 @@ func (p *Proc) Kill() {
 	if syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL) != nil {
 		p.cmd.Process.Kill()
 	}
+}
+
+// Stop ends the program and everything of its process group: SIGTERM (and
+// SIGCONT, for a stopped one), then SIGKILL for what is left after grace.
+// Only the program's own group is signalled, never the leader's id alone
+// when the group is gone.
+func (p *Proc) Stop(grace time.Duration) {
+	pgid := p.cmd.Process.Pid
+	if !groupAlive(pgid) {
+		return
+	}
+	syscall.Kill(-pgid, syscall.SIGTERM)
+	syscall.Kill(-pgid, syscall.SIGCONT)
+	for deadline := time.Now().Add(grace); groupAlive(pgid) && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if groupAlive(pgid) {
+		syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+}
+
+// groupAlive tells whether a process group has a member: the program may be
+// gone, and what it started in its group not.
+func groupAlive(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 // Foreground returns the process group in the terminal's foreground: the

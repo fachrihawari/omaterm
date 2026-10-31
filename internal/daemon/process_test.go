@@ -60,6 +60,9 @@ func TestDaemonProcessesTrustRunAndState(t *testing.T) {
 	if processSession == nil || processSession.Process != "web" || len(processSession.Panes) != 1 || processSession.Lead.ID != started.Pane {
 		t.Fatalf("process session: %+v", state.Sessions)
 	}
+	if pr := processSession.Proc; pr == nil || pr.Name != "web" || !pr.Trusted || pr.Pane != started.Pane || pr.Session != processSession.ID {
+		t.Fatalf("the session's process: %+v", pr)
+	}
 	waitFor(t, "process output", func() bool {
 		got := call[proto.ReadResult](t, c, "read", proto.ReadParams{ID: started.Pane})
 		return strings.Contains(got.Text, "up")

@@ -97,6 +97,9 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	}
 	t := &a.tabs[i]
 	active := i == a.activeTab
+	// A click on the process's Dev URL opens it, and does not also
+	// activate the tab.
+	linkClicked := false
 	e := ui.ButtonBase(c.Key(i)).Height(26).Radius(13).Padding(0, 6, 0, 10).Gap(6).Shrink(0).AlignItems(ui.Center)
 	switch {
 	case active:
@@ -146,8 +149,24 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			ui.Text(c, t.Detail).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
 		if t.Kind == tabProcess {
-			if proc, ok := a.procOfTab(*t); ok && proc.Port > 0 {
-				ui.Text(c, ":"+itoa(proc.Port)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+			if proc, ok := a.procOfTab(*t); ok {
+				switch {
+				case proc.Link != "":
+					// Served at its Dev URL: the host, which opens it.
+					link := ui.Text(c, procLinkHost(proc.Link)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0).
+						Cursor(ui.CursorPointer).Tooltip("Open " + proc.Link)
+					if link.Clicked() {
+						linkClicked = true
+						a.openURL(proc.Link)
+					}
+				case proc.Port > 0:
+					ui.Text(c, ":"+itoa(proc.Port)).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
+				}
+				if proc.Share != "" {
+					// The pill is a button of its own: it takes the press,
+					// so the tab does not also activate.
+					pillShare(c, proc, func() { a.openURL(proc.Share) })
+				}
 			}
 		}
 		if t.Dirty {
@@ -172,7 +191,7 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 			a.closingTab = i + 1 // after the row is built: closed in it, the next tab was skipped
 		}
 	})
-	if e.Clicked() {
+	if e.Clicked() && !linkClicked {
 		a.activateTab(i)
 	}
 	return e
@@ -534,6 +553,13 @@ func (a *appState) closeTabID(id string) {
 	}
 }
 
+// askConfirm asks a question whose answer changes something the user can
+// change back, as sharing a process: its last button runs run. Unlike
+// askDanger, the sheet is no warning.
+func (a *appState) askConfirm(title, text, confirm string, run func()) {
+	a.closeAsk = &closeAsk{open: true, title: title, text: text, confirm: confirm, run: run, plain: true}
+}
+
 // closeAsk is a close waiting for the user to confirm it.
 type closeAsk struct {
 	open        bool
@@ -543,6 +569,9 @@ type closeAsk struct {
 	// alt is a button between Cancel and confirm, which runs altRun.
 	alt    string
 	altRun func()
+	// plain tells that the sheet warns of nothing that can't be undone:
+	// its confirm button is the accent, not the danger color.
+	plain bool
 }
 
 // askDanger runs run once the user confirms a step that can't be undone,

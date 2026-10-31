@@ -1,0 +1,410 @@
+/* The key bar and compose box for the web terminal (keys.js, compose.js).
+   Every color comes from the page's theme tokens, with dark fallbacks so
+   the modules stand on their own. */
+
+.keybar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  background: var(--card, #161b22);
+  border-top: 1px solid var(--border, #30363d);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+}
+
+.keybar-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+}
+
+.keybar-row::-webkit-scrollbar {
+  display: none;
+}
+
+.keybar-key {
+  flex: 0 0 auto;
+  min-width: 40px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 9px;
+  background: var(--raised, #1c2128);
+  color: var(--text, #e6edf3);
+  font: 500 13px/1 "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.keybar-key:hover {
+  background: var(--hover, #1f262e);
+}
+
+.keybar-key:active {
+  transform: translateY(1px);
+}
+
+.keybar-key:focus-visible {
+  outline: 2px solid var(--accent, #2f81f7);
+  outline-offset: 1px;
+}
+
+/* A sticky modifier that is on for one key, and one that is locked. */
+.keybar-mod.is-on {
+  border-color: var(--accent, #2f81f7);
+  background: color-mix(in srgb, var(--accent, #2f81f7) 20%, var(--raised, #1c2128));
+  color: var(--accent, #2f81f7);
+}
+
+.keybar-mod.is-locked {
+  border-color: var(--accent, #2f81f7);
+  background: var(--accent, #2f81f7);
+  color: var(--accent-text, #fff);
+}
+
+.keybar-edit {
+  border-style: dashed;
+  color: var(--text-muted, #8b949e);
+}
+
+/* Edit stays in reach while the keys scroll under it. */
+.keybar-end {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  padding-left: 2px;
+  border-left: 1px solid var(--border, #30363d);
+}
+
+/* The edit sheet, over the whole page. */
+.keybar-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.keybar-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 560px;
+  max-height: 86vh;
+  max-height: 86dvh;
+  overflow: hidden;
+  padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  border: 1px solid var(--border, #30363d);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: var(--card, #161b22);
+  color: var(--text, #e6edf3);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.keybar-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-top: 10px;
+}
+
+.keybar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 -14px;
+  padding: 0 14px 10px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+
+.keybar-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.keybar-done {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--accent, #2f81f7);
+  color: var(--accent-text, #fff);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.keybar-hint {
+  margin: 8px 0 12px;
+  color: var(--text-muted, #8b949e);
+  font-size: 13px;
+}
+
+.keybar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.keybar-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 36px);
+  align-items: center;
+  gap: 4px;
+  min-height: 38px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 9px;
+  background: var(--wash, #0d1117);
+}
+
+.keybar-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 13px/1.2 "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.keybar-item button {
+  width: 34px;
+  height: 32px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  background: var(--raised, #1c2128);
+  color: var(--text, #e6edf3);
+  cursor: pointer;
+}
+
+.keybar-item button:hover:not(:disabled) {
+  background: var(--hover, #1f262e);
+}
+
+.keybar-item button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.keybar-catalogue {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(66px, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.keybar-catalogue button {
+  min-height: 38px;
+  padding: 0 6px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 9px;
+  background: var(--raised, #1c2128);
+  color: var(--text, #e6edf3);
+  font: 500 13px/1 "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  cursor: pointer;
+}
+
+.keybar-catalogue button:hover {
+  background: var(--hover, #1f262e);
+}
+
+.keybar-text {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.keybar-text input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong, #484f58);
+  border-radius: 9px;
+  background: var(--input, #0d1117);
+  color: var(--text, #e6edf3);
+  font: inherit;
+}
+
+.keybar-text input:focus {
+  outline: none;
+  border-color: var(--accent, #2f81f7);
+}
+
+.keybar-text button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 9px;
+  background: var(--raised, #1c2128);
+  color: var(--text, #e6edf3);
+  cursor: pointer;
+}
+
+.keybar-foot {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.keybar-reset {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted, #8b949e);
+  cursor: pointer;
+}
+
+.keybar-reset:hover {
+  color: var(--text, #e6edf3);
+  background: var(--hover, #1f262e);
+}
+
+/* The compose box, a sheet from the bottom of the page. */
+.compose {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.compose[hidden] {
+  display: none !important;
+}
+
+.compose-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.compose-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 720px;
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+  border: 1px solid var(--border, #30363d);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: var(--card, #161b22);
+  color: var(--text, #e6edf3);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.compose-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted, #8b949e);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.compose-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted, #8b949e);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.compose-close:hover {
+  background: var(--hover, #1f262e);
+  color: var(--text, #e6edf3);
+}
+
+.compose-box {
+  width: 100%;
+  min-height: 96px;
+  max-height: 40vh;
+  max-height: 40dvh;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong, #484f58);
+  border-radius: 10px;
+  background: var(--input, #0d1117);
+  color: var(--text, #e6edf3);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  resize: vertical;
+}
+
+.compose-box:focus {
+  outline: none;
+  border-color: var(--accent, #2f81f7);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #2f81f7) 25%, transparent);
+}
+
+.compose-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.compose-insert {
+  min-height: 42px;
+  padding: 0 16px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  background: var(--raised, #1c2128);
+  color: var(--text, #e6edf3);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.compose-insert:hover {
+  background: var(--hover, #1f262e);
+}
+
+.compose-send {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent, #2f81f7);
+  color: var(--accent-text, #fff);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.compose-insert:focus-visible,
+.compose-send:focus-visible,
+.compose-close:focus-visible {
+  outline: 2px solid var(--accent, #2f81f7);
+  outline-offset: 2px;
+}
+
+.compose-note {
+  margin-right: auto;
+  align-self: center;
+  font-size: 12.5px;
+  color: var(--bad, #ff6f6f);
+}
+
+.compose-note[hidden] {
+  display: none;
+}

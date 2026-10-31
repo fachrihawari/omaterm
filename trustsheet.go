@@ -84,8 +84,11 @@ func trustDetails(d procs.Def) [][2]string {
 		dir = "the project"
 	}
 	port := "none"
-	if d.Port > 0 {
+	switch {
+	case d.Port > 0:
 		port = strconv.Itoa(d.Port)
+	case d.URL != "":
+		port = "a free one, picked as it starts (PORT)"
 	}
 	restart := d.Restart
 	if restart == "" {
@@ -95,7 +98,7 @@ func trustDetails(d procs.Def) [][2]string {
 	if len(d.Watch) > 0 {
 		watch = strings.Join(d.Watch, ", ")
 	}
-	return [][2]string{
+	rows := [][2]string{
 		{"Command", d.Command},
 		{"Directory", dir},
 		{"Env", envLines(d.Env)},
@@ -103,6 +106,10 @@ func trustDetails(d procs.Def) [][2]string {
 		{"Restart", restart},
 		{"Watch", watch},
 	}
+	if d.URL != "" {
+		rows = append(rows, [2]string{"URL", "https://" + procs.Host(d.URL)})
+	}
+	return rows
 }
 
 // envLines is an environment as KEY=value lines, sorted by key, or "none".

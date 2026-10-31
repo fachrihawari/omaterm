@@ -177,6 +177,65 @@ func TestScannerBracketed(t *testing.T) {
 	}
 }
 
+// A program's keyboard modes are followed from its output: the kitty
+// protocol's pushed, popped and set flags, and modifyOtherKeys' level.
+func TestScannerKeyboardModes(t *testing.T) {
+	cases := []struct {
+		in         string
+		kitty, mok int
+	}{
+		{"\x1b[>1u", 1, 0},
+		{"\x1b[>1u\x1b[>5u", 5, 0},         // pushed, the last current
+		{"\x1b[>1u\x1b[<u", 0, 0},          // popped, one when none is given
+		{"\x1b[>1u\x1b[>5u\x1b[<2u", 0, 0}, // popped two
+		{"\x1b[>1u\x1b[>5u\x1b[<3u", 0, 0}, // popping more than was pushed
+		{"\x1b[>1u\x1b[=3u", 3, 0},         // set
+		{"\x1b[>1u\x1b[=4;2u", 5, 0},       // add
+		{"\x1b[>7u\x1b[=1;3u", 6, 0},       // clear
+		{"\x1b[=2u", 2, 0},                 // set with nothing pushed
+		{"\x1b[>1u\x1b[?u", 1, 0},          // a query changes nothing
+		{"\x1b[>1u\x1b[?1u", 1, 0},
+		{"\x1b[1u", 0, 0},                       // restore cursor, not flags
+		{"\x1b[>1u\x1bc", 0, 0},                 // a full reset
+		{"\x1b[>4;2m", 0, 2},                    // modifyOtherKeys
+		{"\x1b[>4;2m\x1b[>4m", 0, 0},            // reset
+		{"\x1b[>4;2m\x1b[>4;0m", 0, 0},          // reset, with 0
+		{"\x1b[>4;2m\x1bc", 0, 0},               // a full reset
+		{"\x1b[>1;2m", 0, 0},                    // another key's option
+		{"\x1b[0m\x1b[>4;1m", 0, 1},             // SGR, then the level
+		{"\x1b[?2004h\x1b[>1u\x1b[>4;2m", 1, 2}, // with bracketed paste
+
+		// Each screen has its own flags: the alternate screen's start empty
+		// and are dropped as the program leaves it.
+		{"\x1b[>1u\x1b[?1049h", 0, 0},                               // the alternate screen has none yet
+		{"\x1b[>1u\x1b[?1049h\x1b[>9u", 9, 0},                       // its own push
+		{"\x1b[>1u\x1b[?1049h\x1b[>9u\x1b[?1049l", 1, 0},            // leaving without a pop: the main's again
+		{"\x1b[>1u\x1b[?1049h\x1b[<u\x1b[?1049l", 1, 0},             // a pop there pops nothing of the main's
+		{"\x1b[>1u\x1b[?1047h\x1b[>9u\x1b[?1047l", 1, 0},            // 1047
+		{"\x1b[>1u\x1b[?47h\x1b[>9u\x1b[?47l", 1, 0},                // 47
+		{"\x1b[>1u\x1b[?1049h\x1b[>9u\x1b[?1049l\x1b[?1049h", 0, 0}, // entering again starts empty
+		{"\x1b[>1u\x1b[?25;1049h\x1b[>9u\x1b[?25;1049l", 1, 0},      // among other modes
+		{"\x1b[?1049h\x1b[>9u\x1bc", 0, 0},                          // a full reset leaves the alternate screen
+		{"\x1b[>1u\x1b[?1049h\x1b[?1049h\x1b[>9u", 9, 0},            // set twice: still the one screen
+	}
+	for _, c := range cases {
+		for _, one := range []bool{false, true} {
+			var s Scanner
+			if one {
+				for i := 0; i < len(c.in); i++ {
+					s.Scan([]byte{c.in[i]}, func([]byte) {}, nil)
+				}
+			} else {
+				s.Scan([]byte(c.in), func([]byte) {}, nil)
+			}
+			if s.Kitty != c.kitty || s.ModifyOtherKeys != c.mok {
+				t.Errorf("%q (byte at a time %v): kitty %d, modifyOtherKeys %d, want %d, %d",
+					c.in, one, s.Kitty, s.ModifyOtherKeys, c.kitty, c.mok)
+			}
+		}
+	}
+}
+
 // Of reports of a state, one that words it leads: an agent's own, over
 // its program's bare one as its turn ends.
 func TestLeadWorded(t *testing.T) {
@@ -189,5 +248,18 @@ func TestLeadWorded(t *testing.T) {
 	rs.Apply(Record{State: "working", App: "claude-code", Progress: -1})
 	if r, _ := rs.Lead(); r.State != "working" {
 		t.Fatalf("lead %+v", r)
+	}
+}
+
+// A program pushing kitty keyboard flags without end keeps the stack
+// bounded; the flags in force are its last push.
+func TestKittyStackBounded(t *testing.T) {
+	var o Scanner
+	for i := 0; i < 1000; i++ {
+		o.Scan([]byte("\x1b[>1u"), nil, nil)
+	}
+	o.Scan([]byte("\x1b[>3u"), nil, nil)
+	if len(o.kitty[0]) > maxKittyStack || o.Kitty != 3 {
+		t.Fatalf("stack %d, flags %d", len(o.kitty[0]), o.Kitty)
 	}
 }

@@ -74,7 +74,7 @@ func (a *appState) view(c *ui.Context) {
 		if ask.alt != "" {
 			buttons = []string{"Cancel", ask.alt, confirm}
 		}
-		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, true, buttons...)
+		result := a.confirmDialog(c, &ask.open, ask.title, ask.text, !ask.plain, buttons...)
 		if result != -1 || !ask.open {
 			a.closeAsk = nil
 			switch {

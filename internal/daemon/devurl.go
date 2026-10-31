@@ -1,0 +1,265 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"fmt"
+	"log"
+	"net"
+	"omaterm/internal/client"
+	"omaterm/internal/paths"
+	"os"
+	"path/filepath"
+	"strconv"
+
+	"omaterm/internal/devurl"
+	"omaterm/internal/procs"
+)
+
+// defaultProxyAddr is where the proxy listens unless Options says otherwise:
+// the port a browser uses for https, so that the URL has no port in it.
+// Binding it takes a privilege the user gives once, in Dev URLs' setup. It
+// is a variable so that the tests, which start many daemons, take a free
+// port instead.
+var defaultProxyAddr = "127.0.0.1:443"
+
+// ProxyStatus is what proxy.status tells: whether the proxy runs, where, why
+// not, and the routes it has.
+type ProxyStatus struct {
+	Running bool           `json:"running"`
+	Addr    string         `json:"addr"`
+	Error   string         `json:"error"`
+	Routes  []devurl.Route `json:"routes"`
+	// Checks are what Dev URLs needs and whether it is so: proxy.status and
+	// proxy.reload fill them, which runs the browsers' tools.
+	Checks []devurl.Check `json:"checks"`
+}
+
+// procKey names a process across projects.
+type procKey struct{ project, name string }
+
+// devView is what List adds to the processes: their links, and the notes of
+// those whose URL is taken. It is replaced as a whole by rebuildRoutes.
+type devView struct {
+	links map[procKey]string
+	notes map[procKey]string
+}
+
+// defaultSetupEnv is the system the checks look at: a variable so that the
+// tests look at a temporary one, not the developer's.
+var defaultSetupEnv = devurl.DefaultEnv
+
+// proxyAddrEnv names the address of the proxy for the end-to-end tests,
+// whose daemon can't bind 443. It is not a setting: nobody else sets it.
+const proxyAddrEnv = "OMATERM_PROXY_ADDR"
+
+func (d *Daemon) proxyListenAddr() string {
+	if d.opts.ProxyAddr != "" {
+		return d.opts.ProxyAddr
+	}
+	if addr := os.Getenv(proxyAddrEnv); addr != "" {
+		return addr
+	}
+	return defaultProxyAddr
+}
+
+// proxyRetryTicks is how many of the daemon's one-second ticks pass between
+// tries to bind a proxy that doesn't run: a variable for the tests.
+var proxyRetryTicks = 10
+
+// reloadProxy (re)binds the proxy: it closes the one that runs and listens
+// again, and the routes and links are made anew for the outcome.
+func (d *Daemon) reloadProxy() ProxyStatus {
+	d.devMu.Lock()
+	if d.dev != nil {
+		d.dev.Close()
+		d.dev = nil
+	}
+	d.bindProxyLocked(true)
+	d.rebuildRoutesLocked()
+	st := d.proxyStatusLocked()
+	d.devMu.Unlock()
+	d.changed()
+	return st
+}
+
+// bindProxyLocked tries to bind the proxy, with devMu held, and keeps why
+// it could not; loud says to log the failure, which a retry of one that
+// keeps failing does not, every few seconds.
+func (d *Daemon) bindProxyLocked(loud bool) {
+	s, err := devurl.Listen(d.proxyListenAddr(), filepath.Join(d.opts.StateDir, "devurl"), d.devRouter)
+	if err != nil {
+		var caErr *devurl.CAError
+		d.devErr, d.devRetry = err.Error(), !errors.As(err, &caErr)
+		if loud {
+			log.Printf("dev urls: %v", err)
+		}
+		return
+	}
+	d.dev, d.devErr, d.devRetry = s, "", false
+	log.Printf("dev urls: https://%s", s.Addr())
+}
+
+// retryProxy binds a proxy that doesn't run, when the address was refused:
+// the setup's step may have since opened the port, or a program let go of
+// it. It is cheap (one failed listen), so proxy.status and a slow timer both
+// call it, and the links appear without the user asking.
+func (d *Daemon) retryProxy() {
+	d.devMu.Lock()
+	if d.dev != nil || !d.devRetry {
+		d.devMu.Unlock()
+		return
+	}
+	d.bindProxyLocked(false)
+	bound := d.dev != nil
+	if bound {
+		d.rebuildRoutesLocked()
+	}
+	d.devMu.Unlock()
+	if bound {
+		d.changed()
+	}
+}
+
+// proxyStatus tells how the proxy is, and what of Dev URLs works.
+func (d *Daemon) proxyStatus() ProxyStatus {
+	d.retryProxy()
+	d.devMu.Lock()
+	st := d.proxyStatusLocked()
+	d.devMu.Unlock()
+	return d.withChecks(st)
+}
+
+// withChecks adds the checks to a status. It runs outside devMu: the checks
+// run the browsers' tools.
+func (d *Daemon) withChecks(st ProxyStatus) ProxyStatus {
+	st.Checks = devurl.Checks(defaultSetupEnv(filepath.Join(d.opts.StateDir, "devurl")),
+		devurl.ProxyState{Running: st.Running, Addr: st.Addr, Error: st.Error})
+	return st
+}
+
+func (d *Daemon) proxyStatusLocked() ProxyStatus {
+	st := ProxyStatus{Error: d.devErr, Routes: d.devRouter.Routes()}
+	if d.dev != nil {
+		st.Running, st.Addr = true, d.dev.Addr()
+	} else {
+		st.Addr = d.proxyListenAddr()
+	}
+	return st
+}
+
+func (d *Daemon) stopProxy() {
+	d.devMu.Lock()
+	defer d.devMu.Unlock()
+	if d.dev != nil {
+		d.dev.Close()
+		d.dev = nil
+	}
+}
+
+// rebuildRoutes makes the routes, and the links the processes show, from
+// the processes as they are: the supervisor tells it on every change.
+func (d *Daemon) rebuildRoutes() {
+	d.devMu.Lock()
+	defer d.devMu.Unlock()
+	d.rebuildRoutesLocked()
+}
+
+// rebuildRoutesLocked is rebuildRoutes with devMu held, which also orders
+// two rebuilds so that the later one, from the newer processes, is the last
+// to apply.
+func (d *Daemon) rebuildRoutesLocked() {
+	var routes []devurl.Route
+	var keys []procKey // keys[i] is the process of routes[i]
+	for _, p := range d.procs.All() {
+		if p.URL == "" {
+			continue
+		}
+		routes = append(routes, devurl.Route{Host: procs.Host(p.URL), Project: d.projectName(p.Project), Process: p.Name,
+			Port: p.Port, Running: p.Status == procs.Running, Status: string(p.Status)})
+		keys = append(keys, procKey{p.Project, p.Name})
+	}
+	d.devRouter.Set(routes)
+	// The router keeps the first route of a host: the others are told so.
+	view := &devView{links: map[procKey]string{}, notes: map[procKey]string{}}
+	owner := map[string]int{}
+	for i, rt := range routes {
+		if first, taken := owner[rt.Host]; taken {
+			view.notes[keys[i]] = fmt.Sprintf("%s is taken by %s in project %s", rt.Host, routes[first].Process, routes[first].Project)
+			continue
+		}
+		owner[rt.Host] = i
+		if d.dev != nil {
+			view.links[keys[i]] = d.link(rt.Host)
+		}
+	}
+	d.devViewMu.Lock()
+	d.devView = view
+	d.devViewMu.Unlock()
+}
+
+// link is the address a host is served at: no port when the proxy listens
+// on the one https uses.
+func (d *Daemon) link(host string) string {
+	if port := d.dev.Port(); port != 443 {
+		host = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return "https://" + host
+}
+
+// projectName is what the user calls a project, which a page of the proxy
+// and a note say; the id when it isn't known.
+func (d *Daemon) projectName(id string) string {
+	d.procMu.Lock()
+	defer d.procMu.Unlock()
+	for _, p := range d.procProjects {
+		if p.ID == id {
+			return p.Name
+		}
+	}
+	return id
+}
+
+// decorateProc gives a process its link, or the note that its URL is
+// taken. It reads the view only, so the supervisor can call it with its
+// lock held.
+func (d *Daemon) decorateProc(project string, p *procs.Proc) {
+	d.devViewMu.Lock()
+	view := d.devView
+	d.devViewMu.Unlock()
+	if view == nil || p.URL == "" {
+		return
+	}
+	key := procKey{project, p.Name}
+	p.Link = view.links[key]
+	if note := view.notes[key]; note != "" && p.Message == "" {
+		p.Message = note
+	}
+}
+
+// CallProxy asks the session daemon for proxy.status or proxy.reload,
+// starting the daemon when asked and none runs.
+func CallProxy(method string, start bool) (ProxyStatus, error) {
+	c, err := client.Dial(paths.DaemonSocketPath())
+	if errors.Is(err, client.ErrUnreachable) && start {
+		if err := StartProcess(); err != nil {
+			return ProxyStatus{}, err
+		}
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if c, err = client.Dial(paths.DaemonSocketPath()); err == nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		return ProxyStatus{}, err
+	}
+	defer c.Close()
+	var st ProxyStatus
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err = c.CallContext(ctx, method, nil, &st)
+	return st, err
+}

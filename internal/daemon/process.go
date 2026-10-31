@@ -15,6 +15,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/tunnel"
 	"omaterm/service"
 )
 
@@ -169,6 +170,10 @@ func (d *Daemon) processCall(method string, raw json.RawMessage) (any, error) {
 		err = d.procs.Restart(p.Project, p.Name)
 	case "process.trust":
 		err = d.procs.Trust(p.Project, p.Name)
+	case "process.share":
+		err = d.shareProcess(p.Project, p.Name, tunnel.Provider(p.Via))
+	case "process.unshare":
+		err = d.unshareProcess(p.Project, p.Name)
 	}
 	if err != nil {
 		code := proto.CodeUsage

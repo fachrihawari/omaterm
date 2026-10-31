@@ -67,9 +67,14 @@ type Config struct {
 	Host string `json:"host,omitempty"`
 	// Port is the port served; 0 is DefaultPort.
 	Port int `json:"port,omitempty"`
-	// URL is where devices reach it through a tunnel, for pairing links;
-	// empty asks Tailscale, else gives the loopback address.
+	// URL is where devices reach it through a tunnel the user runs
+	// themselves: it overrides the tunnel omaterm runs. Empty asks the
+	// live one, then Tailscale, else the loopback address.
 	URL string `json:"url,omitempty"`
+	// Tunnel is the tunnel omaterm runs to carry web access beyond this
+	// machine: "tailscale" to its own devices, "cloudflare" as a public
+	// link, "" for none. Anything else is none.
+	Tunnel string `json:"tunnel,omitempty"`
 }
 
 // ListenAddr is the address to serve.

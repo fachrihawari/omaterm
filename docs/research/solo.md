@@ -209,6 +209,13 @@ This is the headline. Solo's `solo.yml` is a manifest of a project's dev process
 - **Port names:** stop using `/etc/services` names for dev ports. 8080 shows as "http-alt" today. Use the process name instead ("bun", "vite").
 
 ### 6.2b Named HTTPS URLs for dev servers: **build in, portless-style** (M overall; phase 1 is S–M)
+**Built in 0.12.0 (phase 1).** The proxy, CA and setup flow, with the Settings page. It differs from the plan below:
+- The URL is the name before `.localhost` (`url: shop` is `https://shop.localhost`; up to three dotted parts), not `<process>.<project>.localhost`. Two processes can't share a name: the first gets it.
+- The CA has a critical name constraint, `.localhost` only, and the privileged step refuses any other certificate.
+- Linux and macOS. Windows is not built.
+- Not built: worktree subdomains, `omaterm new --url`, a flag table for tools that ignore `PORT`, the optional `/etc/hosts` block, and the `PORTLESS_URL` rule. `PORT` is the only way a server is told its port.
+- Where: `internal/devurl` (CA, proxy, setup), the daemon's `proxy.status` and `proxy.reload`, `omaterm proxy`, and `settings_devurls.go`.
+
 [portless](https://github.com/vercel-labs/portless) (Vercel Labs) runs a dev server behind a proxy at a stable `https://<name>.localhost`:
 - it gives the app a free port (4000–4999) through `PORT`, and adds `--port`/`--host` for tools that ignore `PORT` (Vite, Astro);
 - it makes a local CA, trusts it, and serves HTTP/2 on 443;
