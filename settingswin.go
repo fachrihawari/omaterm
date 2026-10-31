@@ -397,7 +397,7 @@ func (a *appState) settingsNavItems() []settingsNavItem {
 		var hits []settingsNavItem
 		for j := range settingDefs {
 			d := &settingDefs[j]
-			if d.Page != p.ID {
+			if d.Page != p.ID || !d.shown() {
 				continue
 			}
 			if strings.Contains(strings.ToLower(d.Title+" "+d.Sub+" "+d.Keywords), q) {

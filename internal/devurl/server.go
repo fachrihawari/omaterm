@@ -1,12 +1,14 @@
 package devurl
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"runtime"
 	"strconv"
 	"sync"
 )
@@ -32,7 +34,7 @@ func (e *CAError) Unwrap() error { return e.Err }
 // or made, once the address is bound, so that a machine that cannot bind it
 // gets no authority it has no use for.
 func Listen(addr, caDir string, router *Router) (*Server, error) {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listenTCP(runtime.GOOS, addr, net.Listen)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +91,7 @@ func (s *Server) handler() http.Handler {
 			r.SetXForwarded()
 			r.Out.Header.Set("X-Forwarded-Proto", "https")
 		},
+		Transport: loopbackTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			rt, _ := s.router.Lookup(r.Host)
 			rt.Running = false
@@ -108,3 +111,24 @@ func (s *Server) handler() http.Handler {
 		}
 	})
 }
+
+// loopbackTransport reaches a dev server on 127.0.0.1, else on ::1: on
+// macOS "localhost" is ::1 first, and a server that listens on localhost,
+// as Vite does by default, listens there only.
+var loopbackTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		c, err := d.DialContext(ctx, network, addr)
+		if err == nil {
+			return c, nil
+		}
+		if _, port, e := net.SplitHostPort(addr); e == nil {
+			if c, e := d.DialContext(ctx, network, net.JoinHostPort("::1", port)); e == nil {
+				return c, nil
+			}
+		}
+		return nil, err
+	}
+	return t
+}()

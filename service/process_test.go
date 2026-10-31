@@ -1,8 +1,10 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"testing"
 	"time"
 )
@@ -130,6 +132,48 @@ func TestListProjectProcessesHidesOmaterm(t *testing.T) {
 	for comm, want := range map[string]bool{"omaterm": true, "omaterm-dev": true, "zsh": false} {
 		if got := ownProcess(1, comm); got != want {
 			t.Errorf("ownProcess(%q) = %v, want %v", comm, got, want)
+		}
+	}
+}
+
+func TestParsePSUsage(t *testing.T) {
+	got := parsePSUsage("    1   0.0  12288\n 4242  12.5 524288\nbad line\n")
+	if got[1] != (usage{"0.0%", "12 MB"}) || got[4242] != (usage{"12.5%", "512 MB"}) || len(got) != 2 {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestParseLsofListen(t *testing.T) {
+	// lsof -nP -a -iTCP -sTCP:LISTEN -p 501,502 -Fpn on macOS: Vite on
+	// IPv6 loopback only, a server on two families, one not asked for.
+	out := "p501\nf23\nn[::1]:5173\np502\nf5\nn*:3000\nf6\nn127.0.0.1:3000\nf7\nn127.0.0.1:9229\np999\nf3\nn*:80\n"
+	ports := parseLsofListen(out, map[int]bool{501: true, 502: true}, map[int]string{501: "node", 502: "ruby"})
+	var got []string
+	for _, p := range ports {
+		got = append(got, fmt.Sprintf("%d:%s:%d", p.Port, p.Process, p.Pid))
+	}
+	if want := []string{"3000:ruby:502", "5173:node:501", "9229:ruby:502"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// Native Claude Code's executable is named by its version; the Info panel
+// names it by the command it was run as.
+func TestDisplayName(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"2.1.3", []string{"claude", "--resume"}, "claude"},
+		{"2.1.3", []string{"/Users/me/.local/bin/claude"}, "claude"},
+		{"2.1.3", nil, "2.1.3"},
+		{"2.1.3", []string{"/Users/me/.local/share/claude/versions/2.1.3"}, "2.1.3"},
+		{"node", []string{"node", "server.js"}, "node"},
+		{"1password", []string{"op"}, "1password"},
+	} {
+		if got := displayName(c.name, c.args); got != c.want {
+			t.Errorf("%q %q: %q, want %q", c.name, c.args, got, c.want)
 		}
 	}
 }

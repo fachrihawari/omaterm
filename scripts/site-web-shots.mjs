@@ -26,6 +26,8 @@ const tmp = mkdtempSync(join(tmpdir(), "omaterm-web-shots-"));
 const env = {
   ...process.env,
   XDG_CONFIG_HOME: join(tmp, "config"),
+  // macOS ignores XDG_CONFIG_HOME; this keeps its real config out of reach.
+  OMATERM_CONFIG_HOME: join(tmp, "config"),
   XDG_STATE_HOME: join(tmp, "state"),
   XDG_RUNTIME_DIR: join(tmp, "run"),
 };

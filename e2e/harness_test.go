@@ -206,6 +206,7 @@ func Start(t *testing.T, o Options) *App {
 	set := map[string]string{
 		"HOME":                     filepath.Join(dir, "home"),
 		"XDG_CONFIG_HOME":          filepath.Join(dir, "config"),
+		"OMATERM_CONFIG_HOME":      filepath.Join(dir, "config"),
 		"XDG_STATE_HOME":           filepath.Join(dir, "state"),
 		"XDG_RUNTIME_DIR":          filepath.Join(dir, "run"),
 		"WAYLAND_DISPLAY":          w.wayland,

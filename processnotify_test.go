@@ -25,7 +25,7 @@ func captureNotice(t *testing.T) *[]string {
 }
 
 func TestProcessFailureNotifies(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	sent := captureNotice(t)
@@ -51,7 +51,7 @@ func TestProcessFailureNotifies(t *testing.T) {
 }
 
 func TestProcessFailureIsQuietWhenTheSettingIsOff(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	sent := captureNotice(t)
@@ -65,7 +65,7 @@ func TestProcessFailureIsQuietWhenTheSettingIsOff(t *testing.T) {
 
 // A start or a stop was asked for, and says nothing.
 func TestProcessLifecycleIsQuiet(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	sent := captureNotice(t)
@@ -81,7 +81,7 @@ func TestProcessLifecycleIsQuiet(t *testing.T) {
 // One notification every five seconds a process: a crash loop does not
 // fill the screen with notifications.
 func TestProcessFailureNotifiesOnceInABurst(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	sent := captureNotice(t)
@@ -98,7 +98,7 @@ func TestProcessFailureNotifiesOnceInABurst(t *testing.T) {
 // The port a running process listens on opens its page, and clicking it
 // does not also open the process's tab.
 func TestProcessPortPillOpensThePage(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.settings.OpenLinks = "pane"

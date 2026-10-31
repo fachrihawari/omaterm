@@ -12,7 +12,7 @@ import (
 // switch back to the first project.
 func TestStartupKeepsSavedActiveProject(t *testing.T) {
 	cfg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", cfg)
+	setConfigHome(t, cfg)
 	one, two := t.TempDir(), t.TempDir()
 	st := map[string]any{"projects": []map[string]any{{"Name": "one", "Path": one}, {"Name": "two", "Path": two}}, "active": 1}
 	data, _ := json.Marshal(st)
@@ -134,7 +134,7 @@ func TestBackgroundExitViaRegistry(t *testing.T) {
 // sessions across launches, though it is too broad to be added as one.
 func TestHomeProjectKeepsSessions(t *testing.T) {
 	cfg, home := t.TempDir(), t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", cfg)
+	setConfigHome(t, cfg)
 	t.Setenv("HOME", home)
 	st := map[string]any{"version": 2, "activeProject": "phome01",
 		"projects": []map[string]any{{"id": "phome01", "name": "home", "dir": home}},
@@ -160,7 +160,7 @@ func TestHomeProjectKeepsSessions(t *testing.T) {
 // shown this run too.
 func TestStateListsUnshownProjects(t *testing.T) {
 	cfg, one, two := t.TempDir(), t.TempDir(), t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", cfg)
+	setConfigHome(t, cfg)
 	st := map[string]any{"version": 2, "activeProject": "pone001",
 		"projects": []map[string]any{{"id": "pone001", "name": "one", "dir": one}, {"id": "ptwo001", "name": "two", "dir": two}},
 		"sessions": []map[string]any{
@@ -184,7 +184,7 @@ func TestStateListsUnshownProjects(t *testing.T) {
 // A first launch opens no project: no home folder project to confuse,
 // and nothing of the home folder read.
 func TestFreshStartHasNoProject(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newApp()
 	if len(a.projects) != 0 || a.project() != nil || a.workspace != "" || a.activeTab != -1 {
 		t.Fatalf("projects %v, workspace %q, tab %d: want none", a.projects, a.workspace, a.activeTab)

@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
+	"omaterm/internal/shellcmd"
 )
 
 // What the app's Settings window shows and changes of what the omaterm
@@ -22,6 +24,37 @@ func CLIStatus() (where string, installed bool) {
 	link := cliLink()
 	_, err := os.Readlink(link)
 	return shortDir(link), err == nil
+}
+
+// CLIPathHint says what to add to the shell's profile when the folder the
+// command is linked into isn't on PATH, as on a Mac, whose PATH has no
+// ~/.local/bin; "" when it is on PATH.
+func CLIPathHint() string {
+	return cliPathHint(filepath.Dir(cliLink()), os.Getenv("PATH"), shellcmd.Login(), runtime.GOOS)
+}
+
+func cliPathHint(dir, path, shell, goos string) string {
+	for _, p := range filepath.SplitList(path) {
+		if p != "" && filepath.Clean(p) == dir {
+			return ""
+		}
+	}
+	lead := shortDir(dir) + " is not on your PATH, so other terminals don't find omaterm. "
+	profile := "~/.profile"
+	switch shellcmd.Name(shell) {
+	case "fish":
+		return lead + "Run: fish_add_path ~/.local/bin"
+	case "zsh":
+		profile = "~/.zprofile"
+	case "bash":
+		// A login bash reads ~/.bash_profile alone when it exists, and
+		// Terminal.app starts login shells; on Linux, ~/.profile is the
+		// one desktops read.
+		if goos == "darwin" {
+			profile = "~/.bash_profile"
+		}
+	}
+	return lead + "Add this line to " + profile + `: export PATH="$HOME/.local/bin:$PATH"`
 }
 
 // UninstallCLI removes the omaterm command's link, as `omaterm cli

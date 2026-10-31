@@ -40,6 +40,14 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # go build skips test files, so only vet catches a test that doesn't
+      # compile for macOS or Windows.
+      - name: go vet for macOS
+        run: GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+
+      - name: go vet for Windows
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+
       # The terminal plugin binds libghostty-vt, a plain shared library: under
       # go test it downloads into the user's cache on first use, checking its
       # SHA-256, so the runner needs no graphics stack for it.
@@ -73,6 +81,41 @@ jobs:
         run: |
           go test -race -count=1 -timeout 15m ./internal/... ./service/...
           go test -race -count=1 -timeout 20m -skip '^TestShots$' .
+
+  # The tests that can run on a Mac, on one: process lookups, PTYs,
+  # sockets and the web pages go through macOS's own code there. The root
+  # package and e2e stay on Linux: e2e needs sway, and the app's own tests
+  # haven't been made ready for a Mac.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test
+        run: |
+          go test -count=1 -timeout 15m \
+            ./internal/agent ./internal/detect ./internal/osc ./internal/proto \
+            ./internal/model ./internal/keys ./internal/notice ./internal/crash \
+            ./internal/shellcmd ./internal/theme ./internal/paths ./internal/client \
+            ./internal/ctl ./internal/pty ./internal/procs ./internal/gitsnap \
+            ./internal/worktree ./internal/tunnel ./internal/devurl ./internal/web \
+            ./internal/session ./internal/peer ./service
+
+      # What macOS lets a user bind on port 443, which Dev URLs depend on:
+      # the test logs it, and -v shows the log.
+      - name: Dev URLs on port 443
+        run: go test -count=1 -v -run 'TestListenTCPOnThisMac' ./internal/devurl
+
+      # The session daemon and the omaterm command start real daemons and
+      # processes, timed for Linux. They don't block a push until they have
+      # proved steady on a Mac.
+      - name: go test (daemon and command)
+        continue-on-error: true
+        run: go test -count=1 -timeout 15m ./internal/daemon ./internal/cli
 
   # The real app in a headless sway, driven by keys and the omaterm
   # command (e2e/). It doesn't block a push until it has proved steady on

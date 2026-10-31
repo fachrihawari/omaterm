@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,16 +20,16 @@ import (
 )
 
 // ended tells whether a process has ended, within a moment: a zombie not yet
-// reaped has ended too.
+// reaped has ended too. ps reads the state, as macOS has no /proc; only
+// no such process counts as gone, not any failure to look.
 func ended(pid int, within time.Duration) bool {
 	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err != nil || strings.Contains(string(b), ") Z ") {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
 			return true
 		}
-		if runtime.GOOS != "linux" {
-			if syscall.Kill(pid, 0) != nil {
-				return true
-			}
+		out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		if err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+			return true
 		}
 	}
 	return false

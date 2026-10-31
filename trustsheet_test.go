@@ -21,7 +21,7 @@ func seedUntrusted(t *testing.T, a *appState) {
 }
 
 func TestTrustSheetTrustsThenStarts(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()
@@ -75,7 +75,7 @@ func TestTrustSheetTrustsThenStarts(t *testing.T) {
 }
 
 func TestTrustSheetCancelStartsNothing(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()

@@ -38,8 +38,8 @@ type devurlData struct {
 	running string
 	msg     string
 	failed  bool
-	// terminal is the command to run in a terminal, when there was no
-	// polkit agent to ask for the password.
+	// terminal is the command to run in a terminal, when no password
+	// dialog could open.
 	terminal []string
 }
 
@@ -386,12 +386,23 @@ func (a *appState) devurlTerminal() {
 func (a *appState) devurlRemoveSheet() {
 	a.settingsUI.sheet = &settingsSheet{
 		title: "Remove Dev URLs?", text: "The URLs stop working until you set it up again.", confirm: "Remove", danger: true,
-		items: [][2]string{
-			{"Trust in Chrome, Chromium and Firefox", ""},
-			{"Trust system-wide, and the setting that lets programs use port 443", "Asks for your password"},
-			{"omaterm’s certificate authority and its key", ""},
-		},
-		run: func(*ui.Context) { a.devurlRemove() },
+		items: devurlRemoveItems(runtime.GOOS),
+		run:   func(*ui.Context) { a.devurlRemove() },
+	}
+}
+
+// devurlRemoveItems are what removing takes away on goos. On macOS only
+// Firefox keeps its own trust (Chrome and Safari read the System keychain),
+// and there is no port setting: that is Linux's sysctl.
+func devurlRemoveItems(goos string) [][2]string {
+	browsers, system := "Trust in Chrome, Chromium and Firefox", "Trust system-wide, and the setting that lets programs use port 443"
+	if goos == "darwin" {
+		browsers, system = "Trust in Firefox", "Trust in the System keychain"
+	}
+	return [][2]string{
+		{browsers, ""},
+		{system, "Asks for your password"},
+		{"omaterm’s certificate authority and its key", ""},
 	}
 }
 

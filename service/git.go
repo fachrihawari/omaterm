@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"omaterm/internal/gitsnap"
 )
 
 // GitFile is one changed file in a repo's status.
@@ -65,7 +68,7 @@ type Repo struct {
 // an agent committing beside the panel never finds it held, and never asks
 // for a password.
 func gitCmd(root string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"--no-optional-locks"}, args...)...)
+	cmd := gitsnap.Command(context.Background(), append([]string{"--no-optional-locks"}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	if root != "" {
 		cmd.Dir = root
@@ -209,7 +212,7 @@ func conflicted(x, y byte) bool {
 
 // gitOut runs a git command for its output alone, not its warnings.
 func gitOut(root string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"--no-optional-locks"}, args...)...)
+	cmd := gitsnap.Command(context.Background(), append([]string{"--no-optional-locks"}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	cmd.Dir = root
 	hide(cmd)
@@ -411,7 +414,7 @@ func Show(root, rev, path string) (string, error) {
 // trims trailing newlines, which would corrupt a bitmap. An empty rev
 // reads the index.
 func ShowBytes(root, rev, path string) ([]byte, error) {
-	cmd := exec.Command("git", "show", rev+":"+path)
+	cmd := gitsnap.Command(context.Background(), "show", rev+":"+path)
 	if root != "" {
 		cmd.Dir = root
 	}

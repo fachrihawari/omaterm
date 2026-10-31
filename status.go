@@ -117,6 +117,7 @@ func (a *appState) syncStatus() {
 		if t := a.windowTitle(); t != a.title {
 			a.title = t
 			a.win.SetTitle(t)
+			a.setBadge()
 		}
 	}
 	// What a restart needs is saved as it changes, not only as the window

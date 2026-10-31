@@ -28,8 +28,16 @@ func Home() string {
 	return h
 }
 
-// ConfigDir holds state.json, settings.json and ui.json.
+// ConfigDir holds state.json, settings.json and ui.json. OMATERM_CONFIG_HOME
+// stands in for the OS's config folder, as XDG_CONFIG_HOME does on Linux:
+// macOS's ignores XDG_CONFIG_HOME, so without it tests and scripts there
+// would use the developer's real config. macOS doesn't follow
+// XDG_CONFIG_HOME itself: an app opened from Finder lacks it while a shell
+// may set it, and the two would keep different configs.
 func ConfigDir() string {
+	if d := os.Getenv("OMATERM_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, Name())
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		dir = filepath.Join(Home(), ".config")

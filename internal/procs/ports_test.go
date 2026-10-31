@@ -172,3 +172,23 @@ func TestDecorateAppliesToListOnly(t *testing.T) {
 		t.Fatalf("All carries the link %q", got)
 	}
 }
+
+// A server on ::1 only, as Vite on macOS, is up as much as one on
+// 127.0.0.1.
+func TestListeningOnEitherLoopback(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Logf("skipping %s: %v", addr, err)
+			continue
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		if !listening(port) {
+			t.Errorf("%s: not listening", ln.Addr())
+		}
+		ln.Close()
+		if listening(port) {
+			t.Errorf("%s: listening once closed", ln.Addr())
+		}
+	}
+}

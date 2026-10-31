@@ -1,13 +1,16 @@
-//go:build linux
+//go:build linux || darwin
 
 package pty
 
 import (
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -60,8 +63,9 @@ func TestResize(t *testing.T) {
 func TestForegroundAndProc(t *testing.T) {
 	p := start(t, "exec sleep 5")
 	defer p.Kill()
+	// The name changes during exec a moment before the arguments do.
 	deadline := time.Now().Add(2 * time.Second)
-	for ProcName(p.PID()) != "sleep" && time.Now().Before(deadline) {
+	for (ProcName(p.PID()) != "sleep" || len(ProcArgs(p.PID())) != 2) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if fg := p.Foreground(); fg != p.PID() {
@@ -90,7 +94,8 @@ func TestKill(t *testing.T) {
 }
 
 func TestNoFDLeak(t *testing.T) {
-	count := func() int { e, _ := os.ReadDir("/proc/self/fd"); return len(e) }
+	// /dev/fd lists this process's descriptors on Linux and macOS alike.
+	count := func() int { e, _ := os.ReadDir("/dev/fd"); return len(e) }
 	before := count()
 	for i := 0; i < 5; i++ {
 		p := start(t, "true")
@@ -104,11 +109,15 @@ func TestNoFDLeak(t *testing.T) {
 }
 
 // gone tells whether a process has ended, within a moment: one that is a
-// zombie, not yet reaped, has ended too.
+// zombie, not yet reaped, has ended too. ps reads the state, as macOS has
+// no /proc.
 func gone(pid int) bool {
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-		if err != nil || strings.Contains(string(b), ") Z ") {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return true
+		}
+		out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		if err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
 			return true
 		}
 	}
@@ -138,7 +147,9 @@ func TestStopEndsTheWholeGroup(t *testing.T) {
 	}{
 		{"a child ignoring the hangup", `trap "" HUP; sleep 300 & echo $! > FILE; wait`, 0},
 		{"a program and child ignoring terminate", `trap "" HUP TERM; sleep 300 & echo $! > FILE; wait`, 300 * time.Millisecond},
-		{"a child left after the program exited", `(trap "" HUP TERM; exec sleep 300) & echo $! > FILE`, 300 * time.Millisecond},
+		// The child inherits the ignored signals: a trap of its own would
+		// race the hangup that the program's exit sends it.
+		{"a child left after the program exited", `trap "" HUP TERM; sleep 300 & echo $! > FILE`, 300 * time.Millisecond},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "pid")

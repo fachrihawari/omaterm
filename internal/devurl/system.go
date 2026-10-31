@@ -1,7 +1,9 @@
 package devurl
 
 import (
+	"crypto/sha1"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 const (
 	anchorBase         = "omaterm-dev-ca"
 	caCommonNamePrefix = "omaterm development CA"
+	macSystemKeychain  = "/Library/Keychains/System.keychain"
 )
 
 // trustStore is how a system keeps the authorities it trusts.
@@ -81,7 +84,11 @@ func ValidateCA(data []byte) (*x509.Certificate, []byte, error) {
 
 func (e Env) needRoot() error {
 	if e.Geteuid == nil || e.Geteuid() != 0 {
-		return errors.New("this step changes the system and must run as root: omaterm proxy setup does it through pkexec, or run sudo omaterm proxy setup --system --ca <ca.pem>")
+		how := "pkexec"
+		if e.OS == "darwin" {
+			how = "macOS's password dialog"
+		}
+		return errors.New("this step changes the system and must run as root: omaterm proxy setup does it through " + how + ", or run sudo omaterm proxy setup --system --ca <ca.pem>")
 	}
 	return nil
 }
@@ -136,7 +143,7 @@ func (e Env) installAnchor(st trustStore, certPEM []byte) error {
 			return err
 		}
 		defer os.RemoveAll(filepath.Dir(f))
-		return run("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", f)
+		return run("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", macSystemKeychain, f)
 	case "p11kit":
 		f, err := tempCert(certPEM)
 		if err != nil {
@@ -221,7 +228,7 @@ func RemoveSystem(e Env, caPath string) error {
 	if st, err := e.trustStore(); err == nil {
 		switch st.kind {
 		case "macos":
-			errs = append(errs, run("security", "remove-trusted-cert", "-d", caPath))
+			errs = append(errs, e.removeFromKeychain(caPath))
 		case "p11kit":
 			if _, statErr := os.Stat(caPath); statErr == nil {
 				errs = append(errs, run("trust", "anchor", "--remove", caPath))
@@ -245,6 +252,53 @@ func RemoveSystem(e Env, caPath string) error {
 		e.say("✓ %s removed (ports below 1024 close again at the next boot)", sysctlFile)
 	}
 	return errors.Join(errs...)
+}
+
+// removeFromKeychain takes the authority's trust setting and its
+// certificate out of the System keychain, which keeps the certificate once
+// the setting is gone. What is already gone is no failure. Without the
+// authority's file nothing tells which certificate is this user's, so the
+// user is told where to look.
+func (e Env) removeFromKeychain(caPath string) error {
+	data, err := os.ReadFile(caPath)
+	if os.IsNotExist(err) {
+		e.say("the authority's file is gone: if Keychain Access lists %q… in the System keychain, delete it there", caCommonNamePrefix)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Not ValidateCA: an expired authority is removed too. The name is
+	// checked all the same, as this runs as root and deletes by it.
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return fmt.Errorf("%s: not a PEM certificate", caPath)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("%s: not a certificate: %w", caPath, err)
+	}
+	name := cert.Subject.CommonName
+	if !strings.HasPrefix(name, caCommonNamePrefix) {
+		return fmt.Errorf("%s: not omaterm's certificate authority (%q)", caPath, name)
+	}
+	var errs []error
+	if err := run("security", "remove-trusted-cert", "-d", caPath); err != nil && !keychainNotFound(err) {
+		errs = append(errs, err)
+	}
+	// By its SHA-1, not its name: an older authority of the same name may
+	// be there too, which a name doesn't tell apart.
+	sum := sha1.Sum(cert.Raw)
+	if err := run("security", "delete-certificate", "-Z", strings.ToUpper(hex.EncodeToString(sum[:])), macSystemKeychain); err != nil && !keychainNotFound(err) {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// keychainNotFound tells a security command failing on what isn't there:
+// a trust setting or a certificate removed before.
+func keychainNotFound(err error) bool {
+	return strings.Contains(err.Error(), "could not be found") || strings.Contains(err.Error(), "Unable to delete certificate matching")
 }
 
 // RemoveUser takes the authority out of the browsers' databases it is in.

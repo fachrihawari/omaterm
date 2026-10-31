@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -72,6 +73,9 @@ func (d *Daemon) notifyProgram(paneID, title, body string) {
 func (d *Daemon) notifier() Notifier {
 	if d.opts.Notifier != nil {
 		return d.opts.Notifier
+	}
+	if runtime.GOOS == "darwin" {
+		return d.notifyMac
 	}
 	return d.notifySend
 }
@@ -203,4 +207,54 @@ func (d *Daemon) notifySend(title, body, sessionID string) {
 			go open.Wait()
 		}
 	}()
+}
+
+// runOsascript runs osascript with the arguments, no shell between: a
+// variable so that the tests see what it is given.
+var runOsascript = func(args ...string) error {
+	return exec.Command("osascript", args...).Run()
+}
+
+// notifyMac shows the notification through osascript, the one way to post
+// one on macOS without the app. Notification Center shows it as Script
+// Editor's, and clicking it can't open the session: unlike notify-send,
+// osascript has no action to wait for.
+func (d *Daemon) notifyMac(title, body, _ string) {
+	args := macNotifyArgs(title, body, d.notifyPrefs().Sound)
+	go runOsascript(args...)
+}
+
+// macNotifyArgs are osascript's arguments for a notification: one script,
+// with the title and the body as AppleScript strings.
+func macNotifyArgs(title, body string, sound bool) []string {
+	script := "display notification " + appleScriptString(body) + " with title " + appleScriptString(title)
+	if sound {
+		script += ` sound name "Glass"`
+	}
+	return []string{"-e", script}
+}
+
+// appleScriptString quotes s as an AppleScript string literal. A quote or a
+// backslash left as it is ended the literal early, and the rest ran as
+// script. Other control characters, from a program's own notification, are
+// dropped.
+func appleScriptString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r == 0x7f:
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }

@@ -92,7 +92,7 @@ func TestSettingsWebTunnelStates(t *testing.T) {
 func TestSettingsWebTunnelChooses(t *testing.T) {
 	runtime := t.TempDir() // the daemon's socket, and nothing else's
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // its web.json, not the run's
+	setConfigHome(t, t.TempDir()) // its web.json, not the run's
 	dir := t.TempDir()
 	d, err := daemon.Start(daemon.Options{Socket: paths.DaemonSocketPath(), StateDir: dir,
 		StateFile: filepath.Join(dir, "state.json"), Version: "test"})

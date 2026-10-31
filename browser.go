@@ -8,6 +8,7 @@ package main
 
 import (
 	"errors"
+	"runtime"
 	"time"
 	"unicode/utf8"
 
@@ -252,7 +253,11 @@ func (a *appState) browserCard(c *ui.Context, tab *topTab, id string, multi, foc
 				ui.Text(c, "This pane cannot show web pages").FontSize(13).FontWeight(600).TextColor(pal.Text)
 				msg := e.err
 				if msg == "" {
-					msg = "Install webkit2gtk-4.1 to use browser panes."
+					// Only Linux lacks a web view of its own.
+					msg = "The system's web view did not start."
+					if runtime.GOOS == "linux" {
+						msg = "Install webkit2gtk-4.1 to use browser panes."
+					}
 				}
 				ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
 			})

@@ -120,12 +120,28 @@ func TestMacKeysLeaveOptionToType(t *testing.T) {
 // and zoom keys did nothing: the menu's keys come before the window's.
 func TestAppMenuLeavesTheAppItsKeys(t *testing.T) {
 	var roles []mygo.MenuRole
-	for _, it := range appMenu().Items() {
+	opened := false
+	menu := appMenu(func() { opened = true })
+	for _, it := range menu.Items() {
 		roles = append(roles, it.Role)
 	}
 	want := []mygo.MenuRole{mygo.RoleAppMenu, mygo.RoleEditMenu, mygo.RoleWindowMenu}
 	if !slices.Equal(roles, want) {
 		t.Fatalf("menu roles = %v, want %v", roles, want)
+	}
+	// Settings… is there, with the key the table gives the command.
+	it := menu.ItemByID("settings")
+	if it == nil {
+		t.Fatal("no Settings… in the app's menu")
+	}
+	for _, b := range keybindingsFor(true) {
+		if b.Command == "app.settings" && (b.Combo != combo(ui.Super, ui.KeyComma) || it.Accelerator != "Cmd+,") {
+			t.Errorf("Settings… is %q, the table's key %s", it.Accelerator, b.Combo.label(true))
+		}
+	}
+	it.Click(it, nil)
+	if !opened {
+		t.Error("Settings… did not run the Settings command")
 	}
 }
 
@@ -652,5 +668,17 @@ func TestAltArrowsEditorsOwn(t *testing.T) {
 	a.activeView = tabEditor
 	if a.keyActive(next) {
 		t.Error("Alt+Down switches sessions in the editor")
+	}
+}
+
+// ⌘←, ⌘→ and ⌘⌫ are the terminal's line keys on macOS (session's
+// wordKey), so no app command may take them there.
+func TestMacLineKeysStayWithTheTerminal(t *testing.T) {
+	for _, b := range keybindingsFor(true) {
+		for _, k := range []ui.Key{ui.KeyLeft, ui.KeyRight, ui.KeyBackspace} {
+			if b.Combo == combo(ui.Super, k) {
+				t.Errorf("%s takes %s", b.Command, b.Combo.label(true))
+			}
+		}
 	}
 }

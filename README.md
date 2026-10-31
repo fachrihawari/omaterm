@@ -274,9 +274,14 @@ in.
 - omaterm makes its own certificate authority, a small certificate that lives
   in your omaterm folder. It signs for `.localhost` names only, so a browser
   that trusts it trusts it for nothing else.
-- It is trusted in Chrome, Chromium and each Firefox profile, as you.
+- It is trusted in Chrome, Chromium and each Firefox profile, as you. On macOS
+  only Firefox needs this: Chrome and Safari read the System keychain.
 - It is trusted system-wide, which curl and other programs read. This asks for
   your password.
+- macOS only: the proxy listens on port 443 on every address, as macOS lets a
+  program have that port without root only there, and closes connections that
+  don't come from your Mac. With the firewall on, macOS may ask once whether
+  omaterm may accept incoming connections.
 - Linux only: omaterm lets programs listen on ports 443 and up
   (`/etc/sysctl.d/50-omaterm.conf` sets `net.ipv4.ip_unprivileged_port_start`
   to 443), so that the address needs no port. This asks for your password

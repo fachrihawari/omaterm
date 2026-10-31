@@ -30,7 +30,7 @@ func TestDevURLsShot(t *testing.T) {
 		return map[tunnel.Provider]string{tunnel.Tailscale: "", tunnel.Cloudflare: ""}
 	}
 	defer func() { shareAvailable = prevAvail }()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	setPalette(theme.BuiltinLight())
 	defer stopTermPanes(a)

@@ -122,7 +122,12 @@ func TestDaemonProcessRestartStopAndEvent(t *testing.T) {
 
 func TestDaemonProcessAutostartSyncAndLocal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	root := t.TempDir()
+	// A short folder, for the socket's path: macOS allows 103 bytes.
+	root, err := os.MkdirTemp("", "omp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
 	projectDir := filepath.Join(root, "proj")
 	if err := os.Mkdir(projectDir, 0o700); err != nil {
 		t.Fatal(err)

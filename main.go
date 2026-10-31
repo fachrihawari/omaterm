@@ -16,6 +16,7 @@ import (
 	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
 	"omaterm/internal/daemon"
+	"omaterm/internal/loginenv"
 	"omaterm/internal/paths"
 	"omaterm/internal/theme"
 )
@@ -33,9 +34,24 @@ func appVersion() string {
 // whose keys come before the window's: ⌘W closed the window, so quit the
 // app, and ⌘R, ⇧⌘R and the zoom keys did nothing at all. omaterm's own
 // table has those keys. Linux and Windows get no menu bar.
-func appMenu() *mygo.Menu {
+//
+// The app's menu is mygo's with Settings… under About, where macOS apps
+// keep it; settings runs the Settings command, and ⌘, is that command's
+// key in the table, so the menu's key does what the window's did.
+func appMenu(settings func()) *mygo.Menu {
 	return mygo.NewMenu([]*mygo.MenuItem{
-		{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu}, {Role: mygo.RoleWindowMenu},
+		{Role: mygo.RoleAppMenu, Submenu: []*mygo.MenuItem{
+			{Role: mygo.RoleAbout},
+			mygo.Separator(),
+			{ID: "settings", Label: "Settings…", Accelerator: "Cmd+,", Click: func(*mygo.MenuItem, *mygo.Window) { settings() }},
+			mygo.Separator(),
+			{Role: mygo.RoleServices},
+			mygo.Separator(),
+			{Role: mygo.RoleHide}, {Role: mygo.RoleHideOthers}, {Role: mygo.RoleUnhide},
+			mygo.Separator(),
+			{Role: mygo.RoleQuit},
+		}},
+		{Role: mygo.RoleEditMenu}, {Role: mygo.RoleWindowMenu},
 	})
 }
 
@@ -135,6 +151,10 @@ func main() {
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
+	// Opened from Finder or the Dock on macOS, the app has launchd's bare
+	// PATH: take the login shell's before anything looks a tool up or
+	// starts the daemon, which inherits it.
+	loginenv.Import(runtime.GOOS)
 	// A crash prints its report and is gone: keep it, and tell the user
 	// of the ones past runs left.
 	crashes := crash.Unseen(paths.StateDir())
@@ -154,7 +174,11 @@ func main() {
 		// Once ready, as mygo's own examples do: the roles' labels name
 		// the app.
 		if runtime.GOOS == "darwin" {
-			mygo.App.SetMenu(appMenu())
+			mygo.App.SetMenu(appMenu(func() {
+				if app != nil && app.win != nil {
+					app.win.Update(func() { commandsByID["app.settings"].Run(app, nil) })
+				}
+			}))
 		}
 		systemDark = mygo.Theme.IsDark
 		a := newApp()

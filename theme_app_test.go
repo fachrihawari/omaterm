@@ -79,3 +79,74 @@ func TestFollowsOmarchyTheme(t *testing.T) {
 		t.Fatal("light mode gave a dark theme")
 	}
 }
+
+// Without Omarchy, as on a Mac, nothing offers to follow it: not the
+// palette, the theme's caption or the font popup, which names the font
+// that renders instead.
+func TestNoOmarchyWordingWithoutOmarchy(t *testing.T) {
+	for _, omarchy := range []bool{false, true} {
+		dir := os.DevNull + "-omarchy"
+		if omarchy {
+			dir = t.TempDir()
+		}
+		t.Setenv("OMATERM_OMARCHY_DIR", dir)
+		a, tr := newSettingsTester(t, "appearance")
+		a.cmdQuery = "theme"
+		found := false
+		for _, e := range a.paletteCommands() {
+			found = found || e.ID == "theme.omarchy"
+		}
+		if found != omarchy {
+			t.Errorf("omarchy=%v: palette offers Follow Omarchy %v", omarchy, found)
+		}
+		if got := tr.HasText("Omarchy follows your Omarchy theme as it changes. System follows light or dark mode."); got != omarchy {
+			t.Errorf("omarchy=%v: caption names Omarchy %v", omarchy, got)
+		}
+		a.settingsGo("terminal")
+		tr.Frame()
+		if err := tr.Click("font"); err != nil {
+			t.Fatal(err)
+		}
+		tr.Frame()
+		named := false
+		for _, s := range tr.Texts() {
+			named = named || strings.HasPrefix(s, "Follow Omarchy (")
+		}
+		if named != omarchy {
+			t.Errorf("omarchy=%v: font popup says Follow Omarchy %v: %q", omarchy, named, tr.Texts())
+		}
+		stopTermPanes(a)
+	}
+}
+
+// The default font is named by the first family installed, else the
+// system's monospace: SF Mono on a Mac.
+func TestDefaultFontName(t *testing.T) {
+	const list = "JetBrainsMono Nerd Font, JetBrains Mono, monospace"
+	for _, c := range []struct {
+		installed map[string]bool
+		mac       bool
+		want      string
+	}{
+		{map[string]bool{"jetbrains mono": true}, true, "JetBrains Mono"},
+		{map[string]bool{"jetbrainsmono nerd font": true, "jetbrains mono": true}, false, "JetBrainsMono Nerd Font"},
+		{map[string]bool{"menlo": true}, true, "SF Mono"},
+		{nil, false, "the system's monospace"},
+	} {
+		if got := defaultFontName(list, c.installed, c.mac); got != c.want {
+			t.Errorf("%v mac=%v: %q, want %q", c.installed, c.mac, got, c.want)
+		}
+	}
+}
+
+// A Ghostty config's last font-family is its font.
+func TestGhosttyFont(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(path, []byte("font-family = \"Fira Code\"\ntheme = x\nfont-family=Iosevka\n"), 0o644)
+	if got := ghosttyFont(path); got != "Iosevka" {
+		t.Errorf("font %q, want Iosevka", got)
+	}
+	if got := ghosttyFont(path + "-none"); got != "" {
+		t.Errorf("no config gave %q", got)
+	}
+}

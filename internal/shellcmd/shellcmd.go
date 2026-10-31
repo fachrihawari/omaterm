@@ -8,34 +8,67 @@ package shellcmd
 
 import (
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// Login returns the user's shell: $SHELL, else the account's, else sh.
+// Login returns the user's shell: $SHELL, else the account's, else the
+// system's default (zsh on macOS, sh elsewhere).
 func Login() string {
 	if sh := os.Getenv("SHELL"); sh != "" {
 		return sh
 	}
 	if u, err := user.Current(); err == nil {
-		if sh := accountShell(u.Username); sh != "" {
+		if sh := accountShell(runtime.GOOS, u.Username); sh != "" {
 			return sh
 		}
+	}
+	if runtime.GOOS == "darwin" {
+		return "/bin/zsh"
 	}
 	return "/bin/sh"
 }
 
-// accountShell reads a user's shell from /etc/passwd.
-func accountShell(name string) string {
+// accountShell reads a user's shell from the account database. macOS keeps
+// its users in Directory Services: its /etc/passwd lists only a few system
+// accounts.
+func accountShell(goos, name string) string {
+	if goos == "darwin" {
+		out, err := exec.Command("/usr/bin/dscl", ".", "-read", "/Users/"+name, "UserShell").Output()
+		if err != nil {
+			return ""
+		}
+		return dsclShell(string(out))
+	}
 	data, err := os.ReadFile("/etc/passwd")
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	return passwdShell(string(data), name)
+}
+
+// passwdShell is a user's shell in /etc/passwd's text.
+func passwdShell(data, name string) string {
+	for _, line := range strings.Split(data, "\n") {
 		f := strings.Split(line, ":")
 		if len(f) == 7 && f[0] == name {
 			return f[6]
+		}
+	}
+	return ""
+}
+
+// dsclShell is the shell in what `dscl . -read /Users/<name> UserShell`
+// prints: "UserShell: /bin/zsh".
+func dsclShell(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "UserShell:"); ok {
+			if v = strings.TrimSpace(v); strings.HasPrefix(v, "/") {
+				return v
+			}
 		}
 	}
 	return ""

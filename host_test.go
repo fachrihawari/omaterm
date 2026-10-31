@@ -28,7 +28,7 @@ func TestControlSocket(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.host = newLocalHost(a)
-	s, err := ctl.Listen(filepath.Join(t.TempDir(), "omaterm.sock"), a.host, "test")
+	s, err := ctl.Listen(filepath.Join(socketDir(t), "omaterm.sock"), a.host, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestCreateWorktreeOverSocket(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.host = newLocalHost(a)
-	s, err := ctl.Listen(filepath.Join(t.TempDir(), "omaterm.sock"), a.host, "test")
+	s, err := ctl.Listen(filepath.Join(socketDir(t), "omaterm.sock"), a.host, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +665,7 @@ func TestSendWaitsForTheUser(t *testing.T) {
 // command talks to while the window is open: here with the app's own
 // host, as without a daemon.
 func TestProcessMethodsOverSocket(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()

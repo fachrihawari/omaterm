@@ -79,6 +79,7 @@ func settingsPageList() []settingsPageDef {
 type settingsData struct {
 	cliWhere     string
 	cliOn        bool
+	cliHint      string // what to add to the profile when the command's folder isn't on PATH
 	service      bool
 	scrollCount  int
 	scrollBytes  int64
@@ -124,6 +125,13 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	u.dataAt = c.Now()
 	d := &u.data
 	d.cliWhere, d.cliOn = cli.CLIStatus()
+	// On a Mac, PATH is the login shell's (see loginenv), which has no
+	// ~/.local/bin unless the user added it. Elsewhere the app's PATH is
+	// the desktop's, which may differ from the shell's: no hint there.
+	d.cliHint = ""
+	if d.cliOn && runtime.GOOS == "darwin" {
+		d.cliHint = cli.CLIPathHint()
+	}
 	d.omarchy = nil
 	if src, err := theme.LoadOmarchy(); err == nil {
 		d.omarchy = &src
@@ -251,7 +259,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 		a.settingSwitchRow(c, "snapshot", false)
 		a.settingSwitchRow(c, "confirmClose", false)
 	})
-	a.settingsGroup(c, "links", "Links and tools", "", func() {
+	a.settingsGroup(c, "links", "Links and tools", d.cliHint, func() {
 		a.settingDefRow(c, "openLinks", func() {
 			if settingsPopup(c, "openLinks", &a.settings.OpenLinks, [][2]string{{"pane", "A browser pane"}, {"system", "Your browser"}}) {
 				a.applySettings()
@@ -346,7 +354,11 @@ func (a *appState) setService(on bool) {
 // --- Appearance ---
 
 func (a *appState) settingsAppearance(c *ui.Context) {
-	a.settingsGroup(c, "theme", "Theme", "Omarchy follows your Omarchy theme as it changes. System follows light or dark mode.", func() {
+	caption := "System follows light or dark mode."
+	if hasOmarchy() {
+		caption = "Omarchy follows your Omarchy theme as it changes. " + caption
+	}
+	a.settingsGroup(c, "theme", "Theme", caption, func() {
 		a.settingsUI.rowN++
 		ui.Row(c.Key("tiles")).FillWidth().Gap(12).Padding(12).Children(func() {
 			if hasOmarchy() {
@@ -437,8 +449,14 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 			mode = "custom"
 		}
 		follow := strings.TrimSpace(strings.Split(termFontFamily(), ",")[0])
+		followLabel := "Follow Omarchy (" + follow + ")"
+		if !hasOmarchy() {
+			// Named by what renders: on a Mac, SF Mono unless JetBrains
+			// Mono is installed.
+			followLabel = "Default (" + defaultFontName(termFontFamily(), installedFonts(), onMac) + ")"
+		}
 		a.settingDefRow(c, "font", func() {
-			if settingsPopup(c, "font", &mode, [][2]string{{"follow", "Follow Omarchy (" + follow + ")"}, {"custom", "Custom…"}}) {
+			if settingsPopup(c, "font", &mode, [][2]string{{"follow", followLabel}, {"custom", "Custom…"}}) {
 				if mode == "follow" {
 					t.FontFamily, d.customFont = "", ""
 					a.applySettings()
@@ -500,6 +518,11 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 		})
 		a.settingSwitchRow(c, "blink", false)
 	})
+	if onMac {
+		a.settingsGroup(c, "keyboard", "Keyboard", "", func() {
+			a.settingSwitchRow(c, "optionMeta", false)
+		})
+	}
 	a.settingsGroup(c, "mouse", "Mouse and clipboard", "", func() {
 		a.settingSwitchRow(c, "copySelect", false)
 		a.settingDefRow(c, "rightClick", func() {

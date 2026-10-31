@@ -11,7 +11,7 @@ import (
 )
 
 func TestProcessDialogSavesSharedAndLocalDefs(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()
@@ -55,7 +55,7 @@ func TestProcessDialogSavesSharedAndLocalDefs(t *testing.T) {
 }
 
 func TestProcessDialogSuggestionAndDirectoryValidation(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()
@@ -95,7 +95,7 @@ func TestProcessDialogSuggestionAndDirectoryValidation(t *testing.T) {
 }
 
 func TestProcessDialogEditRenamesDef(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.useLocalProcHost()

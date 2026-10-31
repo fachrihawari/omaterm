@@ -49,3 +49,22 @@ func TestArgsReportsExit(t *testing.T) {
 		t.Errorf("output %q", out)
 	}
 }
+
+func TestAccountShellParsers(t *testing.T) {
+	passwd := "root:x:0:0:root:/root:/bin/bash\nme:x:1000:1000::/home/me:/usr/bin/fish\n"
+	if got := passwdShell(passwd, "me"); got != "/usr/bin/fish" {
+		t.Errorf("passwd: %q", got)
+	}
+	if got := passwdShell(passwd, "nobody"); got != "" {
+		t.Errorf("passwd, no such user: %q", got)
+	}
+	if got := dsclShell("UserShell: /opt/homebrew/bin/fish\n"); got != "/opt/homebrew/bin/fish" {
+		t.Errorf("dscl: %q", got)
+	}
+	// A missing attribute: dscl says so on stderr and prints nothing of use.
+	for _, out := range []string{"", "No such key: UserShell\n", "UserShell:\n"} {
+		if got := dsclShell(out); got != "" {
+			t.Errorf("dscl %q: %q", out, got)
+		}
+	}
+}

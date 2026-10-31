@@ -1,7 +1,7 @@
 {
   "name": "omaterm",
-  "identifier": "com.example.omaterm",
-  "version": "0.12.0",
+  "identifier": "id.my.fhwr.omaterm",
+  "version": "0.12.1",
   "out": "build",
   "resources": [
     "LICENSE",

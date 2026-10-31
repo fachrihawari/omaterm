@@ -1,9 +1,11 @@
 package devurl
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -55,9 +57,13 @@ func Checks(e Env, proxy ProxyState) []Check {
 	checks = append(checks, trusted)
 
 	// The browsers' databases are checked where there are any: a machine
-	// with none has no browser that keeps its own.
+	// with none has no browser that keeps its own. On macOS only Firefox
+	// keeps one: Chrome and Safari trust what the System keychain does.
 	if dbs := NSSDBs(e); len(dbs) > 0 {
 		c := Check{Name: "Trusted by Chrome and Firefox"}
+		if e.OS == "darwin" {
+			c.Name = "Trusted by Firefox"
+		}
 		var missing []string
 		_, certutilErr := exec.LookPath("certutil")
 		for _, db := range dbs {
@@ -82,40 +88,71 @@ func Checks(e Env, proxy ProxyState) []Check {
 
 func (e Env) resolveCheck() Check {
 	c := Check{Name: "*.localhost names resolve"}
+	problem := e.resolveProblem()
+	switch {
+	case problem == "":
+		c.OK = true
+	case e.OS == "darwin":
+		// macOS's resolver may not answer for *.localhost, but the browsers
+		// resolve those names to this machine themselves.
+		c.OK, c.Detail = true, "browsers resolve them themselves (the system's resolver: "+problem+")"
+	default:
+		c.Detail = problem
+	}
+	return c
+}
+
+// resolveProblem is what is wrong with how a *.localhost name resolves, ""
+// when it is this machine.
+func (e Env) resolveProblem() string {
 	if e.LookupHost == nil {
-		c.Detail = "can't tell"
-		return c
+		return "can't tell"
 	}
 	addrs, err := e.LookupHost("omaterm-check.localhost")
 	if err != nil {
-		c.Detail = err.Error()
-		return c
+		return err.Error()
 	}
 	for _, a := range addrs {
 		if ip := net.ParseIP(a); ip == nil || !ip.IsLoopback() {
-			c.Detail = "resolves to " + a + ", not this machine"
-			return c
+			return "resolves to " + a + ", not this machine"
 		}
 	}
 	if len(addrs) == 0 {
-		c.Detail = "resolves to nothing"
-		return c
+		return "resolves to nothing"
 	}
-	c.OK = true
-	return c
+	return ""
 }
 
 func (e Env) portCheck(proxy ProxyState) Check {
 	c := Check{Name: "Port 443 can be used"}
 	switch {
-	case e.OS == "darwin":
-		c.OK = true
 	case proxy.Running && strings.HasSuffix(proxy.Addr, ":443"):
 		c.OK, c.Detail = true, "the proxy listens on it"
+	case e.OS == "darwin":
+		// Nothing tells beforehand whether macOS lets a user have the port:
+		// it is bound as the proxy binds it, and let go.
+		if err := e.tryPort(); err != nil {
+			c.Detail = err.Error()
+		} else {
+			c.OK = true
+		}
 	case e.portStart() <= firstPort:
 		c.OK = true
 	default:
 		c.Detail = fmt.Sprintf("programs can't listen below %d (%s)", e.portStart(), sysctlKey)
 	}
 	return c
+}
+
+// tryPort binds port 443 as the proxy does, on 127.0.0.1 or else on every
+// address, and closes it.
+func (e Env) tryPort() error {
+	if e.Listen == nil {
+		return errors.New("can't tell")
+	}
+	ln, err := listenTCP(e.OS, net.JoinHostPort("127.0.0.1", strconv.Itoa(firstPort)), e.Listen)
+	if err != nil {
+		return err
+	}
+	return ln.Close()
 }

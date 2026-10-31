@@ -35,7 +35,14 @@ func (fakeHost) Subscribe(func(proto.Message)) func() { return func() {} }
 // fakeSocket serves h on a socket of its own, and points omaterm at it.
 func fakeSocket(t *testing.T, h fakeHost) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "s.sock")
+	// A short folder, for the socket's path: macOS allows 103 bytes, and
+	// t.TempDir() there, with a long test's name, is longer.
+	dir, err := os.MkdirTemp("", "omc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s.sock")
 	srv, err := ctl.Listen(path, h, "test")
 	if err != nil {
 		t.Fatal(err)

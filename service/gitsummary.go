@@ -3,11 +3,12 @@ package service
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"omaterm/internal/gitsnap"
 )
 
 // GitSummary is what a pane header says of the repository a pane works
@@ -23,7 +24,7 @@ type GitSummary struct {
 // the index lock an agent may be committing under, and without asking for
 // a password.
 func safeGit(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-optional-locks", "-c", "core.quotepath=false", "-c", "color.ui=false"}, args...)...)
+	cmd := gitsnap.Command(ctx, append([]string{"--no-optional-locks", "-c", "core.quotepath=false", "-c", "color.ui=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	hide(cmd)

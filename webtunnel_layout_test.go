@@ -58,7 +58,7 @@ func TestSettingsWebTunnelLayoutFailed(t *testing.T) {
 // name.
 func TestSettingsPairNote(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setConfigHome(t, t.TempDir())
 	a, tr := newSettingsTester(t, "pair")
 	a.webOn = true
 	tr.Frame()

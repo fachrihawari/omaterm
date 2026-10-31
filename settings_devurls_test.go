@@ -241,6 +241,18 @@ func TestDevurlsCancelledAndFailedSteps(t *testing.T) {
 	}
 }
 
+// On macOS, Remove names what is there: Firefox's trust and the System
+// keychain, not Chrome's databases or Linux's port setting.
+func TestDevurlsRemoveItemsPerSystem(t *testing.T) {
+	linux, mac := devurlRemoveItems("linux"), devurlRemoveItems("darwin")
+	if !strings.Contains(linux[0][0], "Chrome") || !strings.Contains(linux[1][0], "port 443") {
+		t.Errorf("linux %v", linux)
+	}
+	if mac[0][0] != "Trust in Firefox" || mac[1][0] != "Trust in the System keychain" || mac[1][1] != "Asks for your password" {
+		t.Errorf("macOS %v", mac)
+	}
+}
+
 func TestDevurlsRemoveShowsOnlyWhenSetUp(t *testing.T) {
 	f := useFakeDevurl(t, true)
 	f.status = daemon.ProxyStatus{Checks: []devurl.Check{{Name: "Certificate authority made", Detail: "not yet"}}}
