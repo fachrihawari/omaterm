@@ -246,3 +246,92 @@ func shortStart(t *testing.T, d time.Duration) (undo func()) {
 	startTimeout = d
 	return func() { startTimeout = was }
 }
+
+// Only a tunnel's own subdomain is its URL: cloudflared names Cloudflare's
+// api host when it fails to ask for a tunnel.
+func TestQuickURL(t *testing.T) {
+	for _, tc := range []struct{ line, want string }{
+		{"INF |  https://some-words-here.trycloudflare.com |", "https://some-words-here.trycloudflare.com"},
+		{`ERR Post "https://api.trycloudflare.com/tunnel": dial tcp: no such host`, ""},
+		{"https://api.trycloudflare.com then https://real-one.trycloudflare.com", "https://real-one.trycloudflare.com"},
+		{"https://api-x.trycloudflare.com", "https://api-x.trycloudflare.com"},
+		{"no url here", ""},
+	} {
+		if got := quickURL(tc.line); got != tc.want {
+			t.Errorf("quickURL(%q) = %q, want %q", tc.line, got, tc.want)
+		}
+	}
+}
+
+// A cloudflared that fails with the api host in its log is a failure, not
+// a tunnel at that address.
+func TestCloudflareTunnelFailureNamesAPI(t *testing.T) {
+	tunnelTest(t)
+	fakePATH(t, map[string]string{"cloudflared": `echo 'ERR Failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": dial tcp: lookup api.trycloudflare.com: no such host' >&2
+exit 1`})
+	tun, err := Start(context.Background(), Spec{Provider: Cloudflare, Target: "http://127.0.0.1:7370"})
+	if err == nil {
+		tun.Stop()
+		t.Fatalf("a tunnel at %q from a failure line", tun.URL())
+	}
+}
+
+// A helper that keeps cloudflared's log open after it ended does not keep
+// the tunnel from ending, and stopping an ended tunnel is quiet.
+func TestCloudflareTunnelEndsWithAHelperOnItsLog(t *testing.T) {
+	tunnelTest(t)
+	fakePATH(t, map[string]string{
+		"sleep": "exec /bin/sleep \"$@\"",
+		"cloudflared": `echo "INF |  https://some-words-here.trycloudflare.com |" >&2
+sleep 5 &
+exit 0`,
+	})
+	tun, err := Start(context.Background(), Spec{Provider: Cloudflare, Target: "http://127.0.0.1:7370"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-tun.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("the tunnel did not end though cloudflared did")
+	}
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A serve that goes away under a running tunnel ends it with an error, and
+// a status that cannot be read does not.
+func TestTailscaleTunnelEndsWhenItsServeIsGone(t *testing.T) {
+	tunnelTest(t)
+	fakePATH(t, map[string]string{"tailscale": fakeTailscale})
+	old := serveWatch
+	serveWatch = 40 * time.Millisecond
+	defer func() { serveWatch = old }()
+
+	const target = "http://127.0.0.1:7370"
+	t.Setenv("TS_SERVE", `{"TCP":{"443":{}},"Web":{"box.tailnet.ts.net:443":{"Handlers":{"/":{"Proxy":"`+target+`"}}}}}`)
+	tun, err := Start(context.Background(), Spec{Provider: Tailscale, Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tun.Stop()
+
+	t.Setenv("TS_SERVE_FAIL", "1")
+	select {
+	case <-tun.Done():
+		t.Fatal("the tunnel ended on a status that could not be read")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	t.Setenv("TS_SERVE_FAIL", "")
+	t.Setenv("TS_SERVE", `{}`)
+	select {
+	case <-tun.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("the tunnel did not end though its serve was reset")
+	}
+	if tun.Err() == nil || !strings.Contains(tun.Err().Error(), "no longer serves") {
+		t.Fatalf("Err: %v", tun.Err())
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,13 +26,21 @@ var serveTimeout = 30 * time.Second
 // offTimeout bounds turning a serve off.
 const offTimeout = 10 * time.Second
 
+// serveWatch is how often a running serve is looked up to still be there.
+var serveWatch = 30 * time.Second
+
 // tailscale is a serve tailscaled keeps running: it has no process of
-// its own to watch, so Done waits for Stop.
+// its own to watch, so it is looked up every serveWatch, and Done waits for
+// Stop or for the serve to be gone.
 type tailscale struct {
-	port int
-	url  string
-	done chan struct{}
-	once sync.Once
+	port   int
+	target string
+	url    string
+	done   chan struct{}
+	once   sync.Once
+
+	mu  sync.Mutex
+	err error
 }
 
 // startTailscale serves s's target on this machine's tailnet name, in
@@ -67,16 +76,52 @@ func startTailscale(ctx context.Context, s Spec) (Tunnel, error) {
 	if port != 443 {
 		u += ":" + strconv.Itoa(port)
 	}
-	return &tailscale{port: port, url: u, done: make(chan struct{})}, nil
+	t := &tailscale{port: port, target: s.Target, url: u, done: make(chan struct{})}
+	go t.watch()
+	return t, nil
+}
+
+// watch ends the tunnel, with an error, when tailscaled no longer serves
+// its target on its port: the user reset the serve, or signed out. A status
+// that can't be read is no proof of that, and is tried again.
+func (t *tailscale) watch() {
+	tick := time.NewTicker(serveWatch)
+	defer tick.Stop()
+	for {
+		select {
+		case <-t.done:
+			return
+		case <-tick.C:
+		}
+		serves, err := TailscaleServe()
+		if err != nil {
+			continue
+		}
+		if !slices.Contains(serves[t.port], t.target) {
+			t.once.Do(func() {
+				t.mu.Lock()
+				t.err = fmt.Errorf("tailscale no longer serves %s on port %d", t.target, t.port)
+				t.mu.Unlock()
+				trackServe(t.port, false)
+				close(t.done)
+			})
+			return
+		}
+	}
 }
 
 func (t *tailscale) URL() string { return t.url }
 
-// Done stays open until Stop: --bg left tailscaled serving, and nothing
-// of ours ends by itself.
+// Done stays open until Stop or until the serve is gone: --bg left
+// tailscaled serving, and no process of ours ends by itself.
 func (t *tailscale) Done() <-chan struct{} { return t.done }
 
-func (t *tailscale) Err() error { return nil }
+// Err is why the serve ended, nil while it runs and after Stop.
+func (t *tailscale) Err() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.err
+}
 
 // Stop turns the serve off, which ends what tailscaled runs for it.
 func (t *tailscale) Stop() error {

@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"sync"
@@ -14,7 +14,23 @@ import (
 
 // trycloudflare is the URL a Cloudflare quick tunnel gets, in the
 // message cloudflared logs when it makes one.
-var trycloudflare = regexp.MustCompile(`https://[A-Za-z0-9-]+\.trycloudflare\.com`)
+var trycloudflare = regexp.MustCompile(`https://([A-Za-z0-9-]+)\.trycloudflare\.com`)
+
+// quickURL is the tunnel's URL in a line of cloudflared's log, "" when
+// there is none. The api subdomain is Cloudflare's own service, which
+// cloudflared names when it fails to ask for a tunnel, so it is no tunnel.
+func quickURL(line string) string {
+	for _, m := range trycloudflare.FindAllStringSubmatch(line, -1) {
+		if m[1] != "api" {
+			return m[0]
+		}
+	}
+	return ""
+}
+
+// logGrace is how long cloudflared's log is read on after it ended: a
+// helper it started may hold the log open for good.
+const logGrace = 500 * time.Millisecond
 
 // cloudflaredBin is the command that makes a quick tunnel.
 const cloudflaredBin = "cloudflared"
@@ -40,11 +56,17 @@ func startCloudflare(ctx context.Context, s Spec) (Tunnel, error) {
 	cmd := exec.Command(cloudflaredBin, "tunnel", "--no-autoupdate", "--url", s.Target)
 	hide(cmd)
 	inGroup(cmd) // stopped as a group: cloudflared runs helpers of its own
-	stderr, err := cmd.StderrPipe()
+	// The log goes to a pipe of our own, so that waiting for the command
+	// does not wait for whoever else holds the pipe's write end.
+	stderr, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	cmd.Stderr = w
+	err = cmd.Start()
+	w.Close()
+	if err != nil {
+		stderr.Close()
 		return nil, fmt.Errorf("cloudflared: %w", err)
 	}
 	t := &cloudflare{cmd: cmd, done: make(chan struct{})}
@@ -75,22 +97,32 @@ func startCloudflare(ctx context.Context, s Spec) (Tunnel, error) {
 }
 
 // watch reads cloudflared's log for the tunnel's URL, and after its end
-// closes done and keeps why it ended, if it wasn't stopped.
-func (t *cloudflare) watch(r io.Reader, found chan<- string) {
-	br := bufio.NewReader(r)
-	for {
-		line, err := br.ReadString('\n')
-		if u := trycloudflare.FindString(line); u != "" {
-			select {
-			case found <- u:
-			default:
+// closes done and keeps why it ended, if it wasn't stopped. The log is
+// read on for logGrace after the command ended, and then dropped.
+func (t *cloudflare) watch(r *os.File, found chan<- string) {
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		br := bufio.NewReader(r)
+		for {
+			line, err := br.ReadString('\n')
+			if u := quickURL(line); u != "" {
+				select {
+				case found <- u:
+				default:
+				}
+			}
+			if err != nil {
+				return
 			}
 		}
-		if err != nil {
-			break
-		}
-	}
+	}()
 	werr := t.cmd.Wait()
+	select {
+	case <-read:
+	case <-time.After(logGrace):
+	}
+	r.Close()
 	t.mu.Lock()
 	if !t.stopped && werr != nil {
 		t.err = fmt.Errorf("cloudflared: %w", werr)
@@ -125,6 +157,13 @@ func (t *cloudflare) Stop() error {
 	if already {
 		<-t.done
 		return nil
+	}
+	// A command that ended is waited for: its group id may be another
+	// process's by now.
+	select {
+	case <-t.done:
+		return nil
+	default:
 	}
 	killGroup(t.cmd)
 	<-t.done
