@@ -28,6 +28,15 @@ func ProcArgs(pid int) []string {
 	return strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
 }
 
+// ProcEnv returns a process's environment, as it started.
+func ProcEnv(pid int) []string {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
+	if err != nil || len(b) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
+}
+
 // ProcCwd returns a process's working directory.
 func ProcCwd(pid int) string {
 	dir, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")

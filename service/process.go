@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"omaterm/internal/pty"
 )
 
 // Process is a running process whose working directory is inside the
@@ -37,9 +40,10 @@ type Port struct {
 // ListProjectProcesses returns the project's processes: roots (the shells
 // of its panes) and their descendants, and those whose CWD is under
 // workspace. omaterm's own processes are never listed: killing one would
-// end every session.
+// end every session. Processes are read as panes read them (Linux's /proc,
+// macOS's libSystem), their CPU and memory from ps.
 func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return nil, nil
 	}
 	if strings.TrimSpace(workspace) == "" {
@@ -55,29 +59,20 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 			abs = workspace
 		}
 	}
-
-	// CPU% from ps (one call for all processes).
-	cpuMap := map[int]string{}
-	ps := exec.Command("ps", "-eo", "pid=,pcpu=")
-	hide(ps)
-	if out, err := ps.Output(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
-				continue
-			}
-			pid, err := strconv.Atoi(fields[0])
-			if err != nil {
-				continue
-			}
-			cpuMap[pid] = fields[1] + "%"
-		}
+	under := func(dir string) bool {
+		return dir == abs || strings.HasPrefix(dir, abs+string(filepath.Separator))
 	}
+
+	all := pty.Procs()
+	if len(all) == 0 {
+		return nil, fmt.Errorf("could not list the system's processes")
+	}
+	usage := psUsage()
 
 	// The project's panes and what they started, wherever it went.
 	pidSet := map[int]bool{}
 	rootOf := map[int]int{}
-	children := childrenMap()
+	children := childrenMap(all)
 	for _, root := range roots {
 		pidSet[root] = true
 		if rootOf[root] == 0 {
@@ -91,50 +86,28 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 		}
 	}
 
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, err
-	}
-
 	var procs []Process
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		cwd, err := os.Readlink(filepath.Join("/proc", e.Name(), "cwd"))
-		if err != nil {
-			continue
+	for _, pid := range all {
+		cwd := pty.ProcCwd(pid)
+		if cwd == "" {
+			continue // gone, or not the user's
 		}
 		resolvedCwd := cwd
 		if r, err := filepath.EvalSymlinks(cwd); err == nil {
 			resolvedCwd = r
 		}
 
-		// Check if process is in project: CWD under workspace OR descendant of terminal.
-		inProject := pidSet[pid]
+		// In the project: a pane's or what it started, its CWD under the
+		// workspace, or the PWD it was started with.
+		inProject := pidSet[pid] || under(resolvedCwd)
 		if !inProject {
-			// CWD under workspace.
-			if resolvedCwd == abs || strings.HasPrefix(resolvedCwd, abs+string(filepath.Separator)) {
-				inProject = true
-			}
-		}
-		if !inProject {
-			// Environment-based: check if PWD or PROJECT_ROOT matches.
-			if envData, err := os.ReadFile(filepath.Join("/proc", e.Name(), "environ")); err == nil {
-				for _, env := range strings.Split(string(envData), "\x00") {
-					if strings.HasPrefix(env, "PWD=") {
-						pwd := strings.TrimPrefix(env, "PWD=")
-						if resolved, err := filepath.EvalSymlinks(pwd); err == nil {
-							pwd = resolved
-						}
-						if pwd == abs || strings.HasPrefix(pwd, abs+string(filepath.Separator)) {
-							inProject = true
-						}
+			for _, env := range pty.ProcEnv(pid) {
+				if pwd, ok := strings.CutPrefix(env, "PWD="); ok {
+					if r, err := filepath.EvalSymlinks(pwd); err == nil {
+						pwd = r
 					}
+					inProject = under(pwd)
+					break
 				}
 			}
 		}
@@ -142,11 +115,7 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 			continue
 		}
 
-		// Read process name.
-		name := ""
-		if data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "comm")); err == nil {
-			name = strings.TrimSpace(string(data))
-		}
+		name := pty.ProcName(pid)
 		if name == "" {
 			name = "?"
 		}
@@ -154,37 +123,21 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 			continue
 		}
 
-		// Read full command line (truncated).
-		cmdLine := ""
-		if data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline")); err == nil {
-			cmdLine = strings.ReplaceAll(string(data), "\x00", " ")
-			cmdLine = strings.TrimSpace(cmdLine)
-			if r := []rune(cmdLine); len(r) > 60 {
-				cmdLine = string(r[:57]) + "..." // whole characters: cut by bytes, one broke
-			}
+		// The full command line, truncated.
+		cmdLine := strings.TrimSpace(strings.Join(pty.ProcArgs(pid), " "))
+		if r := []rune(cmdLine); len(r) > 60 {
+			cmdLine = string(r[:57]) + "..." // whole characters: cut by bytes, one broke
 		}
 
-		// Read RSS from statm.
-		memStr := ""
-		if data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "statm")); err == nil {
-			fields := strings.Fields(string(data))
-			if len(fields) >= 2 {
-				if rss, err := strconv.Atoi(fields[1]); err == nil {
-					mb := rss * 4096 / 1024 / 1024
-					memStr = fmt.Sprintf("%d MB", mb)
-				}
-			}
+		u, ok := usage[pid]
+		if !ok {
+			u.cpu = "0%"
 		}
-		cpuStr := cpuMap[pid]
-		if cpuStr == "" {
-			cpuStr = "0%"
-		}
-
 		procs = append(procs, Process{
 			Name: name,
 			Pid:  pid,
-			CPU:  cpuStr,
-			Mem:  memStr,
+			CPU:  u.cpu,
+			Mem:  u.mem,
 			Cwd:  resolvedCwd,
 			Cmd:  cmdLine,
 			Root: rootOf[pid],
@@ -195,47 +148,57 @@ func ListProjectProcesses(workspace string, roots []int) ([]Process, error) {
 	return procs, nil
 }
 
+// usage is a process's CPU and memory, as ps shows them.
+type usage struct {
+	cpu string // "12.5%"
+	mem string // "42 MB"
+}
+
+// psUsage reads every process's CPU and resident memory in one ps call,
+// whose flags Linux's ps and macOS's take alike (RSS in KiB on both).
+func psUsage() map[int]usage {
+	ps := exec.Command("ps", "-eo", "pid=,pcpu=,rss=")
+	hide(ps)
+	out, err := ps.Output()
+	if err != nil {
+		return nil
+	}
+	return parsePSUsage(string(out))
+}
+
+func parsePSUsage(out string) map[int]usage {
+	m := map[int]usage{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		u := usage{cpu: fields[1] + "%"}
+		if kb, err := strconv.Atoi(fields[2]); err == nil {
+			u.mem = fmt.Sprintf("%d MB", kb/1024)
+		}
+		m[pid] = u
+	}
+	return m
+}
+
 // ownProcess reports whether a process is omaterm's own: the app, its
 // session daemon, or an omaterm command a pane runs.
 func ownProcess(pid int, comm string) bool {
 	return pid == os.Getpid() || strings.HasPrefix(comm, "omaterm")
 }
 
-// childrenMap maps each PID to its children's.
-func childrenMap() map[int][]int {
+// childrenMap maps each of pids to its children.
+func childrenMap(pids []int) map[int][]int {
 	children := map[int][]int{}
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	for _, pid := range pids {
+		if ppid := pty.ProcParent(pid); ppid > 0 {
+			children[ppid] = append(children[ppid], pid)
 		}
-		childPid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
-		if err != nil {
-			continue
-		}
-		// stat format: pid (comm) state ppid ...
-		// comm may contain spaces/parens, so find the last ")".
-		s := string(data)
-		idx := strings.LastIndex(s, ")")
-		if idx < 0 || idx+2 >= len(s) {
-			continue
-		}
-		fields := strings.Fields(s[idx+2:])
-		if len(fields) < 2 {
-			continue
-		}
-		ppid, err := strconv.Atoi(fields[1])
-		if err != nil {
-			continue
-		}
-		children[ppid] = append(children[ppid], childPid)
 	}
 	return children
 }
@@ -261,7 +224,7 @@ func descendants(children map[int][]int, pid int) []int {
 
 // ListProjectPorts returns listening TCP ports owned by the given processes.
 func ListProjectPorts(processes []Process) ([]Port, error) {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return nil, nil
 	}
 	pidSet := map[int]bool{}
@@ -269,6 +232,9 @@ func ListProjectPorts(processes []Process) ([]Port, error) {
 	for _, p := range processes {
 		pidSet[p.Pid] = true
 		procName[p.Pid] = p.Name
+	}
+	if runtime.GOOS == "darwin" {
+		return listPortsViaLsof(pidSet, procName)
 	}
 
 	// Try ss first.
@@ -363,6 +329,64 @@ func listPortsViaSS(pidSet map[int]bool, procName map[int]string) ([]Port, error
 	return ports, nil
 }
 
+// listPortsViaLsof lists the ports with lsof, which macOS always has (it
+// has neither ss nor /proc/net).
+func listPortsViaLsof(pidSet map[int]bool, procName map[int]string) ([]Port, error) {
+	if len(pidSet) == 0 {
+		return nil, nil
+	}
+	pids := make([]string, 0, len(pidSet))
+	for pid := range pidSet {
+		pids = append(pids, strconv.Itoa(pid))
+	}
+	sort.Strings(pids)
+	cmd := exec.Command("lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", strings.Join(pids, ","), "-Fpn")
+	hide(cmd)
+	out, err := cmd.Output()
+	if err != nil && len(out) == 0 {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return nil, nil // lsof exits 1 when nothing listens
+		}
+		return nil, err
+	}
+	return parseLsofListen(string(out), pidSet, procName), nil
+}
+
+// parseLsofListen reads lsof -Fpn: a "p<pid>" line, then a line for each
+// of its files, "n<address>:<port>" for a socket (f lines between).
+func parseLsofListen(out string, pidSet map[int]bool, procName map[int]string) []Port {
+	var ports []Port
+	seen := map[int]bool{}
+	pid := 0
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		switch line[0] {
+		case 'p':
+			pid, _ = strconv.Atoi(line[1:])
+		case 'n':
+			i := strings.LastIndexByte(line, ':')
+			if i < 0 || !pidSet[pid] {
+				continue
+			}
+			port, err := strconv.Atoi(line[i+1:])
+			if err != nil || seen[port] {
+				continue
+			}
+			seen[port] = true
+			name := procName[pid]
+			if name == "" {
+				name = "unknown"
+			}
+			ports = append(ports, Port{Port: port, Name: portName(port, name), Open: true, Pid: pid, Process: name})
+		}
+	}
+	sort.Slice(ports, func(i, j int) bool { return ports[i].Port < ports[j].Port })
+	return ports
+}
+
 func listPortsViaProc(pidSet map[int]bool, procName map[int]string) ([]Port, error) {
 	data, err := os.ReadFile("/proc/net/tcp")
 	if err != nil {
@@ -447,7 +471,7 @@ func listPortsViaProc(pidSet map[int]bool, procName map[int]string) ([]Port, err
 
 // KillProcess sends SIGTERM to the given PID.
 func KillProcess(pid int) error {
-	if runtime.GOOS != "linux" {
+	if runtime.GOOS == "windows" {
 		return fmt.Errorf("not supported on this platform")
 	}
 	proc, err := os.FindProcess(pid)
