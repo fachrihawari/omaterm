@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"strconv"
 	"time"
 
@@ -129,6 +130,17 @@ func (a *appState) windowTitle() string {
 		return "(" + strconv.Itoa(waiting) + ") omaterm"
 	}
 	return "omaterm"
+}
+
+// setBadge puts the same count on the Dock's icon on macOS, where the
+// title is seldom in sight. Linux stays with the title: mygo's badge there
+// goes to the launcher entry of the few docks that read one.
+func (a *appState) setBadge() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	waiting, _, _ := a.statusCounts()
+	mygo.App.SetBadgeCount(waiting)
 }
 
 // cycleSession shows the next (d = 1) or previous (-1) session in the

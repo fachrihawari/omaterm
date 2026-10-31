@@ -33,9 +33,24 @@ func appVersion() string {
 // whose keys come before the window's: ⌘W closed the window, so quit the
 // app, and ⌘R, ⇧⌘R and the zoom keys did nothing at all. omaterm's own
 // table has those keys. Linux and Windows get no menu bar.
-func appMenu() *mygo.Menu {
+//
+// The app's menu is mygo's with Settings… under About, where macOS apps
+// keep it; settings runs the Settings command, and ⌘, is that command's
+// key in the table, so the menu's key does what the window's did.
+func appMenu(settings func()) *mygo.Menu {
 	return mygo.NewMenu([]*mygo.MenuItem{
-		{Role: mygo.RoleAppMenu}, {Role: mygo.RoleEditMenu}, {Role: mygo.RoleWindowMenu},
+		{Role: mygo.RoleAppMenu, Submenu: []*mygo.MenuItem{
+			{Role: mygo.RoleAbout},
+			mygo.Separator(),
+			{ID: "settings", Label: "Settings…", Accelerator: "Cmd+,", Click: func(*mygo.MenuItem, *mygo.Window) { settings() }},
+			mygo.Separator(),
+			{Role: mygo.RoleServices},
+			mygo.Separator(),
+			{Role: mygo.RoleHide}, {Role: mygo.RoleHideOthers}, {Role: mygo.RoleUnhide},
+			mygo.Separator(),
+			{Role: mygo.RoleQuit},
+		}},
+		{Role: mygo.RoleEditMenu}, {Role: mygo.RoleWindowMenu},
 	})
 }
 
@@ -154,7 +169,11 @@ func main() {
 		// Once ready, as mygo's own examples do: the roles' labels name
 		// the app.
 		if runtime.GOOS == "darwin" {
-			mygo.App.SetMenu(appMenu())
+			mygo.App.SetMenu(appMenu(func() {
+				if app != nil && app.win != nil {
+					app.win.Update(func() { commandsByID["app.settings"].Run(app, nil) })
+				}
+			}))
 		}
 		systemDark = mygo.Theme.IsDark
 		a := newApp()
