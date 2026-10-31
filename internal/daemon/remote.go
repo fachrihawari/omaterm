@@ -372,6 +372,17 @@ func (r *Remote) ProcessTrust(project, name string) error {
 	return r.call("process.trust", proto.ProcessParams{Project: project, Name: name}, nil)
 }
 
+// ProcessShare shares a process's port through a tunnel: via is "tailscale"
+// or "cloudflare".
+func (r *Remote) ProcessShare(project, name, via string) error {
+	return r.call("process.share", proto.ProcessParams{Project: project, Name: name, Via: via}, nil)
+}
+
+// ProcessUnshare ends a process's share.
+func (r *Remote) ProcessUnshare(project, name string) error {
+	return r.call("process.unshare", proto.ProcessParams{Project: project, Name: name}, nil)
+}
+
 // ProcessSync reloads process definitions from the project state.
 func (r *Remote) ProcessSync(project string) error {
 	return r.call("process.sync", proto.ProcessParams{Project: project}, nil)

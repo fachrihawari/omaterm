@@ -131,6 +131,8 @@ type Process = procs.Proc
 type ProcessParams struct {
 	Project string `json:"project"`
 	Name    string `json:"name,omitempty"`
+	// Via is the tunnel process.share uses: "tailscale" or "cloudflare".
+	Via string `json:"via,omitempty"`
 }
 
 // DropGoneParents forgets the parents that are no more: a session whose

@@ -20,13 +20,15 @@ import (
 type fakeTunnel struct {
 	url  string
 	done chan struct{}
+	// fail is the error Err gives once the tunnel has ended.
+	fail error
 
 	mu      sync.Mutex
 	stopped bool
 }
 
 func (f *fakeTunnel) URL() string { return f.url }
-func (f *fakeTunnel) Err() error  { return nil }
+func (f *fakeTunnel) Err() error  { return f.fail }
 func (f *fakeTunnel) Done() <-chan struct{} {
 	return f.done
 }

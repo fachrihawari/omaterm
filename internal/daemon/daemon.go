@@ -138,6 +138,12 @@ type Daemon struct {
 	devRouter *devurl.Router
 	devViewMu sync.Mutex
 	devView   *devView
+
+	// shares are the processes shared through a tunnel, and shareNotes why
+	// a share of one ended; shareMu orders both.
+	shareMu    sync.Mutex
+	shares     map[procKey]*share
+	shareNotes map[procKey]string
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -193,14 +199,18 @@ func Start(opts Options) (*Daemon, error) {
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
 		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){},
 		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{},
-		devRouter: devurl.NewRouter()}
+		devRouter: devurl.NewRouter(), shares: map[procKey]*share{}, shareNotes: map[procKey]string{}}
 	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
 	d.procs.OnEvent = d.processEvent
 	d.procs.OnChange = func() {
 		d.rebuildRoutes()
+		d.reconcileShares()
 		d.changed()
 	}
-	d.procs.Decorate = d.decorateProc
+	d.procs.Decorate = func(project string, p *procs.Proc) {
+		d.decorateProc(project, p)
+		d.decorateShare(project, p)
+	}
 	d.procs.Watch = WatchFolder
 	d.procs.Match = service.MatchGlob
 	d.procs.Ignore = service.IgnoreFunc
@@ -283,6 +293,7 @@ func (d *Daemon) Stop() {
 		close(d.quit)
 		d.stopWeb()
 		d.stopProxy()
+		d.stopShares()
 		d.srv.Close()
 		d.reg.CloseAll()
 		d.lock.Close()
@@ -460,7 +471,7 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		return map[string]any{"app": d.opts.Version, "proto": proto.Version, "pid": os.Getpid()}, nil
 	case "panes":
 		return d.reg.Infos(), nil
-	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync":
+	case "process.list", "process.start", "process.stop", "process.restart", "process.trust", "process.sync", "process.share", "process.unshare":
 		return d.processCall(method, raw)
 	case "pane.start":
 		var p StartParams

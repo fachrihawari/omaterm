@@ -113,6 +113,10 @@ type procHost interface {
 	Stop(projectID, name string) error
 	Restart(projectID, name string) error
 	Trust(projectID, name string) error
+	// Share makes the process reachable through a tunnel ("tailscale" or
+	// "cloudflare"), and Unshare ends it. Only the session daemon can.
+	Share(projectID, name, via string) error
+	Unshare(projectID, name string) error
 	Sync()
 	Close()
 }
@@ -133,6 +137,12 @@ func (p *remoteProcs) Restart(projectID, name string) error {
 }
 func (p *remoteProcs) Trust(projectID, name string) error {
 	return p.remote.ProcessTrust(projectID, name)
+}
+func (p *remoteProcs) Share(projectID, name, via string) error {
+	return p.remote.ProcessShare(projectID, name, via)
+}
+func (p *remoteProcs) Unshare(projectID, name string) error {
+	return p.remote.ProcessUnshare(projectID, name)
 }
 func (p *remoteProcs) Sync()  { _ = p.remote.ProcessSync("") }
 func (p *remoteProcs) Close() {}
@@ -203,8 +213,12 @@ func (p *localProcs) Start(projectID, name string) error          { return p.s.S
 func (p *localProcs) Stop(projectID, name string) error           { return p.s.Stop(projectID, name) }
 func (p *localProcs) Restart(projectID, name string) error        { return p.s.Restart(projectID, name) }
 func (p *localProcs) Trust(projectID, name string) error          { return p.s.Trust(projectID, name) }
-func (p *localProcs) Sync()                                       { p.load() }
-func (p *localProcs) Close()                                      { p.s.Close() }
+func (p *localProcs) Share(projectID, name, via string) error {
+	return errors.New("sharing needs the session daemon, which is off")
+}
+func (p *localProcs) Unshare(projectID, name string) error { return nil }
+func (p *localProcs) Sync()                                { p.load() }
+func (p *localProcs) Close()                               { p.s.Close() }
 
 func (p *localProcs) SyncIfChanged() {
 	next := map[string]time.Time{}

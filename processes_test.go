@@ -216,3 +216,15 @@ func TestProtoStateProcessSessionCarriesItsProcess(t *testing.T) {
 		}
 	}
 }
+
+// Sharing a process needs the session daemon: the app's own supervisor
+// says so, and ending a share it never had is no error.
+func TestLocalProcessesCannotShare(t *testing.T) {
+	var host procHost = &localProcs{}
+	if err := host.Share("p", "web", "tailscale"); err == nil || !strings.Contains(err.Error(), "session daemon") {
+		t.Fatalf("Share: %v", err)
+	}
+	if err := host.Unshare("p", "web"); err != nil {
+		t.Fatalf("Unshare: %v", err)
+	}
+}
