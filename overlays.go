@@ -616,7 +616,7 @@ func (a *appState) paletteSources() []paletteEntry {
 	}
 	// The switches the Settings window shows, by the palette's names.
 	for _, d := range settingDefs {
-		if d.PaletteTitle == "" || d.On == nil {
+		if d.PaletteTitle == "" || d.On == nil || !d.shown() {
 			continue
 		}
 		d := d
@@ -772,13 +772,13 @@ func (a *appState) shareSettings() {
 // terminal is made.
 type termBehavior struct {
 	cursor, rightClick, clipboard string
-	blink                         bool
+	blink, optionAsMeta           bool
 	scrollback                    int
 }
 
 func (a *appState) termBehavior() termBehavior {
 	t := a.settings.Terminal
-	return termBehavior{t.Cursor, t.RightClick, t.ClipboardRead, t.CursorBlink, t.ScrollbackMB}
+	return termBehavior{t.Cursor, t.RightClick, t.ClipboardRead, t.CursorBlink, t.OptionAsMeta, t.ScrollbackMB}
 }
 
 func (a *appState) commandPaletteBody(c *ui.Context) {

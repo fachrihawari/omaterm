@@ -732,7 +732,7 @@ func (p *remotePane) Term() *terminal.Terminal {
 		Font: o.Font, Theme: o.Theme, MinimumContrast: o.MinimumContrast,
 		Padding: o.Padding, PaddingColor: terminal.PaddingExtend,
 		Cursor: o.Cursor, NoBlink: o.NoBlink, CopyOnSelect: o.CopyOnSelect,
-		RightClick: o.RightClick, ClipboardRead: o.ClipboardRead, Scrollback: o.Scrollback,
+		RightClick: o.RightClick, ClipboardRead: o.ClipboardRead, Scrollback: o.Scrollback, OptionAsAlt: o.OptionAsAlt,
 		OpenLink: o.OpenLink, OnZoom: o.OnZoom, OnKey: session.WordKeys(&t),
 	})
 	if err != nil {

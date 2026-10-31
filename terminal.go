@@ -241,6 +241,7 @@ func (a *appState) termStartOptions(id string) session.StartOptions {
 		NoBlink:         !t.CursorBlink,
 		Scrollback:      t.ScrollbackMB << 20,
 		Shell:           strings.TrimSpace(t.Shell),
+		OptionAsAlt:     t.OptionAsMeta,
 		OpenLink:        func(link string) bool { return a.openTermLink(id, link) },
 		OnZoom: func(z terminal.Zoom) bool {
 			if z.Reset {

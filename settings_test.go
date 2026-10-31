@@ -192,6 +192,7 @@ func TestSettingsCoverAll(t *testing.T) {
 		"Terminal.ScrollbackMB": "scrollbackSize", "Terminal.Shell": "shell", "Terminal.Bell": "bell",
 		"Editor.TerminalFont": "editorFont", "Editor.TabSize": "tabSize", "Editor.Wrap": "wrap",
 		"Editor.LineNumbers": "lineNumbers", "Editor.MarkdownPreview": "markdown", "Editor.DiffSplit": "diffLayout",
+		"Terminal.OptionAsMeta": "optionMeta",
 	}
 	var walk func(prefix string, typ reflect.Type)
 	walk = func(prefix string, typ reflect.Type) {
@@ -310,6 +311,9 @@ func TestSettingsSearchHitsLeadSomewhere(t *testing.T) {
 	defer stopTermPanes(a)
 	tr.SetSize(settingsWidth, 4000)
 	for _, d := range settingDefs {
+		if !d.shown() {
+			continue
+		}
 		a.settingsGo(d.Page)
 		tr.Frame()
 		if !a.settingsUI.shown[d.ID] {
@@ -408,4 +412,50 @@ func TestKeyboardShowsKeyRuns(t *testing.T) {
 		return
 	}
 	t.Fatal("no row with more than two keys")
+}
+
+// Option as Meta is a macOS setting: its row, its search hit and its
+// palette switch show there alone, and it reaches the terminals' options.
+func TestOptionAsMetaOnMacOnly(t *testing.T) {
+	was := onMac
+	defer func() { onMac = was }()
+	for _, mac := range []bool{false, true} {
+		onMac = mac
+		a, tr := newSettingsTester(t, "terminal")
+		tr.SetSize(settingsWidth, 4000)
+		tr.Frame()
+		if got := tr.HasText("Use Option as Meta"); got != mac {
+			t.Errorf("mac=%v: row shown %v", mac, got)
+		}
+		a.settingsUI.query = "option"
+		found := false
+		for _, it := range a.settingsNavItems() {
+			found = found || it.def != nil && it.def.ID == "optionMeta"
+		}
+		if found != mac {
+			t.Errorf("mac=%v: search finds it %v", mac, found)
+		}
+		inPalette := false
+		for _, e := range a.paletteSources() {
+			inPalette = inPalette || e.ID == "setting:optionMeta"
+		}
+		if inPalette != mac {
+			t.Errorf("mac=%v: palette lists it %v", mac, inPalette)
+		}
+		a.settingsUI.query = ""
+		tr.Frame()
+		if mac {
+			if a.settings.Terminal.OptionAsMeta {
+				t.Fatal("Option as Meta is on by default")
+			}
+			if err := tr.Click("optionMeta"); err != nil {
+				t.Fatal(err)
+			}
+			tr.Frame()
+			if !a.settings.Terminal.OptionAsMeta || !a.termStartOptions("p").OptionAsAlt {
+				t.Error("the switch did not reach the terminals' options")
+			}
+		}
+		stopTermPanes(a)
+	}
 }

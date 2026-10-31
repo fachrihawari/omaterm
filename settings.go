@@ -101,6 +101,10 @@ type TerminalSettings struct {
 	// Bell is what a program's bell does: "off", "visual" (the pane's
 	// header flashes) or "notify" (a notification while you look away).
 	Bell string `json:"bell"`
+	// OptionAsMeta makes Option the Meta key on macOS. Off, as in
+	// Terminal.app, iTerm and Ghostty, Option types accented letters and
+	// symbols, which many keyboard layouts need.
+	OptionAsMeta bool `json:"optionAsMeta"`
 }
 
 // EditorSettings are the file editor's and the diff's.
@@ -303,7 +307,12 @@ type settingDef struct {
 	// PaletteTitle lists the switch in the command palette too, by this
 	// name: the palette's titles are in title case, the window's not.
 	PaletteTitle string
+	// MacOnly shows the setting on macOS alone, where its key is.
+	MacOnly bool
 }
+
+// shown tells whether the def is a setting of this system.
+func (d settingDef) shown() bool { return !d.MacOnly || onMac }
 
 // boolDef is a switch over one field.
 func boolDef(id, page, title, sub string, field func(*Settings) *bool) settingDef {
@@ -320,6 +329,10 @@ var settingDefs = func() []settingDef {
 	}
 	row := func(id, page, title, sub, keywords string) settingDef {
 		return settingDef{ID: id, Page: page, Title: title, Sub: sub, Keywords: keywords}
+	}
+	macOnly := func(d settingDef) settingDef {
+		d.MacOnly = true
+		return d
 	}
 	return []settingDef{
 		// General
@@ -368,6 +381,8 @@ var settingDefs = func() []settingDef {
 		row("shell", "terminal", "Shell", "", "zsh bash fish"),
 		row("scrollbackSize", "terminal", "Scrollback", "", "history lines buffer"),
 		row("bell", "terminal", "Bell", "", "beep sound"),
+		macOnly(sw(boolDef("optionMeta", "terminal", "Use Option as Meta", "⌥B, ⌥F and ⌥D move and delete by word, instead of typing ∫ ƒ ∂.",
+			func(s *Settings) *bool { return &s.Terminal.OptionAsMeta }), "Use Option as Meta", false, "alt key esc word")),
 
 		// Editor
 		sw(boolDef("editorFont", "editor", "Use the terminal font", "",

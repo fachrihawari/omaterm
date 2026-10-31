@@ -113,6 +113,8 @@ type StartOptions struct {
 	Scrollback    int
 	OpenLink      func(link string) bool
 	OnZoom        func(z terminal.Zoom) bool
+	// OptionAsAlt makes Option Meta on macOS.
+	OptionAsAlt bool
 	// Shell is the shell to run; the login shell when empty.
 	Shell string
 	// History is shown above the shell, as a restored pane's scrollback.

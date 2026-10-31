@@ -105,7 +105,7 @@ func (r *Registry) start(o StartOptions) (*Pane, error) {
 		Font: o.Font, Theme: o.Theme, MinimumContrast: o.MinimumContrast,
 		Padding: o.Padding, PaddingColor: terminal.PaddingExtend,
 		Cursor: o.Cursor, NoBlink: o.NoBlink, CopyOnSelect: o.CopyOnSelect,
-		RightClick: o.RightClick, ClipboardRead: o.ClipboardRead, Scrollback: o.Scrollback,
+		RightClick: o.RightClick, ClipboardRead: o.ClipboardRead, Scrollback: o.Scrollback, OptionAsAlt: o.OptionAsAlt,
 		OpenLink: o.OpenLink, OnZoom: o.OnZoom,
 		OnTitle: p.onTitle, OnNotify: p.onNotify, OnBell: p.onBell,
 	}

@@ -500,6 +500,11 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 		})
 		a.settingSwitchRow(c, "blink", false)
 	})
+	if onMac {
+		a.settingsGroup(c, "keyboard", "Keyboard", "", func() {
+			a.settingSwitchRow(c, "optionMeta", false)
+		})
+	}
 	a.settingsGroup(c, "mouse", "Mouse and clipboard", "", func() {
 		a.settingSwitchRow(c, "copySelect", false)
 		a.settingDefRow(c, "rightClick", func() {
