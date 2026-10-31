@@ -654,3 +654,15 @@ func TestAltArrowsEditorsOwn(t *testing.T) {
 		t.Error("Alt+Down switches sessions in the editor")
 	}
 }
+
+// ⌘←, ⌘→ and ⌘⌫ are the terminal's line keys on macOS (session's
+// wordKey), so no app command may take them there.
+func TestMacLineKeysStayWithTheTerminal(t *testing.T) {
+	for _, b := range keybindingsFor(true) {
+		for _, k := range []ui.Key{ui.KeyLeft, ui.KeyRight, ui.KeyBackspace} {
+			if b.Combo == combo(ui.Super, k) {
+				t.Errorf("%s takes %s", b.Command, b.Combo.label(true))
+			}
+		}
+	}
+}

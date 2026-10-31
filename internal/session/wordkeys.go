@@ -7,20 +7,36 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// wordKey is what Option+Left and Right send on macOS: Esc b and Esc f,
-// which move the shell's cursor by a word in bash, zsh and fish, as
-// Ghostty's own keys there do. The terminal sent them as Alt-modified
-// arrows, which stock shells leave unbound. Elsewhere Alt is Meta already,
-// and Ctrl+arrows are the word keys: nil.
+// wordKey is what the macOS line-editing keys send. Option+Left and Right
+// send Esc b and Esc f, which move the shell's cursor by a word in bash,
+// zsh and fish, as Ghostty's own keys there do: the terminal sent them as
+// Alt-modified arrows, which stock shells leave unbound. Command+Left and
+// Right send Ctrl+A and Ctrl+E, to the start and end of the line, and
+// Command+Backspace Ctrl+U, which deletes the line, as Terminal.app and
+// iTerm do: the terminal left Command's keys to the app, which binds none
+// of these. Elsewhere Alt is Meta already, and Ctrl+arrows are the word
+// keys: nil.
 func wordKey(mac bool, mods ui.Modifiers, key ui.Key) []byte {
-	if !mac || mods != ui.Alt {
+	if !mac {
 		return nil
 	}
-	switch key {
-	case ui.KeyLeft:
-		return []byte("\x1bb")
-	case ui.KeyRight:
-		return []byte("\x1bf")
+	switch mods {
+	case ui.Alt:
+		switch key {
+		case ui.KeyLeft:
+			return []byte("\x1bb")
+		case ui.KeyRight:
+			return []byte("\x1bf")
+		}
+	case ui.Super:
+		switch key {
+		case ui.KeyLeft:
+			return []byte("\x01")
+		case ui.KeyRight:
+			return []byte("\x05")
+		case ui.KeyBackspace:
+			return []byte("\x15")
+		}
 	}
 	return nil
 }
