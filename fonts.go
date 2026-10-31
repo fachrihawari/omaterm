@@ -88,8 +88,8 @@ func ghosttyFont(path string) string {
 // defaultFontName is the family the terminals' default font renders in,
 // for the font popup to name where Omarchy's isn't what it follows: the
 // first family of the list that is installed, else the system's
-// monospace, which is SF Mono on a Mac.
-func defaultFontName(families string, installed map[string]bool, mac bool) string {
+// monospace, which is SF Mono on a Mac and Cascadia Mono on Windows.
+func defaultFontName(families string, installed map[string]bool, goos string) string {
 	for _, f := range strings.Split(families, ",") {
 		if f = strings.TrimSpace(f); f == "monospace" {
 			break
@@ -97,8 +97,11 @@ func defaultFontName(families string, installed map[string]bool, mac bool) strin
 			return f
 		}
 	}
-	if mac {
+	switch goos {
+	case "darwin":
 		return "SF Mono"
+	case "windows":
+		return "Cascadia Mono"
 	}
 	return "the system's monospace"
 }

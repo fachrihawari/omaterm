@@ -3,6 +3,7 @@ package web
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,8 @@ func TestPairOnce(t *testing.T) {
 	if strings.Contains(string(b), secret) {
 		t.Fatal("the cookie's secret is on disk")
 	}
-	if fi, _ := os.Stat(s.path); fi.Mode().Perm() != 0o600 {
+	// Windows keeps no Unix modes to check.
+	if fi, _ := os.Stat(s.path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("web.json is %v, want 0600", fi.Mode().Perm())
 	}
 }

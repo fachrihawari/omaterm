@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -22,6 +22,7 @@ import (
 	"omaterm/internal/gitsnap"
 	"omaterm/internal/mail"
 	"omaterm/internal/model"
+	"omaterm/internal/ospath"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/shellcmd"
@@ -502,8 +503,17 @@ func (a *appState) projectFor(ref, dir string) int {
 	return 0
 }
 
+// within reports whether dir is root, or inside it: /home/a holds
+// /home/a/src and not /home/ab, on Windows too, where a \ separates and
+// case is no matter.
 func within(dir, root string) bool {
-	return dir == root || strings.HasPrefix(dir, strings.TrimSuffix(root, "/")+"/")
+	return ospath.Contains(runtime.GOOS, root, dir)
+}
+
+// samePath reports whether a and b name the same folder or file: c:\proj
+// and C:\Proj do on Windows, where the names are the same.
+func samePath(a, b string) bool {
+	return ospath.Same(runtime.GOOS, a, b)
 }
 
 // addProject adds a folder as a project, unless it is one; it returns its
@@ -512,7 +522,7 @@ func within(dir, root string) bool {
 // ended as unknown at the next launch.
 func (a *appState) addProject(dir, name string) int {
 	for i, p := range a.projects {
-		if p.Path == dir {
+		if samePath(p.Path, dir) {
 			return i
 		}
 	}
@@ -521,7 +531,7 @@ func (a *appState) addProject(dir, name string) int {
 		return -1
 	}
 	if name == "" {
-		name = filepath.Base(dir)
+		name = ospath.Base(runtime.GOOS, dir)
 	}
 	a.projects = append(a.projects, project{ID: newID(), Name: name, Path: dir})
 	a.saveSoon()

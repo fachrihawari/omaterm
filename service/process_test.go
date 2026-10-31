@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
 )
 
 func TestListProjectProcesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	dir := t.TempDir()
 	// Start a child process with CWD in dir.
 	cmd := exec.Command("sleep", "60")
@@ -55,6 +59,9 @@ func TestListProjectProcesses(t *testing.T) {
 }
 
 func TestListProjectPorts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	dir := t.TempDir()
 	// Start a listener in the project dir.
 	cmd := exec.Command("python3", "-c", "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(5); time.sleep(10)")
@@ -78,6 +85,9 @@ func TestListProjectPorts(t *testing.T) {
 }
 
 func TestKillProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -93,6 +103,9 @@ func TestKillProcess(t *testing.T) {
 // A project lists its panes' shells and what they start, wherever that
 // runs, and nothing from outside it.
 func TestListProjectProcessesRoots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("it starts sleep or python3, Unix programs")
+	}
 	workspace, elsewhere := t.TempDir(), t.TempDir()
 	start := func() *exec.Cmd {
 		cmd := exec.Command("sleep", "30")
@@ -174,6 +187,39 @@ func TestDisplayName(t *testing.T) {
 	} {
 		if got := displayName(c.name, c.args); got != c.want {
 			t.Errorf("%q %q: %q, want %q", c.name, c.args, got, c.want)
+		}
+	}
+}
+
+// A project is a folder scoped closely enough to be one; a drive's root,
+// Windows' own folders and the home folder are not, while D:\app is.
+func TestWorkspaceTooBroad(t *testing.T) {
+	for _, c := range []struct {
+		goos, abs, home string
+		want            bool
+	}{
+		{"linux", "/", "/home/me", true},
+		{"linux", "/home", "/home/me", true},
+		{"linux", "/tmp", "/home/me", true},
+		{"linux", "/fachri", "/home/me", true},
+		{"linux", "/home/me", "/home/me", true},
+		{"linux", "/home/me/proj", "/home/me", false},
+		{"linux", "/srv/app", "/home/me", false},
+		{"windows", `C:\`, `C:\Users\me`, true},
+		{"windows", `C:\Users`, `C:\Users\me`, true},
+		{"windows", `c:\users`, `C:\Users\me`, true},
+		{"windows", `C:\Windows`, `C:\Users\me`, true},
+		{"windows", `C:\Program Files`, `C:\Users\me`, true},
+		{"windows", `C:\Program Files (x86)`, `C:\Users\me`, true},
+		{"windows", `C:\Users\me`, `C:\Users\me`, true},
+		{"windows", `c:\users\ME`, `C:\Users\me`, true},
+		{"windows", `C:\Users\me\src`, `C:\Users\me`, false},
+		{"windows", `D:\`, `C:\Users\me`, true},
+		{"windows", `D:\app`, `C:\Users\me`, false},
+		{"windows", `D:\app\src`, `C:\Users\me`, false},
+	} {
+		if got := workspaceTooBroad(c.goos, c.abs, c.home); got != c.want {
+			t.Errorf("%s %q (home %q) = %v, want %v", c.goos, c.abs, c.home, got, c.want)
 		}
 	}
 }

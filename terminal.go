@@ -6,6 +6,7 @@ import (
 	"omaterm/internal/shellcmd"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -298,21 +299,19 @@ func (a *appState) openTermLink(pane, link string) bool {
 		if dir == "" {
 			dir = a.workspace
 		}
-		path = filepath.Join(dir, path)
+		path = termLinkPath(runtime.GOOS, dir, path)
 	}
 	path = filepath.Clean(path)
 	if st, err := os.Stat(path); err != nil || st.IsDir() {
 		return false
 	}
+	// A file outside the project, as a plan under ~/.claude, opens in the
+	// editor too: the system would hand it to whatever opens its type, and
+	// on Windows run a program.
 	if rel, err := filepath.Rel(a.workspace, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		a.openEditorAt(filepath.ToSlash(rel), line, col)
-		return true
+		path = filepath.ToSlash(rel)
 	}
-	// OpenPath makes the file URL itself: "file://" + path, unescaped,
-	// was no URL to macOS with a space, % or # in the path.
-	if a.win != nil {
-		mygo.Shell.OpenPath(path)
-	}
+	a.openEditorAt(path, line, col)
 	return true
 }
 

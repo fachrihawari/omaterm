@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
 
+	"omaterm/internal/atomicfile"
 	"omaterm/service"
 )
 
@@ -27,7 +29,7 @@ func (a *appState) openEditor(path string) {
 // line 0 keeps it, col 0 is the line's start).
 func (a *appState) openEditorAt(path string, line, col int) {
 	if _, ok := a.editors[path]; !ok {
-		abs := filepath.Join(a.workspace, path)
+		abs := a.docPath(path)
 		if st, err := os.Stat(abs); err == nil && st.Size() > maxEditorSize && !isImagePath(path) {
 			a.editors[path] = &openFile{Path: path, Binary: true, TooLarge: true, Size: st.Size()}
 			a.focusEditorTab(path)
@@ -82,9 +84,18 @@ func (a *appState) openEditorAt(path string, line, col int) {
 		}
 	}
 	if a.win != nil {
-		mygo.App.AddRecentDocument(filepath.Join(a.workspace, path))
+		mygo.App.AddRecentDocument(a.docPath(path))
 	}
 	a.focusEditorTab(path)
+}
+
+// docPath is where an editor's file is: path is the project's, or, for
+// a file opened from outside it, absolute.
+func (a *appState) docPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(a.workspace, path)
 }
 
 // focusEditorTab activates the tab showing path, creating one if needed.
@@ -228,7 +239,7 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 
 // saveEditor writes the buffer back to disk.
 func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
-	abs := filepath.Join(a.workspace, doc.Path)
+	abs := a.docPath(doc.Path)
 	if data, err := os.ReadFile(abs); err == nil && sha256.Sum256(data) != doc.Disk {
 		// Changed on disk since it was opened, an agent's edit perhaps:
 		// saving would overwrite it.
@@ -241,13 +252,19 @@ func (a *appState) saveEditor(doc *openFile, c *ui.Context) {
 
 // writeEditor writes the editor's text to its file, whatever is there.
 func (a *appState) writeEditor(doc *openFile, c *ui.Context) {
-	text := []byte(doc.State.Buffer.String())
-	if err := writeFileAtomic(filepath.Join(a.workspace, doc.Path), text); err != nil {
+	// WriteTo writes the file's own line ending: the buffer's text alone
+	// is LF, and a CRLF file saved so had every line rewritten.
+	var text bytes.Buffer
+	if _, err := doc.State.Buffer.WriteTo(&text); err != nil {
+		c.Toast("Save failed: " + err.Error())
+		return
+	}
+	if err := writeFileAtomic(a.docPath(doc.Path), text.Bytes()); err != nil {
 		c.Toast("Save failed: " + err.Error())
 		return
 	}
 	doc.State.Buffer.MarkSaved()
-	doc.Disk = sha256.Sum256(text)
+	doc.Disk = sha256.Sum256(text.Bytes())
 	c.Toast("Saved " + doc.Path)
 	a.refreshActiveRepo()
 }
@@ -301,7 +318,7 @@ func writeFileAtomic(path string, data []byte) error {
 		err = os.Chmod(tmp, mode)
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = atomicfile.Rename(tmp, path)
 	}
 	if err != nil {
 		os.Remove(tmp)
@@ -317,7 +334,7 @@ func (a *appState) checkDisk(doc *openFile) {
 		return
 	}
 	doc.checked = time.Now()
-	data, err := os.ReadFile(filepath.Join(a.workspace, doc.Path))
+	data, err := os.ReadFile(a.docPath(doc.Path))
 	if err != nil {
 		return
 	}

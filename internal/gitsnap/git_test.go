@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -205,7 +206,8 @@ func TestWrite(t *testing.T) {
 	}
 	b, _ := os.ReadFile(full)
 	fi, _ := os.Stat(full)
-	if string(b) != "b\n" || fi.Mode().Perm() != 0o755 {
+	// Windows keeps no Unix modes to check.
+	if string(b) != "b\n" || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o755) {
 		t.Errorf("wrote %q, mode %v", b, fi.Mode())
 	}
 }

@@ -72,6 +72,9 @@ func searchContentRG(ctx context.Context, root, query string) ([]Match, error) {
 		"--max-count", strconv.Itoa(MaxMatches),
 		// A minified bundle's line, megabytes long, ended the reading.
 		"--max-columns", "2000", "--max-columns-preview",
+		// Paths come back with /, as the rest of the app writes them,
+		// rather than Windows' \.
+		"--path-separator", "/",
 	}
 	if Protected(filepath.Join(root, "Library")) {
 		args = append(args, "--glob", "!/Library/")
@@ -103,7 +106,10 @@ func searchContentRG(ctx context.Context, root, query string) ([]Match, error) {
 		if err != nil {
 			rel = ev.Data.Path.Text
 		}
-		text := strings.TrimRight(ev.Data.Lines.Text, "\n")
+		rel = filepath.ToSlash(rel)
+		// A CRLF file's line keeps its \r, which showed as a stray
+		// character in every result.
+		text := strings.TrimRight(ev.Data.Lines.Text, "\r\n")
 		for _, sm := range ev.Data.Submatches {
 			matches = append(matches, Match{
 				Path:  rel,
@@ -164,6 +170,7 @@ func searchFile(ctx context.Context, root, path, lowerQuery string, matches *[]M
 		return
 	}
 	rel, _ := filepath.Rel(root, path)
+	rel = filepath.ToSlash(rel)
 	line := 0
 	for len(data) > 0 {
 		line++
@@ -189,7 +196,7 @@ func searchFile(ctx context.Context, root, path, lowerQuery string, matches *[]M
 				*matches = append(*matches, Match{
 					Path:  rel,
 					Line:  line,
-					Text:  string(l),
+					Text:  strings.TrimRight(string(l), "\r"),
 					Start: start,
 					End:   start + len(lowerQuery),
 				})

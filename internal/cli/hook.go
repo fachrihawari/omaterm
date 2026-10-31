@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"omaterm/internal/atomicfile"
 	"omaterm/internal/client"
 	"omaterm/internal/clilink"
 	"omaterm/internal/paths"
@@ -311,6 +312,13 @@ func omaterm() string {
 	return exe
 }
 
+// commandIsThere tells whether omaterm's command is where hooks run it: a
+// hook that runs a missing file fails at every start, so it isn't current.
+func commandIsThere() bool {
+	_, err := os.Stat(omaterm())
+	return err == nil
+}
+
 // command is the hook's command line: the omaterm command of omaterm's own
 // directory (package clilink), which stays where it is as omaterm updates.
 func (h agentHook) command() string {
@@ -344,6 +352,9 @@ func (h agentHook) state() string {
 			state = "outdated"
 		}
 	})
+	if state == "current" && !commandIsThere() {
+		return "outdated"
+	}
 	return state
 }
 
@@ -512,7 +523,7 @@ func (p agentPlugin) state() string {
 		}
 	}
 	switch {
-	case same == len(p.files):
+	case same == len(p.files) && commandIsThere():
 		return "current"
 	case there == 0:
 		return "missing"
@@ -596,6 +607,9 @@ func (h agyHook) state() string {
 	}
 	var have, want bytes.Buffer
 	if json.Compact(&have, raw) != nil || json.Compact(&want, h.spec()) != nil || have.String() != want.String() {
+		return "outdated"
+	}
+	if !commandIsThere() {
 		return "outdated"
 	}
 	return "current"
@@ -805,5 +819,5 @@ func writeFileAtomic(path string, b []byte) error {
 	if err := os.Chmod(tmp.Name(), mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Rename(tmp.Name(), path)
 }

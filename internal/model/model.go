@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/atomicfile"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
@@ -261,7 +262,7 @@ func Save(path string, st State) error {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	return atomicfile.Rename(tmp, path)
 }
 
 // Unreadable tells a state file that is there but can't be read, as one

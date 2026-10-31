@@ -16,10 +16,14 @@ import (
 )
 
 // Login returns the user's shell: $SHELL, else the account's, else the
-// system's default (zsh on macOS, sh elsewhere).
+// system's default (zsh on macOS, sh elsewhere). Windows has no login
+// shell: PowerShell, else cmd.
 func Login() string {
 	if sh := os.Getenv("SHELL"); sh != "" {
 		return sh
+	}
+	if runtime.GOOS == "windows" {
+		return windowsShell(exec.LookPath, os.Getenv("ComSpec"))
 	}
 	if u, err := user.Current(); err == nil {
 		if sh := accountShell(runtime.GOOS, u.Username); sh != "" {
@@ -74,8 +78,8 @@ func dsclShell(out string) string {
 	return ""
 }
 
-// Name is a shell's name, as panes show it: "zsh", "fish".
-func Name(shell string) string { return filepath.Base(shell) }
+// Name is a shell's name, as panes show it: "zsh", "fish", "pwsh".
+func Name(shell string) string { return windowsName(filepath.Base(shell)) }
 
 // Args is the argv that starts shell, running command first when set. With
 // no command it is a login shell ("-zsh"). With one, the command runs in
@@ -84,6 +88,9 @@ func Name(shell string) string { return filepath.Base(shell) }
 // telling its exit status (OSC 133;D).
 func Args(shell string, command []string) []string {
 	name := Name(shell)
+	if powerShell(name) || name == "cmd" {
+		return windowsArgs(name, command)
+	}
 	if len(command) == 0 {
 		return []string{"-" + name}
 	}
@@ -103,6 +110,9 @@ func Args(shell string, command []string) []string {
 // LoginArgs is the argv that runs a command in the user's non-interactive
 // login shell, whose exit status is the command's.
 func LoginArgs(shell, cmd string) []string {
+	if name := Name(shell); powerShell(name) || name == "cmd" {
+		return windowsLoginArgs(shell, name, cmd)
+	}
 	if Name(shell) == "fish" {
 		cmd = "status job-control full; " + cmd
 	}

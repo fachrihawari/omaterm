@@ -118,7 +118,14 @@ func TestProgramNotificationsLimited(t *testing.T) {
 		Command: []string{"sh", "-c", script}, Cols: 80, Rows: 24}); err != nil {
 		t.Fatal(err)
 	}
-	n := 0
+	// The first comes once the shell runs, which a slow runner takes a
+	// while for; the others would come right after it.
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no notification shown")
+	}
+	n := 1
 	for deadline := time.After(2 * time.Second); ; {
 		select {
 		case <-ch:

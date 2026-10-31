@@ -4,12 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"omaterm/internal/client"
+	"omaterm/internal/ospath"
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/tunnel"
@@ -218,13 +219,10 @@ func currentProject(st proto.State) (string, error) {
 	return best, nil
 }
 
-// within reports whether path is dir, or inside it.
+// within reports whether path is dir, or inside it, in the case Windows
+// keeps no.
 func within(path, dir string) bool {
-	if dir == "" {
-		return false
-	}
-	rel, err := filepath.Rel(dir, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return ospath.Contains(runtime.GOOS, dir, path)
 }
 
 // dash is a cell's text, or "-" for an empty one.

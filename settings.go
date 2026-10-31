@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"time"
+
+	"omaterm/internal/atomicfile"
 )
 
 // Settings are the user's preferences, in settings.json beside state.json.
@@ -178,7 +182,7 @@ var settingsBase Settings
 func loadSettings() Settings {
 	s := defaultSettings()
 	if data, err := os.ReadFile(settingsFilePath()); err == nil {
-		if err := json.Unmarshal(data, &s); err != nil {
+		if err := json.Unmarshal(trimBOM(data), &s); err != nil {
 			var wrong *json.UnmarshalTypeError
 			if errors.As(err, &wrong) {
 				settingsWrongKey = wrong.Field
@@ -208,11 +212,18 @@ func copySettings(s Settings) Settings {
 	return c
 }
 
+// trimBOM drops the UTF-8 byte order mark a Windows editor may write at
+// the file's start, as PowerShell 5's do: the JSON reader refuses it, and
+// the file was then set aside as broken.
+func trimBOM(data []byte) []byte {
+	return bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+}
+
 // settingsFileHas tells whether settings.json has the key at its top.
 func settingsFileHas(key string) bool {
 	var m map[string]json.RawMessage
 	data, err := os.ReadFile(settingsFilePath())
-	if err != nil || json.Unmarshal(data, &m) != nil {
+	if err != nil || json.Unmarshal(trimBOM(data), &m) != nil {
 		return false
 	}
 	_, ok := m[key]
@@ -246,7 +257,7 @@ func (a *appState) saveSettings() {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return
 	}
-	if os.Rename(tmp, path) == nil {
+	if atomicfile.Rename(tmp, path) == nil {
 		settingsBase = copySettings(a.settings)
 	}
 }
@@ -257,7 +268,7 @@ func (a *appState) saveSettings() {
 func mergeSettings(path string, base, now Settings) ([]byte, error) {
 	disk := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &disk); err != nil {
+		if err := json.Unmarshal(trimBOM(data), &disk); err != nil {
 			if settingsBroken == "" {
 				return nil, err
 			}
@@ -309,10 +320,29 @@ type settingDef struct {
 	PaletteTitle string
 	// MacOnly shows the setting on macOS alone, where its key is.
 	MacOnly bool
+	// LinuxOnly shows the setting on Linux alone, where its service is.
+	LinuxOnly bool
+	// NotWindows hides the setting on Windows, which doesn't run the
+	// session daemon the setting is for.
+	NotWindows bool
 }
 
+// notOnWindows is why a feature that needs the session daemon is left out
+// of Windows, where it doesn't run yet.
+const notOnWindows = "Not available on Windows yet"
+
 // shown tells whether the def is a setting of this system.
-func (d settingDef) shown() bool { return !d.MacOnly || onMac }
+func (d settingDef) shown() bool {
+	switch {
+	case d.MacOnly:
+		return onMac
+	case d.LinuxOnly:
+		return runtime.GOOS == "linux"
+	case d.NotWindows:
+		return !onWindows
+	}
+	return true
+}
 
 // boolDef is a switch over one field.
 func boolDef(id, page, title, sub string, field func(*Settings) *bool) settingDef {
@@ -334,11 +364,19 @@ var settingDefs = func() []settingDef {
 		d.MacOnly = true
 		return d
 	}
+	linuxOnly := func(d settingDef) settingDef {
+		d.LinuxOnly = true
+		return d
+	}
+	notWindows := func(d settingDef) settingDef {
+		d.NotWindows = true
+		return d
+	}
 	return []settingDef{
 		// General
-		sw(boolDef("daemon", "general", "Keep sessions running when the window closes", "Shells and agents run in the session daemon.",
-			func(s *Settings) *bool { return &s.Daemon }), "Keep Sessions Running When the Window Closes", true, "daemon background"),
-		row("loginStart", "general", "Start the session daemon at login", "A systemd user service, so sessions are back before you open omaterm.", "systemd service boot"),
+		notWindows(sw(boolDef("daemon", "general", "Keep sessions running when the window closes", "Shells and agents run in the session daemon.",
+			func(s *Settings) *bool { return &s.Daemon }), "Keep Sessions Running When the Window Closes", true, "daemon background")),
+		linuxOnly(row("loginStart", "general", "Start the session daemon at login", "A systemd user service, so sessions are back before you open omaterm.", "systemd service boot")),
 		sw(boolDef("restore", "general", "Restore sessions at launch", "",
 			func(s *Settings) *bool { return &s.RestoreSessions }), "Restore Sessions at Launch", false, "reopen"),
 		sw(boolDef("resume", "general", "Resume agents in their own conversation", "Needs the agent integration (Agents page).",
@@ -417,15 +455,15 @@ var settingDefs = func() []settingDef {
 			func(s *Settings) *bool { return &s.ControlSocket }), "Allow the omaterm Command", true, "control socket cli"),
 
 		// Web Access (web.json, drawn by its page)
-		row("web", "web", "Web access", "", "phone remote browser"),
-		row("webNetwork", "web", "On your network", "", "lan 0.0.0.0"),
-		row("devices", "web", "Paired devices", "", "revoke phone"),
-		row("pair", "web", "Pair a device", "", "qr code"),
-		row("webPort", "web", "Port", "", "7370"),
-		row("webURL", "web", "Public URL", "", "tailscale tunnel"),
+		notWindows(row("web", "web", "Web access", "", "phone remote browser")),
+		notWindows(row("webNetwork", "web", "On your network", "", "lan 0.0.0.0")),
+		notWindows(row("devices", "web", "Paired devices", "", "revoke phone")),
+		notWindows(row("pair", "web", "Pair a device", "", "qr code")),
+		notWindows(row("webPort", "web", "Port", "", "7370")),
+		notWindows(row("webURL", "web", "Public URL", "", "tailscale tunnel")),
 
 		// Dev URLs (the proxy's, drawn by its page)
-		row("devurlSetup", "devurls", "Dev URLs setup", "", "https proxy localhost certificate ssl tls portless routes trust"),
+		notWindows(row("devurlSetup", "devurls", "Dev URLs setup", "", "https proxy localhost certificate ssl tls portless routes trust")),
 
 		// Browser
 		row("searchEngine", "browser", "Search with", "", "google duckduckgo kagi brave"),

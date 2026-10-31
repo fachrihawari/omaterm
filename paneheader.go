@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/ospath"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
@@ -159,28 +161,43 @@ func paneTitle(i session.Info, t *terminal.Terminal) string {
 }
 
 // shellTitle tells the title a shell sets at its prompt, as
-// "user@host:~/dir", which says no more than the directory.
+// "user@host:~/dir", which says no more than the directory, or the title
+// a Windows console gives its shell: the program's path, or the window's name.
 func shellTitle(title string, i session.Info) bool {
 	if i.Process != "" {
 		return false
 	}
-	return title == i.Shell || strings.Contains(title, "@") && strings.Contains(title, ":") || strings.HasPrefix(title, "~") || strings.HasPrefix(title, "/")
+	return title == i.Shell || strings.Contains(title, "@") && strings.Contains(title, ":") || strings.HasPrefix(title, "~") || strings.HasPrefix(title, "/") || windowsShellTitle(title)
 }
 
-// shortDir writes a directory with the home directory as "~".
+// windowsShellTitle tells the title of a Windows console's shell: the path
+// of its program, as C:\…\pwsh.exe, or the name of its window.
+func windowsShellTitle(title string) bool {
+	if i := strings.LastIndexByte(title, '\\'); i >= 0 {
+		switch strings.ToLower(title[i+1:]) {
+		case "pwsh.exe", "powershell.exe", "cmd.exe":
+			return true
+		}
+		return false
+	}
+	switch strings.ToLower(strings.TrimPrefix(title, "Administrator: ")) {
+	case "windows powershell", "command prompt", "pwsh":
+		return true
+	}
+	return false
+}
+
+// shortDir writes a directory with the home directory as "~", with the
+// separator the OS writes: ~/src on Unix, ~\src on Windows.
 func shortDir(d string) string {
 	if d == "" {
 		return ""
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if d == home {
-			return "~"
-		}
-		if rest, ok := strings.CutPrefix(d, home+"/"); ok {
-			return "~/" + rest
-		}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return d
 	}
-	return d
+	return ospath.ShortHome(runtime.GOOS, home, d)
 }
 
 func firstNonEmpty(s ...string) string {

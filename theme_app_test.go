@@ -120,21 +120,22 @@ func TestNoOmarchyWordingWithoutOmarchy(t *testing.T) {
 }
 
 // The default font is named by the first family installed, else the
-// system's monospace: SF Mono on a Mac.
+// system's monospace: SF Mono on a Mac, Cascadia Mono on Windows.
 func TestDefaultFontName(t *testing.T) {
 	const list = "JetBrainsMono Nerd Font, JetBrains Mono, monospace"
 	for _, c := range []struct {
 		installed map[string]bool
-		mac       bool
+		goos      string
 		want      string
 	}{
-		{map[string]bool{"jetbrains mono": true}, true, "JetBrains Mono"},
-		{map[string]bool{"jetbrainsmono nerd font": true, "jetbrains mono": true}, false, "JetBrainsMono Nerd Font"},
-		{map[string]bool{"menlo": true}, true, "SF Mono"},
-		{nil, false, "the system's monospace"},
+		{map[string]bool{"jetbrains mono": true}, "darwin", "JetBrains Mono"},
+		{map[string]bool{"jetbrainsmono nerd font": true, "jetbrains mono": true}, "linux", "JetBrainsMono Nerd Font"},
+		{map[string]bool{"menlo": true}, "darwin", "SF Mono"},
+		{nil, "linux", "the system's monospace"},
+		{nil, "windows", "Cascadia Mono"},
 	} {
-		if got := defaultFontName(list, c.installed, c.mac); got != c.want {
-			t.Errorf("%v mac=%v: %q, want %q", c.installed, c.mac, got, c.want)
+		if got := defaultFontName(list, c.installed, c.goos); got != c.want {
+			t.Errorf("%v %s: %q, want %q", c.installed, c.goos, got, c.want)
 		}
 	}
 }

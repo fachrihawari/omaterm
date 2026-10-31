@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -38,6 +39,9 @@ func read(t *testing.T, path string) string {
 // other hooks; installing again changes nothing; removing takes only
 // omaterm's out.
 func TestHookInstallKeepsSettings(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the command is quoted for pwsh and cmd there, not for sh")
+	}
 	h := testHook(t, `{
   "model": "opus",
   "hooks": {
@@ -211,6 +215,9 @@ func TestWriteThroughLink(t *testing.T) {
 // user's own hooks, once Antigravity is installed; removing it takes only
 // omaterm's away.
 func TestAntigravityIntegration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the command is quoted for pwsh and cmd there, not for sh")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))

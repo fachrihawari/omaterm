@@ -14,6 +14,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"omaterm/internal/atomicfile"
 )
 
 // maxText is the size of the largest file shown whole: larger ones show
@@ -346,7 +348,7 @@ func (r Repo) Write(path, hash, text string) error {
 		err = os.Chmod(tmp.Name(), fi.Mode().Perm())
 	}
 	if err == nil {
-		err = os.Rename(tmp.Name(), full)
+		err = atomicfile.Rename(tmp.Name(), full)
 	}
 	if err != nil {
 		os.Remove(tmp.Name())

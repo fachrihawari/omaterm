@@ -14,15 +14,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"omaterm/internal/client"
+	"omaterm/internal/clilink"
 	"omaterm/internal/keys"
 	"omaterm/internal/model"
 	"omaterm/internal/osc"
+	"omaterm/internal/ospath"
 	"omaterm/internal/paths"
 	"omaterm/internal/proto"
 )
@@ -58,6 +61,7 @@ func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)
 // Run runs a subcommand, returning the exit code: 0 ok, 1 failed, 2 bad
 // usage, 3 no such target, 4 omaterm not running.
 func Run(args []string) int {
+	attachConsole()
 	err := run(args)
 	if err == nil {
 		return 0
@@ -846,14 +850,7 @@ func orDash(s string) string {
 }
 
 func shortDir(d string) string {
-	home := paths.Home()
-	if d == home {
-		return "~"
-	}
-	if rest, ok := strings.CutPrefix(d, home+"/"); ok {
-		return "~/" + rest
-	}
-	return d
+	return ospath.ShortHome(runtime.GOOS, paths.Home(), d)
 }
 
 func parseTimeout(s string) (int64, error) {
@@ -1073,13 +1070,20 @@ func unescape(s string) string {
 }
 
 // InstallCLI links the omaterm command into ~/.local/bin, as `omaterm
-// cli install` does, returning where.
+// cli install` does, returning where. On Windows it puts omaterm.exe in
+// omaterm's folder instead, which the user adds to PATH.
 func InstallCLI() (string, error) {
-	link := filepath.Join(paths.Home(), ".local", "bin", "omaterm")
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
+	if runtime.GOOS == "windows" {
+		if err := clilink.Link(exe, paths.BinDir()); err != nil {
+			return "", err
+		}
+		return shortDir(cliLink()), nil
+	}
+	link := filepath.Join(paths.Home(), ".local", "bin", "omaterm")
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
@@ -1103,6 +1107,17 @@ func cliCmd(args []string) error {
 	link := filepath.Join(paths.Home(), ".local", "bin", "omaterm")
 	switch sub {
 	case "status":
+		if runtime.GOOS == "windows" {
+			if where, ok := CLIStatus(); ok {
+				fmt.Printf("%s\n", where)
+				if hint := CLIPathHint(); hint != "" {
+					fmt.Println(hint)
+				}
+			} else {
+				fmt.Println("not installed: the app puts it there when it starts, or omaterm cli install does")
+			}
+			return nil
+		}
 		if t, err := os.Readlink(link); err == nil {
 			fmt.Printf("%s → %s\n", shortDir(link), t)
 		} else if _, err := os.Stat(link); err == nil {
@@ -1122,6 +1137,10 @@ func cliCmd(args []string) error {
 		}
 		return nil
 	case "uninstall":
+		if runtime.GOOS == "windows" {
+			fmt.Println("kept: the app runs omaterm.exe for its panes and the agents' hooks")
+			return nil
+		}
 		if st, err := os.Lstat(link); err == nil && st.Mode()&os.ModeSymlink != 0 {
 			return os.Remove(link)
 		}

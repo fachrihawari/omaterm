@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -148,10 +149,12 @@ func (a *appState) quickOpenItems() []service.FuzzyMatch {
 		// Recent documents first, then everything else.
 		var recents []string
 		if a.win != nil {
-			prefix := a.workspace + "/"
+			// Recent documents come in the OS's form; the index and the
+			// open tabs name a file with /, so it is compared that way.
+			prefix := filepath.ToSlash(a.workspace) + "/"
 			for _, p := range mygo.App.RecentDocuments() {
-				if strings.HasPrefix(p, prefix) {
-					recents = append(recents, strings.TrimPrefix(p, prefix))
+				if r, ok := strings.CutPrefix(filepath.ToSlash(p), prefix); ok {
+					recents = append(recents, r)
 				}
 			}
 		}
@@ -630,10 +633,12 @@ func (a *appState) paletteSources() []paletteEntry {
 		s.Background = map[bool]string{true: "plain", false: "wash"}[s.Background != "plain"]
 	})
 	// Web access lives in web.json, which the omaterm command changes too.
-	out = append(out, paletteEntry{Setting: true, On: a.webOn, Command: Command{ID: "setting:web", Category: "Setting", Title: "Web Access",
-		Run: func(a *appState, c *ui.Context) { a.setWeb(c, !a.webOn) }}})
-	out = append(out, paletteEntry{Setting: true, On: a.webOn && a.webNetwork, Command: Command{ID: "setting:webnetwork", Category: "Setting",
-		Title: "Web Access on Your Network", Run: func(a *appState, c *ui.Context) { a.setWebNetwork(c, !(a.webOn && a.webNetwork)) }}})
+	if !onWindows {
+		out = append(out, paletteEntry{Setting: true, On: a.webOn, Command: Command{ID: "setting:web", Category: "Setting", Title: "Web Access",
+			Run: func(a *appState, c *ui.Context) { a.setWeb(c, !a.webOn) }}})
+		out = append(out, paletteEntry{Setting: true, On: a.webOn && a.webNetwork, Command: Command{ID: "setting:webnetwork", Category: "Setting",
+			Title: "Web Access on Your Network", Run: func(a *appState, c *ui.Context) { a.setWebNetwork(c, !(a.webOn && a.webNetwork)) }}})
+	}
 	return out
 }
 

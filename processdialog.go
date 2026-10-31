@@ -124,13 +124,16 @@ func (a *appState) processDialog(c *ui.Context) {
 				dialogNote(c, err, true)
 			}
 			dialogField(c, "Port", func() { processTextInput(c, "proc-port", &st.port, "5173", "Port input", false) })
-			dialogField(c, "URL", func() {
-				processURLInput(c, "proc-url", &st.url, processURLPlaceholder(st), "URL input")
-			})
-			if err := processURLError(st); err != "" {
-				dialogNote(c, err, true)
-			} else if strings.TrimSpace(st.url) != "" && strings.TrimSpace(st.port) == "" {
-				dialogNote(c, "omaterm picks a free port and tells it to the process as PORT.", false)
+			if !onWindows {
+				// Nothing serves a URL on Windows yet.
+				dialogField(c, "URL", func() {
+					processURLInput(c, "proc-url", &st.url, processURLPlaceholder(st), "URL input")
+				})
+				if err := processURLError(st); err != "" {
+					dialogNote(c, err, true)
+				} else if strings.TrimSpace(st.url) != "" && strings.TrimSpace(st.port) == "" {
+					dialogNote(c, "omaterm picks a free port and tells it to the process as PORT.", false)
+				}
 			}
 			dialogField(c, "Autostart", func() { settingsSwitch(c, "proc-autostart", &st.autostart, false) })
 			dialogField(c, "Restart", func() {

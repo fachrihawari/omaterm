@@ -53,6 +53,9 @@ func pathDir(p string) string {
 	if d == "." || d == "/" {
 		return ""
 	}
+	if filepath.IsAbs(d) {
+		return shortDir(d)
+	}
 	return d
 }
 

@@ -5,7 +5,10 @@ package session
 
 import (
 	"os"
+	"runtime"
 	"strings"
+
+	"omaterm/internal/shellcmd"
 )
 
 // GhosttyVersion is the version of Ghostty the terminal emulator,
@@ -35,7 +38,7 @@ func environment(o StartOptions, shell string) []string {
 	set := func(kv string) {
 		k, _, _ := strings.Cut(kv, "=")
 		for i, e := range env {
-			if ek, _, _ := strings.Cut(e, "="); ek == k {
+			if ek, _, _ := strings.Cut(e, "="); sameKey(ek, k, runtime.GOOS) {
 				env[i] = kv
 				return
 			}
@@ -47,7 +50,7 @@ func environment(o StartOptions, shell string) []string {
 	set("TERM_PROGRAM=ghostty")
 	set("TERM_PROGRAM_VERSION=" + GhosttyVersion)
 	set("LC_TERMINAL=omaterm")
-	if shell != "" {
+	if shell != "" && !windowsShell(shell) {
 		set("SHELL=" + shell)
 	}
 	set("OMATERM_SESSION=" + o.Session)
@@ -70,4 +73,24 @@ func environment(o StartOptions, shell string) []string {
 		}
 	}
 	return env
+}
+
+// sameKey tells whether two environment variables are one: on Windows
+// their names ignore case, and the PATH a pane is given must replace the
+// app's Path, not come after it, where Windows would never read it.
+func sameKey(a, b, goos string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// windowsShell tells PowerShell and cmd, which no program takes for a
+// POSIX shell as $SHELL says one: agents run their commands in $SHELL.
+func windowsShell(shell string) bool {
+	switch shellcmd.Name(shell) {
+	case "pwsh", "powershell", "cmd":
+		return true
+	}
+	return false
 }

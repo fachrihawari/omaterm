@@ -28,24 +28,34 @@ import (
 var ErrNoGit = errors.New("git is not installed")
 
 var (
-	gitOnce sync.Once
+	gitMu sync.Mutex
+	// gitPath is where git is, once one was found.
 	gitPath string
+	// gitStub is macOS's /usr/bin/git without the command line tools,
+	// which asking again would not change.
+	gitStub bool
 )
 
-// command returns the git to run, or "" for none.
+// command returns the git to run, or "" for none. A lookup that found no
+// git is made again at the next command: a Git installed while omaterm
+// runs is found without a restart.
 func command() string {
-	gitOnce.Do(func() {
-		p, err := exec.LookPath("git")
-		if err != nil {
-			return
-		}
-		// /usr/bin/git without the command line tools is a stub that
-		// shows a dialog asking to install them, each time it runs.
-		if runtime.GOOS == "darwin" && p == "/usr/bin/git" && exec.Command("/usr/bin/xcode-select", "-p").Run() != nil {
-			return
-		}
-		gitPath = p
-	})
+	gitMu.Lock()
+	defer gitMu.Unlock()
+	if gitPath != "" || gitStub {
+		return gitPath
+	}
+	p, err := exec.LookPath("git")
+	if err != nil {
+		return ""
+	}
+	// /usr/bin/git without the command line tools is a stub that
+	// shows a dialog asking to install them, each time it runs.
+	if runtime.GOOS == "darwin" && p == "/usr/bin/git" && exec.Command("/usr/bin/xcode-select", "-p").Run() != nil {
+		gitStub = true
+		return ""
+	}
+	gitPath = p
 	return gitPath
 }
 

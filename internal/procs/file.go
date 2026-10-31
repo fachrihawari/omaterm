@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"omaterm/internal/atomicfile"
 )
 
 // FileName is the file a project keeps its shared processes in, at its root.
@@ -245,7 +247,7 @@ func writeAtomic(path string, data []byte, mode fs.FileMode) error {
 		err = os.Chmod(tmp, mode)
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = atomicfile.Rename(tmp, path)
 	}
 	if err != nil {
 		os.Remove(tmp)

@@ -8,6 +8,7 @@ package main
 // not: what a merge would bring.
 
 import (
+	"bytes"
 	"context"
 	"strconv"
 	"sync"
@@ -241,14 +242,22 @@ func (a *appState) revertHunk(c *ui.Context, cf *changeFile, i int) {
 		return
 	}
 	cf.ds.Revert(i)
-	text := cf.ds.New.String()
-	r := gitsnap.Repo{Root: cs.root}
-	if err := r.Write(cf.file.Path, cf.text.Hash, text); err != nil {
+	// WriteTo writes the file's own line ending, which a CRLF file's diff
+	// keeps: the buffer's text alone is LF, and the whole file came back
+	// changed.
+	var text bytes.Buffer
+	if _, err := cf.ds.New.WriteTo(&text); err != nil {
 		toast(c, "Could not revert: "+err.Error())
 		a.loadChangeFile(cf.file.Path, cf.file)
 		return
 	}
-	cf.text.New, cf.text.Hash = text, gitsnap.Hash([]byte(text))
+	r := gitsnap.Repo{Root: cs.root}
+	if err := r.Write(cf.file.Path, cf.text.Hash, text.String()); err != nil {
+		toast(c, "Could not revert: "+err.Error())
+		a.loadChangeFile(cf.file.Path, cf.file)
+		return
+	}
+	cf.text.New, cf.text.Hash = text.String(), gitsnap.Hash(text.Bytes())
 	a.refreshChanges(true)
 }
 

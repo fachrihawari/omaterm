@@ -195,6 +195,8 @@ type appState struct {
 	diffSplit bool
 
 	fileTree *fileNode
+	// newEntry is the file or folder being named in the Files tab.
+	newEntry *newEntry
 
 	// --- Real workspace/git state ---
 
@@ -685,7 +687,7 @@ func (a *appState) setProject(i int) {
 	a.commitFiles = map[string][]service.CommitFile{}
 	a.commitStats = map[string][2]int{}
 	a.fileIndex = nil
-	a.fileTree = nil
+	a.fileTree, a.newEntry = nil, nil
 	a.diffOld, a.diffNew, a.diffPatch = nil, nil, nil
 	a.diffDs, a.diffKey = nil, ""
 	// Nor the last project's diff: its header's Stage and Discard acted

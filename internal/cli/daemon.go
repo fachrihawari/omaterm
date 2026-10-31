@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 
@@ -108,6 +109,9 @@ func stopDaemon(socket string) (replaced bool, err error) {
 // the daemon from the omaterm command's stable link, so an update keeps
 // it.
 func installService() error {
+	if runtime.GOOS == "windows" {
+		return daemon.ErrNoDaemon
+	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return errors.New("systemctl not found: the service needs systemd")
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -190,7 +191,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 									pill(c, owner)
 								}
 								ui.Spacer(c)
-								mutedTxt2(c, proc.CPU+" · "+proc.Mem, 11)
+								mutedTxt2(c, strings.Trim(proc.CPU+" · "+proc.Mem, " ·"), 11)
 								if proc.Pid != 1 && proc.Pid != os.Getpid() {
 									if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
 										a.pendingKillPid = proc.Pid
@@ -315,8 +316,23 @@ func (a *appState) updateSection(c *ui.Context) {
 
 func (a *appState) filesPanel(c *ui.Context) ui.Element {
 	return ui.Column(c).Grow(1).Children(func() {
+		if a.workspace != "" {
+			ui.Row(c).Height(36).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, 12).Gap(2).Children(func() {
+				sectionLabel(c, "FILES")
+				ui.Spacer(c)
+				if cmdButton(c, iconFilePlus, iconBtn, false).Tooltip("New File").Label("New File").Clicked() {
+					a.startNewEntry(a.workspace, false)
+				}
+				if cmdButton(c, iconFolderPlus, iconBtn, false).Tooltip("New Folder").Label("New Folder").Clicked() {
+					a.startNewEntry(a.workspace, true)
+				}
+			})
+		}
 		ui.Scroll(c).Grow(1).Children(func() {
-			ui.Column(c).Padding(4, 0).Children(func() {
+			ui.Column(c).Padding(0, 0, 4, 0).Children(func() {
+				if a.newEntry != nil && a.newEntry.dir == a.workspace {
+					a.newEntryRow(c, 0)
+				}
 				if a.fileTree != nil {
 					for _, n := range a.fileTree.Children {
 						a.fileNodeView(c, n, 0)
@@ -375,7 +391,23 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 			a.openEditor(a.nodePath(n))
 		}
 	}
+	e.ContextMenu(func(m *ui.Menu) {
+		// A file's are made beside it, a folder's in it.
+		dir := n.Path
+		if !n.Dir {
+			dir = filepath.Dir(n.Path)
+		}
+		if m.Item("New File…").Chosen() {
+			a.startNewEntry(dir, false)
+		}
+		if m.Item("New Folder…").Chosen() {
+			a.startNewEntry(dir, true)
+		}
+	})
 	if n.Dir && n.Open {
+		if a.newEntry != nil && a.newEntry.dir == n.Path {
+			a.newEntryRow(c, depth+1)
+		}
 		for _, ch := range n.Children {
 			a.fileNodeView(c, ch, depth+1)
 		}

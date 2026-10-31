@@ -110,9 +110,9 @@ func (r *Registry) start(o StartOptions) (*Pane, error) {
 		OnTitle: p.onTitle, OnNotify: p.onNotify, OnBell: p.onBell,
 	}
 	if errors.Is(err, pty.ErrUnsupported) {
-		// No pseudo-terminal of our own (Windows): the terminal runs the
-		// program, and the status comes from its title alone.
-		opts.Command, opts.Dir, opts.Env = o.Command, dir, o.Env
+		// No pseudo-terminal of our own: the terminal runs the program,
+		// and omaterm sees neither its output nor its process.
+		opts.Command, opts.Dir, opts.Env = o.Command, dir, environment(o, "")
 		opts.OnExit = func(code int) { r.paneExited(o.ID, code) }
 	} else if err != nil {
 		return nil, err
@@ -127,6 +127,19 @@ func (r *Registry) start(o StartOptions) (*Pane, error) {
 	}
 	var t *terminal.Terminal
 	opts.OnKey = WordKeys(&t)
+	if c, ok := any(proc).(interface{ ClearScreen() error }); ok && proc != nil {
+		// Windows' console clears its own screen too, else it draws its
+		// next frames with the prompt where it was (pty.Proc.ClearScreen).
+		opts.OnClear = func(what terminal.Clear) bool {
+			if what != terminal.ClearScreen {
+				return false
+			}
+			if t.ClearScreen() {
+				c.ClearScreen()
+			}
+			return true
+		}
+	}
 	t, err = terminal.New(opts)
 	if err != nil {
 		if proc != nil {

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"omaterm/internal/daemon"
 	"omaterm/internal/paths"
@@ -16,12 +17,23 @@ import (
 // command installs: the command itself, the daemon's service, and the
 // agents' hooks and skills.
 
-// cliLink is where `omaterm cli install` puts the command.
-func cliLink() string { return filepath.Join(paths.Home(), ".local", "bin", "omaterm") }
+// cliLink is where `omaterm cli install` puts the command. On Windows
+// that is omaterm's own folder, where the app keeps omaterm.exe for panes
+// and hooks: a link in ~/.local/bin would need Developer Mode.
+func cliLink() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(paths.BinDir(), "omaterm.exe")
+	}
+	return filepath.Join(paths.Home(), ".local", "bin", "omaterm")
+}
 
 // CLIStatus is where the omaterm command is linked, and whether it is.
 func CLIStatus() (where string, installed bool) {
 	link := cliLink()
+	if runtime.GOOS == "windows" {
+		_, err := os.Stat(link)
+		return shortDir(link), err == nil
+	}
 	_, err := os.Readlink(link)
 	return shortDir(link), err == nil
 }
@@ -40,6 +52,13 @@ func cliPathHint(dir, path, shell, goos string) string {
 		}
 	}
 	lead := shortDir(dir) + " is not on your PATH, so other terminals don't find omaterm. "
+	if goos == "windows" {
+		// The user's PATH needs no administrator. The folder is quoted for
+		// pwsh, where a $ in a double-quoted string would expand.
+		quoted := "'" + strings.ReplaceAll(dir, "'", "''") + "'"
+		return lead + `Run in PowerShell: [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";" + ` + quoted + `, "User")` +
+			", or add it under Settings → System → About → Advanced system settings → Environment Variables."
+	}
 	profile := "~/.profile"
 	switch shellcmd.Name(shell) {
 	case "fish":
