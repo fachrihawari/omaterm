@@ -35,6 +35,9 @@ func TestMain(m *testing.M) {
 		return devurl.Env{OS: "linux", Home: filepath.Join(cfg, "home"), Root: filepath.Join(cfg, "root"), CADir: caDir,
 			Geteuid: func() int { return 1000 }}
 	}
+	// A daemon a test starts without a Notifier would notify the developer
+	// for real on macOS.
+	runOsascript = func(...string) error { return nil }
 	// macOS ignores XDG_CONFIG_HOME: OMATERM_CONFIG_HOME isolates it there.
 	os.Setenv("XDG_CONFIG_HOME", cfg)
 	os.Setenv("OMATERM_CONFIG_HOME", cfg)
