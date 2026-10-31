@@ -127,7 +127,8 @@ const lightTheme = {
   stamp: "baacb32bfcadf62b",
 };
 
-function setDaemonTheme(sockPath, themeObj) {
+// daemonCall calls a method of the daemon's socket, as a client does.
+function daemonCall(sockPath, method, params) {
   return new Promise((resolve, reject) => {
     const s = createConnection(sockPath);
     let buf = "";
@@ -142,10 +143,10 @@ function setDaemonTheme(sockPath, themeObj) {
         if (!line.trim()) continue;
         const msg = JSON.parse(line);
         if (msg.kind === "control" || msg.process || msg.version !== undefined) {
-          s.write(JSON.stringify({ id: 1, method: "web.setTheme", params: themeObj }) + "\n");
+          s.write(JSON.stringify({ id: 1, method, params }) + "\n");
         } else if (msg.id === 1) {
           s.end();
-          resolve(msg.result);
+          msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result);
         }
       }
     });
@@ -166,7 +167,21 @@ try {
   session(omadir, "vite", screens.dev, "bun", "working");
   session(omadir, "omarchy themes", screens.done, "codex", `done "Follows Omarchy theme switches"`);
   session(apidir, "tests", screens.tests, "go", `done "Tests passed"`);
-  const pane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === dev).focus;
+  const sessions = JSON.parse(omaterm("ls", "--json"));
+  const pane = sessions.find((s) => s.id === dev).focus;
+
+  // A process of the project: defined in omaterm.yml, trusted and started
+  // over the daemon, so that the page shows a process session.
+  const daemonSock = join(env.XDG_RUNTIME_DIR, "omaterm", "omaterm-daemon.sock");
+  writeFileSync(join(omadir, "omaterm.yml"), "processes:\n  dev server:\n    command: sh -c 'echo ready on :5173; exec sleep 3600'\n    port: 5173\n    url: shop\n");
+  const project = sessions.find((s) => s.id === dev).project;
+  try {
+    await daemonCall(daemonSock, "process.sync", { project });
+    await daemonCall(daemonSock, "process.trust", { project, name: "dev server" });
+    await daemonCall(daemonSock, "process.start", { project, name: "dev server" });
+  } catch (err) {
+    console.error("could not start the sample process:", err.message);
+  }
   await sleep(1500);
 
   const code = omaterm("web", "pair").match(/code=([A-Z0-9-]+)/)[1];
@@ -195,50 +210,92 @@ try {
     console.log("wrote " + join(out, name + ".png"));
   };
 
-  // Dark theme screenshots
-  await size(1440, 900, 2, false);
-  await go(`${base}/#code=${code}`);
-  await go(`${base}/#/pane/${pane}`);
-  await shot("web-desktop");
+  const unpair = async () => {
+    await cdp("Network.clearBrowserCookies");
+    await go(`${base}/#`);
+    await cdp("Page.reload", {});
+    await sleep(1500);
+  };
+  const compose = async (name) => {
+    await cdp("Runtime.evaluate", { expression: "document.querySelector('.btn-compose')?.click()" });
+    await sleep(500);
+    await shot(name);
+  };
 
+  // The pairing page comes first: this browser is not paired yet.
+  await size(1440, 900, 2, false);
+  await go(`${base}/#`);
+  await shot("web-pair-desktop");
   await size(390, 844, 3, true);
   await go(`${base}/#`);
-  await cdp("Page.reload", {});
-  await sleep(2500);
-  await shot("web-phone-list");
+  await shot("web-pair-phone");
 
-  await go(`${base}/#/pane/${pane}`);
-  await shot("web-phone");
-  await sleep(500);
-  await cdp("Runtime.evaluate", { expression: "document.querySelector('.btn-compose')?.click()" });
-  await sleep(500);
-  await shot("web-phone-compose");
-
-  // Light theme screenshots
-  const daemonSock = join(env.XDG_RUNTIME_DIR, "omaterm", "omaterm-daemon.sock");
-  try {
-    await setDaemonTheme(daemonSock, lightTheme);
-    await sleep(1500);
-
+  // The pictures of one theme, named with its suffix.
+  const pictures = async (suffix) => {
     await size(1440, 900, 2, false);
     await go(`${base}/#/pane/${pane}`);
-    await shot("web-desktop-light");
+    await shot("web-desktop" + suffix);
 
     await size(390, 844, 3, true);
     await go(`${base}/#`);
     await cdp("Page.reload", {});
     await sleep(2500);
-    await shot("web-phone-list-light");
+    await shot("web-phone-list" + suffix);
 
     await go(`${base}/#/pane/${pane}`);
-    await shot("web-phone-light");
-    await sleep(500);
-    await cdp("Runtime.evaluate", { expression: "document.querySelector('.btn-compose')?.click()" });
-    await sleep(500);
-    await shot("web-phone-compose-light");
+    await shot("web-phone" + suffix);
+    await compose("web-phone-compose" + suffix);
+  };
+
+  await size(1440, 900, 2, false);
+  await go(`${base}/#code=${code}`);
+  await cdp("Page.reload", {});
+  await sleep(2000);
+  const darkTheme = JSON.parse((await cdp("Runtime.evaluate", {
+    expression: 'fetch("/api/theme").then((r) => r.text())', awaitPromise: true, returnByValue: true,
+  })).result.value);
+  await pictures("");
+
+  // The empty state and the pairing page in a theme: close every session,
+  // then unpair.
+  const empty = async (suffix) => {
+    await size(1440, 900, 2, false);
+    await go(`${base}/#`);
+    await shot("web-empty-desktop" + suffix);
+    await size(390, 844, 3, true);
+    await go(`${base}/#`);
+    await shot("web-empty-phone" + suffix);
+  };
+  const pairs = async (suffix) => {
+    await unpair();
+    await size(1440, 900, 2, false);
+    await shot("web-pair-desktop" + suffix);
+    await size(390, 844, 3, true);
+    await shot("web-pair-phone" + suffix);
+    await go(`${base}/#code=${code2()}`);
+    await cdp("Page.reload", {});
+    await sleep(2000);
+  };
+  const code2 = () => { const c = omaterm("web", "pair").match(/code=([A-Z0-9-]+)/)[1]; return c; };
+
+  try {
+    await daemonCall(daemonSock, "web.setTheme", lightTheme);
+    await sleep(1500);
+    await pictures("-light");
+    await pairs("-light");
+    await sleep(1500);
   } catch (err) {
     console.error("error taking light theme shots:", err);
   }
+
+  for (const sess of JSON.parse(omaterm("ls", "--json"))) {
+    try { omaterm("close", sess.id); } catch {}
+  }
+  await sleep(1500);
+  await empty("-light");
+  await daemonCall(daemonSock, "web.setTheme", darkTheme);
+  await sleep(1500);
+  await empty("");
 } finally {
   chrome?.kill();
   try { omaterm("daemon", "stop"); } catch {}
