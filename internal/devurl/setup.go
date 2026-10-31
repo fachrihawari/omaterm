@@ -53,6 +53,9 @@ type Env struct {
 	SystemPool func() (*x509.CertPool, error)
 	// LookupHost resolves a name, as a program's resolver does.
 	LookupHost func(host string) ([]string, error)
+	// Listen binds an address, as net.Listen: on macOS the port check
+	// binds 443 to tell whether the proxy may.
+	Listen func(network, addr string) (net.Listener, error)
 	// Out is where progress is told.
 	Out io.Writer
 }
@@ -61,7 +64,7 @@ type Env struct {
 func DefaultEnv(caDir string) Env {
 	home, _ := os.UserHomeDir()
 	return Env{OS: runtime.GOOS, Home: home, CADir: caDir, Geteuid: os.Geteuid,
-		SystemPool: x509.SystemCertPool, LookupHost: net.LookupHost, Out: os.Stdout}
+		SystemPool: x509.SystemCertPool, LookupHost: net.LookupHost, Listen: net.Listen, Out: os.Stdout}
 }
 
 func (e Env) path(p string) string { return filepath.Join(e.Root, p) }

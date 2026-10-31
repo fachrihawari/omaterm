@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"runtime"
 	"strconv"
 	"sync"
 )
@@ -33,7 +34,7 @@ func (e *CAError) Unwrap() error { return e.Err }
 // or made, once the address is bound, so that a machine that cannot bind it
 // gets no authority it has no use for.
 func Listen(addr, caDir string, router *Router) (*Server, error) {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listenTCP(runtime.GOOS, addr, net.Listen)
 	if err != nil {
 		return nil, err
 	}

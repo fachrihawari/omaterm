@@ -3,7 +3,9 @@ package devurl
 import (
 	"crypto/x509"
 	"errors"
+	"net"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -99,12 +101,53 @@ func TestChecksNamesAndNSS(t *testing.T) {
 	if c := checkNamed(Checks(e, ProxyState{}), "Trusted by Chrome and Firefox"); c == nil || c.OK || !strings.Contains(c.Detail, "certutil") {
 		t.Errorf("%+v", c)
 	}
-	// Port 443 is fine when the proxy has it, or on macOS.
+	// Port 443 is fine when the proxy has it.
 	if c := checkNamed(Checks(e, ProxyState{Running: true, Addr: "127.0.0.1:443"}), "Port 443 can be used"); !c.OK {
 		t.Errorf("%+v", c)
 	}
+}
+
+// On macOS the port is tried, as the proxy binds it: 127.0.0.1, else every
+// address. What it was refused for is told.
+func TestPortCheckOnMacOS(t *testing.T) {
+	newFakeTools(t)
+	e := testEnv(t)
 	e.OS = "darwin"
-	if c := checkNamed(Checks(e, ProxyState{}), "Port 443 can be used"); !c.OK {
+	var asked []string
+	e.Listen = func(_, addr string) (net.Listener, error) {
+		asked = append(asked, addr)
+		if addr == "127.0.0.1:443" {
+			return nil, &net.OpError{Op: "listen", Net: "tcp", Err: syscall.EACCES}
+		}
+		return net.Listen("tcp", "127.0.0.1:0")
+	}
+	if c := checkNamed(Checks(e, ProxyState{}), "Port 443 can be used"); !c.OK || len(asked) != 2 || asked[1] != ":443" {
+		t.Errorf("%+v after %v", c, asked)
+	}
+	e.Listen = func(string, string) (net.Listener, error) {
+		return nil, &net.OpError{Op: "listen", Net: "tcp", Err: syscall.EADDRINUSE}
+	}
+	if c := checkNamed(Checks(e, ProxyState{}), "Port 443 can be used"); c.OK || !strings.Contains(c.Detail, "address already in use") {
+		t.Errorf("in use: %+v", c)
+	}
+	// The proxy having it is enough: nothing is bound.
+	e.Listen = nil
+	if c := checkNamed(Checks(e, ProxyState{Running: true, Addr: "[::]:443"}), "Port 443 can be used"); !c.OK {
+		t.Errorf("proxy on it: %+v", c)
+	}
+	if c := checkNamed(Checks(e, ProxyState{}), "Port 443 can be used"); c.OK {
+		t.Errorf("no way to tell: %+v", c)
+	}
+}
+
+// macOS's resolver may not resolve *.localhost, which the browsers do
+// themselves: the check says so, and doesn't fail.
+func TestResolveCheckOnMacOS(t *testing.T) {
+	newFakeTools(t)
+	e := testEnv(t)
+	e.OS = "darwin"
+	e.LookupHost = func(string) ([]string, error) { return nil, errors.New("no such host") }
+	if c := checkNamed(Checks(e, ProxyState{}), "*.localhost names resolve"); !c.OK || !strings.Contains(c.Detail, "browsers resolve them") {
 		t.Errorf("%+v", c)
 	}
 }
