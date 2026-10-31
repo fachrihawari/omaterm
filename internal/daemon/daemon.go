@@ -170,9 +170,7 @@ func Run(opts Options) error {
 	if err != nil {
 		return err
 	}
-	sigs := make(chan os.Signal, 1)
-	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	sigs := notifySignals()
 	select {
 	case sig := <-sigs:
 		log.Printf("stopping: %v", sig)
@@ -180,6 +178,22 @@ func Run(opts Options) error {
 	}
 	d.Stop()
 	return nil
+}
+
+// notifySignals has the daemon take SIGHUP and SIGPIPE without acting, and
+// tells of SIGTERM and SIGINT. They are caught, not ignored: an ignored
+// signal stays ignored in every program the daemon starts, and a process
+// that never gets its hangup is left running when its pane is closed.
+func notifySignals() <-chan os.Signal {
+	quiet := make(chan os.Signal, 8)
+	signal.Notify(quiet, syscall.SIGHUP, syscall.SIGPIPE)
+	go func() {
+		for range quiet {
+		}
+	}()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	return sigs
 }
 
 // Start starts the daemon and returns it running.

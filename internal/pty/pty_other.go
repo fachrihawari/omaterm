@@ -5,6 +5,7 @@ package pty
 import (
 	"errors"
 	"io"
+	"time"
 )
 
 // ErrUnsupported is Start's error where the app does not own terminals
@@ -30,4 +31,5 @@ func (*Proc) Exited() <-chan struct{}                   { c := make(chan struct{
 func (*Proc) Code() int                                 { return 0 }
 func (*Proc) Close() error                              { return nil }
 func (*Proc) Kill()                                     {}
+func (*Proc) Stop(time.Duration)                        {}
 func (*Proc) Foreground() int                           { return 0 }

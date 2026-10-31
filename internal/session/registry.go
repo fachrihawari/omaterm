@@ -28,6 +28,9 @@ type Registry struct {
 
 	changedCh chan struct{}
 
+	// stops counts the programs being ended after their panes closed.
+	stops sync.WaitGroup
+
 	// OnExit is told of a pane whose shell exited; OnNotice of a desktop
 	// notification a program sent; OnStatus of each status change, with
 	// the pane's Info after it. They run on a goroutine of their own,
@@ -207,11 +210,13 @@ func (r *Registry) Remove(id string) {
 	}
 }
 
-// CloseAll closes every pane.
+// CloseAll closes every pane, and waits until their programs, and what they
+// started in their process groups, have ended.
 func (r *Registry) CloseAll() {
 	for _, p := range r.list() {
 		r.Remove(p.info.ID)
 	}
+	r.stops.Wait()
 }
 
 // SetViewed tells which session the user looks at ("" for none, as when

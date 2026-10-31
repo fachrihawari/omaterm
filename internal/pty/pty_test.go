@@ -5,6 +5,8 @@ package pty
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,5 +100,70 @@ func TestNoFDLeak(t *testing.T) {
 	}
 	if after := count(); after > before+1 {
 		t.Errorf("fds %d → %d", before, after)
+	}
+}
+
+// gone tells whether a process has ended, within a moment: one that is a
+// zombie, not yet reaped, has ended too.
+func gone(pid int) bool {
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if err != nil || strings.Contains(string(b), ") Z ") {
+			return true
+		}
+	}
+	return false
+}
+
+// childPID reads the pid a script noted.
+func childPID(t *testing.T, file string) int {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if b, err := os.ReadFile(file); err == nil && strings.HasSuffix(string(b), "\n") {
+			n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+			return n
+		}
+	}
+	t.Fatal("the script never noted its child")
+	return 0
+}
+
+// Stop ends the program and what it left in its group: a child that
+// ignores the hangup, one that ignores the terminate too (killed after the
+// grace), and one left behind after the program exited.
+func TestStopEndsTheWholeGroup(t *testing.T) {
+	for _, tt := range []struct {
+		name, script string
+		took         time.Duration // at least
+	}{
+		{"a child ignoring the hangup", `trap "" HUP; sleep 300 & echo $! > FILE; wait`, 0},
+		{"a program and child ignoring terminate", `trap "" HUP TERM; sleep 300 & echo $! > FILE; wait`, 300 * time.Millisecond},
+		{"a child left after the program exited", `(trap "" HUP TERM; exec sleep 300) & echo $! > FILE`, 300 * time.Millisecond},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "pid")
+			p := start(t, strings.ReplaceAll(tt.script, "FILE", file))
+			pid := childPID(t, file)
+			p.Close() // the hangup: ignored by all of them
+			start := time.Now()
+			p.Stop(400 * time.Millisecond)
+			if took := time.Since(start); took < tt.took {
+				t.Errorf("Stop returned after %v, before the grace for what ignores terminate", took)
+			}
+			if !gone(pid) {
+				t.Fatalf("child %d is still running", pid)
+			}
+			select {
+			case <-p.Exited():
+			case <-time.After(2 * time.Second):
+				t.Fatal("the program is still running")
+			}
+			// Nothing left to signal: a second Stop does nothing, quickly.
+			start = time.Now()
+			p.Stop(2 * time.Second)
+			if time.Since(start) > 500*time.Millisecond {
+				t.Error("Stop waited for a group that was gone")
+			}
+		})
 	}
 }

@@ -392,16 +392,22 @@ func (p *Pane) Close() {
 		p.term.Close()
 	}
 	if proc != nil {
+		// The hangup alone is not enough: the program may ignore it, or
+		// leave a child in its group that does. The whole group is told to
+		// end, and killed after a grace; a registry shutting down waits
+		// for that, as the process leaves with it.
 		proc.Close()
+		p.reg.stops.Add(1)
 		go func() {
-			select {
-			case <-proc.Exited():
-			case <-time.After(2 * time.Second):
-				proc.Kill()
-			}
+			defer p.reg.stops.Done()
+			proc.Stop(stopGrace)
 		}()
 	}
 }
+
+// stopGrace is how long a closed pane's program has to end before its
+// process group is killed.
+const stopGrace = 2 * time.Second
 
 // --- the pane's terminal connection ---------------------------------------
 
