@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -461,6 +463,59 @@ func TestMacOSSystemStep(t *testing.T) {
 	}
 	if err := RemoveSystem(e, e.CAPath()); err != nil || !tools.called("security remove-trusted-cert -d "+e.CAPath()) {
 		t.Fatalf("%v %v", err, tools.calls())
+	}
+	// The certificate goes too, by its own hash, from the System keychain.
+	ca, err := load(e.CADir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha1.Sum(ca.cert.Raw)
+	if want := "security delete-certificate -Z " + strings.ToUpper(hex.EncodeToString(sum[:])) + " /Library/Keychains/System.keychain"; !tools.called(want) {
+		t.Fatalf("no %q in %v", want, tools.calls())
+	}
+}
+
+// Uninstalling on macOS what is already gone is no failure: a trust setting
+// or a certificate removed before, or the authority's file.
+func TestMacOSRemoveWhatIsGone(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\necho \"security $*\" >> '" + log + "'\n" +
+		"case \"$1\" in\n" +
+		"remove-trusted-cert) echo 'SecTrustSettingsRemoveTrustSettings: The specified item could not be found in the keychain.' >&2 ;;\n" +
+		"delete-certificate) echo 'Unable to delete certificate matching \"x\"' >&2 ;;\n" +
+		"esac\nexit 44\n"
+	if err := os.WriteFile(filepath.Join(dir, "security"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	e := testEnv(t)
+	e.OS = "darwin"
+	newCA(t, e)
+	if err := RemoveSystem(e, e.CAPath()); err != nil {
+		t.Fatalf("already removed: %v", err)
+	}
+	if b, _ := os.ReadFile(log); strings.Count(string(b), "\n") != 2 {
+		t.Fatalf("calls %q", b)
+	}
+	// Another failure is told.
+	os.WriteFile(filepath.Join(dir, "security"), []byte("#!/bin/sh\necho 'The authorization was denied.' >&2\nexit 1\n"), 0o755)
+	if err := RemoveSystem(e, e.CAPath()); err == nil || !strings.Contains(err.Error(), "authorization was denied") {
+		t.Fatalf("denied: %v", err)
+	}
+	// Without the file nothing is run, and the user is told where to look.
+	os.Remove(log)
+	if err := RemoveFiles(e); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveSystem(e, e.CAPath()); err != nil {
+		t.Fatalf("no file: %v", err)
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("security ran without the authority's file")
+	}
+	if out := e.Out.(*bytes.Buffer).String(); !strings.Contains(out, "Keychain Access") {
+		t.Errorf("told %q", out)
 	}
 }
 
