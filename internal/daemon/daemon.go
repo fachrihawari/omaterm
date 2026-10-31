@@ -117,6 +117,9 @@ type Daemon struct {
 	webMu   sync.Mutex
 	web     *web.Server
 	webAddr string // the address asked of web
+	// webTheme is the app's look for the web page, as it last sent it;
+	// nil until one is sent or read back from web-theme.json.
+	webTheme *web.Theme
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -566,6 +569,15 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		return true, nil
 	case "web.reload":
 		return d.reloadWeb()
+	case "web.theme":
+		return d.currentWebTheme(), nil
+	case "web.setTheme":
+		var t web.Theme
+		if err := json.Unmarshal(raw, &t); err != nil || len(t.Tokens) == 0 {
+			return nil, proto.Errorf(proto.CodeUsage, "bad theme")
+		}
+		d.setWebTheme(t)
+		return true, nil
 	case "clients":
 		d.mu.Lock()
 		defer d.mu.Unlock()

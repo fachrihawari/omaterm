@@ -57,6 +57,7 @@ func (a *appState) setPanes(h session.Host) {
 		a.panesStop()
 		a.startPanes()
 	}
+	a.pushWebTheme() // a daemon taking over learns the look too
 }
 
 // hostRef holds a host for panesRef.

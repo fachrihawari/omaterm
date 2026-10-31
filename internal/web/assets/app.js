@@ -103,7 +103,9 @@ function connectEvents() {
   events = ws;
   ws.onopen = () => { eventsRetry = 500; };
   ws.onmessage = (e) => {
-    state = JSON.parse(e.data);
+    const msg = JSON.parse(e.data);
+    if (msg.type !== "state") return;
+    state = msg.state;
     offline = false;
     render();
   };

@@ -21,6 +21,7 @@ import (
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
+	"omaterm/internal/web"
 )
 
 // Remote is the app's hold on the daemon's panes: a session.Host whose
@@ -685,6 +686,11 @@ func (p *remotePane) Changed() <-chan struct{} {
 var uiCallTimeout = 5 * time.Second
 
 // call calls the daemon, giving up after uiCallTimeout.
+// SetWebTheme sends the app's look to the daemon, for web access's page.
+func (r *Remote) SetWebTheme(t web.Theme) error {
+	return r.call("web.setTheme", t, nil)
+}
+
 func (r *Remote) call(method string, params, out any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), uiCallTimeout)
 	defer cancel()

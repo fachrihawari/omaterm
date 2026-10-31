@@ -173,6 +173,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("POST /api/pair", s.pair)
 	mux.HandleFunc("GET /api/state", s.auth(s.state))
+	mux.HandleFunc("GET /api/theme", s.auth(s.theme))
 	mux.HandleFunc("GET /api/events", s.auth(s.events))
 	mux.HandleFunc("POST /api/sessions", s.auth(s.create))
 	mux.HandleFunc("GET /api/panes/{id}/attach", s.auth(s.attach))
@@ -318,6 +319,24 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, st)
 }
 
+// theme is the app's look, for the page to take: see Theme.
+func (s *Server) theme(w http.ResponseWriter, r *http.Request) {
+	t, err := s.d.Handle(r.Context(), "web.theme", nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, t)
+}
+
+// event is what the events socket sends: the state, and the stamp of the
+// theme, which the page fetches again when it is new.
+type event struct {
+	Type  string `json:"type"` // "state"
+	State any    `json:"state"`
+	Theme string `json:"theme,omitempty"`
+}
+
 // events sends the state as it changes, settled for a quarter second.
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true}) // secure checked the origin
@@ -340,7 +359,13 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		b, _ := json.Marshal(st)
+		ev := event{Type: "state", State: st}
+		if t, err := s.d.Handle(ctx, "web.theme", nil); err == nil {
+			if th, ok := t.(Theme); ok {
+				ev.Theme = th.Stamp
+			}
+		}
+		b, _ := json.Marshal(ev)
 		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		return c.Write(wctx, websocket.MessageText, b)

@@ -22,6 +22,7 @@ import (
 	"omaterm/internal/daemon"
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
+	"omaterm/internal/theme"
 	"omaterm/internal/web"
 )
 
@@ -310,5 +311,67 @@ func TestWebWakesPane(t *testing.T) {
 	}
 	if typ, msg, err := ws.Read(ctx); err != nil || typ != websocket.MessageBinary || msg[0] != proto.FrameOutput {
 		t.Fatalf("first frame: %v %v", typ, err)
+	}
+}
+
+// The page takes the app's look: the built-in dark one until the app sends
+// its own, which the events announce with a new stamp, and which a
+// restarted daemon still has.
+func TestWebTheme(t *testing.T) {
+	f := newFixture(t)
+	c := f.paired(t)
+	get := func() web.Theme {
+		t.Helper()
+		res, err := c.Get(f.base + "/api/theme")
+		if err != nil || res.StatusCode != 200 {
+			t.Fatalf("theme: %v %v", res.Status, err)
+		}
+		var th web.Theme
+		if err := json.NewDecoder(res.Body).Decode(&th); err != nil {
+			t.Fatal(err)
+		}
+		return th
+	}
+	dark := get()
+	if !dark.Dark || dark.Tokens["accent"] == "" || dark.Terminal.ANSI[1] == "" || dark.Stamp == "" {
+		t.Fatalf("default theme: %+v", dark)
+	}
+	ws := f.dial(t, c, "/api/events")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	read := func() (ev struct {
+		Type  string          `json:"type"`
+		State json.RawMessage `json:"state"`
+		Theme string          `json:"theme"`
+	}) {
+		t.Helper()
+		_, msg, err := ws.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(msg, &ev); err != nil {
+			t.Fatal(err)
+		}
+		return ev
+	}
+	if ev := read(); ev.Type != "state" || ev.Theme != dark.Stamp || len(ev.State) == 0 {
+		t.Fatalf("first event: %+v", ev)
+	}
+	light := web.ThemeOf(theme.BuiltinLight())
+	params, _ := json.Marshal(light)
+	if _, err := f.d.Handle(ctx, "web.setTheme", params); err != nil {
+		t.Fatal(err)
+	}
+	if ev := read(); ev.Theme != light.Stamp {
+		t.Fatalf("the event after a new theme carries %q, want %q", ev.Theme, light.Stamp)
+	}
+	if got := get(); got.Dark || got.Stamp != light.Stamp {
+		t.Fatalf("theme after the app sent a light one: %+v", got)
+	}
+	if _, err := f.d.Handle(ctx, "web.setTheme", []byte(`{"dark":true}`)); err == nil {
+		t.Fatal("a theme without colors was taken")
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, "web-theme.json")); err != nil {
+		t.Fatalf("the theme isn't kept: %v", err)
 	}
 }
