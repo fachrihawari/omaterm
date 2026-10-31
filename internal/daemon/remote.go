@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"omaterm/internal/agent"
 	"omaterm/internal/client"
 	"omaterm/internal/paths"
+	"omaterm/internal/peer"
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
@@ -868,6 +870,12 @@ func attach(socket, pane string) (*stream, error) {
 	conn, err := net.DialTimeout("unix", socket, 2*time.Second)
 	if err != nil {
 		return nil, err
+	}
+	// As client.Dial checks: another user's daemon must not get what is
+	// typed into the pane.
+	if uid := peer.UID(conn); uid >= 0 && uid != os.Getuid() {
+		conn.Close()
+		return nil, fmt.Errorf("the daemon's socket %s belongs to another user", socket)
 	}
 	if err := json.NewEncoder(conn).Encode(proto.Hello{Kind: "attach", Version: proto.Version, Pane: pane}); err != nil {
 		conn.Close()
