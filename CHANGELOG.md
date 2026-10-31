@@ -3,6 +3,72 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.11.0
+
+Project processes, one place to add things, and Antigravity.
+
+### Project processes
+
+- **A project's dev server, queue worker or watcher runs in omaterm.**
+  Define it once and it shows in the sidebar's **Processes** group with
+  its status: start, stop or restart it from its row, and open its page
+  from its port. It runs in the session daemon, so it keeps running
+  after you close the window, and humans and agents share it instead of
+  each starting their own.
+- **Add Process…** suggests what to run from the project's files: the
+  `dev`, `start` and `serve` scripts in `package.json`, Procfiles,
+  Makefile, justfile and Taskfile targets, Docker Compose, Laravel,
+  Rails, Django and Go servers, and Solo's `solo.yml`.
+- **Saved in `omaterm.yml`**, which you commit and share, or kept local.
+  A command from the file runs only once you trust it, in a sheet that
+  shows what it runs; a changed definition asks again.
+- **It restarts when it should:** on failure or always, with a backoff
+  and a pause after too many crashes, and when the files it watches
+  change. A failure tells you.
+- **A process's output opens in a tab** beside your sessions, which the
+  tab keys reach like any other. Closing the tab leaves the process
+  running.
+- **Move** a process between `omaterm.yml` and the project, remove it,
+  or start and stop them all from the project's menu.
+- **From the command line:** `omaterm ps`, `start <name> [--wait]`,
+  `stop` and `restart`, and `omaterm services --wait 3000` for a port.
+  Agents are taught to use the shared dev server rather than start their
+  own.
+
+### Adding things
+
+- **The sidebar's +** lists what you can add: a session, an agent, a
+  process, a project. So does the + on a project, and its menu.
+- **New Agent…** starts Claude Code, Codex, OpenCode, Pi or Antigravity,
+  in the project's folder or, with **Work in a worktree**, on a branch
+  of its own.
+- **A project with nothing in it** starts nothing by itself: it shows
+  what can start there. Its chevron only opens and closes it.
+- **Switch Branch…** creates the branch you type when there is none by
+  that name.
+
+### Antigravity
+
+- **omaterm supports the Antigravity CLI (`agy`)** as it does Claude
+  Code: its status in the sidebar (working, asking, at its prompt), its
+  last answer under the session, `omaterm wait`, messages from other
+  agents, and after a restart the same conversation. Set it up in
+  Settings → Agents, or with `omaterm skill setup --agent antigravity`.
+
+### Also
+
+- **Both side panels resize** by their edge; a double click restores
+  the width.
+- **The inspector's tabs read more clearly**, its list of what a
+  project runs is **Running**, and a process started by one of the
+  project's processes is named for it.
+- **The Git graph keeps to four lanes**, so a deep history leaves the
+  commit subjects their room.
+- **A lead agent hears back from its workers** without being nudged: its
+  "working" report ends with its turn.
+- **Agents' hooks reach omaterm with the window closed**, so a restart
+  resumes their conversation then too.
+
 ## 0.10.1
 
 - **Windows no longer opens a stream of cmd windows.** Every time
