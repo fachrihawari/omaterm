@@ -69,8 +69,8 @@ func Bytes(name string, m Modes) ([]byte, error) {
 		return []byte{0x1b, 'O', final}, nil
 	}
 	switch {
-	case rest == "tab" && mod.shift && !mod.ctrl && !mod.alt:
-		return []byte("\x1b[Z"), nil
+	case rest == "tab" && mod.shift:
+		return shiftTab(mod, m), nil
 	case rest == "enter" || rest == "return":
 		return enter(mod, m), nil
 	case rest == "space" && (mod.ctrl || mod.alt):
@@ -122,6 +122,26 @@ func splitMods(n string) (mods, string) {
 	}
 }
 
+// disambiguates tells that the program asked, by the kitty protocol, for
+// keys a plain terminal can't tell apart to be sent as CSI u: flag 1,
+// "disambiguate escape codes", or flag 8, "report all keys as escape codes".
+// The other flags (event types, alternate keys, text) leave Ctrl+Enter as
+// it was.
+func disambiguates(m Modes) bool { return m.Kitty&(1|8) != 0 }
+
+// shiftTab is Shift+Tab with maybe Ctrl and Alt. Shift+Tab is CSI Z; Ctrl
+// can only be told apart by the kitty protocol (CSI 9;<mod>u), else it is
+// the same key; Alt is an Escape before it.
+func shiftTab(mod mods, modes Modes) []byte {
+	if mod.ctrl && disambiguates(modes) {
+		return []byte(fmt.Sprintf("\x1b[9;%du", mod.xterm()))
+	}
+	if mod.alt {
+		return []byte("\x1b\x1b[Z")
+	}
+	return []byte("\x1b[Z")
+}
+
 // enter is Enter with modifiers. The kitty protocol names it CSI 13;<mod>u
 // and modifyOtherKeys CSI 27;<mod>;13~; a plain terminal has no way to
 // tell it from Enter, so Ctrl+Enter and Shift+Enter go as Ctrl+J, which
@@ -133,7 +153,7 @@ func enter(m mods, modes Modes) []byte {
 	}
 	mod := m.xterm()
 	switch {
-	case modes.Kitty != 0:
+	case disambiguates(modes):
 		return []byte(fmt.Sprintf("\x1b[13;%du", mod))
 	case modes.ModifyOtherKeys >= 1:
 		return []byte(fmt.Sprintf("\x1b[27;%d;13~", mod))
@@ -150,7 +170,7 @@ func enter(m mods, modes Modes) []byte {
 func space(m mods, modes Modes) []byte {
 	mod := m.xterm()
 	switch {
-	case modes.Kitty != 0:
+	case disambiguates(modes):
 		return []byte(fmt.Sprintf("\x1b[32;%du", mod))
 	case modes.ModifyOtherKeys >= 1:
 		return []byte(fmt.Sprintf("\x1b[27;%d;32~", mod))

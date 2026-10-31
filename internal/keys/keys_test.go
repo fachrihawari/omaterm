@@ -56,6 +56,29 @@ func TestBytes(t *testing.T) {
 		{"ctrl+shift+enter", kitty, "\x1b[13;6u"},
 		{"ctrl+alt+enter", other, "\x1b[27;7;13~"},
 
+		// Shift+Tab with Ctrl and Alt: CSI Z, CSI 9;<mod>u where kitty can tell.
+		{"ctrl+shift+tab", plain, "\x1b[Z"},
+		{"ctrl+shift+tab", other, "\x1b[Z"},
+		{"ctrl+shift+tab", kitty, "\x1b[9;6u"},
+		{"ctrl+shift+tab", Modes{Kitty: 8}, "\x1b[9;6u"},
+		{"alt+shift+tab", plain, "\x1b\x1b[Z"},
+		{"alt+shift+tab", kitty, "\x1b\x1b[Z"},
+		{"ctrl+alt+shift+tab", plain, "\x1b\x1b[Z"},
+		{"ctrl+alt+shift+tab", kitty, "\x1b[9;8u"},
+		{"shift+tab", Modes{Kitty: 31}, "\x1b[Z"},
+
+		// Kitty flags that don't disambiguate leave Ctrl+Enter a newline;
+		// flag 1 or 8, alone or among others, make it CSI u.
+		{"ctrl+enter", Modes{Kitty: 2}, "\n"},
+		{"ctrl+enter", Modes{Kitty: 4}, "\n"},
+		{"ctrl+enter", Modes{Kitty: 16}, "\n"},
+		{"ctrl+enter", Modes{Kitty: 8}, "\x1b[13;5u"},
+		{"ctrl+enter", Modes{Kitty: 1 | 2 | 4}, "\x1b[13;5u"},
+		{"ctrl+enter", Modes{Kitty: 31}, "\x1b[13;5u"},
+		{"ctrl+space", Modes{Kitty: 2}, "\x00"},
+		{"ctrl+space", Modes{Kitty: 8}, "\x1b[32;5u"},
+		{"ctrl+enter", Modes{Kitty: 2, ModifyOtherKeys: 2}, "\x1b[27;5;13~"},
+
 		// Ctrl+Space: NUL, or a modified space.
 		{"ctrl+space", plain, "\x00"},
 		{"ctrl+space", kitty, "\x1b[32;5u"},

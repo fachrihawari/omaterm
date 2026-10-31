@@ -204,6 +204,19 @@ func TestScannerKeyboardModes(t *testing.T) {
 		{"\x1b[>1;2m", 0, 0},                    // another key's option
 		{"\x1b[0m\x1b[>4;1m", 0, 1},             // SGR, then the level
 		{"\x1b[?2004h\x1b[>1u\x1b[>4;2m", 1, 2}, // with bracketed paste
+
+		// Each screen has its own flags: the alternate screen's start empty
+		// and are dropped as the program leaves it.
+		{"\x1b[>1u\x1b[?1049h", 0, 0},                               // the alternate screen has none yet
+		{"\x1b[>1u\x1b[?1049h\x1b[>9u", 9, 0},                       // its own push
+		{"\x1b[>1u\x1b[?1049h\x1b[>9u\x1b[?1049l", 1, 0},            // leaving without a pop: the main's again
+		{"\x1b[>1u\x1b[?1049h\x1b[<u\x1b[?1049l", 1, 0},             // a pop there pops nothing of the main's
+		{"\x1b[>1u\x1b[?1047h\x1b[>9u\x1b[?1047l", 1, 0},            // 1047
+		{"\x1b[>1u\x1b[?47h\x1b[>9u\x1b[?47l", 1, 0},                // 47
+		{"\x1b[>1u\x1b[?1049h\x1b[>9u\x1b[?1049l\x1b[?1049h", 0, 0}, // entering again starts empty
+		{"\x1b[>1u\x1b[?25;1049h\x1b[>9u\x1b[?25;1049l", 1, 0},      // among other modes
+		{"\x1b[?1049h\x1b[>9u\x1bc", 0, 0},                          // a full reset leaves the alternate screen
+		{"\x1b[>1u\x1b[?1049h\x1b[?1049h\x1b[>9u", 9, 0},            // set twice: still the one screen
 	}
 	for _, c := range cases {
 		for _, one := range []bool{false, true} {
@@ -246,7 +259,7 @@ func TestKittyStackBounded(t *testing.T) {
 		o.Scan([]byte("\x1b[>1u"), nil, nil)
 	}
 	o.Scan([]byte("\x1b[>3u"), nil, nil)
-	if len(o.kitty) > maxKittyStack || o.Kitty != 3 {
-		t.Fatalf("stack %d, flags %d", len(o.kitty), o.Kitty)
+	if len(o.kitty[0]) > maxKittyStack || o.Kitty != 3 {
+		t.Fatalf("stack %d, flags %d", len(o.kitty[0]), o.Kitty)
 	}
 }

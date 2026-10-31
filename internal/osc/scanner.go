@@ -31,8 +31,13 @@ type Scanner struct {
 	Kitty int
 	// ModifyOtherKeys is xterm's modifyOtherKeys level, 0 when off.
 	ModifyOtherKeys int
-	kitty           []int  // the flags pushed, the last current
-	csi             []byte // a CSI's parameters and intermediates, so far
+	// kitty are the flags pushed, the last current, one stack for each
+	// screen: the program's alternate screen has its own, dropped as it
+	// leaves it, so a program that quits without popping leaves the main
+	// screen's flags as they were.
+	kitty [2][]int
+	alt   bool   // the alternate screen is shown
+	csi   []byte // a CSI's parameters and intermediates, so far
 }
 
 // maxKittyStack is how many kitty keyboard flags are kept pushed.
@@ -66,7 +71,7 @@ func (o *Scanner) Scan(p []byte, fn func(body []byte), reset func()) {
 				o.state = 0
 				if b == 'c' {
 					o.Bracketed = false
-					o.Kitty, o.kitty, o.ModifyOtherKeys = 0, nil, 0
+					o.Kitty, o.kitty, o.alt, o.ModifyOtherKeys = 0, [2][]int{}, false, 0
 					if reset != nil {
 						reset()
 					}
@@ -140,9 +145,39 @@ func (o *Scanner) decMode(final byte) {
 		return
 	}
 	for _, m := range bytes.Split(o.csi[1:], []byte(";")) {
-		if string(m) == "2004" {
+		switch string(m) {
+		case "2004":
 			o.Bracketed = final == 'h'
+		case "47", "1047", "1049":
+			o.screen(final == 'h')
 		}
+	}
+}
+
+// screen follows the program showing its alternate screen (on) or the main
+// one: each has its own kitty flags, and the alternate's start empty.
+func (o *Scanner) screen(on bool) {
+	if on == o.alt {
+		return
+	}
+	o.alt = on
+	o.kitty[1] = nil
+	o.setKitty()
+}
+
+// stack is the kitty flags pushed on the screen shown.
+func (o *Scanner) stack() *[]int {
+	if o.alt {
+		return &o.kitty[1]
+	}
+	return &o.kitty[0]
+}
+
+// setKitty makes Kitty the flags on top of the screen's stack.
+func (o *Scanner) setKitty() {
+	o.Kitty = 0
+	if st := *o.stack(); len(st) > 0 {
+		o.Kitty = st[len(st)-1]
 	}
 }
 
@@ -161,29 +196,30 @@ func (o *Scanner) keyboard() {
 		n, _ := strconv.Atoi(string(params[i]))
 		return n
 	}
+	st := o.stack()
 	switch o.csi[0] {
 	case '>':
 		// The stack is bounded, as kitty bounds it: a program pushing
 		// without end drops its oldest entries, not the daemon's memory.
-		if len(o.kitty) >= maxKittyStack {
-			o.kitty = append(o.kitty[:0], o.kitty[1:]...)
+		if len(*st) >= maxKittyStack {
+			*st = append((*st)[:0], (*st)[1:]...)
 		}
-		o.kitty = append(o.kitty, num(0))
+		*st = append(*st, num(0))
 	case '<':
 		n := num(0)
 		if n < 1 {
 			n = 1
 		}
-		if n > len(o.kitty) {
-			n = len(o.kitty)
+		if n > len(*st) {
+			n = len(*st)
 		}
-		o.kitty = o.kitty[:len(o.kitty)-n]
+		*st = (*st)[:len(*st)-n]
 	case '=':
-		if len(o.kitty) == 0 {
-			o.kitty = append(o.kitty, 0)
+		if len(*st) == 0 {
+			*st = append(*st, 0)
 		}
 		flags, mode := num(0), num(1)
-		cur := o.kitty[len(o.kitty)-1]
+		cur := (*st)[len(*st)-1]
 		switch mode {
 		case 2: // add
 			cur |= flags
@@ -192,14 +228,11 @@ func (o *Scanner) keyboard() {
 		default: // set
 			cur = flags
 		}
-		o.kitty[len(o.kitty)-1] = cur
+		(*st)[len(*st)-1] = cur
 	default:
 		return // a query, CSI ? u: the program asks, it does not say
 	}
-	o.Kitty = 0
-	if len(o.kitty) > 0 {
-		o.Kitty = o.kitty[len(o.kitty)-1]
-	}
+	o.setKitty()
 }
 
 // modifyOtherKeys follows xterm's "CSI > 4 ; n m", which sets the level,
