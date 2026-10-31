@@ -14,6 +14,33 @@ Nothing here has run on a Mac. CI runs only on Linux; release.yml only builds th
 
 This file only collects findings. No code changes.
 
+**Status, 2026-10-31 (`release/0.12.1`):**
+- Fixed:
+  - process lookups and dev servers on `::1`
+  - the login environment (1.1)
+  - daemon notifications (1.2)
+  - Dev URLs binding and an honest port check (1.3, still to confirm on a Mac)
+  - test isolation and the darwin test build (1.5, §4)
+  - CI: `go vet` for macOS and Windows, and a `macos-latest` job
+  - Option as Meta (a setting, off by default) and ⌘←, ⌘→, ⌘⌫
+  - the peer check on darwin
+  - the Dock badge and Settings… in the app menu
+  - osascript errors and the prompt
+  - the shell fallback, the git stub, the Tailscale.app CLI, the CLI PATH hint
+  - opening paths, CPU and memory, the Linux wording, process names
+  - the bundle identifier, now `id.my.fhwr.omaterm`
+- Left:
+  - notarization (1.4)
+  - start at login
+  - where the CLI goes (only a hint for now)
+  - app translocation
+  - `omaterm <dir>` detaching from the terminal
+  - title bar theme sync (`Theme.SetSource` would break the System theme mode)
+  - the quit message, the other menus, FocusFollowsMouse
+  - the state dir's location
+  - the folder comparison in hooks
+  - updating without write access next to the bundle
+
 ---
 
 ## 0. At a glance
