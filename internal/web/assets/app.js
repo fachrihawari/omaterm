@@ -89,12 +89,12 @@ function h(tag, props = {}, ...children) {
 }
 
 function icon(name, cls = "") {
-  return h("span", { class: `ic ${cls}`, html: IC[name] || "" });
+  return h("span", { class: `ic ${cls}`, html: Object.hasOwn(IC, name) ? IC[name] : "" });
 }
 
 function statusIcon(stateName, cls = "") {
   if (!stateName || stateName === "none") return null;
-  return h("span", { class: `st ${cls}`, html: ST[stateName] || "" });
+  return h("span", { class: `st ${cls}`, html: Object.hasOwn(ST, stateName) ? ST[stateName] : "" });
 }
 
 async function api(path, body) {
@@ -278,7 +278,7 @@ function paneByID(id) {
 function label(p) {
   if (!p) return "Terminal";
   if (p.url) return p.title || p.url;
-  if (p.agent) return AGENTS[p.agent] || p.agent;
+  if (p.agent) return Object.hasOwn(AGENTS, p.agent) ? AGENTS[p.agent] : p.agent;
   return p.process || p.shell || "Terminal";
 }
 
@@ -564,7 +564,9 @@ function processRow(s, proj, open) {
   const proc = s.proc;
   const pst = processState(proc ? { status: proc.status } : lead);
 
-  const link = proc?.share || proc?.link || "";
+  // Only a web address is a link: the state is data, not trusted markup.
+  const web = (u) => (typeof u === "string" && /^https?:\/\//.test(u) ? u : "");
+  const link = web(proc?.share) || web(proc?.link);
   const port = proc?.port || lead.port;
   let pill = null;
   if (link) {
@@ -841,8 +843,15 @@ function showTerm(id) {
 
   const send = (bytes) => { if (ws && ws.readyState === 1) ws.send(frame("i", bytes)); };
   const sendText = (s) => send(enc.encode(s));
-  const sendKey = (k) => { if (ws && ws.readyState === 1) ws.send(frame("k", enc.encode(k))); };
-  const sendPaste = (p) => { if (ws && ws.readyState === 1) ws.send(frame("p", enc.encode(p))); };
+  // sendKey and sendPaste tell whether the frame went: the compose box
+  // keeps its text when it did not.
+  const sendFrame = (kind, s) => {
+    if (!ws || ws.readyState !== 1) return false;
+    ws.send(frame(kind, enc.encode(s)));
+    return true;
+  };
+  const sendKey = (k) => sendFrame("k", k);
+  const sendPaste = (p) => sendFrame("p", p);
   const appCursor = () => Boolean(xt.modes?.applicationCursorKeysMode);
 
   const setNote = (text) => { note.hidden = !text; note.textContent = text || ""; };

@@ -6,7 +6,8 @@
 //   const compose = mountCompose(el, { sendPaste, sendKey });
 //   compose.open(); compose.close(); compose.destroy();
 //
-// Send pastes the text (sendPaste) and then presses Enter (sendKey), so a
+// sendPaste and sendKey return false when they could not send; the text then
+// stays in the box, with a note. Send pastes the text (sendPaste) and then presses Enter (sendKey), so a
 // prompt is submitted once; Insert pastes it without Enter, to edit it in
 // the terminal. An unsent draft is kept in localStorage under
 // omaterm.compose; without storage the box works and forgets.
@@ -76,7 +77,11 @@ export function mountCompose(el, options = {}) {
   send.type = "button";
   send.className = "compose-send";
   send.textContent = "Send ⏎";
-  foot.append(insert, send);
+  const note = document.createElement("span");
+  note.className = "compose-note";
+  note.setAttribute("role", "alert");
+  note.hidden = true;
+  foot.append(note, insert, send);
 
   panel.append(head, box, foot);
   root.append(backdrop, panel);
@@ -85,6 +90,7 @@ export function mountCompose(el, options = {}) {
   let lastFocus = null;
 
   function open() {
+    note.hidden = true;
     lastFocus = document.activeElement;
     root.hidden = false;
     box.focus();
@@ -113,10 +119,19 @@ export function mountCompose(el, options = {}) {
     save("");
   }
 
+  // submit sends the text, and Enter after it. A send that reports it did
+  // not go (false: the terminal's socket is down) keeps the text and the box,
+  // so nothing the user wrote is lost.
   function submit(withEnter) {
     const text = box.value;
-    if (text.trim() !== "" && typeof sendPaste === "function") sendPaste(text);
-    if (withEnter && typeof sendKey === "function") sendKey("enter");
+    let sent = true;
+    if (text.trim() !== "" && typeof sendPaste === "function") sent = sendPaste(text) !== false;
+    if (sent && withEnter && typeof sendKey === "function") sent = sendKey("enter") !== false;
+    if (!sent) {
+      note.textContent = "Not connected: not sent";
+      note.hidden = false;
+      return;
+    }
     clear();
     close();
   }
@@ -125,7 +140,10 @@ export function mountCompose(el, options = {}) {
   on(backdrop, "click", close);
   on(insert, "click", () => submit(false));
   on(send, "click", () => submit(true));
-  on(box, "input", () => save(box.value));
+  on(box, "input", () => {
+    note.hidden = true;
+    save(box.value);
+  });
   on(box, "keydown", (e) => {
     if (e.key === "Escape") {
       e.preventDefault();

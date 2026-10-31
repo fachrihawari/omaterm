@@ -397,3 +397,14 @@
   outline: 2px solid var(--accent, #2f81f7);
   outline-offset: 2px;
 }
+
+.compose-note {
+  margin-right: auto;
+  align-self: center;
+  font-size: 12.5px;
+  color: var(--bad, #ff6f6f);
+}
+
+.compose-note[hidden] {
+  display: none;
+}

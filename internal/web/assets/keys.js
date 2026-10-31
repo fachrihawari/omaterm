@@ -7,7 +7,8 @@
 //
 // sendKey(name) sends a key by name to the daemon ("esc", "shift+tab",
 // "up", "ctrl+enter"), which encodes it as the program asked keys to be
-// sent. sendText(text) pastes text into the pane.
+// sent. sendText(text) sends text as typed input, as if the user typed it, not
+// as a paste: a newline in it goes as it is (a line feed).
 //
 // Ctrl and Alt are sticky: one tap applies them to the next key, or to the
 // next character the user types in the terminal, and then releases; a

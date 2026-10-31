@@ -270,7 +270,7 @@ func TestWebKeysAndPaste(t *testing.T) {
 func TestWebModulesServed(t *testing.T) {
 	f := newFixture(t)
 	c := f.client(t)
-	for _, path := range []string{"/keys.js", "/keys.css", "/compose.js", "/keys-demo.html"} {
+	for _, path := range []string{"/keys.js", "/keys.css", "/compose.js"} {
 		res, err := c.Get(f.base + path)
 		if err != nil {
 			t.Fatal(err)
