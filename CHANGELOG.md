@@ -3,6 +3,50 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.12.2
+
+omaterm on Windows does what it does on Linux and macOS, and a few things
+for everyone.
+
+### Windows
+
+- **omaterm runs its terminals itself,** as on Linux and macOS. An
+  agent's status shows in the sidebar, `omaterm send`, `ask`, `wait` and
+  `read` reach its pane, its session resumes, and closing a pane ends
+  everything it started. Until now a pane's program ran out of omaterm's
+  sight, so none of that worked.
+- **Panes and project processes run in PowerShell,** or `cmd` when there
+  is no PowerShell. Project processes didn't start at all.
+- **The `omaterm` command works** in panes and in agents' hooks, and
+  prints its output in PowerShell and `cmd`. Settings says how to put it
+  on `PATH`.
+- **The Info panel lists a session's processes and ports,** and the
+  status bar shows CPU and memory.
+- **Paths are Windows paths:** a project directly under a drive, such as
+  `D:\app`, opens; a folder opened in another case is the same project;
+  files are found in it whatever their case; your home shows as `~`.
+- **Saving a file waits a moment for Windows** when another program,
+  such as Defender, still holds it, rather than failing. A file with
+  Windows line endings keeps them when saved.
+- **Ctrl+click opens `file:///C:/…` links,** and a `settings.json`
+  saved with a byte order mark reads.
+- **Web Access, Dev URLs, Share and keeping sessions running** need the
+  session daemon, which Windows doesn't have yet: Settings says so rather
+  than offering what can't work.
+
+### Everywhere
+
+- **The Files tab makes new files and folders.** New File and New Folder
+  sit at its top, and a file or folder's menu offers them there. Type
+  the name in the tree; `src/app/page.tsx` makes its folders too, and a
+  new file opens in the editor.
+- **A file outside the project, clicked in a terminal, opens in the
+  editor.** A plan Claude Code writes under `~/.claude` went to whatever
+  your system opens its type with.
+- **Projects in the sidebar no longer fold away.** Each shows its
+  sessions, and a long list scrolls.
+- **A Git installed while omaterm runs is found** without a restart.
+
 ## 0.12.1
 
 omaterm on a Mac: what 0.12.0 left broken there, and a Mac's own ways.
