@@ -285,6 +285,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 				a.crashBanner(c)
 				a.daemonBanner(c)
 				a.agentSetupBanner(c)
+				a.mergeAskBanner(c)
 				// No pane starts until the user chose what runs it: a card
 				// says so behind the dialog, where the panes were a hole.
 				if a.daemonRefusedOpen == nil {

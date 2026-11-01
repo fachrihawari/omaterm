@@ -499,9 +499,9 @@ func TestAskReplyCommands(t *testing.T) {
 }
 
 // A lead merges its worker into its own branch, which closes the worker
-// and removes its worktree; the main checkout stays as it was. It can't
-// merge into the main checkout, nor what wasn't made from its branch; a
-// conflict is for the worker to resolve.
+// and removes its worktree; the main checkout stays as it was. Into the
+// main checkout it merges once the user approves; what wasn't made from
+// its branch, never; a conflict is for the worker to resolve.
 func TestLeadMergesItsWorker(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -545,15 +545,37 @@ func TestLeadMergesItsWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c2 := range []struct {
-		by, target, want string
-	}{
-		{plain.(proto.Created).Pane, other.Session, "you work in the main checkout, and merging into main is the user's"},
-		{lead.Pane, other.Session, "other was made from main, not from your branch feat: the user merges it"},
-	} {
-		if err := c.Call("worktree.merge", proto.MergeParams{By: c2.by, Target: c2.target}, nil); err == nil || !strings.Contains(err.Error(), c2.want) {
-			t.Errorf("merged: %v", err)
+	if err := c.Call("worktree.merge", proto.MergeParams{By: lead.Pane, Target: other.Session}, nil); err == nil ||
+		!strings.Contains(err.Error(), "other was made from main, not from your branch feat: the user merges it") {
+		t.Errorf("merged: %v", err)
+	}
+	// From the main checkout, the merge waits for the user: declined, then
+	// approved.
+	asks := make(chan *mergeAsk, 1)
+	defer func(f func(*appState, *mergeAsk)) { mergeAskNotice = f }(mergeAskNotice)
+	mergeAskNotice = func(_ *appState, ask *mergeAsk) { asks <- ask }
+	commitFile(t, wt.Dir, "other.txt", "other's\n")
+	plainPane := plain.(proto.Created).Pane
+	go func() { (<-asks).answer <- false }()
+	if err := c.Call("worktree.merge", proto.MergeParams{By: plainPane, Target: other.Session}, nil); err == nil ||
+		!strings.Contains(err.Error(), "the user declined merging other into main") {
+		t.Errorf("declined: %v", err)
+	}
+	go func() {
+		ask := <-asks
+		if ask.who != "plain" || ask.name != "other" || !strings.Contains(ask.summary, "1 commit") {
+			t.Errorf("asked %+v", ask)
 		}
+		ask.answer <- true
+	}()
+	if err := c.Call("worktree.merge", proto.MergeParams{By: plainPane, Target: other.Session}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Into != "main" || len(out.Commits) != 1 {
+		t.Fatalf("merged %+v", out)
+	}
+	if _, err := os.Stat(filepath.Join(a.workspace, "other.txt")); err != nil {
+		t.Error("the approved merge isn't in the main checkout")
 	}
 
 	// A conflict.

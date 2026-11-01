@@ -386,7 +386,12 @@ func (d *Daemon) mergeWorktree(ctx context.Context, p proto.MergeParams) (any, e
 	}
 	t := st.Sessions[i]
 	name := sessionName(t, session.Info{})
-	if err := model.LeadMerge(lead.Worktree, t.Worktree, name); err != nil {
+	switch err := model.LeadMerge(lead.Worktree, t.Worktree, name); {
+	case errors.Is(err, model.ErrUserApproves):
+		// The user approves it in the window, which is closed.
+		return nil, proto.Errorf(proto.CodeAppClosed, "merging into "+t.Worktree.Base+
+			" waits for the user to approve it in omaterm's window, which is closed: try again once it is open, or leave "+name+" for the user to merge")
+	case err != nil:
 		return nil, proto.Errorf(proto.CodeUsage, err.Error())
 	}
 	w := *t.Worktree
@@ -821,10 +826,14 @@ func (d *Daemon) forward(ctx context.Context, method string, raw json.RawMessage
 
 // forwardTimeout is how long a call passed to the app may take: a wait
 // as long as the command waits, git's work on a worktree as long as it
-// may take, anything else half a minute.
+// may take (a merge, after the user approves it), anything else half a
+// minute.
 func forwardTimeout(method string, raw json.RawMessage) time.Duration {
 	var p struct{ Worktree any }
-	if method == "worktree.merge" || method == "create" && json.Unmarshal(raw, &p) == nil && p.Worktree != nil {
+	switch {
+	case method == "worktree.merge":
+		return model.MergeAskTimeout + worktreeTimeout
+	case method == "create" && json.Unmarshal(raw, &p) == nil && p.Worktree != nil:
 		return worktreeTimeout
 	}
 	if method == "wait" {

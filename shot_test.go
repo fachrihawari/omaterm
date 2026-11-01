@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 
 	"omaterm/internal/gitsnap"
+	"omaterm/internal/model"
 	"omaterm/internal/session"
 	"omaterm/internal/theme"
 	"omaterm/service"
@@ -117,6 +118,10 @@ func TestShots(t *testing.T) {
 		{"changes", shotChanges, nil},
 		{"daemon-banner", func(a *appState) { a.daemonStale = "0.7.0" }, nil},
 		{"agent-setup-banner", func(a *appState) { a.agentSetupOffer = "opencode" }, nil},
+		{"merge-ask-banner", func(a *appState) {
+			a.mergeAsks = []*mergeAsk{{who: "Claude Code", name: "fix-login",
+				w: model.Worktree{Branch: "fix-login", Base: "main"}, summary: "3 commits, 5 files changed (+120 −14)"}}
+		}, nil},
 		{"daemon-dialog", func(a *appState) { open := true; a.daemonRefusedOpen = &open }, nil},
 		{"sessions-light", func(a *appState) { a.applyTheme(shotTheme(t, "lupine")); shotStatuses(a) }, nil},
 		{"theme-tokyo", func(a *appState) { a.applyTheme(shotTheme(t, "tokyo-night")) }, nil},

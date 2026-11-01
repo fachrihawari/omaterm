@@ -458,10 +458,10 @@ func TestBranchDiffWithWindowClosed(t *testing.T) {
 			t.Error("the worker's session stays")
 		}
 	}
-	// Not into the main checkout.
+	// Not into the main checkout: the user approves that in the window.
 	plain := call[proto.Created](t, c, "create", proto.CreateParams{Dir: proj, Name: "plain"})
 	if err := c.Call("worktree.merge", proto.MergeParams{By: plain.Pane, Target: lead.Session}, nil); err == nil ||
-		!strings.Contains(err.Error(), "merging into main is the user's") {
+		!strings.Contains(err.Error(), "merging into main waits for the user to approve it in omaterm's window, which is closed") {
 		t.Fatalf("merged into main: %v", err)
 	}
 }

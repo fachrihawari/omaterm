@@ -77,15 +77,23 @@ type Worktree struct {
 	Base   string `json:"base"`
 }
 
+// ErrUserApproves is LeadMerge's answer for a lead in the main checkout:
+// merging into it is the user's, so it waits for the user to approve.
+var ErrUserApproves = errors.New("merging into the main checkout waits for the user to approve")
+
+// MergeAskTimeout is how long such a merge waits for the user.
+const MergeAskTimeout = 30 * time.Minute
+
 // LeadMerge tells why the agent of a session in worktree lead may not
 // merge w, the worktree of session name: only one made from the lead's
-// own branch may be. Merging into the main checkout is the user's.
+// own branch may be. Merging into the main checkout (no lead worktree)
+// is the user's: ErrUserApproves.
 func LeadMerge(lead, w *Worktree, name string) error {
 	switch {
 	case w == nil:
 		return fmt.Errorf("%s works in no worktree of its own", name)
 	case lead == nil:
-		return fmt.Errorf("you work in the main checkout, and merging into %s is the user's: they merge %s from omaterm", w.Base, w.Branch)
+		return ErrUserApproves
 	case w.Base != lead.Branch:
 		return fmt.Errorf("%s was made from %s, not from your branch %s: the user merges it", w.Branch, w.Base, lead.Branch)
 	}
