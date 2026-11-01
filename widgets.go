@@ -33,7 +33,7 @@ const iconBtn = 14.0
 
 // cmdButton is the mock's .cmd button: a muted icon, optionally filled
 // and white when active.
-func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Element {
+func (a *appState) cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Element {
 	// The mock's .cmd: transparent with a 1px transparent border, and on
 	// hover #182029 with a #27313d border and a white icon.
 	e := ui.ButtonBase(c).Padding(size/2).Radius(7).Shrink(0).Border(1, ui.Color{})
@@ -44,13 +44,14 @@ func cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Elemen
 	case hover:
 		e = e.Background(pal.Hover).Border(1, pal.BorderStrong)
 	}
+	a.press(a.fadeColors(e))
 	e.Children(func() {
 		i := ui.Icon(c, icon).Width(size).Height(size)
+		ink := pal.TextMuted
 		if active || hover {
-			i.TextColor(pal.TextStrong)
-		} else {
-			i.TextColor(pal.TextMuted)
+			ink = pal.TextStrong
 		}
+		i.TextColor(a.animColor(i, "ink", ink, motionFast))
 	})
 	return e
 }

@@ -104,6 +104,7 @@ func (a *appState) processDialog(c *ui.Context) {
 						if row.Hovered() {
 							row.Background(pal.Hover)
 						}
+						a.fadeColors(row)
 						row.Children(func() {
 							ui.Text(c, suggestion.Name).FontSize(12).TextColor(pal.Text).Width(90).SingleLine().Ellipsis("…")
 							ui.Text(c, suggestion.Command).FontSize(11).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)

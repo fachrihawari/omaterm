@@ -182,7 +182,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 						sectionLabel(c, "RUNNING")
 						ui.Spacer(c)
 						countBadge(c, len(a.processes))
-						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
+						if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
 							a.refreshProcesses()
 						}
 					})
@@ -230,7 +230,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								ui.Spacer(c)
 								mutedTxt2(c, strings.Trim(proc.CPU+" · "+proc.Mem, " ·"), 11)
 								if proc.Pid != 1 && proc.Pid != os.Getpid() {
-									if cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
+									if a.cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
 										a.pendingKillPid = proc.Pid
 										a.pendingKillName = proc.Name
 										open := true
@@ -248,7 +248,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 						sectionLabel(c, "PORTS")
 						ui.Spacer(c)
 						countBadge(c, len(a.ports))
-						if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
+						if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
 							a.refreshProcesses()
 						}
 					})
@@ -282,7 +282,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 									// opens it.
 									pill(c, procLinkHost(proc.Link)).Tooltip("Dev URL of the process " + proc.Name)
 									if port.Open {
-										if cmdButton(c, iconExternalLink, iconBtn, false).Label("Open " + proc.Link).
+										if a.cmdButton(c, iconExternalLink, iconBtn, false).Label("Open " + proc.Link).
 											Tooltip("Open " + proc.Link).Clicked() {
 											a.openURL(proc.Link)
 										}
@@ -295,7 +295,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 										// It only said the port; it opens its page now, where
 										// links open (Settings: a browser pane, or yours).
 										url := "http://localhost:" + itoa(port.Port)
-										if cmdButton(c, iconExternalLink, iconBtn, false).Label("Open " + url).
+										if a.cmdButton(c, iconExternalLink, iconBtn, false).Label("Open " + url).
 											Tooltip("Open " + url).Clicked() {
 											a.openURL(url)
 										}
@@ -339,6 +339,7 @@ func (a *appState) updateSection(c *ui.Context) {
 			if b.Hovered() {
 				b.Background(pal.Hover)
 			}
+			a.press(a.fadeColors(b))
 			b.Children(func() {
 				ui.Text(c, "Check").FontSize(10).TextColor(pal.TextSoft)
 			})
@@ -357,10 +358,10 @@ func (a *appState) filesPanel(c *ui.Context) ui.Element {
 			ui.Row(c).Height(36).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, 12).Gap(2).Children(func() {
 				sectionLabel(c, "FILES")
 				ui.Spacer(c)
-				if cmdButton(c, iconFilePlus, iconBtn, false).Tooltip("New File").Label("New File").Clicked() {
+				if a.cmdButton(c, iconFilePlus, iconBtn, false).Tooltip("New File").Label("New File").Clicked() {
 					a.startNewEntry(a.workspace, false)
 				}
-				if cmdButton(c, iconFolderPlus, iconBtn, false).Tooltip("New Folder").Label("New Folder").Clicked() {
+				if a.cmdButton(c, iconFolderPlus, iconBtn, false).Tooltip("New Folder").Label("New Folder").Clicked() {
 					a.startNewEntry(a.workspace, true)
 				}
 			})
@@ -574,17 +575,17 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
 				ui.Spacer(c)
 				remote := r.HasRemote
-				if b := cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch").Label("Fetch"); !remote {
+				if b := a.cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch").Label("Fetch"); !remote {
 					b.Disabled(true) // painted at half opacity
 				} else if b.Clicked() {
 					a.gitFetch(c)
 				}
-				if b := cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull").Label("Pull"); !remote {
+				if b := a.cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull").Label("Pull"); !remote {
 					b.Disabled(true) // painted at half opacity
 				} else if b.Clicked() {
 					a.gitPull(c)
 				}
-				if b := cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push").Label("Push"); !remote {
+				if b := a.cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push").Label("Push"); !remote {
 					b.Disabled(true) // painted at half opacity
 				} else if b.Clicked() {
 					a.gitPush(c)
@@ -741,7 +742,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 		ui.Spacer(c)
 		r := a.activeRepoRef()
 		if staged {
-			all := cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage all")
+			all := a.cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage all")
 			if all.Clicked() && r != nil {
 				if err := service.UnstageAll(r.Root); err != nil {
 					c.Toast("Git error: " + err.Error())
@@ -750,7 +751,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 				}
 			}
 		} else {
-			stageAll := cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stage all")
+			stageAll := a.cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stage all")
 			if stageAll.Clicked() && r != nil {
 				if err := service.StageAll(r.Root); err != nil {
 					c.Toast("Git error: " + err.Error())
@@ -781,7 +782,7 @@ func (a *appState) gitGraphSection(c *ui.Context) {
 			countBadge(c, len(a.commits))
 		}
 		ui.Spacer(c)
-		if cmdButton(c, iconOpenInNew, iconBtn, false).Tooltip("Open in pane").Clicked() {
+		if a.cmdButton(c, iconOpenInNew, iconBtn, false).Tooltip("Open in pane").Clicked() {
 			a.openGraphTab()
 		}
 	})
@@ -843,7 +844,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 		actions.Children(func() {
 			r := a.activeRepoRef()
 			if staged {
-				un := cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage")
+				un := a.cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage")
 				if un.Clicked() && r != nil {
 					if err := service.Unstage(r.Root, f.Path); err != nil {
 						c.Toast("Git error: " + err.Error())
@@ -856,7 +857,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				if f.Status == "!" {
 					stageTip = "Mark Resolved" // staging a conflicted file resolves it
 				}
-				st := cmdButton(c, iconPlus, iconBtn, false).Tooltip(stageTip)
+				st := a.cmdButton(c, iconPlus, iconBtn, false).Tooltip(stageTip)
 				if st.Clicked() && r != nil {
 					if err := service.Stage(r.Root, f.Path); err != nil {
 						c.Toast("Git error: " + err.Error())
@@ -870,7 +871,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				}
 				// A conflict has no version to go back to: git refuses.
 				if f.Status != "!" {
-					di := cmdButton(c, discardIcon, iconBtn, false).Tooltip("Discard")
+					di := a.cmdButton(c, discardIcon, iconBtn, false).Tooltip("Discard")
 					if di.Clicked() && r != nil {
 						a.askDiscard(r.Root, f.Path, f.Status == "U")
 					}
@@ -909,7 +910,7 @@ func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
 			ui.Row(c).Height(28).Radius(6).Border(1, pal.Border).Background(pal.Input).AlignItems(ui.Center).Padding(0, 8).Gap(6).Children(func() {
 				ui.Icon(c, iconArchive).Width(12).Height(12).TextColor(pal.TextMuted)
 				ui.TextInputBase(c, &a.stashMsg).Placeholder("Stash message…").FontSize(10).Grow(1)
-				track := cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stash (include untracked)")
+				track := a.cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stash (include untracked)")
 				if track.Clicked() {
 					a.gitStashPushUntracked(c)
 				}
@@ -928,6 +929,7 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 	if hover {
 		e.Background(pal.Hover)
 	}
+	a.fadeColors(e)
 	e.Children(func() {
 		ui.Icon(c, iconArchive).Width(14).Height(14).TextColor(pal.Warn)
 		ui.Column(c).Gap(1).MinWidth(0).Grow(1).Children(func() {
@@ -946,19 +948,19 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 			// showed it: a drop or pop since moved the others up, and a
 			// quick second click dropped the wrong one.
 			hash := s.Hash
-			apply := cmdButton(c, iconRotate, iconBtn, false).Tooltip("Apply")
+			apply := a.cmdButton(c, iconRotate, iconBtn, false).Tooltip("Apply")
 			if apply.Clicked() {
 				if i, ok := a.stashIndex(c, hash); ok {
 					a.gitStashApply(c, i)
 				}
 			}
-			pop := cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Pop")
+			pop := a.cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Pop")
 			if pop.Clicked() {
 				if i, ok := a.stashIndex(c, hash); ok {
 					a.gitStashPop(c, i)
 				}
 			}
-			drop := cmdButton(c, iconTrash, iconBtn, false).Tooltip("Drop")
+			drop := a.cmdButton(c, iconTrash, iconBtn, false).Tooltip("Drop")
 			if drop.Clicked() {
 				msg := s.Message
 				a.askDanger("Drop Stash?", "“"+msg+"” is deleted for good.", "Drop", func() {

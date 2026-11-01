@@ -184,7 +184,7 @@ func (a *appState) graphView(c *ui.Context) ui.Element {
 			}
 			headerTitle(c, iconGitGraph, pal.ANSI[5], "Git Graph", detail)
 			ui.Spacer(c)
-			if cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Reload history").Clicked() {
+			if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Reload history").Clicked() {
 				a.refreshGraph()
 			}
 		})

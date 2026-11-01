@@ -468,6 +468,7 @@ func (a *appState) settingsNavHit(c *ui.Context, it settingsNavItem) {
 		row.Background(pal.Hover)
 		col = pal.Text
 	}
+	a.fadeColors(row)
 	row.Children(func() {
 		ui.Text(c, it.def.Title).FontSize(12).TextColor(col).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 	})

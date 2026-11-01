@@ -676,6 +676,7 @@ func (a *appState) processPlaceholder(c *ui.Context, tab topTab) ui.Element {
 			if b.Hovered() {
 				b.Background(pal.Hover)
 			}
+			a.press(a.fadeColors(b))
 			b.Children(func() { ui.Text(c, "Start").FontSize(12).TextColor(pal.Text) })
 			if b.Clicked() {
 				if pi, ok := a.projectIndexForTab(tab.ID); ok {

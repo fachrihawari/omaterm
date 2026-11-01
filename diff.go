@@ -237,7 +237,7 @@ func (a *appState) diffFileStrip(c *ui.Context) {
 	}
 	i := a.diffFileIdx
 	ui.Row(c.Key("files")).Gap(2).AlignItems(ui.Center).Shrink(0).Children(func() {
-		if cmdButton(c, iconChevronLeft, 13, false).Tooltip("Previous file").Clicked() && i > 0 {
+		if a.cmdButton(c, iconChevronLeft, 13, false).Tooltip("Previous file").Clicked() && i > 0 {
 			a.diffFileShow(i - 1)
 		}
 		label := ui.Text(c, itoa(i+1)+"/"+itoa(n)).FontSize(11.5).TextColor(pal.TextMuted).SingleLine().Cursor(ui.CursorPointer)
@@ -252,7 +252,7 @@ func (a *appState) diffFileStrip(c *ui.Context) {
 				}
 			}
 		})
-		if cmdButton(c, iconChevronRight, 13, false).Tooltip("Next file").Clicked() && i < n-1 {
+		if a.cmdButton(c, iconChevronRight, 13, false).Tooltip("Next file").Clicked() && i < n-1 {
 			a.diffFileShow(i + 1)
 		}
 	})

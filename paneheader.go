@@ -325,10 +325,10 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 	row.Opacity(a.animate(row, "show", 1, motionFast))
 	row.Children(func() {
 		if splits {
-			if cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
+			if a.cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
 				a.splitActivePaneAt(c, id, splitVertical)
 			}
-			if cmdButton(c, iconRows2, 13, false).Tooltip("Split down (" + keyLabels("terminal.splitDown") + ")").Clicked() {
+			if a.cmdButton(c, iconRows2, 13, false).Tooltip("Split down (" + keyLabels("terminal.splitDown") + ")").Clicked() {
 				a.splitActivePaneAt(c, id, splitHorizontal)
 			}
 		}
@@ -337,12 +337,12 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 			if tab.Zoomed == id {
 				zoomIcon, tip = iconMinimize, "Show all panes"
 			}
-			if cmdButton(c, zoomIcon, 13, false).Tooltip(tip + " (" + keyLabels("pane.zoom") + ")").Clicked() {
+			if a.cmdButton(c, zoomIcon, 13, false).Tooltip(tip + " (" + keyLabels("pane.zoom") + ")").Clicked() {
 				a.activePaneTermID = id
 				a.toggleZoom()
 			}
 		}
-		if cmdButton(c, iconX, 13, false).Tooltip("Close pane").Clicked() {
+		if a.cmdButton(c, iconX, 13, false).Tooltip("Close pane").Clicked() {
 			if multi {
 				a.confirmCloseRunning([]string{id}, "Close Pane", func() { a.removePane(id) })
 			} else {

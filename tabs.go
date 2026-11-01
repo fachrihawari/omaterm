@@ -24,7 +24,7 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 	return ui.Row(c).Height(40).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, left).Gap(4).Children(func() {
 		// Show-sidebar button, only while the sidebar is hidden.
 		if !a.sidebarShown {
-			if cmdButton(c, iconPanelLeft, 15, false).
+			if a.cmdButton(c, iconPanelLeft, 15, false).
 				Tooltip("Show Sidebar (" + keyLabels("view.toggleSidebar") + ")").Label("Show Sidebar").Clicked() {
 				a.setSidebar(true)
 			}
@@ -64,16 +64,16 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 			}
 		})
 		ui.Row(c).AlignItems(ui.Center).Gap(2).Children(func() {
-			if cmdButton(c, iconKeyboard, 15, false).
+			if a.cmdButton(c, iconKeyboard, 15, false).
 				Tooltip("Keyboard Shortcuts (" + keyLabels("help.keyboardShortcuts") + ")").
 				Label("Keyboard Shortcuts").Clicked() {
 				a.openOverlay(overlayShortcuts)
 			}
-			if cmdButton(c, iconSearch, 15, false).
+			if a.cmdButton(c, iconSearch, 15, false).
 				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
-			if cmdButton(c, iconPanelRight, 15, a.inspectorShown).
+			if a.cmdButton(c, iconPanelRight, 15, a.inspectorShown).
 				Tooltip("Toggle Inspector (" + keyLabels("view.toggleInspector") + ")").Clicked() {
 				a.setInspector(!a.inspectorShown)
 			}

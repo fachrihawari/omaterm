@@ -364,6 +364,7 @@ func (a *appState) addressBar(c *ui.Context, tab *topTab, id string, e *webEntry
 				grip.Background(pal.Hover).Cursor(ui.CursorGrab)
 			}
 		}
+		a.fadeColors(grip)
 		grip.Children(func() { ui.Icon(c, iconGlobe).Size(13, 13) })
 		in = ui.TextInputBase(c.Key("in"), &e.address).Grow(1).MinWidth(0).FontSize(12.5).
 			Placeholder("Address or search").Label("Address")
