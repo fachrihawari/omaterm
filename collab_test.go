@@ -147,18 +147,23 @@ func TestSessionTree(t *testing.T) {
 		t.Errorf("tabs go %s", got)
 	}
 
-	// The chevron left of the lead's icon hides what it started.
+	// The chevron, in the place of the lead's icon while the pointer is on
+	// it, hides what it started.
 	r := rects["lead"]
-	tr.ClickAt(r.X-36, r.Y+r.H/2)
-	tr.Frame()
+	chevron := func() {
+		tr.Move(r.X-15, r.Y+r.H/2)
+		tr.Frame()
+		tr.ClickAt(r.X-15, r.Y+r.H/2)
+		tr.Frame()
+	}
+	chevron()
 	if !a.tabs[index(lead.Session)].Collapsed || inSidebar("w1") || !tr.HasText("+3") {
 		t.Fatalf("collapsed %v: %v", a.tabs[index(lead.Session)].Collapsed, tr.Texts())
 	}
 	if a.activeTab == index(lead.Session) {
 		t.Error("the chevron went to the session")
 	}
-	tr.ClickAt(r.X-36, r.Y+r.H/2)
-	tr.Frame()
+	chevron()
 	if !inSidebar("w1") {
 		t.Fatal("expanding didn't show w1")
 	}

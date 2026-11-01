@@ -245,7 +245,7 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 		}
 	}
 	if empty {
-		ui.Text(c, "No sessions").FontSize(11.5).TextColor(pal.TextFaint).Padding(4, 0, 4, 28)
+		ui.Text(c, "No sessions").FontSize(11.5).TextColor(pal.TextFaint).Padding(4, 0, 4, 6)
 	}
 	if len(a.procList[p.ID]) > 0 {
 		a.processGroup(c, i)
@@ -298,7 +298,7 @@ func (a *appState) projectEmpty(id string, tabs []topTab) bool {
 }
 
 func (a *appState) processGroup(c *ui.Context, pi int) {
-	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 4, 0, 28).AlignItems(ui.Center).Children(func() {
+	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 4, 0, 6).AlignItems(ui.Center).Children(func() {
 		sectionLabel(c, "Processes")
 		ui.Spacer(c)
 		if cmdButton(c, iconPlus, 11, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
@@ -317,7 +317,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	// A click on the port or the URL opens its page, and does not also
 	// open the tab.
 	linkClicked := false
-	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 28).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 6).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	if selected {
 		row.Background(pal.RowSelected)
 	} else if row.Hovered() {
@@ -533,11 +533,9 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	info, _ := a.sessionInfo(t)
 	selected := pi == a.active && ti == a.activeTab && a.activeView == tabTerminal
 	unread := info.Unread || info.Status == session.Waiting && !selected
-	// A parent's chevron takes the room left of its icon.
-	left := 22 + 14*float32(node.depth)
-	if len(node.kids) > 0 {
-		left -= 20
-	}
+	// Its icon lines up with the project's name, and a child's under its
+	// parent's.
+	left := 6 + 14*float32(node.depth)
 	// The agent's last word on its turn, under the name, unless the
 	// sidebar is kept compact.
 	sub, height := info.Summary, float32(32)
@@ -560,24 +558,30 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 		chosen(row)
 	}
 	toggled := false
+	collapse := func() {
+		if ptabs := a.projectTabsPtr(p); ptabs != nil && ti < len(*ptabs) {
+			(*ptabs)[ti].Collapsed = !t.Collapsed
+			a.saveSoon()
+		}
+	}
 	row.Children(func() {
-		if len(node.kids) > 0 {
-			chev := ui.Box(c.Key("kids")).Width(12).Height(20).AlignItems(ui.Center).Justify(ui.Center).Cursor(ui.CursorPointer)
+		// A parent's chevron takes its icon's place while the pointer is
+		// on it, so that every icon lines up.
+		if len(node.kids) > 0 && row.Hovered() {
+			chev := ui.Box(c.Key("kids")).Width(14).Height(20).AlignItems(ui.Center).Justify(ui.Center).Cursor(ui.CursorPointer)
 			chev.Children(func() {
-				i := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextFaint)
+				i := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextMuted)
 				if t.Collapsed {
 					i.Rotate(-90)
 				}
 			})
 			if chev.Clicked() {
 				toggled = true
-				if ptabs := a.projectTabsPtr(p); ptabs != nil && ti < len(*ptabs) {
-					(*ptabs)[ti].Collapsed = !t.Collapsed
-					a.saveSoon()
-				}
+				collapse()
 			}
+		} else {
+			ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 		}
-		ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 		if a.renaming == t.ID {
 			in := ui.TextInputBase(c.Key("rename"), &a.renameText).FontSize(13).Grow(1).MinWidth(0).AutoFocus()
 			focused := in.Focused()
@@ -670,6 +674,15 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 		}
 		if _, _, ok := a.agentOf(t); ok && m.Item("Ask for Review…").Chosen() {
 			a.openReviewDialog(t)
+		}
+		if len(node.kids) > 0 {
+			label := "Collapse the Sessions It Started"
+			if t.Collapsed {
+				label = "Show the Sessions It Started"
+			}
+			if m.Item(label).Chosen() {
+				collapse()
+			}
 		}
 		if w := t.Worktree; w != nil {
 			m.Separator()
