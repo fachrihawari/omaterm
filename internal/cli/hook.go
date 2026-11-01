@@ -29,8 +29,8 @@ import (
 // hookCmd is what an agent runs as its session starts (the hook `omaterm
 // skill setup` installs): it tells the agent that it runs in omaterm, in
 // which session and pane, and tells omaterm the agent's own session, to
-// resume after a restart. Before Claude Code's tool calls, it nudges the
-// agent toward omaterm's own (nudge). It never fails the agent: outside
+// resume after a restart. Before the agent's tool calls, it nudges it
+// toward omaterm's own (nudge). It never fails the agent: outside
 // omaterm, or on any trouble, it says nothing.
 func hookCmd(args []string) error {
 	agent := ""
@@ -103,7 +103,8 @@ func hookCmd(args []string) error {
 
 // agyHookCmd is what Antigravity runs (its hooks.json, see agyHook):
 // SessionStart as a conversation starts, PreInvocation before each call of
-// its model. At a turn's start both tell omaterm the pane's conversation,
+// its model, PreToolUse before its subagents' and browser's tool calls,
+// which it nudges toward omaterm's (nudge). At a turn's start both tell omaterm the pane's conversation,
 // since a resumed one starts no session; SessionStart also tells the agent
 // where it runs. It always answers with a JSON object, as Antigravity's
 // hooks must, and never fails the agent.
@@ -116,11 +117,26 @@ func agyHookCmd(args []string) error {
 		Conversation string   `json:"conversationId"`
 		Workspaces   []string `json:"workspacePaths"`
 		Invocation   int      `json:"invocationNum"` // 0 at a turn's start
+		ToolCall     struct {
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
+		} `json:"toolCall"` // PreToolUse's
 	}
 	json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&in)
 	out := map[string]any{}
 	defer func() { json.NewEncoder(os.Stdout).Encode(out) }()
 	pane := os.Getenv("OMATERM_PANE")
+	if event == "PreToolUse" {
+		// Antigravity blocks a call whose hook gives no decision.
+		out["decision"] = "allow"
+		if pane == "" {
+			return nil
+		}
+		if why := nudge("agy", in.Conversation, in.ToolCall.Name, in.ToolCall.Args); why != "" {
+			out["decision"], out["reason"] = "deny", why
+		}
+		return nil
+	}
 	if pane == "" || in.Conversation == "" || event == "PreInvocation" && in.Invocation != 0 {
 		return nil
 	}
@@ -248,7 +264,7 @@ func firstChoice(st proto.State, pane string) string {
 	b.WriteString("\n\nUse omaterm before your own tools where it does what you need, as the user watches omaterm, not your tool calls:")
 	if agentsControlApp() {
 		b.WriteString("\n- To look at a web page, click through it or screenshot it: a browser pane, `omaterm split --url <url>`, " +
-			"then `omaterm browser text|click|type|screenshot`, rather than a browser MCP server or a headless browser.")
+			"then `omaterm browser text|click|type|screenshot`, rather than a browser tool of your own (a browser plugin, MCP server or subagent, or a headless browser).")
 	} else {
 		b.WriteString("\n- To show the user a web page: a browser pane, `omaterm split --url <url>`. Driving it with `omaterm browser` " +
 			"needs the setting “Let Agents Control the App” (Settings › Agents), which is off: when you need to click through or read a page, " +
@@ -376,8 +392,7 @@ type integration interface {
 }
 
 // agentHook is a hook omaterm installs in an agent's settings: a SessionStart
-// command running `omaterm hook <agent>`, and for Claude Code a PreToolUse
-// one too.
+// command running `omaterm hook <agent>`, and a PreToolUse one.
 type agentHook struct {
 	agent string // as `omaterm hook` takes it: "claude", "codex"
 	file  string // the JSON file holding the agent's hooks
@@ -387,13 +402,14 @@ type agentHook struct {
 // matcher, if any.
 type hookEvent struct{ name, matcher string }
 
-// events are the events omaterm hooks: Claude Code's tool calls too, to
-// nudge it toward omaterm (nudge).
+// events are the events omaterm hooks: the agent's tool calls too, to
+// nudge it toward omaterm (nudge). Codex's hook takes every tool, as
+// Codex names its shell differently by version.
 func (h agentHook) events() []hookEvent {
 	if h.agent == "claude" {
 		return []hookEvent{{"SessionStart", ""}, {"PreToolUse", claudeToolMatcher}}
 	}
-	return []hookEvent{{"SessionStart", ""}}
+	return []hookEvent{{"SessionStart", ""}, {"PreToolUse", ""}}
 }
 
 func (h agentHook) name() string { return h.agent }
@@ -666,8 +682,9 @@ func (p agentPlugin) remove() error {
 
 // agyHook is omaterm's hook in Antigravity's hooks.json, whose top-level
 // keys name hooks: "omaterm", running `omaterm hook agy` as a conversation
-// starts (SessionStart) and before each model call (PreInvocation), since
-// a resumed conversation starts no session.
+// starts (SessionStart), before each model call (PreInvocation), since a
+// resumed conversation starts no session, and before its subagents' and
+// browser's tool calls (PreToolUse).
 type agyHook struct {
 	file string // ~/.gemini/config/hooks.json
 }
@@ -678,13 +695,16 @@ const agyHookName = "omaterm"
 func (h agyHook) name() string { return "agy" }
 func (h agyHook) path() string { return h.file }
 
-// spec is omaterm's entry, as it should be.
+// spec is omaterm's entry, as it should be: PreToolUse's handlers go in a
+// group of their matcher.
 func (h agyHook) spec() json.RawMessage {
-	handlers := func(event string) json.RawMessage {
+	handler := func(event string) object {
 		cmd := agentHook{agent: "agy"}.command() + " " + event
-		return marshal([]object{{{"type", marshal("command")}, {"command", marshal(cmd)}, {"timeout", marshal(10)}}})
+		return object{{"type", marshal("command")}, {"command", marshal(cmd)}, {"timeout", marshal(10)}}
 	}
-	return object{{"SessionStart", handlers("SessionStart")}, {"PreInvocation", handlers("PreInvocation")}}.marshal()
+	handlers := func(event string) json.RawMessage { return marshal([]object{handler(event)}) }
+	tools := marshal([]object{{{"matcher", marshal(agyToolMatcher)}, {"hooks", marshal([]object{handler("PreToolUse")})}}})
+	return object{{"SessionStart", handlers("SessionStart")}, {"PreInvocation", handlers("PreInvocation")}, {"PreToolUse", tools}}.marshal()
 }
 
 func (h agyHook) read() (object, []byte, error) {

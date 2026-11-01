@@ -16,7 +16,7 @@ import (
 // installs, from this binary, so that it follows omaterm's updates.
 const skillGuide = `---
 name: omaterm
-description: Use omaterm before your own tools when running inside omaterm ($OMATERM_PANE is set). Its browser pane opens, reads, clicks through and screenshots a web page or a localhost UI, rather than a browser MCP server or a headless browser. Agents of their own, each in a git worktree, split a large task or make changes in parallel, rather than subagents. The project's processes, or a pane beside you, run a dev server, a watcher, tests or any long-running command. It also asks other agents and answers them, merges their branches, and reports your status to the user.
+description: Use omaterm before your own tools when running inside omaterm ($OMATERM_PANE is set). Its browser pane opens, reads, clicks through and screenshots a web page or a localhost UI, rather than a browser tool of your own (a browser plugin, MCP server or subagent, or a headless browser). Agents of their own, each in a git worktree, split a large task or make changes in parallel, rather than subagents. The project's processes, or a pane beside you, run a dev server, a watcher, tests or any long-running command. It also asks other agents and answers them, merges their branches, and reports your status to the user.
 ---
 
 # omaterm
@@ -32,7 +32,7 @@ prefix works), or a session's name; a session stands for its focused pane.
 The user watches omaterm, not your tool calls: where omaterm does what you
 need, use it rather than a tool of your own that does the same.
 
-    omaterm split --url localhost:3000           # a web page to look at, click through or screenshot: not a browser MCP server or a headless browser
+    omaterm split --url localhost:3000           # a web page to look at, click through or screenshot: not a browser tool of your own
     omaterm new --worktree w1 -- claude          # a large task to split, changes made in parallel: not subagents
     omaterm start web --wait                     # a dev server or a watcher: not a background shell
 

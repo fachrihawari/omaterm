@@ -106,7 +106,7 @@ func TestHookReplacesOutdated(t *testing.T) {
 }
 
 // Claude Code's hook runs on its tool calls too, with omaterm's matcher;
-// one without it is outdated. Codex's runs as a session starts only.
+// one without it is outdated. Codex's runs on all its tool calls.
 func TestClaudeHookOnToolCalls(t *testing.T) {
 	h := testHook(t, "")
 	if err := h.install(); err != nil {
@@ -140,7 +140,7 @@ func TestClaudeHookOnToolCalls(t *testing.T) {
 	if err := codex.install(); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(t, codex.file); strings.Contains(got, "PreToolUse") || codex.state() != "current" {
+	if got := read(t, codex.file); !strings.Contains(got, "PreToolUse") || strings.Contains(got, "matcher") || codex.state() != "current" {
 		t.Fatalf("codex:\n%s", got)
 	}
 }
@@ -424,12 +424,50 @@ func TestFirstChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = firstChoice(st, "a1")
-	for _, want := range []string{"rather than a browser MCP server or a headless browser", "the project's processes (web, worker)"} {
+	for _, want := range []string{"rather than a browser tool of your own (a browser plugin, MCP server or subagent, or a headless browser)", "the project's processes (web, worker)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("no %q in:\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "which is off") {
 		t.Errorf("the setting is on:\n%s", got)
+	}
+}
+
+// Antigravity's PreToolUse hook always gives a decision, as Antigravity
+// blocks a call without one: allow, outside omaterm and the second time;
+// deny the first subagent of a conversation, saying what omaterm offers.
+// Its entry runs on subagents and the browser, not the shell.
+func TestAgyToolHook(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("OMATERM_CONFIG_HOME", t.TempDir())
+	call := func() (out struct{ Decision, Reason string }) {
+		t.Helper()
+		got := captureStdout(t, func() {
+			withStdin(t, `{"conversationId":"c1","toolCall":{"name":"invoke_subagent","args":{"task":"Build the export"}}}`, func() {
+				if err := hookCmd([]string{"agy", "PreToolUse"}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		})
+		if err := json.Unmarshal([]byte(got), &out); err != nil {
+			t.Fatalf("%q: %v", got, err)
+		}
+		return out
+	}
+	t.Setenv("OMATERM_PANE", "")
+	if out := call(); out.Decision != "allow" {
+		t.Fatalf("outside omaterm: %+v", out)
+	}
+	t.Setenv("OMATERM_PANE", "p1")
+	if out := call(); out.Decision != "deny" || !strings.Contains(out.Reason, "omaterm new --worktree <branch> -- agy") {
+		t.Fatalf("first: %+v", out)
+	}
+	if out := call(); out.Decision != "allow" {
+		t.Fatalf("second: %+v", out)
+	}
+	spec := string(agyHook{}.spec())
+	if !strings.Contains(spec, `"PreToolUse":[{"matcher":"invoke_subagent|browser_.*","hooks":[{"type":"command"`) {
+		t.Fatalf("spec %s", spec)
 	}
 }

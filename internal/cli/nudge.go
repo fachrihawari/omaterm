@@ -22,43 +22,75 @@ import (
 
 // claudeToolMatcher is the matcher of the PreToolUse hook omaterm installs in
 // Claude Code: its subagents, its shell, and browser MCP servers' tools.
-const claudeToolMatcher = "Agent|Task|Bash|mcp__.*([Pp]laywright|[Pp]uppeteer|[Cc]hrome|[Bb]rowser|[Dd]ev[Tt]ools).*"
+// Codex's hook has none, as Codex names its shell differently by version;
+// agyToolMatcher is Antigravity's, which blocks a call whose hook fails, so
+// it leaves its shell out.
+const (
+	claudeToolMatcher = "Agent|Task|Bash|mcp__.*([Pp]laywright|[Pp]uppeteer|[Cc]hrome|[Bb]rowser|[Dd]ev[Tt]ools).*"
+	agyToolMatcher    = "invoke_subagent|browser_.*"
+)
 
-// readOnlySubagents are Claude Code's subagents that only search and read:
-// they stay the agent's to use.
-var readOnlySubagents = []string{"Explore", "Plan", "claude-code-guide", "statusline-setup"}
+// readOnlySubagents are subagents that only search and read, which stay
+// the agent's to use: Claude Code's types, and Codex's explorer.
+var readOnlySubagents = []string{"Explore", "Plan", "claude-code-guide", "statusline-setup", "explorer"}
+
+// subagentTools start a subagent: Claude Code's, Codex's, Antigravity's,
+// and a Pi extension's.
+var subagentTools = []string{"Agent", "Task", "spawn_agent", "invoke_subagent", "subagent"}
+
+// shellTools run a command: Claude Code's Bash, Codex's shell by its
+// names, Antigravity's run_command, Pi's bash.
+var shellTools = []string{"Bash", "bash", "shell", "exec_command", "local_shell", "unified_exec", "container.exec", "run_command"}
 
 var (
-	// browserMCP names a browser MCP server's tool.
-	browserMCP = regexp.MustCompile(`(?i)^mcp__.*(playwright|puppeteer|chrome|browser|devtools)`)
+	// browserTool names a browser tool: a browser MCP server's, or
+	// Antigravity's own.
+	browserTool = regexp.MustCompile(`(?i)^mcp__.*(playwright|puppeteer|chrome|browser|devtools)|^browser_`)
 	// browserShell is a shell command that drives a browser of its own,
 	// or opens a page in the user's.
 	browserShell = regexp.MustCompile(`(?i)\b(npx|bunx|pnpm\s+dlx|pnpm\s+exec|yarn)\s+(@playwright/\S+|playwright|puppeteer)\b` +
 		`|\b(chromium|chromium-browser|google-chrome|google-chrome-stable|chrome|firefox|msedge)\b[^;&|]*--(headless|screenshot|dump-dom)` +
 		`|(^|[;&|(]\s*)(xdg-open|open)\s+['"]?https?://`)
+	// browserJS is JavaScript that drives Codex's browser, through its
+	// node_repl tool.
+	browserJS = regexp.MustCompile(`agent\.browsers|browser-client|\btab\.(goto|click|type|screenshot|reload)\(`)
 )
 
 // nudgeKind is what a tool call would do that omaterm does: "subagent",
 // "browser", or "" for anything else.
 func nudgeKind(tool string, input json.RawMessage) string {
+	var in struct {
+		Type        string          `json:"subagent_type"`
+		AgentType   string          `json:"agent_type"`
+		Isolation   string          `json:"isolation"`
+		Command     json.RawMessage `json:"command"`
+		CommandLine string          `json:"CommandLine"`
+		Cmd         string          `json:"cmd"`
+	}
+	json.Unmarshal(input, &in)
 	switch {
-	case tool == "Agent" || tool == "Task":
-		var in struct {
-			Type      string `json:"subagent_type"`
-			Isolation string `json:"isolation"`
-		}
-		json.Unmarshal(input, &in)
-		if in.Isolation == "" && slices.Contains(readOnlySubagents, in.Type) {
+	case slices.Contains(subagentTools, tool):
+		if in.Isolation == "" && (slices.Contains(readOnlySubagents, in.Type) || slices.Contains(readOnlySubagents, in.AgentType)) {
 			return ""
 		}
 		return "subagent"
-	case tool == "Bash":
-		var in struct{ Command string }
-		json.Unmarshal(input, &in)
-		if browserShell.MatchString(in.Command) {
+	case slices.Contains(shellTools, tool):
+		cmd := in.CommandLine + in.Cmd
+		var s string
+		var argv []string
+		if json.Unmarshal(in.Command, &s) == nil {
+			cmd += s
+		} else if json.Unmarshal(in.Command, &argv) == nil {
+			cmd += strings.Join(argv, " ")
+		}
+		if browserShell.MatchString(cmd) {
 			return "browser"
 		}
-	case browserMCP.MatchString(tool):
+	case tool == "mcp__node_repl__js":
+		if browserJS.Match(input) {
+			return "browser"
+		}
+	case browserTool.MatchString(tool):
 		return "browser"
 	}
 	return ""

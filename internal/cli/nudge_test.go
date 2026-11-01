@@ -31,6 +31,26 @@ func TestNudgeKind(t *testing.T) {
 		{"Bash", `{"command": "go test -run TestBrowser ./..."}`, ""},
 		{"Bash", `{"command": "curl -s localhost:3000"}`, ""},
 		{"Edit", `{}`, ""},
+		// Codex: its subagents, its explorer read-only; its browser, in
+		// node_repl; its shell, by any of its names.
+		{"spawn_agent", `{"message": "Fix the login", "agent_type": "worker"}`, "subagent"},
+		{"spawn_agent", `{"message": "Fix the login"}`, "subagent"},
+		{"spawn_agent", `{"message": "Where is the login?", "agent_type": "explorer"}`, ""},
+		{"mcp__node_repl__js", `{"code": "const b = await agent.browsers.get(); const tab = await b.newTab(); await tab.goto('http://localhost:3000')"}`, "browser"},
+		{"mcp__node_repl__js", `{"code": "1 + 1"}`, ""},
+		{"shell", `{"command": ["bash", "-lc", "npx playwright test"]}`, "browser"},
+		{"exec_command", `{"cmd": "xdg-open http://localhost:3000"}`, "browser"},
+		{"exec_command", `{"cmd": "go test ./..."}`, ""},
+		// Antigravity: its subagents and browser; its shell.
+		{"invoke_subagent", `{"task": "Build the export"}`, "subagent"},
+		{"browser_subagent", `{"task": "Open localhost:3000"}`, "browser"},
+		{"browser_get_dom", `{}`, "browser"},
+		{"run_command", `{"CommandLine": "npx playwright screenshot http://localhost:3000 a.png", "Cwd": "/x"}`, "browser"},
+		{"run_command", `{"CommandLine": "npm test"}`, ""},
+		// Pi: its shell, and an extension's subagent.
+		{"bash", `{"command": "bunx puppeteer browsers install chrome"}`, "browser"},
+		{"bash", `{"command": "ls"}`, ""},
+		{"subagent", `{"task": "Refactor the store"}`, "subagent"},
 	} {
 		if got := nudgeKind(c.tool, json.RawMessage(c.input)); got != c.want {
 			t.Errorf("%s %s: %q, want %q", c.tool, c.input, got, c.want)
