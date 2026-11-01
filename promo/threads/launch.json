@@ -22,7 +22,7 @@
     },
     {
       "text": "Agent-nya pakai omaterm sendiri: buka pane buat test, jalanin dev server, buka halaman di browser pane terus klik dan screenshot. Semua kelihatan di depan kamu, bukan di tool tersembunyi. Cukup sekali: omaterm skill setup",
-      "video": "~/Videos/omaterm-cli-tall.mp4"
+      "video": "~/Videos/omaterm-browser-tall.mp4"
     },
     {
       "text": "Fitur favoritku: Last turn (Ctrl+Shift+A). Cuma nampilin yang diubah agent di giliran terakhirnya, terpisah dari perubahan lain yang belum di-commit. Keep atau revert per hunk.",

@@ -31,12 +31,14 @@
 //
 // The account, once, by hand (it needs your login):
 //   1. developers.facebook.com: create an app with the "Access the Threads
-//      API" use case, with threads_basic and threads_content_publish.
+//      API" use case, with threads_basic and threads_content_publish, and
+//      threads_delete for delete (a token made before it was added can't).
 //   2. App roles: add your Threads account as a Threads tester, and accept
 //      it in Threads (Settings, Account, Website permissions, Invites).
-//   3. Get a token for it (the use case's "Generate access token"), and
-//      swap it for one that lasts 60 days:
-//      curl "https://graph.threads.com/access_token?grant_type=th_exchange_token&client_secret=APP_SECRET&access_token=SHORT_TOKEN"
+//   3. Get a token for it: the use case's Settings, User Token Generator,
+//      "Generate access token". That one (TH…) already lasts 60 days; one
+//      from a login flow lasts an hour, and is swapped for a 60-day one with
+//      curl "https://graph.threads.com/access_token?grant_type=th_exchange_token&client_secret=THREADS_APP_SECRET&access_token=SHORT_TOKEN"
 //   4. Your user id: curl "https://graph.threads.com/v1.0/me?fields=id,username&access_token=TOKEN"
 //   5. Put both in ~/.config/omaterm-threads/credentials (chmod 600):
 //        THREADS_USER_ID=…
