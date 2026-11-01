@@ -336,7 +336,7 @@ func (a *appState) turnChanges(c *ui.Context, info session.Info) {
 			}
 			ui.Text(c, "· "+since).FontSize(12).TextColor(pal.TextFaint).SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
 			ui.Spacer(c)
-			if cmdButton(c, iconRefresh, 13, false).Tooltip("Refresh").Clicked() {
+			if a.cmdButton(c, iconRefresh, 13, false).Tooltip("Refresh").Clicked() {
 				a.refreshChanges(true)
 			}
 		})
@@ -371,6 +371,7 @@ func (a *appState) changeRow(c *ui.Context, f gitsnap.File) {
 	if cf != nil || row.Hovered() {
 		row.Background(pal.Hover)
 	}
+	a.fadeColors(row)
 	letter := "M"
 	switch f.Status {
 	case "added":

@@ -12,7 +12,8 @@ type pageData struct {
 	Routes []Route // the unknown-host page: the hosts there are
 }
 
-// pageStyle is shared by the pages, which load nothing from outside.
+// pageStyle is shared by the pages, which load nothing from outside. The
+// page rises in as omaterm's own pages do, unless less motion is asked.
 const pageStyle = `<style>
 :root{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--dim:#78716c;--card:#fff;--line:#e7e5e4;--accent:#b45309}
 @media (prefers-color-scheme:dark){:root{--bg:#1c1917;--fg:#f5f5f4;--dim:#a8a29e;--card:#292524;--line:#44403c;--accent:#fbbf24}}
@@ -25,6 +26,11 @@ ul{list-style:none;margin:1rem 0 0;padding:0;border:1px solid var(--line);border
 li{display:flex;justify-content:space-between;gap:1rem;padding:.6rem .9rem;border-top:1px solid var(--line)}
 li:first-child{border-top:0}
 li span{color:var(--dim)}
+li{transition:background-color 120ms}
+li:hover{background:color-mix(in srgb,var(--line) 40%,transparent)}
+main{animation:rise 360ms cubic-bezier(.2,.8,.3,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+@media (prefers-reduced-motion:reduce){main{animation:none}li{transition:none}}
 </style>`
 
 var notRunningPage = template.Must(template.New("notRunning").Parse(`<!doctype html>

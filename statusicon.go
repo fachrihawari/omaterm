@@ -53,10 +53,27 @@ func (a *appState) statusIcon(c *ui.Context, i session.Info, size float32) ui.El
 	st := statusState(i)
 	progress := float32(i.Progress) / 100
 	unread := i.Unread
-	still := a.settings.ReduceMotion
-	return ui.Box(c).Size(size, size).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
+	still := a.still()
+	e := ui.Box(c).Size(size, size).Shrink(0)
+	a.popOnChange(e, int(statusFamily(st)))
+	if st == iconProgress {
+		progress = a.animate(e, "progress", progress, motionPanel)
+	}
+	return e.Draw(func(p *ui.Painter, r ui.Rect) {
 		drawStatus(p, r, st, progress, unread, still)
 	})
+}
+
+// statusFamily is what a status icon pops for changing: working with or
+// without progress is working, and done seen is done.
+func statusFamily(st iconState) iconState {
+	switch st {
+	case iconProgress:
+		return iconWorking
+	case iconDoneSeen:
+		return iconDone
+	}
+	return st
 }
 
 func drawStatus(p *ui.Painter, r ui.Rect, st iconState, progress float32, unread, still bool) {

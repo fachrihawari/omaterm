@@ -32,10 +32,19 @@
     --err: #f85149;
     --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    /* How the page moves, as the app and its web page do: hovers and
+       presses in --dur-fast, things coming and going in --dur-base. */
+    --dur-fast: 120ms;
+    --dur-base: 180ms;
+    --dur-reveal: 480ms;
+    --ease-out: cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; scroll-padding-top: 72px; }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, ::before, ::after, ::backdrop { transition-duration: 0s !important; animation: none !important; }
+  }
   body {
     margin: 0;
     background: var(--bg);
@@ -59,7 +68,7 @@
   .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 700 16px var(--mono); }
   .brand img { width: 24px; height: 24px; }
   nav .links { display: flex; gap: 22px; margin-left: auto; font: 14px var(--mono); }
-  nav .links a { text-decoration: none; color: var(--muted); }
+  nav .links a { text-decoration: none; color: var(--muted); transition: color var(--dur-fast); }
   nav .links a:hover { color: var(--text); }
 
   /* Hero */
@@ -84,18 +93,25 @@
     flex: none; display: inline-flex; align-items: center; height: 36px; padding: 0 14px;
     border-radius: 6px; font: 500 14px var(--mono); text-decoration: none; cursor: pointer;
     border: 1px solid var(--line); background: transparent; color: var(--text);
+    transition: border-color var(--dur-fast), background-color var(--dur-fast), color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-out);
   }
   .btn:hover { border-color: var(--muted); }
+  .btn:active { transform: scale(0.97); }
+  .btn.copied, .btn.primary.copied { background: var(--ok); border-color: var(--ok); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn.primary:hover { background: #1f6feb; border-color: #1f6feb; }
   .links-row { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 16px; font: 14px var(--mono); color: var(--dim); }
-  .links-row a { color: var(--muted); }
+  .links-row a { color: var(--muted); transition: color var(--dur-fast); }
   .links-row a:hover { color: var(--text); }
 
   .shot {
     border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface);
     box-shadow: 0 16px 40px rgba(1, 4, 9, 0.5);
+    transition: border-color var(--dur-base), box-shadow var(--dur-base), transform var(--dur-base) var(--ease-out);
   }
+  .shot:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: 0 20px 48px rgba(1, 4, 9, 0.6); }
+  .shot:active, .phone:active { transform: scale(0.995); }
   .hero .shot { margin-top: 48px; }
   .agents { margin: 24px 0 0; font: 14px var(--mono); color: var(--dim); }
   .agents span { color: var(--muted); }
@@ -107,9 +123,10 @@
   .card {
     display: flex; flex-direction: column; gap: 6px; padding: 16px;
     border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
-    text-decoration: none; transition: border-color 0.15s, transform 0.15s;
+    text-decoration: none; transition: border-color var(--dur-base), transform var(--dur-base) var(--ease-out);
   }
   .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card:active { transform: translateY(0) scale(0.98); transition-duration: var(--dur-fast); }
   .card .n { font: 500 12px var(--mono); color: var(--dim); }
   .card b { font-size: 15px; font-weight: 600; }
   .card span { color: var(--muted); font-size: 14px; line-height: 1.45; }
@@ -167,7 +184,9 @@
   .phone {
     width: 190px; border: 6px solid #2a3038; border-radius: 26px; overflow: hidden; background: var(--bg);
     box-shadow: 0 16px 40px rgba(1, 4, 9, 0.5);
+    transition: border-color var(--dur-base), transform var(--dur-base) var(--ease-out);
   }
+  .phone:hover { border-color: #353c46; }
   .web-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 48px; margin-top: 40px; align-items: start; }
 
   dl.more {
@@ -184,8 +203,10 @@
   .credits { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
   .credits a {
     display: block; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
-    background: var(--surface); text-decoration: none; transition: border-color 0.15s;
+    background: var(--surface); text-decoration: none;
+    transition: border-color var(--dur-base), transform var(--dur-fast) var(--ease-out);
   }
+  .credits a:active { transform: scale(0.99); }
   .credits a:hover { border-color: var(--accent); }
   .credits b { font-size: 15px; }
   .credits b small { font: 400 13px var(--sans); color: var(--dim); margin-left: 6px; }
@@ -204,10 +225,28 @@
   dialog.zoom {
     max-width: none; max-height: none; width: 100vw; height: 100vh; margin: 0; padding: 24px;
     border: 0; background: transparent; display: none; place-items: center;
+    /* It fades in as the picture grows to its size, and out again. */
+    opacity: 0;
+    transition: opacity var(--dur-base) var(--ease-out),
+      display var(--dur-base) allow-discrete, overlay var(--dur-base) allow-discrete;
   }
-  dialog.zoom[open] { display: grid; }
-  dialog.zoom::backdrop { background: rgba(1, 4, 9, 0.88); }
-  dialog.zoom .slot { max-width: min(96vw, 1920px); max-height: 92vh; display: flex; }
+  dialog.zoom[open] { display: grid; opacity: 1; }
+  dialog.zoom::backdrop {
+    background: rgba(1, 4, 9, 0);
+    transition: background-color var(--dur-base),
+      display var(--dur-base) allow-discrete, overlay var(--dur-base) allow-discrete;
+  }
+  dialog.zoom[open]::backdrop { background: rgba(1, 4, 9, 0.88); }
+  dialog.zoom .slot {
+    max-width: min(96vw, 1920px); max-height: 92vh; display: flex;
+    transform: scale(0.96); transition: transform var(--dur-base) var(--ease-out);
+  }
+  dialog.zoom[open] .slot { transform: none; }
+  @starting-style {
+    dialog.zoom[open] { opacity: 0; }
+    dialog.zoom[open]::backdrop { background: rgba(1, 4, 9, 0); }
+    dialog.zoom[open] .slot { transform: scale(0.96); }
+  }
   dialog.zoom .slot > * {
     max-width: 100%; max-height: 92vh; width: auto; height: auto; object-fit: contain;
     border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
@@ -217,7 +256,20 @@
     border: 1px solid var(--line); background: var(--surface); color: var(--text);
     font: 22px/1 var(--sans); cursor: pointer;
   }
+  dialog.zoom .close { transition: border-color var(--dur-fast), transform var(--dur-fast) var(--ease-out); }
   dialog.zoom .close:hover { border-color: var(--muted); }
+  dialog.zoom .close:active { transform: scale(0.92); }
+
+  /* What scrolls into view rises a little as it fades in, the cards one
+     after another. Only with the script running and motion wanted: it
+     sets .motion on the page, so without it everything simply shows. */
+  .motion .rv {
+    opacity: 0; transform: translateY(12px);
+    transition: opacity var(--dur-reveal) var(--ease-out), transform var(--dur-reveal) var(--ease-out);
+    transition-delay: calc(var(--i, 0) * 40ms);
+  }
+  .motion .rv.in { opacity: 1; transform: none; }
+  @media print { .motion .rv { opacity: 1; transform: none; } }
 
   .end { padding: 120px 0 80px; }
   .end h2 { margin-bottom: 8px; }
@@ -225,7 +277,7 @@
 
   footer { border-top: 1px solid var(--line); padding: 24px 0; color: var(--dim); font: 13px var(--mono); }
   footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: space-between; }
-  footer a { color: var(--muted); text-decoration: none; }
+  footer a { color: var(--muted); text-decoration: none; transition: color var(--dur-fast); }
   footer a:hover { color: var(--text); }
 
   @media (max-width: 1000px) {
@@ -677,7 +729,8 @@
     b.addEventListener("click", function () {
       navigator.clipboard.writeText(b.dataset.copy).then(function () {
         b.textContent = "Copied";
-        setTimeout(function () { b.textContent = "Copy"; }, 1500);
+        b.classList.add("copied");
+        setTimeout(function () { b.textContent = "Copy"; b.classList.remove("copied"); }, 1500);
       });
     });
   });
@@ -723,8 +776,11 @@
     slot.replaceChildren(big);
     zoom.showModal();
   }
+  // The picture stays while the full view fades out.
+  var clearing = 0;
   zoom.addEventListener("close", function () {
-    slot.replaceChildren();
+    clearTimeout(clearing);
+    clearing = setTimeout(function () { if (!zoom.open) slot.replaceChildren(); }, still ? 0 : 200);
     if (paused) { paused.play().catch(function () {}); paused = null; }
   });
   zoom.querySelector(".close").addEventListener("click", function () { zoom.close(); });
@@ -744,6 +800,37 @@
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openZoom(box); }
     });
   });
+  // The page's parts rise into view as they scroll in: each section's
+  // text and media, the cards, the pictures, the credits.
+  if (!still && "IntersectionObserver" in window) {
+    var parts = document.querySelectorAll(
+      ".hero h1, .hero .lede, .hero .install, .hero .links-row, .hero .shot, .agents, .tour-head, .card, " +
+      "section .feature-head, section .intro, section .media, section .devices, section .web-grid > *, " +
+      ".gallery figure, dl.more div, .credits li, .end .wrap");
+    var reveal = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          var el = e.target;
+          el.classList.add("in");
+          reveal.unobserve(el);
+          // Come in, it has its own transitions again, as a card's hover.
+          el.addEventListener("transitionend", function done(ev) {
+            if (ev.target !== el || ev.propertyName !== "opacity") return;
+            el.classList.remove("rv", "in");
+            el.removeEventListener("transitionend", done);
+          });
+        }
+      });
+    }, { rootMargin: "0px 0px -8% 0px" });
+    parts.forEach(function (el) {
+      // Those side by side follow one another; a row starts the count again.
+      var sibs = el.parentElement ? Array.prototype.indexOf.call(el.parentElement.children, el) : 0;
+      el.style.setProperty("--i", el.matches(".card, .gallery figure, dl.more div, .credits li, .hero *") ? Math.min(sibs, 8) : 0);
+      el.classList.add("rv");
+      reveal.observe(el);
+    });
+    document.documentElement.classList.add("motion");
+  }
   // The tag names the latest release when GitHub answers.
   fetch("https://api.github.com/repos/fachrihawari/omaterm/releases/latest")
     .then(function (r) { return r.ok ? r.json() : null; })

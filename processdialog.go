@@ -91,7 +91,7 @@ func (a *appState) processDialog(c *ui.Context) {
 	}
 	save := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, processDialogTitle(st), false)
 		_, height := c.Size()
 		ui.Scroll(c.Key("process-form")).MaxHeight(height - 180).Children(func() {
@@ -104,6 +104,7 @@ func (a *appState) processDialog(c *ui.Context) {
 						if row.Hovered() {
 							row.Background(pal.Hover)
 						}
+						a.fadeColors(row)
 						row.Children(func() {
 							ui.Text(c, suggestion.Name).FontSize(12).TextColor(pal.Text).Width(90).SingleLine().Ellipsis("…")
 							ui.Text(c, suggestion.Command).FontSize(11).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
@@ -135,24 +136,24 @@ func (a *appState) processDialog(c *ui.Context) {
 					dialogNote(c, "omaterm picks a free port and tells it to the process as PORT.", false)
 				}
 			}
-			dialogField(c, "Autostart", func() { settingsSwitch(c, "proc-autostart", &st.autostart, false) })
+			dialogField(c, "Autostart", func() { a.settingsSwitch(c, "proc-autostart", &st.autostart, false) })
 			dialogField(c, "Restart", func() {
-				settingsSegmented(c, "proc-restart", &st.restart, []string{"Never", "On failure", "Always"})
+				a.settingsSegmented(c, "proc-restart", &st.restart, []string{"Never", "On failure", "Always"})
 			})
 			ui.Text(c, "Watch (one glob per line)").FontSize(12.5).TextColor(pal.Text)
 			processTextArea(c, "proc-watch", "Watch", &st.watch, "src/**", 48)
 			ui.Text(c, "Environment (one KEY=value per line)").FontSize(12.5).TextColor(pal.Text)
 			processTextArea(c, "proc-env", "Environment", &st.env, "NODE_ENV=development", 48)
 		})
-		dialogField(c, "Save in omaterm.yml", func() { settingsSwitch(c, "proc-shared", &st.shared, false) })
+		dialogField(c, "Save in omaterm.yml", func() { a.settingsSwitch(c, "proc-shared", &st.shared, false) })
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if dialogButton(c, "Cancel", false, false) {
+			if a.dialogButton(c, "Cancel", false, false) {
 				st.open = false
 			}
-			if dialogButton(c, "Save", true, false) {
+			if a.dialogButton(c, "Save", true, false) {
 				save = true
 			}
 		})

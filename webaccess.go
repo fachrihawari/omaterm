@@ -203,12 +203,12 @@ func (a *appState) webPairDialog(c *ui.Context) {
 	}
 	p := a.webPair
 	ui.DialogBase(c, a.webPairOpen, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, "Pair a Device", false)
 		// The code and what goes with it centered under the title.
 		ui.Column(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() { a.webPairBody(c, p) })
 		ui.Row(c).Gap(8).Justify(ui.End).FillWidth().Margin(8, 0, 0, 0).Children(func() {
-			if dialogButton(c, "Done", true, false) {
+			if a.dialogButton(c, "Done", true, false) {
 				*a.webPairOpen = false
 			}
 		})

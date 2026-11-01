@@ -45,15 +45,10 @@
   touch-action: manipulation;
   -webkit-user-select: none;
   user-select: none;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
 .keybar-key:hover {
   background: var(--hover, #1f262e);
-}
-
-.keybar-key:active {
-  transform: translateY(1px);
 }
 
 .keybar-key:focus-visible {
@@ -407,4 +402,34 @@
 
 .compose-note[hidden] {
   display: none;
+}
+
+/* Sheets slide up as their scrim fades in, and back down faster. */
+.keybar-sheet, .compose-backdrop {
+  transition: background var(--dur-base, 180ms), opacity var(--dur-base, 180ms);
+}
+.keybar-panel, .compose-panel {
+  transition: translate 240ms var(--ease-out, cubic-bezier(0.2, 0.8, 0.3, 1)), opacity var(--dur-base, 180ms);
+}
+@starting-style {
+  .keybar-sheet { background: rgba(0, 0, 0, 0); }
+  .compose-backdrop { opacity: 0; }
+  .keybar-panel, .compose-panel { translate: 0 40px; opacity: 0; }
+}
+.keybar-sheet.leaving { background: rgba(0, 0, 0, 0); pointer-events: none; }
+.compose.leaving { pointer-events: none; }
+.compose.leaving .compose-backdrop { opacity: 0; }
+.keybar-sheet.leaving .keybar-panel, .compose.leaving .compose-panel {
+  translate: 0 40px; opacity: 0; transition-duration: 140ms; transition-timing-function: ease-in;
+}
+.keybar-key, .compose-insert, .compose-send, .compose-close {
+  transition: background var(--dur-fast, 120ms), border-color var(--dur-fast, 120ms), color var(--dur-fast, 120ms),
+    transform var(--dur-fast, 120ms) var(--ease-out, cubic-bezier(0.2, 0.8, 0.3, 1));
+}
+.keybar-key:active, .compose-insert:active, .compose-send:active, .compose-close:active {
+  transform: scale(0.96);
+}
+.compose-box { transition: border-color var(--dur-fast, 120ms), box-shadow var(--dur-fast, 120ms); }
+@media (prefers-reduced-motion: reduce) {
+  .keybar-key:active, .compose-insert:active, .compose-send:active, .compose-close:active { transform: none; }
 }

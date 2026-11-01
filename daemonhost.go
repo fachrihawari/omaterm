@@ -192,7 +192,7 @@ func (a *appState) ignoredDaemonBanner(c *ui.Context) {
 		"Your sessions also run in another version's session daemon, so agents aren't resumed here. Restart omaterm to run them in this version's.", func() {
 			// The dialog asks again at launch, where Restart Sessions
 			// moves them over.
-			if bannerButton(c, "Restart omaterm", true) {
+			if a.bannerButton(c, "Restart omaterm", true) {
 				a.saveState()
 				a.relaunch()
 			}
@@ -211,10 +211,10 @@ func (a *appState) daemonBanner(c *ui.Context) {
 	}
 	a.banner(c, "daemon-banner", iconRefresh, pal.Accent, false,
 		"omaterm updated: your sessions still run in the previous build's session daemon ("+a.daemonStale+").", func() {
-			if bannerButton(c, "Not Now", false) {
+			if a.bannerButton(c, "Not Now", false) {
 				a.daemonStale = ""
 			}
-			if bannerButton(c, "Restart Sessions", true) {
+			if a.bannerButton(c, "Restart Sessions", true) {
 				a.daemonStale = ""
 				a.restartDaemon()
 			}
@@ -225,6 +225,7 @@ func (a *appState) daemonBanner(c *ui.Context) {
 // most with the rest in its tooltip, and its buttons. danger tints it red.
 func (a *appState) banner(c *ui.Context, key string, icon *ui.SVG, iconColor ui.Color, danger bool, msg string, buttons func()) {
 	row := ui.Row(c.Key(key)).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).Radius(8)
+	a.transition(row, motionDrop)
 	if danger {
 		row.Background(pal.Bad.Alpha(0.10)).Border(1, pal.Bad.Alpha(0.35))
 	} else {
@@ -242,14 +243,15 @@ func (a *appState) banner(c *ui.Context, key string, icon *ui.SVG, iconColor ui.
 
 // bannerButton is a banner's button: primary filled, else quiet. It
 // reports a click.
-func bannerButton(c *ui.Context, label string, primary bool) bool {
+func (a *appState) bannerButton(c *ui.Context, label string, primary bool) bool {
 	if primary {
-		return ui.PrimaryButton(c, label).Height(26).FontSize(12).Shrink(0).Clicked()
+		return a.press(ui.PrimaryButton(c, label).Height(26).FontSize(12).Shrink(0)).Clicked()
 	}
 	b := ui.ButtonBase(c).Padding(4, 10).Radius(6).Height(26).Shrink(0)
 	if b.Hovered() {
 		b.Background(pal.Hover)
 	}
+	a.press(a.fadeColors(b))
 	return b.Children(func() {
 		ui.Text(c, label).FontSize(12).TextColor(pal.TextMuted)
 	}).Clicked()
@@ -266,10 +268,10 @@ func (a *appState) crashBanner(c *ui.Context) {
 		what = "The session daemon quit unexpectedly last time."
 	}
 	a.banner(c, "crash-banner", iconAlert, pal.Bad, false, what+" Its report can help fix it.", func() {
-		if bannerButton(c, "Dismiss", false) {
+		if a.bannerButton(c, "Dismiss", false) {
 			a.dismissCrashes()
 		}
-		if bannerButton(c, "Show Report", true) {
+		if a.bannerButton(c, "Show Report", true) {
 			if a.win != nil {
 				for _, r := range a.crashes {
 					mygo.Shell.OpenPath(r.Path)
@@ -288,7 +290,7 @@ func (a *appState) serviceBanner(c *ui.Context) {
 	}
 	a.banner(c, "service-banner", iconAlert, pal.Warn, false,
 		"The session daemon is off, but its service still starts it at login, so both run sessions. Agents aren't resumed here until one goes.", func() {
-			if bannerButton(c, "Remove the Service", false) {
+			if a.bannerButton(c, "Remove the Service", false) {
 				a.serviceConflict = false
 				go func() {
 					err := cli.UninstallService()
@@ -299,7 +301,7 @@ func (a *appState) serviceBanner(c *ui.Context) {
 					})
 				}()
 			}
-			if bannerButton(c, "Turn the Daemon Back On", true) {
+			if a.bannerButton(c, "Turn the Daemon Back On", true) {
 				a.settings.Daemon = true
 				a.saveSettings()
 				a.saveState()
@@ -317,7 +319,7 @@ func (a *appState) stateBanner(c *ui.Context) {
 	a.banner(c, "state-banner", iconAlert, pal.Bad, true,
 		"omaterm couldn't read its sessions file, so it shows none and changes nothing: your sessions keep running. A copy is at "+
 			cli.ShortPath(a.stateLoadFailed)+".", func() {
-			if bannerButton(c, "Show File", true) && a.win != nil {
+			if a.bannerButton(c, "Show File", true) && a.win != nil {
 				mygo.Shell.ShowItemInFolder(a.stateLoadFailed)
 			}
 		})

@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -23,7 +24,7 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 	return ui.Row(c).Height(40).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, left).Gap(4).Children(func() {
 		// Show-sidebar button, only while the sidebar is hidden.
 		if !a.sidebarShown {
-			if cmdButton(c, iconPanelLeft, 15, false).
+			if a.cmdButton(c, iconPanelLeft, 15, false).
 				Tooltip("Show Sidebar (" + keyLabels("view.toggleSidebar") + ")").Label("Show Sidebar").Clicked() {
 				a.setSidebar(true)
 			}
@@ -33,8 +34,9 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 		// edge and "+" were out of reach.
 		ui.ScrollHorizontal(c.Key("tabs")).Shrink(1).MinWidth(0).Height(40).Children(func() {
 			ui.Row(c).Height(40).AlignItems(ui.Center).Gap(4).Children(func() {
+				seen := map[string]bool{}
 				for _, i := range a.visibleTabIndices() {
-					e := a.topTab(c, i)
+					e := a.topTab(c, i, seen)
 					if i == a.activeTab && a.activeTab != a.tabInView {
 						e.ScrollIntoView()
 						a.tabInView = a.activeTab
@@ -53,6 +55,7 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 			if plus.Hovered() {
 				plus.Background(pal.Hover)
 			}
+			a.press(a.fadeColors(plus))
 			plus.Children(func() {
 				ui.Icon(c, iconPlus).Size(14, 14).TextColor(pal.TextMuted)
 			})
@@ -61,16 +64,16 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 			}
 		})
 		ui.Row(c).AlignItems(ui.Center).Gap(2).Children(func() {
-			if cmdButton(c, iconKeyboard, 15, false).
+			if a.cmdButton(c, iconKeyboard, 15, false).
 				Tooltip("Keyboard Shortcuts (" + keyLabels("help.keyboardShortcuts") + ")").
 				Label("Keyboard Shortcuts").Clicked() {
 				a.openOverlay(overlayShortcuts)
 			}
-			if cmdButton(c, iconSearch, 15, false).
+			if a.cmdButton(c, iconSearch, 15, false).
 				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
-			if cmdButton(c, iconPanelRight, 15, a.inspectorShown).
+			if a.cmdButton(c, iconPanelRight, 15, a.inspectorShown).
 				Tooltip("Toggle Inspector (" + keyLabels("view.toggleInspector") + ")").Clicked() {
 				a.setInspector(!a.inspectorShown)
 			}
@@ -91,7 +94,7 @@ func (a *appState) visibleTabIndices() []int {
 
 // topTab is a tab as a pill: a session with its status, or an editor,
 // diff or graph with its icon.
-func (a *appState) topTab(c *ui.Context, i int) ui.Element {
+func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element {
 	if i < 0 || i >= len(a.tabs) {
 		return ui.Box(c)
 	}
@@ -100,13 +103,14 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 	// A click on the process's Dev URL opens it, and does not also
 	// activate the tab.
 	linkClicked := false
-	e := ui.ButtonBase(c.Key(i)).Height(26).Radius(13).Padding(0, 6, 0, 10).Gap(6).Shrink(0).AlignItems(ui.Center)
+	e := ui.ButtonBase(c.Key(tabKey(t, seen))).Height(26).Radius(13).Padding(0, 6, 0, 10).Gap(6).Shrink(0).AlignItems(ui.Center)
 	switch {
 	case active:
 		raised(e.Background(pal.Raised))
 	case e.Hovered():
 		e.Background(pal.Hover)
 	}
+	a.transition(e, motionTab)
 	e.Children(func() {
 		switch t.Kind {
 		case tabTerminal:
@@ -174,16 +178,18 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 		}
 		if t.Kind == tabEditor && t.Path != "" {
 			if doc := a.editors[t.Path]; doc != nil && doc.State != nil && doc.State.Buffer.Modified() {
-				ui.Text(c, "●").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0)
+				a.transition(ui.Text(c.Key("modified"), "●").FontSize(10).TextColor(pal.Warn).SingleLine().Shrink(0), motionPop)
 			}
 		}
 		// The close button keeps its room, so pills keep their width, but
 		// shows only on the active or hovered pill.
 		show := len(a.tabs) > 1 && (active || e.Hovered())
-		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Opacity(b2f(show)).Disabled(!show)
+		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Disabled(!show)
+		x.Opacity(a.animate(x, "show", b2f(show), motionFast))
 		if x.Hovered() {
 			x.Background(pal.Hover)
 		}
+		a.fadeColors(x)
 		x.Children(func() {
 			ui.Icon(c, iconX).Size(12, 12).TextColor(pal.TextMuted)
 		})
@@ -195,6 +201,21 @@ func (a *appState) topTab(c *ui.Context, i int) ui.Element {
 		a.activateTab(i)
 	}
 	return e
+}
+
+// tabKey names tab t's pill by what it shows, not where, so a pill
+// keeps its motion as tabs before it close; seen makes a name shared by
+// two tabs one of each.
+func tabKey(t *topTab, seen map[string]bool) string {
+	k := strconv.Itoa(int(t.Kind)) + ":" + t.ID + ":" + t.Path + ":" + t.Process
+	if t.ID == "" && t.Path == "" && t.Process == "" {
+		k += ":" + t.Label
+	}
+	for base, n := k, 2; seen[k]; n++ {
+		k = base + "#" + strconv.Itoa(n)
+	}
+	seen[k] = true
+	return k
 }
 
 // activateTab makes tab i the active one and shows it.

@@ -440,7 +440,14 @@ export function mountKeyBar(el, options = {}) {
 
   function closeSheet() {
     if (!sheet) return;
-    sheet.remove();
+    // It slides away, then goes; with less motion asked for, at once.
+    const going = sheet;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      going.remove();
+    } else {
+      going.classList.add("leaving");
+      setTimeout(() => going.remove(), 160);
+    }
     sheet = null;
     if (lastFocus && typeof lastFocus.focus === "function") {
       try {

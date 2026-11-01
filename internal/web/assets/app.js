@@ -39,6 +39,8 @@ let offline = false;
 let paired = false;     // shell shows, not pair page
 let term = null;        // open terminal: its pane id, refresh and teardown
 let shell = null;       // shell DOM elements
+let rowsShown = null;   // the sessions the list showed, so a new one rises in; null before the first list
+let rowsNow = new Set();
 const touch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
 
 // Dynamic modules loaded asynchronously
@@ -442,6 +444,7 @@ function renderSidebar() {
 
   const open = term?.id;
   const items = [];
+  rowsNow = new Set();
 
   if (!state) {
     items.push(h("p", { class: "empty" }, "Loading…"));
@@ -482,6 +485,7 @@ function renderSidebar() {
   }
 
   list.replaceChildren(...items);
+  if (state) rowsShown = rowsNow;
 
   // Footer chips & sign out
   const footChips = [];
@@ -525,6 +529,14 @@ function jumpToSession(filterFn) {
   }
 }
 
+// fresh is " fresh" for a session the list did not show before, which
+// rises in; the first list shows all at once.
+function fresh(s) {
+  const id = s.id || terminals(s)[0]?.id || "";
+  rowsNow.add(id);
+  return rowsShown && !rowsShown.has(id) ? " fresh" : "";
+}
+
 function sessionRow(s, proj, open) {
   const panes = terminals(s);
   const lead = (s.lead && s.lead.id && !s.lead.url) ? s.lead : panes[0];
@@ -536,7 +548,7 @@ function sessionRow(s, proj, open) {
   const sub = lead.summary || lead.message || "";
 
   return h("div", {
-    class: "row" + (here ? " sel" : "") + (lead.unread ? " unread" : "") + (lead.status === "exited" ? " exited" : ""),
+    class: "row" + (here ? " sel" : "") + (lead.unread ? " unread" : "") + (lead.status === "exited" ? " exited" : "") + fresh(s),
     onclick: () => { location.hash = "#/pane/" + encodeURIComponent(here ? open : lead.id); },
   },
     h("span", { class: "pi" }, icon(prog)),
@@ -586,7 +598,7 @@ function processRow(s, proj, open) {
   }
 
   return h("div", {
-    class: "row" + (here ? " sel" : ""),
+    class: "row" + (here ? " sel" : "") + fresh(s),
     onclick: () => { location.hash = "#/pane/" + encodeURIComponent(here ? open : lead.id); },
   },
     statusEl,
@@ -656,7 +668,11 @@ function touchScroll(xt, host) {
     }));
   };
 
+  // stretch pulls the screen past its end, as a native list does; with
+  // less motion asked for it stays put (the glide is scrolling, and stays).
+  const still = matchMedia("(prefers-reduced-motion: reduce)");
   const stretch = (ease) => {
+    if (still.matches) return;
     const max = row() * 4, d = Math.abs(pulled) * 0.5;
     const off = Math.sign(pulled) * max * (1 - 1 / (d / max + 1));
     screen.style.transition = ease ? "transform 0.3s cubic-bezier(0.2, 0.8, 0.3, 1)" : "none";
