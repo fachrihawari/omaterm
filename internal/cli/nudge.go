@@ -62,6 +62,7 @@ func nudgeKind(tool string, input json.RawMessage) string {
 	var in struct {
 		Type        string          `json:"subagent_type"`
 		AgentType   string          `json:"agent_type"`
+		TypeName    string          `json:"TypeName"` // Antigravity's: "browser" for its browser
 		Isolation   string          `json:"isolation"`
 		Command     json.RawMessage `json:"command"`
 		CommandLine string          `json:"CommandLine"`
@@ -69,6 +70,8 @@ func nudgeKind(tool string, input json.RawMessage) string {
 	}
 	json.Unmarshal(input, &in)
 	switch {
+	case tool == "invoke_subagent" && in.TypeName == "browser":
+		return "browser"
 	case slices.Contains(subagentTools, tool):
 		if in.Isolation == "" && (slices.Contains(readOnlySubagents, in.Type) || slices.Contains(readOnlySubagents, in.AgentType)) {
 			return ""

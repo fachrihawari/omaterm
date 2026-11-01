@@ -42,7 +42,8 @@ func TestNudgeKind(t *testing.T) {
 		{"exec_command", `{"cmd": "xdg-open http://localhost:3000"}`, "browser"},
 		{"exec_command", `{"cmd": "go test ./..."}`, ""},
 		// Antigravity: its subagents and browser; its shell.
-		{"invoke_subagent", `{"task": "Build the export"}`, "subagent"},
+		{"invoke_subagent", `{"Prompt": "Build the export", "Role": "Worker", "TypeName": "self"}`, "subagent"},
+		{"invoke_subagent", `{"Prompt": "Open about:blank", "Role": "Browser Subagent", "TypeName": "browser"}`, "browser"},
 		{"browser_subagent", `{"task": "Open localhost:3000"}`, "browser"},
 		{"browser_get_dom", `{}`, "browser"},
 		{"run_command", `{"CommandLine": "npx playwright screenshot http://localhost:3000 a.png", "Cwd": "/x"}`, "browser"},
