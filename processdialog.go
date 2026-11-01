@@ -91,7 +91,7 @@ func (a *appState) processDialog(c *ui.Context) {
 	}
 	save := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, processDialogTitle(st), false)
 		_, height := c.Size()
 		ui.Scroll(c.Key("process-form")).MaxHeight(height - 180).Children(func() {
@@ -149,10 +149,10 @@ func (a *appState) processDialog(c *ui.Context) {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if dialogButton(c, "Cancel", false, false) {
+			if a.dialogButton(c, "Cancel", false, false) {
 				st.open = false
 			}
-			if dialogButton(c, "Save", true, false) {
+			if a.dialogButton(c, "Save", true, false) {
 				save = true
 			}
 		})

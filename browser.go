@@ -369,7 +369,7 @@ func (a *appState) addressBar(c *ui.Context, tab *topTab, id string, e *webEntry
 	})
 	focused := in.Focused()
 	e.editing = focused
-	glow := a.animate(frame, "glow", b2f(focused), 120*time.Millisecond)
+	glow := a.animate(frame, "glow", b2f(focused), motionFast)
 	if glow > 0 {
 		frame.Shadow(0, 0, 0, 3*glow, pal.Accent.Alpha(0.3*glow))
 	}

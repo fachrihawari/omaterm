@@ -63,10 +63,7 @@ func (a *appState) sidebar(c *ui.Context) {
 	if a.sidebarShown {
 		target = a.sidebarWidth()
 	}
-	w := box.AnimateTo("w", target, ui.Animation{Spring: ui.SpringOptions{Duration: 260 * time.Millisecond}})
-	if a.settings.ReduceMotion {
-		w = target
-	}
+	w := a.animateTo(box, "w", target, springPanel)
 	box.Width(w)
 	if w < 1 {
 		return
@@ -553,7 +550,7 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	case row.Hovered():
 		bg = pal.Hover
 	}
-	row.Background(a.animColor(row, "bg", bg, 110*time.Millisecond))
+	row.Background(a.animColor(row, "bg", bg, motionFast))
 	if selected {
 		chosen(row)
 	}

@@ -627,7 +627,7 @@ func (a *appState) terminalPreview(c *ui.Context) {
 			if t.Cursor == "underline" {
 				cur.AlignSelf(ui.End)
 			}
-			if t.CursorBlink && !a.settings.ReduceMotion {
+			if t.CursorBlink && !a.still() {
 				if c.Now().UnixMilli()/530%2 == 1 {
 					cur.Opacity(0)
 				}

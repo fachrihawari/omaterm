@@ -50,7 +50,7 @@ func (a *appState) trustDialog(c *ui.Context) {
 	}
 	confirmed := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, "Trust "+st.proc.Name+"?", false)
 		ui.Text(c, "omaterm.yml defines this process; a command from a file in the repository runs only once you have read it.").
 			FontSize(12.5).TextColor(pal.TextMuted).Wrap()
@@ -63,10 +63,10 @@ func (a *appState) trustDialog(c *ui.Context) {
 			})
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if dialogButton(c, "Cancel", false, false) {
+			if a.dialogButton(c, "Cancel", false, false) {
 				st.open = false
 			}
-			if dialogButton(c, "Trust and Start", true, false) {
+			if a.dialogButton(c, "Trust and Start", true, false) {
 				confirmed = true
 			}
 		})

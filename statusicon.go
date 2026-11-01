@@ -53,7 +53,7 @@ func (a *appState) statusIcon(c *ui.Context, i session.Info, size float32) ui.El
 	st := statusState(i)
 	progress := float32(i.Progress) / 100
 	unread := i.Unread
-	still := a.settings.ReduceMotion
+	still := a.still()
 	return ui.Box(c).Size(size, size).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
 		drawStatus(p, r, st, progress, unread, still)
 	})

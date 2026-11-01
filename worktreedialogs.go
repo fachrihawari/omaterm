@@ -110,7 +110,7 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 	}
 	submitted := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, "New Agent", false)
 		about := "It starts in a session of its own, in " + st.name + ", beside your other sessions."
 		if st.worktree {
@@ -170,14 +170,14 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if dialogButton(c, "Cancel", false, false) && !st.busy {
+			if a.dialogButton(c, "Cancel", false, false) && !st.busy {
 				st.open = false
 			}
 			label := "Start"
 			if st.busy {
 				label = "Starting…"
 			}
-			if dialogButton(c, label, true, false) {
+			if a.dialogButton(c, label, true, false) {
 				submitted = true
 			}
 		})
@@ -377,7 +377,7 @@ func (a *appState) mergeDialog(c *ui.Context) {
 	needMsg := squash || st.sum != nil && st.sum.Uncommitted > 0
 	merge := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, "Merge "+st.w.Branch+" into "+st.w.Base, false)
 		switch {
 		case st.sumErr != "":
@@ -407,14 +407,14 @@ func (a *appState) mergeDialog(c *ui.Context) {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if dialogButton(c, "Cancel", false, false) && !st.busy {
+			if a.dialogButton(c, "Cancel", false, false) && !st.busy {
 				st.open = false
 			}
 			label := "Merge"
 			if st.busy {
 				label = "Merging…"
 			}
-			if dialogButton(c, label, true, false) {
+			if a.dialogButton(c, label, true, false) {
 				merge = true
 			}
 		})

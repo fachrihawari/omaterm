@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -23,10 +22,7 @@ func (a *appState) inspectorPanel(c *ui.Context, gap float32) {
 	if a.inspectorShown {
 		target = a.inspectorWidth() + gap
 	}
-	w := box.AnimateTo("w", target, ui.Animation{Spring: ui.SpringOptions{Duration: 260 * time.Millisecond}})
-	if a.settings.ReduceMotion {
-		w = target
-	}
+	w := a.animateTo(box, "w", target, springPanel)
 	box.Width(w)
 	if w < 1 {
 		return

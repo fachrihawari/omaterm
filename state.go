@@ -427,10 +427,16 @@ type appState struct {
 	// settings are the user's preferences (settings.json); themeMode is
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
 	// last loaded, themeWatchStop ends the theme watch.
-	settings     Settings
-	settingsUI   settingsUI
-	settingsPage string
-	settingsWin  *mygo.Window
+	settings Settings
+	// osStill is the desktop's Reduce Motion, as the last frame read it.
+	osStill bool
+	// mainDialogs and settingsDialogs are the dialogs each window shows,
+	// and dialogs those of the window building its frame.
+	mainDialogs, settingsDialogs shown
+	dialogs                      *shown
+	settingsUI                   settingsUI
+	settingsPage                 string
+	settingsWin                  *mygo.Window
 	// termMade is termBehavior as the open terminals were made.
 	termMade       termBehavior
 	themeMode      string

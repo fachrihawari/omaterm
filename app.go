@@ -1,8 +1,6 @@
 package main
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/service"
@@ -13,6 +11,7 @@ import (
 
 func (a *appState) view(c *ui.Context) {
 	a.drainPosted()
+	a.motionFrame(c, &a.mainDialogs)
 	a.trackViewed()
 	a.followWorktreeRepo()
 	c.SetTheme(omaTheme())
@@ -192,24 +191,6 @@ func (a *appState) modalOpen() bool {
 		a.trustAsk != nil || a.processDialogOpen()
 }
 
-// animColor animates e's color to target, or, with Reduce Motion on,
-// gives it at once.
-func (a *appState) animColor(e ui.Element, key string, target ui.Color, d time.Duration) ui.Color {
-	if a.settings.ReduceMotion {
-		return target
-	}
-	return e.AnimateColor(key, target, ui.Animation{Duration: d})
-}
-
-// animate animates a value of e to target, or, with Reduce Motion on,
-// gives it at once.
-func (a *appState) animate(e ui.Element, key string, target float32, d time.Duration) float32 {
-	if a.settings.ReduceMotion {
-		return target
-	}
-	return e.Animate(key, target, d)
-}
-
 func (a *appState) wash(e ui.Element) {
 	if a.settings.Background == "plain" {
 		e.Background(pal.Wash)
@@ -334,7 +315,7 @@ const (
 )
 
 // dialogFrame styles a DialogBase's backdrop and panel.
-func dialogFrame(c *ui.Context, backdrop, panel ui.Element) {
+func (a *appState) dialogFrame(c *ui.Context, backdrop, panel ui.Element) {
 	winW, winH := c.Size()
 	w := float32(dialogWidth)
 	if avail := winW - 2*dialogMinSide; avail > 0 && w > avail {
@@ -345,6 +326,7 @@ func dialogFrame(c *ui.Context, backdrop, panel ui.Element) {
 	backdrop.Justify(ui.Start).Background(pal.Scrim)
 	floating(panel.Top(winH * dialogTopFraction).Width(w).Padding(18).Gap(10).
 		Radius(10).Background(pal.Popover))
+	a.arriveDialog(c, backdrop, panel)
 }
 
 // dialogTitle is a dialog's title, with a warning sign for danger.
@@ -359,7 +341,7 @@ func dialogTitle(c *ui.Context, title string, danger bool) {
 
 // dialogButton is a dialog's button: primary filled with the accent, red
 // with danger, else bordered. It reports a click.
-func dialogButton(c *ui.Context, label string, primary, danger bool) bool {
+func (a *appState) dialogButton(c *ui.Context, label string, primary, danger bool) bool {
 	b := ui.ButtonBase(c.Key("dlg-"+label)).Height(dialogButtonHeight).Padding(0, 14).Radius(6).
 		AlignItems(ui.Center).Shrink(0).Label(label)
 	fg, weight := pal.Text, 500
@@ -383,6 +365,7 @@ func dialogButton(c *ui.Context, label string, primary, danger bool) bool {
 		}
 		face(b, bg).Border(1, pal.BorderStrong)
 	}
+	a.press(a.fadeColors(b))
 	b.Children(func() {
 		ui.Text(c, label).FontSize(12).FontWeight(weight).TextColor(fg).SingleLine()
 	})
@@ -398,7 +381,7 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 	}
 	result := -1
 	ui.DialogBase(c, open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, title, danger)
 		if message != "" {
 			ui.Text(c, message).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
@@ -406,7 +389,7 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			for i, label := range buttons {
 				last := i == len(buttons)-1
-				if dialogButton(c, label, last, last && danger) {
+				if a.dialogButton(c, label, last, last && danger) {
 					result = i
 				}
 			}

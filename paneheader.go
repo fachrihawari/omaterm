@@ -317,7 +317,7 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 	// would go when the process restarts.
 	splits := (w == 0 || w >= 260) && tab.Kind != tabProcess
 	row := ui.Row(c.Key("ctl")).Gap(2).AlignItems(ui.Center).Shrink(0)
-	row.Opacity(row.Animate("show", 1, 120*time.Millisecond))
+	row.Opacity(a.animate(row, "show", 1, motionFast))
 	row.Children(func() {
 		if splits {
 			if cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {

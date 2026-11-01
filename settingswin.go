@@ -225,6 +225,7 @@ func (a *appState) settingsGo(id string) {
 // settingsView is the window's view.
 func (a *appState) settingsView(c *ui.Context) {
 	a.drainPosted()
+	a.motionFrame(c, &a.settingsDialogs)
 	c.SetTheme(omaTheme())
 	u := &a.settingsUI
 	if u.focused == nil {
@@ -439,7 +440,7 @@ func (a *appState) settingsNavRow(c *ui.Context, p *settingsPageDef) {
 	case row.Hovered():
 		bg = pal.Hover
 	}
-	row.Background(a.animColor(row, "bg", bg, 110*time.Millisecond))
+	row.Background(a.animColor(row, "bg", bg, motionFast))
 	if selected {
 		chosen(row)
 	}
@@ -697,7 +698,7 @@ func (a *appState) settingsFlash(c *ui.Context, e ui.Element, id string) {
 		return
 	}
 	k := float32(1)
-	if el > 560*time.Millisecond {
+	if el > 560*time.Millisecond && !a.still() {
 		k = 1 - float32(el-560*time.Millisecond)/float32(840*time.Millisecond)
 	}
 	e.Background(pal.Accent.Alpha(0.12 * k))
@@ -1050,7 +1051,7 @@ func (a *appState) settingsSheetView(c *ui.Context) {
 	}
 	open := true
 	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, sh.title, sh.danger)
 		if sh.text != "" {
 			ui.Text(c, sh.text).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
@@ -1068,15 +1069,15 @@ func (a *appState) settingsSheetView(c *ui.Context) {
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			if sh.run == nil {
-				if dialogButton(c, "Done", true, false) {
+				if a.dialogButton(c, "Done", true, false) {
 					open = false
 				}
 				return
 			}
-			if dialogButton(c, "Cancel", false, false) {
+			if a.dialogButton(c, "Cancel", false, false) {
 				open = false
 			}
-			if dialogButton(c, sh.confirm, true, sh.danger) {
+			if a.dialogButton(c, sh.confirm, true, sh.danger) {
 				open = false
 				sh.run(c)
 			}

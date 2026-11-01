@@ -156,16 +156,16 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 	focused := a.activePaneTermID == id
 	card := ui.Column(c.Key("pane-" + id)).Grow(1).Basis(0).MinWidth(0).MinHeight(0).
 		Radius(a.cardRadius()).Clip().Bind(a.handle("card-" + id))
-	card.Background(a.animColor(card, "bg", pal.Card, 140*time.Millisecond))
+	card.Background(a.animColor(card, "bg", pal.Card, motionFast))
 	cardEdge(card)
 	if multi && focused {
-		card.BorderColor(a.animColor(card, "ring", pal.Accent.Alpha(0.55), 140*time.Millisecond))
+		card.BorderColor(a.animColor(card, "ring", pal.Accent.Alpha(0.55), motionFast))
 	}
 	// A bell flashes the card's edge, fading over half a second.
 	if at, ok := a.bells[id]; ok {
 		if el := c.Now().Sub(at); el < 600*time.Millisecond {
 			k := 1 - float32(el)/float32(600*time.Millisecond)
-			if a.settings.ReduceMotion {
+			if a.still() {
 				k = 1
 			}
 			card.Border(2, pal.Warn.Alpha(0.8*k))
@@ -244,7 +244,7 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 			if !focused {
 				on = 1
 			}
-			v.Opacity(a.animate(v, "on", on, 160*time.Millisecond))
+			v.Opacity(a.animate(v, "on", on, motionBase))
 		}
 		if zone != zoneNone {
 			a.dropPreview(c, id, zone)
@@ -262,8 +262,8 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 		delete(a.arrived, id)
 		c.Invalidate()
 	}
-	if !a.settings.ReduceMotion {
-		card.AnimatePose(pose, ui.Animation{Spring: ui.SpringOptions{Duration: 420 * time.Millisecond, Bounce: 0.18}})
+	if !a.still() {
+		card.AnimatePose(pose, springPop)
 	}
 }
 
@@ -329,21 +329,16 @@ func (a *appState) dropPreview(c *ui.Context, target string, zone dropZone) {
 	if zone == zoneSwap {
 		glyph = iconRefresh
 	}
-	fadeIn := min(float32(c.Now().Sub(a.previewSince))/float32(140*time.Millisecond), 1)
-	if a.settings.ReduceMotion {
+	fadeIn := min(float32(c.Now().Sub(a.previewSince))/float32(motionFast), 1)
+	if a.still() {
 		fadeIn = 1
 	}
 	if fadeIn < 1 {
 		c.AnimationFrame()
 	}
-	spring := ui.Animation{Spring: ui.SpringOptions{Duration: 300 * time.Millisecond, Bounce: 0.12}}
 	o := ui.Column(c.Key("drop")).Absolute().PassThrough().Padding(8).Opacity(fadeIn)
-	if a.settings.ReduceMotion {
-		o.LeftPercent(r[0]).TopPercent(r[1]).WidthPercent(r[2]).HeightPercent(r[3])
-	} else {
-		o.LeftPercent(o.AnimateTo("l", r[0], spring)).TopPercent(o.AnimateTo("t", r[1], spring)).
-			WidthPercent(o.AnimateTo("w", r[2], spring)).HeightPercent(o.AnimateTo("h", r[3], spring))
-	}
+	o.LeftPercent(a.animateTo(o, "l", r[0], springGlide)).TopPercent(a.animateTo(o, "t", r[1], springGlide)).
+		WidthPercent(a.animateTo(o, "w", r[2], springGlide)).HeightPercent(a.animateTo(o, "h", r[3], springGlide))
 	o.Children(func() {
 		room := ui.Column(c).Grow(1).Radius(9).AlignItems(ui.Center).Justify(ui.Center).
 			Background(pal.Accent.Alpha(0.10)).InsetShadow(0, 0, 28, 0, pal.Accent.Alpha(0.22)).
