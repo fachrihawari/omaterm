@@ -184,6 +184,9 @@ func main() {
 		a := newApp()
 		a.crashes = crashes
 		app = a
+		// Agents read the skill and hooks this omaterm installs, not the
+		// ones an older one left.
+		go cli.RefreshOutdated()
 		a.useDaemon()
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "omaterm",
