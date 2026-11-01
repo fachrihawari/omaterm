@@ -22,14 +22,16 @@ import (
 	"omaterm/internal/client"
 	"omaterm/internal/clilink"
 	"omaterm/internal/paths"
+	"omaterm/internal/procs"
 	"omaterm/internal/proto"
 )
 
 // hookCmd is what an agent runs as its session starts (the hook `omaterm
 // skill setup` installs): it tells the agent that it runs in omaterm, in
 // which session and pane, and tells omaterm the agent's own session, to
-// resume after a restart. It never fails the agent: outside omaterm, or on
-// any trouble, it says nothing.
+// resume after a restart. Before the agent's tool calls, it nudges it
+// toward omaterm's own (nudge). It never fails the agent: outside
+// omaterm, or on any trouble, it says nothing.
 func hookCmd(args []string) error {
 	agent := ""
 	if len(args) > 0 {
@@ -43,14 +45,30 @@ func hookCmd(args []string) error {
 	}
 	pane := os.Getenv("OMATERM_PANE")
 	var in struct {
-		Event   string `json:"hook_event_name"`
-		AgentID string `json:"agent_id"`   // set for Claude Code's subagents
-		Session string `json:"session_id"` // the agent's own
-		Cwd     string `json:"cwd"`
-		Source  string `json:"source"` // "startup", "resume", "clear", "compact"
+		Event   string          `json:"hook_event_name"`
+		AgentID string          `json:"agent_id"`   // set for Claude Code's subagents
+		Session string          `json:"session_id"` // the agent's own
+		Cwd     string          `json:"cwd"`
+		Source  string          `json:"source"` // "startup", "resume", "clear", "compact"
+		Tool    string          `json:"tool_name"`
+		Input   json.RawMessage `json:"tool_input"`
 	}
 	json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&in)
-	if pane == "" || in.Event != "SessionStart" || in.AgentID != "" {
+	if pane == "" || in.AgentID != "" {
+		return nil
+	}
+	if in.Event == "PreToolUse" {
+		why := nudge(agent, in.Session, in.Tool, in.Input)
+		if why == "" {
+			return nil
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"hookSpecificOutput": map[string]string{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": why,
+		}})
+	}
+	if in.Event != "SessionStart" {
 		return nil
 	}
 	if t := os.Getenv("CODEX_THREAD_ID"); t != "" && in.Session != "" && t != in.Session {
@@ -85,7 +103,8 @@ func hookCmd(args []string) error {
 
 // agyHookCmd is what Antigravity runs (its hooks.json, see agyHook):
 // SessionStart as a conversation starts, PreInvocation before each call of
-// its model. At a turn's start both tell omaterm the pane's conversation,
+// its model, PreToolUse before its subagents' and browser's tool calls,
+// which it nudges toward omaterm's (nudge). At a turn's start both tell omaterm the pane's conversation,
 // since a resumed one starts no session; SessionStart also tells the agent
 // where it runs. It always answers with a JSON object, as Antigravity's
 // hooks must, and never fails the agent.
@@ -98,11 +117,26 @@ func agyHookCmd(args []string) error {
 		Conversation string   `json:"conversationId"`
 		Workspaces   []string `json:"workspacePaths"`
 		Invocation   int      `json:"invocationNum"` // 0 at a turn's start
+		ToolCall     struct {
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
+		} `json:"toolCall"` // PreToolUse's
 	}
 	json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&in)
 	out := map[string]any{}
 	defer func() { json.NewEncoder(os.Stdout).Encode(out) }()
 	pane := os.Getenv("OMATERM_PANE")
+	if event == "PreToolUse" {
+		// Antigravity blocks a call whose hook gives no decision.
+		out["decision"] = "allow"
+		if pane == "" {
+			return nil
+		}
+		if why := nudge("agy", in.Conversation, in.ToolCall.Name, in.ToolCall.Args); why != "" {
+			out["decision"], out["reason"] = "deny", why
+		}
+		return nil
+	}
 	if pane == "" || in.Conversation == "" || event == "PreInvocation" && in.Invocation != 0 {
 		return nil
 	}
@@ -201,7 +235,72 @@ func hookContext(c *client.Client, pane, sid string, away bool) string {
 	if known {
 		b.WriteString(sessionNotes(st, sid))
 	}
+	b.WriteString(firstChoice(st, pane))
 	return b.String()
+}
+
+// firstChoice tells the agent to use omaterm before tools of its own that
+// do the same: a browser, subagents, a background shell. It names only
+// what works now, so that the agent doesn't learn from a failure to leave
+// omaterm alone.
+func firstChoice(st proto.State, pane string) string {
+	agent, dir := "claude", ""
+	for _, s := range st.Sessions {
+		for _, p := range s.Panes {
+			if p.ID != pane {
+				continue
+			}
+			if p.Agent != "" {
+				agent = p.Agent
+			}
+			for _, pr := range st.Projects {
+				if pr.ID == s.Project {
+					dir = pr.Dir
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString("\n\nUse omaterm before your own tools where it does what you need, as the user watches omaterm, not your tool calls:")
+	if agentsControlApp() {
+		b.WriteString("\n- To look at a web page, click through it or screenshot it: a browser pane, `omaterm split --url <url>`, " +
+			"then `omaterm browser text|click|type|screenshot`, rather than a browser tool of your own (a browser plugin, MCP server or subagent, or a headless browser).")
+	} else {
+		b.WriteString("\n- To show the user a web page: a browser pane, `omaterm split --url <url>`. Driving it with `omaterm browser` " +
+			"needs the setting “Let Agents Control the App” (Settings › Agents), which is off: when you need to click through or read a page, " +
+			"ask the user to turn it on before reaching for another browser.")
+	}
+	b.WriteString("\n- For work worth splitting, or changes made in parallel: agents of their own, each in a worktree, " +
+		"`omaterm new --worktree <branch> -- " + agent + "`, `omaterm ask <branch> \"<its part>\" --no-wait`, then `omaterm merge <branch>`, " +
+		"rather than subagents, which stay fine for read-only searching and reading.")
+	var names []string
+	if dir != "" {
+		defs, _ := procs.LoadFile(dir)
+		for _, d := range defs {
+			names = append(names, d.Name)
+		}
+	}
+	if len(names) > 0 {
+		b.WriteString("\n- For a dev server or a watcher: the project's processes (" + strings.Join(names, ", ") +
+			"), `omaterm ps` and `omaterm start <name> --wait`, rather than starting your own.")
+	} else {
+		b.WriteString("\n- For a dev server or a watcher: `omaterm split --down -- <command>`, rather than a background shell.")
+	}
+	b.WriteString("\nUse your own tools when omaterm can't do what's needed, and say why.")
+	return b.String()
+}
+
+// agentsControlApp tells whether the setting “Let Agents Control the App”
+// is on, which omaterm browser needs.
+func agentsControlApp() bool {
+	b, err := os.ReadFile(filepath.Join(paths.ConfigDir(), "settings.json"))
+	if err != nil {
+		return false
+	}
+	var s struct {
+		RemoteControl bool `json:"remoteControl"`
+	}
+	return json.Unmarshal(b, &s) == nil && s.RemoteControl
 }
 
 // sessionNotes tells the agent what to know of its session: its name,
@@ -293,10 +392,24 @@ type integration interface {
 }
 
 // agentHook is a hook omaterm installs in an agent's settings: a SessionStart
-// command running `omaterm hook <agent>`.
+// command running `omaterm hook <agent>`, and a PreToolUse one.
 type agentHook struct {
 	agent string // as `omaterm hook` takes it: "claude", "codex"
 	file  string // the JSON file holding the agent's hooks
+}
+
+// hookEvent is an event of the agent's that omaterm's hook runs on, and its
+// matcher, if any.
+type hookEvent struct{ name, matcher string }
+
+// events are the events omaterm hooks: the agent's tool calls too, to
+// nudge it toward omaterm (nudge). Codex's hook takes every tool, as
+// Codex names its shell differently by version.
+func (h agentHook) events() []hookEvent {
+	if h.agent == "claude" {
+		return []hookEvent{{"SessionStart", ""}, {"PreToolUse", claudeToolMatcher}}
+	}
+	return []hookEvent{{"SessionStart", ""}, {"PreToolUse", ""}}
 }
 
 func (h agentHook) name() string { return h.agent }
@@ -333,8 +446,8 @@ func (h agentHook) ours(command string) bool {
 	return strings.Contains(command, "omaterm") && strings.HasSuffix(command, " hook "+h.agent)
 }
 
-// state is "current", "outdated" (omaterm's hook, of another command line)
-// or "missing".
+// state is "current", "outdated" (omaterm's hook, of another command line
+// or matcher, or missing on one of its events) or "missing".
 func (h agentHook) state() string {
 	b, err := os.ReadFile(h.file)
 	if err != nil {
@@ -344,31 +457,41 @@ func (h agentHook) state() string {
 	if err != nil {
 		return "missing"
 	}
-	state := "missing"
-	h.each(settings, func(command string) {
-		if command == h.command() {
-			state = "current"
-		} else if state == "missing" {
-			state = "outdated"
+	found, current := 0, 0
+	for _, ev := range h.events() {
+		n, exact := 0, false
+		h.each(settings, ev.name, func(command, matcher string) {
+			n++
+			exact = exact || command == h.command() && matcher == ev.matcher
+		})
+		found += n
+		if n == 1 && exact {
+			current++
 		}
-	})
-	if state == "current" && !commandIsThere() {
+	}
+	switch {
+	case found == 0:
+		return "missing"
+	case current < len(h.events()) || found > current || !commandIsThere():
 		return "outdated"
 	}
-	return state
+	return "current"
 }
 
-// each calls fn with the command of each of omaterm's SessionStart hooks.
-func (h agentHook) each(settings object, fn func(command string)) {
+// each calls fn with the command, and the matcher of its group, of each
+// of omaterm's hooks on event.
+func (h agentHook) each(settings object, event string, fn func(command, matcher string)) {
 	hooks, _ := parseObject(settings.get("hooks"))
 	var groups []object
-	json.Unmarshal(hooks.get("SessionStart"), &groups)
+	json.Unmarshal(hooks.get(event), &groups)
 	for _, g := range groups {
+		var matcher string
+		json.Unmarshal(g.get("matcher"), &matcher)
 		var handlers []struct{ Type, Command string }
 		json.Unmarshal(g.get("hooks"), &handlers)
 		for _, hd := range handlers {
 			if hd.Type == "command" && h.ours(hd.Command) {
-				fn(hd.Command)
+				fn(hd.Command, matcher)
 			}
 		}
 	}
@@ -418,49 +541,50 @@ func (h agentHook) edit(add bool) error {
 	if err != nil {
 		return fmt.Errorf("%s: hooks: %w", shortDir(h.file), err)
 	}
-	var groups []object
-	if raw := hooks.get("SessionStart"); raw != nil {
-		if err := json.Unmarshal(raw, &groups); err != nil {
-			return fmt.Errorf("%s: hooks.SessionStart: %w", shortDir(h.file), err)
-		}
-	}
-	// Already there, alone: nothing to do. Else drop omaterm's handlers, and
-	// the groups they leave empty.
-	n, exact := 0, false
-	h.each(settings, func(command string) {
-		n++
-		exact = exact || command == h.command()
-	})
-	if add && n == 1 && exact || !add && n == 0 {
+	// Already there, alone: nothing to do.
+	if st := h.state(); add && st == "current" || !add && st == "missing" {
 		return nil
 	}
-	kept := groups[:0]
-	for _, g := range groups {
-		var handlers []json.RawMessage
-		json.Unmarshal(g.get("hooks"), &handlers)
-		n := len(handlers)
-		handlers = slices.DeleteFunc(handlers, func(raw json.RawMessage) bool {
-			var hd struct{ Type, Command string }
-			json.Unmarshal(raw, &hd)
-			return hd.Type == "command" && h.ours(hd.Command)
-		})
-		if n > 0 && len(handlers) == 0 {
-			continue
+	for _, ev := range h.events() {
+		var groups []object
+		if raw := hooks.get(ev.name); raw != nil {
+			if err := json.Unmarshal(raw, &groups); err != nil {
+				return fmt.Errorf("%s: hooks.%s: %w", shortDir(h.file), ev.name, err)
+			}
 		}
-		if len(handlers) != n {
-			g = g.set("hooks", marshal(handlers))
+		// Drop omaterm's handlers, and the groups they leave empty.
+		kept := groups[:0]
+		for _, g := range groups {
+			var handlers []json.RawMessage
+			json.Unmarshal(g.get("hooks"), &handlers)
+			n := len(handlers)
+			handlers = slices.DeleteFunc(handlers, func(raw json.RawMessage) bool {
+				var hd struct{ Type, Command string }
+				json.Unmarshal(raw, &hd)
+				return hd.Type == "command" && h.ours(hd.Command)
+			})
+			if n > 0 && len(handlers) == 0 {
+				continue
+			}
+			if len(handlers) != n {
+				g = g.set("hooks", marshal(handlers))
+			}
+			kept = append(kept, g)
 		}
-		kept = append(kept, g)
-	}
-	groups = kept
-	if add {
-		handler := object{{"type", marshal("command")}, {"command", marshal(h.command())}, {"timeout", marshal(10)}}
-		groups = append(groups, object{{"hooks", marshal([]object{handler})}})
-	}
-	if len(groups) > 0 {
-		hooks = hooks.set("SessionStart", marshal(groups))
-	} else {
-		hooks = hooks.del("SessionStart")
+		groups = kept
+		if add {
+			handler := object{{"type", marshal("command")}, {"command", marshal(h.command())}, {"timeout", marshal(10)}}
+			group := object{}
+			if ev.matcher != "" {
+				group = group.set("matcher", marshal(ev.matcher))
+			}
+			groups = append(groups, group.set("hooks", marshal([]object{handler})))
+		}
+		if len(groups) > 0 {
+			hooks = hooks.set(ev.name, marshal(groups))
+		} else {
+			hooks = hooks.del(ev.name)
+		}
 	}
 	if len(hooks) > 0 {
 		settings = settings.set("hooks", hooks.marshal())
@@ -558,8 +682,9 @@ func (p agentPlugin) remove() error {
 
 // agyHook is omaterm's hook in Antigravity's hooks.json, whose top-level
 // keys name hooks: "omaterm", running `omaterm hook agy` as a conversation
-// starts (SessionStart) and before each model call (PreInvocation), since
-// a resumed conversation starts no session.
+// starts (SessionStart), before each model call (PreInvocation), since a
+// resumed conversation starts no session, and before its subagents' and
+// browser's tool calls (PreToolUse).
 type agyHook struct {
 	file string // ~/.gemini/config/hooks.json
 }
@@ -570,13 +695,16 @@ const agyHookName = "omaterm"
 func (h agyHook) name() string { return "agy" }
 func (h agyHook) path() string { return h.file }
 
-// spec is omaterm's entry, as it should be.
+// spec is omaterm's entry, as it should be: PreToolUse's handlers go in a
+// group of their matcher.
 func (h agyHook) spec() json.RawMessage {
-	handlers := func(event string) json.RawMessage {
+	handler := func(event string) object {
 		cmd := agentHook{agent: "agy"}.command() + " " + event
-		return marshal([]object{{{"type", marshal("command")}, {"command", marshal(cmd)}, {"timeout", marshal(10)}}})
+		return object{{"type", marshal("command")}, {"command", marshal(cmd)}, {"timeout", marshal(10)}}
 	}
-	return object{{"SessionStart", handlers("SessionStart")}, {"PreInvocation", handlers("PreInvocation")}}.marshal()
+	handlers := func(event string) json.RawMessage { return marshal([]object{handler(event)}) }
+	tools := marshal([]object{{{"matcher", marshal(agyToolMatcher)}, {"hooks", marshal([]object{handler("PreToolUse")})}}})
+	return object{{"SessionStart", handlers("SessionStart")}, {"PreInvocation", handlers("PreInvocation")}, {"PreToolUse", tools}}.marshal()
 }
 
 func (h agyHook) read() (object, []byte, error) {

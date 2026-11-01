@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"omaterm/internal/proto"
 )
 
 func testHook(t *testing.T, settings string) agentHook {
@@ -98,8 +100,48 @@ func TestHookReplacesOutdated(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := read(t, h.file)
-	if strings.Contains(got, "/old/omaterm") || strings.Count(got, "hook claude") != 1 {
+	if strings.Contains(got, "/old/omaterm") || strings.Count(got, "hook claude") != 2 {
 		t.Fatalf("after install:\n%s", got)
+	}
+}
+
+// Claude Code's hook runs on its tool calls too, with omaterm's matcher;
+// one without it is outdated. Codex's runs on all its tool calls.
+func TestClaudeHookOnToolCalls(t *testing.T) {
+	h := testHook(t, "")
+	if err := h.install(); err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Hooks map[string][]struct {
+			Matcher string
+			Hooks   []struct{ Command string }
+		}
+	}
+	got := read(t, h.file)
+	if err := json.Unmarshal([]byte(got), &v); err != nil {
+		t.Fatal(err)
+	}
+	pre := v.Hooks["PreToolUse"]
+	if len(v.Hooks["SessionStart"]) != 1 || len(pre) != 1 || pre[0].Matcher != claudeToolMatcher ||
+		!strings.HasSuffix(pre[0].Hooks[0].Command, " hook claude") {
+		t.Fatalf("installed:\n%s", got)
+	}
+	// The SessionStart hook alone, as omaterm installed it before.
+	old := strings.Replace(got, `"PreToolUse"`, `"Other"`, 1)
+	if err := os.WriteFile(h.file, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st := h.state(); st != "outdated" {
+		t.Fatalf("state %s without PreToolUse", st)
+	}
+
+	codex := agentHook{"codex", filepath.Join(t.TempDir(), "hooks.json")}
+	if err := codex.install(); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, codex.file); !strings.Contains(got, "PreToolUse") || strings.Contains(got, "matcher") || codex.state() != "current" {
+		t.Fatalf("codex:\n%s", got)
 	}
 }
 
@@ -350,4 +392,82 @@ func captureStdout(t *testing.T, fn func()) string {
 	b, _ := io.ReadAll(r)
 	r.Close()
 	return string(b)
+}
+
+// The agent is told to use omaterm before its own browser, subagents and
+// background shell, naming only what works now: driving the browser pane
+// when agents may control the app, and the project's processes.
+func TestFirstChoice(t *testing.T) {
+	t.Setenv("OMATERM_CONFIG_HOME", t.TempDir())
+	proj := t.TempDir()
+	st := proto.State{
+		Projects: []proto.Project{{ID: "p1", Name: "shop", Dir: proj}},
+		Sessions: []proto.Session{{ID: "s1", Project: "p1", Panes: []proto.Pane{{ID: "a1", Agent: "codex"}}}},
+	}
+	got := firstChoice(st, "a1")
+	for _, want := range []string{"“Let Agents Control the App” (Settings › Agents), which is off",
+		"omaterm new --worktree <branch> -- codex", "rather than subagents", "omaterm split --down -- <command>",
+		"Use your own tools when omaterm can't do what's needed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in:\n%s", want, got)
+		}
+	}
+
+	settings := filepath.Join(os.Getenv("OMATERM_CONFIG_HOME"), "omaterm", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"remoteControl": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "omaterm.yml"), []byte("processes:\n  web:\n    command: npm run dev\n  worker:\n    command: npm run worker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got = firstChoice(st, "a1")
+	for _, want := range []string{"rather than a browser tool of your own (a browser plugin, MCP server or subagent, or a headless browser)", "the project's processes (web, worker)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "which is off") {
+		t.Errorf("the setting is on:\n%s", got)
+	}
+}
+
+// Antigravity's PreToolUse hook always gives a decision, as Antigravity
+// blocks a call without one: allow, outside omaterm and the second time;
+// deny the first subagent of a conversation, saying what omaterm offers.
+// Its entry runs on subagents and the browser, not the shell.
+func TestAgyToolHook(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("OMATERM_CONFIG_HOME", t.TempDir())
+	call := func() (out struct{ Decision, Reason string }) {
+		t.Helper()
+		got := captureStdout(t, func() {
+			withStdin(t, `{"conversationId":"c1","toolCall":{"name":"invoke_subagent","args":{"task":"Build the export"}}}`, func() {
+				if err := hookCmd([]string{"agy", "PreToolUse"}); err != nil {
+					t.Fatal(err)
+				}
+			})
+		})
+		if err := json.Unmarshal([]byte(got), &out); err != nil {
+			t.Fatalf("%q: %v", got, err)
+		}
+		return out
+	}
+	t.Setenv("OMATERM_PANE", "")
+	if out := call(); out.Decision != "allow" {
+		t.Fatalf("outside omaterm: %+v", out)
+	}
+	t.Setenv("OMATERM_PANE", "p1")
+	if out := call(); out.Decision != "deny" || !strings.Contains(out.Reason, "omaterm new --worktree <branch> -- agy") {
+		t.Fatalf("first: %+v", out)
+	}
+	if out := call(); out.Decision != "allow" {
+		t.Fatalf("second: %+v", out)
+	}
+	spec := string(agyHook{}.spec())
+	if !strings.Contains(spec, `"PreToolUse":[{"matcher":"invoke_subagent|browser_.*","hooks":[{"type":"command"`) {
+		t.Fatalf("spec %s", spec)
+	}
 }

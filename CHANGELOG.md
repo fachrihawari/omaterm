@@ -3,6 +3,39 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.12.3
+
+Agents reach for what omaterm gives them, and a few touches in the window.
+
+### Agents use omaterm first
+
+- **Agents are told to use omaterm before their own tools.** At the start
+  of a session, Claude Code, Codex, OpenCode, Pi and Antigravity learn
+  what omaterm does for them: a browser pane to look at and click through
+  a page, agents of their own in worktrees to split a large task, the
+  project's processes for a dev server. They used their own browser and
+  subagents, out of your sight.
+- **The first time an agent reaches for its own browser or a subagent
+  that writes code, omaterm says what it offers instead.** If omaterm
+  can't do what the agent needs, it asks again and goes ahead. Claude
+  Code, Codex, Antigravity and Pi; subagents that only search and read
+  are left alone, and so is a browser when agents may not control the
+  app. Codex asks you once to approve omaterm's new hook (`/hooks`).
+- **An agent in your project's main folder can merge the agents it
+  started,** once you approve it: a banner asks you to Merge or Decline,
+  and the agent waits for your answer. Until now only an agent in a
+  worktree of its own could merge.
+- **The skill and hooks omaterm installed for your agents stay up to
+  date.** They were left as an older omaterm wrote them, missing what it
+  added since, such as project processes.
+
+### In the window
+
+- **A session's icon lines up with its project's name.** A session that
+  started others shows its chevron in place of its icon while the pointer
+  is on it, and its menu folds them away too.
+- **The right sidebar slides in and out,** as the left one does.
+
 ## 0.12.2
 
 omaterm on Windows does what it does on Linux and macOS, and a few things

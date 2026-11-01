@@ -368,8 +368,11 @@ type appState struct {
 	hookChecked     map[string]bool
 	// wtNew and wtMerge are the New Agent and Merge dialogs, open while
 	// set; wtAgent, wtUse, wtEnv and mergeSquash their last choices.
-	wtNew       *worktreeNew
-	wtMerge     *worktreeMerge
+	wtNew   *worktreeNew
+	wtMerge *worktreeMerge
+	// mergeAsks are agents' asks to merge into the main checkout, waiting
+	// for the user (mergeAskBanner).
+	mergeAsks   []*mergeAsk
 	wtAgent     string
 	wtUse       bool
 	wtEnv       bool

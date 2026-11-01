@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -13,6 +14,31 @@ import (
 )
 
 // The right inspector: Info / Files / Git panels behind a tab strip.
+
+// inspectorPanel slides the inspector in and out, as the sidebar does, with
+// gap, its room from the panes; while shown, its left edge resizes it.
+func (a *appState) inspectorPanel(c *ui.Context, gap float32) {
+	box := ui.Row(c.Key("inspector")).FillHeight().Shrink(0).ClipX()
+	target := float32(0)
+	if a.inspectorShown {
+		target = a.inspectorWidth() + gap
+	}
+	w := box.AnimateTo("w", target, ui.Animation{Spring: ui.SpringOptions{Duration: 260 * time.Millisecond}})
+	if a.settings.ReduceMotion {
+		w = target
+	}
+	box.Width(w)
+	if w < 1 {
+		return
+	}
+	box.Padding(0, 0, 0, min(gap, w)).Children(func() {
+		a.panelEdge(c, "inspector-edge", &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
+		card := ui.Column(c).Grow(1).MinWidth(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
+		cardEdge(card).Children(func() {
+			a.inspector(c)
+		})
+	})
+}
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
 	return ui.Column(c).Fill().Children(func() {

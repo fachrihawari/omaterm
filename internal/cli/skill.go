@@ -16,7 +16,7 @@ import (
 // installs, from this binary, so that it follows omaterm's updates.
 const skillGuide = `---
 name: omaterm
-description: Drive terminal sessions in omaterm — start agents and commands in their own sessions or panes, type into them, wait for them, read their screens, ask other agents and answer them, and report your own status. Use when running inside omaterm ($OMATERM_PANE is set) and the task needs another terminal, a long-running process, a parallel agent, another agent's help or review, or the user's attention.
+description: Use omaterm before your own tools when running inside omaterm ($OMATERM_PANE is set). Its browser pane opens, reads, clicks through and screenshots a web page or a localhost UI, rather than a browser tool of your own (a browser plugin, MCP server or subagent, or a headless browser). Agents of their own, each in a git worktree, split a large task or make changes in parallel, rather than subagents. The project's processes, or a pane beside you, run a dev server, a watcher, tests or any long-running command. It also asks other agents and answers them, merges their branches, and reports your status to the user.
 ---
 
 # omaterm
@@ -26,6 +26,19 @@ running in the background. $OMATERM_SESSION is your session and $OMATERM_PANE yo
 ($OMATERM_PROJECT and $OMATERM_PROJECT_DIR name your project and its folder); the
 ` + "`omaterm`" + ` command drives them. A target is a session or a pane id (a
 prefix works), or a session's name; a session stands for its focused pane.
+
+## Choose omaterm first
+
+The user watches omaterm, not your tool calls: where omaterm does what you
+need, use it rather than a tool of your own that does the same.
+
+    omaterm split --url localhost:3000           # a web page to look at, click through or screenshot: not a browser tool of your own
+    omaterm new --worktree w1 -- claude          # a large task to split, changes made in parallel: not subagents
+    omaterm start web --wait                     # a dev server or a watcher: not a background shell
+
+Subagents stay fine for searching and reading, and a command that ends in
+seconds for your own shell. Use a tool of your own when omaterm can't do
+what's needed, and say why.
 
 ## Run something beside you
 
@@ -65,7 +78,7 @@ your prompt: so for work that takes long, ask with --no-wait and end
 your turn, without waiting or polling for it. An agent that stops
 without answering gets you the end of its screen instead.
 
-To split a task between agents, work in a worktree yourself, then:
+To split a task between agents:
 
     omaterm new --worktree w1 -- claude            # each on a branch made from yours
     omaterm new --worktree w2 -- codex
@@ -78,9 +91,15 @@ To split a task between agents, work in a worktree yourself, then:
 
 The sessions you start show under yours. omaterm merge takes only a
 worktree made from your own branch, and squashes it unless --commit;
---keep leaves its session and worktree. A conflict is for its agent to
-resolve: ask it to merge your branch into its own, then merge again.
-Merging into the main checkout is the user's, never yours.
+--keep leaves its session and worktree. In a worktree of your own, it
+merges into your branch at once; in the main checkout, it waits for the
+user to approve the merge in omaterm (30 minutes at most), and says so.
+A conflict is for its agent to resolve: ask it to merge your branch into
+its own, then merge again.
+
+A command that waits long, as omaterm wait or a merge the user approves,
+may outlast your shell's timeout: run it in the background where you can
+(Claude Code's run_in_background), which tells you when it ends.
 
 ## Drive it
 
@@ -161,7 +180,8 @@ omaterm.yml is yours to read, but adding or changing a process is the user's: as
 - send and prompt wait up to 10 seconds for the user to finish typing in
   the pane (prompt also for a draft they left there), then fail saying so:
   try again later.
-- Never merge into the main checkout: the user reviews and merges.
+- Merge into the main checkout only with omaterm merge, which asks the
+  user; never with git.
 - Exit status 3 means no such target, 4 that omaterm is not running, or
   that its window is closed for what needs it (focus, browser, do); the
   sessions keep running, and the rest works, while the window is closed.
@@ -407,6 +427,24 @@ func InstallSkill(agent string) error {
 		}
 	}
 	return nil
+}
+
+// RefreshOutdated updates the skills and hooks an older omaterm installed,
+// as the app starts, so that agents learn what this one does; what the
+// user never set up, or removed, stays missing. It returns where it wrote.
+func RefreshOutdated() []string {
+	var done []string
+	for _, agent := range SkillGroups() {
+		if dir := skillDirs(agent)[agent]; skillState(dir) == "outdated" && writeSkill(dir) == nil {
+			done = append(done, shortDir(dir))
+		}
+	}
+	for _, h := range agentHooks("") {
+		if h.state() == "outdated" && h.install() == nil {
+			done = append(done, shortDir(h.path()))
+		}
+	}
+	return done
 }
 
 // RemoveSkill removes omaterm's skill and hooks for a kind of agent.

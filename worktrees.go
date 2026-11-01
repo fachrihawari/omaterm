@@ -6,9 +6,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/model"
 	"omaterm/internal/proto"
@@ -82,13 +86,15 @@ func (a *appState) createWorktreeSession(wt worktree.Info, p proto.CreateParams)
 
 // mergeWorktree merges a worker's worktree into its lead's branch, for
 // omaterm merge: a lead's agent merges only what was made from its own
-// branch (model.LeadMerge). The worker's session closes, and its worktree
+// branch (model.LeadMerge), and into the main checkout once the user
+// approves (mergeAsk). The worker's session closes, and its worktree
 // goes, unless kept.
 func (h *localHost) mergeWorktree(ctx context.Context, p proto.MergeParams) (any, error) {
 	a := h.a
 	type job struct {
 		w             model.Worktree
 		session, name string
+		lead          string // the lead's session, when the user approves
 	}
 	v, err := h.onUI(func() (any, error) {
 		_, ltabs, lti, ok := a.findPane(p.By)
@@ -101,18 +107,27 @@ func (h *localHost) mergeWorktree(ctx context.Context, p proto.MergeParams) (any
 		}
 		t := (*ttabs)[tti]
 		name := a.tabName(t)
-		if err := model.LeadMerge((*ltabs)[lti].Worktree, t.Worktree, name); err != nil {
+		lead := ""
+		switch err := model.LeadMerge((*ltabs)[lti].Worktree, t.Worktree, name); {
+		case errors.Is(err, model.ErrUserApproves):
+			lead = (*ltabs)[lti].ID
+		case err != nil:
 			return nil, proto.Errorf(proto.CodeUsage, err.Error())
 		}
 		if a.worktreeBusy(t.Worktree.Dir) {
 			return nil, proto.Errorf(proto.CodeUsage, name+" is working: wait until it stops (omaterm wait "+name+"), then merge")
 		}
-		return job{*t.Worktree, t.ID, name}, nil
+		return job{*t.Worktree, t.ID, name, lead}, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	j := v.(job)
+	if j.lead != "" {
+		if err := h.askToMerge(ctx, j.lead, j.session, j.name, j.w); err != nil {
+			return nil, err
+		}
+	}
 	// The command going away doesn't stop git midway through a merge.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeTimeout)
 	defer cancel()
@@ -130,6 +145,95 @@ func (h *localHost) mergeWorktree(ctx context.Context, p proto.MergeParams) (any
 	}
 	h.onUI(func() (any, error) { a.refreshRepos(); return nil, nil })
 	return merged, nil
+}
+
+// mergeAsk is an agent's ask to merge a worker's worktree into the main
+// checkout, which is the user's: a banner over the panes until they
+// answer, or the agent stops waiting.
+type mergeAsk struct {
+	lead, session string // the asking agent's session, and the worker's
+	who, name     string // their names
+	w             model.Worktree
+	summary       string
+	answer        chan bool // the user's: merge or not
+}
+
+// askToMerge asks the user to approve lead's merge of the worktree w, of
+// session id, into the main checkout, and waits for them: nil once they
+// approve. It tells them in a banner, and in a notification.
+func (h *localHost) askToMerge(ctx context.Context, lead, id, name string, w model.Worktree) error {
+	a := h.a
+	sumCtx, cancel := context.WithTimeout(ctx, worktreeTimeout)
+	s, err := worktree.Summarize(sumCtx, worktreeOf(&w))
+	cancel()
+	summary := ""
+	if err == nil {
+		summary = mergeSummary(s)
+	}
+	ask := &mergeAsk{lead: lead, session: id, name: name, w: w, summary: summary, answer: make(chan bool, 1)}
+	h.onUI(func() (any, error) {
+		ask.who = lead
+		if _, tabs, ti, ok := a.findSession(lead); ok {
+			ask.who = a.tabName((*tabs)[ti])
+		}
+		a.mergeAsks = append(a.mergeAsks, ask)
+		mergeAskNotice(a, ask)
+		return nil, nil
+	})
+	select {
+	case ok := <-ask.answer:
+		if !ok {
+			return proto.Errorf(proto.CodeUsage, "the user declined merging "+w.Branch+" into "+w.Base+
+				": leave "+name+" for them to merge, or ask them what to change")
+		}
+		return nil
+	case <-time.After(model.MergeAskTimeout):
+		h.onUI(func() (any, error) { a.dropMergeAsk(ask); return nil, nil })
+		return proto.Errorf(proto.CodeTimeout, "the user didn't answer: leave "+name+" for them to merge")
+	case <-ctx.Done():
+		h.onUI(func() (any, error) { a.dropMergeAsk(ask); return nil, nil })
+		return ctx.Err()
+	}
+}
+
+// mergeAskNotice tells the user of an ask to merge, in a notification: the
+// app's own, which a test replaces to answer it.
+var mergeAskNotice = func(a *appState, ask *mergeAsk) {
+	a.notify(ask.lead, ask.who+" asks to merge "+ask.w.Branch+" into "+ask.w.Base, ask.summary)
+}
+
+// dropMergeAsk takes an ask off the banner. UI thread.
+func (a *appState) dropMergeAsk(ask *mergeAsk) {
+	a.mergeAsks = slices.DeleteFunc(a.mergeAsks, func(m *mergeAsk) bool { return m == ask })
+}
+
+// mergeAskBanner shows the first ask to merge into the main checkout, for
+// the user to approve or decline.
+func (a *appState) mergeAskBanner(c *ui.Context) {
+	if len(a.mergeAsks) == 0 {
+		return
+	}
+	ask := a.mergeAsks[0]
+	msg := ask.who + " asks to merge " + ask.w.Branch + " into " + ask.w.Base
+	if ask.summary != "" {
+		msg += ": " + strings.TrimSuffix(ask.summary, ".")
+	}
+	a.banner(c, "merge-ask-banner", iconGitBranch, pal.Accent, false, msg, func() {
+		if bannerButton(c, "Show "+ask.name, false) {
+			a.showSession(ask.session)
+		}
+		if bannerButton(c, "Decline", false) {
+			a.dropMergeAsk(ask)
+			ask.answer <- false
+		}
+		if bannerButton(c, "Merge", true) {
+			if a.atWork(&ask.w) {
+				return
+			}
+			a.dropMergeAsk(ask)
+			ask.answer <- true
+		}
+	})
 }
 
 // worktreeSession finds the session working in the worktree dir.
