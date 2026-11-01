@@ -16,3 +16,6 @@ mygo-update.pub
 update-keys/
 *.key
 e2e/out/
+
+# What scripts/threads-post.mjs published; the posts files stay.
+promo/threads/**/*.state.json

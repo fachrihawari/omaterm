@@ -1,0 +1,9 @@
+{
+  "topic": "AI",
+  "posts": [
+    {
+      "text": "Dev URLs di omaterm: tulis ini di omaterm.yml\n\nprocesses:\n  web:\n    command: bun run dev\n    url: shop\n\nterus app-nya ada di https://shop.localhost, HTTPS beneran tanpa warning, tanpa nomor port. omaterm yang pilih port-nya dan kasih lewat PORT. Mau dibuka dari HP? Share → Tailscale (perangkat kamu) atau Cloudflare (link publik).",
+      "video": "~/Videos/omaterm-processes-tall.mp4"
+    }
+  ]
+}

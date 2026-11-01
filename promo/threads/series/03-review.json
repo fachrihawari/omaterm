@@ -1,0 +1,9 @@
+{
+  "topic": "AI",
+  "posts": [
+    {
+      "text": "Codex me-review kerjaan Claude Code: dari menu sesi pilih Ask for Review. Agent kedua baca diff-nya, nggak ngubah apa-apa, kirim yang perlu dibenerin, sampai 3 putaran. Vonisnya muncul langsung di bawah nama sesinya.",
+      "video": "~/Videos/omaterm-team-tall.mp4"
+    }
+  ]
+}

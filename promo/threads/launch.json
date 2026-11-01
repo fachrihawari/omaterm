@@ -1,0 +1,40 @@
+{
+  "topic": "AI",
+  "posts": [
+    {
+      "text": "Sebulan terakhir aku bikin terminal sendiri buat ngejalanin coding agent barengan: omaterm (Oh My Terminal).\n\nClaude Code, Codex, OpenCode, Pi, Antigravity jalan berdampingan, dan kelihatan mana yang lagi kerja, mana yang nunggu kamu. Linux, macOS, Windows. Open source, MIT. 🧵",
+      "video": "~/Videos/omaterm-launch-tall.mp4"
+    },
+    {
+      "text": "Masalahnya: jalanin 3 agent di 3 tab terminal itu capek. Bolak-balik ngecek \"udah selesai belum?\", \"dia nunggu izin nggak?\". Dan kalau dua agent ngedit repo yang sama, file-nya saling timpa."
+    },
+    {
+      "text": "Tiap sesi punya status: kerja, nunggu kamu, gagal, selesai, plus kalimat terakhir agent di bawah namanya. Ada yang butuh izin waktu kamu lagi lihat yang lain? Muncul notifikasi, Ctrl+Shift+J langsung ke sana.",
+      "video": "~/Videos/omaterm-status-tall.mp4"
+    },
+    {
+      "text": "Tiap agent bisa kerja di branch-nya sendiri (git worktree), jadi beberapa agent jalan bareng tanpa saling timpa, checkout kamu juga aman. Selesai? Merge ke main, Update from main, atau Push & Create PR dari menu sesi.",
+      "video": "~/Videos/omaterm-worktree-tall.mp4"
+    },
+    {
+      "text": "Agent juga bisa kerja bareng. Satu jadi lead, bikin pekerja di worktree, kasih tugas lewat omaterm ask, tunggu jawabannya, lalu merge hasilnya.\n\nAsk for Review: Codex me-review kerjaan Claude Code, maksimal 3 putaran, vonisnya langsung di sidebar.",
+      "video": "~/Videos/omaterm-team-tall.mp4"
+    },
+    {
+      "text": "Agent-nya pakai omaterm sendiri: buka pane buat test, jalanin dev server, buka halaman di browser pane terus klik dan screenshot. Semua kelihatan di depan kamu, bukan di tool tersembunyi. Cukup sekali: omaterm skill setup",
+      "video": "~/Videos/omaterm-cli-tall.mp4"
+    },
+    {
+      "text": "Fitur favoritku: Last turn (Ctrl+Shift+A). Cuma nampilin yang diubah agent di giliran terakhirnya, terpisah dari perubahan lain yang belum di-commit. Keep atau revert per hunk.",
+      "video": "~/Videos/omaterm-lastturn-tall.mp4"
+    },
+    {
+      "text": "Dev server, worker, watcher jadi proses project di sidebar, disimpan di omaterm.yml, dan agent juga bisa pakai. Kasih url: shop dan app-nya kebuka di https://shop.localhost, tanpa port, tanpa warning. Mau dicoba dari HP? Share lewat Tailscale atau link Cloudflare.",
+      "video": "~/Videos/omaterm-processes-tall.mp4"
+    },
+    {
+      "text": "Bonus: semua sesi bisa dicek dan dibalas dari HP, pair pakai QR.\n\nInstall di Linux:\ncurl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh\n\nmacOS & Windows: github.com/fachrihawari/omaterm/releases\nTur + video tiap fitur: fachrihawari.github.io/omaterm\n\nMasih awal, feedback & bug report sangat diterima 🙏",
+      "video": "~/Videos/omaterm-phone-tall.mp4"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "topic": "AI",
+  "posts": [
+    {
+      "text": "omaterm sekarang jalan di Linux, macOS dan Windows. Di Mac: ⌘ shortcut, badge di Dock buat sesi yang nunggu kamu, PATH dari shell kamu (nvm, Homebrew). Di Windows: status agent, resume, PowerShell/cmd, proses project. Download: github.com/fachrihawari/omaterm/releases"
+    }
+  ]
+}

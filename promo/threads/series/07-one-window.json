@@ -1,0 +1,9 @@
+{
+  "topic": "AI",
+  "posts": [
+    {
+      "text": "Nggak perlu pindah aplikasi: Git panel (stage, commit, push), commit graph, diff berdampingan, editor, Ctrl+P buat buka file, Ctrl+Shift+F buat cari di seluruh project. Semua di jendela yang sama dengan agent-nya.",
+      "video": "~/Videos/omaterm-allinone-tall.mp4"
+    }
+  ]
+}
