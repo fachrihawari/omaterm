@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/session"
 	"omaterm/internal/theme"
 )
 
@@ -37,6 +38,14 @@ var motionScenes = []motionScene{
 		a.arrived[id] = true
 		a.activePaneTermID = id
 	}, long: 900 * time.Millisecond},
+	{name: "status", set: func(a *appState, tr *ui.Tester) {
+		id := a.activeSplitLeaf()
+		a.status[id] = session.Info{ID: id, Session: a.tabs[0].ID, Status: session.Working, Agent: "claude", Process: "claude", Progress: -1}
+	}, act: func(a *appState, tr *ui.Tester) {
+		id := a.activeSplitLeaf()
+		a.status[id] = session.Info{ID: id, Session: a.tabs[0].ID, Status: session.Waiting, Agent: "claude", Process: "claude",
+			Kind: "permission", Unread: true, Progress: -1}
+	}},
 	{name: "zoom", set: func(a *appState, tr *ui.Tester) {
 		a.activePaneTermID = a.splitPane(a.activeSplitLeaf(), splitVertical)
 	}, act: func(a *appState, tr *ui.Tester) { a.toggleZoom() }, long: 900 * time.Millisecond},

@@ -737,7 +737,9 @@ func (a *appState) processIcon(c *ui.Context, proc procs.Proc, size float32) {
 	var state iconState
 	switch proc.Status {
 	case procs.Running:
-		ui.Box(c).Size(size, size).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
+		dot := ui.Box(c).Size(size, size).Shrink(0)
+		a.popOnChange(dot, -1)
+		dot.Draw(func(p *ui.Painter, r ui.Rect) {
 			p.FillPath(new(ui.Path).Circle(r.X+r.W/2, r.Y+r.H/2, min(r.W, r.H)*0.28), pal.Ok)
 		})
 		return

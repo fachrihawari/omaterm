@@ -169,6 +169,41 @@ func (a *appState) arriveDialog(c *ui.Context, backdrop, panel ui.Element) {
 	panel.AnimatePose(ui.Pose{}, springPanel)
 }
 
+// iconPop is a status icon's last state, by its element, and how many
+// times it changed.
+type iconPop struct {
+	state int
+	n     uint64
+}
+
+// popOnChange pops e, a status icon, when its state changes: it shrinks
+// and springs back, a little past its size. The first state it shows
+// doesn't pop, or every icon would as the window opened.
+func (a *appState) popOnChange(e ui.Element, state int) {
+	if a.iconPops == nil || len(a.iconPops) > 4096 { // the icons of a long day, gone
+		a.iconPops = map[uint64]iconPop{}
+	}
+	id := e.ID()
+	p, ok := a.iconPops[id]
+	if !ok {
+		a.iconPops[id] = iconPop{state: state}
+		return
+	}
+	if p.state != state {
+		p.state, p.n = state, p.n+1
+		a.iconPops[id] = p
+	}
+	if p.n == 0 || a.still() {
+		return
+	}
+	s := e.Keyframes("pop", []ui.Keyframe{
+		{Value: 0.55},
+		{At: motionFast, Value: 1.12, Ease: ui.EaseOut},
+		{At: motionBase + 60*time.Millisecond, Value: 1, Ease: ui.EaseInOut},
+	}, ui.KeyframeOptions{Run: p.n})
+	e.Scale(s, s)
+}
+
 // press sinks e a little while it is pressed.
 func (a *appState) press(e ui.Element) ui.Element {
 	if a.still() {

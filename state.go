@@ -428,6 +428,8 @@ type appState struct {
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
 	// last loaded, themeWatchStop ends the theme watch.
 	settings Settings
+	// iconPops is what popOnChange keeps of the status icons.
+	iconPops map[uint64]iconPop
 	// osStill is the desktop's Reduce Motion, as the last frame read it.
 	osStill bool
 	// mainDialogs and settingsDialogs are the dialogs each window shows,
