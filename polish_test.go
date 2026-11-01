@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -938,5 +939,33 @@ func TestInspectorNamesProcessOwners(t *testing.T) {
 	texts := tr.Texts()
 	if i := slices.Index(texts, "4010"); i < 0 || i+1 >= len(texts) || texts[i+1] != "web" {
 		t.Fatalf("node, started by the process web, isn't named for it: %q", texts)
+	}
+}
+
+// The inspector slides in and out, as the sidebar does: it popped. Part
+// way out, its tabs have moved right and are still there; then they go.
+func TestInspectorSlides(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.setInspector(true)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	tr.Advance(time.Second)
+	tr.Frame()
+	shown, ok := tr.Find("Files")
+	if !ok {
+		t.Fatalf("no inspector: %v", tr.Texts())
+	}
+	a.setInspector(false)
+	tr.Frame()
+	tr.Advance(80 * time.Millisecond)
+	tr.Frame()
+	if mid, ok := tr.Find("Files"); !ok || mid.X <= shown.X {
+		t.Fatalf("part way out, Files at %+v (was %+v, found %v)", mid, shown, ok)
+	}
+	tr.Advance(time.Second)
+	tr.Frame()
+	if tr.HasText("Files") {
+		t.Fatal("the inspector stays once hidden")
 	}
 }

@@ -277,7 +277,9 @@ func (a *appState) mainColumn(c *ui.Context) {
 	}
 	ui.Column(c).Grow(1).MinWidth(0).FillHeight().Children(func() {
 		a.tabBar(c)
-		ui.Row(c).Grow(1).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Padding(0, gap, gap, left).Gap(gap).Children(func() {
+		// The inspector keeps its gap from the panes in its own width, which
+		// slides in and out with it.
+		ui.Row(c).Grow(1).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Padding(0, gap, gap, left).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 				a.stateBanner(c)
 				a.serviceBanner(c)
@@ -299,17 +301,7 @@ func (a *appState) mainColumn(c *ui.Context) {
 					})
 				}
 			})
-			if a.inspectorShown {
-				// The inspector's left edge resizes it, as the sidebar's
-				// right edge does the sidebar.
-				ui.Row(c.Key("inspector")).Width(a.inspectorWidth()).Shrink(0).FillHeight().Children(func() {
-					a.panelEdge(c, "inspector-edge", &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
-					card := ui.Column(c).Grow(1).MinWidth(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
-					cardEdge(card).Children(func() {
-						a.inspector(c)
-					})
-				})
-			}
+			a.inspectorPanel(c, gap)
 		})
 	})
 }
