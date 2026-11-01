@@ -88,8 +88,11 @@ export function mountCompose(el, options = {}) {
   el.append(root);
 
   let lastFocus = null;
+  let leaving = 0;
 
   function open() {
+    clearTimeout(leaving);
+    root.classList.remove("leaving");
     note.hidden = true;
     lastFocus = document.activeElement;
     root.hidden = false;
@@ -102,8 +105,18 @@ export function mountCompose(el, options = {}) {
     }
   }
 
+  // close slides the sheet away, then hides it; with less motion asked
+  // for, it hides at once.
   function close() {
-    root.hidden = true;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      root.hidden = true;
+    } else if (!root.hidden && !root.classList.contains("leaving")) {
+      root.classList.add("leaving");
+      leaving = setTimeout(() => {
+        root.hidden = true;
+        root.classList.remove("leaving");
+      }, 160);
+    }
     save(box.value);
     if (lastFocus && typeof lastFocus.focus === "function") {
       try {
