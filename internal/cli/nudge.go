@@ -35,7 +35,8 @@ const (
 var readOnlySubagents = []string{"Explore", "Plan", "claude-code-guide", "statusline-setup", "explorer"}
 
 // subagentTools start a subagent: Claude Code's, Codex's, Antigravity's,
-// and a Pi extension's.
+// and a Pi extension's. Codex names its own with its namespace in front,
+// as collaborationspawn_agent.
 var subagentTools = []string{"Agent", "Task", "spawn_agent", "invoke_subagent", "subagent"}
 
 // shellTools run a command: Claude Code's Bash, Codex's shell by its
@@ -72,7 +73,7 @@ func nudgeKind(tool string, input json.RawMessage) string {
 	switch {
 	case tool == "invoke_subagent" && in.TypeName == "browser":
 		return "browser"
-	case slices.Contains(subagentTools, tool):
+	case slices.Contains(subagentTools, tool) || strings.HasSuffix(tool, "spawn_agent"):
 		if in.Isolation == "" && (slices.Contains(readOnlySubagents, in.Type) || slices.Contains(readOnlySubagents, in.AgentType)) {
 			return ""
 		}

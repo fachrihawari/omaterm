@@ -35,6 +35,9 @@ func TestNudgeKind(t *testing.T) {
 		// node_repl; its shell, by any of its names.
 		{"spawn_agent", `{"message": "Fix the login", "agent_type": "worker"}`, "subagent"},
 		{"spawn_agent", `{"message": "Fix the login"}`, "subagent"},
+		{"collaborationspawn_agent", `{"task_name": "write_hello", "agent_type": "worker", "fork_turns": "none"}`, "subagent"},
+		{"collaborationspawn_agent", `{"agent_type": "explorer"}`, ""},
+		{"Bash", `{"command": "chromium --headless --dump-dom about:blank"}`, "browser"},
 		{"spawn_agent", `{"message": "Where is the login?", "agent_type": "explorer"}`, ""},
 		{"mcp__node_repl__js", `{"code": "const b = await agent.browsers.get(); const tab = await b.newTab(); await tab.goto('http://localhost:3000')"}`, "browser"},
 		{"mcp__node_repl__js", `{"code": "1 + 1"}`, ""},
