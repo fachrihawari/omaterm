@@ -77,11 +77,14 @@ func (a *appState) fadeColors(e ui.Element) ui.Element {
 	return e.Transition(ui.ElementTransition{Colors: true, Duration: motionFast})
 }
 
-// Ways in and out: rows and banners grow in and fold away, the others
-// sliding to their places; chips and buttons fade and scale.
+// Ways in and out: rows grow in and fold away, the others sliding to
+// their places; banners drop in; chips pop; hover buttons fade.
 var (
+	// motionFold animates where a row is, not its size, which a panel
+	// being resized changes: the rows would trail the pointer.
 	motionFold = ui.ElementTransition{
 		Duration: motionBase,
+		Position: true,
 		Enter:    &ui.Motion{Collapse: true},
 		Exit:     &ui.Motion{Collapse: true},
 	}
@@ -97,6 +100,22 @@ var (
 		Duration: motionBase,
 		Enter:    &ui.Motion{Scale: 0.9},
 		Exit:     &ui.Motion{Scale: 0.9},
+	}
+	// motionTab brings a tab in and folds a closed one away, the others
+	// sliding to their places.
+	motionTab = ui.ElementTransition{
+		Duration: motionBase,
+		Position: true,
+		Colors:   true,
+		Enter:    &ui.Motion{Scale: 0.9},
+		Exit:     &ui.Motion{Collapse: true, Scale: 0.9},
+	}
+	// motionFade fades in and out, as the buttons a hover shows.
+	motionFade = ui.ElementTransition{
+		Duration: motionFast,
+		Colors:   true,
+		Enter:    &ui.Motion{},
+		Exit:     &ui.Motion{},
 	}
 )
 

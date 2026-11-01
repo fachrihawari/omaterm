@@ -76,6 +76,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 			case grip.Hovered():
 				grip.Background(pal.Hover).Cursor(ui.CursorGrab)
 			}
+			a.fadeColors(grip)
 		}
 		// A process's pane is named for the process, with its command: the
 		// shell that runs the command is no name for it.
@@ -100,9 +101,11 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				// beside it: it ellipsizes too.
 				name.Shrink(1).MinWidth(min(36, float32(len(title))*7))
 			}
+			ink := pal.Text
 			if multi && !focused && !dragging {
-				name.TextColor(pal.TextMuted)
+				ink = pal.TextMuted
 			}
+			name.TextColor(a.animColor(name, "ink", ink, motionFast))
 			sub := shortDir(info.WorkDir())
 			if isProc {
 				sub = proc.Command
@@ -217,10 +220,10 @@ func (a *appState) gitChip(c *ui.Context, branch string, added, removed int) {
 		ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint)
 		ui.Text(c, branch).FontSize(11.5).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 		if added > 0 {
-			ui.Text(c, "+"+strconv.Itoa(added)).FontSize(11.5).TextColor(pal.Ok).SingleLine().Shrink(0)
+			a.swap(ui.Text(c.Key("added"), "+"+strconv.Itoa(added)).FontSize(11.5).TextColor(pal.Ok).SingleLine().Shrink(0), true)
 		}
 		if removed > 0 {
-			ui.Text(c, "−"+strconv.Itoa(removed)).FontSize(11.5).TextColor(pal.Bad).SingleLine().Shrink(0)
+			a.swap(ui.Text(c.Key("removed"), "−"+strconv.Itoa(removed)).FontSize(11.5).TextColor(pal.Bad).SingleLine().Shrink(0), true)
 		}
 	})
 	if chip.Clicked() {
@@ -238,11 +241,13 @@ func (a *appState) statusChip(c *ui.Context, i session.Info) {
 	}
 	// The chips give way before the controls: a long message once pushed
 	// Zoom and Close off the card.
-	ui.Row(c.Key("status")).Height(20).Radius(6).Padding(0, 7).AlignItems(ui.Center).Background(bg).
-		Shrink(1).MinWidth(72).MaxWidth(280).
-		Children(func() {
-			ui.Text(c, text).FontSize(11.5).FontWeight(500).TextColor(fg).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-		})
+	chip := ui.Row(c.Key("status")).Height(20).Radius(6).Padding(0, 7).AlignItems(ui.Center).Background(bg).
+		Shrink(1).MinWidth(72).MaxWidth(280)
+	a.transition(chip, motionFade) // and its color fades as the status changes
+	chip.Children(func() {
+		word := ui.Text(c, text).FontSize(11.5).FontWeight(500).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		a.swap(word.TextColor(a.animColor(word, "fg", fg, motionBase)), true)
+	})
 	if i.Status == session.Working && i.Progress < 0 {
 		c.After(time.Second) // the elapsed time ticks
 	}

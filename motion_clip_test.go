@@ -27,6 +27,19 @@ var motionScenes = []motionScene{
 	{name: "palette", act: func(a *appState, tr *ui.Tester) { a.openOverlay(overlayCommandPalette) }},
 	{name: "confirm", act: func(a *appState, tr *ui.Tester) { open := true; a.quitAsk = &open }},
 	{name: "banner", act: func(a *appState, tr *ui.Tester) { a.agentSetupOffer = "opencode" }},
+	{name: "newtab", act: func(a *appState, tr *ui.Tester) { a.newTerminalTab() }},
+	{name: "closetab", set: func(a *appState, tr *ui.Tester) {
+		a.newTerminalTab()
+		a.newTerminalTab()
+	}, act: func(a *appState, tr *ui.Tester) { a.closeTab(1) }},
+	{name: "split", act: func(a *appState, tr *ui.Tester) {
+		id := a.splitPane(a.activeSplitLeaf(), splitVertical)
+		a.arrived[id] = true
+		a.activePaneTermID = id
+	}, long: 900 * time.Millisecond},
+	{name: "zoom", set: func(a *appState, tr *ui.Tester) {
+		a.activePaneTermID = a.splitPane(a.activeSplitLeaf(), splitVertical)
+	}, act: func(a *appState, tr *ui.Tester) { a.toggleZoom() }, long: 900 * time.Millisecond},
 }
 
 // TestMotionClips films each scene in the light palette, still and

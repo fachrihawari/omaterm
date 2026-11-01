@@ -198,6 +198,7 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	if hovered {
 		h.Background(pal.Hover)
 	}
+	a.fadeColors(h)
 	empty := a.projectEmpty(p.ID, tabs)
 	// The + is a button of its own: a click on it is not the header's,
 	// which shows the project.
@@ -208,6 +209,7 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			plus := cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
 			})
+			a.transition(plus, motionFade)
 			inner = inner || plus.Hovered()
 		}
 	})
@@ -315,11 +317,14 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	// open the tab.
 	linkClicked := false
 	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 6).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	bg := ui.Color{}
 	if selected {
-		row.Background(pal.RowSelected)
+		bg = pal.RowSelected
 	} else if row.Hovered() {
-		row.Background(pal.Hover)
+		bg = pal.Hover
 	}
+	row.Background(a.animColor(row, "bg", bg, motionFast))
+	a.transition(row, motionFold)
 	row.Children(func() {
 		a.processIcon(c, proc, 13)
 		// The name stays readable: its pills give way first, their text
@@ -376,14 +381,14 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			if active {
 				icon, label = iconX, "Stop"
 			}
-			if cmdButton(c, icon, 12, false).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
+			if a.transition(cmdButton(c, icon, 12, false), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
 				if active {
 					a.stopProcess(pi, proc.Name)
 				} else {
 					a.startProcess(pi, proc.Name)
 				}
 			}
-			if cmdButton(c, iconRotate, 12, false).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
+			if a.transition(cmdButton(c, iconRotate, 12, false), motionFade).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
 				a.restartProcess(pi, proc.Name)
 			}
 		}
@@ -551,6 +556,7 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 		bg = pal.Hover
 	}
 	row.Background(a.animColor(row, "bg", bg, motionFast))
+	a.transition(row, motionFold)
 	if selected {
 		chosen(row)
 	}
@@ -568,9 +574,7 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			chev := ui.Box(c.Key("kids")).Width(14).Height(20).AlignItems(ui.Center).Justify(ui.Center).Cursor(ui.CursorPointer)
 			chev.Children(func() {
 				i := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextMuted)
-				if t.Collapsed {
-					i.Rotate(-90)
-				}
+				i.Rotate(a.animate(i, "turn", -90*b2f(t.Collapsed), motionFast))
 			})
 			if chev.Clicked() {
 				toggled = true
@@ -854,9 +858,10 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 			if attention {
 				fg, bg = pal.Attention, pal.AttentionSoft
 			}
+			a.transition(e, motionPop)
 			e.Background(bg).Children(func() {
 				a.statusIcon(c, st, 12)
-				ui.Text(c, strconv.Itoa(n)).FontSize(12).FontWeight(500).TextColor(fg).SingleLine()
+				a.swap(ui.Text(c, strconv.Itoa(n)).FontSize(12).FontWeight(500).TextColor(fg).SingleLine(), true)
 			})
 			if e.Clicked() {
 				next()

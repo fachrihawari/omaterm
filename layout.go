@@ -108,12 +108,13 @@ func (a *appState) divider(c *ui.Context, n *splitNode, key string) {
 	} else {
 		d.Height(gap).Cursor(ui.CursorResizeRow)
 	}
-	if d.Hovered() || d.Pressed() {
+	if k := a.animate(d, "grip", b2f(d.Hovered() || d.Pressed()), motionFast); k > 0 {
+		grip := pal.TextFaint.Alpha(0.7 * k)
 		d.Draw(func(p *ui.Painter, r ui.Rect) {
 			if row {
-				p.Fill(ui.Rect{X: r.X + r.W/2 - 1.5, Y: r.Y + r.H/2 - 18, W: 3, H: 36}, pal.TextFaint.Alpha(0.7), 1.5)
+				p.Fill(ui.Rect{X: r.X + r.W/2 - 1.5, Y: r.Y + r.H/2 - 18, W: 3, H: 36}, grip, 1.5)
 			} else {
-				p.Fill(ui.Rect{X: r.X + r.W/2 - 18, Y: r.Y + r.H/2 - 1.5, W: 36, H: 3}, pal.TextFaint.Alpha(0.7), 1.5)
+				p.Fill(ui.Rect{X: r.X + r.W/2 - 18, Y: r.Y + r.H/2 - 1.5, W: 36, H: 3}, grip, 1.5)
 			}
 		})
 	}
@@ -432,11 +433,18 @@ func (a *appState) toggleZoom() {
 		return
 	}
 	tab := &a.tabs[a.activeTab]
+	// The pane zoomed, or those coming back, spring in where they land.
 	if tab.Zoomed != "" {
+		for _, id := range tab.Split.termIDs() {
+			if id != tab.Zoomed {
+				a.arrived[id] = true
+			}
+		}
 		tab.Zoomed = ""
 		return
 	}
 	if tab.Split != nil && !tab.Split.isLeaf() {
 		tab.Zoomed = a.activeSplitLeaf()
+		a.arrived[tab.Zoomed] = true
 	}
 }
