@@ -1,6 +1,7 @@
 package main
 
 import (
+	"hash/fnv"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -185,10 +186,23 @@ func (a *appState) arrive(c *ui.Context, e ui.Element, from ui.Pose, anim ui.Ani
 // once; posed at rest in the next, it goes there in frames that only
 // paint.
 func (a *appState) fresh(c *ui.Context, e ui.Element) bool {
+	return a.freshID(c, e.ID())
+}
+
+// freshPane is fresh for terminal pane id, by the pane rather than its
+// card: a split or a zoom moves the card elsewhere in the layout, a new
+// element, but the pane was there all along and doesn't fade in again.
+func (a *appState) freshPane(c *ui.Context, id string) bool {
+	h := fnv.New64a()
+	h.Write([]byte("pane:" + id))
+	return a.freshID(c, h.Sum64())
+}
+
+// freshID is fresh for an element, or a thing shown, by its ID.
+func (a *appState) freshID(c *ui.Context, id uint64) bool {
 	if a.dialogs == nil {
 		return false
 	}
-	id := e.ID()
 	a.dialogs.now[id] = true
 	if a.dialogs.last[id] {
 		return false
