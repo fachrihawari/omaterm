@@ -4,13 +4,16 @@
 #
 #   scripts/site-video.sh <clip> <format> [out.mp4]
 #
-# clip is launch, status, cli, lastturn, resume, phone, allinone, splits,
-# files, ports, settings, worktree or team.
+# clip is launch, status, cli, lastturn, worktree, team, resume, allinone,
+# splits, files, ports, settings, processes, merge or phone.
 # format is wide (1920×1080, captions over the app), tall (1080×1350, the
 # 4:5 a phone's feed shows biggest, captions above the app) or site
 # (1920×1200 for the website, no captions, with a poster picture of its
 # last frame beside it). out defaults to ~/Videos/omaterm-<clip>-<format>.mp4,
 # or site/assets/video/<clip>.mp4 for site.
+#
+# SITE_VIDEO_WEB, a folder from `node scripts/site-web-shots.mjs <dir>`, gives
+# the phone clip fresh web pictures, its compose box too.
 #
 # Needs ffmpeg (with libx264 and drawtext), ImageMagick and Noto Sans.
 set -euo pipefail

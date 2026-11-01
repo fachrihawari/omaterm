@@ -19,6 +19,7 @@ import (
 	xdraw "golang.org/x/image/draw"
 
 	"omaterm/internal/model"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 	"omaterm/internal/web"
 	"omaterm/internal/worktree"
@@ -119,6 +120,27 @@ const (
 		"w1 is merged into feat. w2 is still on the report; I'll merge it\n" +
 		"when its answer comes.\n\n" +
 		"\x1b[1;36m❯\x1b[0m "
+)
+
+// What an agent prints running the project's processes, for the
+// processes clip.
+const (
+	siteProcAgent = "\x1b[1;36m❯\x1b[0m start the shop and check it loads\n\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm start web --wait\n" +
+		"  \x1b[2m└\x1b[0m web running on :5173, https://shop.localhost\n" +
+		"\x1b[32m●\x1b[0m Bash   curl -sI https://shop.localhost | head -1\n" +
+		"  \x1b[2m└\x1b[0m HTTP/2 200\n\n"
+	siteProcShare = "\x1b[32m●\x1b[0m Bash   omaterm share web --cloudflare\n" +
+		"  \x1b[2m└\x1b[0m https://shop-omaterm.trycloudflare.com\n\n" +
+		"The shop is up at https://shop.localhost, and shared at\n" +
+		"the link above for your phone.\n\n" +
+		"\x1b[1;36m❯\x1b[0m "
+	siteLeadAsks = "\x1b[1;36m❯\x1b[0m fix the login bug with a worker, then merge it\n\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm new --worktree fix-login -- codex\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm ask fix-login \"fix the session timeout\"\n" +
+		"  \x1b[2m└\x1b[0m Fixed: sessions refresh before they expire; tests pass\n" +
+		"\x1b[32m●\x1b[0m Bash   omaterm merge fix-login\n" +
+		"  \x1b[2m└\x1b[0m waiting for the user to approve…\n"
 )
 
 // videoRec renders the app into numbered frames.
@@ -297,6 +319,8 @@ func newVideoScene(t *testing.T, wd string, tall bool) *videoScene {
 		}
 	}
 	a.inspectorVisible = false
+	// The side panels slide in and out; the clips crossfade instead.
+	a.settings.ReduceMotion = true
 	v := &videoScene{t: t, a: a, tab: tab, ids: tab.Split.termIDs(), tall: tall, wd: wd,
 		since: nowFunc().Add(-2 * time.Minute).UnixMilli()}
 	v.status(0, session.Info{Status: session.Working, Agent: "claude", Process: "claude"})
@@ -383,7 +407,12 @@ func (v *videoScene) finish(r *videoRec, lastTurn func()) {
 
 // phone frames a phone screenshot, centered on the video's background.
 func phone(t *testing.T, size image.Rectangle, shot string) *image.RGBA {
-	f, err := os.Open(filepath.Join("site", "assets", shot))
+	// SITE_VIDEO_WEB holds fresh pictures from scripts/site-web-shots.mjs.
+	dir := filepath.Join("site", "assets")
+	if d := os.Getenv("SITE_VIDEO_WEB"); d != "" {
+		dir = d
+	}
+	f, err := os.Open(filepath.Join(dir, shot))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,6 +928,78 @@ func TestSiteVideo(t *testing.T) {
 			r.hold(frame(), 1)
 		}
 
+	case "processes": // project processes, a Dev URL, and Share
+		host := &fakeShareHost{}
+		a.procHost = host
+		projectID := a.projects[a.active].ID
+		setProcs := func(list ...procs.Proc) {
+			host.procs = list
+			a.procList[projectID] = list
+		}
+		v.tab.Split = &splitNode{TermID: v.ids[0]}
+		delete(a.status, v.ids[1])
+		delete(a.status, v.ids[2])
+		v.status(0, session.Info{Status: session.Idle, Agent: "claude", Process: "claude"})
+
+		// Add Process, with what the project's files suggest.
+		r.caption("Dev server, worker, watcher: | proses project di sidebar.")
+		r.play(8)
+		a.procDialog = &processDialogState{open: true, project: projectID, projectName: a.projects[a.active].Name,
+			root: v.wd, shared: true, restart: "Never", suggestions: []procs.Def{
+				{Name: "dev", Command: "bun run dev", Port: 5173},
+				{Name: "api", Command: "go run ./cmd/api", Port: 8080},
+				{Name: "test", Command: "bun test --watch"},
+			}}
+		r.fade(8)
+		r.play(int(1.2 * videoFPS))
+		st := a.procDialog
+		st.name, st.command, st.port = "web", "bun run dev", "5173"
+		r.play(int(1.3 * videoFPS))
+		st.url = "shop"
+		r.play(int(1.5 * videoFPS))
+
+		// Saved to omaterm.yml and started: a row with its port and URL.
+		start := r.n
+		r.caption("url: shop jadi https://shop.localhost, | tanpa port, tanpa warning.")
+		a.procDialog = nil
+		web := procs.Proc{Def: procs.Def{Name: "web", Command: "bun run dev", Port: 5173, URL: "shop"},
+			Status: procs.Running, Link: "https://shop.localhost", Trusted: true}
+		api := procs.Proc{Def: procs.Def{Name: "api", Command: "go run ./cmd/api", Port: 8080},
+			Status: procs.Running, Trusted: true}
+		setProcs(web, api)
+		r.fade(8)
+		r.lines(v.feeds[0], siteProcAgent, 6)
+		r.until(start, 5)
+
+		// Shared through a tunnel, for a phone or anyone with the link.
+		start = r.n
+		r.caption("Share ke HP kamu, | atau ke siapa aja.")
+		web.Share, web.ShareVia = "https://shop-omaterm.trycloudflare.com", "cloudflare"
+		setProcs(web, api)
+		r.lines(v.feeds[0], siteProcShare, 6)
+		r.until(start, 4.5)
+
+	case "merge": // a lead in your checkout asks before it merges
+		v.tab.Split = &splitNode{TermID: v.ids[0]}
+		delete(a.status, v.ids[1])
+		delete(a.status, v.ids[2])
+		r.caption("Lead mau merge ke checkout kamu? | Dia nanya dulu.")
+		v.status(0, session.Info{Status: session.Waiting, Agent: "claude", Process: "claude", Kind: "merge"})
+		v.feeds[0](strings.ReplaceAll(siteLeadAsks, "\n", "\r\n"))
+		r.play(10)
+		a.mergeAsks = []*mergeAsk{{who: "Claude Code", name: "fix-login",
+			w: model.Worktree{Branch: "fix-login", Base: "main"}, summary: "3 commits, 5 files changed (+120 −14)"}}
+		r.fade(8)
+		r.play(int(3.5 * videoFPS))
+		start := r.n
+		r.caption("Kamu yang klik Merge. | Atau Decline.")
+		a.mergeAsks = nil
+		a.toast(nil, "fix-login merged into main")
+		v.status(0, session.Info{Status: session.Working, Agent: "claude", Process: "claude"})
+		r.lines(v.feeds[0], "  \x1b[2m└\x1b[0m approved: fix-login merged into main\n\nMerged. The login fix is on main.\n", 6)
+		r.fade(8)
+		r.until(start, 3.5)
+
 	case "phone": // web access from a phone
 		r.caption("Aktifkan Web Access, | pair HP pakai QR.")
 		v.feeds[0](strings.ReplaceAll(siteAgentWaiting, "\n", "\r\n"))
@@ -920,8 +1021,15 @@ func TestSiteVideo(t *testing.T) {
 		r.fadeTo(phone(t, size, "web-phone.png"), 10)
 		r.hold(r.last, int(3.5*videoFPS)-11)
 
+		// The compose box only the fresh pictures have.
+		if _, err := os.Stat(filepath.Join(os.Getenv("SITE_VIDEO_WEB"), "web-phone-compose.png")); os.Getenv("SITE_VIDEO_WEB") != "" && err == nil {
+			r.caption("Esc, Tab, Ctrl di key bar, | prompt panjang di Compose.")
+			r.fadeTo(phone(t, size, "web-phone-compose.png"), 10)
+			r.hold(r.last, int(3.5*videoFPS)-11)
+		}
+
 	default:
-		t.Fatalf("no clip %q: launch, status, cli, lastturn, resume, phone, allinone, splits, files, ports or settings", clip)
+		t.Fatalf("no clip %q: launch, status, cli, lastturn, worktree, team, resume, allinone, splits, files, ports, settings, processes, merge or phone", clip)
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "captions.txt"), r.captionsFile(), 0o644); err != nil {
