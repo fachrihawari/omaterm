@@ -371,6 +371,7 @@ func (a *appState) changeRow(c *ui.Context, f gitsnap.File) {
 	if cf != nil || row.Hovered() {
 		row.Background(pal.Hover)
 	}
+	a.fadeColors(row)
 	letter := "M"
 	switch f.Status {
 	case "added":

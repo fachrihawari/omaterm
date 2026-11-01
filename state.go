@@ -401,6 +401,8 @@ type appState struct {
 	previewKey   string
 	previewSince time.Time
 	arrived      map[string]bool
+	// fading are the panes fading in as they show anew.
+	fading map[string]bool
 
 	// changes is the Changes panel's state; snaps the turn snapshots
 	// being taken.
@@ -592,6 +594,7 @@ func newApp() *appState {
 		hookChecked:      map[string]bool{},
 		git:              newGitWatch(),
 		arrived:          map[string]bool{},
+		fading:           map[string]bool{},
 		notified:         map[string]time.Time{},
 		ws:               map[string]*projectWS{},
 		saved:            map[string][]model.Session{},

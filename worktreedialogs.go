@@ -126,7 +126,7 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 			settingsPopup(c, "wt-agent", &st.agent, opts)
 		})
 		dialogField(c, "Work in a worktree", func() {
-			settingsSwitch(c, "wt-use", &st.worktree, !st.git || st.busy)
+			a.settingsSwitch(c, "wt-use", &st.worktree, !st.git || st.busy)
 		})
 		if !st.git {
 			dialogNote(c, st.name+" isn't in a git repository, which a worktree needs.", false)
@@ -163,7 +163,7 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 				settingsPopup(c, "wt-base", &st.base, opts)
 			})
 			dialogField(c, "Copy .env files", func() {
-				settingsSwitch(c, "wt-env", &st.env, false)
+				a.settingsSwitch(c, "wt-env", &st.env, false)
 			})
 		}
 		if st.err != "" {
@@ -388,7 +388,7 @@ func (a *appState) mergeDialog(c *ui.Context) {
 			ui.Text(c, mergeSummary(*st.sum)).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
 		}
 		dialogField(c, "Merge as", func() {
-			settingsSegmented(c, "merge-how", &st.how, []string{"Squash", "Merge Commit"})
+			a.settingsSegmented(c, "merge-how", &st.how, []string{"Squash", "Merge Commit"})
 		})
 		if needMsg {
 			label := "Commit message"
@@ -401,7 +401,7 @@ func (a *appState) mergeDialog(c *ui.Context) {
 			})
 		}
 		dialogField(c, "Remove the worktree", func() {
-			settingsSwitch(c, "merge-remove", &st.remove, false)
+			a.settingsSwitch(c, "merge-remove", &st.remove, false)
 		})
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()

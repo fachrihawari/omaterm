@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -490,7 +491,10 @@ func (a *appState) settingsContent(c *ui.Context) {
 		a.settingsToolbar(c, a.settingsTitle(id, p))
 		ui.Scroll(c.Key("page-" + id)).Grow(1).MinHeight(0).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().AlignItems(ui.Center).Children(func() {
-				ui.Column(c.Key("page")).FillWidth().MaxWidth(settingsPageW+40).Padding(16, 20, 28, 20).Children(func() {
+				page := ui.Column(c.Key("page")).FillWidth().MaxWidth(settingsPageW+40).Padding(16, 20, 28, 20)
+				// A page coming in rises a little as it fades in.
+				a.arrive(c, page, ui.Pose{Y: 8, Fade: 1}, ui.Animation{Duration: motionBase})
+				page.Children(func() {
 					if a.settingsUI.restart {
 						a.settingsRestartBanner(c)
 					}
@@ -523,10 +527,10 @@ func (a *appState) settingsToolbar(c *ui.Context, title string) {
 	bar := c.TitleBar()
 	ui.Row(c.Key("toolbar")).Height(max(44, bar.Height)).Shrink(0).FillWidth().Padding(0, 10+bar.Right, 0, 10).Gap(2).
 		AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).DragWindow().Children(func() {
-		if settingsIconButton(c, "back", iconChevronLeft, "Back", u.pos > 0) {
+		if a.settingsIconButton(c, "back", iconChevronLeft, "Back", u.pos > 0) {
 			a.settingsBack()
 		}
-		if settingsIconButton(c, "forward", iconChevronRight, "Forward", u.pos < len(u.stack)-1) {
+		if a.settingsIconButton(c, "forward", iconChevronRight, "Forward", u.pos < len(u.stack)-1) {
 			a.settingsForward()
 		}
 		ui.Text(c, title).FontSize(13.5).FontWeight(600).TextColor(pal.TextStrong).Margin(0, 0, 0, 6).
@@ -534,7 +538,7 @@ func (a *appState) settingsToolbar(c *ui.Context, title string) {
 		// A desktop that draws no buttons on the window, as a tiling one,
 		// gets a close button here.
 		if bar == (ui.TitleBar{}) {
-			if settingsIconButton(c, "close", iconX, "Close", true) {
+			if a.settingsIconButton(c, "close", iconX, "Close", true) {
 				a.closeSettings()
 			}
 		}
@@ -543,7 +547,7 @@ func (a *appState) settingsToolbar(c *ui.Context, title string) {
 
 // settingsIconButton is a toolbar button of an icon, dimmed when it does
 // nothing; it reports a click.
-func settingsIconButton(c *ui.Context, key string, icon *ui.SVG, label string, enabled bool) bool {
+func (a *appState) settingsIconButton(c *ui.Context, key string, icon *ui.SVG, label string, enabled bool) bool {
 	b := ui.ButtonBase(c.Key(key)).Size(26, 26).Radius(7).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).
 		Label(label).Tooltip(label).Disabled(!enabled)
 	col := pal.TextMuted
@@ -553,6 +557,7 @@ func settingsIconButton(c *ui.Context, key string, icon *ui.SVG, label string, e
 		b.Background(pal.Hover)
 		col = pal.Text
 	}
+	a.fadeColors(b)
 	b.Children(func() { ui.Icon(c, icon).Size(15, 15).TextColor(col) })
 	return enabled && b.Clicked()
 }
@@ -642,6 +647,7 @@ func (a *appState) settingsRow(c *ui.Context, title string, o settingsRowOpts, c
 		if row.Hovered() {
 			row.Background(pal.Hover)
 		}
+		a.fadeColors(row)
 	} else {
 		row = ui.Row(c.Key("row-" + key))
 	}
@@ -742,7 +748,7 @@ func settingsPill(c *ui.Context, text string, kind pillKind) {
 }
 
 // settingsSwitch is a small switch, as macOS's: the accent when on.
-func settingsSwitch(c *ui.Context, key string, on *bool, disabled bool) bool {
+func (a *appState) settingsSwitch(c *ui.Context, key string, on *bool, disabled bool) bool {
 	sw := ui.SwitchBase(c.Key("sw-"+key), on).Size(30, 18).Radius(9).Shrink(0).Disabled(disabled).Label(key)
 	track := pal.BorderStrong
 	if *on {
@@ -751,10 +757,9 @@ func settingsSwitch(c *ui.Context, key string, on *bool, disabled bool) bool {
 	if disabled {
 		sw.Opacity(0.4)
 	}
-	x := float32(2)
-	if *on {
-		x = 14
-	}
+	// The knob slides over, the track's color following.
+	x := a.animate(sw, "knob", 2+12*b2f(*on), motionFast)
+	track = a.animColor(sw, "track", track, motionFast)
 	sw.Draw(func(p *ui.Painter, r ui.Rect) {
 		p.Fill(r, track, 9)
 		p.Fill(ui.Rect{X: r.X + x, Y: r.Y + 2.5, W: 14, H: 14}, black.Alpha(0.18), 7)
@@ -771,7 +776,7 @@ func (a *appState) settingSwitchRow(c *ui.Context, id string, disabled bool) {
 	}
 	on := d.On(&a.settings)
 	a.settingsRow(c, d.Title, settingsRowOpts{id: d.ID, sub: d.Sub, restart: d.Restart}, func() {
-		if settingsSwitch(c, d.ID, &on, disabled) {
+		if a.settingsSwitch(c, d.ID, &on, disabled) {
 			d.Set(&a.settings, on)
 			if d.Restart {
 				a.settingsUI.restart = true
@@ -828,7 +833,7 @@ func settingsPopup(c *ui.Context, key string, value *string, options [][2]string
 
 // settingsSegmented is a segmented control of a few labels; it reports a
 // new choice.
-func settingsSegmented(c *ui.Context, key string, value *string, labels []string) bool {
+func (a *appState) settingsSegmented(c *ui.Context, key string, value *string, labels []string) bool {
 	i := 0
 	for j, l := range labels {
 		if strings.EqualFold(l, *value) {
@@ -837,15 +842,38 @@ func settingsSegmented(c *ui.Context, key string, value *string, labels []string
 	}
 	before := i
 	seg := ui.SegmentedBase(c.Key("seg-"+key), &i, len(labels))
-	seg.Track.Padding(2).Gap(2).Radius(7).Background(pal.Chip).Children(func() {
+	// The raised thumb under the chosen segment slides from the last one:
+	// the track paints it, under the segments' labels, where the chosen
+	// one was laid out. A thumb of its own, placed, painted over them.
+	track, chosenAt := a.handle("seg-"+key), a.handle("seg-"+key+"-"+strconv.Itoa(i))
+	tb, sb := track.Bounds(c), chosenAt.Bounds(c)
+	slides := tb.W > 0 && sb.W > 0
+	var x, w float32
+	if slides {
+		x = a.animateTo(seg.Track, "x", sb.X-tb.X, springPanel)
+		w = a.animateTo(seg.Track, "w", sb.W, springPanel)
+	}
+	seg.Track.Padding(2).Gap(2).Radius(7).Background(pal.Chip).Bind(track)
+	if slides {
+		seg.Track.Draw(func(p *ui.Painter, r ui.Rect) {
+			thumb := ui.Rect{X: r.X + x, Y: r.Y + 2, W: w, H: r.H - 4}
+			p.Fill(ui.Rect{X: thumb.X, Y: thumb.Y + 0.5, W: thumb.W, H: thumb.H}, black.Alpha(0.15), 5)
+			p.Fill(thumb, pal.Raised, 5)
+		})
+	}
+	seg.Track.Children(func() {
 		for j, l := range labels {
-			s := seg.Segment(j).Padding(3, 10).Radius(5).Label(l)
+			s := seg.Segment(j).Padding(3, 10).Radius(5).Label(l).Bind(a.handle("seg-" + key + "-" + strconv.Itoa(j)))
 			fg := pal.TextMuted
 			if j == i {
-				s.Background(pal.Raised).Shadow(0, 0.5, 2, 0, black.Alpha(0.15))
 				fg = pal.Text
+				if !slides {
+					s.Background(pal.Raised).Shadow(0, 0.5, 2, 0, black.Alpha(0.15))
+				}
 			}
-			s.Children(func() { ui.Text(c, l).FontSize(12).TextColor(fg).SingleLine() })
+			s.Children(func() {
+				ui.Text(c, l).FontSize(12).TextColor(a.animColor(s, "fg", fg, motionFast)).SingleLine()
+			})
 		}
 	})
 	if i != before {
@@ -875,7 +903,7 @@ func settingsSlider(c *ui.Context, key string, value *float64, lo, hi, step floa
 
 // settingsButton is a small bordered button; primary fills it with the
 // accent, danger colors its label red. It reports a click.
-func settingsButton(c *ui.Context, label string, primary, danger, disabled bool) bool {
+func (a *appState) settingsButton(c *ui.Context, label string, primary, danger, disabled bool) bool {
 	b := ui.ButtonBase(c.Key("btn-"+label)).Height(26).Padding(0, 10).Radius(6).AlignItems(ui.Center).Shrink(0).
 		Label(strings.Split(label, "##")[0]).Disabled(disabled)
 	fg := pal.Text
@@ -907,6 +935,8 @@ func settingsButton(c *ui.Context, label string, primary, danger, disabled bool)
 	}
 	if disabled {
 		b.Opacity(0.55)
+	} else {
+		a.press(a.fadeColors(b))
 	}
 	// "Revoke##id" shows "Revoke": what follows ## only tells buttons of
 	// one label apart.
@@ -1029,11 +1059,12 @@ func (a *appState) settingsRestoreButton(c *ui.Context, p *settingsPageDef) {
 // settingsRestartBanner offers to restart omaterm, for settings that
 // apply as it starts.
 func (a *appState) settingsRestartBanner(c *ui.Context) {
-	ui.Row(c.Key("restart")).FillWidth().Gap(10).Padding(8, 12).Radius(8).Margin(0, 0, 14, 0).AlignItems(ui.Center).
-		Background(pal.Accent.Alpha(0.12)).Children(func() {
+	banner := ui.Row(c.Key("restart")).FillWidth().Gap(10).Padding(8, 12).Radius(8).Margin(0, 0, 14, 0).AlignItems(ui.Center).
+		Background(pal.Accent.Alpha(0.12))
+	a.transition(banner, motionDrop).Children(func() {
 		ui.Icon(c, iconInfo).Size(14, 14).TextColor(pal.Accent)
 		ui.Text(c, "Restart omaterm to apply your changes.").FontSize(12.5).TextColor(pal.Text).Grow(1).MinWidth(0).Wrap()
-		if settingsButton(c, "Restart Now", true, false, false) {
+		if a.settingsButton(c, "Restart Now", true, false, false) {
 			a.saveState()
 			a.saveSettings()
 			a.saveUIPrefs()

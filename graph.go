@@ -240,6 +240,7 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane, g
 	if e.Hovered() {
 		e.Background(pal.Hover)
 	}
+	a.fadeColors(e)
 	e.Children(func() {
 		a.graphCanvas(c, lane, gutter, graphRowH)
 		ui.Text(c, cm.Short).Font(monoFont).FontSize(11).TextColor(pal.TextFaint).Width(58).SingleLine().Shrink(0)
@@ -270,6 +271,7 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 	if e.Hovered() {
 		e.Background(pal.Hover)
 	}
+	a.fadeColors(e)
 	e.Children(func() {
 		a.graphCanvas(c, lane, gutter, 26)
 		ui.Text(c, cm.Subject).FontSize(11).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
@@ -340,6 +342,7 @@ func (a *appState) commitFileRow(c *ui.Context, hash string, f service.CommitFil
 	if row.Hovered() {
 		row.Background(pal.Hover)
 	}
+	a.fadeColors(row)
 	row.Children(func() {
 		fileLabel(c, f.Path)
 		statusLetter(c, f.Status)

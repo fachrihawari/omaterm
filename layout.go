@@ -254,7 +254,13 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 
 	// The pane dragged sinks back where it was; one just moved springs in
 	// at its new place.
-	pose := ui.Pose{}
+	// A pane shown anew, as its tab is chosen, fades in, without the
+	// bounce of one moved.
+	pose, anim := ui.Pose{}, springPop
+	if a.fading[id] {
+		anim = ui.Animation{Duration: motionBase}
+		delete(a.fading, id)
+	}
 	switch {
 	case dragging:
 		pose = ui.Pose{Scale: 0.985, Fade: 0.45}
@@ -262,9 +268,15 @@ func (a *appState) paneCard(c *ui.Context, tab *topTab, id string, multi bool) {
 		pose = ui.Pose{Scale: 0.94, Fade: 0.7}
 		delete(a.arrived, id)
 		c.Invalidate()
+	case !a.still() && a.fresh(c, card):
+		pose = ui.Pose{Y: 4, Fade: 0.6}
+		if a.fading == nil {
+			a.fading = map[string]bool{}
+		}
+		a.fading[id] = true
 	}
 	if !a.still() {
-		card.AnimatePose(pose, springPop)
+		card.AnimatePose(pose, anim)
 	}
 }
 

@@ -88,6 +88,14 @@ var (
 		Enter:    &ui.Motion{Collapse: true},
 		Exit:     &ui.Motion{Collapse: true},
 	}
+	// motionRow is motionFold whose hover fades too.
+	motionRow = ui.ElementTransition{
+		Duration: motionBase,
+		Position: true,
+		Colors:   true,
+		Enter:    &ui.Motion{Collapse: true},
+		Exit:     &ui.Motion{Collapse: true},
+	}
 	// motionDrop fades in from a little above, and out back up: for
 	// what the content below makes room for at once, as a banner, since
 	// a terminal resized frame by frame would reflow its shell each time.
@@ -135,8 +143,8 @@ func (a *appState) swap(e ui.Element, numeric bool) ui.Element {
 	return e.ContentTransition(ui.ContentTransition{Numeric: numeric})
 }
 
-// shown is which dialogs a window built in its last frame, and builds in
-// this one, by their panels' IDs: one coming in is new to it.
+// shown is what came in (dialogs, pages) that a window built in its last
+// frame, and builds in this one, by their IDs: one coming in is new to it.
 type shown struct{ last, now map[uint64]bool }
 
 // frame starts a frame of the window.
@@ -153,20 +161,40 @@ func (s *shown) frame() {
 // it lays out, shows it clear; the motion starts in the next one and goes
 // on in frames that only paint, so the window isn't built again for it.
 func (a *appState) arriveDialog(c *ui.Context, backdrop, panel ui.Element) {
-	if a.still() || a.dialogs == nil {
+	a.arrive(c, backdrop, ui.Pose{Fade: 1}, ui.Animation{Duration: motionBase})
+	a.arrive(c, panel, ui.Pose{Y: -8}, springPanel)
+}
+
+// arrive brings in e, which shows all at once with what holds it (a
+// dialog, a page, a tab's content), from pose: Transition's Enter plays
+// only in a parent the frame before showed. It goes as arriveDialog's.
+func (a *appState) arrive(c *ui.Context, e ui.Element, from ui.Pose, anim ui.Animation) {
+	if a.still() {
 		return
 	}
-	id := panel.ID()
+	if a.fresh(c, e) {
+		e.AnimatePose(from, anim)
+		return
+	}
+	e.AnimatePose(ui.Pose{}, anim)
+}
+
+// fresh reports whether e is new to the window, which the last frame
+// didn't build, asking for the next frame, in which it is no longer.
+// Posed where it starts in this frame, as arrive does, it shows there at
+// once; posed at rest in the next, it goes there in frames that only
+// paint.
+func (a *appState) fresh(c *ui.Context, e ui.Element) bool {
+	if a.dialogs == nil {
+		return false
+	}
+	id := e.ID()
 	a.dialogs.now[id] = true
-	fade := ui.Animation{Duration: motionBase}
-	if !a.dialogs.last[id] {
-		backdrop.AnimatePose(ui.Pose{Fade: 1}, fade)
-		panel.AnimatePose(ui.Pose{Y: -8}, springPanel)
-		c.Invalidate()
-		return
+	if a.dialogs.last[id] {
+		return false
 	}
-	backdrop.AnimatePose(ui.Pose{}, fade)
-	panel.AnimatePose(ui.Pose{}, springPanel)
+	c.Invalidate()
+	return true
 }
 
 // iconPop is a status icon's last state, by its element, and how many
@@ -202,6 +230,11 @@ func (a *appState) popOnChange(e ui.Element, state int) {
 		{At: motionBase + 60*time.Millisecond, Value: 1, Ease: ui.EaseInOut},
 	}, ui.KeyframeOptions{Run: p.n})
 	e.Scale(s, s)
+}
+
+// disclosure turns a right-pointing chevron down while open.
+func (a *appState) disclosure(chevron ui.Element, open bool) ui.Element {
+	return chevron.Rotate(a.animate(chevron, "turn", 90*b2f(open), motionFast))
 }
 
 // press sinks e a little while it is pressed.

@@ -212,10 +212,10 @@ func (a *appState) settingsDevurls(c *ui.Context) {
 					}
 					settingsPill(c, strings.ToUpper(status[:1])+status[1:], pillPlain)
 				}
-				if settingsButton(c, "Open##"+rt.Host, false, false, !d.status.Running) {
+				if a.settingsButton(c, "Open##"+rt.Host, false, false, !d.status.Running) {
 					a.openURL(link)
 				}
-				if settingsButton(c, "Copy##"+rt.Host, false, false, false) {
+				if a.settingsButton(c, "Copy##"+rt.Host, false, false, false) {
 					mygo.Clipboard.WriteText(link)
 					toast(c, "Copied "+link)
 				}
@@ -231,12 +231,12 @@ func (a *appState) devurlActions(c *ui.Context) {
 	busy := d.running != ""
 	settingsActions(c, func() {
 		if len(d.terminal) > 0 {
-			if settingsButton(c, "Run in a Terminal", false, false, busy) {
+			if a.settingsButton(c, "Run in a Terminal", false, false, busy) {
 				a.devurlTerminal()
 			}
 		}
 		if d.known && d.made() {
-			if settingsButton(c, "Remove…", false, true, busy) {
+			if a.settingsButton(c, "Remove…", false, true, busy) {
 				a.devurlRemoveSheet()
 			}
 		}
@@ -247,11 +247,11 @@ func (a *appState) devurlActions(c *ui.Context) {
 			if busy && d.running == "setup" {
 				label = "Setting Up…"
 			}
-			if settingsButton(c, label, true, false, busy) {
+			if a.settingsButton(c, label, true, false, busy) {
 				a.devurlSetupSheet()
 			}
 		case !d.status.Running:
-			if settingsButton(c, "Try Again", true, false, busy) {
+			if a.settingsButton(c, "Try Again", true, false, busy) {
 				a.devurlReload()
 			}
 		}

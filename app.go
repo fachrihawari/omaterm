@@ -293,7 +293,8 @@ func (a *appState) content(c *ui.Context) {
 		return
 	}
 	// The editor, diff and graph views sit on a card as a pane does.
-	card := ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Radius(a.cardRadius()).Clip().Background(pal.Card)
+	card := ui.Column(c.Key(int(a.activeView))).Grow(1).MinWidth(0).MinHeight(0).Radius(a.cardRadius()).Clip().Background(pal.Card)
+	a.arrive(c, card, ui.Pose{Y: 4, Fade: 0.6}, ui.Animation{Duration: motionBase})
 	cardEdge(card).Children(func() {
 		switch a.activeView {
 		case tabEditor:

@@ -45,14 +45,19 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 			ui.Spacer(c)
 		})
 
-		switch a.inspectorTab {
-		case 1:
-			a.filesPanel(c)
-		case 2:
-			a.gitPanel(c)
-		default:
-			a.infoPanel(c)
-		}
+		// The tab shown fades in, rising a little, as it replaces the last.
+		page := ui.Column(c.Key(a.inspectorTab)).Grow(1).MinHeight(0)
+		a.arrive(c, page, ui.Pose{Y: 6, Fade: 1}, ui.Animation{Duration: motionBase})
+		page.Children(func() {
+			switch a.inspectorTab {
+			case 1:
+				a.filesPanel(c)
+			case 2:
+				a.gitPanel(c)
+			default:
+				a.infoPanel(c)
+			}
+		})
 	})
 }
 
@@ -78,15 +83,25 @@ func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, labe
 				countBadge(c, badge)
 			}
 		})
+		// The underline slides from the tab shown before.
+		if active {
+			line := ui.Box(c.Key("line")).Absolute().Left(0).Right(0).Bottom(0).Height(2).Background(pal.Accent).PassThrough()
+			a.transition(line, ui.ElementTransition{Animation: &springPanel, Match: inspectorLine{}})
+		}
 	})
-	if active {
-		e.BorderWidth(0, 0, 2, 0).BorderColor(pal.Accent)
-	}
 	if e.Clicked() {
 		a.showInspectorTab(idx)
 	}
 	return e
 }
+
+// gitFileMatch is a changed file's row's identity, the same staged or
+// not.
+type gitFileMatch struct{ path string }
+
+// inspectorLine is the identity of the inspector's tab underline, which
+// moves from tab to tab.
+type inspectorLine struct{}
 
 // showInspectorTab switches the inspector to Info (0), Files (1) or Git
 // (2), loading what that tab shows.
@@ -370,6 +385,7 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	if e.Hovered() {
 		e.Background(pal.Hover)
 	}
+	a.transition(e, motionRow)
 	e.Children(func() {
 		row := ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4)
 		if n.Muted {
@@ -379,11 +395,7 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 			// Disclosure column: always present, so folder and file
 			// badges line up on one grid at every depth.
 			if n.Dir {
-				ci := iconChevronRight
-				if n.Open {
-					ci = iconChevronDown
-				}
-				ui.Icon(c, ci).Width(12).Height(12).TextColor(pal.TextFaint)
+				a.disclosure(ui.Icon(c, iconChevronRight).Width(12).Height(12).TextColor(pal.TextFaint), n.Open)
 			} else {
 				ui.Box(c).Width(12)
 			}
@@ -718,16 +730,12 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 	if !staged {
 		collapsed = &a.changesCollapsed
 	}
-	icon := iconChevronRight
-	if !*collapsed {
-		icon = iconChevronDown
-	}
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if !staged {
 		e = e.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	}
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		a.disclosure(ui.Icon(c, iconChevronRight).Width(14).Height(14).TextColor(pal.TextMuted), !*collapsed)
 		txt(c, label, 10, pal.TextMuted).LetterSpacing(1.0)
 		countBadge(c, count)
 		ui.Spacer(c)
@@ -824,12 +832,14 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 	if hover {
 		e.Background(pal.Hover)
 	}
+	// Staged or unstaged, the file moves from one list to the other.
+	t := motionRow
+	t.Match = gitFileMatch{f.Path}
+	a.transition(e, t)
 	e.Children(func() {
 		fileLabel(c, f.Path)
-		actions := ui.Row(c).Gap(2).Shrink(0)
-		if !hover {
-			actions.Opacity(0)
-		}
+		actions := ui.Row(c.Key("actions")).Gap(2).Shrink(0)
+		actions.Opacity(a.animate(actions, "show", b2f(hover), motionFast))
 		actions.Children(func() {
 			r := a.activeRepoRef()
 			if staged {
@@ -929,10 +939,8 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 			meta += " · " + relativeTime(s.When)
 			txt(c, meta, 9, pal.TextMuted)
 		})
-		actions := ui.Row(c).Gap(2).Shrink(0)
-		if !hover {
-			actions.Opacity(0)
-		}
+		actions := ui.Row(c.Key("actions")).Gap(2).Shrink(0)
+		actions.Opacity(a.animate(actions, "show", b2f(hover), motionFast))
 		actions.Children(func() {
 			// Each acts on the stash by its commit, not where the list
 			// showed it: a drop or pop since moved the others up, and a

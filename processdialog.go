@@ -135,16 +135,16 @@ func (a *appState) processDialog(c *ui.Context) {
 					dialogNote(c, "omaterm picks a free port and tells it to the process as PORT.", false)
 				}
 			}
-			dialogField(c, "Autostart", func() { settingsSwitch(c, "proc-autostart", &st.autostart, false) })
+			dialogField(c, "Autostart", func() { a.settingsSwitch(c, "proc-autostart", &st.autostart, false) })
 			dialogField(c, "Restart", func() {
-				settingsSegmented(c, "proc-restart", &st.restart, []string{"Never", "On failure", "Always"})
+				a.settingsSegmented(c, "proc-restart", &st.restart, []string{"Never", "On failure", "Always"})
 			})
 			ui.Text(c, "Watch (one glob per line)").FontSize(12.5).TextColor(pal.Text)
 			processTextArea(c, "proc-watch", "Watch", &st.watch, "src/**", 48)
 			ui.Text(c, "Environment (one KEY=value per line)").FontSize(12.5).TextColor(pal.Text)
 			processTextArea(c, "proc-env", "Environment", &st.env, "NODE_ENV=development", 48)
 		})
-		dialogField(c, "Save in omaterm.yml", func() { settingsSwitch(c, "proc-shared", &st.shared, false) })
+		dialogField(c, "Save in omaterm.yml", func() { a.settingsSwitch(c, "proc-shared", &st.shared, false) })
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
