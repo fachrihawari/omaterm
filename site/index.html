@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>omaterm</title>
-<meta name="description" content="Oh My Terminal: a terminal workspace for running coding agents side by side. A tour of what it does: agent status, sessions and splits, Last turn, Git, an editor, browser panes, sessions that keep running, your sessions on your phone, agents on branches of their own, and agents working together.">
+<meta name="description" content="Oh My Terminal: a terminal workspace for running coding agents side by side. A tour of what it does: agent status, agents on branches of their own and working together, Last turn, project processes at clean https://*.localhost addresses, Git, an editor, browser panes, sessions that keep running, and your sessions on your phone.">
 <meta property="og:title" content="omaterm">
 <meta property="og:description" content="Oh My Terminal: a terminal workspace for running coding agents side by side.">
 <meta property="og:image" content="https://fachrihawari.github.io/omaterm/assets/hero.png">
@@ -274,7 +274,7 @@
   <div class="wrap">
     <p class="tag"><b>Oh My Terminal</b> · <a id="release" href="https://github.com/fachrihawari/omaterm/releases/latest">latest release</a></p>
     <h1>A terminal workspace for running coding agents side by side.</h1>
-    <p class="lede">Projects, sessions and split panes in one native window. See which agent needs you, what each turn changed, and keep Git, an editor and a browser next to your shells. Check on it all from your phone.</p>
+    <p class="lede">Projects, sessions and split panes in one native window. See which agent needs you and what each turn changed, put agents on branches of their own and let them work together, run your dev servers at clean <code class="k">https://*.localhost</code> addresses, and keep Git, an editor and a browser next to your shells. Check on it all from your phone.</p>
     <div class="install">
       <code>curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh</code>
       <button class="btn primary" type="button" data-copy="curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh">Copy</button>
@@ -285,9 +285,9 @@
       <a href="https://github.com/fachrihawari/omaterm/releases/latest">All downloads</a>
     </div>
   </div>
-  <div class="wrap wide"><div class="shot"><video class="clip" src="assets/video/launch.mp4?v=3" poster="assets/hero.png" width="1920" height="1200" muted loop playsinline preload="none" aria-label="omaterm at work: three agents and a dev server side by side, an agent asking for permission, what its last turn changed, and the themes"></video></div></div>
+  <div class="wrap wide"><div class="shot"><video class="clip" src="assets/video/launch.mp4?v=5" poster="assets/hero.png" width="1920" height="1200" muted loop playsinline preload="none" aria-label="omaterm at work: three agents and a dev server side by side, an agent asking for permission, what its last turn changed, and the themes"></video></div></div>
   <div class="wrap">
-    <p class="agents">Knows when these are working, waiting or done: <span>Claude Code · Codex · Gemini · OpenCode · Pi</span></p>
+    <p class="agents">Knows when these are working, waiting or done: <span>Claude Code · Codex · OpenCode · Pi · Antigravity · Gemini</span></p>
   </div>
 </header>
 
@@ -306,14 +306,14 @@
       <a class="card" href="#last-turn"><span class="n">03</span><b>Last turn</b><span>Exactly what an agent changed in its last turn.</span></a>
       <a class="card" href="#git"><span class="n">04</span><b>Git and diffs</b><span>Stage, commit, push, and a graph of every branch.</span></a>
       <a class="card" href="#editor"><span class="n">05</span><b>Files and editor</b><span>Go to a file, search the project, edit it.</span></a>
-      <a class="card" href="#info"><span class="n">06</span><b>Processes and ports</b><span>What your sessions run, and the ports they open.</span></a>
+      <a class="card" href="#processes"><span class="n">06</span><b>Processes and Dev URLs</b><span>Dev servers in the sidebar, at https://shop.localhost.</span></a>
       <a class="card" href="#browser"><span class="n">07</span><b>Browser panes</b><span>Your dev server, next to your shells.</span></a>
       <a class="card" href="#daemon"><span class="n">08</span><b>Sessions keep running</b><span>Close the window; agents carry on.</span></a>
-      <a class="card" href="#web"><span class="n">09</span><b>From your phone</b><span>Your sessions in a browser, live.</span></a>
+      <a class="card" href="#web"><span class="n">09</span><b>From your phone</b><span>Your sessions in a browser, with a key bar.</span></a>
       <a class="card" href="#themes"><span class="n">10</span><b>Themes</b><span>Dark and light, and Omarchy&rsquo;s.</span></a>
       <a class="card" href="#cli"><span class="n">11</span><b>Agents drive it</b><span>The <code>omaterm</code> command, for agents and scripts.</span></a>
       <a class="card" href="#settings"><span class="n">12</span><b>Settings</b><span>Every preference in one window.</span></a>
-      <a class="card" href="#worktrees"><span class="n">13</span><b>Agents on branches</b><span>Each agent in a worktree of its own, merged from a menu.</span></a>
+      <a class="card" href="#worktrees"><span class="n">13</span><b>Agents on branches</b><span>Each agent in a worktree of its own, merged when you say.</span></a>
       <a class="card" href="#team"><span class="n">14</span><b>Agents working together</b><span>A lead and its workers, messages between them, a reviewer.</span></a>
     </div>
   </div>
@@ -341,7 +341,7 @@
         </ul>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/status.mp4?v=3" poster="assets/video/status.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions at work, an agent asking for permission, then a jump to the Codex session that needs you"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/status.mp4?v=5" poster="assets/video/status.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions at work, an agent asking for permission, then a jump to the Codex session that needs you"></video></div></div>
   </section>
 
   <section id="sessions">
@@ -360,7 +360,7 @@
         <p class="note">Drag a pane&rsquo;s header onto another pane to move it, and drag the dividers to resize.</p>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/splits.mp4?v=3" poster="assets/video/splits.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A pane split right and down, one zoomed, then a new session"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/splits.mp4?v=5" poster="assets/video/splits.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A pane split right and down, one zoomed, then a new session"></video></div></div>
   </section>
 
   <section id="last-turn">
@@ -378,7 +378,7 @@
         <p class="note">omaterm takes a snapshot when a turn starts. No branch or commit is made.</p>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/lastturn.mp4?v=3" poster="assets/video/lastturn.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent finishing its turn, then Last turn listing the three files it changed"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/lastturn.mp4?v=5" poster="assets/video/lastturn.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent finishing its turn, then Last turn listing the three files it changed"></video></div></div>
   </section>
 
   <section id="git">
@@ -411,24 +411,26 @@
         </ul>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/files.mp4?v=4" poster="assets/video/files.jpg?v=4" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Go to File finding themewatch.go, the editor opening it, then a search of the project"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/files.mp4?v=5" poster="assets/video/files.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Go to File finding themewatch.go, the editor opening it, then a search of the project"></video></div></div>
   </section>
 
-  <section id="info">
+  <section id="processes">
     <div class="wrap feature-head">
       <div>
-        <p class="label">06 · processes and ports</p>
-        <h2>What&rsquo;s running, and where</h2>
-        <p>The Info tab lists what your project&rsquo;s sessions run, with CPU and memory, and the ports they listen on. Stop a runaway process, or open a port in the browser, in one click.</p>
+        <p class="label">06 · processes and dev urls</p>
+        <h2>Your dev servers, at a name of their own</h2>
+        <p>Dev servers, workers and watchers live in the sidebar as the project&rsquo;s processes, kept in <code class="k">omaterm.yml</code>: started, stopped and restarted there, by you or by an agent, and still running when the window closes. <b>Add Process&hellip;</b> suggests commands from <code class="k">package.json</code>, a Procfile, a Makefile and more. Give one <code class="k">url: shop</code> and it&rsquo;s served at <code class="k">https://shop.localhost</code>: real HTTPS, no port, no warning. <b>Share</b> sends it to your devices through Tailscale, or to anyone with a Cloudflare link.</p>
       </div>
       <div>
         <ul class="how">
-          <li><span>The Info tab</span><kbd>Ctrl+Shift+I</kbd></li>
-          <li><span>Show or hide the side panel</span><kbd>Ctrl+Shift+B</kbd></li>
+          <li><span>Add one, from the + menu</span><kbd>Add Process&hellip;</kbd></li>
+          <li class="wide"><span>From an agent or a script</span><code class="k">omaterm start web --wait</code></li>
+          <li class="wide"><span>Share it, from its menu or here</span><code class="k">omaterm share web --cloudflare</code></li>
         </ul>
+        <p class="note">A command from <code class="k">omaterm.yml</code> runs only once you trust it. Dev URLs set up once, in Settings, on Linux and macOS. The Info tab (<kbd>Ctrl+Shift+I</kbd>) shows what every session runs, and its ports.</p>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/ports.mp4?v=3" poster="assets/video/ports.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A dev server starting, and its port appearing in the Info tab"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/processes.mp4?v=5" poster="assets/video/processes.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Add Process suggesting commands, the web process served at https://shop.localhost, then shared through a Cloudflare link"></video></div></div>
   </section>
 
   <section id="browser">
@@ -446,7 +448,7 @@
         </ul>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/browser.mp4?v=3" poster="assets/video/browser.jpg?v=3" width="1920" height="1080" muted loop playsinline preload="none" aria-label="An agent opening a browser pane, adding a todo, checking it off and reading the page, all with omaterm browser"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/browser.mp4?v=5" poster="assets/video/browser.jpg?v=5" width="1920" height="1080" muted loop playsinline preload="none" aria-label="An agent opening a browser pane, adding a todo, checking it off and reading the page, all with omaterm browser"></video></div></div>
   </section>
 
   <section id="daemon">
@@ -461,10 +463,10 @@
           <li class="wide"><span>Bring sessions back at login</span><code class="k">omaterm daemon install-service</code></li>
           <li class="wide"><span>See what it runs</span><code class="k">omaterm daemon status</code></li>
         </ul>
-        <p class="note">After a reboot, Claude Code, Codex, OpenCode and Pi resume the same conversation.</p>
+        <p class="note">After a reboot, Claude Code, Codex, OpenCode, Pi and Antigravity resume the same conversation.</p>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/resume.mp4?v=3" poster="assets/video/resume.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions, the window gone through a reboot, and the sessions back with the agent in the same conversation"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/resume.mp4?v=5" poster="assets/video/resume.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="Sessions, the window gone through a reboot, and the sessions back with the agent in the same conversation"></video></div></div>
   </section>
 
   <section id="web">
@@ -472,7 +474,7 @@
       <div class="intro">
         <p class="label">09 · from your phone</p>
         <h2>Your sessions, in any browser</h2>
-        <p>Turn on web access and your sessions open in a browser: projects and sessions beside a live terminal on a computer, one at a time on a phone, with keys for Esc, Ctrl and the arrows. Answer the agent that needs you from the couch.</p>
+        <p>Turn on web access and your sessions open in a browser, looking like the app: projects, sessions with what each agent last said, and the project&rsquo;s processes, beside a live terminal on a computer, one at a time on a phone. A key bar you can rearrange gives a phone Esc, Tab, Ctrl, Alt and the arrows, and Compose takes a long prompt. Answer the agent that needs you from the couch.</p>
       </div>
       <div class="devices">
         <div class="shot"><img src="assets/web-desktop.png" width="2880" height="1800" loading="lazy" alt="Web access in a desktop browser: sessions in a sidebar, an agent asking to allow an edit"></div>
@@ -491,11 +493,11 @@
             <li><span>Paired devices, and signing one out</span><span><code class="k">omaterm web devices</code> <code class="k">omaterm web revoke</code></span></li>
           </ul>
           <h3 style="margin: 28px 0 8px; font-size: 18px">Reach it from anywhere</h3>
-          <p>omaterm serves it on your machine only. Carry it with a tunnel you trust, or serve it on your home network:</p>
+          <p>omaterm serves it on your machine only. It can carry it through a tunnel itself, and the pairing QR code follows the tunnel&rsquo;s address:</p>
 <pre class="cli"><span class="c"># your own devices, on your tailnet</span>
-<span class="p">$</span> tailscale serve --bg 7370
+<span class="p">$</span> omaterm web on --tunnel tailscale
 <span class="c"># a public https URL</span>
-<span class="p">$</span> cloudflared tunnel --url http://127.0.0.1:7370
+<span class="p">$</span> omaterm web on --tunnel cloudflare
 <span class="c"># devices on the same Wi-Fi (plain HTTP)</span>
 <span class="p">$</span> omaterm web on --network</pre>
         </div>
@@ -523,17 +525,17 @@
       <div>
         <p class="label">11 · agents drive it</p>
         <h2>Agents can use it too</h2>
-        <p>The <code class="k">omaterm</code> command lets agents and scripts open panes, run commands, wait for them, read the screen and report their status. It works even while the window is closed.</p>
+        <p>The <code class="k">omaterm</code> command lets agents and scripts open panes, run commands, wait for them, read the screen and report their status. It works even while the window is closed. Agents learn to reach for omaterm first: its browser pane rather than a hidden browser, agents in worktrees rather than hidden subagents, the project&rsquo;s processes for a dev server. So you see what they do.</p>
       </div>
       <div>
         <ul class="how">
-          <li class="wide"><span>Teach Claude Code, Codex, Pi and OpenCode to use it</span><code class="k">omaterm skill setup</code></li>
+          <li class="wide"><span>Teach Claude Code, Codex, OpenCode, Pi and Antigravity to use it</span><code class="k">omaterm skill setup</code></li>
           <li class="wide"><span>Run the tests in a pane below</span><code class="k">omaterm split --down -- go test ./...</code></li>
           <li class="wide"><span>Tell the user you need them</span><code class="k">omaterm report blocked "Which database?"</code></li>
         </ul>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/cli.mp4?v=3" poster="assets/video/cli.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent running the tests in a pane below with omaterm split, waiting for them and reading the result"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/cli.mp4?v=5" poster="assets/video/cli.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="An agent running the tests in a pane below with omaterm split, waiting for them and reading the result"></video></div></div>
   </section>
 
   <section id="settings">
@@ -541,7 +543,7 @@
       <div>
         <p class="label">12 · settings</p>
         <h2>Every preference, in one window</h2>
-        <p>Settings has a page for each part of omaterm: the theme, the terminal&rsquo;s font, cursor and clipboard, the editor, notifications, the agents&rsquo; integration, web access and its paired devices, the browser&rsquo;s search engine and updates. Search finds any setting, and changes apply as you make them.</p>
+        <p>Settings has a page for each part of omaterm: the theme, the terminal&rsquo;s font, cursor and clipboard, the editor, notifications, the agents&rsquo; integration, web access and its paired devices, Dev URLs, the browser&rsquo;s search engine and updates. Search finds any setting, and changes apply as you make them.</p>
       </div>
       <div>
         <ul class="how">
@@ -550,7 +552,7 @@
         </ul>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/settings.mp4?v=3" poster="assets/video/settings.jpg?v=3" width="1920" height="1200" muted loop playsinline preload="none" aria-label="The Settings window going through its pages, then a search for font"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/settings.mp4?v=5" poster="assets/video/settings.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="The Settings window going through its pages, then a search for font"></video></div></div>
   </section>
 
   <section id="worktrees">
@@ -558,18 +560,18 @@
       <div>
         <p class="label">13 · agents on branches</p>
         <h2>An agent on a branch of its own</h2>
-        <p><b>New Agent in Worktree&hellip;</b> starts an agent on a new branch, in a git worktree under the repository&rsquo;s <code class="k">.worktrees</code> folder, with your <code class="k">.env</code> files copied in. Run several at once: none touches another&rsquo;s files, or yours. The session shows its branch, and the Git tab follows it, with a <b>Branch</b> view of everything the branch changed.</p>
+        <p><b>New Agent&hellip;</b>, with <b>Work in a worktree</b> on, starts an agent on a new branch, in a git worktree under the repository&rsquo;s <code class="k">.worktrees</code> folder, with your <code class="k">.env</code> files copied in. Run several at once: none touches another&rsquo;s files, or yours. The session shows its branch, and the Git tab follows it, with a <b>Branch</b> view of everything the branch changed.</p>
       </div>
       <div>
         <ul class="how">
-          <li><span>Start one, from the palette or a project&rsquo;s menu</span><kbd>New Agent in Worktree&hellip;</kbd></li>
+          <li><span>Start one, from the + menu or the palette</span><kbd>New Agent&hellip;</kbd></li>
           <li class="wide"><span>Or from an agent or a script</span><code class="k">omaterm new --worktree fix-login -- claude</code></li>
           <li class="wide"><span>When it&rsquo;s done, from the session&rsquo;s menu</span><span>Merge into main&hellip; · Update from main · Push &amp; Create PR · Discard Worktree&hellip;</span></li>
         </ul>
         <p class="note">A merge that would conflict isn&rsquo;t made: conflicts are resolved in the worktree, never in your checkout. Closing a session asks before dropping work that isn&rsquo;t in main.</p>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/worktree.mp4?v=1" poster="assets/video/worktree.jpg?v=1" width="1920" height="1200" muted loop playsinline preload="none" aria-label="New Agent in Worktree, an agent working on its branch beside another, then the Merge into main dialog"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/worktree.mp4?v=5" poster="assets/video/worktree.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="New Agent with a worktree, an agent working on its branch beside another, then the Merge into main dialog"></video></div></div>
   </section>
 
   <section id="team">
@@ -577,7 +579,7 @@
       <div>
         <p class="label">14 · agents working together</p>
         <h2>A lead, its workers, and a reviewer</h2>
-        <p>An agent can lead others. It starts workers in worktrees made from its own branch, which nest under its session, and hands each its part with <code class="k">omaterm ask</code>. omaterm types the message into the worker&rsquo;s prompt once it&rsquo;s free and you aren&rsquo;t typing there, and the answer comes back to the lead, waking it. The lead merges each worker into its own branch; merging into main stays yours.</p>
+        <p>An agent can lead others. It starts workers in worktrees made from its own branch, which nest under its session, and hands each its part with <code class="k">omaterm ask</code>. omaterm types the message into the worker&rsquo;s prompt once it&rsquo;s free and you aren&rsquo;t typing there, and the answer comes back to the lead, waking it. The lead merges each worker into its own branch. A lead working in your checkout asks first: a banner says what it would merge, and nothing happens until you click <b>Merge</b>.</p>
       </div>
       <div>
         <ul class="how">
@@ -589,7 +591,7 @@
         <p class="note">The reviewer reads what the session changed, changes nothing itself, sends the agent what to fix for up to three rounds, then tells you its verdict, under its session.</p>
       </div>
     </div>
-    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/team.mp4?v=1" poster="assets/video/team.jpg?v=1" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A lead agent starting two workers, its message typed into a worker's prompt, the answer waking the lead, which merges the worker, then Ask for Review"></video></div></div>
+    <div class="wrap wide media"><div class="shot"><video class="clip" src="assets/video/team.mp4?v=5" poster="assets/video/team.jpg?v=5" width="1920" height="1200" muted loop playsinline preload="none" aria-label="A lead agent starting two workers, its message typed into a worker's prompt, the answer waking the lead, which merges the worker, then Ask for Review"></video></div></div>
   </section>
 
   <section id="more">
@@ -603,7 +605,7 @@
         <div><dt>The agent&rsquo;s last word</dt><dd>What an agent last said of its turn shows under its session, in the sidebar, the palette and on your phone.</dd></div>
         <div><dt>Notifications</dt><dd>Choose which ones you get: needs you, finished, failed, with or without a sound. Each is a setting.</dd></div>
         <div><dt>Zoom</dt><dd><kbd>Ctrl+=</kbd> and <kbd>Ctrl+-</kbd> scale the whole window; <kbd>Ctrl+0</kbd> resets it.</dd></div>
-        <div><dt>Native</dt><dd>A native app written in Go. It runs on Linux first, and on macOS and Windows too.</dd></div>
+        <div><dt>Native, everywhere</dt><dd>A native app written in Go, on Linux, macOS (a Dock badge for agents that need you, Option as Meta) and Windows (PowerShell or cmd panes; no session daemon yet, so no web access, Dev URLs or keep-running there).</dd></div>
         <div><dt>Open source</dt><dd>MIT licensed, on <a href="https://github.com/fachrihawari/omaterm">GitHub</a>.</dd></div>
       </dl>
     </div>
