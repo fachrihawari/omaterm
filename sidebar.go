@@ -63,10 +63,7 @@ func (a *appState) sidebar(c *ui.Context) {
 	if a.sidebarShown {
 		target = a.sidebarWidth()
 	}
-	w := box.AnimateTo("w", target, ui.Animation{Spring: ui.SpringOptions{Duration: 260 * time.Millisecond}})
-	if a.settings.ReduceMotion {
-		w = target
-	}
+	w := a.animateTo(box, "w", target, springPanel)
 	box.Width(w)
 	if w < 1 {
 		return
@@ -97,16 +94,16 @@ func (a *appState) sidebar(c *ui.Context) {
 
 func (a *appState) sidebarHeader(c *ui.Context) {
 	ui.Row(c).Height(40).Shrink(0).AlignItems(ui.Center).Padding(0, 4, 0, 8).Gap(2).Children(func() {
-		if cmdButton(c, iconPanelLeftClose, 15, false).Tooltip("Hide Sidebar (" + keyLabels("view.toggleSidebar") + ")").Clicked() {
+		if a.cmdButton(c, iconPanelLeftClose, 15, false).Tooltip("Hide Sidebar (" + keyLabels("view.toggleSidebar") + ")").Clicked() {
 			a.sidebarVisible = false
 		}
 		ui.Text(c, "Projects").FontSize(11).FontWeight(600).TextColor(pal.TextFaint).Padding(0, 4).SingleLine().Grow(1)
 		// What can be added, in one place: a session, an agent, a
 		// process, a project.
-		cmdButton(c, iconPlus, 15, false).Tooltip("New…").Label("New").Menu(func(m *ui.Menu) {
+		a.cmdButton(c, iconPlus, 15, false).Tooltip("New…").Label("New").Menu(func(m *ui.Menu) {
 			a.addItems(m, a.active, true)
 		})
-		if cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
+		if a.cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
 			a.openProjectDialog()
 		}
 	})
@@ -122,6 +119,7 @@ func (a *appState) sidebarEmpty(c *ui.Context) {
 		if b.Hovered() {
 			b.Background(pal.Hover.Over(pal.Raised))
 		}
+		a.press(a.fadeColors(b))
 		b.Children(func() {
 			ui.Text(c, "Open Project").FontSize(12).TextColor(pal.Text)
 		})
@@ -142,6 +140,7 @@ func (a *appState) unavailableProject(c *ui.Context, i int) {
 	if h.Hovered() {
 		h.Background(pal.Hover)
 	}
+	a.fadeColors(h)
 	h.Children(func() {
 		ui.Icon(c, iconFolder).Size(12, 12).TextColor(pal.TextFaint)
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
@@ -201,6 +200,7 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	if hovered {
 		h.Background(pal.Hover)
 	}
+	a.fadeColors(h)
 	empty := a.projectEmpty(p.ID, tabs)
 	// The + is a button of its own: a click on it is not the header's,
 	// which shows the project.
@@ -208,9 +208,10 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	h.Children(func() {
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		if hovered {
-			plus := cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
+			plus := a.cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
 			})
+			a.transition(plus, motionFade)
 			inner = inner || plus.Hovered()
 		}
 	})
@@ -301,7 +302,7 @@ func (a *appState) processGroup(c *ui.Context, pi int) {
 	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 4, 0, 6).AlignItems(ui.Center).Children(func() {
 		sectionLabel(c, "Processes")
 		ui.Spacer(c)
-		if cmdButton(c, iconPlus, 11, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
+		if a.cmdButton(c, iconPlus, 11, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
 			a.switchProject(pi)
 			a.openProcessDialog(pi, nil)
 		}
@@ -318,11 +319,14 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	// open the tab.
 	linkClicked := false
 	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 6).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	bg := ui.Color{}
 	if selected {
-		row.Background(pal.RowSelected)
+		bg = pal.RowSelected
 	} else if row.Hovered() {
-		row.Background(pal.Hover)
+		bg = pal.Hover
 	}
+	row.Background(a.animColor(row, "bg", bg, motionFast))
+	a.transition(row, motionFold)
 	row.Children(func() {
 		a.processIcon(c, proc, 13)
 		// The name stays readable: its pills give way first, their text
@@ -379,14 +383,14 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			if active {
 				icon, label = iconX, "Stop"
 			}
-			if cmdButton(c, icon, 12, false).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
+			if a.transition(a.cmdButton(c, icon, 12, false), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
 				if active {
 					a.stopProcess(pi, proc.Name)
 				} else {
 					a.startProcess(pi, proc.Name)
 				}
 			}
-			if cmdButton(c, iconRotate, 12, false).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
+			if a.transition(a.cmdButton(c, iconRotate, 12, false), motionFade).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
 				a.restartProcess(pi, proc.Name)
 			}
 		}
@@ -553,7 +557,8 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	case row.Hovered():
 		bg = pal.Hover
 	}
-	row.Background(a.animColor(row, "bg", bg, 110*time.Millisecond))
+	row.Background(a.animColor(row, "bg", bg, motionFast))
+	a.transition(row, motionFold)
 	if selected {
 		chosen(row)
 	}
@@ -571,9 +576,7 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			chev := ui.Box(c.Key("kids")).Width(14).Height(20).AlignItems(ui.Center).Justify(ui.Center).Cursor(ui.CursorPointer)
 			chev.Children(func() {
 				i := ui.Icon(c, iconChevronDown).Size(12, 12).TextColor(pal.TextMuted)
-				if t.Collapsed {
-					i.Rotate(-90)
-				}
+				i.Rotate(a.animate(i, "turn", -90*b2f(t.Collapsed), motionFast))
 			})
 			if chev.Clicked() {
 				toggled = true
@@ -829,13 +832,13 @@ func (a *appState) renameSession(pi int, tabID, name string) {
 func (a *appState) sidebarFooter(c *ui.Context) {
 	waiting, working, done := a.statusCounts()
 	ui.Row(c).Height(44).Shrink(0).AlignItems(ui.Center).Padding(0, 6, 6, 8).Gap(4).Children(func() {
-		if cmdButton(c, iconSettings, 15, false).Tooltip("Settings (" + keyLabels("app.settings") + ")").Clicked() {
+		if a.cmdButton(c, iconSettings, 15, false).Tooltip("Settings (" + keyLabels("app.settings") + ")").Clicked() {
 			a.openSettings("")
 		}
-		if cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
+		if a.cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
 			a.openProjectDialog()
 		}
-		if cmdButton(c, iconSearch, 15, false).Tooltip("Command Palette (" + keyLabels("app.commandPalette") + ")").Clicked() {
+		if a.cmdButton(c, iconSearch, 15, false).Tooltip("Command Palette (" + keyLabels("app.commandPalette") + ")").Clicked() {
 			a.openOverlay(overlayCommandPalette)
 		}
 		ui.Spacer(c)
@@ -857,9 +860,10 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 			if attention {
 				fg, bg = pal.Attention, pal.AttentionSoft
 			}
+			a.transition(e, motionPop)
 			e.Background(bg).Children(func() {
 				a.statusIcon(c, st, 12)
-				ui.Text(c, strconv.Itoa(n)).FontSize(12).FontWeight(500).TextColor(fg).SingleLine()
+				a.swap(ui.Text(c, strconv.Itoa(n)).FontSize(12).FontWeight(500).TextColor(fg).SingleLine(), true)
 			})
 			if e.Clicked() {
 				next()

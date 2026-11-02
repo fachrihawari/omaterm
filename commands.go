@@ -317,6 +317,7 @@ func (a *appState) splitActivePaneAt(c *ui.Context, termID string, dir splitDir)
 	if id == "" {
 		return
 	}
+	a.arrived[id] = true
 	a.activePaneTermID = id
 	if dir == splitHorizontal {
 		c.Toast("Split down")

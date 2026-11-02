@@ -945,6 +945,7 @@ func TestInspectorNamesProcessOwners(t *testing.T) {
 // The inspector slides in and out, as the sidebar does: it popped. Part
 // way out, its tabs have moved right and are still there; then they go.
 func TestInspectorSlides(t *testing.T) {
+	withMotion(t)
 	a := newTestApp(t)
 	defer stopTermPanes(a)
 	a.setInspector(true)

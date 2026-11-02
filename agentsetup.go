@@ -42,10 +42,10 @@ func (a *appState) agentSetupBanner(c *ui.Context) {
 	name := agent.DisplayName(a.agentSetupOffer)
 	a.banner(c, "agent-setup-banner", iconBot, pal.Accent, false,
 		"Resume "+name+" in its own conversation after a restart: set up the agent integration.", func() {
-			if bannerButton(c, "Not Now", false) {
+			if a.bannerButton(c, "Not Now", false) {
 				a.answerAgentSetup()
 			}
-			if bannerButton(c, "Set Up", true) {
+			if a.bannerButton(c, "Set Up", true) {
 				offered := a.agentSetupOffer
 				a.answerAgentSetup()
 				a.setupAgents(c, offered)

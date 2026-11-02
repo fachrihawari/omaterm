@@ -219,14 +219,14 @@ func (a *appState) mergeAskBanner(c *ui.Context) {
 		msg += ": " + strings.TrimSuffix(ask.summary, ".")
 	}
 	a.banner(c, "merge-ask-banner", iconGitBranch, pal.Accent, false, msg, func() {
-		if bannerButton(c, "Show "+ask.name, false) {
+		if a.bannerButton(c, "Show "+ask.name, false) {
 			a.showSession(ask.session)
 		}
-		if bannerButton(c, "Decline", false) {
+		if a.bannerButton(c, "Decline", false) {
 			a.dropMergeAsk(ask)
 			ask.answer <- false
 		}
-		if bannerButton(c, "Merge", true) {
+		if a.bannerButton(c, "Merge", true) {
 			if a.atWork(&ask.w) {
 				return
 			}

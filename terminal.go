@@ -515,6 +515,7 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 				if b.Hovered() {
 					b.Background(pal.Hover)
 				}
+				a.press(a.fadeColors(b))
 				b.Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 						ui.Icon(c, iconFolderPlus).Width(14).Height(14).TextColor(pal.TextSoft)
@@ -529,6 +530,7 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 				if b2.Hovered() {
 					b2.Background(pal.Hover)
 				}
+				a.press(a.fadeColors(b2))
 				b2.Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 						ui.Icon(c, iconTerminal).Width(14).Height(14).TextColor(pal.TextSoft)
@@ -577,6 +579,7 @@ func (a *appState) projectStart(c *ui.Context, p *project) ui.Element {
 				if b.Hovered() {
 					b.Background(pal.Hover.Over(pal.Raised))
 				}
+				a.press(a.fadeColors(b))
 				b.Children(func() {
 					ui.Icon(c, icon).Size(15, 15).TextColor(pal.TextMuted)
 					ui.Column(c).Grow(1).MinWidth(0).Children(func() {

@@ -124,6 +124,7 @@ func (a *appState) dialogSized(c *ui.Context, w, h float32, fixed bool, body fun
 		if fixed {
 			panel.Height(h)
 		}
+		a.arriveDialog(c, backdrop, panel)
 		body()
 	})
 	if !open {
@@ -270,6 +271,7 @@ func (a *appState) openQuickSelection(items []service.FuzzyMatch) {
 // on the left keeps the row from repeating the path.
 func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selected bool) {
 	e := ui.Row(c).Key(path).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	a.fadeColors(e)
 	if !selected && e.Hovered() { // the list fills the chosen row
 		e.Background(pal.Hover)
 	}
@@ -463,6 +465,7 @@ func (a *appState) branchToCreate(items []service.FuzzyMatch) string {
 // createBranchRow offers to make the branch the query names.
 func (a *appState) createBranchRow(c *ui.Context, name string, selected bool) {
 	e := ui.Row(c).Key("create:"+name).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	a.fadeColors(e)
 	if !selected && e.Hovered() {
 		e.Background(pal.Hover)
 	}
@@ -539,6 +542,7 @@ func (a *appState) checkoutBranch(c *ui.Context, items []service.FuzzyMatch) {
 func (a *appState) branchRow(c *ui.Context, name string, selected bool) {
 	cur := name == a.currentBranch
 	e := ui.Row(c).Key(name).FillWidth().Height(30).Padding(0, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	a.fadeColors(e)
 	if !selected && e.Hovered() { // the list fills the chosen row
 		e.Background(pal.Hover)
 	}
@@ -869,6 +873,7 @@ func (a *appState) runPaletteSelection(c *ui.Context, cmds []paletteEntry) {
 func (a *appState) commandRow(c *ui.Context, e paletteEntry, selected bool) {
 	enabled := e.Enabled == nil || e.Enabled(a)
 	row := ui.Row(c).Key(e.ID).FillWidth().Height(34).Padding(0, 10).Gap(10).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	a.fadeColors(row)
 	if !selected && row.Hovered() { // the list fills the chosen row
 		row.Background(pal.Hover)
 	}
@@ -1078,6 +1083,7 @@ func (a *appState) searchResultsPane(c *ui.Context) bool {
 
 func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool) {
 	e := ui.Row(c).Key(m.Path+":"+itoa(m.Line)+":"+itoa(m.Start)).FillWidth().Padding(6, 10).Gap(8).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	a.fadeColors(e)
 	if !selected && e.Hovered() { // the list fills the chosen row
 		e.Background(pal.Hover)
 	}
@@ -1342,6 +1348,7 @@ func (a *appState) keymapRow(c *ui.Context, e keymapEntry, selected bool) {
 	enabled := e.Enabled == nil || e.Enabled(a)
 	row := ui.Row(c).Key(e.ID).FillWidth().Height(34).Padding(0, 10).Gap(10).
 		Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	a.fadeColors(row)
 	if !selected && row.Hovered() { // the list fills the chosen row
 		row.Background(pal.Hover)
 	}

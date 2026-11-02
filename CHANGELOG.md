@@ -3,6 +3,30 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.12.4
+
+### omaterm moves
+
+- **Everything you open, close or change now moves a little, quickly.**
+  Dialogs and the command palette drop in as the window dims; tabs and
+  sessions grow in and fold away, the others sliding to their places; a
+  split pane springs in where it lands; banners drop in. Nothing waits
+  on a motion: you can type and click straight away.
+- **A status changing catches your eye.** An agent's icon pops as it
+  goes from working to waiting or done; a progress ring sweeps; counts in
+  the sidebar, the status bar and a pane's Git chip roll to their new
+  numbers.
+- **The inspector and Settings follow you.** The inspector's underline
+  slides to the tab you chose, a staged file moves to the staged list,
+  folders' chevrons turn; in Settings, switches slide and a page rises as
+  it opens. A browser pane shows a thin line while a page loads.
+- **On your phone,** the session list and a terminal slide in from their
+  sides, the compose box and the key editor rise from the bottom, and
+  buttons and keys sink as you press them.
+- **Reduce Motion stills all of it,** whether you turn it on in
+  Settings → Appearance or in your desktop's settings, which omaterm now
+  follows too; on the phone, your phone's setting does.
+
 ## 0.12.3
 
 Agents reach for what omaterm gives them, and a few touches in the window.

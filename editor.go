@@ -175,7 +175,7 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				if doc.Preview {
 					label = "Source"
 				}
-				if cmdButton(c, iconImage, iconBtn, false).Tooltip(label).Clicked() {
+				if a.cmdButton(c, iconImage, iconBtn, false).Tooltip(label).Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}
@@ -185,12 +185,12 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				if doc.Preview {
 					label = "Source"
 				}
-				if cmdButton(c, iconFileText, iconBtn, false).
+				if a.cmdButton(c, iconFileText, iconBtn, false).
 					Tooltip(withKeys(label, "markdown.togglePreview")).Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}
-			if save := cmdButton(c, iconSave, iconBtn, false).
+			if save := a.cmdButton(c, iconSave, iconBtn, false).
 				Tooltip("Save (" + keyLabels("file.save") + ")"); save.Clicked() {
 				a.saveEditor(doc, c)
 			}
@@ -356,7 +356,7 @@ func (a *appState) imageView(c *ui.Context, doc *openFile) ui.Element {
 			headerTitle(c, iconImage, pal.Ok, pathBase(doc.Path), pathDir(doc.Path))
 			ui.Spacer(c)
 			if doc.State != nil {
-				if cmdButton(c, iconFileCode, iconBtn, false).Tooltip("Source").Clicked() {
+				if a.cmdButton(c, iconFileCode, iconBtn, false).Tooltip("Source").Clicked() {
 					doc.Preview = false
 				}
 			}

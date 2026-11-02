@@ -283,6 +283,9 @@ func (a *appState) browserCard(c *ui.Context, tab *topTab, id string, multi, foc
 			case !ref.Focused(c):
 				e.focused = false
 			}
+			if e.loading {
+				a.loadBar(c)
+			}
 			if e.err != "" {
 				a.browserError(c, e)
 			}
@@ -302,21 +305,21 @@ func (a *appState) browserBar(c *ui.Context, tab *topTab, id string, e *webEntry
 		a.activePaneTermID = id
 	}
 	h.Children(func() {
-		navButton(c, "back", iconChevronLeft, "Back", e.back, func() { e.view.Page().GoBack() })
-		navButton(c, "forward", iconChevronRight, "Forward", e.fwd, func() { e.view.Page().GoForward() })
+		a.navButton(c, "back", iconChevronLeft, "Back", e.back, func() { e.view.Page().GoBack() })
+		a.navButton(c, "forward", iconChevronRight, "Forward", e.fwd, func() { e.view.Page().GoForward() })
 		if e.loading {
-			navButton(c, "stop", iconX, "Stop", true, func() { e.view.Page().Stop(); e.loading = false })
+			a.navButton(c, "stop", iconX, "Stop", true, func() { e.view.Page().Stop(); e.loading = false })
 			c.After(500 * time.Millisecond) // a load's end may come late
 			e.syncNav()
 		} else {
-			navButton(c, "reload", iconRefresh, "Reload", e.view != nil && e.url != proto.BlankURL, func() {
+			a.navButton(c, "reload", iconRefresh, "Reload", e.view != nil && e.url != proto.BlankURL, func() {
 				e.view.Page().Reload()
 				e.loading = true
 			})
 		}
 		dragging = a.addressBar(c, tab, id, e, multi)
 		if e.url != proto.BlankURL {
-			navButton(c, "external", iconExternalLink, "Open in Default Browser", true, func() {
+			a.navButton(c, "external", iconExternalLink, "Open in Default Browser", true, func() {
 				// The system's opener: xdg-open is Linux's alone.
 				mygo.Shell.OpenExternal(e.url)
 			})
@@ -327,7 +330,7 @@ func (a *appState) browserBar(c *ui.Context, tab *topTab, id string, e *webEntry
 }
 
 // navButton is a toolbar's button, faint while it can do nothing.
-func navButton(c *ui.Context, key string, svg *ui.SVG, label string, enabled bool, fn func()) {
+func (a *appState) navButton(c *ui.Context, key string, svg *ui.SVG, label string, enabled bool, fn func()) {
 	b := ui.ButtonBase(c.Key(key)).Size(26, 24).Radius(6).Center().TextColor(pal.TextMuted).Label(label).Tooltip(label).Disabled(!enabled).Shrink(0)
 	switch {
 	case !enabled:
@@ -335,6 +338,7 @@ func navButton(c *ui.Context, key string, svg *ui.SVG, label string, enabled boo
 	case b.Hovered():
 		b.Background(pal.Hover).TextColor(pal.Text)
 	}
+	a.press(a.fadeColors(b))
 	b.Children(func() { ui.Icon(c, svg).Size(14, 14) })
 	if enabled && b.Clicked() {
 		fn()
@@ -360,6 +364,7 @@ func (a *appState) addressBar(c *ui.Context, tab *topTab, id string, e *webEntry
 				grip.Background(pal.Hover).Cursor(ui.CursorGrab)
 			}
 		}
+		a.fadeColors(grip)
 		grip.Children(func() { ui.Icon(c, iconGlobe).Size(13, 13) })
 		in = ui.TextInputBase(c.Key("in"), &e.address).Grow(1).MinWidth(0).FontSize(12.5).
 			Placeholder("Address or search").Label("Address")
@@ -369,7 +374,7 @@ func (a *appState) addressBar(c *ui.Context, tab *topTab, id string, e *webEntry
 	})
 	focused := in.Focused()
 	e.editing = focused
-	glow := a.animate(frame, "glow", b2f(focused), 120*time.Millisecond)
+	glow := a.animate(frame, "glow", b2f(focused), motionFast)
 	if glow > 0 {
 		frame.Shadow(0, 0, 0, 3*glow, pal.Accent.Alpha(0.3*glow))
 	}
@@ -402,10 +407,32 @@ func (a *appState) addressBar(c *ui.Context, tab *topTab, id string, e *webEntry
 	return dragging
 }
 
+// loadBar is a thin line over the page's top while it loads: a short
+// stroke sweeping across, or, still, the line alone.
+func (a *appState) loadBar(c *ui.Context) {
+	still := a.still()
+	bar := ui.Box(c.Key("loading")).Absolute().Top(0).Left(0).Right(0).Height(2).PassThrough()
+	a.transition(bar, motionFade)
+	bar.Draw(func(p *ui.Painter, r ui.Rect) {
+		p.Fill(r, pal.Accent.Alpha(0.18), 0)
+		if still {
+			return
+		}
+		const period = 1100 * time.Millisecond
+		t := float32(p.Now().UnixMilli()%period.Milliseconds()) / float32(period.Milliseconds())
+		t = ui.EaseInOut(t)
+		w := r.W * 0.3
+		x := r.X - w + (r.W+w)*t
+		p.Clip(r, 0, func() { p.Fill(ui.Rect{X: x, Y: r.Y, W: w, H: r.H}, pal.Accent, 1) })
+		p.AnimationFrame()
+	})
+}
+
 // browserError shows why the page failed to load, over its top.
 func (a *appState) browserError(c *ui.Context, e *webEntry) {
 	bar := ui.Row(c.Key("error")).Absolute().Top(8).Left(12).Right(12).Padding(8, 8, 8, 12).Gap(8).
 		AlignItems(ui.Center).Radius(10).Background(pal.Popover)
+	a.transition(bar, motionDrop)
 	floating(bar).Children(func() {
 		ui.Text(c, e.err).FontSize(12.5).TextColor(pal.Bad).Grow(1).MinWidth(0).Ellipsis("…").SingleLine()
 		retry := ui.ButtonBase(c.Key("retry")).Height(26).Padding(0, 10).Radius(7)
@@ -415,7 +442,7 @@ func (a *appState) browserError(c *ui.Context, e *webEntry) {
 		if retry.Clicked() {
 			e.load(e.url)
 		}
-		navButton(c, "dismiss", iconX, "Dismiss", true, func() { e.err = "" })
+		a.navButton(c, "dismiss", iconX, "Dismiss", true, func() { e.err = "" })
 	})
 }
 
@@ -426,6 +453,7 @@ func (a *appState) browserFind(c *ui.Context, e *webEntry) {
 	}
 	bar := ui.Row(c.Key("find")).Absolute().Top(8).Right(12).Height(34).Padding(0, 4, 0, 12).Gap(4).
 		AlignItems(ui.Center).Radius(10).Background(pal.Popover).Label("Find")
+	a.transition(bar, motionDrop)
 	floating(bar).Children(func() {
 		ui.Icon(c, iconSearch).Size(13, 13).TextColor(pal.TextMuted).Shrink(0)
 		in := ui.TextInputBase(c.Key("q"), &e.query).Width(180).FontSize(13).Placeholder("Find in page").AutoFocus()
@@ -441,9 +469,9 @@ func (a *appState) browserFind(c *ui.Context, e *webEntry) {
 			count = itoa(e.found.Active) + " of " + itoa(e.found.Matches)
 		}
 		ui.Text(c, count).FontSize(12).TextColor(pal.TextFaint).SingleLine().MinWidth(56).TextAlign(ui.End).Margin(0, 4, 0, 0)
-		navButton(c, "previous", iconArrowUp, "Previous", true, func() { a.findInPage(e, true, true) })
-		navButton(c, "next", iconArrowDown, "Next", true, func() { a.findInPage(e, true, false) })
-		navButton(c, "close", iconX, "Close", true, func() { e.finding = false; e.query = ""; a.findInPage(e, false, false) })
+		a.navButton(c, "previous", iconArrowUp, "Previous", true, func() { a.findInPage(e, true, true) })
+		a.navButton(c, "next", iconArrowDown, "Next", true, func() { a.findInPage(e, true, false) })
+		a.navButton(c, "close", iconX, "Close", true, func() { e.finding = false; e.query = ""; a.findInPage(e, false, false) })
 	})
 	if bar.Shortcut(0, ui.KeyEscape) {
 		e.finding, e.query = false, ""

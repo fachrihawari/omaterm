@@ -89,7 +89,7 @@ func (a *appState) reviewDialog(c *ui.Context) {
 	}
 	start := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
-		dialogFrame(c, backdrop, panel)
+		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, "Ask for Review", false)
 		ui.Text(c, fmt.Sprintf("Another agent reads what %s changed, changing nothing itself, and sends it what to fix, "+
 			"for up to %d rounds.", st.name, reviewRounds)).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
@@ -104,10 +104,10 @@ func (a *appState) reviewDialog(c *ui.Context) {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if dialogButton(c, "Cancel", false, false) {
+			if a.dialogButton(c, "Cancel", false, false) {
 				st.open = false
 			}
-			if dialogButton(c, "Start Review", true, false) {
+			if a.dialogButton(c, "Start Review", true, false) {
 				start = true
 			}
 		})

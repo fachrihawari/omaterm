@@ -6,10 +6,13 @@ import (
 )
 
 // TestMain pins what tests see of the machine: no Omarchy theme, so every
-// test and screenshot paints with the built-in dark theme, and an empty
+// test and screenshot paints with the built-in dark theme, an empty
 // config directory, so the developer's projects, settings and window
-// layout never leak into a test.
+// layout never leak into a test, and no motion, so a picture or position
+// doesn't depend on how far a test advanced the clock (withMotion turns
+// it on).
 func TestMain(m *testing.M) {
+	motionOff = true
 	os.Setenv("OMATERM_OMARCHY_DIR", os.DevNull+"-omarchy")
 	cfg, err := os.MkdirTemp("", "omaterm-test-config-")
 	if err != nil {
@@ -20,6 +23,14 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(cfg)
 	os.Exit(code)
+}
+
+// withMotion lets t's app move, as a user's does. Not for parallel tests:
+// the others would move too.
+func withMotion(t *testing.T) {
+	t.Helper()
+	motionOff = false
+	t.Cleanup(func() { motionOff = true })
 }
 
 // setConfigHome gives a test its own config directory dir. macOS ignores

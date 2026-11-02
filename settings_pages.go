@@ -249,7 +249,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 			if runtime.GOOS == "linux" {
 				on := d.service
 				a.settingDefRow(c, "loginStart", func() {
-					if settingsSwitch(c, "loginStart", &on, d.busy == "service") {
+					if a.settingsSwitch(c, "loginStart", &on, d.busy == "service") {
 						a.askService(on)
 					}
 				})
@@ -273,13 +273,13 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 				settingsPill(c, "Installed", pillOk)
 				// Windows keeps omaterm.exe for the app's own panes and hooks,
 				// so there is nothing to remove.
-				if runtime.GOOS != "windows" && settingsButton(c, "Remove", false, false, false) {
+				if runtime.GOOS != "windows" && a.settingsButton(c, "Remove", false, false, false) {
 					if err := cli.UninstallCLI(); err != nil {
 						toast(c, "Could not remove: "+err.Error())
 					}
 					a.settingsUI.dataAt = time.Time{}
 				}
-			} else if settingsButton(c, "Install", true, false, false) {
+			} else if a.settingsButton(c, "Install", true, false, false) {
 				if where, err := cli.InstallCLI(); err != nil {
 					toast(c, "Could not install: "+err.Error())
 				} else {
@@ -293,7 +293,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 			sub = plural(d.scrollCount, "session") + ", " + service.FormatBytes(uint64(d.scrollBytes))
 		}
 		a.settingsRow(c, "Saved scrollback", settingsRowOpts{id: "scrollback", sub: sub}, func() {
-			if settingsButton(c, "Clear…", false, false, d.scrollCount == 0) {
+			if a.settingsButton(c, "Clear…", false, false, d.scrollCount == 0) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear saved scrollback?",
 					danger:  true,
@@ -376,12 +376,12 @@ func (a *appState) settingsAppearance(c *ui.Context) {
 	})
 	a.settingsGroup(c, "window", "Window", "", func() {
 		a.settingDefRow(c, "density", func() {
-			if settingsSegmented(c, "density", &a.settings.Density, []string{"Comfortable", "Compact"}) {
+			if a.settingsSegmented(c, "density", &a.settings.Density, []string{"Comfortable", "Compact"}) {
 				a.applySettings()
 			}
 		})
 		a.settingDefRow(c, "background", func() {
-			if settingsSegmented(c, "background", &a.settings.Background, []string{"Wash", "Plain"}) {
+			if a.settingsSegmented(c, "background", &a.settings.Background, []string{"Wash", "Plain"}) {
 				a.applySettings()
 			}
 		})
@@ -517,7 +517,7 @@ func (a *appState) settingsTerminal(c *ui.Context) {
 	})
 	a.settingsGroup(c, "cursor", "Cursor", "", func() {
 		a.settingDefRow(c, "cursor", func() {
-			if settingsSegmented(c, "cursor", &t.Cursor, []string{"Block", "Bar", "Underline"}) {
+			if a.settingsSegmented(c, "cursor", &t.Cursor, []string{"Block", "Bar", "Underline"}) {
 				a.applySettings()
 			}
 		})
@@ -627,7 +627,7 @@ func (a *appState) terminalPreview(c *ui.Context) {
 			if t.Cursor == "underline" {
 				cur.AlignSelf(ui.End)
 			}
-			if t.CursorBlink && !a.settings.ReduceMotion {
+			if t.CursorBlink && !a.still() {
 				if c.Now().UnixMilli()/530%2 == 1 {
 					cur.Opacity(0)
 				}
@@ -660,7 +660,7 @@ func (a *appState) settingsEditor(c *ui.Context) {
 			layout = "unified"
 		}
 		a.settingDefRow(c, "diffLayout", func() {
-			if settingsSegmented(c, "diffLayout", &layout, []string{"Split", "Unified"}) {
+			if a.settingsSegmented(c, "diffLayout", &layout, []string{"Split", "Unified"}) {
 				a.diffSplit = layout == "split"
 				a.applySettings()
 			}
@@ -680,7 +680,7 @@ func (a *appState) settingsNotifications(c *ui.Context) {
 		a.settingSwitchRow(c, "notify-sound", false)
 		a.settingSwitchRow(c, "notify-programs", false)
 		a.settingsRow(c, "Try it", settingsRowOpts{id: "notify-test"}, func() {
-			if settingsButton(c, "Send Test Notification", false, false, false) {
+			if a.settingsButton(c, "Send Test Notification", false, false, false) {
 				if a.win == nil || !mygo.NotificationsSupported() {
 					toast(c, "This desktop shows no notifications")
 				} else {
@@ -767,7 +767,7 @@ func (a *appState) settingsAgent(c *ui.Context) {
 	})
 	settingsActions(c, func() {
 		installed := it.Installed()
-		if installed && settingsButton(c, "Remove Integration", false, true, false) {
+		if installed && a.settingsButton(c, "Remove Integration", false, true, false) {
 			a.settingsUI.sheet = &settingsSheet{
 				title:   "Remove the " + agent.DisplayName(name) + " integration?",
 				danger:  true,
@@ -786,7 +786,7 @@ func (a *appState) settingsAgent(c *ui.Context) {
 		if installed && !it.Current() {
 			label = "Update"
 		}
-		if (!installed || label == "Update") && settingsButton(c, label, true, false, false) {
+		if (!installed || label == "Update") && a.settingsButton(c, label, true, false, false) {
 			if err := cli.SetupAgent(name); err != nil {
 				toast(c, "Setup failed: "+err.Error())
 			} else {
@@ -822,7 +822,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 	a.settingsGroup(c, "web", "", foot, func() {
 		on := a.webOn
 		a.settingDefRow(c, "web", func() {
-			if settingsSwitch(c, "web", &on, false) {
+			if a.settingsSwitch(c, "web", &on, false) {
 				a.setWeb(c, on)
 				a.settingsUI.dataAt = time.Time{}
 			}
@@ -838,7 +838,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				a.settingsUI.dataAt = time.Time{}
 			}
 			if d.webTunnelURL != "" {
-				if settingsButton(c, "Copy", false, false, false) {
+				if a.settingsButton(c, "Copy", false, false, false) {
 					mygo.Clipboard.WriteText(d.webTunnelURL)
 					toast(c, "Copied the tunnel's link")
 				}
@@ -846,7 +846,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 		})
 		net := a.webOn && a.webNetwork
 		a.settingsRow(c, "On your network", settingsRowOpts{id: "webNetwork", sub: "Listens on every address, not only this computer’s."}, func() {
-			if settingsSwitch(c, "webNetwork", &net, !a.webOn) {
+			if a.settingsSwitch(c, "webNetwork", &net, !a.webOn) {
 				a.setWebNetwork(c, net)
 				a.settingsUI.dataAt = time.Time{}
 			}
@@ -861,7 +861,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				link = "…"
 			}
 			ui.Text(c, link).Font(monoFont).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").MaxWidth(240)
-			if settingsButton(c, "Copy", false, false, d.webLink == "") {
+			if a.settingsButton(c, "Copy", false, false, d.webLink == "") {
 				mygo.Clipboard.WriteText(d.webLink)
 				toast(c, "Copied the link")
 			}
@@ -883,7 +883,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				name = "A browser"
 			}
 			a.settingsRow(c, name, settingsRowOpts{id: "dev-" + dev.ID, sub: "Last seen " + seen + " · signed in until " + until}, func() {
-				if settingsButton(c, "Revoke##"+dev.ID, false, false, false) {
+				if a.settingsButton(c, "Revoke##"+dev.ID, false, false, false) {
 					a.revokeSheet(dev.ID, name)
 				}
 			})
@@ -895,7 +895,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 	})
 	if len(d.devices) > 1 {
 		settingsActions(c, func() {
-			if settingsButton(c, "Revoke All…", false, true, false) {
+			if a.settingsButton(c, "Revoke All…", false, true, false) {
 				a.revokeSheet("all", "every device")
 			}
 		})
@@ -991,7 +991,7 @@ func (a *appState) settingsPair(c *ui.Context) {
 	if !a.webOn {
 		a.settingsGroup(c, "pair-off", "", "", func() {
 			a.settingsRow(c, "Web access is off", settingsRowOpts{sub: "Turn it on to pair a device."}, func() {
-				if settingsButton(c, "Turn On", true, false, false) {
+				if a.settingsButton(c, "Turn On", true, false, false) {
 					a.setWeb(c, true)
 				}
 			})
@@ -1022,7 +1022,7 @@ func (a *appState) settingsPair(c *ui.Context) {
 				ui.Text(c, p.code).FontSize(20).FontWeight(600).Font(monoFont).TextColor(pal.TextStrong)
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, p.link).Font(monoFont).FontSize(11.5).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").MaxWidth(360)
-					if settingsButton(c, "Copy", false, false, false) {
+					if a.settingsButton(c, "Copy", false, false, false) {
 						mygo.Clipboard.WriteText(p.link)
 						toast(c, "Copied the link")
 					}
@@ -1031,7 +1031,7 @@ func (a *appState) settingsPair(c *ui.Context) {
 		})
 	})
 	settingsActions(c, func() {
-		if settingsButton(c, "New Code", false, false, !p.ready) {
+		if a.settingsButton(c, "New Code", false, false, !p.ready) {
 			d.pair = a.startPairing()
 		}
 	})
@@ -1085,7 +1085,7 @@ func (a *appState) settingsBrowser(c *ui.Context) {
 			})
 		}
 		a.settingsRow(c, "Browsing data", settingsRowOpts{id: "clearData", sub: "Cookies, storage and cache of every browser pane."}, func() {
-			if settingsButton(c, "Clear…", false, false, false) {
+			if a.settingsButton(c, "Clear…", false, false, false) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear browsing data?",
 					danger:  true,
@@ -1170,7 +1170,7 @@ func (a *appState) settingsAbout(c *ui.Context) {
 			}
 		}
 		a.settingsRow(c, "omaterm "+appVersion(), settingsRowOpts{id: "updates", sub: sub}, func() {
-			if settingsButton(c, "Check for Updates", false, false, !updatesReady || !mygo.Updater.Enabled()) {
+			if a.settingsButton(c, "Check for Updates", false, false, !updatesReady || !mygo.Updater.Enabled()) {
 				// The updater's window opens over the main one: Settings,
 				// which stays above that, goes first.
 				a.closeSettings()
@@ -1182,13 +1182,13 @@ func (a *appState) settingsAbout(c *ui.Context) {
 		a.settingsGroup(c, "auto", "", "", func() {
 			check := updater.AutomaticChecks()
 			a.settingsRow(c, "Check for updates automatically", settingsRowOpts{id: "autoCheck"}, func() {
-				if settingsSwitch(c, "autoCheck", &check, false) {
+				if a.settingsSwitch(c, "autoCheck", &check, false) {
 					updater.SetAutomaticChecks(check)
 				}
 			})
 			dl := updater.AutomaticDownloads()
 			a.settingsRow(c, "Download updates automatically", settingsRowOpts{id: "autoDownload"}, func() {
-				if settingsSwitch(c, "autoDownload", &dl, !check) {
+				if a.settingsSwitch(c, "autoDownload", &dl, !check) {
 					updater.SetAutomaticDownloads(dl)
 				}
 			})
@@ -1212,7 +1212,7 @@ func (a *appState) settingsAbout(c *ui.Context) {
 			f := f
 			a.settingsRow(c, f[0], settingsRowOpts{id: "file-" + f[0], sub: cli.ShortPath(f[1]), mono: true}, func() {
 				_, err := os.Stat(f[1])
-				if settingsButton(c, "Reveal##"+f[0], false, false, err != nil) && a.win != nil {
+				if a.settingsButton(c, "Reveal##"+f[0], false, false, err != nil) && a.win != nil {
 					mygo.Shell.ShowItemInFolder(f[1])
 				}
 			})

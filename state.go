@@ -401,6 +401,8 @@ type appState struct {
 	previewKey   string
 	previewSince time.Time
 	arrived      map[string]bool
+	// fading are the panes fading in as they show anew.
+	fading map[string]bool
 
 	// changes is the Changes panel's state; snaps the turn snapshots
 	// being taken.
@@ -427,10 +429,18 @@ type appState struct {
 	// settings are the user's preferences (settings.json); themeMode is
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
 	// last loaded, themeWatchStop ends the theme watch.
-	settings     Settings
-	settingsUI   settingsUI
-	settingsPage string
-	settingsWin  *mygo.Window
+	settings Settings
+	// iconPops is what popOnChange keeps of the status icons.
+	iconPops map[uint64]iconPop
+	// osStill is the desktop's Reduce Motion, as the last frame read it.
+	osStill bool
+	// mainDialogs and settingsDialogs are the dialogs each window shows,
+	// and dialogs those of the window building its frame.
+	mainDialogs, settingsDialogs shown
+	dialogs                      *shown
+	settingsUI                   settingsUI
+	settingsPage                 string
+	settingsWin                  *mygo.Window
 	// termMade is termBehavior as the open terminals were made.
 	termMade       termBehavior
 	themeMode      string
@@ -584,6 +594,7 @@ func newApp() *appState {
 		hookChecked:      map[string]bool{},
 		git:              newGitWatch(),
 		arrived:          map[string]bool{},
+		fading:           map[string]bool{},
 		notified:         map[string]time.Time{},
 		ws:               map[string]*projectWS{},
 		saved:            map[string][]model.Session{},
