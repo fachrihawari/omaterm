@@ -87,6 +87,11 @@ func TestSidebarAddMenu(t *testing.T) {
 	a.projects = append(a.projects, project{ID: "empty-project", Name: "quiet", Path: t.TempDir()})
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
+	// The + is the header's last button: Open Project is in its menu, so
+	// no folder button follows it.
+	if plus, ok := tr.Find("New"); !ok || a.sidebarWidth()-(plus.X+plus.W) > 16 {
+		t.Fatalf("something follows the header's +: found=%v rect=%+v width=%v", ok, plus, a.sidebarWidth())
+	}
 	if err := tr.Click("New"); err != nil {
 		t.Fatal(err)
 	}

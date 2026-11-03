@@ -63,6 +63,9 @@ var iconGlobeLockSVG []byte
 //go:embed icons/info.svg
 var iconInfoSVG []byte
 
+//go:embed icons/link.svg
+var iconLinkSVG []byte
+
 //go:embed icons/minus.svg
 var iconMinusSVG []byte
 
@@ -87,6 +90,9 @@ var iconRadioSVG []byte
 //go:embed icons/refresh-cw.svg
 var iconRefreshSVG []byte
 
+//go:embed icons/play.svg
+var iconPlaySVG []byte
+
 //go:embed icons/rotate-cw.svg
 var iconRotateSVG []byte
 
@@ -104,6 +110,9 @@ var iconTrashSVG []byte
 
 //go:embed icons/undo-2.svg
 var iconUndoSVG []byte
+
+//go:embed icons/square.svg
+var iconSquareSVG []byte
 
 //go:embed icons/x.svg
 var iconXSVG []byte
@@ -176,17 +185,20 @@ var (
 	iconGlobe          = ui.MustParseSVG(iconGlobeSVG)
 	iconGlobeLock      = ui.MustParseSVG(iconGlobeLockSVG)
 	iconInfo           = ui.MustParseSVG(iconInfoSVG)
+	iconLink           = ui.MustParseSVG(iconLinkSVG)
 	iconMinus          = ui.MustParseSVG(iconMinusSVG)
 	iconOpenInNew      = ui.MustParseSVG(iconOpenInNewSVG)
 	iconPanelLeft      = ui.MustParseSVG(iconPanelLeftSVG)
 	iconPanelLeftClose = ui.MustParseSVG(iconPanelLeftCloseSVG)
 	iconPanelRight     = ui.MustParseSVG(iconPanelRightSVG)
+	iconPlay           = ui.MustParseSVG(iconPlaySVG)
 	iconPlus           = ui.MustParseSVG(iconPlusSVG)
 	iconRadio          = ui.MustParseSVG(iconRadioSVG)
 	iconRefresh        = ui.MustParseSVG(iconRefreshSVG)
 	iconRotate         = ui.MustParseSVG(iconRotateSVG)
 	iconRows2          = ui.MustParseSVG(iconRows2SVG)
 	iconSearch         = ui.MustParseSVG(iconSearchSVG)
+	iconSquare         = ui.MustParseSVG(iconSquareSVG)
 	iconTerminal       = ui.MustParseSVG(iconTerminalSVG)
 	iconTrash          = ui.MustParseSVG(iconTrashSVG)
 	iconUndo           = ui.MustParseSVG(iconUndoSVG)
