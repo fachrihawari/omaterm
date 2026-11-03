@@ -194,7 +194,8 @@ func (a *appState) voiceEngineRow(c *ui.Context) {
 	case st.Engine != "":
 		sub = "whisper.cpp " + voice.EngineVersion + ", downloaded"
 	case built && e.Published():
-		sub = "whisper.cpp’s whisper-server, about " + service.FormatBytes(uint64(e.Size)) + "."
+		// To the nearest MB: FormatBytes cuts 1.9 MB down to 1.
+		sub = "whisper.cpp’s whisper-server, about " + service.FormatBytes(uint64((e.Size+1<<19)>>20<<20)) + "."
 	default:
 		sub = "No download for this computer yet: install whisper.cpp so that whisper-server is on your PATH."
 	}
