@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -340,5 +341,75 @@ func TestLocaleLanguage(t *testing.T) {
 	}
 	if DefaultLanguage == "auto" || !KnownLanguage(DefaultLanguage) {
 		t.Errorf("DefaultLanguage %q", DefaultLanguage)
+	}
+}
+
+func TestLanguageSets(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+		name string
+	}{
+		{"id", []string{"id"}, "Indonesian"},
+		{"id,en", []string{"id", "en"}, "Indonesian or English"},
+		{" en , id ,en", []string{"en", "id"}, "English or Indonesian"},
+		{"id,en,jw", []string{"id", "en", "jw"}, "Indonesian, English or Javanese"},
+		{"auto", nil, "any language"},
+		{"id,auto", nil, "any language"},
+		{"id,xx", nil, "any language"},
+		{"", nil, "any language"},
+	} {
+		if got := ParseLanguages(tc.in); !slices.Equal(got, tc.want) {
+			t.Errorf("ParseLanguages(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if got := LanguageName(tc.in); got != tc.name {
+			t.Errorf("LanguageName(%q) = %q, want %q", tc.in, got, tc.name)
+		}
+	}
+	if !ValidLanguage("auto") || !ValidLanguage("id,en") || ValidLanguage("id,xx") || ValidLanguage("") {
+		t.Fatal("ValidLanguage")
+	}
+	// A set is offered to the phone as a choice of its own, first.
+	dir := t.TempDir()
+	st := Check(dir, Settings{Enabled: true, Model: "tiny", Language: "id,en"})
+	if st.Language != "id,en" || st.Languages[0].Code != "id,en" || st.Languages[0].Name != "Indonesian or English" {
+		t.Fatalf("set: %+v", st.Languages[:2])
+	}
+}
+
+// inferenceAmong takes whisper's guess when it is one of the languages,
+// in one pass; else it writes it down again in the likeliest of them.
+func TestInferenceAmong(t *testing.T) {
+	var asked []string
+	probs := map[string]float64{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lang, format := r.FormValue("language"), r.FormValue("response_format")
+		asked = append(asked, lang+"/"+format)
+		ans := map[string]any{"text": " in " + lang}
+		if format == "verbose_json" {
+			ans["language_probabilities"] = probs
+		}
+		json.NewEncoder(w).Encode(ans)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	for _, tc := range []struct {
+		probs map[string]float64
+		text  string
+		asked []string
+	}{
+		// Guessed Indonesian: one pass.
+		{map[string]float64{"id": 0.7, "en": 0.2, "ms": 0.1}, "in auto", []string{"auto/verbose_json"}},
+		// Heard Russian; English is likelier than Indonesian.
+		{map[string]float64{"ru": 0.5, "en": 0.3, "id": 0.1}, "in en", []string{"auto/verbose_json", "en/json"}},
+		// Neither scored: the first of them.
+		{map[string]float64{"zh": 0.9}, "in id", []string{"auto/verbose_json", "id/json"}},
+		{nil, "in id", []string{"auto/verbose_json", "id/json"}},
+	} {
+		asked, probs = nil, tc.probs
+		text, err := inferenceAmong(context.Background(), addr, wav(10, SampleRate, 1), []string{"id", "en"})
+		if err != nil || text != tc.text || !slices.Equal(asked, tc.asked) {
+			t.Errorf("%v: %q %v, asked %q; want %q, %q", tc.probs, text, err, asked, tc.text, tc.asked)
+		}
 	}
 }

@@ -90,7 +90,7 @@ func (d *Daemon) transcribeCall(ctx context.Context, raw json.RawMessage) (any, 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, proto.Errorf(proto.CodeUsage, "bad recording")
 	}
-	if p.Lang != "" && !voice.KnownLanguage(p.Lang) {
+	if p.Lang != "" && !voice.ValidLanguage(p.Lang) {
 		return nil, proto.Errorf(proto.CodeUsage, "unknown language "+p.Lang)
 	}
 	if _, err := voice.CheckWAV(p.WAV); err != nil {

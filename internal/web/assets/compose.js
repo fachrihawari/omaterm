@@ -173,7 +173,7 @@ export function mountCompose(el, options = {}) {
     if (!langs.some((l) => l.code === want)) want = voice.language || "auto";
     langPick.replaceChildren(...langs.map((l) => new Option(l.name, l.code, false, l.code === want)));
     langPick.value = want;
-    langCode.textContent = want === "auto" ? "Auto" : want.toUpperCase();
+    langCode.textContent = langTag(want);
   }
 
   function showMic() {
@@ -321,7 +321,7 @@ export function mountCompose(el, options = {}) {
   });
   on(langPick, "change", () => {
     store(LANG_STORE, langPick.value);
-    langCode.textContent = langPick.value === "auto" ? "Auto" : langPick.value.toUpperCase();
+    langCode.textContent = langTag(langPick.value);
   });
   on(closeButton, "click", close);
   on(backdrop, "click", close);
@@ -351,4 +351,10 @@ export function mountCompose(el, options = {}) {
       root.remove();
     },
   };
+}
+
+// langTag is a language setting as the chip shows it: ID, ID+EN (one of
+// two, which whisper tells), or Auto.
+function langTag(code) {
+  return code === "auto" ? "Auto" : code.toUpperCase().replaceAll(",", "+");
 }

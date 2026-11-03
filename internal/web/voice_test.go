@@ -129,6 +129,9 @@ func TestVoiceTranscribes(t *testing.T) {
 	if code, body := f.postVoice(t, c, "?lang=en", wav(), f.base); code != 200 || !strings.Contains(body, "halo dari en") {
 		t.Fatalf("POST in English: %d %s", code, body)
 	}
+	if code, body := f.postVoice(t, c, "?lang=id%2Cen", wav(), f.base); code != 200 || !strings.Contains(body, "halo dari id,en") {
+		t.Fatalf("POST in Indonesian or English: %d %s", code, body)
+	}
 
 	calls := fv.calls.Load()
 	if code, _ := f.postVoice(t, c, "", wav(), "https://evil.example"); code != http.StatusForbidden {
@@ -145,6 +148,9 @@ func TestVoiceTranscribes(t *testing.T) {
 	}
 	if code, _ := f.postVoice(t, c, "?lang=klingon", wav(), f.base); code != http.StatusBadRequest {
 		t.Fatalf("unknown language: %d", code)
+	}
+	if code, _ := f.postVoice(t, c, "?lang=id%2Cklingon", wav(), f.base); code != http.StatusBadRequest {
+		t.Fatalf("a set with an unknown language: %d", code)
 	}
 	if n := fv.calls.Load(); n != calls {
 		t.Fatalf("whisper was asked for %d refused recordings", n-calls)

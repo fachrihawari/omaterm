@@ -159,16 +159,17 @@ func (a *appState) settingsVoice(c *ui.Context) {
 			}
 		})
 		a.settingsGroup(c, "voiceLanguage", "", "", func() {
-			lang := d.status.Language
-			opts := make([][2]string, len(voice.Languages))
-			for i, l := range voice.Languages {
-				opts[i] = [2]string{l.Code, l.Name}
-			}
-			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "The language you speak, here and on the phone (whose chip can switch it). Detect Each Time can hear another one."}, func() {
-				if settingsPopup(c, "voiceLanguage", &lang, opts) {
-					v.Language = lang
-					a.voiceChanged()
-				}
+			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "What you speak, here and on the phone: tick two, as Indonesian and English, for it to tell which. Detect Each Time can hear another one."}, func() {
+				// A menu, not a popup: it takes several languages.
+				name := voice.LanguageName(d.status.Language)
+				b := ui.ButtonBase(c.Key("voiceLanguage")).Height(26).MaxWidth(260).Shrink(1).MinWidth(0).
+					Padding(0, 8, 0, 10).Gap(6).Radius(6).AlignItems(ui.Center).Label("Language").Tooltip(name)
+				face(b, pal.Raised).Border(1, pal.BorderStrong)
+				b.Children(func() {
+					ui.Text(c, name).FontSize(12).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+					ui.Icon(c, iconChevronsUpDown).Size(12, 12).TextColor(pal.TextFaint).Shrink(0)
+				})
+				b.Menu(func(m *ui.Menu) { a.voiceLanguageMenu(m) })
 			})
 		})
 	}

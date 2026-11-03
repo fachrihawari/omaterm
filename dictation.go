@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -174,7 +175,7 @@ func (a *appState) stopDictation() {
 	ctx, cancel := context.WithCancel(context.Background())
 	d.cancel = cancel
 	lang := a.settings.Voice.Language
-	if !voice.KnownLanguage(lang) {
+	if !voice.ValidLanguage(lang) {
 		lang = ""
 	}
 	go func() {
@@ -300,7 +301,7 @@ func (a *appState) micButton(c *ui.Context, pane string) {
 		return
 	}
 	b := a.cmdButton(c, iconMic, 13, false).Label("Dictate").
-		Tooltip(withKeys("Dictate in "+languageName(a.settings.Voice.Language), "voice.dictate") + " · right-click for the language")
+		Tooltip(withKeys("Dictate in "+voice.LanguageName(a.settings.Voice.Language), "voice.dictate") + " · right-click for the language")
 	// The language is a right-click away: dictating in another one than
 	// it listens for comes out garbled, or in a third.
 	b.ContextMenu(func(m *ui.Menu) { a.voiceLanguageMenu(m) })
@@ -314,14 +315,25 @@ func (a *appState) micButton(c *ui.Context, pane string) {
 }
 
 // voiceLanguageMenu picks what voice input listens for, here and on the
-// phone: the languages most asked for, the rest in a submenu, then
-// whisper guessing.
+// phone: one language or several, as Indonesian and English, for whisper
+// to tell which; the languages most asked for, the rest in a submenu,
+// then whisper guessing among all.
 func (a *appState) voiceLanguageMenu(m *ui.Menu) {
-	cur := a.settings.Voice.Language
+	cur := voice.ParseLanguages(a.settings.Voice.Language)
+	set := func(codes []string) {
+		a.settings.Voice.Language = strings.Join(codes, ",")
+		a.voiceChanged()
+	}
 	item := func(m *ui.Menu, l voice.Language) {
-		if m.Item(l.Name).Checked(l.Code == cur).Chosen() {
-			a.settings.Voice.Language = l.Code
-			a.voiceChanged()
+		on := slices.Contains(cur, l.Code)
+		if m.Item(l.Name).Checked(on).Chosen() {
+			switch {
+			case !on:
+				set(append(slices.Clone(cur), l.Code))
+			case len(cur) > 1:
+				// The last one stays: it listens for something.
+				set(slices.DeleteFunc(slices.Clone(cur), func(c string) bool { return c == l.Code }))
+			}
 		}
 	}
 	const common = 5 // Indonesian, English, Javanese, Sundanese, Malay
@@ -336,33 +348,20 @@ func (a *appState) voiceLanguageMenu(m *ui.Menu) {
 		}
 	})
 	m.Separator()
-	for _, l := range voice.Languages {
-		if l.Code == "auto" {
-			item(m, l)
-		}
+	if m.Item("Detect Each Time").Checked(cur == nil).Chosen() {
+		a.settings.Voice.Language = "auto"
+		a.voiceChanged()
 	}
 }
 
-// languageName names a language code for a tooltip.
-func languageName(code string) string {
-	for _, l := range voice.Languages {
-		if l.Code == code {
-			if code == "auto" {
-				return "any language"
-			}
-			return l.Name
-		}
+// languageTag is a language setting as the chip shows it: ID, ID+EN, or
+// Auto.
+func languageTag(s string) string {
+	if !voice.ValidLanguage(s) {
+		s = voice.DefaultLanguage
 	}
-	return languageName(voice.DefaultLanguage)
-}
-
-// languageTag is a language code as the chip shows it: ID, EN, or Auto.
-func languageTag(code string) string {
-	if !voice.KnownLanguage(code) {
-		code = voice.DefaultLanguage
-	}
-	if code == "auto" {
+	if s == "auto" {
 		return "Auto"
 	}
-	return strings.ToUpper(code)
+	return strings.ToUpper(strings.Join(voice.ParseLanguages(s), "+"))
 }

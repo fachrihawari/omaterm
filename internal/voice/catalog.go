@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -20,9 +21,11 @@ type Settings struct {
 	Enabled bool `json:"enabled"`
 	// Model is the name of the model in use, of Models.
 	Model string `json:"model"`
-	// Language is what it listens for: a code of Languages. One language,
-	// not "auto": whisper guessing it again each recording, a small model
-	// on a short one hears Russian or Chinese in Indonesian.
+	// Language is what it listens for: a code of Languages, or several
+	// joined by commas ("id,en"), whisper telling which of them each
+	// recording is in. Not "auto", by default: whisper guessing among
+	// all, a small model on a short recording hears Russian or Chinese
+	// in Indonesian.
 	Language string `json:"language"`
 }
 
@@ -165,6 +168,50 @@ var Languages = []Language{
 	{"pl", "Polish"}, {"pt", "Portuguese"}, {"ru", "Russian"}, {"es", "Spanish"}, {"th", "Thai"},
 	{"tr", "Turkish"}, {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
 	{"auto", "Detect Each Time"},
+}
+
+// ParseLanguages is the languages a setting names: one code, or several
+// joined by commas ("id,en") for whisper to tell between, in the order
+// given, each once. It is nil for "auto", or for a code it doesn't know.
+func ParseLanguages(s string) []string {
+	var codes []string
+	for _, code := range strings.Split(s, ",") {
+		code = strings.TrimSpace(code)
+		if code == "auto" || !KnownLanguage(code) {
+			return nil
+		}
+		if !slices.Contains(codes, code) {
+			codes = append(codes, code)
+		}
+	}
+	return codes
+}
+
+// ValidLanguage tells a language setting voice input takes: "auto", or
+// codes of Languages, one or several.
+func ValidLanguage(s string) bool {
+	return s == "auto" || ParseLanguages(s) != nil
+}
+
+// LanguageName names a language setting: "Indonesian or English", or
+// "any language" for "auto".
+func LanguageName(s string) string {
+	codes := ParseLanguages(s)
+	if codes == nil {
+		return "any language"
+	}
+	names := make([]string, len(codes))
+	for i, code := range codes {
+		for _, l := range Languages {
+			if l.Code == code {
+				names[i] = l.Name
+			}
+		}
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 // KnownLanguage tells whether code is one of Languages.

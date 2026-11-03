@@ -270,11 +270,8 @@ func TestDictationNeedsATerminal(t *testing.T) {
 }
 
 func TestVoiceLanguageNames(t *testing.T) {
-	if languageTag("id") != "ID" || languageTag("auto") != "Auto" || languageTag("xx") != languageTag(voice.DefaultLanguage) {
+	if languageTag("id") != "ID" || languageTag("id,en") != "ID+EN" || languageTag("auto") != "Auto" || languageTag("xx") != languageTag(voice.DefaultLanguage) {
 		t.Fatal("languageTag")
-	}
-	if languageName("id") != "Indonesian" || languageName("auto") != "any language" {
-		t.Fatal("languageName")
 	}
 	// Auto is offered last, and the first five are the common ones.
 	if voice.Languages[len(voice.Languages)-1].Code != "auto" || voice.Languages[0].Code != "id" || voice.Languages[4].Code != "ms" {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,8 +68,12 @@ func Check(dir string, s Settings) Status {
 	if st.Model == "" {
 		st.Model = DefaultModel
 	}
-	if !KnownLanguage(st.Language) {
+	if !ValidLanguage(st.Language) {
 		st.Language = DefaultLanguage
+	}
+	if codes := ParseLanguages(st.Language); len(codes) > 1 {
+		// The phone's chip offers the set as a choice of its own.
+		st.Languages = append([]Language{{st.Language, LanguageName(st.Language)}}, Languages...)
 	}
 	st.Engine, st.EngineOnPATH, st.Ready = Find(dir)
 	if !st.Ready {
@@ -156,7 +161,8 @@ func (s *Server) stopLocked() {
 }
 
 // Transcribe writes down what the WAV says, in lang ("" for the default,
-// "auto" for whisper to guess), with whisper-server bin running model: started now
+// "auto" for whisper to guess, or "id,en" for it to tell which of them),
+// with whisper-server bin running model: started now
 // if it doesn't run, or runs another.
 func (s *Server) Transcribe(ctx context.Context, bin, model string, wav []byte, lang string) (string, error) {
 	addr, err := s.acquire(ctx, bin, model)
@@ -166,6 +172,9 @@ func (s *Server) Transcribe(ctx context.Context, bin, model string, wav []byte, 
 	defer s.release()
 	if lang == "" {
 		lang = DefaultLanguage
+	}
+	if codes := ParseLanguages(lang); len(codes) > 1 {
+		return inferenceAmong(ctx, addr, wav, codes)
 	}
 	return inference(ctx, addr, wav, lang)
 }
@@ -259,44 +268,80 @@ func (s *Server) start(ctx context.Context, bin, model string) error {
 	}
 }
 
-// inference posts the WAV to whisper-server's /inference.
+// inferenceAnswer is whisper-server's answer: verbose_json's carries
+// how likely each language is, by code.
+type inferenceAnswer struct {
+	Text  string             `json:"text"`
+	Error string             `json:"error"`
+	Probs map[string]float64 `json:"language_probabilities"`
+}
+
+// inference asks whisper-server at addr to write down wav in lang.
 func inference(ctx context.Context, addr string, wav []byte, lang string) (string, error) {
+	ans, err := ask(ctx, addr, wav, lang, "json")
+	return strings.TrimSpace(ans.Text), err
+}
+
+// inferenceAmong writes wav down in whichever of langs it is in: whisper
+// guesses the language among all it knows, and a guess outside langs,
+// as Russian heard in Indonesian, is written down again in the likeliest
+// of langs. A guess among them takes one pass.
+func inferenceAmong(ctx context.Context, addr string, wav []byte, langs []string) (string, error) {
+	ans, err := ask(ctx, addr, wav, "auto", "verbose_json")
+	if err != nil {
+		return "", err
+	}
+	guess, pick := "", langs[0]
+	for code, p := range ans.Probs {
+		if guess == "" || p > ans.Probs[guess] {
+			guess = code
+		}
+		if slices.Contains(langs, code) && p > ans.Probs[pick] {
+			pick = code
+		}
+	}
+	if slices.Contains(langs, guess) {
+		return strings.TrimSpace(ans.Text), nil
+	}
+	return inference(ctx, addr, wav, pick)
+}
+
+// ask posts wav to whisper-server's /inference, in lang, for an answer
+// in format.
+func ask(ctx context.Context, addr string, wav []byte, lang, format string) (inferenceAnswer, error) {
+	var ans inferenceAnswer
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	fw, err := mw.CreateFormFile("file", "audio.wav")
 	if err != nil {
-		return "", err
+		return ans, err
 	}
 	fw.Write(wav)
-	mw.WriteField("response_format", "json")
+	mw.WriteField("response_format", format)
 	mw.WriteField("language", lang)
 	mw.WriteField("temperature", "0")
 	mw.Close()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/inference", &body)
 	if err != nil {
-		return "", err
+		return ans, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return ans, err
 	}
 	defer res.Body.Close()
-	var out struct {
-		Text  string `json:"text"`
-		Error string `json:"error"`
-	}
 	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return ans, err
 	}
-	if err := json.Unmarshal(b, &out); err != nil {
-		return "", fmt.Errorf("whisper-server: %s: %s", res.Status, strings.TrimSpace(string(b)))
+	if err := json.Unmarshal(b, &ans); err != nil {
+		return ans, fmt.Errorf("whisper-server: %s: %s", res.Status, strings.TrimSpace(string(b)))
 	}
-	if out.Error != "" || res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("whisper-server: %s %s", res.Status, out.Error)
+	if ans.Error != "" || res.StatusCode != http.StatusOK {
+		return ans, fmt.Errorf("whisper-server: %s %s", res.Status, ans.Error)
 	}
-	return strings.TrimSpace(out.Text), nil
+	return ans, nil
 }
 
 // freePort is a loopback port free now.

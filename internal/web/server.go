@@ -528,7 +528,7 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lang := r.URL.Query().Get("lang")
-	if lang != "" && !voice.KnownLanguage(lang) {
+	if lang != "" && !voice.ValidLanguage(lang) {
 		http.Error(w, "unknown language", http.StatusBadRequest)
 		return
 	}

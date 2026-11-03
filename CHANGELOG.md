@@ -38,11 +38,14 @@ one is written for the user: what changed, and why it matters.
   no mic and nothing records. On Linux it records with PipeWire, PulseAudio
   or ALSA (`pw-record`, `parecord` or `arecord`); macOS asks once for the
   microphone. Not on Windows yet.
-- **One language, not a guess.** Voice listens for the language you set,
-  your system's to begin with, or English: guessing it each recording,
-  a small model heard Russian or Chinese in Indonesian. Right-click the
-  mic to switch, and the chip shows which while it records; Detect Each
-  Time is still there, last.
+- **Your languages, not a guess.** Voice listens for the languages you
+  set, your system's to begin with, or English: guessing among all of
+  them each recording, a small model heard Russian or Chinese in
+  Indonesian. Tick two, as Indonesian and English, and whisper tells
+  which of them each recording is in; heard as another, it is written
+  down again in the likelier of yours. Right-click the mic to pick them,
+  or in Settings → Voice; the chip shows them while it records (ID+EN),
+  and on the phone too. Detect Each Time is still there, last.
 
 ## 0.12.4
 
