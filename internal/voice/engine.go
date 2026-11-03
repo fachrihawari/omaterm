@@ -155,8 +155,8 @@ func (s *Server) stopLocked() {
 	log.Printf("voice: whisper-server stopped")
 }
 
-// Transcribe writes down what the WAV says, in lang ("auto" or "" for
-// whisper to tell), with whisper-server bin running model: started now
+// Transcribe writes down what the WAV says, in lang ("" for the default,
+// "auto" for whisper to guess), with whisper-server bin running model: started now
 // if it doesn't run, or runs another.
 func (s *Server) Transcribe(ctx context.Context, bin, model string, wav []byte, lang string) (string, error) {
 	addr, err := s.acquire(ctx, bin, model)

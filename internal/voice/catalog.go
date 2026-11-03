@@ -8,8 +8,10 @@
 package voice
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // Settings are settings.json's "voice": the app writes them, the daemon
@@ -18,16 +20,43 @@ type Settings struct {
 	Enabled bool `json:"enabled"`
 	// Model is the name of the model in use, of Models.
 	Model string `json:"model"`
-	// Language is the phone's default: a code of Languages, "auto" for
-	// whisper to tell.
+	// Language is what it listens for: a code of Languages. One language,
+	// not "auto": whisper guessing it again each recording, a small model
+	// on a short one hears Russian or Chinese in Indonesian.
 	Language string `json:"language"`
 }
 
-// DefaultModel and DefaultLanguage are the settings' defaults.
-const (
-	DefaultModel    = "small"
-	DefaultLanguage = "auto"
-)
+// DefaultModel is the settings' model.
+const DefaultModel = "small"
+
+// DefaultLanguage is the settings' language: the system's, as its locale
+// tells, or English.
+var DefaultLanguage = localeLanguage(os.Getenv)
+
+// localeLanguage is the language of the locale getenv tells (LC_ALL,
+// LC_MESSAGES or LANG, as id_ID.UTF-8), when whisper knows it; else
+// English. Never "auto".
+func localeLanguage(getenv func(string) string) string {
+	for _, k := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		v := getenv(k)
+		if v == "" {
+			continue
+		}
+		parts := strings.FieldsFunc(v, func(r rune) bool { return r == '_' || r == '.' || r == '@' || r == '-' })
+		if len(parts) == 0 {
+			continue
+		}
+		code := strings.ToLower(parts[0])
+		if code == "jv" {
+			code = "jw" // whisper's code for Javanese
+		}
+		if code != "auto" && KnownLanguage(code) {
+			return code
+		}
+		return "en" // C, POSIX, or one whisper doesn't know
+	}
+	return "en"
+}
 
 // Model is one of whisper.cpp's models, from Hugging Face.
 type Model struct {
@@ -125,16 +154,17 @@ type Language struct {
 	Name string `json:"name"`
 }
 
-// Languages are offered in the pickers: Auto, then those most asked for,
-// then the rest whisper does well, by name. The codes are whisper's
-// (Javanese is "jw").
+// Languages are offered in the pickers: those most asked for, then the
+// rest whisper does well, by name, then "auto", whisper guessing each
+// time, last: it guesses wrong on short recordings. The codes are
+// whisper's (Javanese is "jw").
 var Languages = []Language{
-	{"auto", "Auto"},
 	{"id", "Indonesian"}, {"en", "English"}, {"jw", "Javanese"}, {"su", "Sundanese"}, {"ms", "Malay"},
 	{"ar", "Arabic"}, {"zh", "Chinese"}, {"nl", "Dutch"}, {"tl", "Filipino"}, {"fr", "French"},
 	{"de", "German"}, {"hi", "Hindi"}, {"it", "Italian"}, {"ja", "Japanese"}, {"ko", "Korean"},
 	{"pl", "Polish"}, {"pt", "Portuguese"}, {"ru", "Russian"}, {"es", "Spanish"}, {"th", "Thai"},
 	{"tr", "Turkish"}, {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
+	{"auto", "Detect Each Time"},
 }
 
 // KnownLanguage tells whether code is one of Languages.

@@ -156,6 +156,10 @@ func TestDictationPastesWithoutEnter(t *testing.T) {
 	if !da.tr.HasText("0:00") {
 		t.Fatalf("no timer: %q", da.tr.Texts())
 	}
+	// The chip says what it listens for.
+	if !da.tr.HasText("ID") {
+		t.Fatalf("no language: %q", da.tr.Texts())
+	}
 	da.dictate()
 	if !da.recs[0].stopped.Load() && da.a.dictation.step != dictTranscribing {
 		t.Fatal("the second press didn't stop it")
@@ -262,5 +266,18 @@ func TestDictationNeedsATerminal(t *testing.T) {
 	da.dictate()
 	if da.a.dictation != nil || len(da.recs) != 0 || !da.tr.HasText("Click into a terminal pane") {
 		t.Fatalf("recorded with no terminal pane: %q", da.tr.Texts())
+	}
+}
+
+func TestVoiceLanguageNames(t *testing.T) {
+	if languageTag("id") != "ID" || languageTag("auto") != "Auto" || languageTag("xx") != languageTag(voice.DefaultLanguage) {
+		t.Fatal("languageTag")
+	}
+	if languageName("id") != "Indonesian" || languageName("auto") != "any language" {
+		t.Fatal("languageName")
+	}
+	// Auto is offered last, and the first five are the common ones.
+	if voice.Languages[len(voice.Languages)-1].Code != "auto" || voice.Languages[0].Code != "id" || voice.Languages[4].Code != "ms" {
+		t.Fatalf("Languages order: %v", voice.Languages[:5])
 	}
 }

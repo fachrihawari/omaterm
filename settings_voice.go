@@ -164,7 +164,7 @@ func (a *appState) settingsVoice(c *ui.Context) {
 			for i, l := range voice.Languages {
 				opts[i] = [2]string{l.Code, l.Name}
 			}
-			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "What it listens for: on the phone, unless its language chip says otherwise."}, func() {
+			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "The language you speak, here and on the phone (whose chip can switch it). Detect Each Time can hear another one."}, func() {
 				if settingsPopup(c, "voiceLanguage", &lang, opts) {
 					v.Language = lang
 					a.voiceChanged()

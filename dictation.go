@@ -269,6 +269,8 @@ func (a *appState) dictationChip(c *ui.Context, pane string) {
 			a.swap(ui.Text(c.Key("time"), strconv.Itoa(s/60)+":"+twoDigits(s%60)).FontSize(11.5).FontWeight(500).
 				TextColor(pal.Bad).SingleLine(), true)
 			c.After(time.Second - time.Since(d.start)%time.Second)
+			// What it listens for, as a wrong one is what garbles it.
+			ui.Text(c, languageTag(a.settings.Voice.Language)).FontSize(10.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine()
 		} else {
 			ui.Spinner(c).FontSize(11).Label("Writing it down")
 			ui.Text(c, "Writing…").FontSize(11.5).TextColor(pal.TextMuted).SingleLine()
@@ -297,11 +299,70 @@ func (a *appState) micButton(c *ui.Context, pane string) {
 	if st := a.desktopVoice(); !st.Enabled || !st.Ready {
 		return
 	}
-	if a.cmdButton(c, iconMic, 13, false).Label("Dictate").Tooltip(withKeys("Dictate", "voice.dictate")).Clicked() {
+	b := a.cmdButton(c, iconMic, 13, false).Label("Dictate").
+		Tooltip(withKeys("Dictate in "+languageName(a.settings.Voice.Language), "voice.dictate") + " · right-click for the language")
+	// The language is a right-click away: dictating in another one than
+	// it listens for comes out garbled, or in a third.
+	b.ContextMenu(func(m *ui.Menu) { a.voiceLanguageMenu(m) })
+	if b.Clicked() {
 		if a.dictation != nil {
 			return
 		}
 		a.focusPane(pane)
 		a.startDictation(c, pane)
 	}
+}
+
+// voiceLanguageMenu picks what voice input listens for, here and on the
+// phone: the languages most asked for, the rest in a submenu, then
+// whisper guessing.
+func (a *appState) voiceLanguageMenu(m *ui.Menu) {
+	cur := a.settings.Voice.Language
+	item := func(m *ui.Menu, l voice.Language) {
+		if m.Item(l.Name).Checked(l.Code == cur).Chosen() {
+			a.settings.Voice.Language = l.Code
+			a.voiceChanged()
+		}
+	}
+	const common = 5 // Indonesian, English, Javanese, Sundanese, Malay
+	for _, l := range voice.Languages[:common] {
+		item(m, l)
+	}
+	m.Submenu("Other Languages", func(m *ui.Menu) {
+		for _, l := range voice.Languages[common:] {
+			if l.Code != "auto" {
+				item(m, l)
+			}
+		}
+	})
+	m.Separator()
+	for _, l := range voice.Languages {
+		if l.Code == "auto" {
+			item(m, l)
+		}
+	}
+}
+
+// languageName names a language code for a tooltip.
+func languageName(code string) string {
+	for _, l := range voice.Languages {
+		if l.Code == code {
+			if code == "auto" {
+				return "any language"
+			}
+			return l.Name
+		}
+	}
+	return languageName(voice.DefaultLanguage)
+}
+
+// languageTag is a language code as the chip shows it: ID, EN, or Auto.
+func languageTag(code string) string {
+	if !voice.KnownLanguage(code) {
+		code = voice.DefaultLanguage
+	}
+	if code == "auto" {
+		return "Auto"
+	}
+	return strings.ToUpper(code)
 }

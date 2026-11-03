@@ -286,7 +286,7 @@ func TestServerTranscribe(t *testing.T) {
 	if !s.Running() {
 		t.Fatal("whisper-server isn't running after a recording")
 	}
-	if text, err := s.Transcribe(ctx, bin, small, wav(SampleRate, SampleRate, 1), ""); err != nil || text != "said in auto with ggml-small.bin" {
+	if text, err := s.Transcribe(ctx, bin, small, wav(SampleRate, SampleRate, 1), ""); err != nil || text != "said in "+DefaultLanguage+" with ggml-small.bin" {
 		t.Fatalf("another model: %q %v", text, err)
 	}
 	for deadline := time.Now().Add(5 * time.Second); s.Running(); time.Sleep(50 * time.Millisecond) {
@@ -316,5 +316,29 @@ func TestInference(t *testing.T) {
 	}
 	if _, err := inference(context.Background(), addr, wav(10, SampleRate, 1), "fr"); err == nil {
 		t.Fatal("an error answer gave no error")
+	}
+}
+
+func TestLocaleLanguage(t *testing.T) {
+	for _, tc := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{map[string]string{"LANG": "id_ID.UTF-8"}, "id"},
+		{map[string]string{"LANG": "en_US.UTF-8", "LC_ALL": "ja_JP.UTF-8"}, "ja"},
+		{map[string]string{"LANG": "id_ID.UTF-8", "LC_MESSAGES": "de_DE"}, "de"},
+		{map[string]string{"LANG": "jv_ID"}, "jw"},
+		{map[string]string{"LANG": "C.UTF-8"}, "en"},
+		{map[string]string{"LANG": "eo_XX"}, "en"},
+		{map[string]string{"LANG": "auto"}, "en"},
+		{map[string]string{}, "en"},
+		{map[string]string{"LC_ALL": "._", "LANG": "id_ID"}, "id"},
+	} {
+		if got := localeLanguage(func(k string) string { return tc.env[k] }); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.env, got, tc.want)
+		}
+	}
+	if DefaultLanguage == "auto" || !KnownLanguage(DefaultLanguage) {
+		t.Errorf("DefaultLanguage %q", DefaultLanguage)
 	}
 }
