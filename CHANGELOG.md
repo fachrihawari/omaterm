@@ -19,7 +19,7 @@ one is written for the user: what changed, and why it matters.
   box has a mic: tap it, talk, tap again, and what you said lands in the
   box, to fix before you press Send; it is never sent by itself. A chip
   beside the mic picks the language: Indonesian, English, Javanese and
-  about 99 others, or Auto. whisper.cpp writes it down on your computer,
+  20 more, or several of them. whisper.cpp writes it down on your computer,
   so no speech service hears it. It is off until you turn it on in
   **Settings → Voice**, where you download the engine and a model
   (Small is the one for Indonesian); turning it off stops the engine and

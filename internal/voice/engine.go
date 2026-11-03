@@ -116,7 +116,10 @@ type Server struct {
 	// bin and model are what it runs, to start again when either changes.
 	bin, model string
 	busy       int
-	idle       *time.Timer
+	// done is signalled as a use ends, for a start of another model to
+	// wait for the ones still being written down.
+	done *sync.Cond
+	idle *time.Timer
 	// tail is the end of what it printed, to say why it failed.
 	tail *tailBuffer
 	// running is whether it runs or starts, read without the lock, which
@@ -184,6 +187,14 @@ func (s *Server) Transcribe(ctx context.Context, bin, model string, wav []byte, 
 func (s *Server) acquire(ctx context.Context, bin, model string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.done == nil {
+		s.done = sync.NewCond(&s.mu)
+	}
+	// Another model or engine replaces it once the recordings it is
+	// writing down are done, not under them.
+	for s.alive() && (s.bin != bin || s.model != model) && s.busy > 0 {
+		s.done.Wait()
+	}
 	if s.alive() && (s.bin != bin || s.model != model) {
 		s.stopLocked()
 	}
@@ -206,6 +217,9 @@ func (s *Server) release() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.busy--
+	if s.done != nil {
+		s.done.Broadcast()
+	}
 	if s.busy > 0 || s.cmd == nil {
 		return
 	}
@@ -274,6 +288,9 @@ type inferenceAnswer struct {
 	Text  string             `json:"text"`
 	Error string             `json:"error"`
 	Probs map[string]float64 `json:"language_probabilities"`
+	// Language is the one it wrote in, by name ("indonesian"), which
+	// an older whisper-server gives without the probabilities.
+	Language string `json:"language"`
 }
 
 // inference asks whisper-server at addr to write down wav in lang.
@@ -292,6 +309,15 @@ func inferenceAmong(ctx context.Context, addr string, wav []byte, langs []string
 		return "", err
 	}
 	guess, pick := "", langs[0]
+	if len(ans.Probs) == 0 {
+		// An older whisper-server, as one on the PATH: what it wrote in
+		// is all it tells.
+		for _, l := range Languages {
+			if strings.EqualFold(l.Name, ans.Language) {
+				guess = l.Code
+			}
+		}
+	}
 	for code, p := range ans.Probs {
 		if guess == "" || p > ans.Probs[guess] {
 			guess = code

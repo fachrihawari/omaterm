@@ -271,12 +271,12 @@ func (a *appState) dictationChip(c *ui.Context, pane string) {
 				TextColor(pal.Bad).SingleLine(), true)
 			c.After(time.Second - time.Since(d.start)%time.Second)
 			// What it listens for, as a wrong one is what garbles it.
-			ui.Text(c, languageTag(a.settings.Voice.Language)).FontSize(10.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine()
+			ui.Text(c, languageTag(a.voiceLanguage())).FontSize(10.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine()
 		} else {
 			ui.Spinner(c).FontSize(11).Label("Writing it down")
 			ui.Text(c, "Writing…").FontSize(11.5).TextColor(pal.TextMuted).SingleLine()
 		}
-		if v, ok := d.rec.(interface{ view() ui.NativeWebView }); ok && v.view() != nil {
+		if v, ok := d.rec.(interface{ view() ui.NativeWebView }); ok && recording && v.view() != nil {
 			// The page that records (macOS) is in the window, at a
 			// pixel, transparent: WebKit lets pages it shows record.
 			ui.WebView(c, v.view()).Size(1, 1).Shrink(0)
@@ -301,7 +301,7 @@ func (a *appState) micButton(c *ui.Context, pane string) {
 		return
 	}
 	b := a.cmdButton(c, iconMic, 13, false).Label("Dictate").
-		Tooltip(withKeys("Dictate in "+voice.LanguageName(a.settings.Voice.Language), "voice.dictate") + " · right-click for the language")
+		Tooltip(withKeys("Dictate in "+voice.LanguageName(a.voiceLanguage()), "voice.dictate") + " · right-click for the language")
 	// The language is a right-click away: dictating in another one than
 	// it listens for comes out garbled, or in a third.
 	b.ContextMenu(func(m *ui.Menu) { a.voiceLanguageMenu(m) })
@@ -319,7 +319,7 @@ func (a *appState) micButton(c *ui.Context, pane string) {
 // to tell which; the languages most asked for, the rest in a submenu,
 // then whisper guessing among all.
 func (a *appState) voiceLanguageMenu(m *ui.Menu) {
-	cur := voice.ParseLanguages(a.settings.Voice.Language)
+	cur := voice.ParseLanguages(a.voiceLanguage())
 	set := func(codes []string) {
 		a.settings.Voice.Language = strings.Join(codes, ",")
 		a.voiceChanged()
@@ -352,6 +352,15 @@ func (a *appState) voiceLanguageMenu(m *ui.Menu) {
 		a.settings.Voice.Language = "auto"
 		a.voiceChanged()
 	}
+}
+
+// voiceLanguage is what voice input listens for: the setting, or the
+// default for an empty or unknown one, as voice.Check reads it.
+func (a *appState) voiceLanguage() string {
+	if l := a.settings.Voice.Language; voice.ValidLanguage(l) {
+		return l
+	}
+	return voice.DefaultLanguage
 }
 
 // languageTag is a language setting as the chip shows it: ID, ID+EN, or

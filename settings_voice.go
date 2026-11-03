@@ -249,6 +249,8 @@ func (a *appState) voiceModelRow(c *ui.Context, m voice.Model) {
 			if a.settingsButton(c, "Delete##"+m.Name, false, true, false) {
 				os.Remove(voice.ModelPath(voiceDir(), m))
 				a.refreshVoice()
+				// A whisper-server running it holds it until told.
+				go daemon.ReloadVoice()
 			}
 		default:
 			if a.settingsButton(c, "Download##"+m.Name, inUse, false, false) {

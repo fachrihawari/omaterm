@@ -382,34 +382,83 @@ func TestLanguageSets(t *testing.T) {
 func TestInferenceAmong(t *testing.T) {
 	var asked []string
 	probs := map[string]float64{}
+	language := ""
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lang, format := r.FormValue("language"), r.FormValue("response_format")
 		asked = append(asked, lang+"/"+format)
 		ans := map[string]any{"text": " in " + lang}
 		if format == "verbose_json" {
-			ans["language_probabilities"] = probs
+			ans["language"] = language
+			if probs != nil {
+				ans["language_probabilities"] = probs
+			}
 		}
 		json.NewEncoder(w).Encode(ans)
 	}))
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	for _, tc := range []struct {
-		probs map[string]float64
-		text  string
-		asked []string
+		probs    map[string]float64
+		language string
+		text     string
+		asked    []string
 	}{
 		// Guessed Indonesian: one pass.
-		{map[string]float64{"id": 0.7, "en": 0.2, "ms": 0.1}, "in auto", []string{"auto/verbose_json"}},
+		{map[string]float64{"id": 0.7, "en": 0.2, "ms": 0.1}, "indonesian", "in auto", []string{"auto/verbose_json"}},
 		// Heard Russian; English is likelier than Indonesian.
-		{map[string]float64{"ru": 0.5, "en": 0.3, "id": 0.1}, "in en", []string{"auto/verbose_json", "en/json"}},
+		{map[string]float64{"ru": 0.5, "en": 0.3, "id": 0.1}, "russian", "in en", []string{"auto/verbose_json", "en/json"}},
 		// Neither scored: the first of them.
-		{map[string]float64{"zh": 0.9}, "in id", []string{"auto/verbose_json", "id/json"}},
-		{nil, "in id", []string{"auto/verbose_json", "id/json"}},
+		{map[string]float64{"zh": 0.9}, "chinese", "in id", []string{"auto/verbose_json", "id/json"}},
+		// An older whisper-server tells only what it wrote in: English,
+		// one of them, takes one pass; Russian, the first of them.
+		{nil, "english", "in auto", []string{"auto/verbose_json"}},
+		{nil, "russian", "in id", []string{"auto/verbose_json", "id/json"}},
 	} {
-		asked, probs = nil, tc.probs
+		asked, probs, language = nil, tc.probs, tc.language
 		text, err := inferenceAmong(context.Background(), addr, wav(10, SampleRate, 1), []string{"id", "en"})
 		if err != nil || text != tc.text || !slices.Equal(asked, tc.asked) {
 			t.Errorf("%v: %q %v, asked %q; want %q, %q", tc.probs, text, err, asked, tc.text, tc.asked)
 		}
+	}
+}
+
+// Another model waits for the recordings the running one is writing down,
+// rather than killing it under them.
+func TestServerModelChangeWaits(t *testing.T) {
+	t.Setenv("OMATERM_FAKE_WHISPER", "1")
+	dir := t.TempDir()
+	tiny, small := filepath.Join(dir, "ggml-tiny.bin"), filepath.Join(dir, "ggml-small.bin")
+	os.WriteFile(tiny, []byte("x"), 0o600)
+	os.WriteFile(small, []byte("x"), 0o600)
+	bin, _ := os.Executable()
+	s := &Server{}
+	defer s.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	addr, err := s.acquire(ctx, bin, tiny)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switched := make(chan error, 1)
+	go func() {
+		_, err := s.acquire(ctx, bin, small)
+		switched <- err
+	}()
+	select {
+	case err := <-switched:
+		t.Fatalf("switched models under a recording: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	// The recording on tiny still gets its answer.
+	if text, err := inference(ctx, addr, wav(SampleRate, SampleRate, 1), "id"); err != nil || text != "said in id with ggml-tiny.bin" {
+		t.Fatalf("recording under way: %q %v", text, err)
+	}
+	s.release()
+	if err := <-switched; err != nil {
+		t.Fatal(err)
+	}
+	s.release()
+	if s.model != small {
+		t.Fatalf("runs %s", s.model)
 	}
 }
