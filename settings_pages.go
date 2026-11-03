@@ -66,6 +66,9 @@ func settingsPageList() []settingsPageDef {
 		{ID: "devurls", Title: "Dev URLs", Icon: iconGlobeLock, Group: 1, Body: (*appState).settingsDevurls,
 			Hero:     "A process with a URL is served at https://<name>.localhost, with no port and no certificate warning. omaterm’s own certificate authority signs for .localhost names only.",
 			HeroLink: "https://fachrihawari.github.io/omaterm/#dev-urls"},
+		{ID: "voice", Title: "Voice", Icon: iconMic, Group: 1, Body: (*appState).settingsVoice,
+			Hero:     "Speak a prompt on your phone in web access. whisper.cpp writes it down here, on this computer, so no speech service hears it, and the text waits in the compose box for you to check.",
+			HeroLink: "https://fachrihawari.github.io/omaterm/#web"},
 		{ID: "browser", Title: "Browser", Icon: iconGlobe, Group: 1, Body: (*appState).settingsBrowser,
 			Restore: func(s *Settings, d Settings) { s.SearchEngine = d.SearchEngine }},
 		{ID: "keyboard", Title: "Keyboard", Icon: iconKeyboard, Group: 1, Body: (*appState).settingsKeyboard},
@@ -113,6 +116,8 @@ type settingsData struct {
 	omarchy *theme.Source
 	// devurls is the Dev URLs page's: the proxy's checks and routes.
 	devurls devurlData
+	// voice is the Voice page's: downloads, and whether whisper runs.
+	voice voiceData
 }
 
 // refreshSettingsData reads what the pages show, at most every two
@@ -189,6 +194,9 @@ func (a *appState) refreshSettingsData(c *ui.Context) {
 	}
 	if a.settingsCurrent() == "devurls" && d.devurls.known {
 		a.fetchDevurls()
+	}
+	if a.settingsCurrent() == "voice" {
+		a.refreshVoice()
 	}
 	// The window wakes to read them again.
 	c.After(2 * time.Second)

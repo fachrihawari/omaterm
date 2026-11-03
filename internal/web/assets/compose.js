@@ -11,8 +11,37 @@
 // prompt is submitted once; Insert pastes it without Enter, to edit it in
 // the terminal. An unsent draft is kept in localStorage under
 // omaterm.compose; without storage the box works and forgets.
+//
+// With voice input on (Settings › Voice on the computer), a mic records a
+// prompt and the computer writes it down into the box, to fix before Send:
+// it is never sent by itself. The language chip beside it picks the
+// language, kept under omaterm.voice.lang. Off, neither shows.
 
 const STORE = "omaterm.compose";
+const LANG_STORE = "omaterm.voice.lang";
+
+const MIC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19v3m7-12v2a7 7 0 0 1-14 0v-2"/><rect width="6" height="13" x="9" y="2" rx="3"/></svg>';
+const STOP = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
+
+// voice.js loads the first time the box opens, as keys.js does.
+let voiceModule = null;
+const loadVoice = () => (voiceModule ??= import("./voice.js").catch(() => null));
+
+function stored(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function store(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // No storage: the choice lasts this time only.
+  }
+}
 
 function load() {
   try {
@@ -81,7 +110,27 @@ export function mountCompose(el, options = {}) {
   note.className = "compose-note";
   note.setAttribute("role", "alert");
   note.hidden = true;
-  foot.append(note, insert, send);
+
+  const mic = document.createElement("button");
+  mic.type = "button";
+  mic.className = "compose-mic";
+  mic.hidden = true;
+  mic.innerHTML = MIC;
+  mic.title = "Speak a prompt";
+  mic.setAttribute("aria-label", "Speak a prompt");
+  const micTime = document.createElement("span");
+  micTime.className = "compose-mic-time";
+  mic.append(micTime);
+  // The chip shows the language's code; the select over it, unseen, opens
+  // the phone's own picker with the names.
+  const lang = document.createElement("label");
+  lang.className = "compose-lang";
+  lang.hidden = true;
+  const langCode = document.createElement("span");
+  const langPick = document.createElement("select");
+  langPick.setAttribute("aria-label", "Language");
+  lang.append(langCode, langPick);
+  foot.append(mic, lang, note, insert, send);
 
   panel.append(head, box, foot);
   root.append(backdrop, panel);
@@ -90,10 +139,120 @@ export function mountCompose(el, options = {}) {
   let lastFocus = null;
   let leaving = 0;
 
+  // voice is what the computer said of voice input, and why the page can't
+  // record ("" when it can); rec is the recording in progress.
+  let voice = { enabled: false };
+  let voiceMod = null;
+  let cannot = "";
+  let rec = null;
+  let ticking = 0;
+  let busy = false;
+  let starting = false;
+
+  function say(text) {
+    note.textContent = text;
+    note.hidden = !text;
+  }
+
+  // refreshVoice asks whether voice input is on, each time the box opens:
+  // it is turned on and off on the computer.
+  async function refreshVoice() {
+    const mod = await loadVoice();
+    if (!mod) return;
+    voiceMod = mod;
+    voice = await mod.voiceStatus();
+    cannot = mod.canRecord();
+    mic.hidden = lang.hidden = !voice.enabled;
+    if (!voice.enabled) {
+      stopRecording(false);
+      return;
+    }
+    mic.classList.toggle("dim", !voice.ready || cannot !== "");
+    const langs = voice.languages || [];
+    let want = stored(LANG_STORE) || voice.language || "auto";
+    if (!langs.some((l) => l.code === want)) want = voice.language || "auto";
+    langPick.replaceChildren(...langs.map((l) => new Option(l.name, l.code, false, l.code === want)));
+    langPick.value = want;
+    langCode.textContent = want === "auto" ? "Auto" : want.toUpperCase();
+  }
+
+  function showMic() {
+    mic.classList.toggle("recording", rec !== null);
+    mic.classList.toggle("busy", busy);
+    mic.disabled = busy;
+    mic.innerHTML = rec ? STOP : MIC;
+    mic.append(micTime);
+    micTime.textContent = "";
+    const label = rec ? "Stop recording" : busy ? "Writing it down…" : "Speak a prompt";
+    mic.title = label;
+    mic.setAttribute("aria-label", label);
+  }
+
+  function tick() {
+    if (!rec) return;
+    const s = Math.floor(rec.seconds());
+    micTime.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  // startRecording starts the microphone; called straight from the tap,
+  // with no await before record, which iOS needs to let audio play.
+  async function startRecording() {
+    say("");
+    starting = true;
+    try {
+      rec = await voiceMod.record({ onLimit: () => stopRecording(true) });
+    } catch (err) {
+      rec = null;
+      say(err?.name === "NotAllowedError" ? "Microphone access was refused" : "The microphone didn't start");
+      return;
+    } finally {
+      starting = false;
+    }
+    // Closed while the microphone was asked for.
+    if (root.hidden || root.classList.contains("leaving")) {
+      stopRecording(false);
+      return;
+    }
+    showMic();
+    ticking = setInterval(tick, 250);
+  }
+
+  // stopRecording ends the recording; keep sends it to be written down,
+  // and the text joins what the box has.
+  async function stopRecording(keep) {
+    if (!rec) return;
+    const r = rec;
+    rec = null;
+    clearInterval(ticking);
+    if (!keep) {
+      r.cancel();
+      showMic();
+      return;
+    }
+    busy = true;
+    showMic();
+    try {
+      const text = (await voiceMod.transcribe(await r.stop(), langPick.value)).trim();
+      if (text) {
+        const v = box.value;
+        box.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
+        save(box.value);
+      } else {
+        say("Nothing was heard");
+      }
+    } catch (err) {
+      say(err?.message || "Not written down");
+    } finally {
+      busy = false;
+      showMic();
+    }
+  }
+
   function open() {
     clearTimeout(leaving);
     root.classList.remove("leaving");
     note.hidden = true;
+    refreshVoice();
     lastFocus = document.activeElement;
     root.hidden = false;
     box.focus();
@@ -106,8 +265,9 @@ export function mountCompose(el, options = {}) {
   }
 
   // close slides the sheet away, then hides it; with less motion asked
-  // for, it hides at once.
+  // for, it hides at once. A recording in progress is dropped.
   function close() {
+    stopRecording(false);
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
       root.hidden = true;
     } else if (!root.hidden && !root.classList.contains("leaving")) {
@@ -149,6 +309,20 @@ export function mountCompose(el, options = {}) {
     close();
   }
 
+  on(mic, "click", () => {
+    if (busy || starting) return;
+    if (rec) {
+      stopRecording(true);
+    } else if (!voice.ready || cannot || !voiceMod) {
+      say(cannot || voice.reason || "Voice input isn't ready");
+    } else {
+      startRecording();
+    }
+  });
+  on(langPick, "change", () => {
+    store(LANG_STORE, langPick.value);
+    langCode.textContent = langPick.value === "auto" ? "Auto" : langPick.value.toUpperCase();
+  });
   on(closeButton, "click", close);
   on(backdrop, "click", close);
   on(insert, "click", () => submit(false));
@@ -171,6 +345,7 @@ export function mountCompose(el, options = {}) {
     open,
     close,
     destroy() {
+      stopRecording(false);
       save(box.value);
       ac.abort();
       root.remove();

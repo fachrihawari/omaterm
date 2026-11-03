@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"omaterm/internal/atomicfile"
+	"omaterm/internal/voice"
 )
 
 // Settings are the user's preferences, in settings.json beside state.json.
@@ -63,6 +64,10 @@ type Settings struct {
 
 	Terminal TerminalSettings `json:"terminal"`
 	Editor   EditorSettings   `json:"editor"`
+
+	// Voice is voice input in web access, which the daemon reads too: off
+	// until turned on.
+	Voice voice.Settings `json:"voice"`
 }
 
 // NotifySettings choose which session changes notify while you look away.
@@ -149,6 +154,7 @@ func defaultSettings() Settings {
 			RightClick: "menu", ClipboardRead: "never", Bell: "off",
 		},
 		Editor: EditorSettings{TerminalFont: true, LineNumbers: true, MarkdownPreview: true, DiffSplit: true},
+		Voice:  voice.Settings{Model: voice.DefaultModel, Language: voice.DefaultLanguage},
 	}
 }
 
@@ -461,6 +467,10 @@ var settingDefs = func() []settingDef {
 		notWindows(row("pair", "web", "Pair a device", "", "qr code")),
 		notWindows(row("webPort", "web", "Port", "", "7370")),
 		notWindows(row("webURL", "web", "Public URL", "", "tailscale tunnel")),
+
+		// Voice (drawn by its page, which tells the daemon)
+		notWindows(row("voice", "voice", "Voice input", "Speak a prompt in web access on your phone, instead of typing it.",
+			"speech microphone mic dictation whisper speak talk transcribe language model")),
 
 		// Dev URLs (the proxy's, drawn by its page)
 		notWindows(row("devurlSetup", "devurls", "Dev URLs setup", "", "https proxy localhost certificate ssl tls portless routes trust")),

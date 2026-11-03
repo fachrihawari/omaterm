@@ -356,8 +356,14 @@
 
 .compose-foot {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* The buttons keep to the right, the mic and its chip to the left. */
+.compose-insert {
+  margin-left: auto;
 }
 
 .compose-insert {
@@ -393,8 +399,10 @@
   outline-offset: 2px;
 }
 
+/* A note takes a line of its own over the buttons: a reason can be long. */
 .compose-note {
-  margin-right: auto;
+  order: -1;
+  flex-basis: 100%;
   align-self: center;
   font-size: 12.5px;
   color: var(--bad, #ff6f6f);
@@ -402,6 +410,80 @@
 
 .compose-note[hidden] {
   display: none;
+}
+
+/* Voice input: the mic and its language chip, at the foot's start. */
+.compose-mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 42px;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  background: var(--raised, #1c2128);
+  color: var(--text, #e6edf3);
+  font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background var(--dur-fast, 120ms), border-color var(--dur-fast, 120ms), color var(--dur-fast, 120ms),
+    opacity var(--dur-fast, 120ms);
+}
+.compose-mic svg { width: 18px; height: 18px; flex: none; }
+.compose-mic-time:empty { display: none; }
+.compose-mic:hover { background: var(--hover, #1f262e); }
+.compose-mic.dim { opacity: 0.45; }
+.compose-mic.recording {
+  border-color: transparent;
+  background: var(--bad, #ff6f6f);
+  color: #fff;
+  animation: compose-mic-pulse 1.4s ease-in-out infinite;
+}
+.compose-mic.busy { cursor: progress; color: var(--text-muted, #8b949e); }
+.compose-mic.busy svg { display: none; }
+.compose-mic.busy::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: compose-spin 0.8s linear infinite;
+}
+.compose-mic[hidden], .compose-lang[hidden] { display: none !important; }
+@keyframes compose-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad, #ff6f6f) 45%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--bad, #ff6f6f) 0%, transparent); }
+}
+@keyframes compose-spin { to { rotate: 360deg; } }
+
+.compose-lang {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--chip, rgba(215, 221, 229, 0.07));
+  color: var(--text-soft, #b9bfc7);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.compose-lang select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  font-size: 16px; /* iOS zooms into a smaller one */
+  cursor: pointer;
+}
+.compose-lang:focus-within, .compose-mic:focus-visible {
+  outline: 2px solid var(--accent, #2f81f7);
+  outline-offset: 2px;
 }
 
 /* Sheets slide up as their scrim fades in, and back down faster. */
@@ -432,4 +514,5 @@
 .compose-box { transition: border-color var(--dur-fast, 120ms), box-shadow var(--dur-fast, 120ms); }
 @media (prefers-reduced-motion: reduce) {
   .keybar-key:active, .compose-insert:active, .compose-send:active, .compose-close:active { transform: none; }
+  .compose-mic.recording { animation: none; }
 }

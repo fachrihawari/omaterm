@@ -34,8 +34,8 @@ type fixture struct {
 }
 
 // newFixture runs a daemon with web access on, and one pane in it, "p1",
-// which echoes what it is sent.
-func newFixture(t *testing.T) *fixture {
+// which echoes what it is sent; opts change the daemon's options.
+func newFixture(t *testing.T, opts ...func(*daemon.Options)) *fixture {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "omw")
 	if err != nil {
@@ -47,7 +47,11 @@ func newFixture(t *testing.T) *fixture {
 	ln.Close()
 	store := web.OpenStore(web.StorePath(dir))
 	store.SetConfig(func(c *web.Config) { c.Enabled, c.Port = true, port })
-	d, err := daemon.Start(daemon.Options{Socket: filepath.Join(dir, "d.sock"), StateDir: dir, StateFile: filepath.Join(dir, "state.json"), Version: "test"})
+	o := daemon.Options{Socket: filepath.Join(dir, "d.sock"), StateDir: dir, StateFile: filepath.Join(dir, "state.json"), Version: "test"}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	d, err := daemon.Start(o)
 	if err != nil {
 		t.Fatal(err)
 	}

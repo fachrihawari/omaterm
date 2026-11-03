@@ -392,6 +392,12 @@ keyboard: **Send** pastes it and presses Enter, **Insert** only pastes it.
 Keys reach the program as it asked for them, so Ctrl+Enter and Shift+Tab work
 in agents that take them.
 
+**Voice input** puts a mic in the compose box: speak a prompt, and
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) writes it down on your
+computer into the box, to check before you send it. It is off until you turn
+it on in **Settings → Voice** and download a model there; the phone needs web
+access over HTTPS (Tailscale or Cloudflare) for its microphone.
+
 <br clear="right">
 
 ### Browser panes

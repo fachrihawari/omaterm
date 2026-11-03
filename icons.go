@@ -147,6 +147,9 @@ var iconBotSVG []byte
 //go:embed icons/smartphone.svg
 var iconSmartphoneSVG []byte
 
+//go:embed icons/mic.svg
+var iconMicSVG []byte
+
 //go:embed icons/chevrons-up-down.svg
 var iconChevronsUpDownSVG []byte
 
@@ -201,6 +204,7 @@ var (
 	iconCode           = ui.MustParseSVG(iconCodeSVG)
 	iconBot            = ui.MustParseSVG(iconBotSVG)
 	iconSmartphone     = ui.MustParseSVG(iconSmartphoneSVG)
+	iconMic            = ui.MustParseSVG(iconMicSVG)
 	iconChevronsUpDown = ui.MustParseSVG(iconChevronsUpDownSVG)
 	iconFileCog        = ui.MustParseSVG(iconFileCogSVG)
 )

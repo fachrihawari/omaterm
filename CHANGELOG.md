@@ -13,6 +13,18 @@ one is written for the user: what changed, and why it matters.
   reloads when the file changes on disk, and "Open in default app" hands
   it to the system's own viewer.
 
+### Voice input on your phone
+
+- **Speak a prompt instead of typing it.** In web access, the compose
+  box has a mic: tap it, talk, tap again, and what you said lands in the
+  box, to fix before you press Send; it is never sent by itself. A chip
+  beside the mic picks the language: Indonesian, English, Javanese and
+  about 99 others, or Auto. whisper.cpp writes it down on your computer,
+  so no speech service hears it. It is off until you turn it on in
+  **Settings → Voice**, where you download the engine and a model
+  (Small is the one for Indonesian); turning it off stops the engine and
+  hides the mic. It needs web access over HTTPS: Tailscale or Cloudflare.
+
 ## 0.12.4
 
 ### omaterm moves
