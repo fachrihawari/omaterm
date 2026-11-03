@@ -68,7 +68,7 @@ func (a *appState) openMedia(path, kind string) *openFile {
 
 // ensureMediaWeb makes a media editor's web view, on its file.
 func (a *appState) ensureMediaWeb(doc *openFile) {
-	if doc.web != nil || doc.webErr != "" || a.win == nil {
+	if doc.web != nil || doc.webErr != "" || doc.crashed || a.win == nil {
 		return
 	}
 	look := playerLook{
@@ -112,7 +112,18 @@ func (a *appState) ensureMediaWeb(doc *openFile) {
 			mygo.Shell.OpenExternal(n.URL)
 		}
 	})
-	page.OnRenderProcessGone(func(string) { page.Reload() })
+	// A file that crashes the page crashes it again as it reloads, every
+	// few seconds: as WebKitGTK lacking GStreamer's plugins does on a
+	// video. The tab says so instead, once.
+	page.OnRenderProcessGone(func(string) {
+		a.post(func() {
+			if doc.web != v {
+				return
+			}
+			doc.dropMedia()
+			doc.crashed = true
+		})
+	})
 	if err := page.LoadURL(url); err != nil {
 		doc.webErr = err.Error()
 	}
@@ -165,9 +176,14 @@ func (a *appState) mediaView(c *ui.Context, doc *openFile) ui.Element {
 		a.viewHeader(c, func() {
 			headerTitle(c, iconFileText, pal.TextMuted, pathBase(doc.Path), pathDir(doc.Path))
 			ui.Spacer(c)
-			if doc.web != nil {
+			if doc.web != nil || doc.crashed {
 				if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Reload").Clicked() {
-					doc.web.Page().Reload()
+					if doc.crashed {
+						// Tried once more, as after installing what it lacked.
+						doc.crashed = false
+					} else {
+						doc.web.Page().Reload()
+					}
 				}
 			}
 			if a.cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Open in default app").Clicked() {
@@ -183,7 +199,12 @@ func (a *appState) mediaView(c *ui.Context, doc *openFile) ui.Element {
 					ui.Text(c, "This file can't be previewed here").FontSize(13).FontWeight(600).TextColor(pal.Text)
 					// Only Linux lacks a web view of its own.
 					msg := "The system's web view did not start."
-					if runtime.GOOS == "linux" {
+					switch {
+					case doc.crashed && doc.Media != "pdf" && runtime.GOOS == "linux":
+						msg = "The web view crashed playing it: install GStreamer's plugins (gst-plugins-good, gst-libav), then Reload."
+					case doc.crashed:
+						msg = "The web view crashed showing it."
+					case runtime.GOOS == "linux":
 						msg = "Install webkit2gtk-4.1 to preview PDF, audio and video."
 					}
 					ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
@@ -218,7 +239,10 @@ func (a *appState) mediaView(c *ui.Context, doc *openFile) ui.Element {
 			ui.Text(c, mediaKindLabel(doc.Media)).FontSize(10).TextColor(pal.TextMuted)
 			ui.Text(c, service.FormatBytes(uint64(doc.Size))).FontSize(10).TextColor(pal.TextMuted)
 			ui.Spacer(c)
-			ui.Text(c, strings.ToUpper(strings.TrimPrefix(lowerExt(doc.Path), "."))).FontSize(10).TextColor(pal.TextMuted)
+			// A PDF's format is its kind: said once.
+			if ext := strings.ToUpper(strings.TrimPrefix(lowerExt(doc.Path), ".")); ext != mediaKindLabel(doc.Media) {
+				ui.Text(c, ext).FontSize(10).TextColor(pal.TextMuted)
+			}
 		})
 	})
 }

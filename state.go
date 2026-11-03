@@ -136,6 +136,7 @@ type openFile struct {
 	release   func()
 	mtime     time.Time
 	webErr    string
+	crashed   bool // its page crashed, and is not loaded again
 	focused   bool
 	yieldKeys bool
 	// Disk is the hash of the file as last read or written: a save checks
