@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "Agent lead boleh merge pekerjanya, tapi kalau mau merge ke checkout kamu, dia harus nanya dulu: muncul banner Merge / Decline. Kamu yang klik. Nggak ada agent yang nyentuh branch utama diam-diam.",
+      "text": "Agent lead boleh merge pekerjanya, tapi kalau mau merge ke checkout kamu, dia harus nanya dulu: muncul banner Merge / Decline. Kamu yang klik. Nggak ada agent yang nyentuh branch utama diam-diam.\n\nomaterm, open source: github.com/fachrihawari/omaterm",
       "video": "~/Videos/omaterm-merge-tall.mp4"
     }
   ]
