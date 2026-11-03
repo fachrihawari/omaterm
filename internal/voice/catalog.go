@@ -87,15 +87,14 @@ type Engine struct {
 	Size int64
 }
 
-// Engines are the builds published. Their SHA-256s are filled in from
-// the release's SHA256SUMS once whisper.yml has run; until then they are
-// empty, and Download refuses an empty one, so nothing unchecked ever
-// runs: whisper-server on the PATH works meanwhile.
+// Engines are the builds published, their SHA-256s from the release's
+// SHA256SUMS: Download refuses a build whose checksum differs, so
+// nothing unchecked ever runs.
 var Engines = []Engine{
-	{OS: "linux", Arch: "amd64", SHA256: "" /* PLACEHOLDER: pin from SHA256SUMS of whisper-v1.9.5 */, Size: 6 << 20},
-	{OS: "linux", Arch: "arm64", SHA256: "" /* PLACEHOLDER: pin from SHA256SUMS of whisper-v1.9.5 */, Size: 6 << 20},
-	{OS: "darwin", Arch: "arm64", SHA256: "" /* PLACEHOLDER: pin from SHA256SUMS of whisper-v1.9.5 */, Size: 8 << 20},
-	{OS: "darwin", Arch: "amd64", SHA256: "" /* PLACEHOLDER: pin from SHA256SUMS of whisper-v1.9.5 */, Size: 6 << 20},
+	{OS: "linux", Arch: "amd64", SHA256: "806f2062e1a98c010a05e5ce1e03d52d82b773ea4a0f151948b85272176b875e", Size: 1972478},
+	{OS: "linux", Arch: "arm64", SHA256: "b8556430c6f38eb2eb58220bfb4c9fdf139fdbc7e07dee4568fa145a0373e2d2", Size: 1848595},
+	{OS: "darwin", Arch: "arm64", SHA256: "fac4ab246a20ff76ea7aaef965fe0439dea66e567c93d002a984833ef95f8f6b", Size: 2206660},
+	{OS: "darwin", Arch: "amd64", SHA256: "f19edee6b3aeee04c022a93b475e16a0b1f5422298721e4da38667a19eb7e71c", Size: 1435242},
 }
 
 // Asset is the build's file name on the release.
