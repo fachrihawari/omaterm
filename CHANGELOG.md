@@ -11,7 +11,9 @@ one is written for the user: what changed, and why it matters.
   agent printed, or pick the file, and a PDF shows its pages, a song or a
   video plays and seeks, in an editor tab, however large the file. It
   reloads when the file changes on disk, and "Open in default app" hands
-  it to the system's own viewer.
+  it to the system's own viewer. On Linux, songs and videos need
+  GStreamer's plugins (`gst-plugins-good`, `gst-libav`): without them the
+  tab says so, rather than a blank page.
 
 ### Voice input on your phone
 
@@ -46,6 +48,16 @@ one is written for the user: what changed, and why it matters.
   down again in the likelier of yours. Right-click the mic to pick them,
   or in Settings → Voice; the chip shows them while it records (ID+EN),
   and on the phone too. Detect Each Time is still there, last.
+
+### In the sidebar
+
+- **A process starts with ▶ and stops with ■**, tinted green and red
+  under the pointer, where + and × used to.
+- **A Dev URL is a link icon**, its address in the tooltip, rather than
+  a pill of its host that took the row's width. Right-click still copies
+  it.
+- **One Open Project.** The button beside + is gone: + has it, and so
+  does the sidebar's foot.
 
 ## 0.12.4
 
