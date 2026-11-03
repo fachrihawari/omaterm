@@ -3,6 +3,62 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.13.0
+
+### In the editor
+
+- **PDFs, songs and videos open in a preview.** Ctrl+click a path an
+  agent printed, or pick the file, and a PDF shows its pages, a song or a
+  video plays and seeks, in an editor tab, however large the file. It
+  reloads when the file changes on disk, and "Open in default app" hands
+  it to the system's own viewer. On Linux, songs and videos need
+  GStreamer's plugins (`gst-plugins-good`, `gst-libav`): without them the
+  tab says so, rather than a blank page.
+
+### Voice input on your phone
+
+- **Speak a prompt instead of typing it.** In web access, the compose
+  box has a mic: tap it, talk, tap again, and what you said lands in the
+  box, to fix before you press Send; it is never sent by itself. A chip
+  beside the mic picks the language: Indonesian, English, Javanese and
+  20 more, or several of them. whisper.cpp writes it down on your computer,
+  so no speech service hears it. It is off until you turn it on in
+  **Settings → Voice**, where you download the engine and a model
+  (Small is the one for Indonesian); turning it off stops the engine and
+  hides the mic. It needs web access over HTTPS: Tailscale or Cloudflare.
+
+### Voice input on the desktop
+
+- **Dictate into a terminal.** Press **Ctrl+Shift+Space** (**⇧⌘Space**
+  on macOS), or the mic in a terminal pane's header, and talk; press it
+  again and what you said is pasted into the pane, as a paste, never with
+  Enter, so you read it before it runs. The header shows a red dot and the
+  time while it records, and a spinner while it writes it down; Esc drops
+  it. A recording stops by itself at 2 minutes. The same whisper.cpp
+  engine and model as the phone's write it down, in the language set in
+  **Settings → Voice**, and with voice input off, as it starts, there is
+  no mic and nothing records. On Linux it records with PipeWire, PulseAudio
+  or ALSA (`pw-record`, `parecord` or `arecord`); macOS asks once for the
+  microphone. Not on Windows yet.
+- **Your languages, not a guess.** Voice listens for the languages you
+  set, your system's to begin with, or English: guessing among all of
+  them each recording, a small model heard Russian or Chinese in
+  Indonesian. Tick two, as Indonesian and English, and whisper tells
+  which of them each recording is in; heard as another, it is written
+  down again in the likelier of yours. Right-click the mic to pick them,
+  or in Settings → Voice; the chip shows them while it records (ID+EN),
+  and on the phone too. Detect Each Time is still there, last.
+
+### In the sidebar
+
+- **A process starts with ▶ and stops with ■**, tinted green and red
+  under the pointer, where + and × used to.
+- **A Dev URL is a link icon**, its address in the tooltip, rather than
+  a pill of its host that took the row's width. Right-click still copies
+  it.
+- **One Open Project.** The button beside + is gone: + has it, and so
+  does the sidebar's foot.
+
 ## 0.12.4
 
 ### omaterm moves

@@ -41,6 +41,7 @@ import (
 	"omaterm/internal/proto"
 	"omaterm/internal/session"
 	"omaterm/internal/tunnel"
+	"omaterm/internal/voice"
 	"omaterm/internal/web"
 	"omaterm/service"
 )
@@ -69,6 +70,9 @@ type Options struct {
 	// ProxyAddr is where the Dev URLs proxy listens: 127.0.0.1:443 when
 	// empty (tests give a free port).
 	ProxyAddr string
+	// Voice writes down the phone's recordings: a voice.Server running
+	// whisper-server when nil (tests give a fake).
+	Voice Transcriber
 }
 
 // Daemon is the running daemon.
@@ -145,6 +149,9 @@ type Daemon struct {
 	shareMu    sync.Mutex
 	shares     map[procKey]*share
 	shareNotes map[procKey]string
+
+	// voice runs whisper-server while voice input is used.
+	voice Transcriber
 }
 
 func (d *Daemon) currentTheme() *terminal.Theme {
@@ -207,6 +214,9 @@ func Start(opts Options) (*Daemon, error) {
 	if opts.IdleExit == 0 {
 		opts.IdleExit = 30 * time.Second
 	}
+	if opts.Voice == nil {
+		opts.Voice = &voice.Server{}
+	}
 	if err := os.MkdirAll(filepath.Join(opts.StateDir, "sessions"), 0o700); err != nil {
 		return nil, err
 	}
@@ -214,7 +224,7 @@ func Start(opts Options) (*Daemon, error) {
 		subs: map[int]func(proto.Message){}, attached: map[string]map[*attachment]struct{}{}, idleAt: time.Now(),
 		started: time.Now(), env: map[string]string{}, calls: map[int64]chan proto.Message{}, watchers: map[int]func(){},
 		procProjects: map[string]model.Project{}, procMtimes: map[string]fileStamp{},
-		devRouter: devurl.NewRouter(), shares: map[procKey]*share{}, shareNotes: map[procKey]string{}}
+		devRouter: devurl.NewRouter(), shares: map[procKey]*share{}, shareNotes: map[procKey]string{}, voice: opts.Voice}
 	d.procs = procs.New(daemonRunner{d: d}, procs.OpenTrust(procs.TrustPath()))
 	d.procs.OnEvent = d.processEvent
 	d.procs.OnChange = func() {
@@ -317,6 +327,7 @@ func (d *Daemon) Stop() {
 		d.stopWeb()
 		d.stopProxy()
 		d.stopShares()
+		d.voice.Stop()
 		d.srv.Close()
 		d.reg.CloseAll()
 		d.lock.Close()
@@ -679,6 +690,12 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		return d.webStatus(), nil
 	case "web.theme":
 		return d.currentWebTheme(), nil
+	case "voice.status":
+		return d.voiceStatus(), nil
+	case "voice.reload":
+		return d.reloadVoice(), nil
+	case "voice.transcribe":
+		return d.transcribeCall(ctx, raw)
 	case "web.setTheme":
 		var t web.Theme
 		if err := json.Unmarshal(raw, &t); err != nil || len(t.Tokens) == 0 {

@@ -103,9 +103,6 @@ func (a *appState) sidebarHeader(c *ui.Context) {
 		a.cmdButton(c, iconPlus, 15, false).Tooltip("New…").Label("New").Menu(func(m *ui.Menu) {
 			a.addItems(m, a.active, true)
 		})
-		if a.cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
-			a.openProjectDialog()
-		}
 	})
 }
 
@@ -348,14 +345,15 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		active := proc.Status == procs.Starting || proc.Status == procs.Running
 		switch {
 		case proc.Link != "":
-			// Served at its Dev URL: the pill is that address, not the port.
-			link := pillShrink(c, procLinkHost(proc.Link)).Shrink(1).MinWidth(32)
+			// Served at its Dev URL: a link glyph in place of the port, as
+			// the host took the name's room. Its tip is the address.
 			if active {
-				link.Cursor(ui.CursorPointer).Tooltip("Open " + proc.Link)
-				if link.Clicked() {
+				if a.cmdButton(c, iconLink, 12, false).Tooltip(proc.Link).Label("Open " + proc.Link).Clicked() {
 					linkClicked = true
 					a.openURL(proc.Link)
 				}
+			} else {
+				ui.Icon(c, iconLink).Size(12, 12).Margin(0, 6).Shrink(0).TextColor(pal.TextFaint).Tooltip(proc.Link)
 			}
 		case proc.Port > 0:
 			port := pill(c, ":"+itoa(proc.Port))
@@ -379,11 +377,11 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		ui.Spacer(c)
 		if row.Hovered() {
 			active := proc.Status == procs.Starting || proc.Status == procs.Running
-			icon, label := iconPlus, "Start"
+			icon, label, tone := iconPlay, "Start", pal.Ok
 			if active {
-				icon, label = iconX, "Stop"
+				icon, label, tone = iconSquare, "Stop", pal.Bad
 			}
-			if a.transition(a.cmdButton(c, icon, 12, false), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
+			if a.transition(a.toneButton(c, icon, 12, false, tone), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
 				if active {
 					a.stopProcess(pi, proc.Name)
 				} else {
@@ -454,7 +452,8 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	})
 }
 
-// procLinkHost is a Dev URL without its scheme: the host a pill shows.
+// procLinkHost is a Dev URL without its scheme: the host the row's menu
+// names.
 func procLinkHost(link string) string {
 	host, _ := strings.CutPrefix(link, "https://")
 	return host

@@ -195,6 +195,7 @@ func TestSettingsCoverAll(t *testing.T) {
 		"Editor.TerminalFont": "editorFont", "Editor.TabSize": "tabSize", "Editor.Wrap": "wrap",
 		"Editor.LineNumbers": "lineNumbers", "Editor.MarkdownPreview": "markdown", "Editor.DiffSplit": "diffLayout",
 		"Terminal.OptionAsMeta": "optionMeta",
+		"Voice.Enabled":         "voice", "Voice.Model": "voice", "Voice.Language": "voice",
 	}
 	var walk func(prefix string, typ reflect.Type)
 	walk = func(prefix string, typ reflect.Type) {

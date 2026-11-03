@@ -144,9 +144,9 @@ func TestProcessDialogSuggestionFillsURL(t *testing.T) {
 	tr.Frame()
 }
 
-// A routed process shows its host in place of its port, and the host opens
-// it; one whose URL the proxy isn't serving keeps its port, with a note on
-// where to set Dev URLs up.
+// A routed process shows a link glyph in place of its port, whose tip is
+// its address and which opens it; one whose URL the proxy isn't serving
+// keeps its port, with a note on where to set Dev URLs up.
 func TestProcessRowDevURL(t *testing.T) {
 	setConfigHome(t, t.TempDir())
 	a := newTestApp(t)
@@ -157,12 +157,24 @@ func TestProcessRowDevURL(t *testing.T) {
 	a.procList[projectID][0].Link = "https://shop.localhost"
 	a.settings.OpenLinks = "pane"
 	tr.Frame()
-	if !tr.HasText("shop.localhost") || tr.HasText(":5173") {
-		t.Fatalf("the row does not show the host in place of the port: %v", tr.Texts())
+	if tr.HasText(":5173") {
+		t.Fatalf("the row still shows the port beside its Dev URL: %v", tr.Texts())
 	}
-	if err := tr.Click("shop.localhost"); err != nil {
-		t.Fatal(err)
+	if _, ok := tr.Find("shop.localhost"); ok {
+		t.Fatalf("the row spells out the host, which takes the name's room: %v", tr.Texts())
 	}
+	link, ok := tr.Find("Open https://shop.localhost")
+	if !ok || link.X > a.sidebarWidth() || link.W > 28 {
+		t.Fatalf("the row has no link glyph: found=%v rect=%+v", ok, link)
+	}
+	tr.Move(link.X+link.W/2, link.Y+link.H/2)
+	tr.Frame()
+	tr.Advance(700 * time.Millisecond)
+	tr.Frame()
+	if _, ok := tr.Find("https://shop.localhost"); !ok {
+		t.Fatalf("the link's tip is not its address: %v", tr.Texts())
+	}
+	tr.ClickAt(link.X+link.W/2, link.Y+link.H/2)
 	tr.Frame()
 	var opened bool
 	for _, url := range a.paneURLs {
@@ -174,11 +186,15 @@ func TestProcessRowDevURL(t *testing.T) {
 		t.Fatalf("clicking the host opened nothing: %v", a.paneURLs)
 	}
 
-	// The process's tab and its pane header name the host too.
+	if a.activeView == tabProcess {
+		t.Fatal("clicking the link also opened the process's tab")
+	}
+
+	// The process's tab and its pane header name the host.
 	a.showProcess(a.active, "web")
 	tr.Frame()
-	if n := countText(tr, "shop.localhost"); n < 3 {
-		t.Fatalf("the host shows %d times, want the row, the tab and the header: %v", n, tr.Texts())
+	if n := countText(tr, "shop.localhost"); n < 2 {
+		t.Fatalf("the host shows %d times, want the tab and the header: %v", n, tr.Texts())
 	}
 
 	// The row's menu opens it as well.

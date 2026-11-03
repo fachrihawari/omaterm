@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"omaterm/internal/voice"
 )
 
 //go:embed assets
@@ -33,6 +36,9 @@ type Daemon interface {
 	// Watch calls fn as the panes change, until stopped. Unlike a socket
 	// subscriber, a watcher is not an app.
 	Watch(fn func()) (stop func())
+	// Transcribe writes down a recording, a WAV, in lang ("" for the
+	// settings' language).
+	Transcribe(ctx context.Context, wav []byte, lang string) (string, error)
 }
 
 // Server is the web access server.
@@ -47,6 +53,8 @@ type Server struct {
 	mu       sync.Mutex
 	pairs    map[string][]time.Time
 	pairsAll []time.Time
+	// voices are each device's recent recordings, to limit them.
+	voices map[string][]time.Time
 	// conns are the open WebSockets and the devices they serve: closing
 	// the server or signing a device out ends them, which http.Server
 	// does not do for a connection it has handed over.
@@ -183,6 +191,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions", s.auth(s.create))
 	mux.HandleFunc("GET /api/panes/{id}/attach", s.auth(s.attach))
 	mux.HandleFunc("POST /api/logout", s.auth(s.logout))
+	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))
+	mux.HandleFunc("POST /api/voice", s.auth(s.transcribe))
 	return secure(mux)
 }
 
@@ -455,6 +465,102 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, res)
+}
+
+// maxVoiceBytes caps a recording, apart from the JSON calls' limit: two
+// minutes of 16 kHz 16-bit mono is 3.84 MB.
+const maxVoiceBytes = 4 << 20
+
+// voiceLimit is how many recordings a minute one device may send.
+const voiceLimit = 20
+
+// voiceOn is voice input as the daemon tells it; off when it can't tell.
+func (s *Server) voiceOn(ctx context.Context) (voice.Status, bool) {
+	v, err := s.d.Handle(ctx, "voice.status", nil)
+	st, _ := v.(voice.Status)
+	if err != nil || !st.Enabled {
+		return voice.Status{}, false
+	}
+	return st, true
+}
+
+// voiceStatus tells the page whether to show the mic, and why it can't
+// record yet. Off, it is only {"enabled":false}.
+func (s *Server) voiceStatus(w http.ResponseWriter, r *http.Request) {
+	st, _ := s.voiceOn(r.Context())
+	// Where the engine is on this computer is none of the phone's business.
+	st.Engine, st.EngineOnPATH = "", false
+	writeJSON(w, st)
+}
+
+// allowVoice tells whether the device may send another recording now.
+func (s *Server) allowVoice(device string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if s.voices == nil {
+		s.voices = map[string][]time.Time{}
+	}
+	for d, times := range s.voices {
+		if times = recent(times, now); len(times) == 0 {
+			delete(s.voices, d)
+		} else {
+			s.voices[d] = times
+		}
+	}
+	if len(s.voices[device]) >= voiceLimit {
+		return false
+	}
+	s.voices[device] = append(s.voices[device], now)
+	return true
+}
+
+// transcribe writes down a recording, a WAV the page made, as text the
+// page puts in the compose box. Off, there is no such route.
+func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
+	if _, on := s.voiceOn(r.Context()); !on {
+		http.NotFound(w, r)
+		return
+	}
+	d := r.Context().Value(deviceKey{}).(Device)
+	if !s.allowVoice(d.ID) {
+		http.Error(w, "too many recordings: wait a minute", http.StatusTooManyRequests)
+		return
+	}
+	lang := r.URL.Query().Get("lang")
+	if lang != "" && !voice.ValidLanguage(lang) {
+		http.Error(w, "unknown language", http.StatusBadRequest)
+		return
+	}
+	wav, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxVoiceBytes))
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		http.Error(w, "the recording is too long", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if _, err := voice.CheckWAV(wav); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	text, err := s.d.Transcribe(ctx, wav, lang)
+	var notReady *voice.NotReadyError
+	switch {
+	case errors.Is(err, voice.ErrOff):
+		http.NotFound(w, r)
+	case errors.As(err, &notReady):
+		http.Error(w, notReady.Reason, http.StatusConflict)
+	case err != nil:
+		log.Printf("web: voice: %v", err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+	default:
+		writeJSON(w, map[string]string{"text": text})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

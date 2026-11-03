@@ -337,7 +337,8 @@ so your sessions come back when you log in.
 
 Stage, commit, stash, fetch, pull and push from the Git panel. There is a
 commit graph, side-by-side and inline diffs (images too), a file tree, and an
-editor with syntax highlighting and Markdown preview.
+editor with syntax highlighting and Markdown preview. PDFs, audio and video
+open in the editor too, as a preview.
 
 | Git panel | Diff |
 | --- | --- |
@@ -390,6 +391,15 @@ keys the bar has, and in what order; omaterm keeps that for each browser. The
 keyboard: **Send** pastes it and presses Enter, **Insert** only pastes it.
 Keys reach the program as it asked for them, so Ctrl+Enter and Shift+Tab work
 in agents that take them.
+
+**Voice input** puts a mic in the compose box: speak a prompt, and
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) writes it down on your
+computer into the box, to check before you send it. On the desktop, on Linux
+and macOS, `Ctrl+Shift+Space` (`⇧⌘Space`) or the mic in a terminal pane's
+header starts recording, and again stops it: the text is pasted into the
+pane, never with Enter, and `Esc` drops it. It is off until you turn it on in
+**Settings → Voice** and download a model there; the phone needs web access
+over HTTPS (Tailscale or Cloudflare) for its microphone.
 
 <br clear="right">
 
@@ -456,6 +466,7 @@ Code, Codex, Pi, OpenCode and Antigravity to use it. Every pane knows where it r
 | Close the pane, or the tab | `Ctrl+W` | `⌘W` |
 | Split right / down | `Ctrl+Shift+R` / `Ctrl+Shift+D` | `⇧⌘R` / `⇧⌘D` |
 | Zoom pane | `Ctrl+Shift+Enter` | `⇧⌘↩` |
+| Dictate into the pane (voice input on; not on Windows) | `Ctrl+Shift+Space` | `⇧⌘Space` |
 | Go to tab 1–9 | `Alt+1` … `Alt+9` | `⌘1` … `⌘9` |
 | Go to project 1–9 | `Alt+Shift+1` … `Alt+Shift+9` | `⌥⌘1` … `⌥⌘9` |
 | Next / previous session | `Alt+↓` / `Alt+↑` | `⌥↓` / `⌥↑` |

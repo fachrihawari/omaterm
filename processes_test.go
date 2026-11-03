@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"image/color"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 
 	"omaterm/internal/procs"
 	"omaterm/internal/proto"
+	"omaterm/internal/theme"
 )
 
 func TestProcessSidebarAndTab(t *testing.T) {
@@ -226,5 +228,58 @@ func TestLocalProcessesCannotShare(t *testing.T) {
 	}
 	if err := host.Unshare("p", "web"); err != nil {
 		t.Fatalf("Unshare: %v", err)
+	}
+}
+
+// A process's Start is a play glyph that turns green under the pointer,
+// and its Stop a square that turns red, in a dark and a light theme.
+func TestProcessButtonTones(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	defer a.applyTheme(theme.BuiltinDark())
+	projectID := a.projects[a.active].ID
+	a.procList = map[string][]procs.Proc{projectID: {
+		{Def: procs.Def{Name: "web", Command: "serve"}, Status: procs.Stopped, Session: procs.SessionID(projectID, "web"), Trusted: true},
+		{Def: procs.Def{Name: "api", Command: "serve"}, Status: procs.Running, Session: procs.SessionID(projectID, "api"), Trusted: true},
+	}}
+	for _, th := range []theme.Source{theme.BuiltinDark(), theme.BuiltinLight()} {
+		a.applyTheme(th)
+		tr := ui.NewTester(a.view, 1440, 900)
+		tr.Frame()
+		for _, c := range []struct {
+			row, label string
+			tone       ui.Color
+		}{{"web", "Start", pal.Ok}, {"api", "Stop", pal.Bad}} {
+			row, ok := tr.Find(c.row)
+			if !ok {
+				t.Fatalf("%s row is missing", c.row)
+			}
+			tr.Move(row.X+40, row.Y+row.H/2)
+			tr.Frame()
+			b, ok := tr.Find(c.label)
+			if !ok {
+				t.Fatalf("hovering %s shows no %s: %v", c.row, c.label, tr.Texts())
+			}
+			want := color.RGBA{c.tone.R, c.tone.G, c.tone.B, 255}
+			toned := func() bool {
+				img := tr.Image()
+				for y := b.Y; y < b.Y+b.H; y++ {
+					for x := b.X; x < b.X+b.W; x++ {
+						if dist(at(img, x, y), want) < 40 {
+							return true
+						}
+					}
+				}
+				return false
+			}
+			if toned() {
+				t.Errorf("dark=%v: %s is tinted before the pointer is on it", pal.Dark, c.label)
+			}
+			tr.Move(b.X+b.W/2, b.Y+b.H/2)
+			tr.Frame()
+			if !toned() {
+				t.Errorf("dark=%v: %s under the pointer is not tinted %v", pal.Dark, c.label, want)
+			}
+		}
 	}
 }

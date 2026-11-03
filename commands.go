@@ -243,6 +243,8 @@ var commandRegistry = append([]Command{
 	{ID: "pane.zoom", Title: "Zoom Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.toggleZoom() }},
+	{ID: "voice.dictate", Title: "Dictate", Category: "Terminal",
+		Run: func(a *appState, c *ui.Context) { a.toggleDictation(c) }},
 	{ID: "terminal.closePane", Title: "Close Terminal Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.closeActivePane(c) }},

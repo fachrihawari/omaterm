@@ -23,6 +23,7 @@ func (a *appState) view(c *ui.Context) {
 	// Keyboard Shortcuts overlay.
 	a.registerKeybindings(c)
 	a.overlayWindowKeys(c)
+	a.dictationKeys(c)
 	// A dialog answers first: an overlay under it goes, and the omaterm
 	// command's actions wait for it, as the window's keys do. Run over a
 	// dialog, the palette covered it, two scrims deep.

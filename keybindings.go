@@ -238,6 +238,10 @@ func keybindingsFor(mac bool) []keyBinding {
 		{"terminal.splitDown", combo(cmd|ui.Shift, ui.KeyD), scopeTerminal},
 		{"terminal.splitRight", combo(cmd|ui.Shift, ui.KeyR), scopeTerminal},
 		{"pane.zoom", combo(cmd|ui.Shift, ui.KeyEnter), scopeTerminal},
+		// Voice input, into the terminal pane with the keyboard: Space,
+		// as the push-to-talk keys are; ⇧⌘Space on macOS, where ⌘Space
+		// is Spotlight's and ⌃⌘Space the emoji picker's.
+		{"voice.dictate", combo(cmd|ui.Shift, ui.KeySpace), scopeGlobal},
 
 		// Browser panes: Ctrl+Shift+O opens one (Ctrl+O opens a project),
 		// and the browser's own keys work while one has the keyboard.

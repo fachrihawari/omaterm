@@ -120,9 +120,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           rel="whisper-$TAG"
-          if ! gh release view "$rel" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$rel" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-              --prerelease --latest=false --title "whisper-server $TAG" \
-              --notes "whisper.cpp $TAG's whisper-server, built for omaterm's voice input (Settings › Voice). MIT, © The ggml authors: see LICENSE in each archive."
+          # The app pins these archives' SHA-256s, and a build isn't
+          # byte for byte the same twice: a release once published is
+          # never replaced, or every download of the engine fails its
+          # check. Building a tag again means deleting its release first,
+          # then pinning the new sums.
+          if gh release view "$rel" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$rel is published already, its checksums pinned in internal/voice/catalog.go: delete it first to build it again" >&2
+            exit 1
           fi
-          gh release upload "$rel" --repo "$GITHUB_REPOSITORY" --clobber dist/whisper-server-*.tar.gz dist/SHA256SUMS
+          gh release create "$rel" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false --title "whisper-server $TAG" \
+            --notes "whisper.cpp $TAG's whisper-server, built for omaterm's voice input (Settings › Voice). MIT, © The ggml authors: see LICENSE in each archive."
+          gh release upload "$rel" --repo "$GITHUB_REPOSITORY" dist/whisper-server-*.tar.gz dist/SHA256SUMS

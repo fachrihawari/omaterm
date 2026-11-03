@@ -1,0 +1,235 @@
+// Package voice turns speech into text for web access: the phone records,
+// and whisper.cpp's whisper-server, run beside the session daemon, writes
+// down what was said. The engine and its models are downloaded from
+// Settings › Voice, each checked against a SHA-256 pinned here.
+//
+// Voice is off until the user turns it on: while off, nothing downloads and
+// no whisper-server starts.
+package voice
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+)
+
+// Settings are settings.json's "voice": the app writes them, the daemon
+// reads them.
+type Settings struct {
+	Enabled bool `json:"enabled"`
+	// Model is the name of the model in use, of Models.
+	Model string `json:"model"`
+	// Language is what it listens for: a code of Languages, or several
+	// joined by commas ("id,en"), whisper telling which of them each
+	// recording is in. Not "auto", by default: whisper guessing among
+	// all, a small model on a short recording hears Russian or Chinese
+	// in Indonesian.
+	Language string `json:"language"`
+}
+
+// DefaultModel is the settings' model.
+const DefaultModel = "small"
+
+// DefaultLanguage is the settings' language: the system's, as its locale
+// tells, or English.
+var DefaultLanguage = localeLanguage(os.Getenv)
+
+// localeLanguage is the language of the locale getenv tells (LC_ALL,
+// LC_MESSAGES or LANG, as id_ID.UTF-8), when whisper knows it; else
+// English. Never "auto".
+func localeLanguage(getenv func(string) string) string {
+	for _, k := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		v := getenv(k)
+		if v == "" {
+			continue
+		}
+		parts := strings.FieldsFunc(v, func(r rune) bool { return r == '_' || r == '.' || r == '@' || r == '-' })
+		if len(parts) == 0 {
+			continue
+		}
+		code := strings.ToLower(parts[0])
+		if code == "jv" {
+			code = "jw" // whisper's code for Javanese
+		}
+		if code != "auto" && KnownLanguage(code) {
+			return code
+		}
+		return "en" // C, POSIX, or one whisper doesn't know
+	}
+	return "en"
+}
+
+// Model is one of whisper.cpp's models, from Hugging Face.
+type Model struct {
+	// Name is its name in the settings, Title in Settings › Voice.
+	Name, Title, File string
+	// Size is its size in bytes, as Hugging Face lists it.
+	Size   int64
+	SHA256 string
+	// Note says what it is good for, in a few words.
+	Note string
+}
+
+// modelRevision is the commit of huggingface.co/ggerganov/whisper.cpp
+// the models are downloaded at, so a URL always gives the bytes pinned.
+const modelRevision = "5359861c739e955e79d9a303bcbc70fb988958b1"
+
+// Models are the models offered, smallest first. All are multilingual:
+// one covers every language, so a language is a setting, not a download.
+// The SHA-256s are Hugging Face's LFS ids for these files.
+var Models = []Model{
+	{Name: "tiny", Title: "Tiny", File: "ggml-tiny.bin", Size: 77691713,
+		SHA256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21", Note: "Fastest, rough outside English"},
+	{Name: "base", Title: "Base", File: "ggml-base.bin", Size: 147951465,
+		SHA256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe", Note: "Fast, fine for short English prompts"},
+	{Name: "small", Title: "Small", File: "ggml-small.bin", Size: 487601967,
+		SHA256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b", Note: "Recommended: good Indonesian and English"},
+	{Name: "large-v3-turbo-q5_0", Title: "Large v3 Turbo", File: "ggml-large-v3-turbo-q5_0.bin", Size: 574041195,
+		SHA256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2", Note: "Best, slower on a laptop"},
+}
+
+// URL is where the model is downloaded from.
+func (m Model) URL() string {
+	return "https://huggingface.co/ggerganov/whisper.cpp/resolve/" + modelRevision + "/" + m.File
+}
+
+// ModelByName finds a model of Models.
+func ModelByName(name string) (Model, bool) {
+	for _, m := range Models {
+		if m.Name == name {
+			return m, true
+		}
+	}
+	return Model{}, false
+}
+
+// EngineVersion is the whisper.cpp tag the engine builds are of: the
+// release whisper-<EngineVersion> that .github/workflows/whisper.yml
+// makes.
+const EngineVersion = "v1.9.5"
+
+// Engine is a build of whisper-server for one system, a tar.gz holding
+// the one executable.
+type Engine struct {
+	OS, Arch string
+	SHA256   string
+	// Size is about how big the download is, for the button.
+	Size int64
+}
+
+// Engines are the builds published, their SHA-256s from the release's
+// SHA256SUMS: Download refuses a build whose checksum differs, so
+// nothing unchecked ever runs.
+var Engines = []Engine{
+	{OS: "linux", Arch: "amd64", SHA256: "806f2062e1a98c010a05e5ce1e03d52d82b773ea4a0f151948b85272176b875e", Size: 1972478},
+	{OS: "linux", Arch: "arm64", SHA256: "b8556430c6f38eb2eb58220bfb4c9fdf139fdbc7e07dee4568fa145a0373e2d2", Size: 1848595},
+	{OS: "darwin", Arch: "arm64", SHA256: "fac4ab246a20ff76ea7aaef965fe0439dea66e567c93d002a984833ef95f8f6b", Size: 2206660},
+	{OS: "darwin", Arch: "amd64", SHA256: "f19edee6b3aeee04c022a93b475e16a0b1f5422298721e4da38667a19eb7e71c", Size: 1435242},
+}
+
+// Asset is the build's file name on the release.
+func (e Engine) Asset() string { return "whisper-server-" + e.OS + "-" + e.Arch + ".tar.gz" }
+
+// URL is where the build is downloaded from.
+func (e Engine) URL() string {
+	return "https://github.com/fachrihawari/omaterm/releases/download/whisper-" + EngineVersion + "/" + e.Asset()
+}
+
+// Published tells whether the build's checksum is pinned, which a
+// download needs.
+func (e Engine) Published() bool { return e.SHA256 != "" }
+
+// EngineForHost is the build for this system, if there is one.
+func EngineForHost() (Engine, bool) {
+	for _, e := range Engines {
+		if e.OS == runtime.GOOS && e.Arch == runtime.GOARCH {
+			return e, true
+		}
+	}
+	return Engine{}, false
+}
+
+// Language is a language whisper knows, for the pickers.
+type Language struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+// Languages are offered in the pickers: those most asked for, then the
+// rest whisper does well, by name, then "auto", whisper guessing each
+// time, last: it guesses wrong on short recordings. The codes are
+// whisper's (Javanese is "jw").
+var Languages = []Language{
+	{"id", "Indonesian"}, {"en", "English"}, {"jw", "Javanese"}, {"su", "Sundanese"}, {"ms", "Malay"},
+	{"ar", "Arabic"}, {"zh", "Chinese"}, {"nl", "Dutch"}, {"tl", "Filipino"}, {"fr", "French"},
+	{"de", "German"}, {"hi", "Hindi"}, {"it", "Italian"}, {"ja", "Japanese"}, {"ko", "Korean"},
+	{"pl", "Polish"}, {"pt", "Portuguese"}, {"ru", "Russian"}, {"es", "Spanish"}, {"th", "Thai"},
+	{"tr", "Turkish"}, {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
+	{"auto", "Detect Each Time"},
+}
+
+// ParseLanguages is the languages a setting names: one code, or several
+// joined by commas ("id,en") for whisper to tell between, in the order
+// given, each once. It is nil for "auto", or for a code it doesn't know.
+func ParseLanguages(s string) []string {
+	var codes []string
+	for _, code := range strings.Split(s, ",") {
+		code = strings.TrimSpace(code)
+		if code == "auto" || !KnownLanguage(code) {
+			return nil
+		}
+		if !slices.Contains(codes, code) {
+			codes = append(codes, code)
+		}
+	}
+	return codes
+}
+
+// ValidLanguage tells a language setting voice input takes: "auto", or
+// codes of Languages, one or several.
+func ValidLanguage(s string) bool {
+	return s == "auto" || ParseLanguages(s) != nil
+}
+
+// LanguageName names a language setting: "Indonesian or English", or
+// "any language" for "auto".
+func LanguageName(s string) string {
+	codes := ParseLanguages(s)
+	if codes == nil {
+		return "any language"
+	}
+	names := make([]string, len(codes))
+	for i, code := range codes {
+		for _, l := range Languages {
+			if l.Code == code {
+				names[i] = l.Name
+			}
+		}
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
+}
+
+// KnownLanguage tells whether code is one of Languages.
+func KnownLanguage(code string) bool {
+	for _, l := range Languages {
+		if l.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// Dir is where the engine and models are kept, under the state folder.
+func Dir(stateDir string) string { return filepath.Join(stateDir, "voice") }
+
+// ModelPath is where a model is kept in dir.
+func ModelPath(dir string, m Model) string { return filepath.Join(dir, m.File) }
+
+// EnginePath is where the downloaded whisper-server is kept in dir: not
+// in the state folder's bin/, which panes have on their PATH.
+func EnginePath(dir string) string { return filepath.Join(dir, "bin", "whisper-server") }

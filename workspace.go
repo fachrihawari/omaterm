@@ -265,6 +265,17 @@ func (a *appState) closeProjectPanes(id string) {
 			}
 		}
 	}
+	// Its media editors' web views and served files go with it.
+	editors := a.editors
+	if id != a.wsOwner {
+		editors = nil
+		if ws := a.ws[id]; ws != nil {
+			editors = ws.editors
+		}
+	}
+	for _, doc := range editors {
+		doc.dropMedia()
+	}
 	delete(a.ws, id)
 }
 

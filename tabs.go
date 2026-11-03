@@ -278,6 +278,7 @@ func (a *appState) closeTab(i int) {
 	}
 	t := a.tabs[i]
 	if t.Kind == tabEditor && t.Path != "" {
+		a.editors[t.Path].dropMedia()
 		delete(a.editors, t.Path)
 	}
 	if t.Kind != tabProcess && t.Split != nil { // any tab a split ever got, so its shells end

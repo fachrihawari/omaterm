@@ -30,6 +30,20 @@ func (a *appState) openEditor(path string) {
 func (a *appState) openEditorAt(path string, line, col int) {
 	if _, ok := a.editors[path]; !ok {
 		abs := a.docPath(path)
+		// A PDF, a song or a video is streamed to a web view, never read:
+		// a 2 GB video needs no size cap.
+		if kind := mediaKind(path); kind != "" {
+			if _, err := os.Stat(abs); err != nil {
+				a.toast(nil, "Can't open "+path+": "+errText(err))
+				return
+			}
+			a.editors[path] = a.openMedia(path, kind)
+			if a.win != nil {
+				mygo.App.AddRecentDocument(abs)
+			}
+			a.focusEditorTab(path)
+			return
+		}
 		if st, err := os.Stat(abs); err == nil && st.Size() > maxEditorSize && !isImagePath(path) {
 			a.editors[path] = &openFile{Path: path, Binary: true, TooLarge: true, Size: st.Size()}
 			a.focusEditorTab(path)
@@ -136,6 +150,9 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 			ui.Text(c, "No file open").FontSize(13).TextColor(pal.TextMuted)
 			ui.Text(c, keyLabels("file.quickOpen")+" to open a file").FontSize(11).TextColor(pal.TextFaint).Margin(4, 0, 0, 0)
 		})
+	}
+	if doc.Media != "" {
+		return a.mediaView(c, doc)
 	}
 	if doc.Image != nil && (doc.State == nil || doc.Preview) {
 		return a.imageView(c, doc)
@@ -330,6 +347,10 @@ func writeFileAtomic(path string, data []byte) error {
 // unmodified editor takes them, so it never shows (or saves back) a
 // stale text. A modified one keeps its text, and its save asks.
 func (a *appState) checkDisk(doc *openFile) {
+	if doc != nil && doc.Media != "" {
+		a.checkMedia(doc)
+		return
+	}
 	if doc == nil || doc.State == nil || doc.Binary {
 		return
 	}

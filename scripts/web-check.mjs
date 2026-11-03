@@ -9,6 +9,10 @@
 // on, taps the key bar's keys and the compose box's Send, and compares the
 // bytes the program read with what each key should send. It prints one line
 // per check and exits 1, saying which bytes arrived, when one is wrong.
+//
+// Voice input is checked too, with Chromium's fake microphone and a fake
+// whisper-server on the PATH: the mic records, the text lands in the
+// compose box and nothing is sent; turned off, the mic is gone.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -53,6 +57,38 @@ appendFileSync(${JSON.stringify(logFile)}, "");
 setInterval(() => {}, 1 << 30);
 `);
 
+// Voice input is on, with a model and a whisper-server that answers with
+// the language it was asked for and the WAV's sample rate.
+const name = env.OMATERM_DEV === "1" ? "omaterm-dev" : "omaterm";
+const settingsFile = join(env.XDG_CONFIG_HOME, name, "settings.json");
+const setVoice = (enabled) => {
+  mkdirSync(join(env.XDG_CONFIG_HOME, name), { recursive: true });
+  writeFileSync(settingsFile, JSON.stringify({ voice: { enabled, model: "tiny", language: "id" } }));
+};
+setVoice(true);
+mkdirSync(join(env.XDG_STATE_HOME, name, "voice"), { recursive: true });
+writeFileSync(join(env.XDG_STATE_HOME, name, "voice", "ggml-tiny.bin"), "not a model");
+const fakeBin = join(tmp, "fakebin");
+mkdirSync(fakeBin);
+writeFileSync(join(fakeBin, "whisper-server"), `#!${process.execPath}
+const { createServer } = require("node:http");
+const port = process.argv[process.argv.indexOf("--port") + 1];
+createServer((req, res) => {
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", () => {
+    const body = Buffer.concat(chunks);
+    const at = body.indexOf("RIFF");
+    const rate = at < 0 ? 0 : body.readUInt32LE(at + 24);
+    const samples = at < 0 ? 0 : body.readUInt32LE(at + 40) / 2;
+    const lang = /name="language"\\r\\n\\r\\n([^\\r]*)/.exec(body.toString("latin1"))?.[1];
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ text: \` hello from the phone (\${lang}, \${rate} Hz, \${samples > 0 ? "sound" : "silence"})\\n\` }));
+  });
+}).listen(port, "127.0.0.1");
+`, { mode: 0o755 });
+env.PATH = `${fakeBin}:${env.PATH}`;
+
 const hex = (s) => Buffer.from(s, "latin1").toString("hex");
 const got = () => (existsSync(logFile) ? readFileSync(logFile, "utf8") : "");
 const show = (h) => (h ? JSON.stringify(Buffer.from(h, "hex").toString("latin1")) : "nothing");
@@ -75,7 +111,8 @@ try {
   const base = `http://127.0.0.1:${port}`;
 
   chrome = spawn(process.env.CHROMIUM || "chromium", ["--headless=new", `--remote-debugging-port=${debugPort}`,
-    `--user-data-dir=${join(tmp, "chrome")}`, "about:blank"], { stdio: "ignore" });
+    `--user-data-dir=${join(tmp, "chrome")}`, "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
+    "--autoplay-policy=no-user-gesture-required", "about:blank"], { stdio: "ignore" });
   let targets;
   for (let i = 0; i < 50 && !targets; i++) {
     try { targets = await (await fetch(`http://127.0.0.1:${debugPort}/json`)).json(); } catch { await sleep(200); }
@@ -170,6 +207,50 @@ try {
     await evaluate(`document.querySelector(".compose-box").focus()`);
     await cdp("Input.insertText", { text: "just text" });
     await tap(".compose-insert");
+  });
+
+  // waitBox waits for the compose box to hold text matching want.
+  const waitBox = async (want) => {
+    let v = "";
+    for (let i = 0; i < 80; i++) {
+      v = await evaluate(`document.querySelector(".compose-box").value`);
+      if (want.test(v)) return v;
+      await sleep(100);
+    }
+    throw new Error(`the compose box has ${JSON.stringify(v)}`);
+  };
+  // speak records about a second and a half with the mic.
+  const speak = async () => {
+    if (await evaluate(`document.querySelector(".compose-mic").hidden`)) throw new Error("no mic in the compose box");
+    await tap(".compose-mic");
+    await sleep(1500);
+    if (!(await evaluate(`document.querySelector(".compose-mic").classList.contains("recording")`))) {
+      throw new Error("not recording: " + (await evaluate(`document.querySelector(".compose-note").textContent`)));
+    }
+    await tap(".compose-mic");
+  };
+
+  await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {
+    await tap(".btn-compose");
+    await sleep(800);
+    const chip = await evaluate(`document.querySelector(".compose-lang span").textContent`);
+    if (chip !== "ID") throw new Error(`the language chip says ${chip}, not ID`);
+    await speak();
+    await waitBox(/^hello from the phone \(id, 16000 Hz, sound\)$/);
+  });
+  await check("voice: the chip's language, added after what the box had", "", async () => {
+    await evaluate(`(() => { const s = document.querySelector(".compose-lang select"); s.value = "en"; s.dispatchEvent(new Event("change")); })()`);
+    await speak();
+    await waitBox(/^hello from the phone \(id, 16000 Hz, sound\) hello from the phone \(en, 16000 Hz, sound\)$/);
+  });
+  await check("voice: Send then sends what was written down", hex("hello from the phone (id, 16000 Hz, sound) hello from the phone (en, 16000 Hz, sound)\r"), () => tap(".compose-send"));
+  await check("voice: off on the computer, the mic and chip are gone", "", async () => {
+    setVoice(false);
+    await tap(".btn-compose");
+    await sleep(800);
+    const shown = await evaluate(`!document.querySelector(".compose-mic").hidden || !document.querySelector(".compose-lang").hidden`);
+    if (shown) throw new Error("the mic still shows");
+    await tap(".compose-close");
   });
 } catch (err) {
   failed++;
