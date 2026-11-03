@@ -71,14 +71,16 @@ func (a *appState) refreshVoice() {
 	}()
 }
 
-// setVoice turns voice input on or off. Off, downloads stop and the daemon
-// stops whisper-server; what was downloaded stays.
+// setVoice turns voice input on or off. Off, downloads stop, a dictation
+// is dropped, and the daemon stops whisper-server; what was downloaded
+// stays.
 func (a *appState) setVoice(on bool) {
 	a.settings.Voice.Enabled = on
 	if !on {
 		for _, dl := range a.settingsUI.data.voice.downloads {
 			dl.cancel()
 		}
+		a.cancelDictation()
 	}
 	a.voiceChanged()
 }
@@ -138,7 +140,7 @@ func (a *appState) settingsVoice(c *ui.Context) {
 	if d.have == nil {
 		a.refreshVoice()
 	}
-	a.settingsGroup(c, "voice", "", "Voice works in Web Access over HTTPS (Tailscale or Cloudflare): a phone’s browser gives the microphone to secure pages only.", func() {
+	a.settingsGroup(c, "voice", "", a.voiceNote(), func() {
 		on := v.Enabled
 		a.settingDefRow(c, "voice", func() {
 			if d.running {
@@ -162,7 +164,7 @@ func (a *appState) settingsVoice(c *ui.Context) {
 			for i, l := range voice.Languages {
 				opts[i] = [2]string{l.Code, l.Name}
 			}
-			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "What the phone listens for, unless its language chip says otherwise."}, func() {
+			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "What it listens for: on the phone, unless its language chip says otherwise."}, func() {
 				if settingsPopup(c, "voiceLanguage", &lang, opts) {
 					v.Language = lang
 					a.voiceChanged()
@@ -177,6 +179,17 @@ func (a *appState) settingsVoice(c *ui.Context) {
 			}
 		})
 	}
+}
+
+// voiceNote says where voice input works: in a terminal pane, with the
+// key or the header's mic (not on Windows, nor without the session
+// daemon), and on the phone over HTTPS.
+func (a *appState) voiceNote() string {
+	phone := "On your phone it works in web access over HTTPS (Tailscale or Cloudflare): a phone’s browser gives the microphone to secure pages only."
+	if startRecording == nil {
+		return phone
+	}
+	return "Here, press " + keyPrimary("voice.dictate") + " or the mic in a terminal pane’s header to start and again to stop (Esc drops it): the text is pasted into the pane, without Enter. " + phone
 }
 
 // voiceEngineRow says which whisper-server runs, or downloads one.

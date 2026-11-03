@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"os"
@@ -9,6 +11,9 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+
+	"omaterm/internal/voice"
+	"omaterm/internal/web"
 )
 
 func TestMediaKind(t *testing.T) {
@@ -137,5 +142,70 @@ func TestFileServerPDF(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "application/pdf" {
 		t.Fatalf("%d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+}
+
+// The recorder page (macOS's voice input) is served under its token with
+// web access's voice.js, and takes the WAV it posts, or why it couldn't
+// record; nothing else.
+func TestRecorderPage(t *testing.T) {
+	rec := newPageRecorder()
+	u, release, err := mediaFiles.serveRecorder(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	res, err := http.Get(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if csp := res.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") || !strings.Contains(string(page), `src="record.js"`) {
+		t.Fatalf("page %q, CSP %q", page, csp)
+	}
+	res, _ = http.Get(u + "voice.js")
+	js, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if !bytes.Equal(js, web.VoiceScript()) || len(js) == 0 {
+		t.Fatal("voice.js isn't web access's")
+	}
+	if res, _ := http.Post(u+"wav", "audio/wav", strings.NewReader("not a wav")); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a bad WAV: %s", res.Status)
+	}
+	<-rec.done
+	if rec.err == nil {
+		t.Fatal("a bad WAV was taken")
+	}
+
+	rec = newPageRecorder()
+	u2, release2, _ := mediaFiles.serveRecorder(rec)
+	defer release2()
+	wav := make([]byte, 44+3200)
+	copy(wav, "RIFF")
+	binary.LittleEndian.PutUint32(wav[4:], uint32(len(wav)-8))
+	copy(wav[8:], "WAVEfmt ")
+	for at, v := range map[int]uint32{16: 16, 24: voice.SampleRate, 28: 2 * voice.SampleRate, 40: 3200} {
+		binary.LittleEndian.PutUint32(wav[at:], v)
+	}
+	for at, v := range map[int]uint16{20: 1, 22: 1, 32: 2, 34: 16} {
+		binary.LittleEndian.PutUint16(wav[at:], v)
+	}
+	copy(wav[36:], "data")
+	if res, err := http.Post(u2+"wav", "audio/wav", bytes.NewReader(wav)); err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("a good WAV: %v %v", res, err)
+	}
+	<-rec.done
+	if rec.err != nil || !bytes.Equal(rec.wav, wav) {
+		t.Fatalf("got %d bytes, %v", len(rec.wav), rec.err)
+	}
+	// What came first stays: a later error doesn't replace the recording.
+	http.Post(u2+"error", "text/plain", strings.NewReader("late"))
+	if rec.err != nil {
+		t.Fatal("a later error replaced the recording")
+	}
+	release2()
+	if res, _ := http.Get(u2); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("released, the page is %s", res.Status)
 	}
 }

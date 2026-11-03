@@ -259,3 +259,15 @@ func (a *appState) press(e ui.Element) ui.Element {
 	s := e.Animate("press", b2f(!e.Pressed())*0.03+0.97, motionFast/2)
 	return e.Scale(s, s)
 }
+
+// pulse fades e out a little and back in, again and again, while it
+// shows: a recording's dot.
+func (a *appState) pulse(e ui.Element) ui.Element {
+	if a.still() {
+		return e
+	}
+	return e.Opacity(e.Keyframes("pulse", []ui.Keyframe{
+		{Value: 1},
+		{At: 700 * time.Millisecond, Value: 0.35, Ease: ui.EaseInOut},
+	}, ui.KeyframeOptions{Repeat: ui.RepeatForever, Alternate: true}))
+}

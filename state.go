@@ -156,6 +156,11 @@ type appState struct {
 	historyMu  sync.Mutex
 	processGen int // counts stops: a tick that fired before one ends there
 
+	// dictation is voice input recording, or being written down
+	// (dictation.go); voiceCheck is whether it can work.
+	dictation  *dictation
+	voiceCheck voiceCheck
+
 	projects  []project
 	active    int
 	tabs      []topTab

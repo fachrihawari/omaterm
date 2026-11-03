@@ -469,7 +469,7 @@ var settingDefs = func() []settingDef {
 		notWindows(row("webURL", "web", "Public URL", "", "tailscale tunnel")),
 
 		// Voice (drawn by its page, which tells the daemon)
-		notWindows(row("voice", "voice", "Voice input", "Speak a prompt in web access on your phone, instead of typing it.",
+		notWindows(row("voice", "voice", "Voice input", "Speak a prompt instead of typing it: into a terminal pane here, or in web access on your phone.",
 			"speech microphone mic dictation whisper speak talk transcribe language model")),
 
 		// Dev URLs (the proxy's, drawn by its page)

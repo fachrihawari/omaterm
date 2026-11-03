@@ -8,7 +8,10 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "macos": {
-    "minimumSystemVersion": "13.0"
+    "minimumSystemVersion": "13.0",
+    "infoPlist": {
+      "NSMicrophoneUsageDescription": "omaterm records your voice when you dictate into a terminal, and writes it down on this Mac."
+    }
   },
   "updates": {
     "publicKey": "FaHunv4qiHNHes409Ko7lBU/Bc9Vqkha1W5t2Cg0br8=",

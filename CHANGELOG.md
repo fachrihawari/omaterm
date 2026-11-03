@@ -25,6 +25,20 @@ one is written for the user: what changed, and why it matters.
   (Small is the one for Indonesian); turning it off stops the engine and
   hides the mic. It needs web access over HTTPS: Tailscale or Cloudflare.
 
+### Voice input on the desktop
+
+- **Dictate into a terminal.** Press **Ctrl+Shift+Space** (**⇧⌘Space**
+  on macOS), or the mic in a terminal pane's header, and talk; press it
+  again and what you said is pasted into the pane, as a paste, never with
+  Enter, so you read it before it runs. The header shows a red dot and the
+  time while it records, and a spinner while it writes it down; Esc drops
+  it. A recording stops by itself at 2 minutes. The same whisper.cpp
+  engine and model as the phone's write it down, in the language set in
+  **Settings → Voice**, and with voice input off, as it starts, there is
+  no mic and nothing records. On Linux it records with PipeWire, PulseAudio
+  or ALSA (`pw-record`, `parecord` or `arecord`); macOS asks once for the
+  microphone. Not on Windows yet.
+
 ## 0.12.4
 
 ### omaterm moves

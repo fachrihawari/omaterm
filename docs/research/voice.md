@@ -17,7 +17,12 @@ The user wanted to speak prompts on the phone instead of typing them, in several
 
 **Needs HTTPS.** A phone's browser gives the microphone to secure pages only: Tailscale and Cloudflare tunnels are HTTPS; "On your network" is plain HTTP, and there the mic says so instead of failing.
 
+**The desktop, 2026-11-03.** The user's decisions: one command, `voice.dictate`, on Ctrl+Shift+Space (⇧⌘Space on macOS: ⌘Space is Spotlight, ⌃⌘Space the emoji picker), and a mic in a terminal pane's header, a toggle, Esc dropping it; the text is pasted (bracketed when the program asks) into the pane that had the keyboard, on one line, never with Enter. It goes through the session daemon (`voice.transcribe`, the WAV base64 in the JSON: 4 MB is well under the socket's 64 MB line), so one whisper-server serves the phone and the desktop.
+- Linux records with a program, the first on the PATH of `pw-record`, `parecord`, `arecord`, as 16 kHz mono 16-bit WAV into a file of the state folder's, stopped with SIGINT, which has each finish its file; sizes a killed one left out of the header are written in, and the data cut at 2 minutes.
+- macOS has no such program: a web view loads a page from the app's loopback file server (`filesrv.go`), which records with `getUserMedia` and the phone's own `voice.js`, and posts the WAV back. Only that web view, and only for that origin, gets the microphone (`Page.SetPermissionHandler`); `NSMicrophoneUsageDescription` is in `mygo.json`, without which macOS ends the app. The web view sits in the header at one transparent pixel while it records, as WebKit may mute capture in a page it doesn't show. Unverified: built with GOOS=darwin, not run on a Mac.
+- Windows: none, as web access isn't there either.
+
 ## Not done
 - Streaming (text as you speak): whisper works on a whole recording, so the text comes once you stop.
-- Windows: web access is off there, so voice is too.
+- Windows: web access is off there, so voice is too, on the phone and the desktop.
 - Checked live: the downloads, a real `whisper-server` and a real phone are left to the user's live check.

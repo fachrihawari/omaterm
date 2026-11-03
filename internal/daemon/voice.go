@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log"
 	"time"
 
 	"omaterm/internal/client"
 	"omaterm/internal/paths"
+	"omaterm/internal/proto"
 	"omaterm/internal/voice"
 )
 
@@ -64,6 +67,62 @@ func (d *Daemon) Transcribe(ctx context.Context, wav []byte, lang string) (strin
 	}
 	m, _ := voice.ModelByName(st.Model)
 	return d.voice.Transcribe(ctx, st.Engine, voice.ModelPath(voice.Dir(d.opts.StateDir), m), wav, lang)
+}
+
+// VoiceParams are a recording the app made, to write down with
+// voice.transcribe: a WAV as voice.CheckWAV takes, in Lang ("" for the
+// settings' language). Base64 in the JSON, 4 MB of it is well under
+// proto.MaxLine.
+type VoiceParams struct {
+	WAV  []byte `json:"wav"`
+	Lang string `json:"lang,omitempty"`
+}
+
+// VoiceText is what voice.transcribe wrote down.
+type VoiceText struct {
+	Text string `json:"text"`
+}
+
+// transcribeCall is voice.transcribe: the app's recording, written down
+// as the phone's are.
+func (d *Daemon) transcribeCall(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p VoiceParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, proto.Errorf(proto.CodeUsage, "bad recording")
+	}
+	if p.Lang != "" && !voice.KnownLanguage(p.Lang) {
+		return nil, proto.Errorf(proto.CodeUsage, "unknown language "+p.Lang)
+	}
+	if _, err := voice.CheckWAV(p.WAV); err != nil {
+		return nil, proto.Errorf(proto.CodeUsage, err.Error())
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	text, err := d.Transcribe(ctx, p.WAV, p.Lang)
+	var notReady *voice.NotReadyError
+	switch {
+	case errors.Is(err, voice.ErrOff):
+		return nil, proto.Errorf(proto.CodeUsage, "Voice input is off: turn it on in Settings › Voice")
+	case errors.As(err, &notReady):
+		return nil, proto.Errorf(proto.CodeUsage, notReady.Reason)
+	case err != nil:
+		log.Printf("voice: %v", err)
+		return nil, err
+	}
+	return VoiceText{Text: text}, nil
+}
+
+// TranscribeVoice has the session daemon write down a recording of the
+// app's, in lang ("" for the settings' language).
+func TranscribeVoice(ctx context.Context, wav []byte, lang string) (string, error) {
+	c, err := client.Dial(paths.DaemonSocketPath())
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	var out VoiceText
+	err = c.CallContext(ctx, "voice.transcribe", VoiceParams{WAV: wav, Lang: lang}, &out)
+	return out.Text, err
 }
 
 // ReloadVoice tells the session daemon the voice settings changed, so it

@@ -126,6 +126,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 			a.gitChip(c, g.Branch, g.Added, g.Removed)
 		}
 		ui.Spacer(c)
+		a.dictationChip(c, id)
 		if w == 0 || w >= 300 {
 			// Narrower, the status icon by the title tells the state.
 			a.statusChip(c, info)
@@ -324,6 +325,9 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 	row := ui.Row(c.Key("ctl")).Gap(2).AlignItems(ui.Center).Shrink(0)
 	row.Opacity(a.animate(row, "show", 1, motionFast))
 	row.Children(func() {
+		if !a.isBrowser(id) && tab.Kind == tabTerminal {
+			a.micButton(c, id)
+		}
 		if splits {
 			if a.cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
 				a.splitActivePaneAt(c, id, splitVertical)

@@ -12,12 +12,12 @@ func TestPageKeyCommands(t *testing.T) {
 		false: {
 			"c:KeyL": "browser.focusAddress", "c:KeyF": "browser.find", "a:ArrowLeft": "browser.back",
 			"cs:KeyP": "app.commandPalette", "cs:KeyJ": "session.attention", "c:Comma": "app.settings",
-			"cs:KeyD": "terminal.splitDown", "a:Digit1": "tab.select1",
+			"cs:KeyD": "terminal.splitDown", "a:Digit1": "tab.select1", "cs:Space": "voice.dictate",
 		},
 		true: {
 			"m:KeyL": "browser.focusAddress", "m:KeyW": "tab.close", "m:BracketLeft": "browser.back",
 			"m:BracketRight": "browser.forward", "sm:KeyP": "app.commandPalette", "m:Comma": "app.settings",
-			"m:Digit1": "tab.select1", "am:Digit2": "project.select2",
+			"m:Digit1": "tab.select1", "am:Digit2": "project.select2", "sm:Space": "voice.dictate",
 		},
 	} {
 		keys := pageChords(keybindingsFor(mac))

@@ -84,6 +84,8 @@ func domCode(k ui.Key) string {
 		return "BracketLeft"
 	case ui.KeyBracketRight:
 		return "BracketRight"
+	case ui.KeySpace:
+		return "Space"
 	}
 	return ""
 }
