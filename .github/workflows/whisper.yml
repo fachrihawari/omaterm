@@ -1,0 +1,128 @@
+name: whisper-server
+
+# Builds whisper.cpp's whisper-server for Settings › Voice to download.
+#
+#   1. run this workflow with a whisper.cpp tag (as v1.9.5)
+#   2. it builds a static whisper-server for each system and publishes
+#      whisper-server-<os>-<arch>.tar.gz and SHA256SUMS to the release
+#      whisper-<tag>: a prerelease, which the app's updater passes over
+#   3. pin the checksums in internal/voice/catalog.go (Engines), and
+#      EngineVersion to the tag: an engine with no checksum is never
+#      downloaded
+#
+# Windows is left out: web access, and so voice input, is off there.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: whisper.cpp tag to build
+        required: true
+        default: v1.9.5
+
+permissions:
+  contents: write # the release, and the uploads to it
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # amd64 takes AVX2 and FMA (Haswell, 2013, and later): a build
+          # for the runner's own CPU could crash on the user's.
+          - name: linux-amd64
+            os: ubuntu-latest
+            cmake: -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+            ldflags: -static-libstdc++ -static-libgcc
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            ldflags: -static-libstdc++ -static-libgcc
+          # Metal's shaders go inside the executable, so it is one file.
+          - name: darwin-arm64
+            os: macos-latest
+            cmake: -DCMAKE_OSX_ARCHITECTURES=arm64 -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+          # Intel Macs: built on the Apple silicon runner, without Metal.
+          - name: darwin-amd64
+            os: macos-latest
+            cmake: -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+    steps:
+      - name: Check the tag
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "not a whisper.cpp release tag: $TAG" >&2
+            exit 1
+          fi
+
+      - name: Fetch whisper.cpp
+        run: git clone --depth 1 --branch "$TAG" https://github.com/ggml-org/whisper.cpp src
+
+      - name: Build whisper-server
+        env:
+          EXTRA: ${{ matrix.cmake }}
+          LDFLAGS_EXTRA: ${{ matrix.ldflags }}
+        run: |
+          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF -DGGML_NATIVE=OFF \
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON -DWHISPER_SDL2=OFF -DWHISPER_CURL=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS_EXTRA" $EXTRA
+          cmake --build build --config Release -j 4 --target whisper-server
+
+      # It runs, and needs nothing beyond the system's own libraries.
+      - name: Check it
+        run: |
+          bin=build/bin/whisper-server
+          if [[ "${{ matrix.name }}" == darwin-* ]]; then
+            otool -L "$bin"
+          else
+            ldd "$bin" || true
+          fi
+          if [[ "${{ matrix.name }}" != darwin-amd64 ]]; then
+            "$bin" --help >/dev/null
+          fi
+
+      - name: Package
+        run: |
+          dir="whisper-server-${{ matrix.name }}"
+          mkdir "$dir"
+          cp build/bin/whisper-server "$dir/"
+          cp src/LICENSE "$dir/LICENSE"
+          tar czf "$dir.tar.gz" "$dir"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: whisper-server-${{ matrix.name }}
+          path: whisper-server-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum whisper-server-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish to whisper-${{ inputs.tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rel="whisper-$TAG"
+          if ! gh release view "$rel" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$rel" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title "whisper-server $TAG" \
+              --notes "whisper.cpp $TAG's whisper-server, built for omaterm's voice input (Settings › Voice). MIT, © The ggml authors: see LICENSE in each archive."
+          fi
+          gh release upload "$rel" --repo "$GITHUB_REPOSITORY" --clobber dist/whisper-server-*.tar.gz dist/SHA256SUMS
