@@ -3,6 +3,16 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.13.0
+
+### In the editor
+
+- **PDFs, songs and videos open in a preview.** Ctrl+click a path an
+  agent printed, or pick the file, and a PDF shows its pages, a song or a
+  video plays and seeks, in an editor tab, however large the file. It
+  reloads when the file changes on disk, and "Open in default app" hands
+  it to the system's own viewer.
+
 ## 0.12.4
 
 ### omaterm moves

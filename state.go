@@ -126,6 +126,18 @@ type openFile struct {
 	TooLarge bool
 	Size     int64
 	Image    *imageSide // a picture: shown in the image viewer
+	// Media is "pdf", "audio" or "video" for a file shown in a web view
+	// (media.go), never read into a buffer: web is its view, mediaURL its
+	// page on the file server, and release stops serving it. mtime is the
+	// file's as last looked at: a change reloads the page.
+	Media     string
+	web       *mygo.WebView
+	mediaURL  string
+	release   func()
+	mtime     time.Time
+	webErr    string
+	focused   bool
+	yieldKeys bool
 	// Disk is the hash of the file as last read or written: a save checks
 	// it, so changes made on disk meanwhile (an agent's) aren't
 	// overwritten unasked. checked is when the file was last looked at.

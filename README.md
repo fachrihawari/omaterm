@@ -337,7 +337,8 @@ so your sessions come back when you log in.
 
 Stage, commit, stash, fetch, pull and push from the Git panel. There is a
 commit graph, side-by-side and inline diffs (images too), a file tree, and an
-editor with syntax highlighting and Markdown preview.
+editor with syntax highlighting and Markdown preview. PDFs, audio and video
+open in the editor too, as a preview.
 
 | Git panel | Diff |
 | --- | --- |
