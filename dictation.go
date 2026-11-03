@@ -254,7 +254,7 @@ func (a *appState) dictationChip(c *ui.Context, pane string) {
 	a.transition(chip, motionPop)
 	recording := d.step == dictRecording
 	if recording {
-		chip.Background(pal.Bad.Alpha(0.1)).Cursor(ui.CursorPointer).
+		chip.Background(pal.Bad.Alpha(0.1)).Cursor(ui.CursorPointer).Label("Stop Dictating").
 			Tooltip(withKeys("Stop and write it down", "voice.dictate") + " · Esc drops it")
 		if chip.Clicked() {
 			a.stopDictation()

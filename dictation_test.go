@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -115,6 +117,9 @@ func (da *dictationApp) dictate() {
 
 // Off, as by default, the header has no mic, and the key records nothing:
 // it points to Settings.
+// timerText is the recording chip's time, as 0:07.
+var timerText = regexp.MustCompile(`^\d+:\d\d$`)
+
 func TestDictationOff(t *testing.T) {
 	da := newDictationApp(t)
 	da.hover()
@@ -153,7 +158,8 @@ func TestDictationPastesWithoutEnter(t *testing.T) {
 	if d == nil || d.pane != pane || d.step != dictRecording || len(da.recs) != 1 {
 		t.Fatalf("not recording: %+v", d)
 	}
-	if !da.tr.HasText("0:00") {
+	// The timer, whatever second a slow run (-race) is at.
+	if !slices.ContainsFunc(da.tr.Texts(), func(s string) bool { return timerText.MatchString(s) }) {
 		t.Fatalf("no timer: %q", da.tr.Texts())
 	}
 	// The chip says what it listens for.
@@ -222,7 +228,7 @@ func TestDictationCancel(t *testing.T) {
 		t.Fatal("the mic didn't start recording")
 	}
 	// The chip with the timer stops it.
-	if err := da.tr.Click("0:00"); err != nil {
+	if err := da.tr.Click("Stop Dictating"); err != nil {
 		t.Fatal(err)
 	}
 	<-da.heard
