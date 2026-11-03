@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -118,8 +119,9 @@ func (s *fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // playerScript tells a format the web view can't play, rather than
-// showing a player that never starts.
-const playerScript = `document.querySelector("audio,video").addEventListener("error",()=>{document.getElementById("err").hidden=false})`
+// showing a player that never starts: an error, or nothing read of it
+// in 5s, as WebKitGTK without GStreamer's plugins stalls, never failing.
+const playerScript = `const m=document.querySelector("audio,video"),e=document.getElementById("err"),no=()=>{e.hidden=false};m.addEventListener("error",no);setTimeout(()=>{if(m.readyState===0)no()},5000)`
 
 // playerScriptHash is playerScript's, which the page's CSP allows alone.
 var playerScriptHash = scriptHash(playerScript)
@@ -129,6 +131,15 @@ func scriptHash(js string) string {
 	sum := sha256.Sum256([]byte(js))
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
+
+// cantPlay is the note of a song or video the web view can't play. On
+// Linux it is most often GStreamer's plugins that are missing.
+var cantPlay = func() string {
+	if runtime.GOOS == "linux" {
+		return "This can't be played here: open it in the default app, or install GStreamer's plugins (gst-plugins-good, gst-libav)."
+	}
+	return "This format can't be played here: open it in the default app."
+}()
 
 // playerPage is the page of a song or a video: the player, in the
 // editor's colors, and a note it shows when the format can't play.
@@ -146,6 +157,6 @@ video{max-width:100%;max-height:100%;min-height:0;flex:0 1 auto;background:#000}
 audio{width:min(560px,100%)}
 .name{font-weight:600}
 #err{color:` + f.look.Muted + `;text-align:center}
-</style></head><body>` + player + `<div id="err" hidden>This format can't be played here: open it in the default app.</div>
+</style></head><body>` + player + `<div id="err" hidden>` + cantPlay + `</div>
 <script>` + playerScript + `</script></body></html>`
 }
