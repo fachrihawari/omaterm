@@ -454,12 +454,17 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 		// Toolbar.
 		a.viewHeader(c, func() {
 			title, scope, _ := strings.Cut(a.diffTitle, " · ")
+			// A file's name in bold and its folder faint, as an editor's
+			// header has them.
+			if d := pathDir(title); d != "" {
+				title, scope = pathBase(title), d+" · "+scope
+			}
 			headerTitle(c, iconGitCompare, pal.Ok, title, scope)
 
 			// Per-file line stats, next to the title they belong to.
 			if !a.diffBinary && (a.diffAdd > 0 || a.diffDel > 0) {
 				ui.Text(c, "+"+itoa(a.diffAdd)).FontSize(10).TextColor(pal.Ok).SingleLine().Shrink(0)
-				ui.Text(c, "-"+itoa(a.diffDel)).FontSize(10).TextColor(pal.Bad).SingleLine().Shrink(0)
+				ui.Text(c, "−"+itoa(a.diffDel)).FontSize(10).TextColor(pal.Bad).SingleLine().Shrink(0)
 			}
 
 			a.diffFileStrip(c)
@@ -618,6 +623,10 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			} else if a.diffOld != nil && a.diffNew != nil {
 				ds.Old = a.diffOld
 				ds.New = a.diffNew
+				// Its counts, for the header drawn before it: the next
+				// frame shows them.
+				a.diffAdd, a.diffDel = ds.Stats()
+				a.post(func() {})
 			} else {
 				ui.Column(c).Grow(1).Center().Children(func() {
 					ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(pal.TextMuted)

@@ -123,6 +123,9 @@ var iconSaveSVG []byte
 //go:embed icons/git-fork.svg
 var iconGitGraphSVG []byte
 
+//go:embed icons/archive-restore.svg
+var iconArchiveRestoreSVG []byte
+
 //go:embed icons/archive.svg
 var iconArchiveSVG []byte
 
@@ -131,9 +134,6 @@ var iconArrowDownSVG []byte
 
 //go:embed icons/arrow-up.svg
 var iconArrowUpSVG []byte
-
-//go:embed icons/download.svg
-var iconDownloadSVG []byte
 
 //go:embed icons/square-terminal.svg
 var iconSquareTerminalSVG []byte
@@ -206,9 +206,9 @@ var (
 	iconSave           = ui.MustParseSVG(iconSaveSVG)
 	iconGitGraph       = ui.MustParseSVG(iconGitGraphSVG)
 	iconArchive        = ui.MustParseSVG(iconArchiveSVG)
+	iconArchiveRestore = ui.MustParseSVG(iconArchiveRestoreSVG)
 	iconArrowDown      = ui.MustParseSVG(iconArrowDownSVG)
 	iconArrowUp        = ui.MustParseSVG(iconArrowUpSVG)
-	iconDownload       = ui.MustParseSVG(iconDownloadSVG)
 	iconSquareTerminal = ui.MustParseSVG(iconSquareTerminalSVG)
 	iconCheck          = ui.MustParseSVG(iconCheckSVG)
 	iconSettings       = ui.MustParseSVG(iconSettingsSVG)

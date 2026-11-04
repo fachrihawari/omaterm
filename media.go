@@ -87,6 +87,7 @@ func (a *appState) ensureMediaWeb(doc *openFile) {
 	if err != nil {
 		release()
 		doc.webErr = err.Error()
+		doc.noWebView = true
 		return
 	}
 	doc.web, doc.mediaURL, doc.release = v, url, release
@@ -198,20 +199,36 @@ func (a *appState) mediaView(c *ui.Context, doc *openFile) ui.Element {
 					ui.Icon(c, iconFileText).Size(28, 28).TextColor(pal.TextFaint)
 					ui.Text(c, "This file can't be previewed here").FontSize(13).FontWeight(600).TextColor(pal.Text)
 					// Only Linux lacks a web view of its own.
-					msg := "The system's web view did not start."
+					// The hint names what failed: the web view, the page in
+					// it, or the file's serving.
+					msg := "The file could not be served for preview."
 					switch {
 					case doc.crashed && doc.Media != "pdf" && runtime.GOOS == "linux":
 						msg = "The web view crashed playing it: install GStreamer's plugins (gst-plugins-good, gst-libav), then Reload."
 					case doc.crashed:
 						msg = "The web view crashed showing it."
-					case runtime.GOOS == "linux":
+					case doc.noWebView && runtime.GOOS == "linux":
 						msg = "Install webkit2gtk-4.1 to preview PDF, audio and video."
+					case doc.noWebView:
+						msg = "The system's web view did not start."
 					}
 					ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
 					if doc.webErr != "" {
 						ui.Text(c, doc.webErr).FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
 					}
-					if a.cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Open in default app").Clicked() {
+					// A way out that reads as one, not a lone icon.
+					open := ui.ButtonBase(c.Key("open-app")).Radius(6).Border(1, pal.BorderStrong).Padding(5, 12).Margin(4, 0, 0, 0)
+					if open.Hovered() {
+						open.Background(pal.Hover)
+					}
+					a.press(a.fadeColors(open))
+					open.Children(func() {
+						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, iconExternalLink).Size(12, 12).TextColor(pal.TextSoft)
+							ui.Text(c, "Open in Default App").FontSize(12).TextColor(pal.Text)
+						})
+					})
+					if open.Clicked() {
 						openApp()
 					}
 				})

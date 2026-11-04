@@ -202,14 +202,18 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				if doc.Preview {
 					label = "Source"
 				}
-				if a.cmdButton(c, iconFileText, iconBtn, false).
+				// Shown on while the preview is, as a toggle.
+				if a.cmdButton(c, iconFileText, iconBtn, doc.Preview).
 					Tooltip(withKeys(label, "markdown.togglePreview")).Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}
-			if save := a.cmdButton(c, iconSave, iconBtn, false).
-				Tooltip("Save (" + keyLabels("file.save") + ")"); save.Clicked() {
-				a.saveEditor(doc, c)
+			// The preview has nothing to save: its source does.
+			if !(isMd && doc.Preview) {
+				if save := a.cmdButton(c, iconSave, iconBtn, false).
+					Tooltip("Save (" + keyLabels("file.save") + ")"); save.Clicked() {
+					a.saveEditor(doc, c)
+				}
 			}
 		})
 

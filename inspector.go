@@ -68,7 +68,8 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 
 func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, label string, badge int) ui.Element {
 	active := a.inspectorTab == idx
-	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0).Label(label)
+	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0).Label(label).
+		Tooltip(withKeys(label, [...]string{"view.info", "view.files", "view.git"}[idx]))
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 			// The tab shown reads as chosen: its text in full and bold,
@@ -619,20 +620,28 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				// The branch trigger is the only child allowed to give up
 				// width: a long name ellipsizes instead of pushing the
 				// remote actions past the panel's edge.
+				// Its arrows say it opens a list, as a select's do.
 				trigger := ui.ButtonBase(c).Radius(4).Padding(2, 6).Border(1, pal.BorderStrong).Shrink(1).MinWidth(0).Children(func() {
-					ui.Text(c, a.currentBranch).FontSize(11).TextColor(pal.Text).
-						SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+					ui.Row(c).Gap(4).AlignItems(ui.Center).MinWidth(0).Children(func() {
+						ui.Text(c, a.currentBranch).FontSize(11).TextColor(pal.Text).
+							SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+						ui.Icon(c, iconChevronsUpDown).Size(10, 10).TextColor(pal.TextFaint).Shrink(0)
+					})
 				})
 				trigger.Tooltip(a.currentBranch)
 				if trigger.Clicked() {
 					a.openBranchOverlay()
 				}
-				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
+				// How far from its remote, when it has one and is apart.
+				if r.HasRemote && r.Ahead+r.Behind > 0 {
+					pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
+				}
 				ui.Spacer(c)
 				remote := r.HasRemote
 				// Disabled (at half opacity) with no remote, and so with no
 				// hover either.
-				if a.cmdButtonOn(c, iconDownload, iconBtn, false, remote).Tooltip("Fetch").Label("Fetch").Clicked() {
+				// Fetch refreshes what the remote has; only Pull points down.
+				if a.cmdButtonOn(c, iconRefresh, iconBtn, false, remote).Tooltip("Fetch").Label("Fetch").Clicked() {
 					a.gitFetch(c)
 				}
 				if a.cmdButtonOn(c, iconArrowDown, iconBtn, false, remote).Tooltip("Pull").Label("Pull").Clicked() {
@@ -643,7 +652,18 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				}
 			})
 			ui.Box(c).Radius(6).Border(1, pal.Border).Background(pal.Input).Children(func() {
-				ui.TextAreaBase(c, &a.commitMsg).Placeholder("Commit message…").FontSize(11).Padding(8).MinHeight(56).FillWidth()
+				// Ctrl+Enter in the message commits, as Enter does in a
+				// form's line: the field's key, not a second one for a
+				// command.
+				msg := ui.TextAreaBase(c, &a.commitMsg).Placeholder("Commit message… (" + combo(ui.Cmd, ui.KeyEnter).Label() + " commits)").
+					FontSize(11).Padding(8).MinHeight(56).FillWidth()
+				if msg.Focused() {
+					c.OnShortcut(ui.Cmd, ui.KeyEnter, func() {
+						if a.commitReady() {
+							a.gitCommit(c)
+						}
+					})
+				}
 			})
 			ui.Row(c).Gap(8).Children(func() {
 				commit := ui.PrimaryButton(c, "Commit").Grow(1).Height(32).FontSize(11)
@@ -651,8 +671,9 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				if !ready {
 					// Muted, not faded out (a disabled element paints at half
 					// opacity, which left its label unreadable): it still
-					// says what it is for, and does nothing until ready.
-					commit.Background(pal.Chip).TextColor(pal.TextMuted).Cursor(ui.CursorDefault)
+					// says what it is for, does nothing until ready, and
+					// says why.
+					commit.Background(pal.Chip).TextColor(pal.TextMuted).Cursor(ui.CursorDefault).Tooltip(a.commitBlocked())
 				}
 				if commit.Clicked() && ready {
 					a.gitCommit(c)
@@ -754,6 +775,22 @@ func (a *appState) commitReady() bool {
 		strings.TrimSpace(a.commitMsg) != ""
 }
 
+// commitBlocked says why Commit can't run yet.
+func (a *appState) commitBlocked() string {
+	r := a.activeRepoRef()
+	switch {
+	case r == nil:
+		return "No repository"
+	case a.gitBusy != "":
+		return a.gitBusy + "…"
+	case len(r.Staged) == 0:
+		return "Stage changes to commit"
+	case strings.TrimSpace(a.commitMsg) == "":
+		return "Write a commit message"
+	}
+	return ""
+}
+
 func (a *appState) gitCommit(c *ui.Context) {
 	r := a.activeRepoRef()
 	if r == nil {
@@ -820,13 +857,10 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 
 // gitGraphSection renders the commit graph as a collapsible section.
 func (a *appState) gitGraphSection(c *ui.Context) {
-	icon := iconChevronRight
-	if a.gitGraphOpen {
-		icon = iconChevronDown
-	}
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		// Turning, as the other sections' do.
+		a.disclosure(ui.Icon(c, iconChevronRight).Width(14).Height(14).TextColor(pal.TextMuted), a.gitGraphOpen)
 		txt(c, "GIT GRAPH", 10, pal.TextMuted).LetterSpacing(1.0)
 		// No count until the history is in: a dash read as a broken badge.
 		if a.graphLoaded {
@@ -946,13 +980,9 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 // stashSection renders the STASHES section, collapsible like the others,
 // with its create form and list in the panel's normal scroll.
 func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
-	icon := iconChevronRight
-	if !a.stashCollapsed {
-		icon = iconChevronDown
-	}
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		a.disclosure(ui.Icon(c, iconChevronRight).Width(14).Height(14).TextColor(pal.TextMuted), !a.stashCollapsed)
 		txt(c, "STASHES", 10, pal.TextMuted).LetterSpacing(1.0)
 		countBadge(c, len(r.Stashes))
 		ui.Spacer(c)
@@ -1016,7 +1046,7 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 					a.gitStashApply(c, i)
 				}
 			}
-			pop := a.cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Pop")
+			pop := a.cmdButton(c, iconArchiveRestore, iconBtn, false).Tooltip("Pop")
 			if pop.Clicked() {
 				if i, ok := a.stashIndex(c, hash); ok {
 					a.gitStashPop(c, i)

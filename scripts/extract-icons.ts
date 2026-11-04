@@ -40,6 +40,7 @@ const icons: Record<string, string> = {
   x: "x",
   terminal: "terminal",
   "folder-search": "folder-search",
+  "archive-restore": "archive-restore",
 };
 const names = Object.entries(icons);
 

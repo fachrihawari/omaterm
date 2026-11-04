@@ -72,11 +72,15 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 				a.openOverlay(overlayShortcuts)
 			}
 			if a.cmdButton(c, iconSearch, 15, false).
-				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
+				Tooltip(withKeys("Search in Files", "search.global")).Label("Search in Files").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
+			inspector := "Show Inspector"
+			if a.inspectorShown {
+				inspector = "Hide Inspector"
+			}
 			if a.cmdButton(c, iconPanelRight, 15, a.inspectorShown).
-				Tooltip("Toggle Inspector (" + keyLabels("view.toggleInspector") + ")").Clicked() {
+				Tooltip(withKeys(inspector, "view.toggleInspector")).Label(inspector).Clicked() {
 				a.setInspector(!a.inspectorShown)
 			}
 		})
@@ -123,11 +127,8 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 				ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process))).Size(13, 13).TextColor(pal.TextFaint)
 			}
 		case tabEditor:
-			if isImagePath(t.Path) {
-				ui.Icon(c, iconImage).Size(13, 13).TextColor(pal.Ok)
-			} else {
-				ui.Icon(c, iconFileCode).Size(13, 13).TextColor(pal.Syn.FileTS)
-			}
+			// The file's type, as the Files tab and quick open show it.
+			fileBadge(c, t.Path)
 		case tabDiff:
 			ui.Icon(c, iconGitCompare).Size(13, 13).TextColor(pal.Ok)
 		case tabGraph:
@@ -150,7 +151,12 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 		if active {
 			col = pal.Text
 		}
-		ui.Text(c, label).FontSize(12).TextColor(col).SingleLine().Ellipsis("…").MaxWidth(180)
+		// Cut at 180 px; its tip says it whole, a file's by its path.
+		tip := label
+		if t.Kind == tabEditor || t.Kind == tabDiff {
+			tip = firstNonEmpty(t.Path, label)
+		}
+		ui.Text(c, label).FontSize(12).TextColor(col).SingleLine().Ellipsis("…").MaxWidth(180).Tooltip(tip)
 		if t.Detail != "" {
 			ui.Text(c, t.Detail).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
@@ -190,7 +196,7 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 		}
 		show := active || e.Hovered()
 		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Disabled(!show).
-			Tooltip(withKeys("Close", "tab.close")).Label("Close Tab")
+			Tooltip(withKeys("Close Tab", "tab.close")).Label("Close Tab")
 		x.Opacity(a.animate(x, "show", b2f(show), motionFast))
 		if x.Hovered() {
 			x.Background(pal.Hover)

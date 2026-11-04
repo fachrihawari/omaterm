@@ -956,18 +956,25 @@ func (a *appState) runSearch() {
 		// and Enter opened one of its results.
 		a.searchJob.Cancel()
 		a.searchResults = nil
+		a.searching = false
 		return
 	}
 	win := a.win
+	a.searching = true
 	a.searchJob.Run(func(ctx context.Context) error {
 		matches, err := service.SearchContent(ctx, workspace, query)
-		if err != nil || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			win.Update(func() { a.searching = false })
 			return err
 		}
 		win.Update(func() {
 			if a.searchQuery != query || a.workspace != workspace {
 				return // asked for something else meanwhile
 			}
+			a.searching = false
 			a.searchResults = matches
 			if a.searchSelected >= len(matches) {
 				a.searchSelected = 0
@@ -1037,7 +1044,15 @@ func (a *appState) globalSearchBody(c *ui.Context) {
 				submit = true
 			}
 			ui.Spacer(c)
-			ui.Text(c, itoa(len(a.searchResults))+" results").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
+			// A capped search says so: there may be more.
+			count := plural(len(a.searchResults), "result")
+			switch {
+			case a.searching:
+				count = "Searching…"
+			case len(a.searchResults) >= service.MaxMatches:
+				count = itoa(service.MaxMatches) + "+ results"
+			}
+			ui.Text(c, count).FontSize(10).TextColor(pal.TextFaint).Shrink(0)
 		})
 	})
 
@@ -1105,7 +1120,10 @@ func (a *appState) searchResultsPane(c *ui.Context) bool {
 		if len(a.searchResults) == 0 {
 			ui.Box(c).Padding(20).Children(func() {
 				msg := "Type to search file contents"
-				if a.searchQuery != "" {
+				switch {
+				case a.searchQuery != "" && a.searching:
+					msg = "Searching…"
+				case a.searchQuery != "":
 					msg = "No results"
 				}
 				ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted)
@@ -1313,7 +1331,7 @@ func (a *appState) keyboardShortcutsBody(c *ui.Context) {
 				submit = true
 			}
 			ui.Spacer(c)
-			ui.Text(c, itoa(len(items))+" commands").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
+			ui.Text(c, plural(len(items), "command")).FontSize(10).TextColor(pal.TextFaint).Shrink(0)
 		})
 	})
 

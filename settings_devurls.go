@@ -263,7 +263,7 @@ func (a *appState) devurlActions(c *ui.Context) {
 func (a *appState) devurlSetupSheet() {
 	d := &a.settingsUI.data.devurls
 	plan := append([]devurl.Change(nil), d.plan...)
-	sh := &settingsSheet{title: "Set Up Dev URLs?", text: "These are the changes, in this order."}
+	sh := &settingsSheet{title: "Set up Dev URLs?", text: "These are the changes, in this order."}
 	runnable := false
 	for _, ch := range plan {
 		note := ""
@@ -389,7 +389,7 @@ func (a *appState) devurlTerminal() {
 // devurlRemoveSheet asks before taking Dev URLs away.
 func (a *appState) devurlRemoveSheet() {
 	a.settingsUI.sheet = &settingsSheet{
-		title: "Remove Dev URLs?", text: "The URLs stop working until you set it up again.", confirm: "Remove", danger: true,
+		title: "Remove Dev URLs?", text: "The URLs stop working until you set them up again.", confirm: "Remove", danger: true,
 		items: devurlRemoveItems(runtime.GOOS),
 		run:   func(*ui.Context) { a.devurlRemove() },
 	}

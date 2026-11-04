@@ -139,6 +139,7 @@ type openFile struct {
 	release   func()
 	mtime     time.Time
 	webErr    string
+	noWebView bool // the system's web view didn't start, not the file
 	crashed   bool // its page crashed, and is not loaded again
 	focused   bool
 	yieldKeys bool
@@ -314,9 +315,11 @@ type appState struct {
 	searchSelected int
 	searchList     ui.ListState
 	searchResults  []service.Match
-	searchJob      service.Job
-	searchSplit    float32
-	searchPreview  *editor.State // read-only preview editor
+	// searching is while a search runs: its count and "No results" wait.
+	searching     bool
+	searchJob     service.Job
+	searchSplit   float32
+	searchPreview *editor.State // read-only preview editor
 
 	// Branch picker (modal)
 	branchQuery    string

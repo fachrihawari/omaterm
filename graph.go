@@ -346,7 +346,7 @@ func (a *appState) commitFileList(c *ui.Context, cm *service.Commit) {
 			if add > 0 || del > 0 {
 				ui.Spacer(c)
 				txt(c, "+"+itoa(add), 9, pal.Ok)
-				txt(c, "-"+itoa(del), 9, pal.Bad)
+				txt(c, "−"+itoa(del), 9, pal.Bad)
 			}
 		})
 		for _, f := range files {

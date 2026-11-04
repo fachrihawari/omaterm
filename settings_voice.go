@@ -169,7 +169,7 @@ func (a *appState) settingsVoice(c *ui.Context) {
 		// What you speak first: a wrong language garbles more than a
 		// small model does.
 		a.settingsGroup(c, "voiceLanguage", "", "", func() {
-			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "What you speak, here and on the phone: tick two, as Indonesian and English, for it to tell which. Detect Each Time can hear another one."}, func() {
+			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "The language you speak, here and on the phone. Pick two, such as Indonesian and English, and it tells which; Detect Each Time hears any."}, func() {
 				// A menu, not a popup: it takes several languages.
 				name := voice.LanguageName(d.status.Language)
 				b := ui.ButtonBase(c.Key("voiceLanguage")).Height(26).MaxWidth(260).Shrink(1).MinWidth(0).

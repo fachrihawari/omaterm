@@ -252,7 +252,8 @@ func (a *appState) openSettingsFile() {
 func (a *appState) settingsGeneral(c *ui.Context) {
 	d := &a.settingsUI.data
 	if !onWindows {
-		a.settingsGroup(c, "daemon", "", "Changing the daemon applies after you restart omaterm.", func() {
+		// Its row says it applies at restart.
+		a.settingsGroup(c, "daemon", "", "", func() {
 			a.settingSwitchRow(c, "daemon", false)
 			if runtime.GOOS == "linux" {
 				on := d.service
@@ -266,7 +267,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 	}
 	a.settingsGroup(c, "sessions", "Sessions", "", func() {
 		a.settingSwitchRow(c, "restore", false)
-		a.settingSwitchRow(c, "resume", !a.settings.RestoreSessions)
+		a.settingSwitchRowWhy(c, "resume", !a.settings.RestoreSessions, "Turn on Restore sessions at launch first.")
 		a.settingSwitchRow(c, "snapshot", false)
 		a.settingSwitchRow(c, "confirmClose", false)
 	})
@@ -322,7 +323,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 // run. It switched at once.
 func (a *appState) askService(on bool) {
 	sh := &settingsSheet{
-		title:   "Start the Session Daemon at Login?",
+		title:   "Start the session daemon at login?",
 		danger:  true,
 		confirm: "Restart Daemon",
 		items: [][2]string{

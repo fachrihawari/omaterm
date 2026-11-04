@@ -35,7 +35,7 @@ func TestProcessFailureNotifies(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("a failed process did not notify: %v", *sent)
 	}
-	want := procs.SessionID("p1", "web") + "|Process failed: web|exit 1"
+	want := procs.SessionID("p1", "web") + "|Process failed: web|Exited with code 1"
 	if (*sent)[0] != want {
 		t.Fatalf("notification: %q, want %q", (*sent)[0], want)
 	}
@@ -45,7 +45,7 @@ func TestProcessFailureNotifies(t *testing.T) {
 	if len(*sent) != 2 {
 		t.Fatalf("paused restarts did not notify: %v", *sent)
 	}
-	if got, want := (*sent)[1], procs.SessionID("p1", "worker")+"|Restart paused: worker|restarted too often"; got != want {
+	if got, want := (*sent)[1], procs.SessionID("p1", "worker")+"|Restart paused: worker|Stopped restarting: it failed too often"; got != want {
 		t.Fatalf("notification: %q, want %q", got, want)
 	}
 }

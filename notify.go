@@ -40,7 +40,7 @@ func (a *appState) maybeNotify(prev, next session.Info) {
 		return
 	}
 	a.notified[next.Session] = nowFunc()
-	a.notify(next.Session, a.sessionLabel(next.Session), notice.Body(kind, next.Message))
+	a.notify(next.Session, a.sessionLabel(next.Session), notice.Body(kind, next.Message, next.Kind))
 }
 
 // programNotice passes on a desktop notification a program sent (OSC 9,

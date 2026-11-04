@@ -46,12 +46,31 @@ func For(prev, next session.Info, here bool, p Prefs) Kind {
 }
 
 // Body is a notification's text: the program's message, else what
-// happened.
-func Body(k Kind, message string) string {
+// happened, waiting in the words of its status chip (WaitingWords of
+// waitKind, as permission).
+func Body(k Kind, message, waitKind string) string {
 	if message != "" {
 		return message
 	}
-	return map[Kind]string{Waiting: "Needs your input", Failed: "Failed", Done: "Finished"}[k]
+	if k == Waiting {
+		return WaitingWords(waitKind)
+	}
+	return map[Kind]string{Failed: "Failed", Done: "Finished"}[k]
+}
+
+// WaitingWords is what a session waiting for the user waits for, as its
+// status chip and its notification say it: permission, a question,
+// sign-in, else the user.
+func WaitingWords(kind string) string {
+	switch kind {
+	case "permission":
+		return "Needs permission"
+	case "question":
+		return "Has a question"
+	case "auth":
+		return "Needs sign-in"
+	}
+	return "Needs you"
 }
 
 // Limiter lets a session notify at most once every five seconds.

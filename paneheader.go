@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/notice"
 	"omaterm/internal/ospath"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
@@ -282,16 +283,7 @@ func statusWords(i session.Info, now time.Time) (string, ui.Color, ui.Color) {
 	case session.Waiting:
 		text := i.Message
 		if text == "" {
-			switch i.Kind {
-			case "permission":
-				text = "Needs permission"
-			case "question":
-				text = "Has a question"
-			case "auth":
-				text = "Needs sign-in"
-			default:
-				text = "Needs you"
-			}
+			text = notice.WaitingWords(i.Kind)
 		}
 		return text, pal.AttentionSoft, pal.Attention
 	case session.Working:
@@ -351,19 +343,19 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 			a.micButton(c, id)
 		}
 		if splits {
-			if a.cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
+			if a.cmdButton(c, iconColumns2, 13, false).Tooltip(withKeys("Split Right", "terminal.splitRight")).Label("Split Right").Clicked() {
 				a.splitActivePaneAt(c, id, splitVertical)
 			}
-			if a.cmdButton(c, iconRows2, 13, false).Tooltip("Split down (" + keyLabels("terminal.splitDown") + ")").Clicked() {
+			if a.cmdButton(c, iconRows2, 13, false).Tooltip(withKeys("Split Down", "terminal.splitDown")).Label("Split Down").Clicked() {
 				a.splitActivePaneAt(c, id, splitHorizontal)
 			}
 		}
 		if multi || tab.Zoomed != "" {
-			zoomIcon, tip := iconMaximize, "Zoom pane"
+			zoomIcon, tip := iconMaximize, "Zoom Pane"
 			if tab.Zoomed == id {
-				zoomIcon, tip = iconMinimize, "Show all panes"
+				zoomIcon, tip = iconMinimize, "Show All Panes"
 			}
-			if a.cmdButton(c, zoomIcon, 13, false).Tooltip(tip + " (" + keyLabels("pane.zoom") + ")").Clicked() {
+			if a.cmdButton(c, zoomIcon, 13, false).Tooltip(withKeys(tip, "pane.zoom")).Label(tip).Clicked() {
 				a.activePaneTermID = id
 				a.toggleZoom()
 			}
@@ -371,7 +363,12 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 		if tab.Kind == tabProcess {
 			a.processButtons(c, *tab)
 		}
-		if a.cmdButton(c, iconX, 13, false).Tooltip("Close pane").Clicked() {
+		// One pane of several closes alone; the last closes its session.
+		closeLabel := "Close Session"
+		if multi {
+			closeLabel = "Close Pane"
+		}
+		if a.cmdButton(c, iconX, 13, false).Tooltip(withKeys(closeLabel, "tab.close")).Label(closeLabel).Clicked() {
 			if multi {
 				a.confirmCloseRunning([]string{id}, "Close Pane", func() { a.removePane(id) })
 			} else {

@@ -777,12 +777,22 @@ func (a *appState) settingsSwitch(c *ui.Context, key string, on *bool, disabled 
 
 // settingSwitchRow is a row of a switch over a setting of settingDefs.
 func (a *appState) settingSwitchRow(c *ui.Context, id string, disabled bool) {
+	a.settingSwitchRowWhy(c, id, disabled, "")
+}
+
+// settingSwitchRowWhy is settingSwitchRow whose explanation, while it is
+// disabled, says why.
+func (a *appState) settingSwitchRowWhy(c *ui.Context, id string, disabled bool, why string) {
 	d, ok := settingDefByID(id)
 	if !ok || d.On == nil {
 		return
 	}
 	on := d.On(&a.settings)
-	a.settingsRow(c, d.Title, settingsRowOpts{id: d.ID, sub: d.Sub, restart: d.Restart}, func() {
+	sub := d.Sub
+	if disabled && why != "" {
+		sub = why
+	}
+	a.settingsRow(c, d.Title, settingsRowOpts{id: d.ID, sub: sub, restart: d.Restart}, func() {
 		if a.settingsSwitch(c, d.ID, &on, disabled) {
 			d.Set(&a.settings, on)
 			a.settingsUI.restart = a.restartNeeded()
