@@ -149,21 +149,32 @@ var commandRegistry = append([]Command{
 		Enabled: func(a *appState) bool { return a.project() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.openProcessDialog(a.active, nil) }},
 	{ID: "process.edit", Title: "Edit Process…", Category: "Process",
-		Enabled: func(a *appState) bool {
-			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
-		},
+		Enabled: func(a *appState) bool { _, _, ok := a.activeProcess(); return ok },
 		Run: func(a *appState, c *ui.Context) {
-			if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess {
-				tab := &a.tabs[a.activeTab]
-				if pi, ok := a.projectIndexForTab(tab.ID); ok {
-					for _, proc := range a.procList[a.projects[pi].ID] {
-						if proc.Name == tab.Process {
-							def := proc.Def
-							a.openProcessDialog(pi, &def)
-							return
-						}
-					}
-				}
+			if pi, proc, ok := a.activeProcess(); ok {
+				def := proc.Def
+				a.openProcessDialog(pi, &def)
+			}
+		}},
+	{ID: "process.start", Title: "Start Process", Category: "Process",
+		Enabled: func(a *appState) bool { _, proc, ok := a.activeProcess(); return ok && !procActive(proc) },
+		Run: func(a *appState, c *ui.Context) {
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.startProcess(pi, proc.Name)
+			}
+		}},
+	{ID: "process.stop", Title: "Stop Process", Category: "Process",
+		Enabled: func(a *appState) bool { _, proc, ok := a.activeProcess(); return ok && procActive(proc) },
+		Run: func(a *appState, c *ui.Context) {
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.stopProcess(pi, proc.Name)
+			}
+		}},
+	{ID: "process.restart", Title: "Restart Process", Category: "Process",
+		Enabled: func(a *appState) bool { _, proc, ok := a.activeProcess(); return ok && procActive(proc) },
+		Run: func(a *appState, c *ui.Context) {
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.restartProcess(pi, proc.Name)
 			}
 		}},
 	{ID: "process.startAll", Title: "Start All Processes", Category: "Process",
@@ -177,23 +188,10 @@ var commandRegistry = append([]Command{
 		},
 		Run: func(a *appState, c *ui.Context) { a.stopAllProcesses(a.active) }},
 	{ID: "process.remove", Title: "Remove Process…", Category: "Process",
-		Enabled: func(a *appState) bool {
-			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
-		},
+		Enabled: func(a *appState) bool { _, _, ok := a.activeProcess(); return ok },
 		Run: func(a *appState, c *ui.Context) {
-			if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabProcess {
-				return
-			}
-			tab := a.tabs[a.activeTab]
-			pi, ok := a.projectIndexForTab(tab.ID)
-			if !ok {
-				return
-			}
-			for _, proc := range a.procList[a.projects[pi].ID] {
-				if proc.Name == tab.Process {
-					a.askRemoveProcess(pi, proc)
-					return
-				}
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.askRemoveProcess(pi, proc)
 			}
 		}},
 	{ID: "session.askReview", Title: "Ask for Review…", Category: "Session",

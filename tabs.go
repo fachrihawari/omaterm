@@ -478,7 +478,7 @@ func (a *appState) closeTabAsking(i int) {
 		// Its tab goes; the process does not: Stop is what ends it.
 		a.closeTab(i)
 		if proc, ok := a.procOfTab(t); ok && (proc.Status == procs.Starting || proc.Status == procs.Running) {
-			a.toast(nil, proc.Name+" keeps running. Stop it from the sidebar.")
+			a.toast(nil, proc.Name+" keeps running. Stop it from its tab or the sidebar.")
 		}
 		return
 	}

@@ -34,20 +34,11 @@ const iconBtn = 14.0
 // cmdButton is the mock's .cmd button: a muted icon, optionally filled
 // and white when active.
 func (a *appState) cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Element {
-	return a.toneButton(c, icon, size, active, pal.TextStrong)
-}
-
-// toneButton is cmdButton whose icon fades to tone on hover, as a
-// process's Start in green and Stop in red.
-func (a *appState) toneButton(c *ui.Context, icon *ui.SVG, size float32, active bool, tone ui.Color) ui.Element {
 	// The mock's .cmd: transparent with a 1px transparent border, and on
 	// hover #182029 with a #27313d border and a white icon.
 	e := ui.ButtonBase(c).Padding(size/2).Radius(7).Shrink(0).Border(1, ui.Color{})
 	hover := e.Hovered()
-	switch {
-	case active:
-		e = e.Background(pal.Hover).Border(1, pal.BorderStrong)
-	case hover:
+	if active || hover {
 		e = e.Background(pal.Hover).Border(1, pal.BorderStrong)
 	}
 	a.press(a.fadeColors(e))
@@ -55,9 +46,24 @@ func (a *appState) toneButton(c *ui.Context, icon *ui.SVG, size float32, active 
 		i := ui.Icon(c, icon).Width(size).Height(size)
 		ink := pal.TextMuted
 		if active || hover {
-			ink = tone
+			ink = pal.TextStrong
 		}
 		i.TextColor(a.animColor(i, "ink", ink, motionFast))
+	})
+	return e
+}
+
+// litButton is a cmdButton that says what it does by its color, as a
+// process's Start in green and Stop in red: its glyph is in tone whenever
+// it shows, and under the pointer it is a chip of that tone.
+func (a *appState) litButton(c *ui.Context, icon *ui.SVG, size float32, tone ui.Color) ui.Element {
+	e := ui.ButtonBase(c).Padding(size/2).Radius(7).Shrink(0).Border(1, ui.Color{})
+	if e.Hovered() {
+		e = e.Background(tone.Alpha(0.12)).Border(1, tone.Alpha(0.35))
+	}
+	a.press(a.fadeColors(e))
+	e.Children(func() {
+		ui.Icon(c, icon).Width(size).Height(size).TextColor(tone)
 	})
 	return e
 }

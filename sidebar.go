@@ -192,7 +192,7 @@ func (a *appState) projectGroup(c *ui.Context, i int) {
 func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	p := &a.projects[i]
 	tabs := a.projectTabs(p.ID)
-	h := ui.Row(c.Key("head")).Height(28).Padding(0, 6).Gap(6).AlignItems(ui.Center).Radius(7).Margin(6, 0, 0, 0).Cursor(ui.CursorPointer)
+	h := ui.Row(c.Key("head")).Height(28).Padding(0, 8, 0, 6).Gap(6).AlignItems(ui.Center).Radius(7).Margin(6, 0, 0, 0).Cursor(ui.CursorPointer)
 	hovered := h.Hovered()
 	if hovered {
 		h.Background(pal.Hover)
@@ -205,7 +205,7 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	h.Children(func() {
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		if hovered {
-			plus := a.cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
+			plus := a.cmdButton(c, iconPlus, 12, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
 			})
 			a.transition(plus, motionFade)
@@ -296,10 +296,11 @@ func (a *appState) projectEmpty(id string, tabs []topTab) bool {
 }
 
 func (a *appState) processGroup(c *ui.Context, pi int) {
-	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 4, 0, 6).AlignItems(ui.Center).Children(func() {
-		sectionLabel(c, "Processes")
+	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 8, 0, 6).AlignItems(ui.Center).Children(func() {
+		// Spaced as the inspector's capitals are, mixed case read loose.
+		sectionLabel(c, "Processes").LetterSpacing(0)
 		ui.Spacer(c)
-		if a.cmdButton(c, iconPlus, 11, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
+		if a.cmdButton(c, iconPlus, 12, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
 			a.switchProject(pi)
 			a.openProcessDialog(pi, nil)
 		}
@@ -315,21 +316,34 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	// A click on the port or the URL opens its page, and does not also
 	// open the tab.
 	linkClicked := false
-	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 6).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	// The transparent border is the selected row's ring in dark themes,
+	// there all along so that nothing in the row moves when it shows; the
+	// padding and gap put the name where a session row's is.
+	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 7, 0, 5).Border(1, ui.Color{}).Gap(8).
+		AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	bg := ui.Color{}
+	hovered := row.Hovered()
 	if selected {
 		bg = pal.RowSelected
-	} else if row.Hovered() {
+	} else if hovered {
 		bg = pal.Hover
 	}
 	row.Background(a.animColor(row, "bg", bg, motionFast))
 	a.transition(row, motionFold)
+	if selected {
+		chosen(row)
+	}
+	active := proc.Status == procs.Starting || proc.Status == procs.Running
 	row.Children(func() {
-		a.processIcon(c, proc, 13)
+		a.processIcon(c, proc, 14)
 		// The name stays readable: its pills give way first, their text
-		// ellipsized, rather than the name going to "…".
-		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(0.2).
-			MinWidth(min(72, float32(len(proc.Name))*9+2))
+		// ellipsized, rather than the name going to "…". Under the pointer
+		// it gives way to the buttons, as the tooltip names it.
+		minW := min(72, float32(len(proc.Name))*9+2)
+		if hovered {
+			minW = min(minW, 32)
+		}
+		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(0.2).MinWidth(minW)
 		if proc.Status == procs.Exited || proc.Status == procs.Stopped {
 			name.TextColor(pal.TextMuted)
 		}
@@ -339,24 +353,50 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 				p.FillPath(new(ui.Path).Circle(r.X+r.W/2, r.Y+r.H/2, min(r.W, r.H)/2), pal.Warn)
 			})
 		}
-		if proc.Status == procs.Untrusted {
+		if proc.Status == procs.Untrusted && !hovered {
 			pill(c, "untrusted")
 		}
-		active := proc.Status == procs.Starting || proc.Status == procs.Running
+		ui.Spacer(c)
+		// The buttons come in where the room was, beside the address, so
+		// that nothing moves under the pointer.
+		if hovered {
+			icon, label, tone := iconStart, "Start", pal.Ok
+			if active {
+				icon, label, tone = iconStop, "Stop", pal.Bad
+			}
+			if a.transition(a.litButton(c.Key("run"), icon, 12, tone), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
+				if active {
+					a.stopProcess(pi, proc.Name)
+				} else {
+					a.startProcess(pi, proc.Name)
+				}
+			}
+			if active {
+				if a.transition(a.cmdButton(c.Key("restart"), iconRotate, 12, false), motionFade).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
+					a.restartProcess(pi, proc.Name)
+				}
+			}
+		}
+		// The address, at the row's end as a session's time is. Keyed, as
+		// the buttons come and go before it.
 		switch {
 		case proc.Link != "":
 			// Served at its Dev URL: a link glyph in place of the port, as
 			// the host took the name's room. Its tip is the address.
 			if active {
-				if a.cmdButton(c, iconLink, 12, false).Tooltip(proc.Link).Label("Open " + proc.Link).Clicked() {
+				if a.cmdButton(c.Key("link"), iconLink, 12, false).Tooltip(proc.Link).Label("Open " + proc.Link).Clicked() {
 					linkClicked = true
 					a.openURL(proc.Link)
 				}
 			} else {
-				ui.Icon(c, iconLink).Size(12, 12).Margin(0, 6).Shrink(0).TextColor(pal.TextFaint).Tooltip(proc.Link)
+				// The button's box, so the glyph keeps its place as the
+				// process starts and stops.
+				ui.Box(c.Key("link")).Size(26, 26).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Tooltip(proc.Link).Children(func() {
+					ui.Icon(c, iconLink).Size(12, 12).TextColor(pal.TextFaint)
+				})
 			}
 		case proc.Port > 0:
-			port := pill(c, ":"+itoa(proc.Port))
+			port := pill(c.Key("port"), ":"+itoa(proc.Port))
 			if active {
 				url := "http://localhost:" + itoa(proc.Port)
 				port.Cursor(ui.CursorPointer).Tooltip(processPortTip(proc, url))
@@ -374,24 +414,6 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 				a.openURL(proc.Share)
 			})
 		}
-		ui.Spacer(c)
-		if row.Hovered() {
-			active := proc.Status == procs.Starting || proc.Status == procs.Running
-			icon, label, tone := iconPlay, "Start", pal.Ok
-			if active {
-				icon, label, tone = iconSquare, "Stop", pal.Bad
-			}
-			if a.transition(a.toneButton(c, icon, 12, false, tone), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
-				if active {
-					a.stopProcess(pi, proc.Name)
-				} else {
-					a.startProcess(pi, proc.Name)
-				}
-			}
-			if a.transition(a.cmdButton(c, iconRotate, 12, false), motionFade).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
-				a.restartProcess(pi, proc.Name)
-			}
-		}
 	})
 	tooltip := processStatusText(proc.Status)
 	if proc.Status == procs.Untrusted {
@@ -402,20 +424,20 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	if proc.Changed {
 		tooltip += "\nDefinition changed: restart to apply"
 	}
-	row.Tooltip(tooltip)
+	row.Tooltip(proc.Name + " · " + tooltip)
 	if row.Clicked() && !linkClicked {
 		a.showProcess(pi, proc.Name)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
-		if proc.Status == procs.Starting || proc.Status == procs.Running {
+		if active {
 			if m.Item("Stop").Chosen() {
 				a.stopProcess(pi, proc.Name)
 			}
+			if m.Item("Restart").Chosen() {
+				a.restartProcess(pi, proc.Name)
+			}
 		} else if m.Item("Start").Chosen() {
 			a.startProcess(pi, proc.Name)
-		}
-		if m.Item("Restart").Chosen() {
-			a.restartProcess(pi, proc.Name)
 		}
 		a.shareMenu(m, a.projects[pi].ID, proc)
 		if proc.Link != "" {
@@ -547,8 +569,10 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	} else {
 		sub = ""
 	}
-	row := ui.Row(c.Key("s-"+t.ID)).Height(height).Radius(8).Padding(0, 8, 0, left).Gap(8).AlignItems(ui.Center).
-		Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	// The transparent border is the selected row's ring in dark themes,
+	// there all along so that nothing in the row moves when it shows.
+	row := ui.Row(c.Key("s-"+t.ID)).Height(height).Radius(8).Padding(0, 7, 0, left-1).Border(1, ui.Color{}).Gap(8).
+		AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	bg := ui.Color{}
 	switch {
 	case selected:

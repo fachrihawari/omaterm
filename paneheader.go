@@ -346,6 +346,9 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 				a.toggleZoom()
 			}
 		}
+		if tab.Kind == tabProcess {
+			a.processButtons(c, *tab)
+		}
 		if a.cmdButton(c, iconX, 13, false).Tooltip("Close pane").Clicked() {
 			if multi {
 				a.confirmCloseRunning([]string{id}, "Close Pane", func() { a.removePane(id) })

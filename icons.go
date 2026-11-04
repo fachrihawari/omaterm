@@ -90,8 +90,8 @@ var iconRadioSVG []byte
 //go:embed icons/refresh-cw.svg
 var iconRefreshSVG []byte
 
-//go:embed icons/play.svg
-var iconPlaySVG []byte
+//go:embed icons/play-filled.svg
+var iconStartSVG []byte
 
 //go:embed icons/rotate-cw.svg
 var iconRotateSVG []byte
@@ -111,8 +111,8 @@ var iconTrashSVG []byte
 //go:embed icons/undo-2.svg
 var iconUndoSVG []byte
 
-//go:embed icons/square.svg
-var iconSquareSVG []byte
+//go:embed icons/stop.svg
+var iconStopSVG []byte
 
 //go:embed icons/x.svg
 var iconXSVG []byte
@@ -191,14 +191,14 @@ var (
 	iconPanelLeft      = ui.MustParseSVG(iconPanelLeftSVG)
 	iconPanelLeftClose = ui.MustParseSVG(iconPanelLeftCloseSVG)
 	iconPanelRight     = ui.MustParseSVG(iconPanelRightSVG)
-	iconPlay           = ui.MustParseSVG(iconPlaySVG)
+	iconStart          = ui.MustParseSVG(iconStartSVG)
 	iconPlus           = ui.MustParseSVG(iconPlusSVG)
 	iconRadio          = ui.MustParseSVG(iconRadioSVG)
 	iconRefresh        = ui.MustParseSVG(iconRefreshSVG)
 	iconRotate         = ui.MustParseSVG(iconRotateSVG)
 	iconRows2          = ui.MustParseSVG(iconRows2SVG)
 	iconSearch         = ui.MustParseSVG(iconSearchSVG)
-	iconSquare         = ui.MustParseSVG(iconSquareSVG)
+	iconStop           = ui.MustParseSVG(iconStopSVG)
 	iconTerminal       = ui.MustParseSVG(iconTerminalSVG)
 	iconTrash          = ui.MustParseSVG(iconTrashSVG)
 	iconUndo           = ui.MustParseSVG(iconUndoSVG)
