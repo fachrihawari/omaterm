@@ -112,9 +112,7 @@ func (a *appState) showInspectorTab(idx int) {
 	wasTab := a.inspectorTab
 	a.inspectorTab = idx
 	if idx == 0 {
-		a.startProcessRefresh()
-	} else {
-		a.stopProcessRefresh()
+		a.startProcessRefresh() // at once, not in up to 5 s
 	}
 	// The files as they are now: one an agent made was missing until a
 	// restart.

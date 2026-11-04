@@ -17,40 +17,56 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 	return ui.Row(c).Height(24).Shrink(0).AlignItems(ui.Center).Padding(0, 4).Children(func() {
 		// Project and branch: the only identity left when the sidebar is
 		// hidden, so it stays visible and ellipsizes rather than pushing
-		// the counters out.
-		a.statusSegment(c, "project", func() {
-			name := ""
-			branch := ""
-			if p := a.project(); p != nil {
-				name = p.Name
-				branch = p.Branch
+		// the counters out. The name brings the sidebar back; the branch
+		// switches branches, as in an editor's status bar.
+		name, branch := "", ""
+		if p := a.project(); p != nil {
+			name, branch = p.Name, p.Branch
+		}
+		project := func() {
+			ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(pal.TextMuted)
+			ui.Text(c, name).FontSize(10).TextColor(pal.TextSoft).SingleLine().
+				Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(150)
+		}
+		switch {
+		case name == "":
+		case a.sidebarShown:
+			statusCell(c, "project", project).Tooltip(name)
+		default:
+			if a.statusSegment(c, "project", project).Tooltip(name + "\n" + withKeys("Show Sidebar", "view.toggleSidebar")).Clicked() {
+				a.setSidebar(true)
 			}
-			if name != "" {
-				ui.Icon(c, iconFolderGit).Width(12).Height(12).TextColor(pal.TextMuted)
-				ui.Text(c, name).FontSize(10).TextColor(pal.TextSoft).SingleLine().
-					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(150).Tooltip(name)
-				if branch != "" {
-					ui.Text(c, "›").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
-				}
-			}
-			if branch != "" {
+		}
+		if branch != "" {
+			if a.statusSegment(c, "branch", func() {
 				ui.Icon(c, iconGitBranch).Width(12).Height(12).TextColor(pal.TextMuted)
 				ui.Text(c, branch).FontSize(10).TextColor(pal.TextMuted).SingleLine().
-					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(360).Tooltip(branch)
+					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(360)
+			}).Tooltip(branch + "\n" + withKeys("Switch Branch…", "git.switchBranch")).Clicked() {
+				// The bar shows the checkout's branch: the picker switches
+				// that, not the worktree of a session shown meanwhile.
+				if r := a.activeRepoRef(); r != nil && a.isWorktreeRoot(r.Root) {
+					a.selectRepo(min(a.repoMain, len(a.repos)-1))
+				}
+				a.openBranchOverlay()
 			}
-		})
+		}
 		// Both open the Info tab, which lists them.
 		if a.statusSegment(c, "running", func() {
-			ui.Text(c, "●").FontSize(8).TextColor(pal.Ok)
+			dot := pal.TextFaint
+			if len(a.processes) > 0 {
+				dot = pal.Ok
+			}
+			ui.Text(c, "●").FontSize(8).TextColor(dot)
 			a.swap(ui.Text(c, itoa(len(a.processes))+" running").FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0), true)
-		}).Tooltip("Show what runs in this project (" + keyLabels("view.info") + ")").Clicked() {
+		}).Tooltip("Programs running in this project's terminals and processes (" + keyLabels("view.info") + ")").Clicked() {
 			a.setInspector(true)
 			a.showInspectorTab(0)
 		}
 		if a.statusSegment(c, "ports", func() {
 			ui.Icon(c, iconRadio).Width(12).Height(12).TextColor(pal.TextMuted)
 			a.swap(ui.Text(c, plural(len(a.ports), "port")).FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0), true)
-		}).Tooltip("Show ports (" + keyLabels("view.info") + ")").Clicked() {
+		}).Tooltip("Ports they listen on (" + keyLabels("view.info") + ")").Clicked() {
 			a.setInspector(true)
 			a.showInspectorTab(0)
 		}
@@ -70,17 +86,16 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 		// and non-Linux systems show no invented numbers.
 		if a.sysStats.OK && a.settings.ShowSystemLoad {
 			if a.sysStats.CPUPercent >= 0 {
-				a.statusSegment(c, "cpu", func() {
+				statusCell(c, "cpu", func() {
 					a.swap(ui.Text(c, "CPU "+strconv.Itoa(int(math.Round(a.sysStats.CPUPercent)))+"%").
 						FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0), true)
-				})
+				}).Tooltip("This computer's CPU load")
 			}
 			if a.sysStats.MemTotal > 0 {
-				a.statusSegment(c, "mem", func() {
+				statusCell(c, "mem", func() {
 					a.swap(ui.Text(c, "MEM "+service.FormatBytes(a.sysStats.MemUsed)), true).
-						FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0).
-						Tooltip(service.FormatBytes(a.sysStats.MemUsed) + " of " + service.FormatBytes(a.sysStats.MemTotal) + " used")
-				})
+						FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
+				}).Tooltip("This computer's memory: " + service.FormatBytes(a.sysStats.MemUsed) + " of " + service.FormatBytes(a.sysStats.MemTotal) + " used")
 			}
 		}
 	})
@@ -96,6 +111,12 @@ func plural(n int, noun string) string {
 		return itoa(n) + " " + noun + "es"
 	}
 	return itoa(n) + " " + noun + "s"
+}
+
+// statusCell is a status bar cell that only tells: as a segment, without
+// the hover that says a click does something.
+func statusCell(c *ui.Context, key string, children func()) ui.Element {
+	return ui.Row(c.Key(key)).FillHeight().Padding(0, 10).AlignItems(ui.Center).Gap(6).Children(children)
 }
 
 // statusSegment is one full-height, hoverable status bar cell, which

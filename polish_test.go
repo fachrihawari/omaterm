@@ -77,6 +77,36 @@ func TestStatusBarShowsProject(t *testing.T) {
 	}
 }
 
+// The status bar's project name brings the hidden sidebar back, and its
+// branch opens the branch picker; with the sidebar shown, the name is
+// plain text, with nothing to click.
+func TestStatusBarProjectAndBranchAct(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	// The inspector's project card names both too.
+	a.sidebarVisible, a.inspectorVisible = false, false
+	if p := a.project(); p != nil {
+		p.Name = "probe-project"
+		p.Branch = "probe-branch"
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if err := tr.Click("probe-project"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if !a.sidebarVisible {
+		t.Error("clicking the project in the status bar left the sidebar hidden")
+	}
+	if err := tr.Click("probe-branch"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.overlay != overlayBranch {
+		t.Errorf("clicking the branch in the status bar opened %v, not the branch picker", a.overlay)
+	}
+}
+
 // Commit must not look clickable with nothing staged or no message.
 func TestCommitButtonDisabled(t *testing.T) {
 	a := newTestApp(t)

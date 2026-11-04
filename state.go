@@ -754,9 +754,7 @@ func (a *appState) start() {
 	}
 	a.startSystemStats()
 	a.startProcListRefresh()
-	if a.inspectorTab == 0 && a.inspectorShown {
-		a.startProcessRefresh()
-	}
+	a.startProcessRefresh()
 }
 
 // loadProjectData starts the loads of the active project's repos, files
@@ -770,7 +768,8 @@ func (a *appState) loadProjectData() {
 	a.refreshRepos()
 	a.rebuildFileIndex()
 	a.rebuildFileTree()
-	a.refreshProcesses()
+	// Started anew, as no project had stopped it.
+	a.startProcessRefresh()
 }
 
 // switchProject shows project i, as clicking it in the sidebar does, and
@@ -1036,8 +1035,8 @@ func (a *appState) stopSystemStats() {
 	}
 }
 
-// startProcessRefresh begins periodic process/port refresh (5s) while the
-// info panel is visible.
+// startProcessRefresh begins the periodic process/port refresh (5s): the
+// status bar counts them whatever the inspector shows.
 func (a *appState) startProcessRefresh() {
 	a.stopProcessRefresh()
 	a.refreshProcesses()
@@ -1051,7 +1050,7 @@ func (a *appState) startProcessRefresh() {
 }
 
 // processTick refreshes again, unless the refresh was stopped meanwhile
-// (the Info tab hidden): it stays stopped. It says whether it went on.
+// (no project left): it stays stopped. It says whether it went on.
 func (a *appState) processTick(gen int) bool {
 	if a.processGen != gen {
 		return false
