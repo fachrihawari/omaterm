@@ -173,6 +173,11 @@ func (a *appState) daemonDialog(c *ui.Context) {
 		false, "Run Without It", "Restart Sessions") {
 	case -1:
 		return
+	case ui.AlertDismissed:
+		// Only its buttons answer it: Esc or a stray click left the
+		// sessions as they were, unasked.
+		*a.daemonRefusedOpen = true
+		return
 	case 1:
 		a.replaceRefusedDaemon()
 	default:

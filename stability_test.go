@@ -728,6 +728,13 @@ func TestRunWithoutDaemonNoResume(t *testing.T) {
 	a.daemonRefusedOpen = &open
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
+	// Esc doesn't answer it: only its buttons do.
+	tr.Key(0, ui.KeyEscape)
+	tr.Frame()
+	tr.Frame()
+	if a.daemonRefusedOpen == nil || !*a.daemonRefusedOpen || a.daemonIgnored {
+		t.Fatal("Esc answered the daemon question")
+	}
 	if err := tr.Click("Run Without It"); err != nil {
 		t.Fatal(err)
 	}

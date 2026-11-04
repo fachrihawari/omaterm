@@ -144,7 +144,7 @@ func (a *appState) settingsVoice(c *ui.Context) {
 		on := v.Enabled
 		a.settingDefRow(c, "voice", func() {
 			if d.running {
-				settingsPill(c, "Running", pillOk)
+				settingsPill(c, "Engine running", pillOk)
 			}
 			if a.settingsSwitch(c, "voice", &on, false) {
 				a.setVoice(on)
@@ -152,12 +152,8 @@ func (a *appState) settingsVoice(c *ui.Context) {
 		})
 	})
 	if v.Enabled {
-		a.settingsGroup(c, "voiceEngine", "Engine", "", func() { a.voiceEngineRow(c) })
-		a.settingsGroup(c, "voiceModels", "Model", "Every model knows about 99 languages: the bigger, the better it hears, and the slower.", func() {
-			for _, m := range voice.Models {
-				a.voiceModelRow(c, m)
-			}
-		})
+		// What you speak first: a wrong language garbles more than a
+		// small model does.
 		a.settingsGroup(c, "voiceLanguage", "", "", func() {
 			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "What you speak, here and on the phone: tick two, as Indonesian and English, for it to tell which. Detect Each Time can hear another one."}, func() {
 				// A menu, not a popup: it takes several languages.
@@ -171,6 +167,12 @@ func (a *appState) settingsVoice(c *ui.Context) {
 				})
 				b.Menu(func(m *ui.Menu) { a.voiceLanguageMenu(m) })
 			})
+		})
+		a.settingsGroup(c, "voiceEngine", "Engine", "", func() { a.voiceEngineRow(c) })
+		a.settingsGroup(c, "voiceModels", "Model", "Every model knows about 99 languages: the bigger, the better it hears, and the slower.", func() {
+			for _, m := range voice.Models {
+				a.voiceModelRow(c, m)
+			}
 		})
 	}
 	if d.disk > 0 {
@@ -247,11 +249,20 @@ func (a *appState) voiceModelRow(c *ui.Context, m voice.Model) {
 				v.Model = m.Name
 				a.voiceChanged()
 			}
-			if a.settingsButton(c, "Delete##"+m.Name, false, true, false) {
-				os.Remove(voice.ModelPath(voiceDir(), m))
-				a.refreshVoice()
-				// A whisper-server running it holds it until told.
-				go daemon.ReloadVoice()
+			if a.settingsButton(c, "Delete…##"+m.Name, false, true, false) {
+				what := "It downloads again from here."
+				if inUse {
+					what = "Voice input stops until a model is downloaded again."
+				}
+				a.settingsUI.sheet = &settingsSheet{
+					title: "Delete the " + m.Title + " model?", danger: true, text: what, confirm: "Delete",
+					run: func(c *ui.Context) {
+						os.Remove(voice.ModelPath(voiceDir(), m))
+						a.refreshVoice()
+						// A whisper-server running it holds it until told.
+						go daemon.ReloadVoice()
+					},
+				}
 			}
 		default:
 			if a.settingsButton(c, "Download##"+m.Name, inUse, false, false) {

@@ -462,6 +462,9 @@ type appState struct {
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
 	// last loaded, themeWatchStop ends the theme watch.
 	settings Settings
+	// launchSettings are the settings omaterm started with: one that
+	// applies at start asks for a restart while it differs from them.
+	launchSettings Settings
 	// iconPops is what popOnChange keeps of the status icons.
 	iconPops map[uint64]iconPop
 	// osStill is the desktop's Reduce Motion, as the last frame read it.
@@ -645,6 +648,7 @@ func newApp() *appState {
 		cloudflareAsked:  map[string]bool{},
 		settings:         loadSettings(),
 	}
+	a.launchSettings = a.settings
 	a.hookPanes()
 	if cfg, err := webStore().Config(); err == nil {
 		a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()

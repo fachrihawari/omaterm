@@ -315,7 +315,13 @@ func (a *appState) settingsSidebar(c *ui.Context) {
 	bar := c.TitleBar()
 	ui.Column(c.Key("settings-side")).Width(settingsSideW).Shrink(0).FillHeight().Padding(0, 6, 8, 8).Children(func() {
 		// Room for the window's controls, which also moves the window.
-		ui.Box(c).Height(max(bar.Height, 38)).Shrink(0).FillWidth().DragWindow()
+		// Without them, as on a tiling desktop, the search field rises to
+		// the toolbar's line.
+		top := max(bar.Height, 38)
+		if bar == (ui.TitleBar{}) {
+			top = 15
+		}
+		ui.Box(c).Height(top).Shrink(0).FillWidth().DragWindow()
 
 		search := ui.Row(c.Key("search")).Height(30).Shrink(0).Margin(0, 2, 10, 2).Padding(0, 10).Gap(8).
 			AlignItems(ui.Center).Radius(6).Border(1, pal.Border).Background(pal.Input)
@@ -779,9 +785,7 @@ func (a *appState) settingSwitchRow(c *ui.Context, id string, disabled bool) {
 	a.settingsRow(c, d.Title, settingsRowOpts{id: d.ID, sub: d.Sub, restart: d.Restart}, func() {
 		if a.settingsSwitch(c, d.ID, &on, disabled) {
 			d.Set(&a.settings, on)
-			if d.Restart {
-				a.settingsUI.restart = true
-			}
+			a.settingsUI.restart = a.restartNeeded()
 			a.applySettings()
 		}
 	})
@@ -1030,14 +1034,8 @@ func (a *appState) settingsRestoreButton(c *ui.Context, p *settingsPageDef) {
 				text:    "Every setting on this page goes back to how omaterm ships.",
 				confirm: "Restore",
 				run: func(c *ui.Context) {
-					before := a.settings
 					p.Restore(&a.settings, defaultSettings())
-					// Settings that apply as omaterm starts ask for it.
-					for _, d := range settingDefs {
-						if d.Restart && d.On != nil && d.On(&before) != d.On(&a.settings) {
-							a.settingsUI.restart = true
-						}
-					}
+					a.settingsUI.restart = a.restartNeeded()
 					// What the page's fields held goes with the values.
 					d := &a.settingsUI.data
 					d.customFont, d.customSearch, d.searchCustom = "", "", false
@@ -1055,6 +1053,18 @@ func (a *appState) settingsRestoreButton(c *ui.Context, p *settingsPageDef) {
 			}
 		}
 	})
+}
+
+// restartNeeded tells whether a setting that applies as omaterm starts
+// differs from what it started with: one changed and changed back needs
+// no restart, and its banner goes.
+func (a *appState) restartNeeded() bool {
+	for _, d := range settingDefs {
+		if d.Restart && d.On != nil && d.On(&a.launchSettings) != d.On(&a.settings) {
+			return true
+		}
+	}
+	return false
 }
 
 // settingsRestartBanner offers to restart omaterm, for settings that

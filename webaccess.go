@@ -201,6 +201,11 @@ func (a *appState) webPairDialog(c *ui.Context) {
 		a.webPairOpen, a.webPair = nil, nil
 		return
 	}
+	// A code that ran out gives way to a new one, as on the settings
+	// page: one left open showed a code no device could use.
+	if p := a.webPair; p.ready && p.err == "" && time.Now().After(p.expires) {
+		a.webPair = a.startPairing()
+	}
 	p := a.webPair
 	ui.DialogBase(c, a.webPairOpen, func(backdrop, panel ui.Element) {
 		a.dialogFrame(c, backdrop, panel)
@@ -237,10 +242,7 @@ func (a *appState) webPairBody(c *ui.Context, p *webPairing) {
 		ui.Text(c, p.code).FontSize(22).FontWeight(700).Font(monoFont).TextColor(pal.Text)
 		ui.Row(c).Gap(8).AlignItems(ui.Center).FillWidth().Children(func() {
 			ui.Text(c, p.link).FontSize(11).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).Grow(1).Tooltip(p.link)
-			copyBtn := ui.ButtonBase(c).Padding(4, 10).Radius(6).Border(1, pal.BorderStrong).Shrink(0).Children(func() {
-				ui.Text(c, "Copy").FontSize(11).TextColor(pal.TextSoft)
-			})
-			if copyBtn.Clicked() {
+			if a.dialogButton(c, "Copy", false, false) {
 				mygo.Clipboard.WriteText(p.link)
 				c.Toast("Copied the link")
 			}

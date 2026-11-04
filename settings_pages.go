@@ -67,7 +67,7 @@ func settingsPageList() []settingsPageDef {
 			Hero:     "A process with a URL is served at https://<name>.localhost, with no port and no certificate warning. omaterm’s own certificate authority signs for .localhost names only.",
 			HeroLink: "https://fachrihawari.github.io/omaterm/#dev-urls"},
 		{ID: "voice", Title: "Voice", Icon: iconMic, Group: 1, Body: (*appState).settingsVoice,
-			Hero:     "Speak a prompt on your phone in web access. whisper.cpp writes it down here, on this computer, so no speech service hears it, and the text waits in the compose box for you to check.",
+			Hero:     "Speak a prompt instead of typing it: in a terminal pane here, or on your phone in web access. whisper.cpp writes it down on this computer, so no speech service hears it.",
 			HeroLink: "https://fachrihawari.github.io/omaterm/#web"},
 		{ID: "browser", Title: "Browser", Icon: iconGlobe, Group: 1, Body: (*appState).settingsBrowser,
 			Restore: func(s *Settings, d Settings) { s.SearchEngine = d.SearchEngine }},
@@ -301,7 +301,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 			sub = plural(d.scrollCount, "session") + ", " + service.FormatBytes(uint64(d.scrollBytes))
 		}
 		a.settingsRow(c, "Saved scrollback", settingsRowOpts{id: "scrollback", sub: sub}, func() {
-			if a.settingsButton(c, "Clear…", false, false, d.scrollCount == 0) {
+			if a.settingsButton(c, "Clear…", false, true, d.scrollCount == 0) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear saved scrollback?",
 					danger:  true,
@@ -775,7 +775,7 @@ func (a *appState) settingsAgent(c *ui.Context) {
 	})
 	settingsActions(c, func() {
 		installed := it.Installed()
-		if installed && a.settingsButton(c, "Remove Integration", false, true, false) {
+		if installed && a.settingsButton(c, "Remove Integration…", false, true, false) {
 			a.settingsUI.sheet = &settingsSheet{
 				title:   "Remove the " + agent.DisplayName(name) + " integration?",
 				danger:  true,
@@ -891,7 +891,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				name = "A browser"
 			}
 			a.settingsRow(c, name, settingsRowOpts{id: "dev-" + dev.ID, sub: "Last seen " + seen + " · signed in until " + until}, func() {
-				if a.settingsButton(c, "Revoke##"+dev.ID, false, false, false) {
+				if a.settingsButton(c, "Revoke…##"+dev.ID, false, true, false) {
 					a.revokeSheet(dev.ID, name)
 				}
 			})
@@ -1097,7 +1097,7 @@ func (a *appState) settingsBrowser(c *ui.Context) {
 			})
 		}
 		a.settingsRow(c, "Browsing data", settingsRowOpts{id: "clearData", sub: "Cookies, storage and cache of every browser pane."}, func() {
-			if a.settingsButton(c, "Clear…", false, false, false) {
+			if a.settingsButton(c, "Clear…", false, true, false) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear browsing data?",
 					danger:  true,
