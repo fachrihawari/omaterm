@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "omaterm sekarang jalan di Linux, macOS dan Windows. Di Mac: ⌘ shortcut, badge di Dock buat sesi yang nunggu kamu, PATH dari shell kamu (nvm, Homebrew). Di Windows: status agent, resume, PowerShell/cmd, proses project. Download: github.com/fachrihawari/omaterm/releases"
+      "text": "Awalnya omaterm cuma buat Linux, soalnya aku pakai Omarchy. Sekarang udah jalan di macOS sama Windows juga.\n\nDi Mac ada shortcut ⌘ dan badge di Dock kalau ada agent yang nunggu. Di Windows status agent, resume, PowerShell, semuanya jalan.\n\nYang nyoba di Mac atau Windows, kabarin ya kalau nemu bug 🙏\ngithub.com/fachrihawari/omaterm/releases"
     }
   ]
 }

@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "Nggak perlu pindah aplikasi: Git panel (stage, commit, push), commit graph, diff berdampingan, editor, Ctrl+P buat buka file, Ctrl+Shift+F buat cari di seluruh project. Semua di jendela yang sama dengan agent-nya.\n\nomaterm, open source: github.com/fachrihawari/omaterm",
+      "text": "Hal kecil yang bikin betah: aku nggak perlu buka VS Code cuma buat ngecek diff.\n\nGit panel, diff, editor, Ctrl+P, cari di seluruh project, semuanya di jendela yang sama dengan agent-nya. Commit sama push juga dari situ.\n\ngithub.com/fachrihawari/omaterm",
       "video": "~/Videos/omaterm-allinone-tall.mp4"
     }
   ]

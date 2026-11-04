@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "Codex me-review kerjaan Claude Code: dari menu sesi pilih Ask for Review. Agent kedua baca diff-nya, nggak ngubah apa-apa, kirim yang perlu dibenerin, sampai 3 putaran. Vonisnya muncul langsung di bawah nama sesinya.\n\nomaterm, open source: github.com/fachrihawari/omaterm",
+      "text": "Salah satu fitur favoritku: Claude Code yang ngerjain, Codex yang review.\n\nTinggal klik Ask for Review di sesinya. Codex baca diff-nya, nggak ngubah apa-apa, cuma kasih catatan. Bolak-balik maksimal 3 kali, terus hasilnya nongol di sidebar.\n\nKalian biasanya review kerjaan agent gimana?\n\ngithub.com/fachrihawari/omaterm",
       "video": "~/Videos/omaterm-team-tall.mp4"
     }
   ]

@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "Agent lagi kerja, kamu rebahan. Dia nanya izin? Bales dari HP.\n\nSatu WiFi: omaterm web on --network. Lagi di luar: omaterm web on --tunnel cloudflare. Scan QR, selesai. Tampilannya sama kayak app-nya: daftar sesi, siapa yang nunggu kamu, proses project. Ada key bar buat Esc, Tab, Ctrl, panah, plus kotak Compose buat prompt panjang.\n\nomaterm, open source: github.com/fachrihawari/omaterm",
+      "text": "Kebiasaan baru sejak omaterm bisa dibuka dari HP: kasih tugas ke Claude, terus aku rebahan.\n\nKalau dia nanya izin, tinggal aku bales dari HP. Masih satu WiFi cukup omaterm web on --network, kalau lagi di luar pakai --tunnel cloudflare. Scan QR sekali, beres.\n\ngithub.com/fachrihawari/omaterm",
       "video": "~/Videos/omaterm-phone-tall.mp4"
     }
   ]

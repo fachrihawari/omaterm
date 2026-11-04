@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "Agent lead boleh merge pekerjanya, tapi kalau mau merge ke checkout kamu, dia harus nanya dulu: muncul banner Merge / Decline. Kamu yang klik. Nggak ada agent yang nyentuh branch utama diam-diam.\n\nomaterm, open source: github.com/fachrihawari/omaterm",
+      "text": "Satu aturan yang aku pegang: agent bebas ngapain aja di branch-nya sendiri, tapi nggak boleh nyentuh checkout aku tanpa izin.\n\nJadi di omaterm, kalau agent lead mau merge ke branch utama, dia harus nanya dulu. Muncul banner, aku yang pilih Merge atau Decline.\n\ngithub.com/fachrihawari/omaterm",
       "video": "~/Videos/omaterm-merge-tall.mp4"
     }
   ]

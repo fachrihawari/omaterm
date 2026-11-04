@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "Dev URLs di omaterm: tulis ini di omaterm.yml\n\nprocesses:\n  web:\n    command: bun run dev\n    url: shop\n\nterus app-nya ada di https://shop.localhost, HTTPS beneran tanpa warning, tanpa nomor port. omaterm yang pilih port-nya dan kasih lewat PORT. Mau dibuka dari HP? Share → Tailscale (perangkat kamu) atau Cloudflare (link publik).\n\nomaterm, open source: github.com/fachrihawari/omaterm",
+      "text": "Dulu aku harus inget-inget: project ini 3000, yang itu 5173, yang satu lagi 8080 karena bentrok.\n\nSekarang di omaterm.yml cukup tulis url: shop, terus buka https://shop.localhost. Port-nya omaterm yang ngatur, HTTPS-nya nggak ada warning. Mau nunjukin ke temen? Klik Share, dapet link Cloudflare.\n\ngithub.com/fachrihawari/omaterm",
       "video": "~/Videos/omaterm-processes-tall.mp4"
     }
   ]

@@ -2,7 +2,7 @@
   "topic": "AI",
   "posts": [
     {
-      "text": "Di omaterm 0.12.3 agent belajar pakai omaterm duluan: browser pane-nya buat ngecek UI, agent di worktree buat kerja paralel, proses project buat dev server. Pertama kali dia mau pakai tool-nya sendiri, omaterm ngingetin sekali. Hasilnya: semua yang dia kerjain kelihatan di depan kamu.\n\nomaterm, open source: github.com/fachrihawari/omaterm",
+      "text": "Agak lucu: aku bikin browser pane di omaterm biar agent ngetes UI di depan mata, tapi Claude malah sering pakai browser tool-nya sendiri yang nggak kelihatan.\n\nDi 0.12.3 aku benerin. Sekarang dia ngetes di browser pane, jalanin dev server di pane sebelah, bikin agent lain di worktree. Aku bisa lihat dia lagi ngapain.\n\ngithub.com/fachrihawari/omaterm",
       "video": "~/Videos/omaterm-cli-tall.mp4"
     }
   ]
