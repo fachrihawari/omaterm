@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -460,5 +461,46 @@ func TestServerModelChangeWaits(t *testing.T) {
 	s.release()
 	if s.model != small {
 		t.Fatalf("runs %s", s.model)
+	}
+}
+
+// A recording of silence, or too short, has nothing to write down; one
+// with a tenth of a second of sound has.
+func TestSilent(t *testing.T) {
+	wav := func(d time.Duration, amp float64) []byte {
+		n := int(d * SampleRate / time.Second)
+		b := make([]byte, 44+2*n)
+		copy(b, "RIFF")
+		binary.LittleEndian.PutUint32(b[4:], uint32(36+2*n))
+		copy(b[8:], "WAVEfmt ")
+		binary.LittleEndian.PutUint32(b[16:], 16)
+		binary.LittleEndian.PutUint16(b[20:], 1)
+		binary.LittleEndian.PutUint16(b[22:], 1)
+		binary.LittleEndian.PutUint32(b[24:], SampleRate)
+		binary.LittleEndian.PutUint32(b[28:], 2*SampleRate)
+		binary.LittleEndian.PutUint16(b[32:], 2)
+		binary.LittleEndian.PutUint16(b[34:], 16)
+		copy(b[36:], "data")
+		binary.LittleEndian.PutUint32(b[40:], uint32(2*n))
+		// The sound in the last tenth of a second only.
+		for i := n - SampleRate/10; i < n; i++ {
+			v := int16(amp * math.Sin(2*math.Pi*440*float64(i)/SampleRate))
+			binary.LittleEndian.PutUint16(b[44+2*i:], uint16(v))
+		}
+		return b
+	}
+	if !Silent(wav(2*time.Second, 0)) {
+		t.Error("silence isn't silent")
+	}
+	if !Silent(wav(200*time.Millisecond, 8000)) {
+		t.Error("a fifth of a second is something to write down")
+	}
+	if Silent(wav(2*time.Second, 8000)) {
+		t.Error("a tone at the end is silent")
+	}
+	for in, want := range map[string]string{"[BLANK_AUDIO]": "", " [Music] (silence) ": "", "fix  the\nbug [BLANK_AUDIO]": "fix the bug"} {
+		if got := CleanText(in); got != want {
+			t.Errorf("CleanText(%q) = %q, not %q", in, got, want)
+		}
 	}
 }

@@ -43,6 +43,10 @@ var startRecording = platformRecorder
 // daemon. Tests give a fake.
 var transcribeRecording = daemon.TranscribeVoice
 
+// warmVoice has the session daemon load the model as a recording begins.
+// Tests give a fake.
+var warmVoice = daemon.WarmVoice
+
 // voiceDaemon tells whether the session daemon runs, which writes the
 // recordings down. Tests say it does.
 var voiceDaemon = func(a *appState) bool {
@@ -172,6 +176,9 @@ func (a *appState) startDictation(c *ui.Context, pane string) {
 		a.errorToast(c, "Can’t record: "+err.Error())
 		return
 	}
+	// The model loads while the user speaks, not after: the first
+	// dictation in a while waited for it.
+	go warmVoice()
 	d := &dictation{pane: pane, start: time.Now(), rec: rec}
 	// Started by the key, whose modifiers are still down: push-to-talk
 	// if they stay down a while.
@@ -279,7 +286,7 @@ func (a *appState) cancelDictation() {
 // Enter. With send, Enter follows it; without, a space, which the next
 // dictation goes on from.
 func (a *appState) pasteDictation(pane, text string, send bool) {
-	text = strings.Join(strings.Fields(strings.ReplaceAll(text, "[BLANK_AUDIO]", "")), " ")
+	text = voice.CleanText(text)
 	if text == "" {
 		a.toast(nil, "Nothing was heard")
 		return
@@ -425,8 +432,8 @@ func twoDigits(n int) string {
 // micButton is the mic among a pane's controls, while voice input is on
 // and ready: it starts dictating into the pane.
 func (a *appState) micButton(c *ui.Context, pane string) {
-	if a.dictation != nil && a.dictation.pane == pane {
-		return // the chip stops it
+	if a.dictation != nil {
+		return // one at a time: its chip, here or in its pane, stops it
 	}
 	if st := a.desktopVoice(); !st.Enabled || !st.Ready {
 		return

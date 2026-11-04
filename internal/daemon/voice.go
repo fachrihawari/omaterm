@@ -65,8 +65,31 @@ func (d *Daemon) Transcribe(ctx context.Context, wav []byte, lang string) (strin
 	if lang == "" {
 		lang = st.Language
 	}
+	// Nothing said, nothing written: whisper makes text up from silence.
+	if voice.Silent(wav) {
+		return "", nil
+	}
 	m, _ := voice.ModelByName(st.Model)
-	return d.voice.Transcribe(ctx, st.Engine, voice.ModelPath(voice.Dir(d.opts.StateDir), m), wav, lang)
+	text, err := d.voice.Transcribe(ctx, st.Engine, voice.ModelPath(voice.Dir(d.opts.StateDir), m), wav, lang)
+	return voice.CleanText(text), err
+}
+
+// warmVoice starts whisper-server as a recording begins, voice being on
+// and ready, so the model loads while the user speaks.
+func (d *Daemon) warmVoice() {
+	st := d.voiceStatus()
+	w, ok := d.voice.(interface {
+		Warm(ctx context.Context, bin, model string) error
+	})
+	if !st.Enabled || !st.Ready || !ok {
+		return
+	}
+	m, _ := voice.ModelByName(st.Model)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := w.Warm(ctx, st.Engine, voice.ModelPath(voice.Dir(d.opts.StateDir), m)); err != nil {
+		log.Printf("voice: warming whisper-server: %v", err)
+	}
 }
 
 // VoiceParams are a recording the app made, to write down with
@@ -123,6 +146,20 @@ func TranscribeVoice(ctx context.Context, wav []byte, lang string) (string, erro
 	var out VoiceText
 	err = c.CallContext(ctx, "voice.transcribe", VoiceParams{WAV: wav, Lang: lang}, &out)
 	return out.Text, err
+}
+
+// WarmVoice tells the session daemon a recording began, for whisper-server
+// to load its model meanwhile. It doesn't wait for it.
+func WarmVoice() error {
+	c, err := client.Dial(paths.DaemonSocketPath())
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var ok bool
+	return c.CallContext(ctx, "voice.warm", nil, &ok)
 }
 
 // ReloadVoice tells the session daemon the voice settings changed, so it

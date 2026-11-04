@@ -107,6 +107,12 @@ func TestDeriveContrast(t *testing.T) {
 				t.Errorf("%s: %s %s contrast %.2f < %.1f", name, ch.role, Hex(ch.c), r, ch.min)
 			}
 		}
+		// The muted text sits on the wash too: the status bar, the sidebar.
+		for _, ch := range checks[:2] {
+			if r := Contrast(ch.c, p.Wash); r < ch.min-0.05 {
+				t.Errorf("%s: %s %s on the wash: contrast %.2f < %.1f", name, ch.role, Hex(ch.c), r, ch.min)
+			}
+		}
 	}
 }
 

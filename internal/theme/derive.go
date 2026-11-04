@@ -93,8 +93,11 @@ func Derive(s Source) *Palette {
 	p.Text = fg
 	p.TextStrong = s.BrightForeground
 	p.TextSoft = fg.Mix(bg, 0.15)
-	p.TextMuted = ensureContrast(fg.Mix(bg, 0.38), bg, 4.5)
-	p.TextFaint = ensureContrast(fg.Mix(bg, 0.55), bg, 3.0)
+	// Against the wash too, where most of the muted text sits (the status
+	// bar, the sidebar): measured on the card alone, a light theme's fell
+	// short there.
+	p.TextMuted = ensureContrast(ensureContrast(fg.Mix(bg, 0.38), bg, 4.5), p.Wash, 4.5)
+	p.TextFaint = ensureContrast(ensureContrast(fg.Mix(bg, 0.55), bg, 3.0), p.Wash, 3.0)
 
 	p.Accent = ensureContrast(s.Accent, bg, 3)
 	p.AccentHover = p.Accent.Mix(white, 0.08)

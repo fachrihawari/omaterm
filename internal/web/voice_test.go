@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ func (f *fakeVoice) Transcribe(_ context.Context, bin, model string, wav []byte,
 func (f *fakeVoice) Running() bool { return false }
 func (f *fakeVoice) Stop()         {}
 
-// wav is a second of silence as the phone records it.
+// wav is a second of a tone as the phone records it.
 func wav() []byte {
 	var b bytes.Buffer
 	b.WriteString("RIFF")
@@ -40,7 +41,10 @@ func wav() []byte {
 	}
 	b.WriteString("data")
 	binary.Write(&b, binary.LittleEndian, uint32(32000))
-	b.Write(make([]byte, 32000))
+	// A tone, not silence, which is written down as nothing.
+	for i := range 16000 {
+		binary.Write(&b, binary.LittleEndian, int16(3000*math.Sin(2*math.Pi*440*float64(i)/16000)))
+	}
 	return b.Bytes()
 }
 

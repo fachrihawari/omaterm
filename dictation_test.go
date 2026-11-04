@@ -48,8 +48,9 @@ func newDictationApp(t *testing.T) *dictationApp {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	da := &dictationApp{heard: make(chan string, 4), release: make(chan string, 4)}
-	start, transcribe, daemonOn := startRecording, transcribeRecording, voiceDaemon
-	t.Cleanup(func() { startRecording, transcribeRecording, voiceDaemon = start, transcribe, daemonOn })
+	start, transcribe, daemonOn, warm := startRecording, transcribeRecording, voiceDaemon, warmVoice
+	t.Cleanup(func() { startRecording, transcribeRecording, voiceDaemon, warmVoice = start, transcribe, daemonOn, warm })
+	warmVoice = func() error { return nil }
 	startRecording = func(*appState) (recording, error) {
 		r := &fakeRecording{done: make(chan struct{}), wav: []byte("RIFF")}
 		da.recs = append(da.recs, r)
