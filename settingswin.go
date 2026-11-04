@@ -284,7 +284,12 @@ func (a *appState) settingsKeys(c *ui.Context) {
 		a.closeSettings()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyF) {
-		a.handle("settings-search").Focus(c)
+		// On the Keyboard page, its own filter.
+		if a.settingsCurrent() == "keyboard" {
+			a.handle("key-filter").Focus(c)
+		} else {
+			a.handle("settings-search").Focus(c)
+		}
 	}
 	if c.Shortcut(ui.Alt, ui.KeyLeft) {
 		a.settingsBack()
@@ -422,6 +427,20 @@ func (a *appState) settingsNavItems() []settingsNavItem {
 		out = append(out, hits...)
 	}
 	return out
+}
+
+// settingsNeedsDaemon is the row a page that needs the session daemon
+// shows while it is off, the same on every such page: it goes to the
+// setting that turns it on.
+func (a *appState) settingsNeedsDaemon(c *ui.Context, id, what string) {
+	a.settingsGroup(c, "needsDaemon", "", "", func() {
+		if a.settingsRow(c, "Needs the session daemon", settingsRowOpts{id: id, link: "general",
+			sub: what + " runs in the session daemon, which is off: turn on “Keep sessions running when the window closes” in General."}, nil) {
+			a.settingsGo("general")
+			u := &a.settingsUI
+			u.flash, u.flashAt, u.scrolled = "daemon", time.Now(), false
+		}
+	})
 }
 
 // settingsOpenHit shows the page of a sidebar row, lighting the setting
@@ -692,7 +711,12 @@ func (a *appState) settingsRow(c *ui.Context, title string, o settingsRowOpts, c
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(1).MinWidth(0).MaxWidth(320).Children(control)
 		}
 		if o.link != "" {
-			ui.Icon(c, iconChevronRight).Size(14, 14).TextColor(pal.TextFaint).Shrink(0)
+			// A page of Settings drills in; a web page opens outside.
+			ic := iconChevronRight
+			if strings.HasPrefix(o.link, "http") {
+				ic = iconExternalLink
+			}
+			ui.Icon(c, ic).Size(14, 14).TextColor(pal.TextFaint).Shrink(0)
 		}
 	})
 	return o.link != "" && row.Clicked()

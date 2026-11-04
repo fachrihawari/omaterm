@@ -20,6 +20,15 @@ func TestSettingsVoicePage(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // no daemon to tell
 	a, tr := newSettingsTester(t, "voice")
 	defer stopTermPanes(a)
+	// With no daemon, the page says it needs one first.
+	if !tr.HasText("Needs the session daemon") {
+		t.Fatalf("no word of the daemon it needs: %v", tr.Texts())
+	}
+	// The rest as with a daemon, which writes the recordings down.
+	prev := voiceDaemon
+	voiceDaemon = func(*appState) bool { return true }
+	t.Cleanup(func() { voiceDaemon = prev })
+	tr.Frame()
 	if a.settings.Voice.Enabled {
 		t.Fatal("voice is on by default")
 	}

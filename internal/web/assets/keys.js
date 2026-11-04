@@ -161,6 +161,14 @@ export function mountKeyBar(el, options = {}) {
   end.className = "keybar-end";
   root.append(row, end);
   el.append(root);
+  // The fade at the row's end says more keys are past it.
+  const fitMore = () => row.classList.toggle("more", row.scrollLeft + row.clientWidth < row.scrollWidth - 1);
+  on(row, "scroll", fitMore, { passive: true });
+  if (typeof ResizeObserver === "function") {
+    const ro = new ResizeObserver(fitMore);
+    ro.observe(row);
+    ac.signal.addEventListener("abort", () => ro.disconnect());
+  }
   // Tapping a key must not take the focus from the terminal.
   on(root, "pointerdown", (e) => e.preventDefault());
 
@@ -278,6 +286,7 @@ export function mountKeyBar(el, options = {}) {
     on(edit, "click", openSheet);
     end.replaceChildren(edit);
     renderMods();
+    fitMore();
   }
 
   // The edit sheet, a modal over the page.

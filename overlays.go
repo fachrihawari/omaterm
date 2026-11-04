@@ -736,8 +736,26 @@ func (a *appState) paletteCommands() []paletteEntry {
 		out = out[:200]
 	}
 	if q == "" {
-		// Keep the pool's order: sessions, projects, settings, commands.
-		slices.SortStableFunc(out, func(x, y paletteEntry) int { return idx(pool, x.ID) - idx(pool, y.ID) })
+		// The pool's order, sessions and projects first, but commands
+		// before settings, and not the session already on screen: the
+		// palette opened on it and on settings, with no command in view.
+		shown := ""
+		if t := a.activeTabRef(); t != nil && a.activeView == tabTerminal {
+			shown = "session:" + t.ID
+		}
+		out = slices.DeleteFunc(out, func(e paletteEntry) bool { return e.ID == shown })
+		rank := func(e paletteEntry) int {
+			if e.Setting {
+				return 1
+			}
+			return 0
+		}
+		slices.SortStableFunc(out, func(x, y paletteEntry) int {
+			if d := rank(x) - rank(y); d != 0 {
+				return d
+			}
+			return idx(pool, x.ID) - idx(pool, y.ID)
+		})
 	} else {
 		slices.SortStableFunc(out, cmpScore)
 		// What can't run here goes under what can, so Enter on the top

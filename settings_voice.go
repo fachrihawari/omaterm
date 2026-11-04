@@ -137,6 +137,10 @@ func (a *appState) settingsVoice(c *ui.Context) {
 	}
 	v := &a.settings.Voice
 	d := &a.settingsUI.data.voice
+	// It is written down in the session daemon: off, nothing records.
+	if !voiceDaemon(a) {
+		a.settingsNeedsDaemon(c, "voiceDaemon", "Voice input")
+	}
 	if d.have == nil {
 		a.refreshVoice()
 	}

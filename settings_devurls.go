@@ -163,10 +163,7 @@ func (a *appState) settingsDevurls(c *ui.Context) {
 		return
 	}
 	if !devurlTools.available(a) {
-		a.settingsGroup(c, "devurlSetup", "", "", func() {
-			a.settingsRow(c, "Needs the session daemon", settingsRowOpts{id: "devurlSetup",
-				sub: "The proxy runs in the session daemon, which is off. Turn on “Keep sessions running when the window closes” in General."}, nil)
-		})
+		a.settingsNeedsDaemon(c, "devurlSetup", "The proxy")
 		return
 	}
 	if !d.known {

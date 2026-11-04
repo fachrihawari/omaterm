@@ -141,6 +141,8 @@ func TestPaletteRanking(t *testing.T) {
 	a.newTerminalTabReal()
 	waiting := a.tabs[1]
 	a.status[waiting.Split.termIDs()[0]] = session.Info{ID: waiting.Split.termIDs()[0], Session: waiting.ID, Status: session.Waiting}
+	// Another session shown: the one on screen isn't listed.
+	a.activateTab(0)
 	got := a.paletteCommands()
 	if len(got) == 0 || got[0].ID != "session:"+waiting.ID {
 		t.Fatalf("first entry %+v", got[0].Command)

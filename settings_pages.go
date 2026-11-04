@@ -824,6 +824,11 @@ func (a *appState) settingsWeb(c *ui.Context) {
 		return
 	}
 	d := &a.settingsUI.data
+	// Its settings show, and are kept, but it serves nothing until the
+	// daemon runs.
+	if !a.webAvailable() {
+		a.settingsNeedsDaemon(c, "webDaemon", "Web access")
+	}
 	foot := "Tunnels carry web access beyond this computer: Tailscale to your own devices, Cloudflare as a public link. Either way, only devices you pair get in."
 	if a.webOn && a.webNetwork && d.web.URL == "" {
 		foot = "Plain HTTP on your network: use it on networks you trust, or a tunnel from elsewhere."
@@ -836,7 +841,8 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				a.settingsUI.dataAt = time.Time{}
 			}
 		})
-		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: true}, func() {
+		// The link, in code's font; an error, in prose's.
+		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: d.webTunnelURL != ""}, func() {
 			v := d.web.Tunnel
 			if settingsPopup(c, "webTunnel", &v, [][2]string{
 				{"", "Off"},
@@ -855,7 +861,8 @@ func (a *appState) settingsWeb(c *ui.Context) {
 		})
 		net := a.webOn && a.webNetwork
 		a.settingsRow(c, "On your network", settingsRowOpts{id: "webNetwork", sub: "Listens on every address, not only this computer’s."}, func() {
-			if a.settingsSwitch(c, "webNetwork", &net, !a.webOn) {
+			// On, it turns web access on too.
+			if a.settingsSwitch(c, "webNetwork", &net, false) {
 				a.setWebNetwork(c, net)
 				a.settingsUI.dataAt = time.Time{}
 			}
@@ -869,8 +876,9 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			if link == "" {
 				link = "…"
 			}
-			ui.Text(c, link).Font(monoFont).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").MaxWidth(240)
-			if a.settingsButton(c, "Copy", false, false, d.webLink == "") {
+			ui.Text(c, link).Font(monoFont).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").MaxWidth(240).Tooltip(link)
+			// The tunnel's row copies the same link already.
+			if d.webLink != d.webTunnelURL && a.settingsButton(c, "Copy", false, false, d.webLink == "") {
 				mygo.Clipboard.WriteText(d.webLink)
 				toast(c, "Copied the link")
 			}
@@ -1134,8 +1142,10 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 	filter.Children(func() {
 		ui.Icon(c, iconSearch).Size(14, 14).TextColor(pal.TextFaint)
 		ui.TextInputBase(c, &u.keyQuery).Placeholder("Filter by name or keys, as “split” or “" + keyNames(combo(ui.Cmd, 0), onMac)[0] + "+shift”").
-			FontSize(12.5).Grow(1).MinWidth(0).Label("Filter shortcuts")
+			FontSize(12.5).Grow(1).MinWidth(0).Label("Filter shortcuts").Bind(a.handle("key-filter"))
 	})
+	// Said first, where it is read: at the end, after every key, it wasn't.
+	ui.Text(c, "Shortcuts can’t be changed yet.").FontSize(11.5).TextColor(pal.TextFaint).Margin(8, 2, 0, 2)
 	u.blocks++
 	items := keymapFilter(u.keyQuery)
 	if len(items) == 0 {
@@ -1155,12 +1165,12 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 					// A run of keys (Alt+1 to Alt+9) as its ends: cut at
 					// two, it read as if those were all.
 					if n := len(e.Keys); n > 2 {
-						keyChip(c, e.Keys[0].Combo.Label())
+						settingsKeyChip(c, e.Keys[0].Combo.Label())
 						ui.Text(c, "to").FontSize(11).TextColor(pal.TextFaint)
-						keyChip(c, e.Keys[n-1].Combo.Label())
+						settingsKeyChip(c, e.Keys[n-1].Combo.Label())
 					} else {
 						for _, b := range e.Keys {
-							keyChip(c, b.Combo.Label())
+							settingsKeyChip(c, b.Combo.Label())
 						}
 					}
 				})
@@ -1168,7 +1178,14 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 		})
 		start = end
 	}
-	ui.Text(c, "Shortcuts can’t be changed yet.").FontSize(11.5).TextColor(pal.TextFaint).Margin(12, 2, 0, 2)
+}
+
+// settingsKeyChip is a key as the Keyboard page shows it: larger than the
+// palette's, as the page is about them.
+func settingsKeyChip(c *ui.Context, label string) ui.Element {
+	return ui.Row(c).Radius(4).Border(1, pal.KbdBorder).Background(pal.Kbd).Padding(2, 7).Shrink(0).Children(func() {
+		ui.Text(c, label).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+	})
 }
 
 // --- About ---

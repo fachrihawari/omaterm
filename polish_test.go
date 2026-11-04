@@ -795,6 +795,10 @@ func TestGraphColumnsAligned(t *testing.T) {
 func TestPaletteTitlesAligned(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
+	// Sessions besides the one shown, which the palette leaves out.
+	a.newTerminalTabReal()
+	a.newTerminalTabReal()
+	a.activateTab(0)
 	a.openOverlay(overlayCommandPalette)
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()

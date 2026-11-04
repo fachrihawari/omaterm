@@ -289,8 +289,11 @@ function programType(p) {
   const str = (p.agent || p.process || p.runtime || p.shell || "").toLowerCase();
   if (str.includes("claude")) return "claude";
   if (str.includes("codex")) return "codex";
-  if (str.includes("bun") || str.includes("vite")) return "bun";
-  if (str.includes("go")) return "go";
+  // The program's own name, as the desktop reads it: "go" in cargo or
+  // django, or a bun face for vite, was a wrong guess.
+  const name = str.split(/[\s/]/).filter(Boolean)[0]?.split("/").pop() || "";
+  if (name === "bun" || name === "bunx") return "bun";
+  if (name === "go" || name === "gopls") return "go";
   return "term";
 }
 
@@ -410,13 +413,19 @@ function renderPills() {
     const panes = terminals(s);
     const lead = (s.lead && s.lead.id) ? s.lead : panes[0];
     const here = panes.some((p) => p.id === open);
-    const st = statusState(lead);
+    // A process's tab shows its state as its row does, a running one a
+    // green dot.
+    let mark = statusIcon(statusState(lead), "s11");
+    if (s.process) {
+      const pst = processState(s.proc ? { status: s.proc.status } : lead);
+      mark = pst === "running" ? h("span", { class: "dotg" }) : statusIcon(pst, "s11");
+    }
 
     tabs.push(h("a", {
       class: "pill-tab" + (here ? " on" : ""),
       href: "#/pane/" + encodeURIComponent(here ? open : lead.id),
     },
-      statusIcon(st, "s11"),
+      mark,
       s.name || label(lead),
     ));
   }
