@@ -150,24 +150,26 @@ func (a *appState) startDictation(c *ui.Context, pane string) {
 		return
 	}
 	st := a.desktopVoice()
+	voiceSettings := func() { a.openSettings("voice") }
 	switch {
 	case !st.Enabled:
-		a.toast(c, "Voice input is off: turn it on in Settings › Voice")
+		a.actionToast(c, "Voice input is off: turn it on in Settings › Voice", "Open Settings", voiceSettings)
 		return
 	case !st.Ready:
-		a.toast(c, "Voice input isn’t ready: "+voiceNotReady(st.Reason))
+		a.actionToast(c, "Voice input isn’t ready: "+voiceNotReady(st.Reason), "Open Settings", voiceSettings)
 		return
 	case pane == "":
 		a.toast(c, "Click into a terminal pane to dictate into it")
 		return
 	}
 	if !voiceDaemon(a) {
-		a.toast(c, "Voice input needs the session daemon: turn it on in Settings › General")
+		a.actionToast(c, "Voice input needs the session daemon: turn it on in Settings › General", "Open Settings",
+			func() { a.openSettings("general") })
 		return
 	}
 	rec, err := startRecording(a)
 	if err != nil {
-		a.toast(c, "Can’t record: "+err.Error())
+		a.errorToast(c, "Can’t record: "+err.Error())
 		return
 	}
 	d := &dictation{pane: pane, start: time.Now(), rec: rec}
@@ -206,6 +208,13 @@ func voiceNotReady(reason string) string {
 func (a *appState) stopDictation() {
 	d := a.dictation
 	d.limit.Stop()
+	a.writeDown(d, nil)
+}
+
+// writeDown has d's recording written down: wav, or the recording once
+// stopped when wav is nil. The text is pasted into its pane as it comes.
+// When writing it down fails, the recording is kept, to try again.
+func (a *appState) writeDown(d *dictation, wav []byte) {
 	d.step = dictTranscribing
 	ctx, cancel := context.WithCancel(context.Background())
 	d.cancel = cancel
@@ -215,7 +224,11 @@ func (a *appState) stopDictation() {
 	}
 	go func() {
 		defer cancel()
-		wav, err := d.rec.Stop()
+		var err error
+		if wav == nil {
+			wav, err = d.rec.Stop()
+		}
+		recorded := err == nil
 		text := ""
 		if err == nil {
 			text, err = transcribeRecording(ctx, wav, lang)
@@ -226,11 +239,20 @@ func (a *appState) stopDictation() {
 			}
 			a.dictation = nil
 			a.invalidateWindows()
-			if err != nil {
-				a.toast(nil, "Not written down: "+err.Error())
-				return
+			switch {
+			case err != nil && recorded:
+				a.richToast(nil, ui.Toast{Title: "Not written down: " + err.Error(), Type: "error", Timeout: 12 * time.Second,
+					Action: "Try Again", OnAction: func() {
+						if a.dictation == nil {
+							a.dictation = d
+							a.writeDown(d, wav)
+						}
+					}})
+			case err != nil:
+				a.errorToast(nil, "Not written down: "+err.Error())
+			default:
+				a.pasteDictation(d.pane, text, d.send)
 			}
-			a.pasteDictation(d.pane, text, d.send)
 		})
 	}()
 	a.invalidateWindows()

@@ -271,10 +271,11 @@ func (a *appState) browserCard(c *ui.Context, tab *topTab, id string, multi, foc
 			a.post(func() {}) // the page shows again next frame
 		default:
 			ref := a.handle("web-" + id)
-			web := ui.WebView(c.Key("web"), e.view).Grow(1).Bind(ref)
-			if web.Hovered() && !focused && a.settings.FocusFollowsMouse {
-				a.activePaneTermID = id
-			}
+			// A browser pane takes the keyboard on a click only, focus
+			// following the mouse or not: the pointer resting on the page
+			// moved its ring there while the keys still went to the
+			// terminal.
+			ui.WebView(c.Key("web"), e.view).Grow(1).Bind(ref)
 			switch {
 			case ref.Focused(c) && !e.focused:
 				e.focused = true

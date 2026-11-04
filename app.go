@@ -45,6 +45,10 @@ func (a *appState) view(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.queuedToasts = nil
+	for _, t := range a.queuedRich {
+		c.AddToast(t)
+	}
+	a.queuedRich = nil
 
 	root := ui.Column(c).Fill()
 	a.wash(root)
@@ -215,13 +219,17 @@ const (
 // opened last stays, the inspector going first.
 func (a *appState) fitPanels(w float32) {
 	side, insp := a.sidebarVisible, a.inspectorVisible
+	gap := a.paneGap()
+	// A panel fits at its least width: one that didn't fit at its own was
+	// once hidden, though it fit narrower, and widened by its edge it
+	// went.
 	for side || insp {
 		need := float32(minPanesWidth)
 		if side {
-			need += a.sidebarWidth()
+			need += sidebarMinW
 		}
 		if insp {
-			need += a.inspectorWidth() + a.paneGap()
+			need += inspectorMinW + gap
 		}
 		if need <= w {
 			break
@@ -233,6 +241,21 @@ func (a *appState) fitPanels(w float32) {
 		}
 	}
 	a.sidebarShown, a.inspectorShown = side, insp
+	// Shown, each takes its width, or the room there is.
+	room := w - minPanesWidth
+	a.sidebarFit, a.inspectorFit = 0, 0
+	if side {
+		a.sidebarFit = room
+		if insp {
+			a.sidebarFit -= inspectorMinW + gap
+		}
+	}
+	if insp {
+		a.inspectorFit = room - gap
+		if side {
+			a.inspectorFit -= a.sidebarWidth()
+		}
+	}
 }
 
 // setSidebar and setInspector show or hide a side panel; one shown is the

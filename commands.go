@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
@@ -217,7 +218,16 @@ var commandRegistry = append([]Command{
 	{ID: "session.prev", Title: "Previous Session", Category: "Session",
 		Run: func(a *appState, c *ui.Context) { a.cycleSession(-1) }},
 	{ID: "browser.open", Title: "Open Browser Pane", Category: "Browser",
-		Run: func(a *appState, c *ui.Context) { a.openBrowser("") }},
+		Run: func(a *appState, c *ui.Context) {
+			// It opens beside a terminal: from an editor or a process,
+			// beside the last session shown.
+			a.activateKind(tabTerminal)
+			if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+				a.toast(c, "Open a session first: a browser pane opens beside one")
+				return
+			}
+			a.openBrowser("")
+		}},
 	{ID: "browser.focusAddress", Title: "Go to Address Bar", Category: "Browser",
 		Enabled: func(a *appState) bool { return a.focusedWeb() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.focusedWeb().focusAddress = true }},
@@ -294,7 +304,7 @@ func (a *appState) gitStageAll(c *ui.Context) {
 		return
 	}
 	if err := service.StageAll(r.Root); err != nil {
-		c.Toast("Git error: " + err.Error())
+		a.errorToast(c, "Git error: "+err.Error())
 		return
 	}
 	a.refreshActiveRepo()
@@ -307,7 +317,7 @@ func (a *appState) gitUnstageAll(c *ui.Context) {
 		return
 	}
 	if err := service.UnstageAll(r.Root); err != nil {
-		c.Toast("Git error: " + err.Error())
+		a.errorToast(c, "Git error: "+err.Error())
 		return
 	}
 	a.refreshActiveRepo()
@@ -472,4 +482,25 @@ func (a *appState) toast(c *ui.Context, msg string) {
 		return
 	}
 	a.queuedToasts = append(a.queuedToasts, msg)
+}
+
+// errorToast tells of something that failed: it looks an error, stays a
+// while longer than a plain toast, and its button copies what it says.
+func (a *appState) errorToast(c *ui.Context, msg string) {
+	a.richToast(c, ui.Toast{Title: msg, Type: "error", Timeout: 12 * time.Second, Action: "Copy", OnAction: func() { copyText(msg) }})
+}
+
+// actionToast is a toast with a button, label, that runs fn: the way to
+// what it tells of.
+func (a *appState) actionToast(c *ui.Context, msg, label string, fn func()) {
+	a.richToast(c, ui.Toast{Title: msg, Timeout: 8 * time.Second, Action: label, OnAction: fn})
+}
+
+// richToast shows t, now or, with no frame at hand (c nil), in the next.
+func (a *appState) richToast(c *ui.Context, t ui.Toast) {
+	if c != nil {
+		c.AddToast(t)
+		return
+	}
+	a.queuedRich = append(a.queuedRich, t)
 }

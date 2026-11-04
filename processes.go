@@ -968,7 +968,7 @@ func (a *appState) doShare(projectID string, proc procs.Proc, via tunnel.Provide
 		return a.procHost.Share(projectID, proc.Name, string(via))
 	}, func(err error) {
 		if err != nil {
-			a.toast(nil, "Sharing "+proc.Name+" failed: "+err.Error())
+			a.errorToast(nil, "Sharing "+proc.Name+" failed: "+err.Error())
 			return
 		}
 		a.refreshProcList()
@@ -991,7 +991,7 @@ func (a *appState) unshare(projectID string, proc procs.Proc) {
 		return a.procHost.Unshare(projectID, proc.Name)
 	}, func(err error) {
 		if err != nil {
-			a.toast(nil, "Stopping the share of "+proc.Name+" failed: "+err.Error())
+			a.errorToast(nil, "Stopping the share of "+proc.Name+" failed: "+err.Error())
 			return
 		}
 		a.refreshProcList()

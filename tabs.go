@@ -184,9 +184,13 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 			}
 		}
 		// The close button keeps its room, so pills keep their width, but
-		// shows only on the active or hovered pill.
-		show := len(a.tabs) > 1 && (active || e.Hovered())
-		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Disabled(!show)
+		// shows only on the active or hovered pill; a lone tab has none.
+		if len(a.tabs) < 2 {
+			return
+		}
+		show := active || e.Hovered()
+		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Disabled(!show).
+			Tooltip(withKeys("Close", "tab.close")).Label("Close Tab")
 		x.Opacity(a.animate(x, "show", b2f(show), motionFast))
 		if x.Hovered() {
 			x.Background(pal.Hover)

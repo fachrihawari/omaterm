@@ -196,6 +196,23 @@ func TestPaneFocusByArrows(t *testing.T) {
 	step(ui.KeyLeft, first)
 }
 
+// In the smallest window the inspector opens, narrower, rather than not
+// at all, and the sidebar gives way to it.
+func TestPanelsFitTheWindow(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 600, 400)
+	a.setInspector(true)
+	tr.Frame()
+	tr.Frame()
+	if !a.inspectorShown || a.sidebarShown {
+		t.Fatalf("at 600 px: inspector shown %v, sidebar %v", a.inspectorShown, a.sidebarShown)
+	}
+	if w := a.inspectorWidth(); w < inspectorMinW || w > 600-minPanesWidth {
+		t.Errorf("the inspector is %v wide in a 600 px window", w)
+	}
+}
+
 // Commit must not look clickable with nothing staged or no message.
 func TestCommitButtonDisabled(t *testing.T) {
 	a := newTestApp(t)

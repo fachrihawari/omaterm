@@ -475,7 +475,7 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 						err = service.Stage(a.diffSrc.Repo, a.diffSrc.Path)
 					}
 					if err != nil {
-						c.Toast("Git error: " + err.Error())
+						a.errorToast(c, "Git error: "+err.Error())
 					} else {
 						a.refreshActiveRepo()
 					}

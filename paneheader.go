@@ -114,15 +114,25 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 			if sub != "" && sub != title {
 				ui.Text(c, sub).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0).Tooltip(sub)
 			}
-			if isProc && proc.Link != "" && !narrow {
-				// Where the process is served, after what it runs.
-				ui.Text(c, procLinkHost(proc.Link)).FontSize(12).TextColor(pal.TextFaint).SingleLine().
-					Shrink(0).Tooltip("Served at " + proc.Link)
-			}
-			if isProc && proc.Share != "" {
-				pillShare(c, proc, func() { a.openURL(proc.Share) })
-			}
 		})
+		// Where the process is served, after what it runs: a link, as in
+		// its tab, out of the grip, which a press would drag.
+		if isProc && proc.Link != "" && !narrow {
+			host := ui.ButtonBase(c.Key("host")).Shrink(0).Tooltip("Open " + proc.Link).Label("Open " + proc.Link)
+			ink := pal.TextFaint
+			if host.Hovered() {
+				ink = pal.TextMuted
+			}
+			host.Children(func() {
+				ui.Text(c, procLinkHost(proc.Link)).FontSize(12).TextColor(ink).SingleLine()
+			})
+			if host.Clicked() {
+				a.openURL(proc.Link)
+			}
+		}
+		if isProc && proc.Share != "" {
+			pillShare(c, proc, func() { a.openURL(proc.Share) })
+		}
 		if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" {
 			a.gitChip(c, g.Branch, g.Added, g.Removed)
 		}
@@ -217,7 +227,12 @@ func firstNonEmpty(s ...string) string {
 // gitChip is a pane's branch and the lines changed under it.
 func (a *appState) gitChip(c *ui.Context, branch string, added, removed int) {
 	chip := ui.Row(c.Key("git")).Height(20).Radius(6).Padding(0, 7).Gap(5).AlignItems(ui.Center).
-		Background(pal.Chip).Shrink(2).MinWidth(64).MaxWidth(220)
+		Background(pal.Chip).Shrink(2).MinWidth(64).MaxWidth(220).Cursor(ui.CursorPointer).
+		Tooltip(branch + "\n" + withKeys("Show Source Control", "view.git")).Label("Show Source Control")
+	if chip.Hovered() {
+		chip.Background(pal.Chip.Mix(pal.Text, 0.08))
+	}
+	a.fadeColors(chip)
 	chip.Children(func() {
 		ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint)
 		ui.Text(c, branch).FontSize(11.5).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)

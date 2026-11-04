@@ -28,12 +28,21 @@ const (
 )
 
 func (a *appState) sidebarWidth() float32 {
-	return max(sidebarMinW, min(a.sidebarW, sidebarMaxW))
+	w := max(sidebarMinW, min(a.sidebarW, sidebarMaxW))
+	if a.sidebarFit > 0 {
+		w = min(w, a.sidebarFit)
+	}
+	return w
 }
 
-// inspectorWidth is the inspector's width, within its bounds.
+// inspectorWidth is the inspector's width, within its bounds and the room
+// the window gives it.
 func (a *appState) inspectorWidth() float32 {
-	return max(inspectorMinW, min(a.inspectorW, inspectorMaxW))
+	w := max(inspectorMinW, min(a.inspectorW, inspectorMaxW))
+	if a.inspectorFit > 0 {
+		w = min(w, a.inspectorFit)
+	}
+	return w
 }
 
 // panelEdge is the edge of a side panel, a few pixels wide: dragged, it

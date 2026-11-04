@@ -764,7 +764,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 			all := a.cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage all")
 			if all.Clicked() && r != nil {
 				if err := service.UnstageAll(r.Root); err != nil {
-					c.Toast("Git error: " + err.Error())
+					a.errorToast(c, "Git error: "+err.Error())
 				} else {
 					a.refreshActiveRepo()
 				}
@@ -773,7 +773,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 			stageAll := a.cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stage all")
 			if stageAll.Clicked() && r != nil {
 				if err := service.StageAll(r.Root); err != nil {
-					c.Toast("Git error: " + err.Error())
+					a.errorToast(c, "Git error: "+err.Error())
 				} else {
 					a.refreshActiveRepo()
 				}
@@ -866,7 +866,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				un := a.cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage")
 				if un.Clicked() && r != nil {
 					if err := service.Unstage(r.Root, f.Path); err != nil {
-						c.Toast("Git error: " + err.Error())
+						a.errorToast(c, "Git error: "+err.Error())
 					} else {
 						a.refreshActiveRepo()
 					}
@@ -879,7 +879,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				st := a.cmdButton(c, iconPlus, iconBtn, false).Tooltip(stageTip)
 				if st.Clicked() && r != nil {
 					if err := service.Stage(r.Root, f.Path); err != nil {
-						c.Toast("Git error: " + err.Error())
+						a.errorToast(c, "Git error: "+err.Error())
 					} else {
 						a.refreshActiveRepo()
 					}
@@ -1004,7 +1004,7 @@ func (a *appState) askDiscard(root, path string, untracked bool) {
 	}
 	a.askDanger("Discard Changes?", text, "Discard", func() {
 		if err := service.Discard(root, path, untracked); err != nil {
-			a.toast(nil, "Git error: "+err.Error())
+			a.errorToast(nil, "Git error: "+err.Error())
 			return
 		}
 		a.refreshActiveRepo()
@@ -1081,7 +1081,7 @@ func (a *appState) gitStashDrop(c *ui.Context, index int) {
 		return
 	}
 	if err := service.StashDrop(r.Root, index); err != nil {
-		a.toast(c, "Drop failed: "+err.Error())
+		a.errorToast(c, "Drop failed: "+err.Error())
 		return
 	}
 	a.refreshActiveRepo()

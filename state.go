@@ -192,6 +192,9 @@ type appState struct {
 	// (fitPanels): too narrow for both beside the panes, one gives way.
 	// lastPanel is the one the user opened last, which stays.
 	sidebarShown, inspectorShown bool
+	// sidebarFit and inspectorFit are the most room the window leaves
+	// each, 0 for no limit (fitPanels).
+	sidebarFit, inspectorFit float32
 	lastPanel                    string
 	sidebarW                     float32
 	inspectorW                   float32
@@ -375,6 +378,9 @@ type appState struct {
 	// queuedToasts are messages for the next frame, from where there is
 	// no ui.Context.
 	queuedToasts []string
+	// queuedRich are toasts with a button or a look of their own, as
+	// errors, likewise for the next frame.
+	queuedRich []ui.Toast
 	// daemonStale is the version of the session daemon the sessions run
 	// in, when not this one's; daemonRefused* ask to restart a daemon of
 	// another protocol.
