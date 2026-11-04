@@ -3,14 +3,15 @@
 // sending it as a paste.
 //
 //   import { mountCompose } from "./compose.js";
-//   const compose = mountCompose(el, { sendPaste, sendKey });
+//   const compose = mountCompose(el, { sendPaste, sendKey, id });
 //   compose.open(); compose.close(); compose.destroy();
 //
 // sendPaste and sendKey return false when they could not send; the text then
 // stays in the box, with a note. Send pastes the text (sendPaste) and then presses Enter (sendKey), so a
 // prompt is submitted once; Insert pastes it without Enter, to edit it in
-// the terminal. An unsent draft is kept in localStorage under
-// omaterm.compose; without storage the box works and forgets.
+// the terminal. An unsent draft is kept in localStorage, one per pane (id)
+// under omaterm.compose:<id>, so a prompt is not sent to another session;
+// without storage the box works and forgets.
 //
 // With voice input on (Settings › Voice on the computer), a mic records a
 // prompt and the computer writes it down into the box, to fix before Send.
@@ -45,17 +46,18 @@ function store(key, value) {
   }
 }
 
-function load() {
+function loadDraft(key) {
   try {
-    return localStorage.getItem(STORE) || "";
+    return localStorage.getItem(key) || "";
   } catch {
     return "";
   }
 }
 
-function save(text) {
+function saveDraft(key, text) {
   try {
-    localStorage.setItem(STORE, text);
+    if (text) localStorage.setItem(key, text);
+    else localStorage.removeItem(key);
   } catch {
     // A private window, or no storage: the draft lives this time only.
   }
@@ -63,6 +65,9 @@ function save(text) {
 
 export function mountCompose(el, options = {}) {
   const { sendPaste, sendKey } = options;
+  // The draft is the pane's: another session's box starts empty.
+  const draftKey = STORE + ":" + (options.id || "");
+  const save = (text) => saveDraft(draftKey, text);
   const ac = new AbortController();
   const on = (target, type, fn, opts) => target.addEventListener(type, fn, { ...opts, signal: ac.signal });
 
@@ -95,7 +100,7 @@ export function mountCompose(el, options = {}) {
   box.className = "compose-box";
   box.rows = 4;
   box.placeholder = "Write a prompt…";
-  box.value = load();
+  box.value = loadDraft(draftKey);
 
   const foot = document.createElement("div");
   foot.className = "compose-foot";

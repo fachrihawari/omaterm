@@ -472,7 +472,7 @@
   display: inline-flex;
   align-items: center;
   align-self: center;
-  min-height: 30px;
+  min-height: 42px; /* a thumb's, as the mic beside it */
   padding: 0 10px;
   border-radius: 999px;
   background: var(--chip, rgba(215, 221, 229, 0.07));

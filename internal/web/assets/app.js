@@ -458,7 +458,6 @@ function renderSidebar() {
     const processSessions = allSessions.filter((s) => Boolean(s.process));
 
     const projHead = h("div", { class: "proj", title: proj.dir },
-      h("span", { class: "chev" }, icon("chev")),
       h("span", { class: "name" }, proj.name),
       h("button", {
         class: "ib add", title: `New session in ${proj.name}`, "aria-label": `New session in ${proj.name}`,
@@ -601,7 +600,8 @@ function processRow(s, proj, open) {
     class: "row" + (here ? " sel" : "") + fresh(s),
     onclick: () => { location.hash = "#/pane/" + encodeURIComponent(here ? open : lead.id); },
   },
-    statusEl,
+    // In the icon column, so its name lines up with the sessions'.
+    h("span", { class: "pi" }, statusEl),
     h("div", { class: "mid" },
       h("div", { class: "top" },
         h("span", { class: "nm" }, s.name || s.process),
@@ -1000,7 +1000,7 @@ function showTerm(id) {
   composePromise.then((mod) => {
     if (mod?.mountCompose && composeSlot.isConnected) {
       composeSlot.replaceChildren();
-      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey });
+      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey, id });
       composeBtn.hidden = false;
     }
   });
@@ -1095,10 +1095,22 @@ function route() {
 }
 
 async function start() {
+  // Something to see while it connects, which a slow phone link makes a
+  // while, and a way on when it fails.
+  if (!paired) {
+    app.replaceChildren(h("div", { class: "pick" }, h("img", { src: "icon.svg", alt: "" }), h("p", {}, "Connecting to omaterm…")));
+  }
   try {
     state = await api("/api/state");
   } catch (err) {
-    if (err.message !== "not paired") app.replaceChildren(h("p", { class: "empty" }, "omaterm did not answer: " + err.message));
+    if (err.message !== "not paired") {
+      app.replaceChildren(h("div", { class: "pick" },
+        h("img", { src: "icon.svg", alt: "" }),
+        h("h2", {}, "omaterm did not answer"),
+        h("p", {}, err.message),
+        h("button", { class: "primary", onclick: start }, "Try Again"),
+      ));
+    }
     return;
   }
   paired = true;
