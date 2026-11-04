@@ -425,6 +425,9 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			port := pill(c.Key("port"), ":"+itoa(proc.Port))
 			if active {
 				url := "http://localhost:" + itoa(proc.Port)
+				if port.Hovered() {
+					port.Background(pal.Chip.Mix(pal.Text, 0.1))
+				}
 				port.Cursor(ui.CursorPointer).Tooltip(processPortTip(proc, url))
 				if port.Clicked() {
 					linkClicked = true

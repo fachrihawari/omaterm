@@ -240,18 +240,26 @@ func (a *appState) diffFileStrip(c *ui.Context) {
 		if a.cmdButton(c, iconChevronLeft, 13, false).Tooltip("Previous file").Clicked() && i > 0 {
 			a.diffFileShow(i - 1)
 		}
-		label := ui.Text(c, itoa(i+1)+"/"+itoa(n)).FontSize(11.5).TextColor(pal.TextMuted).SingleLine().Cursor(ui.CursorPointer)
-		label.ContextMenu(func(m *ui.Menu) {
+		// A click lists the files to go to, as its pointer said it would.
+		files := func(m *ui.Menu) {
 			for k, f := range a.diffFiles {
 				name := f.NewName
 				if name == "" {
 					name = f.OldName
 				}
-				if m.Item(name).Chosen() {
+				if m.Item(name).Checked(k == i).Chosen() {
 					a.diffFileShow(k)
 				}
 			}
+		}
+		label := ui.ButtonBase(c.Key("file-list")).Padding(2, 6).Radius(5).Tooltip("Go to file").Label("Go to file")
+		if label.Hovered() {
+			label.Background(pal.Hover)
+		}
+		label.Children(func() {
+			ui.Text(c, itoa(i+1)+"/"+itoa(n)).FontSize(11.5).TextColor(pal.TextMuted).SingleLine()
 		})
+		label.Menu(files).ContextMenu(files)
 		if a.cmdButton(c, iconChevronRight, 13, false).Tooltip("Next file").Clicked() && i < n-1 {
 			a.diffFileShow(i + 1)
 		}
