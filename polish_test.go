@@ -165,6 +165,37 @@ func TestTurnEndRefreshesGit(t *testing.T) {
 	}
 }
 
+// Ctrl+Alt and the arrows (⌥⌘ on macOS) move the keyboard between the
+// panes of a split, by where they are.
+func TestPaneFocusByArrows(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	first := a.activeSplitLeaf()
+	a.splitPane(first, splitVertical)
+	ids := a.activeSplit().termIDs()
+	right := ids[1]
+	a.splitPane(right, splitHorizontal)
+	ids = a.activeSplit().termIDs()
+	below := ids[2]
+	a.focusPane(first)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	tr.Frame()
+	step := func(key ui.Key, want string) {
+		t.Helper()
+		tr.Key(ui.Cmd|ui.Alt, key)
+		tr.Frame()
+		if got := a.activeSplitLeaf(); got != want {
+			t.Fatalf("after %v the keyboard is in %s, not %s (panes %v)", key, got, want, ids)
+		}
+	}
+	step(ui.KeyLeft, first) // nothing that way: it stays
+	step(ui.KeyRight, right)
+	step(ui.KeyDown, below)
+	step(ui.KeyUp, right)
+	step(ui.KeyLeft, first)
+}
+
 // Commit must not look clickable with nothing staged or no message.
 func TestCommitButtonDisabled(t *testing.T) {
 	a := newTestApp(t)

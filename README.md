@@ -104,8 +104,8 @@ revert each hunk.
 
 The sidebar lists each project with its sessions, and switching projects
 keeps the other one's shells running. Split a pane right (`Ctrl+Shift+R`) or
-down (`Ctrl+Shift+D`), zoom one (`Ctrl+Shift+Enter`), and drag a pane's
-header to move it.
+down (`Ctrl+Shift+D`), zoom one (`Ctrl+Shift+Enter`), move between them with
+`Ctrl+Alt` and the arrows, and drag a pane's header to move it.
 
 ![Three split panes: an agent, a dev server and a test run](site/assets/split.png)
 
@@ -467,6 +467,7 @@ Code, Codex, Pi, OpenCode and Antigravity to use it. Every pane knows where it r
 | Close the pane, or the tab | `Ctrl+W` | `⌘W` |
 | Split right / down | `Ctrl+Shift+R` / `Ctrl+Shift+D` | `⇧⌘R` / `⇧⌘D` |
 | Zoom pane | `Ctrl+Shift+Enter` | `⇧⌘↩` |
+| Pane to the left / right / above / below | `Ctrl+Alt+←` `→` `↑` `↓` | `⌥⌘←` `→` `↑` `↓` |
 | Dictate into the pane (voice input on; not on Windows) | `Ctrl+Shift+Space` | `⇧⌘Space` |
 | Go to tab 1–9 | `Alt+1` … `Alt+9` | `⌘1` … `⌘9` |
 | Go to project 1–9 | `Alt+Shift+1` … `Alt+Shift+9` | `⌥⌘1` … `⌥⌘9` |
