@@ -1013,9 +1013,6 @@ func (a *appState) settingsPair(c *ui.Context) {
 	foot := "Scan with the phone’s camera, or open the link and type the code."
 	if p.ready && p.err == "" {
 		foot += " It works once, until " + p.expires.Format("15:04") + "."
-		if p.local {
-			foot += " Only this computer can open it: turn on On your network, or pick a tunnel under Reach It from Elsewhere."
-		}
 	}
 	a.settingsGroup(c, "pair", "", foot, func() {
 		a.settingsUI.rowN++
@@ -1026,6 +1023,13 @@ func (a *appState) settingsPair(c *ui.Context) {
 			case p.err != "":
 				ui.Text(c, p.err).FontSize(12).TextColor(pal.Bad)
 			default:
+				if p.local {
+					pairLocalWarning(c)
+					if a.settingsButton(c, "Use My Network", false, false, false) {
+						a.setWebNetwork(c, true)
+						d.pair = nil // a new code, for the network's address
+					}
+				}
 				qrView(c, p.qr, 4)
 				ui.Text(c, p.code).FontSize(20).FontWeight(600).Font(monoFont).TextColor(pal.TextStrong)
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {

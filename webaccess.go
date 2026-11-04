@@ -223,6 +223,14 @@ func (a *appState) webPairBody(c *ui.Context, p *webPairing) {
 	case p.err != "":
 		ui.Text(c, p.err).FontSize(12).TextColor(pal.Bad)
 	default:
+		if p.local {
+			// Said before the code, which no other device can use yet.
+			pairLocalWarning(c)
+			if a.dialogButton(c, "Open Web Access Settings", false, false) {
+				*a.webPairOpen = false
+				a.openSettings("web")
+			}
+		}
 		qrView(c, p.qr, 4)
 		ui.Text(c, "Scan with the device's camera, or open the link and enter the code.").
 			FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
@@ -237,12 +245,15 @@ func (a *appState) webPairBody(c *ui.Context, p *webPairing) {
 				c.Toast("Copied the link")
 			}
 		})
-		note := "Works once, until " + p.expires.Format("15:04") + "."
-		if p.local {
-			note += " Only this computer can open it: turn on Web Access on Your Network, or pick a tunnel under Reach It from Elsewhere."
-		}
-		ui.Text(c, note).FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
+		ui.Text(c, "Works once, until "+p.expires.Format("15:04")+".").FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
 	}
+}
+
+// pairLocalWarning says that a pairing link only this computer can open
+// can't pair another device yet, and what makes it reachable.
+func pairLocalWarning(c *ui.Context) {
+	ui.Text(c, "Only this computer can open this link. Turn on On your network, or pick a tunnel under Reach it from elsewhere: a tunnel is HTTPS, which the phone’s microphone needs.").
+		FontSize(12).TextColor(pal.Warn).Wrap().TextAlign(ui.Center)
 }
 
 // qrView draws a QR code as modules of cell points, dark on white.

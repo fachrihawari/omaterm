@@ -234,6 +234,7 @@
   background: var(--input, #0d1117);
   color: var(--text, #e6edf3);
   font: inherit;
+  font-size: 16px; /* iOS zooms into a smaller one */
 }
 
 .keybar-text input:focus {
@@ -275,7 +276,7 @@
 /* The compose box, a sheet from the bottom of the page. */
 .compose {
   position: fixed;
-  inset: 0;
+  inset: 0 0 var(--kb, 0px) 0; /* clear of the on-screen keyboard (app.js) */
   z-index: 70;
   display: flex;
   align-items: flex-end;
@@ -344,7 +345,7 @@
   border-radius: 10px;
   background: var(--input, #0d1117);
   color: var(--text, #e6edf3);
-  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; /* iOS zooms into a smaller one */
   resize: vertical;
 }
 

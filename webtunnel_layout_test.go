@@ -54,8 +54,8 @@ func TestSettingsWebTunnelLayoutFailed(t *testing.T) {
 	}
 }
 
-// The pair page keeps its local note in step with the tunnel row's new
-// name.
+// A link only this computer can open says so on the pair page, by the
+// rows' own names, and offers to listen on the network.
 func TestSettingsPairNote(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	setConfigHome(t, t.TempDir())
@@ -70,7 +70,7 @@ func TestSettingsPairNote(t *testing.T) {
 	p.local = true
 	p.expires = time.Now().Add(10 * time.Minute) // a code that hasn't run out
 	tr.Frame()
-	if !tr.HasText("Reach It from Elsewhere") {
-		t.Fatalf("the note does not name the row: %v", tr.Texts())
+	if !tr.HasText("Reach it from elsewhere") || !tr.HasText("Use My Network") {
+		t.Fatalf("the warning does not name the row, or offer the network: %v", tr.Texts())
 	}
 }

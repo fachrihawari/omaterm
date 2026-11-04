@@ -1112,6 +1112,19 @@ async function start() {
 
 addEventListener("hashchange", route);
 
+// The on-screen keyboard: where it lies over the page (iOS), --kb is its
+// height, which the page and the compose sheet keep clear of. Where it
+// shrinks the page instead (Android), it comes to 0.
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const fitKeyboard = () => {
+    const kb = Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop));
+    document.documentElement.style.setProperty("--kb", kb + "px");
+  };
+  vv.addEventListener("resize", fitKeyboard);
+  vv.addEventListener("scroll", fitKeyboard);
+}
+
 (async () => {
   const m = location.hash.match(/^#code=([0-9A-Za-z-]+)$/);
   if (m) {
