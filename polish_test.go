@@ -1106,7 +1106,8 @@ func TestInspectorSlides(t *testing.T) {
 	}
 	tr.Advance(time.Second)
 	tr.Frame()
-	if tr.HasText("Files") {
+	// Its tab exactly: "Search in Files" in the tab bar stays.
+	if _, ok := tr.Find("Files"); ok {
 		t.Fatal("the inspector stays once hidden")
 	}
 }

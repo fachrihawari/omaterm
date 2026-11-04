@@ -108,7 +108,7 @@ func pillOn(c *ui.Context, text string, selected bool) ui.Element {
 		bg, fg = pal.AccentText, pal.Accent
 	}
 	return ui.Row(c).Radius(9).Padding(1, 6).Background(bg).Shrink(0).Justify(ui.Center).Children(func() {
-		ui.Text(c, text).FontSize(9).TextColor(fg).SingleLine()
+		ui.Text(c, text).FontSize(10).TextColor(fg).SingleLine()
 	})
 }
 
@@ -118,7 +118,7 @@ func pillShrink(c *ui.Context, text string) ui.Element {
 	e := ui.Row(c).Radius(9).Padding(1, 6).Background(pal.Chip).
 		Shrink(0).MaxWidthPercent(45).Justify(ui.Center)
 	e.Children(func() {
-		ui.Text(c, text).FontSize(9).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+		ui.Text(c, text).FontSize(10).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 	})
 	e.Tooltip(text)
 	return e
@@ -136,12 +136,12 @@ func keyChipOn(c *ui.Context, label string, selected bool) ui.Element {
 	if selected {
 		return ui.Row(c).Radius(4).Border(1, pal.AccentText.Alpha(0.5)).
 			Padding(2, 6).Shrink(0).Children(func() {
-			ui.Text(c, label).FontSize(9).TextColor(pal.AccentText).SingleLine()
+			ui.Text(c, label).FontSize(10).TextColor(pal.AccentText).SingleLine()
 		})
 	}
 	return ui.Row(c).Radius(4).Border(1, pal.KbdBorder).Background(pal.Kbd).
 		Padding(2, 6).Shrink(0).Children(func() {
-		ui.Text(c, label).FontSize(9).TextColor(pal.TextMuted).SingleLine()
+		ui.Text(c, label).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 	})
 }
 
@@ -173,7 +173,7 @@ func countBadge(c *ui.Context, n int) ui.Element {
 // not known yet ("—").
 func countBadgeText(c *ui.Context, s string) ui.Element {
 	return ui.Box(c).Radius(9).Padding(1, 6).Background(pal.Chip).Shrink(0).Children(func() {
-		ui.Text(c, s).FontSize(9).TextColor(pal.TextMuted).SingleLine()
+		ui.Text(c, s).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 	})
 }
 

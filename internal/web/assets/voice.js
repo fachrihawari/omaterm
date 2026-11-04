@@ -144,6 +144,12 @@ function encodeWAV(samples) {
 
 // transcribe sends the WAV to the computer and gives back its text, or
 // throws with the computer's reason.
+// warm has the computer load the model while the user speaks, so the
+// words come soon after the recording stops. Nothing waits for it.
+export function warm() {
+  fetch("/api/voice/warm", { method: "POST" }).catch(() => {});
+}
+
 export async function transcribe(wav, lang) {
   const q = lang ? `?lang=${encodeURIComponent(lang)}` : "";
   const res = await fetch(`/api/voice${q}`, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });

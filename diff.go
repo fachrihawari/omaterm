@@ -541,9 +541,15 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 						t.TextColor(pal.TextMuted)
 					}
 				})
-				if a.diffSplit {
+				// The chosen one has the chip's fill; the other reacts
+				// to the pointer.
+				switch {
+				case a.diffSplit:
 					split.Background(pal.Chip)
+				case split.Hovered():
+					split.Background(pal.Hover)
 				}
+				a.press(a.fadeColors(split))
 				if split.Clicked() {
 					a.diffSplit = true
 					a.saveSettings()
@@ -557,9 +563,13 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 						t.TextColor(pal.TextMuted)
 					}
 				})
-				if !a.diffSplit {
+				switch {
+				case !a.diffSplit:
 					inline.Background(pal.Chip)
+				case inline.Hovered():
+					inline.Background(pal.Hover)
 				}
+				a.press(a.fadeColors(inline))
 				if inline.Clicked() {
 					a.diffSplit = false
 					a.saveSettings()

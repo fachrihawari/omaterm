@@ -200,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logout", s.auth(s.logout))
 	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))
 	mux.HandleFunc("POST /api/voice", s.auth(s.transcribe))
+	mux.HandleFunc("POST /api/voice/warm", s.auth(s.warmVoice))
 	return secure(mux)
 }
 
@@ -631,6 +632,17 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, map[string]string{"text": text})
 	}
+}
+
+// warmVoice has whisper-server load its model as the phone starts
+// recording, so the words come soon after it stops; it answers at once.
+func (s *Server) warmVoice(w http.ResponseWriter, r *http.Request) {
+	if _, on := s.voiceOn(r.Context()); !on {
+		http.NotFound(w, r)
+		return
+	}
+	s.d.Handle(r.Context(), "voice.warm", nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

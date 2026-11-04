@@ -170,3 +170,27 @@ func TestVoiceTranscribes(t *testing.T) {
 		t.Fatal("no limit on recordings")
 	}
 }
+
+// As the phone starts recording, it has the model loaded: on, the warm
+// call answers at once; off, it is not there.
+func TestVoiceWarm(t *testing.T) {
+	f := newFixture(t, func(o *daemon.Options) { o.Voice = &fakeVoice{} })
+	c := f.paired(t)
+	post := func() int {
+		req, _ := http.NewRequest("POST", f.base+"/api/voice/warm", nil)
+		req.Header.Set("Origin", f.base)
+		res, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if code := post(); code != http.StatusNotFound {
+		t.Fatalf("warm with voice off: %d", code)
+	}
+	os.WriteFile(filepath.Join(f.dir, "settings.json"), []byte(`{"voice":{"enabled":true}}`), 0o600)
+	if code := post(); code != http.StatusNoContent {
+		t.Fatalf("warm with voice on: %d", code)
+	}
+}

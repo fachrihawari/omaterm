@@ -208,6 +208,7 @@ export function mountCompose(el, options = {}) {
   async function startRecording() {
     say("");
     starting = true;
+    voiceMod.warm?.();
     try {
       rec = await voiceMod.record({
         onLimit: () => {
