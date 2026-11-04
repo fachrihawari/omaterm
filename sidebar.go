@@ -174,6 +174,22 @@ func (a *appState) unavailableProject(c *ui.Context, i int) {
 	h.Menu(menu).ContextMenu(menu)
 }
 
+// moveProject swaps project i with project j beside it, the shown one
+// staying shown.
+func (a *appState) moveProject(i, j int) {
+	if i < 0 || j < 0 || i >= len(a.projects) || j >= len(a.projects) {
+		return
+	}
+	a.projects[i], a.projects[j] = a.projects[j], a.projects[i]
+	switch a.active {
+	case i:
+		a.active = j
+	case j:
+		a.active = i
+	}
+	a.saveSoon()
+}
+
 // locateUnavailable asks where a missing project's folder went, moved or
 // renamed, and brings the project back there, with its sessions.
 func (a *appState) locateUnavailable(id string) {
@@ -288,6 +304,13 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			copyText(p.Path)
 			a.toast(nil, "Copied "+p.Path)
 		}
+		// The order is the sidebar's and Alt+Shift+N's.
+		if i > 0 && m.Item("Move Up").Chosen() {
+			a.moveProject(i, i-1)
+		}
+		if i < len(a.projects)-1 && m.Item("Move Down").Chosen() {
+			a.moveProject(i, i+1)
+		}
 		m.Separator()
 		if m.Item("Remove Project…").Chosen() {
 			a.pendingRemoveProjectID = p.ID
@@ -382,7 +405,11 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	// The transparent border is the selected row's ring in dark themes,
 	// there all along so that nothing in the row moves when it shows; the
 	// padding and gap put the name where a session row's is.
-	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 7, 0, 5).Border(1, ui.Color{}).Gap(8).
+	rowH := float32(28)
+	if a.settings.Density == "compact" {
+		rowH = 24
+	}
+	row := ui.Row(c.Key("p-"+proc.Name)).Height(rowH).Radius(8).Padding(0, 7, 0, 5).Border(1, ui.Color{}).Gap(8).
 		AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	bg := ui.Color{}
 	hovered := row.Hovered()
@@ -637,9 +664,13 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	// The agent's last word on its turn, under the name, unless the
 	// sidebar is kept compact.
 	sub, height := info.Summary, float32(32)
-	if sub != "" && a.settings.Density != "compact" {
+	switch {
+	case sub != "" && a.settings.Density != "compact":
 		height = 44
-	} else {
+	case a.settings.Density == "compact":
+		// Compact packs the rows too, not only the summaries.
+		sub, height = "", 28
+	default:
 		sub = ""
 	}
 	// The transparent border is the selected row's ring in dark themes,

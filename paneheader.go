@@ -266,7 +266,7 @@ func (a *appState) statusChip(c *ui.Context, i session.Info, roomy bool) {
 		minW = min(150, float32(utf8.RuneCountInString(text))*6.6+14)
 	}
 	chip := ui.Row(c.Key("status")).Height(20).Radius(6).Padding(0, 7).AlignItems(ui.Center).Background(bg).
-		Shrink(1).MinWidth(minW).MaxWidth(280).Tooltip(text)
+		Shrink(1).MinWidth(minW).MaxWidth(280).Tooltip(chipTip(i, text))
 	a.transition(chip, motionFade) // and its color fades as the status changes
 	chip.Children(func() {
 		word := ui.Text(c, text).FontSize(11.5).FontWeight(500).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
@@ -275,6 +275,15 @@ func (a *appState) statusChip(c *ui.Context, i session.Info, roomy bool) {
 	if i.Status == session.Working && i.Progress < 0 {
 		c.After(time.Second) // the elapsed time ticks
 	}
+}
+
+// chipTip is a status chip's tip: its words, a working timer's said in
+// full, as the chip alone ("2m 0s") doesn't say what it times.
+func chipTip(i session.Info, text string) string {
+	if i.Status == session.Working && i.Progress < 0 {
+		return "Working for " + text
+	}
+	return text
 }
 
 // statusWords is a status chip's text and colors, "" for none.

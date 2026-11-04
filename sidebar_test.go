@@ -234,3 +234,18 @@ func TestRelocateMissingProject(t *testing.T) {
 		t.Fatalf("shown: %+v", p)
 	}
 }
+
+// A project moves up and down the list, the shown one staying shown.
+func TestMoveProject(t *testing.T) {
+	a := twoProjectApp(t)
+	defer stopTermPanes(a)
+	first, second := a.projects[0].ID, a.projects[1].ID
+	shown := a.projects[a.active].ID
+	a.moveProject(0, 1)
+	if a.projects[0].ID != second || a.projects[1].ID != first {
+		t.Fatalf("not swapped: %s, %s", a.projects[0].ID, a.projects[1].ID)
+	}
+	if a.projects[a.active].ID != shown {
+		t.Errorf("the shown project changed to %s", a.projects[a.active].ID)
+	}
+}
