@@ -63,8 +63,9 @@ const (
 )
 
 // holdToTalk is how long the dictate key is held for letting go of it to
-// stop the recording: a tap toggles, a hold is push-to-talk.
-const holdToTalk = 400 * time.Millisecond
+// stop the recording: a tap toggles, a hold is push-to-talk. Tests, whose
+// taps a slow run (-race) can stretch, set their own.
+var holdToTalk = 400 * time.Millisecond
 
 // sendGap is between the pasted text and the Enter that sends it: a
 // program that reads both at once takes the Enter as a newline in the
@@ -230,6 +231,7 @@ func (a *appState) writeDown(d *dictation, wav []byte) {
 	if !voice.ValidLanguage(lang) {
 		lang = ""
 	}
+	transcribe := transcribeRecording // read here, not in the goroutine
 	go func() {
 		defer cancel()
 		var err error
@@ -239,7 +241,7 @@ func (a *appState) writeDown(d *dictation, wav []byte) {
 		recorded := err == nil
 		text := ""
 		if err == nil {
-			text, err = transcribeRecording(ctx, wav, lang)
+			text, err = transcribe(ctx, wav, lang)
 		}
 		a.post(func() {
 			if a.dictation != d {

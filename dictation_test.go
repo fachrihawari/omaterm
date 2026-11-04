@@ -48,11 +48,14 @@ func newDictationApp(t *testing.T) *dictationApp {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	da := &dictationApp{heard: make(chan string, 4), release: make(chan string, 4)}
-	start, transcribe, daemonOn, warm := startRecording, transcribeRecording, voiceDaemon, warmVoice
+	start, transcribe, daemonOn, warm, hold := startRecording, transcribeRecording, voiceDaemon, warmVoice, holdToTalk
 	t.Cleanup(func() {
-		startRecording, transcribeRecording, voiceDaemon, warmVoice = start, transcribe, daemonOn, warm
+		startRecording, transcribeRecording, voiceDaemon, warmVoice, holdToTalk = start, transcribe, daemonOn, warm, hold
 	})
 	warmVoice = func() error { return nil }
+	// A tap is a tap however slowly the run goes (-race): only the test
+	// of a hold makes one.
+	holdToTalk = time.Hour
 	startRecording = func(*appState) (recording, error) {
 		r := &fakeRecording{done: make(chan struct{}), wav: []byte("RIFF")}
 		da.recs = append(da.recs, r)
@@ -250,6 +253,7 @@ func TestDictationHoldToTalk(t *testing.T) {
 	if d == nil || d.step != dictRecording || !d.held {
 		t.Fatalf("holding the key doesn't keep it recording: %+v", d)
 	}
+	holdToTalk = 400 * time.Millisecond
 	d.start = d.start.Add(-time.Second)
 	da.tr.HoldModifiers(0)
 	da.tr.Frame()
