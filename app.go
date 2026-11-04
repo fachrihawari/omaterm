@@ -383,28 +383,42 @@ func (a *appState) dialogButton(c *ui.Context, label string, primary, danger boo
 	return a.dialogButtonEl(c, label, primary, danger).Clicked()
 }
 
+// dialogButtonOn is dialogButton that may be disabled, as while what the
+// dialog does is under way: faded, it neither reacts nor reports a click.
+func (a *appState) dialogButtonOn(c *ui.Context, label string, primary, danger, enabled bool) bool {
+	return a.dialogButtonBase(c, label, primary, danger, enabled).Clicked() && enabled
+}
+
 // dialogButtonEl is dialogButton, the button itself: the dialog that
 // makes it the default, which Enter presses, focuses it.
 func (a *appState) dialogButtonEl(c *ui.Context, label string, primary, danger bool) ui.Element {
+	return a.dialogButtonBase(c, label, primary, danger, true)
+}
+
+func (a *appState) dialogButtonBase(c *ui.Context, label string, primary, danger, enabled bool) ui.Element {
 	b := ui.ButtonBase(c.Key("dlg-"+label)).Height(dialogButtonHeight).Padding(0, 14).Radius(6).
-		AlignItems(ui.Center).Shrink(0).Label(label)
+		AlignItems(ui.Center).Shrink(0).Label(label).Disabled(!enabled)
+	if !enabled {
+		b.Opacity(0.55)
+	}
+	hovered := enabled && b.Hovered()
 	fg, weight := pal.Text, 500
 	switch {
 	case primary && danger:
 		b.Background(pal.Bad)
-		if b.Hovered() {
+		if hovered {
 			b.Background(pal.Bad.Alpha(0.85))
 		}
 		fg, weight = pal.OnBad, 600
 	case primary:
 		b.Background(pal.Accent)
-		if b.Hovered() {
+		if hovered {
 			b.Background(pal.AccentHover)
 		}
 		fg, weight = pal.AccentText, 600
 	default:
 		bg := pal.Raised
-		if b.Hovered() {
+		if hovered {
 			bg = pal.Raised.Mix(pal.Text, 0.08)
 		}
 		face(b, bg).Border(1, pal.BorderStrong)

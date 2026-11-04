@@ -143,11 +143,25 @@ func (a *appState) settingsVoice(c *ui.Context) {
 	a.settingsGroup(c, "voice", "", a.voiceNote(), func() {
 		on := v.Enabled
 		a.settingDefRow(c, "voice", func() {
-			if d.running {
-				settingsPill(c, "Engine running", pillOk)
+			// Steady: whether it can work, not whether whisper-server
+			// happens to run, which comes and goes with use.
+			switch {
+			case v.Enabled && d.status.Ready:
+				settingsPill(c, "Ready", pillOk)
+			case v.Enabled:
+				settingsPill(c, "Needs downloads", pillWarn)
 			}
 			if a.settingsSwitch(c, "voice", &on, false) {
-				a.setVoice(on)
+				if !on && len(d.downloads) > 0 {
+					a.settingsUI.sheet = &settingsSheet{
+						title: "Stop the downloads?", danger: true,
+						text:    "Turning voice input off stops what is downloading; what is done stays.",
+						confirm: "Turn Off",
+						run:     func(*ui.Context) { a.setVoice(false) },
+					}
+				} else {
+					a.setVoice(on)
+				}
 			}
 		})
 	})
@@ -205,7 +219,7 @@ func (a *appState) voiceEngineRow(c *ui.Context) {
 	sub := ""
 	switch {
 	case dl != nil:
-		sub = "Downloading whisper.cpp " + voice.EngineVersion + "…"
+		sub = "Downloading whisper.cpp " + voice.EngineVersion + "…" + downloadedOf(dl)
 	case st.EngineOnPATH:
 		sub = "Using whisper-server from your PATH: " + st.Engine
 	case st.Engine != "":
@@ -238,7 +252,11 @@ func (a *appState) voiceModelRow(c *ui.Context, m voice.Model) {
 	v := &a.settings.Voice
 	dl := d.downloads[m.Name]
 	inUse := d.status.Model == m.Name
-	a.settingsRow(c, m.Title, settingsRowOpts{id: "voiceModel-" + m.Name, sub: service.FormatBytes(uint64(m.Size)) + " · " + m.Note}, func() {
+	sub := service.FormatBytes(uint64(m.Size)) + " · " + m.Note
+	if dl != nil {
+		sub = "Downloading…" + downloadedOf(dl)
+	}
+	a.settingsRow(c, m.Title, settingsRowOpts{id: "voiceModel-" + m.Name, sub: sub}, func() {
 		switch {
 		case dl != nil:
 			a.voiceProgress(c, m.Name, dl)
@@ -282,6 +300,15 @@ func (a *appState) voiceModelRow(c *ui.Context, m voice.Model) {
 }
 
 // voiceProgress is a download's bar and its Cancel.
+// downloadedOf says how far a download is, " 120 MB of 466 MB", "" before
+// its size is known.
+func downloadedOf(dl *voiceDownload) string {
+	if dl.total <= 0 {
+		return ""
+	}
+	return " " + service.FormatBytes(uint64(dl.done)) + " of " + service.FormatBytes(uint64(dl.total))
+}
+
 func (a *appState) voiceProgress(c *ui.Context, key string, dl *voiceDownload) {
 	frac := -1.0
 	if dl.total > 0 {

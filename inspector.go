@@ -28,8 +28,11 @@ func (a *appState) inspectorPanel(c *ui.Context, gap float32) {
 	if w < 1 {
 		return
 	}
-	box.Padding(0, 0, 0, min(gap, w)).Children(func() {
-		a.panelEdge(c, "inspector-edge", &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
+	// The edge is the gap itself, so the card is a gap from the panes, as
+	// the panes are from each other: an edge in the card's room put it
+	// 6 px further.
+	box.Children(func() {
+		a.panelEdge(c, "inspector-edge", min(gap, w), &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
 		card := ui.Column(c).Grow(1).MinWidth(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
 		cardEdge(card).Children(func() {
 			a.inspector(c)
@@ -176,7 +179,20 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 									SingleLine().Ellipsis("…").Shrink(0.25).MinWidth(min(96, float32(len(p.Name))*8))
 								ui.Spacer(c)
 								if p.Branch != "" {
-									pillShrink(c, p.Branch).Shrink(1).MinWidth(0).MaxWidthPercent(100)
+									// The branch switches branches, as the
+									// status bar's does.
+									b := ui.ButtonBase(c.Key("branch")).Radius(9).Padding(1, 6).Background(pal.Chip).
+										Shrink(1).MinWidth(0).MaxWidthPercent(100).Tooltip(p.Branch + "\n" + withKeys("Switch Branch…", "git.switchBranch"))
+									if b.Hovered() {
+										b.Background(pal.Chip.Mix(pal.Text, 0.1))
+									}
+									a.fadeColors(b)
+									b.Children(func() {
+										ui.Text(c, p.Branch).FontSize(10).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+									})
+									if b.Clicked() {
+										a.switchCheckoutBranch()
+									}
 								}
 							})
 							ui.Text(c, p.Path).FontSize(10).TextColor(pal.TextMuted).
@@ -198,15 +214,15 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					ui.Row(c).AlignItems(ui.Center).Children(func() {
 						sectionLabel(c, "RUNNING")
 						ui.Spacer(c)
+						// No Refresh: the list follows every 5 s, and as the
+						// tab shows.
 						countBadge(c, len(a.processes))
-						if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
-							a.refreshProcesses()
-						}
 					})
 					if a.processErr != "" {
 						ui.Text(c, a.processErr).FontSize(10).TextColor(pal.Bad).Padding(4, 0)
 					}
-					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+					// One fill for the four cards, the project's and Updates' too.
+					ui.Column(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Children(func() {
 						if a.processes == nil {
 							ui.Box(c).Padding(16).Children(func() {
 								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
@@ -227,7 +243,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							})
 						}
 						for i, p := range a.processes {
-							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							row := ui.Row(c).Height(fileRowH+6).Padding(0, 8, 0, 12).Gap(8).AlignItems(ui.Center).ClipX()
 							if i > 0 {
 								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
 							}
@@ -267,11 +283,8 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 						sectionLabel(c, "PORTS")
 						ui.Spacer(c)
 						countBadge(c, len(a.ports))
-						if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
-							a.refreshProcesses()
-						}
 					})
-					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+					ui.Column(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Children(func() {
 						if a.processes == nil {
 							ui.Box(c).Padding(16).Children(func() {
 								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
@@ -286,7 +299,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							})
 						}
 						for i, p := range a.ports {
-							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							row := ui.Row(c).Height(fileRowH+6).Padding(0, 8, 0, 12).Gap(8).AlignItems(ui.Center).ClipX()
 							if i > 0 {
 								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
 							}
@@ -417,7 +430,7 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	}
 	a.transition(e, motionRow)
 	e.Children(func() {
-		row := ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4)
+		row := ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(4)
 		if n.Muted {
 			row.Opacity(0.5)
 		}
@@ -438,10 +451,11 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 			} else {
 				fileBadge(c, n.Name)
 			}
-			ui.Text(c, n.Name).FontSize(11).TextColor(pal.TextSoft).SingleLine()
+			// A long name ellipsizes, keeping its git letter in sight.
+			ui.Text(c, n.Name).FontSize(11).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).Tooltip(n.Name)
 			ui.Spacer(c)
 			if n.Status != "" {
-				ui.Text(c, n.Status).FontSize(10).TextColor(statusColor(n.Status))
+				ui.Text(c, n.Status).FontSize(10).TextColor(statusColor(n.Status)).Shrink(0)
 			}
 		})
 	})
@@ -560,7 +574,7 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 		// worktree, a switch shows the turn's changes alone, or the
 		// branch's.
 		if info, ok := a.changesPane(); ok && (info.Turn != nil || a.focusedWorktree() != nil) {
-			ui.Box(c).Padding(10, 10, 8, 10).Shrink(0).Children(func() {
+			ui.Box(c).Padding(10, 12, 8, 12).Shrink(0).Children(func() {
 				a.turnSwitch(c, info)
 			})
 			if a.changesView(info) != changesAll {
@@ -616,19 +630,15 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
 				ui.Spacer(c)
 				remote := r.HasRemote
-				if b := a.cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch").Label("Fetch"); !remote {
-					b.Disabled(true) // painted at half opacity
-				} else if b.Clicked() {
+				// Disabled (at half opacity) with no remote, and so with no
+				// hover either.
+				if a.cmdButtonOn(c, iconDownload, iconBtn, false, remote).Tooltip("Fetch").Label("Fetch").Clicked() {
 					a.gitFetch(c)
 				}
-				if b := a.cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull").Label("Pull"); !remote {
-					b.Disabled(true) // painted at half opacity
-				} else if b.Clicked() {
+				if a.cmdButtonOn(c, iconArrowDown, iconBtn, false, remote).Tooltip("Pull").Label("Pull").Clicked() {
 					a.gitPull(c)
 				}
-				if b := a.cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push").Label("Push"); !remote {
-					b.Disabled(true) // painted at half opacity
-				} else if b.Clicked() {
+				if a.cmdButtonOn(c, iconArrowUp, iconBtn, false, remote).Tooltip("Push").Label("Push").Clicked() {
 					a.gitPush(c)
 				}
 			})

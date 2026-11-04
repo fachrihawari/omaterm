@@ -189,6 +189,7 @@ func (a *appState) startDictation(c *ui.Context, pane string) {
 	d.limit = time.AfterFunc(voice.MaxLength, func() {
 		a.post(func() {
 			if a.dictation == d && d.step == dictRecording {
+				a.toast(nil, "Stopped at "+voice.MaxLength.String()+": writing it down")
 				a.stopDictation()
 			}
 		})

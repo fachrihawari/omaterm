@@ -8,6 +8,7 @@ import (
 	"omaterm/internal/shellcmd"
 	"omaterm/internal/tunnel"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,8 +51,8 @@ func (a *appState) inspectorWidth() float32 {
 // to def. A grip shows while the pointer is on it, as the divider between
 // panes has one, so the edge can be found. sign is 1 for a panel that grows
 // as the pointer moves right, -1 for one on the right side.
-func (a *appState) panelEdge(c *ui.Context, key string, w *float32, lo, hi, def, sign float32) {
-	e := ui.Box(c.Key(key)).Width(6).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
+func (a *appState) panelEdge(c *ui.Context, key string, width float32, w *float32, lo, hi, def, sign float32) {
+	e := ui.Box(c.Key(key)).Width(width).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
 	if e.Hovered() || e.Pressed() {
 		e.Draw(func(p *ui.Painter, r ui.Rect) {
 			p.Fill(ui.Rect{X: r.X + r.W/2 - 1.5, Y: r.Y + r.H/2 - 18, W: 3, H: 36}, pal.TextFaint.Alpha(0.7), 1.5)
@@ -97,7 +98,7 @@ func (a *appState) sidebar(c *ui.Context) {
 			})
 			a.sidebarFooter(c)
 		})
-		a.panelEdge(c, "edge", &a.sidebarW, sidebarMinW, sidebarMaxW, sidebarDefaultW, 1)
+		a.panelEdge(c, "edge", 6, &a.sidebarW, sidebarMinW, sidebarMaxW, sidebarDefaultW, 1)
 	})
 }
 
@@ -140,19 +141,24 @@ func (a *appState) sidebarEmpty(c *ui.Context) {
 func (a *appState) unavailableProject(c *ui.Context, i int) {
 	p := a.unavailable[i]
 	n := len(a.saved[p.ID])
-	tip := "Folder missing: " + p.Dir + ". Its " + plural(n, "session") + " are kept and come back with it."
-	h := ui.Row(c.Key("missing-"+p.ID)).Height(28).Padding(0, 6).Gap(6).AlignItems(ui.Center).Radius(7).
-		Margin(6, 0, 0, 0).Tooltip(tip)
+	tip := "Folder missing: " + p.Dir + ". Its " + plural(n, "session") + " are kept and come back with it. Click to find it, or remove it."
+	// In line with the other projects' names; a click offers what its
+	// menu does.
+	h := ui.Row(c.Key("missing-"+p.ID)).Height(28).Padding(0, 8, 0, 6).Gap(6).AlignItems(ui.Center).Radius(7).
+		Margin(6, 0, 0, 0).Tooltip(tip).Cursor(ui.CursorPointer)
 	if h.Hovered() {
 		h.Background(pal.Hover)
 	}
 	a.fadeColors(h)
 	h.Children(func() {
-		ui.Icon(c, iconFolder).Size(12, 12).TextColor(pal.TextFaint)
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		ui.Text(c, "folder missing").FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 	})
-	h.ContextMenu(func(m *ui.Menu) {
+	menu := func(m *ui.Menu) {
+		if m.Item("Locate Folder…").Chosen() {
+			a.locateUnavailable(p.ID)
+		}
+		m.Separator()
 		if m.Item("Remove Project…").Chosen() {
 			var panes []string
 			for _, s := range a.saved[p.ID] {
@@ -164,7 +170,38 @@ func (a *appState) unavailableProject(c *ui.Context, i int) {
 			a.askDanger("Remove Project", "Remove "+p.Name+" from the list?"+a.endingText(panes, 0), "Remove",
 				func() { a.removeUnavailable(id) })
 		}
-	})
+	}
+	h.Menu(menu).ContextMenu(menu)
+}
+
+// locateUnavailable asks where a missing project's folder went, moved or
+// renamed, and brings the project back there, with its sessions.
+func (a *appState) locateUnavailable(id string) {
+	if a.win == nil {
+		return
+	}
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Locate Folder", Directory: true})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.win.Update(func() { a.relocateUnavailable(id, paths[0]) })
+	}()
+}
+
+// relocateUnavailable brings the missing project id back at dir.
+func (a *appState) relocateUnavailable(id, dir string) {
+	for i, p := range a.unavailable {
+		if p.ID != id {
+			continue
+		}
+		a.unavailable = slices.Delete(a.unavailable, i, i+1)
+		a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: dir, Collapsed: p.Collapsed,
+			ActiveSession: p.ActiveSession, Processes: append([]procs.Def(nil), p.Processes...)})
+		a.setProject(len(a.projects) - 1)
+		a.saveSoon()
+		return
+	}
 }
 
 // removeUnavailable forgets a project whose folder is missing, and ends
@@ -970,6 +1007,11 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 func (a *appState) statusCounts() (waiting, working, done int) {
 	for _, p := range a.projects {
 		for _, t := range a.projectTabs(p.ID) {
+			// Sessions only, as the chips' clicks jump to and the rows
+			// show: a process's tab isn't one.
+			if t.Kind != tabTerminal {
+				continue
+			}
 			info, ok := a.sessionInfo(t)
 			if !ok {
 				continue

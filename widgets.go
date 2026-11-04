@@ -34,10 +34,16 @@ const iconBtn = 14.0
 // cmdButton is the mock's .cmd button: a muted icon, optionally filled
 // and white when active.
 func (a *appState) cmdButton(c *ui.Context, icon *ui.SVG, size float32, active bool) ui.Element {
+	return a.cmdButtonOn(c, icon, size, active, true)
+}
+
+// cmdButtonOn is cmdButton that may be disabled: then it neither reacts
+// to the pointer nor reports a click.
+func (a *appState) cmdButtonOn(c *ui.Context, icon *ui.SVG, size float32, active, enabled bool) ui.Element {
 	// The mock's .cmd: transparent with a 1px transparent border, and on
 	// hover #182029 with a #27313d border and a white icon.
-	e := ui.ButtonBase(c).Padding(size/2).Radius(7).Shrink(0).Border(1, ui.Color{})
-	hover := e.Hovered()
+	e := ui.ButtonBase(c).Padding(size/2).Radius(7).Shrink(0).Border(1, ui.Color{}).Disabled(!enabled)
+	hover := enabled && e.Hovered()
 	if active || hover {
 		e = e.Background(pal.Hover).Border(1, pal.BorderStrong)
 	}

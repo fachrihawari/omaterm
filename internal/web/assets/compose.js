@@ -209,7 +209,12 @@ export function mountCompose(el, options = {}) {
     say("");
     starting = true;
     try {
-      rec = await voiceMod.record({ onLimit: () => stopRecording(true) });
+      rec = await voiceMod.record({
+        onLimit: () => {
+          say("Stopped at 2 minutes: writing it down");
+          stopRecording(true);
+        },
+      });
     } catch (err) {
       rec = null;
       say(err?.name === "NotAllowedError" ? "Microphone access was refused" : "The microphone didn't start");

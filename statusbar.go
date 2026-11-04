@@ -43,12 +43,7 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 				ui.Text(c, branch).FontSize(10).TextColor(pal.TextMuted).SingleLine().
 					Ellipsis("…").Shrink(1).MinWidth(0).MaxWidth(360)
 			}).Tooltip(branch + "\n" + withKeys("Switch Branch…", "git.switchBranch")).Clicked() {
-				// The bar shows the checkout's branch: the picker switches
-				// that, not the worktree of a session shown meanwhile.
-				if r := a.activeRepoRef(); r != nil && a.isWorktreeRoot(r.Root) {
-					a.selectRepo(min(a.repoMain, len(a.repos)-1))
-				}
-				a.openBranchOverlay()
+				a.switchCheckoutBranch()
 			}
 		}
 		// Both open the Info tab, which lists them.

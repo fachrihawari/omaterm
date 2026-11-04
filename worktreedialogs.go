@@ -170,14 +170,14 @@ func (a *appState) worktreeDialog(c *ui.Context) {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if a.dialogButton(c, "Cancel", false, false) && !st.busy {
+			if a.dialogButtonOn(c, "Cancel", false, false, !st.busy) {
 				st.open = false
 			}
 			label := "Start"
 			if st.busy {
 				label = "Starting…"
 			}
-			if a.dialogButton(c, label, true, false) {
+			if a.dialogButtonOn(c, label, true, false, !st.busy) {
 				submitted = true
 			}
 		})
@@ -410,14 +410,15 @@ func (a *appState) mergeDialog(c *ui.Context) {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
-			if a.dialogButton(c, "Cancel", false, false) && !st.busy {
+			if a.dialogButtonOn(c, "Cancel", false, false, !st.busy) {
 				st.open = false
 			}
 			label := "Merge"
 			if st.busy {
 				label = "Merging…"
 			}
-			if a.dialogButton(c, label, true, false) {
+			// Merge once what it merges has been read out.
+			if a.dialogButtonOn(c, label, true, false, !st.busy && st.sum != nil) {
 				merge = true
 			}
 		})

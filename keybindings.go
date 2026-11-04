@@ -179,6 +179,8 @@ func (s keyScope) String() string {
 		return "Editor"
 	case scopeBrowser:
 		return "Browser"
+	case scopeNotEditor:
+		return "Not in Editor"
 	}
 	return "Anywhere"
 }

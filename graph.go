@@ -244,11 +244,18 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane, g
 	e.Children(func() {
 		a.graphCanvas(c, lane, gutter, graphRowH)
 		ui.Text(c, cm.Short).Font(monoFont).FontSize(11).TextColor(pal.TextFaint).Width(58).SingleLine().Shrink(0)
-		ui.Text(c, cm.Subject).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(cm.Subject)
-		for _, ref := range cm.Refs {
-			pill(c, ref)
+		// Narrow, the subject keeps some words: the refs and the author
+		// give way.
+		ui.Text(c, cm.Subject).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Grow(1).
+			MinWidth(min(120, float32(len(cm.Subject))*6)).Tooltip(cm.Subject)
+		if len(cm.Refs) > 0 {
+			ui.Row(c).Gap(4).Shrink(1).MinWidth(0).ClipX().Children(func() {
+				for _, ref := range cm.Refs {
+					pill(c, ref)
+				}
+			})
 		}
-		ui.Text(c, cm.Author).FontSize(10).TextColor(pal.TextMuted).Width(120).SingleLine().Shrink(0)
+		ui.Text(c, cm.Author).FontSize(10).TextColor(pal.TextMuted).Width(120).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 		ui.Text(c, relativeTime(cm.Time)).FontSize(10).TextColor(pal.TextFaint).Width(56).SingleLine().Shrink(0)
 	})
 	if e.Clicked() {

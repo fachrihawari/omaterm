@@ -313,14 +313,15 @@ func (a *appState) turnChanges(c *ui.Context, info session.Info) {
 	}
 	a.refreshChanges(false)
 	c.After(time.Second) // follow the files as they change
-	ui.Column(c).Grow(1).MinHeight(0).Padding(0, 10).Gap(8).Children(func() {
+	// At the Git rows' 12 px edge, as the All changes list is.
+	ui.Column(c).Grow(1).MinHeight(0).Padding(0, 6).Gap(8).Children(func() {
 		// The summary: how much changed, since when.
 		added, removed := 0, 0
 		for _, f := range cs.files {
 			added += f.Added
 			removed += f.Removed
 		}
-		ui.Row(c.Key("sum")).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+		ui.Row(c.Key("sum")).Gap(6).AlignItems(ui.Center).Shrink(0).Padding(0, 6).Children(func() {
 			ui.Text(c, plural(len(cs.files), "file")).FontSize(12).TextColor(pal.TextMuted).SingleLine()
 			if added > 0 {
 				ui.Text(c, "+"+strconv.Itoa(added)).FontSize(12).TextColor(pal.Ok).SingleLine()
