@@ -140,7 +140,7 @@ func (a *appState) processDialog(c *ui.Context) {
 				field("Port", "proc-port", &st.port, "5173", "Port input", false)
 				if !onWindows {
 					// Nothing serves a URL on Windows yet.
-					dialogField(c, "URL", func() {
+					dialogField(c, "Dev URL", func() {
 						if processURLInput(c, "proc-url", &st.url, processURLPlaceholder(st), "URL input") {
 							save = true
 						}
@@ -356,6 +356,9 @@ func parseProcessEnv(text string) (map[string]string, error) {
 }
 
 func processDefFromDialog(st *processDialogState) (procs.Def, error) {
+	if strings.TrimSpace(st.name) == "" {
+		return procs.Def{}, fmt.Errorf("give the process a name")
+	}
 	port := 0
 	if strings.TrimSpace(st.port) != "" {
 		var err error
@@ -390,9 +393,10 @@ func processDirectoryError(st *processDialogState) string {
 }
 
 func (a *appState) saveProcessDialog(st *processDialogState) {
+	// Said once, under the form, as a sentence: a toast behind the open
+	// dialog said it again where it couldn't be read.
 	fail := func(err error) {
-		st.err = err.Error()
-		a.toast(nil, err.Error())
+		st.err = sentence(err.Error())
 	}
 	d, err := processDefFromDialog(st)
 	if err == nil {

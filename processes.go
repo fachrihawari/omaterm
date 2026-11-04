@@ -462,26 +462,32 @@ func (a *appState) startAllProcesses(pi int) {
 		return
 	}
 	projectID := a.projects[pi].ID
-	started, untrusted := 0, 0
+	started := 0
+	var untrusted []procs.Proc
 	for _, proc := range a.procList[projectID] {
 		if !proc.Trusted {
-			untrusted++
+			untrusted = append(untrusted, proc)
 			continue
 		}
 		if proc.Status == procs.Starting || proc.Status == procs.Running {
 			continue
 		}
 		if err := a.procHost.Start(projectID, proc.Name); err != nil {
-			a.toast(nil, err.Error())
+			a.toast(nil, sentence(err.Error()))
 			continue
 		}
 		started++
 	}
 	a.refreshProcList()
-	if untrusted > 0 {
-		a.toast(nil, fmt.Sprintf("%d started, %d not trusted: start it to review it", started, untrusted))
-	} else {
+	switch {
+	case started > 0:
 		a.toast(nil, fmt.Sprintf("%d started", started))
+	case len(untrusted) == 0:
+		a.toast(nil, "They all run already")
+	}
+	// The ones not trusted yet, read on one sheet, start with a click.
+	if len(untrusted) > 0 {
+		a.askTrust(projectID, untrusted...)
 	}
 }
 
@@ -967,7 +973,9 @@ func (a *appState) doShare(projectID string, proc procs.Proc, via tunnel.Provide
 		}
 		a.refreshProcList()
 		if shared, ok := a.procNamed(projectID, proc.Name); ok && shared.Share != "" {
-			a.toast(nil, "Shared "+proc.Name+" at "+shared.Share)
+			// Copied, as it is shared to be sent somewhere.
+			copyText(shared.Share)
+			a.toast(nil, "Shared "+proc.Name+" at "+shared.Share+" · link copied")
 			return
 		}
 		a.toast(nil, "Shared "+proc.Name+" over "+shareProviderName(via))

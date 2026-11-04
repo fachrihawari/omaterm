@@ -35,12 +35,12 @@ func TestProcessMoveAndRemove(t *testing.T) {
 	waitProcessFrame(t, tr, func() bool {
 		return len(a.procList[a.projects[a.active].ID]) == 1 && a.procList[a.projects[a.active].ID][0].Status == procs.Running
 	})
-	processContextClick(t, tr, "web", "Keep Local")
+	processContextClick(t, tr, "web", "Move Out of omaterm.yml")
 	if defs, err := procs.LoadFile(a.workspace); err != nil || len(defs) != 0 {
-		t.Fatalf("file definitions after Keep Local = %+v, err=%v", defs, err)
+		t.Fatalf("file definitions after Move Out of omaterm.yml = %+v, err=%v", defs, err)
 	}
 	if state := a.state(); len(state.Projects[0].Processes) != 1 || state.Projects[0].Processes[0].Name != "web" {
-		t.Fatalf("local definitions after Keep Local = %+v", state.Projects[0].Processes)
+		t.Fatalf("local definitions after Move Out of omaterm.yml = %+v", state.Projects[0].Processes)
 	}
 	if list, _ := a.procHost.List(a.projects[a.active].ID); len(list) != 1 || !list[0].Trusted {
 		t.Fatalf("the moved process lost trust: %+v", list)
@@ -130,9 +130,17 @@ func TestProcessStartAllAndStopAll(t *testing.T) {
 		list := a.procList[projectID]
 		return len(list) == 3 && list[0].Status == procs.Running && list[1].Status == procs.Running
 	})
-	if !tr.HasText("2 started, 1 not trusted: start it to review it") {
+	if !tr.HasText("2 started") {
 		t.Fatalf("Start All toast missing: %v", tr.Texts())
 	}
+	// The one not trusted yet comes up to be read, not skipped.
+	if a.trustAsk == nil || len(a.trustAsk.procs) != 1 || !tr.HasText("Trust private?") {
+		t.Fatalf("Start All didn't ask to trust the untrusted process: %v", tr.Texts())
+	}
+	if err := tr.Click("Cancel"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
 	tr.Frame()
 	projectHeader, ok = tr.Find(a.projects[a.active].Name)
 	if !ok {

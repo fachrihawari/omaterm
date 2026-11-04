@@ -192,10 +192,17 @@ func (a *appState) projectGroup(c *ui.Context, i int) {
 func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	p := &a.projects[i]
 	tabs := a.projectTabs(p.ID)
-	h := ui.Row(c.Key("head")).Height(28).Padding(0, 8, 0, 6).Gap(6).AlignItems(ui.Center).Radius(7).Margin(6, 0, 0, 0).Cursor(ui.CursorPointer)
+	// Another project's header shows it; the shown one's has nothing to
+	// do on a click, so it doesn't look like it would. Its tip tells
+	// same-named projects apart.
+	h := ui.Row(c.Key("head")).Height(28).Padding(0, 8, 0, 6).Gap(6).AlignItems(ui.Center).Radius(7).Margin(6, 0, 0, 0).
+		Tooltip(shortDir(p.Path))
 	hovered := h.Hovered()
-	if hovered {
-		h.Background(pal.Hover)
+	if i != a.active {
+		h.Cursor(ui.CursorPointer)
+		if hovered {
+			h.Background(pal.Hover)
+		}
 	}
 	a.fadeColors(h)
 	empty := a.projectEmpty(p.ID, tabs)
@@ -203,7 +210,11 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	// which shows the project.
 	inner := false
 	h.Children(func() {
-		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+		ink := pal.TextMuted
+		if i == a.active {
+			ink = pal.Text
+		}
+		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(ink).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		if hovered {
 			plus := a.cmdButton(c, iconPlus, 12, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
@@ -225,7 +236,13 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			if m.Item("Stop All Processes").Chosen() {
 				a.stopAllProcesses(i)
 			}
+			m.Separator()
 		}
+		if m.Item("Copy Path").Chosen() {
+			copyText(p.Path)
+			a.toast(nil, "Copied "+p.Path)
+		}
+		m.Separator()
 		if m.Item("Remove Project…").Chosen() {
 			a.pendingRemoveProjectID = p.ID
 			a.pendingRemoveProjectName = p.Name
@@ -354,7 +371,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 			})
 		}
 		if proc.Status == procs.Untrusted && !hovered {
-			pill(c, "untrusted")
+			pill(c, "not trusted")
 		}
 		ui.Spacer(c)
 		// The buttons come in where the room was, beside the address, so
@@ -417,7 +434,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	})
 	tooltip := processStatusText(proc.Status)
 	if proc.Status == procs.Untrusted {
-		tooltip = "not trusted yet: Start to review it"
+		tooltip = "Not trusted yet: Start to review it"
 	} else if proc.Message != "" {
 		tooltip = proc.Message
 	}
@@ -439,6 +456,7 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 		} else if m.Item("Start").Chosen() {
 			a.startProcess(pi, proc.Name)
 		}
+		m.Separator()
 		a.shareMenu(m, a.projects[pi].ID, proc)
 		if proc.Link != "" {
 			if m.Item("Open " + procLinkHost(proc.Link)).Chosen() {
@@ -457,17 +475,19 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 				a.toast(nil, "Copied "+proc.Share)
 			}
 		}
+		m.Separator()
 		if m.Item("Edit…").Chosen() {
 			def := proc.Def
 			a.openProcessDialog(pi, &def)
 		}
 		moveLabel := "Move to omaterm.yml"
 		if !proc.Local {
-			moveLabel = "Keep Local"
+			moveLabel = "Move Out of omaterm.yml"
 		}
 		if m.Item(moveLabel).Chosen() {
 			a.moveProcess(pi, proc)
 		}
+		m.Separator()
 		if m.Item("Remove Process…").Chosen() {
 			a.askRemoveProcess(pi, proc)
 		}
@@ -609,7 +629,12 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 		}
 		if a.renaming == t.ID {
-			in := ui.TextInputBase(c.Key("rename"), &a.renameText).FontSize(13).Grow(1).MinWidth(0).AutoFocus()
+			// Framed, as a field is, starting from the name the row showed.
+			var in ui.Element
+			ui.Row(c.Key("rename-box")).Grow(1).MinWidth(0).Height(22).Padding(0, 5).Radius(5).AlignItems(ui.Center).
+				Background(pal.Input).Border(1, pal.Accent).Children(func() {
+				in = ui.TextInputBase(c.Key("rename"), &a.renameText).FontSize(13).Grow(1).MinWidth(0).AutoFocus()
+			})
 			focused := in.Focused()
 			// Enter, or a click away within the window, takes the name;
 			// Escape, or nothing typed, leaves it. A click away dropped
@@ -618,7 +643,10 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			case c.Shortcut(0, ui.KeyEscape):
 				a.renaming, a.renameFocused = "", false
 			case in.Submitted(), a.renameFocused && !focused && (a.win == nil || a.win.IsFocused()):
-				a.renameSession(pi, t.ID, a.renameText)
+				// Left as shown, the name it follows stays its own.
+				if strings.TrimSpace(a.renameText) != a.sessionName(t, info) {
+					a.renameSession(pi, t.ID, a.renameText)
+				}
 				a.renaming, a.renameFocused = "", false
 			case focused:
 				a.renameFocused = true
@@ -685,14 +713,14 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 		row.Tooltip(tip)
 	}
 	if row.DoubleClicked() {
-		a.renaming, a.renameText = t.ID, t.Label
+		a.renaming, a.renameText = t.ID, a.sessionName(t, info)
 	} else if row.Clicked() && !toggled {
 		a.focusSession(pi, t.ID)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
 		if m.Item("Rename").Chosen() {
 			a.focusSession(pi, t.ID)
-			a.renaming, a.renameText = t.ID, t.Label
+			a.renaming, a.renameText = t.ID, a.sessionName(t, info)
 		}
 		if m.Item("Copy Working Directory").Chosen() {
 			mygo.Clipboard.WriteText(info.WorkDir())
@@ -728,8 +756,8 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 				a.focusSession(pi, t.ID)
 				a.discardWorktreeAsking(t)
 			}
-			m.Separator()
 		}
+		m.Separator()
 		if m.Item("Close Session").Chosen() {
 			a.focusSession(pi, t.ID)
 			a.closeTabAsking(a.activeTab)
@@ -861,7 +889,8 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 		if a.cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
 			a.openProjectDialog()
 		}
-		if a.cmdButton(c, iconSearch, 15, false).Tooltip("Command Palette (" + keyLabels("app.commandPalette") + ")").Clicked() {
+		// Not the magnifier, which is Search in Files in the tab bar.
+		if a.cmdButton(c, iconSquareTerminal, 15, false).Tooltip("Command Palette (" + keyLabels("app.commandPalette") + ")").Label("Command Palette").Clicked() {
 			a.openOverlay(overlayCommandPalette)
 		}
 		ui.Spacer(c)
@@ -869,7 +898,7 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 		// the sidebar, cutting the last one. A chip is about 34 px and 7 a
 		// digit; the three buttons and the padding take about 124.
 		room := a.sidebarWidth() - 124
-		chip := func(key string, n int, st session.Info, attention bool, next func() bool) {
+		chip := func(key string, n int, st session.Info, attention bool, tip string, next func() bool) {
 			if n == 0 {
 				return
 			}
@@ -878,11 +907,16 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 				return
 			}
 			room -= need
-			e := ui.Row(c.Key(key)).Height(24).Radius(12).Padding(0, 8, 0, 6).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+			e := ui.Row(c.Key(key)).Height(24).Radius(12).Padding(0, 8, 0, 6).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer).
+				Tooltip(tip).Label(tip)
 			fg, bg := pal.TextMuted, pal.Chip
 			if attention {
 				fg, bg = pal.Attention, pal.AttentionSoft
 			}
+			if e.Hovered() {
+				bg = bg.Mix(pal.Text, 0.08)
+			}
+			a.press(a.fadeColors(e))
 			a.transition(e, motionPop)
 			e.Background(bg).Children(func() {
 				a.statusIcon(c, st, 12)
@@ -892,9 +926,12 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 				next()
 			}
 		}
-		chip("needs", waiting, session.Info{Status: session.Waiting, Progress: -1}, true, func() bool { return a.jumpTo(iconWaiting) })
-		chip("working", working, session.Info{Status: session.Working, Progress: -1}, false, func() bool { return a.jumpTo(iconWorking) })
-		chip("done", done, session.Info{Status: session.Idle, Unread: true, Progress: -1}, false, func() bool { return a.jumpTo(iconDone) })
+		chip("needs", waiting, session.Info{Status: session.Waiting, Progress: -1}, true,
+			withKeys(plural(waiting, "session")+" waiting for you: click for the next", "session.attention"), func() bool { return a.jumpTo(iconWaiting) })
+		chip("working", working, session.Info{Status: session.Working, Progress: -1}, false,
+			plural(working, "session")+" working: click for the next", func() bool { return a.jumpTo(iconWorking) })
+		chip("done", done, session.Info{Status: session.Idle, Unread: true, Progress: -1}, false,
+			plural(done, "session")+" done, not seen yet: click for the next", func() bool { return a.jumpTo(iconDone) })
 	})
 }
 

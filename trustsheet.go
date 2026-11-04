@@ -10,31 +10,38 @@ import (
 	"omaterm/internal/procs"
 )
 
-// trustAsk is the trust sheet of an untrusted process, while it is open: it
-// shows what the process runs before the user trusts it.
+// trustAsk is the trust sheet of untrusted processes, while it is open: it
+// shows what each runs before the user trusts them, one or, from Start
+// All, every one not trusted yet.
 type trustAsk struct {
 	open      bool
 	projectID string
-	proc      procs.Proc
+	procs     []procs.Proc
 }
 
-// askTrust opens the trust sheet of a process of the project, in place of
-// trusting it silently.
-func (a *appState) askTrust(projectID string, proc procs.Proc) {
-	a.trustAsk = &trustAsk{open: true, projectID: projectID, proc: proc}
+// askTrust opens the trust sheet of processes of the project, in place of
+// trusting them silently.
+func (a *appState) askTrust(projectID string, list ...procs.Proc) {
+	a.trustAsk = &trustAsk{open: true, projectID: projectID, procs: list}
 }
 
-// trustAndStart trusts the process the sheet shows, then starts it. The sheet
-// closes either way, and says what went wrong if either step failed.
+// trustAndStart trusts the processes the sheet shows, then starts them. The
+// sheet closes either way, and says what went wrong if a step failed.
 func (a *appState) trustAndStart(st *trustAsk) {
 	st.open = false
-	err := a.procHost.Trust(st.projectID, st.proc.Name)
-	if err == nil {
-		err = a.procHost.Start(st.projectID, st.proc.Name)
+	var errs []string
+	for _, proc := range st.procs {
+		err := a.procHost.Trust(st.projectID, proc.Name)
+		if err == nil {
+			err = a.procHost.Start(st.projectID, proc.Name)
+		}
+		if err != nil {
+			errs = append(errs, sentence(err.Error()))
+		}
 	}
 	a.refreshProcList()
-	if err != nil {
-		a.toast(nil, err.Error())
+	if len(errs) > 0 {
+		a.toast(nil, strings.Join(errs, "\n"))
 	}
 }
 
@@ -44,29 +51,51 @@ func (a *appState) trustDialog(c *ui.Context) {
 	if st == nil {
 		return
 	}
-	if !st.open {
+	if !st.open || len(st.procs) == 0 {
 		a.trustAsk = nil
 		return
 	}
+	many := len(st.procs) > 1
 	confirmed := false
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
 		a.dialogFrame(c, backdrop, panel)
-		dialogTitle(c, "Trust "+st.proc.Name+"?", false)
-		ui.Text(c, "omaterm.yml defines this process; a command from a file in the repository runs only once you have read it.").
-			FontSize(12.5).TextColor(pal.TextMuted).Wrap()
-		for _, row := range trustDetails(st.proc.Def) {
-			dialogField(c, row[0], func() {
-				text := ui.Text(c, row[1]).FontSize(12.5).TextColor(pal.Text).Wrap()
-				if row[0] == "Command" {
-					text.Font(monoFont).FontSize(12)
+		title, intro, button := "Trust "+st.procs[0].Name+"?",
+			"omaterm.yml defines this process; a command from a file in the repository runs only once you have read it.",
+			"Trust and Start"
+		if many {
+			title = "Trust " + itoa(len(st.procs)) + " processes?"
+			intro = "omaterm.yml defines these processes; a command from a file in the repository runs only once you have read it."
+			button = "Trust and Start All"
+		}
+		dialogTitle(c, title, false)
+		ui.Text(c, intro).FontSize(12.5).TextColor(pal.TextMuted).Wrap()
+		_, height := c.Size()
+		ui.Scroll(c.Key("trust-list")).MaxHeight(max(80, height-dialogTop(height)-dialogMinBottom-160)).Children(func() {
+			ui.Column(c).FillWidth().Gap(8).Children(func() {
+				for i, proc := range st.procs {
+					ui.Column(c.Key(i)).FillWidth().Gap(4).Children(func() {
+						if many {
+							ui.Text(c, proc.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextStrong).Margin(4, 0, 0, 0)
+						}
+						for _, row := range trustDetails(proc.Def) {
+							dialogField(c, row[0], func() {
+								// Every value starts at the column's edge, short
+								// or long, as a wrapped command does.
+								text := ui.Text(c, row[1]).FontSize(12.5).TextColor(pal.Text).Wrap().Grow(1).MinWidth(0)
+								if row[0] == "Command" {
+									text.Font(monoFont).FontSize(12)
+								}
+							})
+						}
+					})
 				}
 			})
-		}
+		})
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			if a.dialogButton(c, "Cancel", false, false) {
 				st.open = false
 			}
-			if a.dialogButton(c, "Trust and Start", true, false) {
+			if a.dialogButton(c, button, true, false) {
 				confirmed = true
 			}
 		})
@@ -90,10 +119,7 @@ func trustDetails(d procs.Def) [][2]string {
 	case d.URL != "":
 		port = "a free one, picked as it starts (PORT)"
 	}
-	restart := d.Restart
-	if restart == "" {
-		restart = "never"
-	}
+	restart := restartLabel(d.Restart)
 	watch := "none"
 	if len(d.Watch) > 0 {
 		watch = strings.Join(d.Watch, ", ")
@@ -101,13 +127,13 @@ func trustDetails(d procs.Def) [][2]string {
 	rows := [][2]string{
 		{"Command", d.Command},
 		{"Directory", dir},
-		{"Env", envLines(d.Env)},
+		{"Environment", envLines(d.Env)},
 		{"Port", port},
 		{"Restart", restart},
 		{"Watch", watch},
 	}
 	if d.URL != "" {
-		rows = append(rows, [2]string{"URL", "https://" + procs.Host(d.URL)})
+		rows = append(rows, [2]string{"Dev URL", "https://" + procs.Host(d.URL)})
 	}
 	return rows
 }

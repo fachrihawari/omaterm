@@ -36,7 +36,7 @@ func TestTrustSheetTrustsThenStarts(t *testing.T) {
 
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
-	if !tr.HasText("untrusted") {
+	if !tr.HasText("not trusted") {
 		t.Fatal("an untrusted process shows no untrusted badge")
 	}
 	row, ok := tr.Find("web")

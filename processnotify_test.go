@@ -147,3 +147,18 @@ func TestProcessPortPillOpensThePage(t *testing.T) {
 		t.Fatal("clicking the port also opened the process tab")
 	}
 }
+
+// A process's notification shows the process, its tab opened if it
+// wasn't: clicking "Process failed" once opened nothing.
+func TestProcessNotificationShowsIt(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	projectID := a.projects[a.active].ID
+	a.procList = map[string][]procs.Proc{projectID: {
+		{Def: procs.Def{Name: "web", Command: "serve"}, Status: procs.Failed, Session: procs.SessionID(projectID, "web"), Trusted: true},
+	}}
+	a.showSession(procs.SessionID(projectID, "web"))
+	if a.activeView != tabProcess || a.tabs[a.activeTab].Process != "web" {
+		t.Fatalf("the notification showed %v, not web's tab", a.activeView)
+	}
+}

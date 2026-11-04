@@ -247,7 +247,9 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								ui.Spacer(c)
 								mutedTxt2(c, strings.Trim(proc.CPU+" · "+proc.Mem, " ·"), 11)
 								if proc.Pid != 1 && proc.Pid != os.Getpid() {
-									if a.cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
+									// The sidebar's Stop: a polite SIGTERM, not a
+									// deletion.
+									if a.toneButton(c, iconStop, iconBtn-2, pal.Bad).Tooltip("Kill process").Clicked() {
 										a.pendingKillPid = proc.Pid
 										a.pendingKillName = proc.Name
 										open := true

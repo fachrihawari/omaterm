@@ -68,6 +68,26 @@ func (a *appState) litButton(c *ui.Context, icon *ui.SVG, size float32, tone ui.
 	return e
 }
 
+// toneButton is a muted cmdButton that turns litButton under the pointer:
+// a destructive button among a list's rows, quiet until aimed at.
+func (a *appState) toneButton(c *ui.Context, icon *ui.SVG, size float32, tone ui.Color) ui.Element {
+	e := ui.ButtonBase(c).Padding(size/2).Radius(7).Shrink(0).Border(1, ui.Color{})
+	hover := e.Hovered()
+	if hover {
+		e = e.Background(tone.Alpha(0.12)).Border(1, tone.Alpha(0.35))
+	}
+	a.press(a.fadeColors(e))
+	e.Children(func() {
+		i := ui.Icon(c, icon).Width(size).Height(size)
+		ink := pal.TextMuted
+		if hover {
+			ink = tone
+		}
+		i.TextColor(a.animColor(i, "ink", ink, motionFast))
+	})
+	return e
+}
+
 // pill is the mock's .pill chip: muted small text on a dark fill.
 func pill(c *ui.Context, text string) ui.Element { return pillOn(c, text, false) }
 
