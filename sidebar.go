@@ -852,6 +852,14 @@ func (a *appState) sessionTooltip(i session.Info) string {
 }
 
 // ago writes how long ago, as a sidebar does: now, 3m, 2h, 4d, 1w.
+// agoPhrase is ago in a sentence: "just now", or "3m ago".
+func agoPhrase(d time.Duration) string {
+	if s := ago(d); s != "now" {
+		return s + " ago"
+	}
+	return "just now"
+}
+
 func ago(d time.Duration) string {
 	switch {
 	case d < time.Minute:

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"omaterm/internal/cli"
 	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
+	"omaterm/internal/gitsnap"
 	"omaterm/internal/model"
 	"omaterm/internal/notice"
 	"omaterm/internal/paths"
@@ -144,6 +147,9 @@ type openFile struct {
 	// overwritten unasked. checked is when the file was last looked at.
 	Disk    [32]byte
 	checked time.Time
+	// DiskChanged is a file changed on disk while its edits are unsaved:
+	// the status line says so, with Reload.
+	DiskChanged bool
 }
 
 type appState struct {
@@ -850,8 +856,24 @@ func (a *appState) refreshRepos() {
 				repos = append(repos, *r)
 			}
 		}
+		// None found because there is no git, the Git tab says so, not
+		// that the folder isn't a repository.
+		why := ""
+		if len(repos) == 0 {
+			if err := gitsnap.Command(ctx, "version").Run(); errors.Is(err, gitsnap.ErrNoGit) {
+				why = "git isn’t installed: install it to see changes here"
+				if runtime.GOOS == "darwin" {
+					why += " (xcode-select --install)"
+				}
+			}
+		}
 		if win != nil && ctx.Err() == nil {
-			win.Update(func() { a.applyRepos(workspace, repos) })
+			win.Update(func() {
+				a.applyRepos(workspace, repos)
+				if a.workspace == workspace {
+					a.repoErr = why
+				}
+			})
 		}
 		return nil
 	}, nil)
@@ -1193,7 +1215,8 @@ func (s fileScan) node(parent, name string, isDir bool, depth int, muted bool) *
 		rel, _ := filepath.Rel(s.root, path)
 		muted = name == "node_modules" || s.ignored[filepath.ToSlash(rel)]
 	}
-	n := &fileNode{Name: name, Path: path, Dir: isDir, Open: depth < 1 && !muted, Muted: muted}
+	// Folders start closed, so the files at the top stay in sight.
+	n := &fileNode{Name: name, Path: path, Dir: isDir, Muted: muted}
 	if !isDir {
 		n.Action = "editor"
 		return n

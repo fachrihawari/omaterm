@@ -464,7 +464,14 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				if staged {
 					label = "Unstage File"
 				}
-				stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Background(pal.Chip).Children(func() {
+				// A button, bordered, not the chip fill that says chosen in
+				// the Split / Inline switch beside it.
+				stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Border(1, pal.BorderStrong)
+				if stage.Hovered() {
+					stage.Background(pal.Hover)
+				}
+				a.press(a.fadeColors(stage))
+				stage.Children(func() {
 					ui.Text(c, label).FontSize(10).TextColor(pal.TextSoft)
 				})
 				if stage.Clicked() {
@@ -482,7 +489,12 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				}
 
 				if !staged {
-					discard := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
+					discard := ui.ButtonBase(c).Radius(6).Padding(4, 10)
+					if discard.Hovered() {
+						discard.Background(pal.Bad.Alpha(0.12))
+					}
+					a.press(a.fadeColors(discard))
+					discard.Children(func() {
 						ui.Text(c, "Discard").FontSize(10).TextColor(pal.Bad)
 					})
 					if discard.Clicked() {

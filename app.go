@@ -93,12 +93,22 @@ func (a *appState) view(c *ui.Context) {
 	// Close-tab confirmation dialog.
 	if a.closeTabConfirmOpen != nil {
 		result := a.confirmDialog(c, a.closeTabConfirmOpen,
-			"Close Tab",
-			"This file has unsaved changes. Close anyway?",
-			true, "Cancel", "Close")
+			"Save changes to "+pathBase(a.pendingClosePath)+"?",
+			"Your changes are lost if you don’t save them.",
+			false, "Cancel", "Don’t Save", "Save")
 		if result != -1 {
-			if result == 1 {
+			switch result {
+			case 1:
 				a.closePendingEditor()
+			case 2:
+				// Saved, it closes; asked to overwrite a change on disk
+				// first, it stays, with the question.
+				if doc := a.editors[a.pendingClosePath]; doc != nil && doc.State != nil {
+					a.saveEditor(doc, c)
+					if !doc.State.Buffer.Modified() {
+						a.closePendingEditor()
+					}
+				}
 			}
 			a.closeTabConfirmOpen = nil
 		}
@@ -108,11 +118,14 @@ func (a *appState) view(c *ui.Context) {
 	if a.overwriteAsk != nil {
 		doc := a.overwriteDoc
 		result := a.confirmDialog(c, a.overwriteAsk, "Overwrite "+pathBase(doc.Path)+"?",
-			doc.Path+" changed on disk since you opened it, perhaps by an agent. Saving replaces those changes with yours.",
-			true, "Cancel", "Overwrite")
+			doc.Path+" changed on disk since you opened it, perhaps by an agent. Saving replaces those changes with yours; Reload takes theirs, dropping yours.",
+			true, "Cancel", "Reload from Disk", "Overwrite")
 		if result != -1 {
 			a.overwriteAsk, a.overwriteDoc = nil, nil
-			if result == 1 && doc.State != nil {
+			switch {
+			case result == 1 && doc.State != nil:
+				a.reloadEditor(doc)
+			case result == 2 && doc.State != nil:
 				a.writeEditor(doc, c)
 			}
 		}

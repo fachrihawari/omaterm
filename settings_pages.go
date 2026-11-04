@@ -883,7 +883,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			dev := dev
 			seen := "never"
 			if dev.LastSeen > 0 {
-				seen = ago(time.Since(time.UnixMilli(dev.LastSeen))) + " ago"
+				seen = agoPhrase(time.Since(time.UnixMilli(dev.LastSeen)))
 			}
 			until := time.UnixMilli(max(dev.LastSeen, dev.Created)).Add(web.DeviceTTL).Format("Jan 2")
 			name := dev.Name
@@ -1178,7 +1178,7 @@ func (a *appState) settingsAbout(c *ui.Context) {
 		if updatesReady && mygo.Updater.Enabled() {
 			sub = "Checks for updates daily"
 			if t := updater.LastCheck(); !t.IsZero() {
-				sub = "Last checked " + ago(time.Since(t)) + " ago"
+				sub = "Last checked " + agoPhrase(time.Since(t))
 			}
 		}
 		a.settingsRow(c, "omaterm "+appVersion(), settingsRowOpts{id: "updates", sub: sub}, func() {

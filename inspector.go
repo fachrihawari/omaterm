@@ -326,7 +326,12 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			}
 
-			a.updateSection(c)
+			// A build that updates itself has its card here, where Linux
+			// has no menu bar to check from; one that can't says so in
+			// Settings › About, not under every project.
+			if updatesReady && mygo.Updater.Enabled() {
+				a.updateSection(c)
+			}
 		})
 	})
 }
@@ -377,6 +382,11 @@ func (a *appState) filesPanel(c *ui.Context) ui.Element {
 			ui.Row(c).Height(36).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, 12).Gap(2).Children(func() {
 				sectionLabel(c, "FILES")
 				ui.Spacer(c)
+				// What changed outside the app since the tab was shown; a
+				// turn's end refreshes it too.
+				if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Label("Refresh Files").Clicked() {
+					a.rebuildFileTree()
+				}
 				if a.cmdButton(c, iconFilePlus, iconBtn, false).Tooltip("New File").Label("New File").Clicked() {
 					a.startNewEntry(a.workspace, false)
 				}
@@ -456,6 +466,18 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 		}
 		if m.Item("New Folder…").Chosen() {
 			a.startNewEntry(dir, true)
+		}
+		m.Separator()
+		if m.Item("Copy Relative Path").Chosen() {
+			rel, err := filepath.Rel(a.workspace, n.Path)
+			if err != nil {
+				rel = n.Path
+			}
+			copyText(rel)
+			a.toast(nil, "Copied "+rel)
+		}
+		if m.Item("Reveal in File Manager").Chosen() {
+			mygo.Shell.ShowItemInFolder(n.Path)
 		}
 	})
 	if n.Dir && n.Open {
@@ -858,8 +880,14 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 	a.transition(e, t)
 	e.Children(func() {
 		fileLabel(c, f.Path)
-		actions := ui.Row(c.Key("actions")).Gap(2).Shrink(0)
+		// Over the row's end, before the status letter, not in the flow:
+		// hidden, they kept their room and the names were cut early.
+		actions := ui.Row(c.Key("actions")).Gap(2).Absolute().Right(12+12+8).Top(0).Bottom(0).
+			AlignItems(ui.Center).Padding(0, 4).Background(pal.Hover)
 		actions.Opacity(a.animate(actions, "show", b2f(hover), motionFast))
+		if !hover {
+			actions.PassThrough()
+		}
 		actions.Children(func() {
 			r := a.activeRepoRef()
 			if staged {
@@ -960,8 +988,13 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 			meta += " · " + relativeTime(s.When)
 			txt(c, meta, 9, pal.TextMuted)
 		})
-		actions := ui.Row(c.Key("actions")).Gap(2).Shrink(0)
+		// Over the row's end, as a changed file's are.
+		actions := ui.Row(c.Key("actions")).Gap(2).Absolute().Right(12).Top(0).Bottom(0).
+			AlignItems(ui.Center).Padding(0, 4).Background(pal.Hover)
 		actions.Opacity(a.animate(actions, "show", b2f(hover), motionFast))
+		if !hover {
+			actions.PassThrough()
+		}
 		actions.Children(func() {
 			// Each acts on the stash by its commit, not where the list
 			// showed it: a drop or pop since moved the others up, and a

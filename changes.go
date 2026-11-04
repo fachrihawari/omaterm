@@ -332,9 +332,11 @@ func (a *appState) turnChanges(c *ui.Context, info session.Info) {
 			if w := a.focusedWorktree(); cs.filesMode == changesBranch && w != nil {
 				since = "since " + w.Base
 			} else if info.Turn != nil {
-				since = "since turn " + ago(nowFunc().Sub(time.UnixMilli(info.Turn.At))) + " ago"
+				since = "since the turn began " + agoPhrase(nowFunc().Sub(time.UnixMilli(info.Turn.At)))
 			}
-			ui.Text(c, "· "+since).FontSize(12).TextColor(pal.TextFaint).SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
+			if since != "" {
+				ui.Text(c, "· "+since).FontSize(12).TextColor(pal.TextFaint).SingleLine().Shrink(1).MinWidth(0).Ellipsis("…")
+			}
 			ui.Spacer(c)
 			if a.cmdButton(c, iconRefresh, 13, false).Tooltip("Refresh").Clicked() {
 				a.refreshChanges(true)
@@ -426,9 +428,11 @@ func (a *appState) changeRow(c *ui.Context, f gitsnap.File) {
 				if keep.Clicked() {
 					h.Keep()
 				}
-				rev := ui.ButtonBase(c.Key("revert")).Height(20).Padding(0, 8).Radius(5).Background(pal.Accent)
-				rev.Children(func() {
-					ui.Text(c, "Revert").FontSize(11).TextColor(pal.AccentText)
+				// Revert can't be taken back: plain, in red, as Discard is,
+				// not the button the eye goes to first.
+				rev := ui.ButtonBase(c.Key("revert")).Height(20).Padding(0, 8).Radius(5)
+				face(rev, pal.Raised).Children(func() {
+					ui.Text(c, "Revert").FontSize(11).TextColor(pal.Bad)
 				})
 				if rev.Clicked() {
 					a.revertHunk(c, cf, h.Index)
