@@ -107,6 +107,52 @@ func TestStatusBarProjectAndBranchAct(t *testing.T) {
 	}
 }
 
+// Enter confirms a dialog, unless what it confirms destroys something:
+// then Cancel has the keyboard.
+func TestDialogEnterDefault(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	for _, c := range []struct {
+		danger bool
+		want   int
+	}{{false, 1}, {true, 0}} {
+		open, result := true, -1
+		view := func(ctx *ui.Context) {
+			if r := a.confirmDialog(ctx, &open, "Restart it?", "", c.danger, "Cancel", "Restart"); r >= 0 {
+				result = r
+			}
+		}
+		tr := ui.NewTester(view, 900, 600)
+		tr.Frame()
+		tr.Frame()
+		tr.Key(0, ui.KeyEnter)
+		tr.Frame()
+		if result != c.want {
+			t.Errorf("danger=%v: Enter chose %d, not %d", c.danger, result, c.want)
+		}
+	}
+}
+
+// In the smallest window, with the tab strip full, the + keeps its room
+// beside the tabs instead of drawing over the buttons after it.
+func TestNewTabButtonKeepsItsRoom(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.newTerminalTab()
+	a.newTerminalTab()
+	tr := ui.NewTester(a.view, 600, 400)
+	tr.Frame()
+	tr.Frame()
+	plus, ok := tr.Find("New Terminal")
+	keys, ok2 := tr.Find("Keyboard Shortcuts")
+	if !ok || !ok2 {
+		t.Fatalf("missing the + or the shortcuts button: %v", tr.Texts())
+	}
+	if plus.X+plus.W > keys.X {
+		t.Errorf("the + (%v) runs into the shortcuts button (%v)", plus, keys)
+	}
+}
+
 // Commit must not look clickable with nothing staged or no message.
 func TestCommitButtonDisabled(t *testing.T) {
 	a := newTestApp(t)

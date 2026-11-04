@@ -107,7 +107,7 @@ func (a *appState) reviewDialog(c *ui.Context) {
 			if a.dialogButton(c, "Cancel", false, false) {
 				st.open = false
 			}
-			if a.dialogButton(c, "Start Review", true, false) {
+			if a.dialogButtonEl(c, "Start Review", true, false).AutoFocus().Clicked() {
 				start = true
 			}
 		})

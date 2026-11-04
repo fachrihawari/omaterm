@@ -81,6 +81,16 @@ func (a *appState) renderOverlays(c *ui.Context) {
 // in the middle of the window.
 const dialogTopFraction = 0.2
 
+// dialogTop is how far down a window of height winH a dialog's panel
+// starts: a fifth of the way, but in a short window a little way only, as
+// a fifth of it is room the panel needs.
+func dialogTop(winH float32) float32 {
+	if winH < 560 {
+		return max(dialogMinSide, winH*0.08)
+	}
+	return winH * dialogTopFraction
+}
+
 // dialogMinBottom keeps a panel off the window's bottom edge.
 const dialogMinBottom = 24
 
@@ -100,7 +110,7 @@ func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
 func (a *appState) dialogSized(c *ui.Context, w, h float32, fixed bool, body func()) {
 	open := true
 	winW, winH := c.Size()
-	top := winH * dialogTopFraction
+	top := dialogTop(winH)
 	// The panel sizes to its content, but its cap must leave room for the
 	// top offset, or a tall panel would hang off the bottom. The width is
 	// capped too: the shortcuts list is wider than the minimum window.

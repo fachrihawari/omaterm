@@ -93,57 +93,73 @@ func (a *appState) processDialog(c *ui.Context) {
 	ui.DialogBase(c, &st.open, func(backdrop, panel ui.Element) {
 		a.dialogFrame(c, backdrop, panel)
 		dialogTitle(c, processDialogTitle(st), false)
+		// The form scrolls, so that Save stays in the window whatever its
+		// height: the title, the switch under the form and the buttons
+		// take about 170 of the panel.
 		_, height := c.Size()
-		ui.Scroll(c.Key("process-form")).MaxHeight(height - 180).Children(func() {
-			if st.oldName == "" && len(st.suggestions) > 0 {
-				ui.Text(c, "Suggestions").FontSize(11.5).TextColor(pal.TextMuted)
-				ui.Scroll(c.Key("process-suggestions")).MaxHeight(116).Children(func() {
-					for i, suggestion := range st.suggestions {
-						row := ui.Row(c.Key("suggest-"+strconv.Itoa(i))).FillWidth().Height(28).Padding(0, 8).
-							Gap(8).AlignItems(ui.Center).Radius(5).Cursor(ui.CursorPointer)
-						if row.Hovered() {
-							row.Background(pal.Hover)
-						}
-						a.fadeColors(row)
-						row.Children(func() {
-							ui.Text(c, suggestion.Name).FontSize(12).TextColor(pal.Text).Width(90).SingleLine().Ellipsis("…")
-							ui.Text(c, suggestion.Command).FontSize(11).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-							if suggestion.Port > 0 {
-								ui.Text(c, ":"+strconv.Itoa(suggestion.Port)).FontSize(11).TextColor(pal.TextFaint)
+		form := ui.Scroll(c.Key("process-form")).MaxHeight(max(80, height-dialogTop(height)-dialogMinBottom-170))
+		form.Children(func() {
+			ui.Column(c).FillWidth().Gap(8).Children(func() {
+				if st.oldName == "" && len(st.suggestions) > 0 {
+					ui.Text(c, "Suggestions").FontSize(11.5).TextColor(pal.TextMuted)
+					ui.Scroll(c.Key("process-suggestions")).MaxHeight(116).Children(func() {
+						for i, suggestion := range st.suggestions {
+							row := ui.Row(c.Key("suggest-"+strconv.Itoa(i))).FillWidth().Height(28).Padding(0, 8).
+								Gap(8).AlignItems(ui.Center).Radius(5).Cursor(ui.CursorPointer)
+							if row.Hovered() {
+								row.Background(pal.Hover)
 							}
-						})
-						if row.Clicked() {
-							a.applyProcessSuggestion(st, suggestion)
+							a.fadeColors(row)
+							row.Children(func() {
+								ui.Text(c, suggestion.Name).FontSize(12).TextColor(pal.Text).Width(90).SingleLine().Ellipsis("…")
+								ui.Text(c, suggestion.Command).FontSize(11).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+								if suggestion.Port > 0 {
+									ui.Text(c, ":"+strconv.Itoa(suggestion.Port)).FontSize(11).TextColor(pal.TextFaint)
+								}
+							})
+							if row.Clicked() {
+								a.applyProcessSuggestion(st, suggestion)
+							}
 						}
-					}
-				})
-			}
-			dialogField(c, "Name", func() { processTextInput(c, "proc-name", &st.name, "name", "Process name", false) })
-			dialogField(c, "Command", func() { processTextInput(c, "proc-command", &st.command, "npm run dev", "Command input", true) })
-			dialogField(c, "Directory", func() { processTextInput(c, "proc-dir", &st.dir, ".", "Directory input", false) })
-			if err := processDirectoryError(st); err != "" {
-				dialogNote(c, err, true)
-			}
-			dialogField(c, "Port", func() { processTextInput(c, "proc-port", &st.port, "5173", "Port input", false) })
-			if !onWindows {
-				// Nothing serves a URL on Windows yet.
-				dialogField(c, "URL", func() {
-					processURLInput(c, "proc-url", &st.url, processURLPlaceholder(st), "URL input")
-				})
-				if err := processURLError(st); err != "" {
-					dialogNote(c, err, true)
-				} else if strings.TrimSpace(st.url) != "" && strings.TrimSpace(st.port) == "" {
-					dialogNote(c, "omaterm picks a free port and tells it to the process as PORT.", false)
+					})
 				}
-			}
-			dialogField(c, "Autostart", func() { a.settingsSwitch(c, "proc-autostart", &st.autostart, false) })
-			dialogField(c, "Restart", func() {
-				a.settingsSegmented(c, "proc-restart", &st.restart, []string{"Never", "On failure", "Always"})
+				// Enter in a line saves, as the dialog's Save.
+				field := func(label, key string, value *string, placeholder, name string, mono bool) {
+					dialogField(c, label, func() {
+						if processTextInput(c, key, value, placeholder, name, mono) {
+							save = true
+						}
+					})
+				}
+				field("Name", "proc-name", &st.name, "name", "Process name", false)
+				field("Command", "proc-command", &st.command, "npm run dev", "Command input", true)
+				field("Directory", "proc-dir", &st.dir, ".", "Directory input", false)
+				if err := processDirectoryError(st); err != "" {
+					dialogNote(c, err, true)
+				}
+				field("Port", "proc-port", &st.port, "5173", "Port input", false)
+				if !onWindows {
+					// Nothing serves a URL on Windows yet.
+					dialogField(c, "URL", func() {
+						if processURLInput(c, "proc-url", &st.url, processURLPlaceholder(st), "URL input") {
+							save = true
+						}
+					})
+					if err := processURLError(st); err != "" {
+						dialogNote(c, err, true)
+					} else if strings.TrimSpace(st.url) != "" && strings.TrimSpace(st.port) == "" {
+						dialogNote(c, "omaterm picks a free port and tells it to the process as PORT.", false)
+					}
+				}
+				dialogField(c, "Autostart", func() { a.settingsSwitch(c, "proc-autostart", &st.autostart, false) })
+				dialogField(c, "Restart", func() {
+					a.settingsSegmented(c, "proc-restart", &st.restart, []string{"Never", "On failure", "Always"})
+				})
+				ui.Text(c, "Watch (one glob per line)").FontSize(12.5).TextColor(pal.Text)
+				processTextArea(c, "proc-watch", "Watch", &st.watch, "src/**", 48)
+				ui.Text(c, "Environment (one KEY=value per line)").FontSize(12.5).TextColor(pal.Text)
+				processTextArea(c, "proc-env", "Environment", &st.env, "NODE_ENV=development", 48)
 			})
-			ui.Text(c, "Watch (one glob per line)").FontSize(12.5).TextColor(pal.Text)
-			processTextArea(c, "proc-watch", "Watch", &st.watch, "src/**", 48)
-			ui.Text(c, "Environment (one KEY=value per line)").FontSize(12.5).TextColor(pal.Text)
-			processTextArea(c, "proc-env", "Environment", &st.env, "NODE_ENV=development", 48)
 		})
 		dialogField(c, "Save in omaterm.yml", func() { a.settingsSwitch(c, "proc-shared", &st.shared, false) })
 		if st.err != "" {
@@ -170,18 +186,22 @@ func processDialogTitle(st *processDialogState) string {
 	return "Add Process"
 }
 
-func processTextInput(c *ui.Context, key string, value *string, placeholder, label string, mono bool) {
+// processTextInput is one of the form's fields; it reports Enter in it,
+// which saves the form.
+func processTextInput(c *ui.Context, key string, value *string, placeholder, label string, mono bool) (submitted bool) {
 	f := ui.Row(c.Key(key)).Height(28).Grow(1).Padding(0, 8).Radius(6).AlignItems(ui.Center).
 		Background(pal.Input).Border(1, pal.BorderStrong)
 	f.Children(func() {
 		in := ui.TextInputBase(c, value).Placeholder(placeholder).FontSize(12.5).Grow(1).MinWidth(0).Label(label)
 		if mono {
-			in.Font("monospace")
+			in.Font(monoFont).FontSize(12)
 		}
 		if in.Focused() {
 			f.Border(1, pal.Accent)
 		}
+		submitted = in.Submitted()
 	})
+	return submitted
 }
 
 func processTextArea(c *ui.Context, key, label string, value *string, placeholder string, height float32) {
@@ -192,7 +212,7 @@ func processTextArea(c *ui.Context, key, label string, value *string, placeholde
 
 // processURLInput is a text input with ".localhost" after it, the part of
 // the address omaterm adds.
-func processURLInput(c *ui.Context, key string, value *string, placeholder, label string) {
+func processURLInput(c *ui.Context, key string, value *string, placeholder, label string) (submitted bool) {
 	f := ui.Row(c.Key(key)).Height(28).Grow(1).Padding(0, 8).Radius(6).AlignItems(ui.Center).Gap(2).
 		Background(pal.Input).Border(1, pal.BorderStrong)
 	f.Children(func() {
@@ -201,7 +221,9 @@ func processURLInput(c *ui.Context, key string, value *string, placeholder, labe
 			f.Border(1, pal.Accent)
 		}
 		ui.Text(c, ".localhost").FontSize(12.5).TextColor(pal.TextFaint).Shrink(0)
+		submitted = in.Submitted()
 	})
+	return submitted
 }
 
 // processURLPlaceholder is the URL name the field suggests: a process
@@ -291,11 +313,13 @@ func restartLabel(policy string) string {
 	}
 }
 
+// restartValue is the policy a Restart segment's label means. The
+// segmented control keeps its labels lowercase.
 func restartValue(label string) string {
-	switch label {
-	case "On failure":
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "on failure":
 		return "on-failure"
-	case "Always":
+	case "always":
 		return "always"
 	default:
 		return "never"

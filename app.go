@@ -326,7 +326,7 @@ func (a *appState) dialogFrame(c *ui.Context, backdrop, panel ui.Element) {
 	// DialogBase centers the panel; starting the column at its top and
 	// offsetting the panel puts it where the pickers are.
 	backdrop.Justify(ui.Start).Background(pal.Scrim)
-	floating(panel.Top(winH * dialogTopFraction).Width(w).Padding(18).Gap(10).
+	floating(panel.Top(dialogTop(winH)).Width(w).Padding(18).Gap(10).
 		Radius(10).Background(pal.Popover))
 	a.arriveDialog(c, backdrop, panel)
 }
@@ -344,6 +344,12 @@ func dialogTitle(c *ui.Context, title string, danger bool) {
 // dialogButton is a dialog's button: primary filled with the accent, red
 // with danger, else bordered. It reports a click.
 func (a *appState) dialogButton(c *ui.Context, label string, primary, danger bool) bool {
+	return a.dialogButtonEl(c, label, primary, danger).Clicked()
+}
+
+// dialogButtonEl is dialogButton, the button itself: the dialog that
+// makes it the default, which Enter presses, focuses it.
+func (a *appState) dialogButtonEl(c *ui.Context, label string, primary, danger bool) ui.Element {
 	b := ui.ButtonBase(c.Key("dlg-"+label)).Height(dialogButtonHeight).Padding(0, 14).Radius(6).
 		AlignItems(ui.Center).Shrink(0).Label(label)
 	fg, weight := pal.Text, 500
@@ -371,11 +377,13 @@ func (a *appState) dialogButton(c *ui.Context, label string, primary, danger boo
 	b.Children(func() {
 		ui.Text(c, label).FontSize(12).FontWeight(weight).TextColor(fg).SingleLine()
 	})
-	return b.Clicked()
+	return b
 }
 
 // confirmDialog asks to confirm with a dialog: the last of buttons
-// confirms, red when danger, for actions that destroy something. Returns
+// confirms, red when danger, for actions that destroy something. Enter
+// confirms, unless it destroys something: then the first, as Cancel, has
+// the keyboard, as a destructive alert keeps it on macOS. Returns
 // the chosen button index, or ui.AlertDismissed when dismissed.
 func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message string, danger bool, buttons ...string) int {
 	if !*open {
@@ -391,7 +399,11 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			for i, label := range buttons {
 				last := i == len(buttons)-1
-				if a.dialogButton(c, label, last, last && danger) {
+				b := a.dialogButtonEl(c, label, last, last && danger)
+				if last && !danger {
+					b.AutoFocus()
+				}
+				if b.Clicked() {
 					result = i
 				}
 			}

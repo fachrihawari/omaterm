@@ -49,9 +49,11 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 			a.closingTab = 0
 			a.closeTabAsking(i)
 		}
-		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Children(func() {
+		// The + keeps its room: the tabs before it scroll instead, rather
+		// than it drawing over the buttons after it.
+		ui.Row(c).Grow(1).MinWidth(26).AlignItems(ui.Center).Children(func() {
 			plus := ui.ButtonBase(c.Key("plus")).Size(26, 26).Radius(13).Shrink(0).Center().
-				Tooltip("New Terminal (" + keyLabels("terminal.new") + ")")
+				Tooltip("New Terminal (" + keyLabels("terminal.new") + ")").Label("New Terminal")
 			if plus.Hovered() {
 				plus.Background(pal.Hover)
 			}

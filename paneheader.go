@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -95,7 +96,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				title = proc.Name
 			}
 			name := ui.Text(c, title).FontSize(12.5).FontWeight(600).TextColor(pal.Text).SingleLine().Ellipsis("…").
-				Shrink(0.5).MinWidth(min(90, float32(len(title))*7)).MaxWidth(260)
+				Shrink(0.5).MinWidth(min(90, float32(len(title))*7)).MaxWidth(260).Tooltip(title)
 			if narrow {
 				// Its whole title would draw over the chips and controls
 				// beside it: it ellipsizes too.
@@ -111,7 +112,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				sub = proc.Command
 			}
 			if sub != "" && sub != title {
-				ui.Text(c, sub).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
+				ui.Text(c, sub).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0).Tooltip(sub)
 			}
 			if isProc && proc.Link != "" && !narrow {
 				// Where the process is served, after what it runs.
@@ -129,7 +130,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 		a.dictationChip(c, id)
 		if w == 0 || w >= 300 {
 			// Narrower, the status icon by the title tells the state.
-			a.statusChip(c, info)
+			a.statusChip(c, info, w == 0 || w >= 420)
 		}
 		a.paneControls(c, tab, id, (hovered || focused && multi) && !dragging, multi)
 	})
@@ -235,15 +236,21 @@ func (a *appState) gitChip(c *ui.Context, branch string, added, removed int) {
 
 // statusChip words a pane's status: what it waits for, how long it has
 // worked, how it failed.
-func (a *appState) statusChip(c *ui.Context, i session.Info) {
+func (a *appState) statusChip(c *ui.Context, i session.Info, roomy bool) {
 	text, bg, fg := statusWords(i, nowFunc())
 	if text == "" {
 		return
 	}
 	// The chips give way before the controls: a long message once pushed
-	// Zoom and Close off the card.
+	// Zoom and Close off the card. With room, the folder beside the title
+	// gives way first: the chip keeps a short status whole ("Needs
+	// permission"), as it says what needs the user. Its tip says it all.
+	minW := float32(72)
+	if roomy {
+		minW = min(150, float32(utf8.RuneCountInString(text))*6.6+14)
+	}
 	chip := ui.Row(c.Key("status")).Height(20).Radius(6).Padding(0, 7).AlignItems(ui.Center).Background(bg).
-		Shrink(1).MinWidth(72).MaxWidth(280)
+		Shrink(1).MinWidth(minW).MaxWidth(280).Tooltip(text)
 	a.transition(chip, motionFade) // and its color fades as the status changes
 	chip.Children(func() {
 		word := ui.Text(c, text).FontSize(11.5).FontWeight(500).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)

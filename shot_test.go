@@ -376,6 +376,12 @@ func TestShots(t *testing.T) {
 				return nil
 			}},
 		{"status-hover", nil, nil},
+		{"process-dialog", func(a *appState) { a.openProcessDialog(a.active, nil) }, func(a *appState) error {
+			if a.procDialog == nil {
+				return errShot("the process dialog did not open")
+			}
+			return nil
+		}},
 		{"dictation", func(a *appState) {
 			a.dictation = &dictation{pane: a.activeSplitLeaf(), step: dictRecording, start: time.Now()}
 		}, nil},
