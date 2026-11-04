@@ -201,10 +201,10 @@ type appState struct {
 	// sidebarFit and inspectorFit are the most room the window leaves
 	// each, 0 for no limit (fitPanels).
 	sidebarFit, inspectorFit float32
-	lastPanel                    string
-	sidebarW                     float32
-	inspectorW                   float32
-	activePaneTermID             string // TermID of the focused terminal pane
+	lastPanel                string
+	sidebarW                 float32
+	inspectorW               float32
+	activePaneTermID         string // TermID of the focused terminal pane
 
 	inspectorTab int // 0 info, 1 files, 2 git
 
