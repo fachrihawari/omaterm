@@ -171,7 +171,9 @@ repository. The Add or Edit dialog's **Save in omaterm.yml** switch chooses
 between them. It is on by default when the project is a git repository, and
 **Edit…** in a process's menu opens the dialog for either kind. The menu also
 moves a process between the two (**Move to omaterm.yml**, **Move Out of omaterm.yml**),
-removes it, and a project's menu starts or stops all of them at once.
+removes it, and a project's menu starts or stops all of them at once. A
+process's tab has Stop or Start and Restart in its header, and once it ends
+it says how, with its exit code.
 
 ```yaml
 processes:
@@ -211,7 +213,8 @@ A command from `omaterm.yml` runs only after you trust that exact definition.
 Starting an untrusted process opens a sheet that shows its command, folder,
 environment, port, restart and watch settings. **Trust and Start** runs it,
 and omaterm keeps the trust for that definition, in that project folder, on
-this machine. Renaming a process, or turning autostart on or off, keeps the
+this machine. **Start All Processes** shows every one not trusted yet on one
+sheet, with **Trust and Start All**. Renaming a process, or turning autostart on or off, keeps the
 trust. Changing the command, folder, environment, port, restart or watch
 settings does not. A changed definition makes a stopped process untrusted
 again, and a running one shows a dot until you restart it.
