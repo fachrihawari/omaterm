@@ -396,8 +396,9 @@ in agents that take them.
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) writes it down on your
 computer into the box, to check before you send it. On the desktop, on Linux
 and macOS, `Ctrl+Shift+Space` (`⇧⌘Space`) or the mic in a terminal pane's
-header starts recording, and again stops it: the text is pasted into the
-pane, never with Enter, and `Esc` drops it. It is off until you turn it on in
+header starts recording. `Enter` ends it and sends what you said; the key
+again, or letting go of it after holding it down, pastes the text into the
+pane to read first; `Esc` drops it. It is off until you turn it on in
 **Settings → Voice** and download a model there; the phone needs web access
 over HTTPS (Tailscale or Cloudflare) for its microphone.
 

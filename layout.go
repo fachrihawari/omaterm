@@ -293,6 +293,21 @@ func (a *appState) focusPane(id string) {
 	a.handle("term-" + id).Focus()
 }
 
+// revealPane shows the session pane id is in, in whichever project, and
+// gives the pane the keyboard.
+func (a *appState) revealPane(id string) {
+	if sid := a.status[id].Session; sid != "" {
+		for pi, p := range a.projects {
+			for _, t := range a.projectTabs(p.ID) {
+				if t.ID == sid {
+					a.focusSession(pi, sid)
+				}
+			}
+		}
+	}
+	a.focusPane(id)
+}
+
 // paneDrag is a pane dragged by its header to another place in its tab.
 type paneDrag struct{ tab, pane string }
 

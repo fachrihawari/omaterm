@@ -71,6 +71,8 @@ func (a *appState) statusBar(c *ui.Context) ui.Element {
 			a.showInspectorTab(0)
 		}
 
+		a.dictationStatus(c)
+
 		ui.Spacer(c)
 
 		if a.webOn {

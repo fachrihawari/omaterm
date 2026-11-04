@@ -392,6 +392,13 @@
   cursor: pointer;
 }
 
+/* Waiting for what the mic heard to be written down. */
+.compose-insert:disabled,
+.compose-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .compose-insert:focus-visible,
 .compose-send:focus-visible,
 .compose-close:focus-visible {

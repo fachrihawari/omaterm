@@ -1,9 +1,11 @@
 package main
 
 // Voice input on the desktop: voice.dictate (or the mic in a terminal
-// pane's header) starts recording, again stops, and the session daemon's
-// whisper-server writes the recording down; the text is pasted into the
-// pane, as the user's paste, never with Enter after it. Esc drops it.
+// pane's header) starts recording, and the session daemon's whisper-server
+// writes the recording down into the pane, as the user's paste. How it
+// ends says what comes next: the key again (or letting go of it, held)
+// pastes it to be read first; Enter pastes it and presses Enter, sending
+// it; Esc drops it.
 // It records on Linux with a recorder program (voice.Record) and on
 // macOS through a web page (dictation_darwin.go); on Windows there is
 // none. Off in Settings › Voice, as by default, nothing records.
@@ -18,6 +20,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/daemon"
+	"omaterm/internal/session"
 	"omaterm/internal/voice"
 )
 
@@ -55,12 +58,27 @@ const (
 	dictTranscribing
 )
 
+// holdToTalk is how long the dictate key is held for letting go of it to
+// stop the recording: a tap toggles, a hold is push-to-talk.
+const holdToTalk = 400 * time.Millisecond
+
+// sendGap is between the pasted text and the Enter that sends it: a
+// program that reads both at once takes the Enter as a newline in the
+// text. As the session's own pasteGap.
+const sendGap = 150 * time.Millisecond
+
 // dictation is the one recording or being written down, for its pane.
 type dictation struct {
 	pane  string
 	step  dictationStep
 	start time.Time
 	rec   recording
+	// held is while the dictate key's modifiers stay down after it
+	// started: the key repeating is not a second press, and letting go
+	// late stops it.
+	held bool
+	// send presses Enter after the text: Enter ended it.
+	send bool
 	// cancel drops it while it is written down.
 	cancel context.CancelFunc
 	limit  *time.Timer
@@ -103,12 +121,26 @@ func (a *appState) dictationPane() string {
 // stops the recording, which is then written down.
 func (a *appState) toggleDictation(c *ui.Context) {
 	if d := a.dictation; d != nil {
-		if d.step == dictRecording {
+		switch {
+		case d.held:
+			// The key repeating while held: push-to-talk ends as it is
+			// let go.
+		case d.step == dictRecording:
 			a.stopDictation()
+		default:
+			a.toast(c, "Still writing the last one down (Esc drops it)")
 		}
 		return
 	}
 	a.startDictation(c, a.dictationPane())
+}
+
+// dictateMods are the modifiers of the dictate key, held for push-to-talk.
+func dictateMods() ui.Modifiers {
+	if b := bindingsFor("voice.dictate"); len(b) > 0 {
+		return b[0].Combo.Mods
+	}
+	return ui.Cmd | ui.Shift
 }
 
 // startDictation records for pane, once voice input is on and ready.
@@ -139,6 +171,9 @@ func (a *appState) startDictation(c *ui.Context, pane string) {
 		return
 	}
 	d := &dictation{pane: pane, start: time.Now(), rec: rec}
+	// Started by the key, whose modifiers are still down: push-to-talk
+	// if they stay down a while.
+	d.held = c != nil && c.Modifiers()&dictateMods() == dictateMods()
 	a.dictation = d
 	// At the limit, the recording stops and is written down, as the
 	// phone's does.
@@ -195,7 +230,7 @@ func (a *appState) stopDictation() {
 				a.toast(nil, "Not written down: "+err.Error())
 				return
 			}
-			a.pasteDictation(d.pane, text)
+			a.pasteDictation(d.pane, text, d.send)
 		})
 	}()
 	a.invalidateWindows()
@@ -219,8 +254,9 @@ func (a *appState) cancelDictation() {
 
 // pasteDictation pastes text into pane as the user's paste: bracketed
 // when its program takes that, on one line, so nothing in it presses
-// Enter.
-func (a *appState) pasteDictation(pane, text string) {
+// Enter. With send, Enter follows it; without, a space, which the next
+// dictation goes on from.
+func (a *appState) pasteDictation(pane, text string, send bool) {
 	text = strings.Join(strings.Fields(strings.ReplaceAll(text, "[BLANK_AUDIO]", "")), " ")
 	if text == "" {
 		a.toast(nil, "Nothing was heard")
@@ -232,14 +268,48 @@ func (a *appState) pasteDictation(pane, text string) {
 		a.toast(nil, "Its pane closed: the text is on the clipboard")
 		return
 	}
+	if !send {
+		p.Term().Paste(text + " ")
+		return
+	}
 	p.Term().Paste(text)
+	if info := p.Info(); info.Status == session.Waiting && info.Kind == "permission" {
+		// Enter would answer what it asks, not send the text.
+		a.toast(nil, "It’s asking for permission: pasted, not sent")
+		return
+	}
+	time.AfterFunc(sendGap, func() { p.Key("enter") })
 }
 
-// dictationKeys are the keys of a dictation going on: Esc drops it.
+// dictationKeys are the keys of a dictation going on: Esc drops it, and
+// Enter, in its pane, ends it and sends the text once it is written down.
+// Letting go of the dictate key's modifiers after holding them a while
+// ends a push-to-talk, the text pasted to be read first.
 func (a *appState) dictationKeys(c *ui.Context) {
-	if a.dictation != nil {
-		c.OnShortcut(0, ui.KeyEscape, a.cancelDictation)
+	d := a.dictation
+	if d == nil {
+		return
 	}
+	c.OnShortcut(0, ui.KeyEscape, a.cancelDictation)
+	if a.overlay == overlayNone && !a.modalOpen() && a.dictationPane() == d.pane {
+		c.OnShortcut(0, ui.KeyEnter, func() {
+			d.send = true
+			if d.step == dictRecording {
+				a.stopDictation()
+			}
+		})
+	}
+	if d.held && c.Modifiers()&dictateMods() != dictateMods() {
+		d.held = false
+		if d.step == dictRecording && time.Since(d.start) >= holdToTalk {
+			a.stopDictation()
+		}
+	}
+}
+
+// dictationTip says how a dictation ends, for its chips.
+func dictationTip() string {
+	return "Enter sends · " + keyPrimary("voice.dictate") + " pastes it to read first · Esc drops it"
 }
 
 // dictationChip shows, in the header of pane, its recording (a red dot
@@ -254,13 +324,19 @@ func (a *appState) dictationChip(c *ui.Context, pane string) {
 	a.transition(chip, motionPop)
 	recording := d.step == dictRecording
 	if recording {
-		chip.Background(pal.Bad.Alpha(0.1)).Cursor(ui.CursorPointer).Label("Stop Dictating").
-			Tooltip(withKeys("Stop and write it down", "voice.dictate") + " · Esc drops it")
+		bg := pal.Bad.Alpha(0.1)
+		if chip.Hovered() {
+			bg = pal.Bad.Alpha(0.18)
+		}
+		chip.Background(bg).Cursor(ui.CursorPointer).Label("Stop Dictating").Tooltip(dictationTip())
 		if chip.Clicked() {
 			a.stopDictation()
 		}
 	} else {
 		chip.Background(pal.Chip).Tooltip("Writing it down… Esc drops it")
+		if d.send {
+			chip.Tooltip("Writing it down, then sending it… Esc drops it")
+		}
 	}
 	chip.Children(func() {
 		if recording {
@@ -274,14 +350,47 @@ func (a *appState) dictationChip(c *ui.Context, pane string) {
 			ui.Text(c, languageTag(a.voiceLanguage())).FontSize(10.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine()
 		} else {
 			ui.Spinner(c).FontSize(11).Label("Writing it down")
-			ui.Text(c, "Writing…").FontSize(11.5).TextColor(pal.TextMuted).SingleLine()
+			ui.Text(c, "Writing it down…").FontSize(11.5).TextColor(pal.TextMuted).SingleLine()
+		}
+	})
+}
+
+// dictationStatus is a dictation going on, in the status bar, where it is
+// seen whatever is shown: its pane's header may be out of sight. Clicked,
+// it stops the recording, or shows the pane it is written into.
+func (a *appState) dictationStatus(c *ui.Context) {
+	d := a.dictation
+	if d == nil {
+		return
+	}
+	recording := d.step == dictRecording
+	seg := a.statusSegment(c, "dictation", func() {
+		if recording {
+			dot := ui.Box(c.Key("dot")).Size(7, 7).Radius(3.5).Background(pal.Bad)
+			a.pulse(dot)
+			s := int(time.Since(d.start).Seconds())
+			a.swap(ui.Text(c.Key("time"), "Dictating "+strconv.Itoa(s/60)+":"+twoDigits(s%60)).FontSize(10).
+				TextColor(pal.Bad).SingleLine().Shrink(0), true)
+			ui.Text(c, languageTag(a.voiceLanguage())).FontSize(10).FontWeight(600).TextColor(pal.TextMuted).SingleLine()
+		} else {
+			ui.Spinner(c).FontSize(10).Label("Writing it down")
+			ui.Text(c, "Writing it down…").FontSize(10).TextColor(pal.TextMuted).SingleLine().Shrink(0)
 		}
 		if v, ok := d.rec.(interface{ view() ui.NativeWebView }); ok && recording && v.view() != nil {
 			// The page that records (macOS) is in the window, at a
-			// pixel, transparent: WebKit lets pages it shows record.
-			ui.WebView(c, v.view()).Size(1, 1).Shrink(0)
+			// pixel, transparent: WebKit lets pages it shows record. The
+			// status bar is always there, as a pane's header is not.
+			ui.WebView(c, v.view()).Size(1, 1).Absolute().Top(0).Left(0)
 		}
 	})
+	seg.Tooltip(dictationTip())
+	if seg.Clicked() {
+		if recording {
+			a.stopDictation()
+		} else {
+			a.revealPane(d.pane)
+		}
+	}
 }
 
 func twoDigits(n int) string {

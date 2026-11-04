@@ -13,9 +13,11 @@
 // omaterm.compose; without storage the box works and forgets.
 //
 // With voice input on (Settings › Voice on the computer), a mic records a
-// prompt and the computer writes it down into the box, to fix before Send:
-// it is never sent by itself. The language chip beside it picks the
-// language, kept under omaterm.voice.lang. Off, neither shows.
+// prompt and the computer writes it down into the box, to fix before Send.
+// Send (or Insert) while it records, or writes it down, waits for the words
+// and sends them with the rest: it is never sent by itself. The language
+// chip beside it picks the language, kept under omaterm.voice.lang. Off,
+// neither shows.
 
 const STORE = "omaterm.compose";
 const LANG_STORE = "omaterm.voice.lang";
@@ -145,6 +147,8 @@ export function mountCompose(el, options = {}) {
   let voiceMod = null;
   let cannot = "";
   let rec = null;
+  // pending is the recording being written down, which Send waits for.
+  let pending = null;
   let ticking = 0;
   let busy = false;
   let starting = false;
@@ -218,34 +222,38 @@ export function mountCompose(el, options = {}) {
   }
 
   // stopRecording ends the recording; keep sends it to be written down,
-  // and the text joins what the box has.
-  async function stopRecording(keep) {
-    if (!rec) return;
+  // and the text joins what the box has. It resolves once it has.
+  function stopRecording(keep) {
+    if (!rec) return pending || Promise.resolve();
     const r = rec;
     rec = null;
     clearInterval(ticking);
     if (!keep) {
       r.cancel();
       showMic();
-      return;
+      return Promise.resolve();
     }
     busy = true;
     showMic();
-    try {
-      const text = (await voiceMod.transcribe(await r.stop(), langPick.value)).trim();
-      if (text) {
-        const v = box.value;
-        box.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
-        save(box.value);
-      } else {
-        say("Nothing was heard");
+    pending = (async () => {
+      try {
+        const text = (await voiceMod.transcribe(await r.stop(), langPick.value)).trim();
+        if (text) {
+          const v = box.value;
+          box.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
+          save(box.value);
+        } else {
+          say("Nothing was heard");
+        }
+      } catch (err) {
+        say(err?.message || "Not written down");
+      } finally {
+        busy = false;
+        pending = null;
+        showMic();
       }
-    } catch (err) {
-      say(err?.message || "Not written down");
-    } finally {
-      busy = false;
-      showMic();
-    }
+    })();
+    return pending;
   }
 
   function open() {
@@ -292,10 +300,21 @@ export function mountCompose(el, options = {}) {
     save("");
   }
 
-  // submit sends the text, and Enter after it. A send that reports it did
-  // not go (false: the terminal's socket is down) keeps the text and the box,
-  // so nothing the user wrote is lost.
-  function submit(withEnter) {
+  // submit sends the text, and Enter after it. While the mic records, or
+  // its words are being written down, it waits for them first: with
+  // nothing heard and nothing written, nothing is sent. A send that
+  // reports it did not go (false: the terminal's socket is down) keeps the
+  // text and the box, so nothing the user wrote is lost.
+  async function submit(withEnter) {
+    if (rec || pending) {
+      send.disabled = insert.disabled = true;
+      try {
+        await stopRecording(true);
+      } finally {
+        send.disabled = insert.disabled = false;
+      }
+      if (root.hidden || box.value.trim() === "") return;
+    }
     const text = box.value;
     let sent = true;
     if (text.trim() !== "" && typeof sendPaste === "function") sent = sendPaste(text) !== false;

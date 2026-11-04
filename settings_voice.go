@@ -190,7 +190,8 @@ func (a *appState) voiceNote() string {
 	if startRecording == nil {
 		return phone
 	}
-	return "Here, press " + keyPrimary("voice.dictate") + " or the mic in a terminal pane’s header to start and again to stop (Esc drops it): the text is pasted into the pane, without Enter. " + phone
+	return "Here, press " + keyPrimary("voice.dictate") + " or the mic in a terminal pane’s header and speak. Enter sends what you said; " +
+		keyPrimary("voice.dictate") + " again, or letting go of it after holding it, pastes it to read first; Esc drops it. " + phone
 }
 
 // voiceEngineRow says which whisper-server runs, or downloads one.

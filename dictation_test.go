@@ -109,10 +109,26 @@ func (da *dictationApp) settle(t *testing.T) {
 	da.tr.Frame()
 }
 
-// dictate is the key that starts and stops it.
+// dictate is the key that starts and stops it, tapped: its modifiers let
+// go of at once.
 func (da *dictationApp) dictate() {
 	da.tr.Key(ui.Cmd|ui.Shift, ui.KeySpace)
+	da.tr.HoldModifiers(0)
 	da.tr.Frame()
+}
+
+// waitText waits for the pane to show want, or fails.
+func (da *dictationApp) waitText(t *testing.T, want string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		da.tr.Frame()
+		if strings.Contains(da.term.Text(), want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pane never showed %q: %q", want, da.term.Text())
+		}
+	}
 }
 
 // Off, as by default, the header has no mic, and the key records nothing:
@@ -174,7 +190,7 @@ func TestDictationPastesWithoutEnter(t *testing.T) {
 		t.Fatalf("written down in %q", lang)
 	}
 	da.tr.Frame()
-	if !da.tr.HasText("Writing…") {
+	if !da.tr.HasText("Writing it down…") {
 		t.Fatalf("no spinner while writing it down: %q", da.tr.Texts())
 	}
 	// The shell's answer, 42_RAN, is in the pane only once it runs.
@@ -196,6 +212,62 @@ func TestDictationPastesWithoutEnter(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("Enter didn't run the pasted command: %q", da.term.Text())
 		}
+	}
+}
+
+// Enter, while it records, stops it and sends the text once it is written
+// down: pasted, then Enter, which runs it in a shell. Enter is the
+// dictation's, not the pane's, until then.
+func TestDictationEnterSends(t *testing.T) {
+	da := newDictationApp(t)
+	da.ready()
+	da.dictate()
+	da.tr.Key(0, ui.KeyEnter)
+	da.tr.Frame()
+	if d := da.a.dictation; d == nil || d.step != dictTranscribing || !d.send {
+		t.Fatalf("Enter didn't end the recording to send it: %+v", d)
+	}
+	<-da.heard
+	da.release <- "echo $((6*7))_SENT"
+	da.settle(t)
+	da.waitText(t, "42_SENT")
+}
+
+// Held, the key is push-to-talk: its repeats don't stop the recording,
+// and letting go stops it, the text pasted to be read first, without
+// Enter, and with a space, which the next dictation goes on from.
+func TestDictationHoldToTalk(t *testing.T) {
+	da := newDictationApp(t)
+	da.ready()
+	for range 3 { // the press, and the key repeating
+		da.tr.Key(ui.Cmd|ui.Shift, ui.KeySpace)
+		da.tr.Frame()
+	}
+	d := da.a.dictation
+	if d == nil || d.step != dictRecording || !d.held {
+		t.Fatalf("holding the key doesn't keep it recording: %+v", d)
+	}
+	d.start = d.start.Add(-time.Second)
+	da.tr.HoldModifiers(0)
+	da.tr.Frame()
+	if d.step != dictTranscribing || d.send {
+		t.Fatalf("letting go didn't stop it to paste: %+v", d)
+	}
+	<-da.heard
+	da.release <- "echo one"
+	da.settle(t)
+	da.waitText(t, "echo one")
+	da.dictate()
+	da.dictate()
+	<-da.heard
+	da.release <- "two"
+	da.settle(t)
+	da.waitText(t, "echo one two")
+	// Run, it would print "one two" on a line of its own.
+	time.Sleep(300 * time.Millisecond)
+	da.tr.Frame()
+	if n := strings.Count(da.term.Text(), "one two"); n != 1 {
+		t.Fatalf("a dictation ran without Enter: %q", da.term.Text())
 	}
 }
 
