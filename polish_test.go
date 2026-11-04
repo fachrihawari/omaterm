@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/procs"
+	"omaterm/internal/session"
 	"omaterm/internal/theme"
 	"omaterm/service"
 )
@@ -150,6 +151,17 @@ func TestNewTabButtonKeepsItsRoom(t *testing.T) {
 	}
 	if plus.X+plus.W > keys.X {
 		t.Errorf("the + (%v) runs into the shortcuts button (%v)", plus, keys)
+	}
+}
+
+// A turn's end refreshes the Git tab, which an agent's edits made stale.
+func TestTurnEndRefreshesGit(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.repoAt = time.Time{}
+	a.statusChanged(map[string]session.Info{"p": {Status: session.Working}}, map[string]session.Info{"p": {Status: session.Idle}})
+	if a.repoAt.IsZero() {
+		t.Error("the end of a turn didn't refresh the repo")
 	}
 }
 

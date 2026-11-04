@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -37,6 +38,7 @@ func (a *appState) inspectorPanel(c *ui.Context, gap float32) {
 }
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
+	a.followRepo(c)
 	return ui.Column(c).Fill().Children(func() {
 		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
@@ -102,6 +104,23 @@ type gitFileMatch struct{ path string }
 // inspectorLine is the identity of the inspector's tab underline, which
 // moves from tab to tab.
 type inspectorLine struct{}
+
+// followRepo keeps the Git tab, and the count on it, up with what the
+// agents change while the inspector shows: every few seconds while one
+// works, now and then otherwise. A turn's end refreshes it at once
+// (statusChanged).
+func (a *appState) followRepo(c *ui.Context) {
+	every := 30 * time.Second
+	if _, working, _ := a.statusCounts(); working > 0 {
+		every = 4 * time.Second
+	}
+	if since := time.Since(a.repoAt); since < every {
+		c.After(every - since)
+		return
+	}
+	a.refreshActiveRepo()
+	c.After(every)
+}
 
 // showInspectorTab switches the inspector to Info (0), Files (1) or Git
 // (2), loading what that tab shows.

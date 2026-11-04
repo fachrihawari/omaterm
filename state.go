@@ -223,7 +223,9 @@ type appState struct {
 	repos      []service.Repo
 	activeRepo int
 	repoJob    service.Job
-	repoErr    string
+	// repoAt is when the shown repo was last refreshed (refreshActiveRepo).
+	repoAt  time.Time
+	repoErr string
 	// repoFollow is the session the Git panel last followed, repoMain the
 	// repo it showed before following one into its worktree, and
 	// repoAsked the worktree last searched for.
@@ -880,6 +882,7 @@ func (a *appState) applyRepos(workspace string, repos []service.Repo) {
 
 // refreshActiveRepo reloads status of the active repo only.
 func (a *appState) refreshActiveRepo() {
+	a.repoAt = time.Now()
 	r := a.activeRepoRef()
 	if r == nil || a.win == nil {
 		return
