@@ -534,7 +534,7 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 				b2.Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 						ui.Icon(c, iconTerminal).Width(14).Height(14).TextColor(pal.TextSoft)
-						ui.Text(c, "New Terminal").FontSize(12).TextColor(pal.TextSoft)
+						ui.Text(c, "New Session").FontSize(12).TextColor(pal.TextSoft)
 					})
 				})
 				if b2.Clicked() {
@@ -542,7 +542,7 @@ func (a *appState) terminalView(c *ui.Context) ui.Element {
 				}
 			})
 			ui.Text(c, keyLabels("app.openProject")+" open project  ·  "+
-				keyLabels("terminal.new")+" new terminal  ·  "+
+				keyLabels("terminal.new")+" new session  ·  "+
 				keyLabels("file.quickOpen")+" open file  ·  "+
 				keyLabels("help.keyboardShortcuts")+" shortcuts").
 				FontSize(10).TextColor(pal.TextFaint).Margin(8, 0, 0, 0)

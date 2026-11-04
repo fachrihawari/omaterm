@@ -53,7 +53,7 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 		// than it drawing over the buttons after it.
 		ui.Row(c).Grow(1).MinWidth(26).AlignItems(ui.Center).Children(func() {
 			plus := ui.ButtonBase(c.Key("plus")).Size(26, 26).Radius(13).Shrink(0).Center().
-				Tooltip("New Terminal (" + keyLabels("terminal.new") + ")").Label("New Terminal")
+				Tooltip("New Session (" + keyLabels("terminal.new") + ")").Label("New Session")
 			if plus.Hovered() {
 				plus.Background(pal.Hover)
 			}
@@ -205,6 +205,19 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 	})
 	if e.Clicked() && !linkClicked {
 		a.activateTab(i)
+	}
+	// Its menu is its sidebar row's.
+	tab := *t
+	if pi, ok := a.projectIndexForTab(tab.ID); ok {
+		switch tab.Kind {
+		case tabTerminal:
+			info, _ := a.sessionInfo(tab)
+			e.ContextMenu(func(m *ui.Menu) { a.sessionMenu(c, m, pi, tab, info, false, nil) })
+		case tabProcess:
+			if proc, ok := a.procOfTab(tab); ok {
+				e.ContextMenu(func(m *ui.Menu) { a.processMenu(m, pi, proc) })
+			}
+		}
 	}
 	return e
 }

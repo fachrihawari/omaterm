@@ -198,7 +198,7 @@ function showPair(message = "") {
   },
     h("img", { src: "icon.svg", alt: "omaterm" }),
     h("h2", {}, "Pair this browser"),
-    h("p", {}, "On your computer, run ", h("code", {}, "omaterm web pair"), " or choose ", h("b", {}, "Web Access: Pair a Device"), " in omaterm, then enter the code."),
+    h("p", {}, "On your computer, run ", h("code", {}, "omaterm web pair"), " or choose ", h("b", {}, "Web: Pair a Device"), " in omaterm, then enter the code."),
     input, button, error,
   );
   app.replaceChildren(h("div", { class: "pair" }, form));

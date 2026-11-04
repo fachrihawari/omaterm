@@ -1041,7 +1041,7 @@ func (a *appState) gitStashPushOpt(c *ui.Context, untracked bool) {
 		return
 	}
 	if err := service.StashPush(r.Root, a.stashMsg, untracked); err != nil {
-		c.Toast("Stash failed: " + err.Error())
+		a.errorToast(c, "Stash failed: "+err.Error())
 		return
 	}
 	a.stashMsg = ""

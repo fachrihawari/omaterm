@@ -735,7 +735,8 @@ func TestRunWithoutDaemonNoResume(t *testing.T) {
 // omaterm or lets a device in: an agent with remote control ran
 // daemon.restart, ending every session.
 func TestRemoteActionsSafe(t *testing.T) {
-	for _, id := range []string{"daemon.restart", "agents.setup", "cli.install", "web.pair", "app.quit", "git.commit"} {
+	for _, id := range []string{"daemon.restart", "agents.setup", "cli.install", "web.pair", "app.quit", "git.commit",
+		"worktree.merge", "worktree.discard", "worktree.push", "project.remove"} {
 		if remoteAction(id) {
 			t.Errorf("omaterm do may run %s", id)
 		}

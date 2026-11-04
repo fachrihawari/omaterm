@@ -144,7 +144,7 @@ func TestNewTabButtonKeepsItsRoom(t *testing.T) {
 	tr := ui.NewTester(a.view, 600, 400)
 	tr.Frame()
 	tr.Frame()
-	plus, ok := tr.Find("New Terminal")
+	plus, ok := tr.Find("New Session")
 	keys, ok2 := tr.Find("Keyboard Shortcuts")
 	if !ok || !ok2 {
 		t.Fatalf("missing the + or the shortcuts button: %v", tr.Texts())

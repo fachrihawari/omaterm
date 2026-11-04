@@ -454,53 +454,57 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	if row.Clicked() && !linkClicked {
 		a.showProcess(pi, proc.Name)
 	}
-	row.ContextMenu(func(m *ui.Menu) {
-		if active {
-			if m.Item("Stop").Chosen() {
-				a.stopProcess(pi, proc.Name)
-			}
-			if m.Item("Restart").Chosen() {
-				a.restartProcess(pi, proc.Name)
-			}
-		} else if m.Item("Start").Chosen() {
-			a.startProcess(pi, proc.Name)
+	row.ContextMenu(func(m *ui.Menu) { a.processMenu(m, pi, proc) })
+}
+
+// processMenu is a process's menu, its row's and its tab's.
+func (a *appState) processMenu(m *ui.Menu, pi int, proc procs.Proc) {
+	active := procActive(proc)
+	if active {
+		if m.Item("Stop").Chosen() {
+			a.stopProcess(pi, proc.Name)
 		}
-		m.Separator()
-		a.shareMenu(m, a.projects[pi].ID, proc)
-		if proc.Link != "" {
-			if m.Item("Open " + procLinkHost(proc.Link)).Chosen() {
-				a.openURL(proc.Link)
-			}
+		if m.Item("Restart").Chosen() {
+			a.restartProcess(pi, proc.Name)
 		}
-		if addr := processAddress(proc); addr != "" {
-			if m.Item("Copy URL").Chosen() {
-				copyText(addr)
-				a.toast(nil, "Copied "+addr)
-			}
+	} else if m.Item("Start").Chosen() {
+		a.startProcess(pi, proc.Name)
+	}
+	m.Separator()
+	a.shareMenu(m, a.projects[pi].ID, proc)
+	if proc.Link != "" {
+		if m.Item("Open " + procLinkHost(proc.Link)).Chosen() {
+			a.openURL(proc.Link)
 		}
-		if proc.Share != "" {
-			if m.Item("Copy Share Link").Chosen() {
-				copyText(proc.Share)
-				a.toast(nil, "Copied "+proc.Share)
-			}
+	}
+	if addr := processAddress(proc); addr != "" {
+		if m.Item("Copy URL").Chosen() {
+			copyText(addr)
+			a.toast(nil, "Copied "+addr)
 		}
-		m.Separator()
-		if m.Item("Edit…").Chosen() {
-			def := proc.Def
-			a.openProcessDialog(pi, &def)
+	}
+	if proc.Share != "" {
+		if m.Item("Copy Share Link").Chosen() {
+			copyText(proc.Share)
+			a.toast(nil, "Copied "+proc.Share)
 		}
-		moveLabel := "Move to omaterm.yml"
-		if !proc.Local {
-			moveLabel = "Move Out of omaterm.yml"
-		}
-		if m.Item(moveLabel).Chosen() {
-			a.moveProcess(pi, proc)
-		}
-		m.Separator()
-		if m.Item("Remove Process…").Chosen() {
-			a.askRemoveProcess(pi, proc)
-		}
-	})
+	}
+	m.Separator()
+	if m.Item("Edit…").Chosen() {
+		def := proc.Def
+		a.openProcessDialog(pi, &def)
+	}
+	moveLabel := "Move to omaterm.yml"
+	if !proc.Local {
+		moveLabel = "Move Out of omaterm.yml"
+	}
+	if m.Item(moveLabel).Chosen() {
+		a.moveProcess(pi, proc)
+	}
+	m.Separator()
+	if m.Item("Remove Process…").Chosen() {
+		a.askRemoveProcess(pi, proc)
+	}
 }
 
 // procLinkHost is a Dev URL without its scheme: the host the row's menu
@@ -726,52 +730,58 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	} else if row.Clicked() && !toggled {
 		a.focusSession(pi, t.ID)
 	}
-	row.ContextMenu(func(m *ui.Menu) {
-		if m.Item("Rename").Chosen() {
-			a.focusSession(pi, t.ID)
-			a.renaming, a.renameText = t.ID, a.sessionName(t, info)
+	row.ContextMenu(func(m *ui.Menu) { a.sessionMenu(c, m, pi, t, info, len(node.kids) > 0, collapse) })
+}
+
+// sessionMenu is a session's menu, its row's and its tab's: kids tells it
+// started sessions, which collapse folds.
+func (a *appState) sessionMenu(c *ui.Context, m *ui.Menu, pi int, t topTab, info session.Info, kids bool, collapse func()) {
+	if m.Item("Rename").Chosen() {
+		// In its row, which the sidebar shows.
+		a.setSidebar(true)
+		a.focusSession(pi, t.ID)
+		a.renaming, a.renameText = t.ID, a.sessionName(t, info)
+	}
+	if m.Item("Copy Working Directory").Chosen() {
+		mygo.Clipboard.WriteText(info.WorkDir())
+		c.Toast("Copied")
+	}
+	if _, _, ok := a.agentOf(t); ok && m.Item("Ask for Review…").Chosen() {
+		a.openReviewDialog(t)
+	}
+	if kids {
+		label := "Collapse the Sessions It Started"
+		if t.Collapsed {
+			label = "Show the Sessions It Started"
 		}
-		if m.Item("Copy Working Directory").Chosen() {
-			mygo.Clipboard.WriteText(info.WorkDir())
-			c.Toast("Copied")
+		if m.Item(label).Chosen() {
+			collapse()
 		}
-		if _, _, ok := a.agentOf(t); ok && m.Item("Ask for Review…").Chosen() {
-			a.openReviewDialog(t)
-		}
-		if len(node.kids) > 0 {
-			label := "Collapse the Sessions It Started"
-			if t.Collapsed {
-				label = "Show the Sessions It Started"
-			}
-			if m.Item(label).Chosen() {
-				collapse()
-			}
-		}
-		if w := t.Worktree; w != nil {
-			m.Separator()
-			if m.Item("Merge into " + w.Base + "…").Chosen() {
-				a.focusSession(pi, t.ID)
-				a.openMergeDialog(t)
-			}
-			if m.Item("Update from " + w.Base).Chosen() {
-				a.focusSession(pi, t.ID)
-				a.updateWorktree(t)
-			}
-			if m.Item("Push & Create PR").Chosen() {
-				a.focusSession(pi, t.ID)
-				a.pushWorktree(t)
-			}
-			if m.Item("Discard Worktree…").Chosen() {
-				a.focusSession(pi, t.ID)
-				a.discardWorktreeAsking(t)
-			}
-		}
+	}
+	if w := t.Worktree; w != nil {
 		m.Separator()
-		if m.Item("Close Session").Chosen() {
+		if m.Item("Merge into " + w.Base + "…").Chosen() {
 			a.focusSession(pi, t.ID)
-			a.closeTabAsking(a.activeTab)
+			a.openMergeDialog(t)
 		}
-	})
+		if m.Item("Update from " + w.Base).Chosen() {
+			a.focusSession(pi, t.ID)
+			a.updateWorktree(t)
+		}
+		if m.Item("Push & Create PR").Chosen() {
+			a.focusSession(pi, t.ID)
+			a.pushWorktree(t)
+		}
+		if m.Item("Discard Worktree…").Chosen() {
+			a.focusSession(pi, t.ID)
+			a.discardWorktreeAsking(t)
+		}
+	}
+	m.Separator()
+	if m.Item("Close Session").Chosen() {
+		a.focusSession(pi, t.ID)
+		a.closeTabAsking(a.activeTab)
+	}
 }
 
 // tabName is what a session is called, as its row shows it.

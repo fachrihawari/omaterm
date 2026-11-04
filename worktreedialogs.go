@@ -403,6 +403,9 @@ func (a *appState) mergeDialog(c *ui.Context) {
 		dialogField(c, "Remove the worktree", func() {
 			a.settingsSwitch(c, "merge-remove", &st.remove, false)
 		})
+		if st.remove {
+			dialogNote(c, "Its session closes with it.", false)
+		}
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(12).TextColor(pal.Bad).Wrap()
 		}
@@ -468,7 +471,11 @@ func (a *appState) mergeFromDialog(st *worktreeMerge, needMsg bool) {
 		if a.wtMerge == st {
 			a.wtMerge = nil
 		}
-		a.toast(nil, "Merged "+w.Branch+" into "+w.Base)
+		if remove {
+			a.toast(nil, "Merged "+w.Branch+" into "+w.Base+" · closed its session")
+		} else {
+			a.toast(nil, "Merged "+w.Branch+" into "+w.Base)
+		}
 		if remove {
 			a.cliCloseSession(st.session)
 			a.removeWorktree(w)

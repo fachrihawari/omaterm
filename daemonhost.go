@@ -215,10 +215,40 @@ func (a *appState) daemonBanner(c *ui.Context) {
 				a.daemonStale = ""
 			}
 			if a.bannerButton(c, "Restart Sessions", true) {
-				a.daemonStale = ""
-				a.restartDaemon()
+				a.restartDaemonAsking(c, func() { a.daemonStale = "" })
 			}
 		})
+}
+
+// restartDaemonAsking restarts the session daemon, first asking when a
+// program or a process still runs, which the restart stops: after runs
+// once it goes ahead.
+func (a *appState) restartDaemonAsking(c *ui.Context, after func()) {
+	run := func() {
+		after()
+		if a.restartDaemon() {
+			a.toast(nil, "Restarting the session daemon…")
+		} else {
+			a.toast(nil, "Sessions run in the app: the session daemon is off")
+		}
+	}
+	what := ""
+	for _, p := range a.projects {
+		if what == "" {
+			what = a.runningProgram(a.projectPaneIDs(p.ID))
+		}
+		for _, proc := range a.procList[p.ID] {
+			if what == "" && procActive(proc) {
+				what = proc.Name
+			}
+		}
+	}
+	if what == "" || !a.settings.ConfirmClose {
+		run()
+		return
+	}
+	a.askDanger("Restart Sessions", what+" is still running: restarting stops it. Sessions come back with their scrollback, and agents go on with their conversation; processes start again only if they start by themselves.",
+		"Restart", run)
 }
 
 // banner is a notice above the panes: an icon, what it says, two lines at

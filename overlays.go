@@ -729,8 +729,20 @@ func (a *appState) paletteCommands() []paletteEntry {
 		slices.SortStableFunc(out, func(x, y paletteEntry) int { return idx(pool, x.ID) - idx(pool, y.ID) })
 	} else {
 		slices.SortStableFunc(out, cmpScore)
+		// What can't run here goes under what can, so Enter on the top
+		// row does something.
+		slices.SortStableFunc(out, func(x, y paletteEntry) int {
+			return b2i(x.Enabled != nil && !x.Enabled(a)) - b2i(y.Enabled != nil && !y.Enabled(a))
+		})
 	}
 	return out
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // cmpScore orders entries by their score, best first.
@@ -874,6 +886,7 @@ func (a *appState) runPaletteSelection(c *ui.Context, cmds []paletteEntry) {
 	}
 	cmd := cmds[a.cmdSelected]
 	if cmd.Enabled != nil && !cmd.Enabled(a) {
+		a.toast(c, cmd.Title+" isn’t available here")
 		return
 	}
 	a.closeOverlay()

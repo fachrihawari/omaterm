@@ -51,6 +51,15 @@ func (a *appState) agentOf(t topTab) (string, session.Info, bool) {
 	return "", session.Info{}, false
 }
 
+// activeWorktreeTab is the shown session when it works in a worktree that
+// is still there, nil else.
+func (a *appState) activeWorktreeTab() *topTab {
+	if t := a.activeTabRef(); t != nil && t.Worktree != nil && !t.Worktree.Gone() {
+		return t
+	}
+	return nil
+}
+
 // activeTabRef is the session shown, nil for none.
 func (a *appState) activeTabRef() *topTab {
 	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
