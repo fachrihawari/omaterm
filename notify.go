@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"omaterm/internal/notice"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
 
@@ -39,7 +40,7 @@ func (a *appState) maybeNotify(prev, next session.Info) {
 		return
 	}
 	a.notified[next.Session] = nowFunc()
-	a.notify(next.Session, a.sessionLabel(next.Session), notice.Body(kind, next.Message))
+	a.notify(next.Session, a.sessionLabel(next.Session), notice.Body(kind, next.Message, next.Kind))
 }
 
 // programNotice passes on a desktop notification a program sent (OSC 9,
@@ -96,10 +97,21 @@ func (a *appState) sessionLabel(sessionID string) string {
 
 // showSession brings the window up on a session.
 func (a *appState) showSession(sessionID string) {
+	shown := false
 	for pi, p := range a.projects {
 		for _, t := range a.projectTabs(p.ID) {
 			if t.ID == sessionID {
 				a.focusSession(pi, sessionID)
+				shown = true
+			}
+		}
+	}
+	// A process's, as one that failed tells: its tab opens, if it wasn't.
+	for pi, p := range a.projects {
+		for _, proc := range a.procList[p.ID] {
+			if !shown && procs.SessionID(p.ID, proc.Name) == sessionID {
+				a.showProcess(pi, proc.Name)
+				shown = true
 			}
 		}
 	}

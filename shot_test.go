@@ -17,8 +17,10 @@ import (
 
 	"omaterm/internal/gitsnap"
 	"omaterm/internal/model"
+	"omaterm/internal/procs"
 	"omaterm/internal/session"
 	"omaterm/internal/theme"
+	"omaterm/internal/tunnel"
 	"omaterm/service"
 )
 
@@ -71,6 +73,40 @@ func shotChanges(a *appState) {
 		{Path: "internal/theme/omarchy_test.go", Status: "added", Added: 7},
 	}
 	cs.open = map[string]*changeFile{}
+}
+
+// shotProcesses gives the project a process in every state a sidebar row
+// shows: served at a Dev URL and shared, on a port with a changed
+// definition, starting, stopped, exited, and not trusted yet.
+func shotProcesses(a *appState) {
+	id := a.projects[a.active].ID
+	def := func(name, cmd string, port int) procs.Def { return procs.Def{Name: name, Command: cmd, Port: port} }
+	proc := func(d procs.Def, st procs.Status) procs.Proc {
+		return procs.Proc{Def: d, Status: st, Session: procs.SessionID(id, d.Name), Trusted: st != procs.Untrusted}
+	}
+	web := proc(def("web", "bun run dev", 5173), procs.Running)
+	web.URL, web.Link = "shop", "https://shop.localhost"
+	web.Share, web.ShareVia = "https://box.tailnet.ts.net:8443", string(tunnel.Tailscale)
+	api := proc(def("api", "go run ./cmd/api", 3001), procs.Running)
+	api.Changed = true
+	migrate := proc(def("migrate", "go run ./cmd/migrate", 0), procs.Exited)
+	migrate.Message = "exited with code 1"
+	a.procList = map[string][]procs.Proc{id: {
+		web, api,
+		proc(def("storybook", "bun run storybook", 6006), procs.Starting),
+		proc(def("worker", "go run ./cmd/worker", 0), procs.Stopped),
+		migrate,
+		proc(def("docs", "bun run docs", 4000), procs.Untrusted),
+	}}
+}
+
+// hoverRow puts the pointer on the sidebar row showing name, at its left
+// end, where no button is.
+func hoverRow(tr *ui.Tester, name string) {
+	if r, ok := tr.Find(name); ok {
+		tr.Move(r.X+2, r.Y+r.H/2)
+		tr.Frame()
+	}
 }
 
 // shotTheme loads one of the Omarchy theme fixtures.
@@ -329,6 +365,26 @@ func TestShots(t *testing.T) {
 			}
 			return nil
 		}},
+		{"processes", shotProcesses, nil},
+		{"processes-hover", shotProcesses, nil},
+		{"processes-stop", shotProcesses, nil},
+		{"process-tab", func(a *appState) { shotProcesses(a); a.showProcess(a.active, "migrate") },
+			func(a *appState) error {
+				if a.activeView != tabProcess {
+					return errShot("process tab did not open")
+				}
+				return nil
+			}},
+		{"status-hover", nil, nil},
+		{"process-dialog", func(a *appState) { a.openProcessDialog(a.active, nil) }, func(a *appState) error {
+			if a.procDialog == nil {
+				return errShot("the process dialog did not open")
+			}
+			return nil
+		}},
+		{"dictation", func(a *appState) {
+			a.dictation = &dictation{pane: a.activeSplitLeaf(), step: dictRecording, start: time.Now()}
+		}, nil},
 		{"binary-diff", func(a *appState) {
 			a.setDiffBinary("assets/models.bin", 78*1024)
 			a.diffTitle = "assets/models.bin · Index → Working Tree"
@@ -340,6 +396,23 @@ func TestShots(t *testing.T) {
 			}
 			return nil
 		}},
+	}
+	// What a shot does once the window is up: the pointer on what it is
+	// named for.
+	acts := map[string]func(a *appState, tr *ui.Tester){
+		"processes-hover": func(a *appState, tr *ui.Tester) { hoverRow(tr, "web") },
+		"processes-stop": func(a *appState, tr *ui.Tester) {
+			hoverRow(tr, "web")
+			if r, ok := tr.Find("Stop"); ok {
+				tr.Move(r.X+r.W/2, r.Y+r.H/2)
+				tr.Frame()
+			}
+		},
+		"status-hover": func(a *appState, tr *ui.Tester) {
+			// The status bar's first cell, the project's name.
+			tr.Move(40, float32(tr.Image().Bounds().Dy())-12)
+			tr.Frame()
+		},
 	}
 	for _, s := range shots {
 		a := newShotApp(wd)
@@ -368,6 +441,13 @@ func TestShots(t *testing.T) {
 			w, h = 600, 400 // the smallest window
 		}
 		tr := ui.NewTester(a.view, w, h)
+		// Twice more: a layout that reads the last frame's bounds, as the
+		// pane header's narrow rules do, settles on the next one.
+		tr.Frame()
+		tr.Frame()
+		if act := acts[s.name]; act != nil {
+			act(a, tr)
+		}
 		dir := "testdata"
 		if d := os.Getenv("SHOT_DIR"); d != "" {
 			dir = d

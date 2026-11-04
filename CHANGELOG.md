@@ -3,6 +3,110 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.13.1
+
+A pass over the whole app for what looked broken or felt awkward: things
+that lit up and did nothing, buttons that didn't say what they do, rows
+out of line, and a few flows with a step too many.
+
+### Processes
+
+- **A process row reads as a session row does.** Its link, port and
+  share sit at the row's end; under the pointer, Stop and Restart come
+  in just before them, so nothing moves and the link is beside the
+  buttons. Start and Stop are a filled ▶ in green and ■ in red as soon
+  as the row is under the pointer. A stopped process keeps its place
+  with a ring, and Restart shows only while it runs.
+- **A process's own tab has Stop or Start and Restart** in its header.
+  Once it ends, its card says how and why (the exit code), with its
+  command and Start. The palette starts, stops and restarts the process
+  shown.
+- **Start All asks about the processes not trusted yet** on one sheet,
+  Trust and Start All, rather than skipping them.
+- Sharing a process copies its link. A "Process failed" notification
+  opens the process. "Keep Local" is now "Move Out of omaterm.yml".
+- **Fixed:** Add Process saved a Restart of On failure or Always as
+  never.
+
+### Voice
+
+- **Enter sends.** While you dictate, Enter ends the recording and sends
+  what you said once it is written down; the key again pastes it to read
+  first, and Esc drops it. **Hold** the key to talk and let go to stop.
+  When the agent is asking for permission, the text is pasted, not sent.
+- A dictation shows in the status bar, wherever its pane is. The model
+  starts loading as you start talking, so the first dictation in a while
+  doesn't wait for it.
+- **Fixed:** holding the key stopped and restarted the recording; two
+  dictations ran together with no space; an Enter pressed while it was
+  written down reached the agent before the text; silence was written
+  down as made-up text (or [BLANK_AUDIO] on the phone). A transcription
+  that fails can be tried again.
+- On the phone, Send while recording sends what you said, rather than
+  dropping it.
+
+### Panes, tabs and the status bar
+
+- **The status bar's branch switches branches**, and its project name
+  brings back a hidden sidebar; CPU and MEM no longer light up for
+  nothing. Its counts of what runs no longer freeze when the inspector
+  shows another tab.
+- **Ctrl+Alt and the arrows move between panes** (⌥⌘ and the arrows on
+  macOS).
+- A tab's right-click menu is its sidebar row's. A pane's status chip
+  keeps "Needs permission" whole, and its branch chip, Dev URL and
+  buttons say what they do. A browser pane takes the keyboard on a
+  click, and its header is as tall as a terminal's.
+- In a narrow window a side panel opens narrower instead of not at all,
+  and the tab bar's + no longer covers the buttons beside it.
+
+### Dialogs, the palette and menus
+
+- **Enter presses a dialog's highlighted button**; where it confirms
+  destroying something, Cancel keeps the keyboard. Closing an unsaved
+  file offers Save. Restart Sessions asks first when a program still
+  runs. Tall dialogs fit short windows.
+- The palette names each command once ("Git: Refresh", not "Git: Git:
+  Refresh"), opens on the sessions to go to rather than the one shown,
+  and says so when a command can't run here. Merge, Update, Push and
+  Discard a worktree, and Remove Project, are palette commands.
+- Menus are in groups, Remove and Close apart. A project can move up or
+  down the list, and one whose folder moved can be pointed at it again.
+- Errors stay a while, with Copy.
+
+### Git, files and the editor
+
+- The Git tab follows what an agent changes, as its turn ends and while
+  it works. Its file names get the row's width; without git installed it
+  says so. A commit in the graph opens as a whole, or copies its hash.
+- An editor says when its file changed on disk, with Reload.
+- The Files tab starts with folders closed, has Refresh, and copies a
+  path. A diff shows its +N −N; Stage File no longer looks like a chosen
+  toggle; reviewing a turn, Revert is no longer the highlighted button.
+
+### Settings
+
+- One rule for buttons: "…" means a sheet asks first, red means it
+  destroys something. Restart omaterm goes once a change is undone.
+  Pages that need the session daemon say so the same way, with the way
+  to it. Settings › Voice puts the language first and says whether voice
+  input is ready.
+
+### On your phone
+
+- Buttons are thumb-sized, iOS no longer zooms in as you type, and the
+  keyboard no longer covers the key bar or Send. A long status no longer
+  pushes Compose off the screen.
+- A draft is its session's. The page says it is connecting, and lets you
+  try again; once loaded, it opens without downloading again.
+- Pairing says when its link works on this computer only, above the code.
+
+### Look
+
+- Muted text in light themes is a little darker, and chips 10 px rather
+  than 9, where they fell short of their contrast. Compact density packs
+  the sidebar's rows too.
+
 ## 0.13.0
 
 ### In the editor

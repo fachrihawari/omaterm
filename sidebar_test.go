@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"omaterm/internal/model"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
 )
@@ -60,7 +61,8 @@ func TestPanelEdgesResize(t *testing.T) {
 		t.Fatalf("sidebar past its bound: %v", a.sidebarW)
 	}
 	gap := a.paneGap()
-	edge := func() float32 { return 1440 - gap - a.inspectorWidth() + 3 }
+	// The inspector's edge is the gap before its card.
+	edge := func() float32 { return 1440 - 2*gap - a.inspectorWidth() + gap/2 }
 	drag(edge(), -50)
 	if a.inspectorW != inspectorDefaultW+50 {
 		t.Fatalf("inspector after a drag: %v", a.inspectorW)
@@ -213,5 +215,37 @@ func TestSidebarScrollsManyProjects(t *testing.T) {
 	r, ok := tr.Find("many-19")
 	if !ok || r.Y < 0 || r.Y+r.H > 860 {
 		t.Fatalf("the last project isn't in sight after scrolling: %+v %v", r, ok)
+	}
+}
+
+// A project whose folder moved comes back where it went, as the same
+// project, its sessions with it.
+func TestRelocateMissingProject(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.unavailable = []model.Project{{ID: "moved", Name: "shop", Dir: "/nowhere/shop"}}
+	dir := t.TempDir()
+	a.relocateUnavailable("moved", dir)
+	if len(a.unavailable) != 0 {
+		t.Fatal("the project still shows as missing")
+	}
+	p := a.project()
+	if p == nil || p.ID != "moved" || p.Path != dir {
+		t.Fatalf("shown: %+v", p)
+	}
+}
+
+// A project moves up and down the list, the shown one staying shown.
+func TestMoveProject(t *testing.T) {
+	a := twoProjectApp(t)
+	defer stopTermPanes(a)
+	first, second := a.projects[0].ID, a.projects[1].ID
+	shown := a.projects[a.active].ID
+	a.moveProject(0, 1)
+	if a.projects[0].ID != second || a.projects[1].ID != first {
+		t.Fatalf("not swapped: %s, %s", a.projects[0].ID, a.projects[1].ID)
+	}
+	if a.projects[a.active].ID != shown {
+		t.Errorf("the shown project changed to %s", a.projects[a.active].ID)
 	}
 }

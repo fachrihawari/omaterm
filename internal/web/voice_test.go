@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ func (f *fakeVoice) Transcribe(_ context.Context, bin, model string, wav []byte,
 func (f *fakeVoice) Running() bool { return false }
 func (f *fakeVoice) Stop()         {}
 
-// wav is a second of silence as the phone records it.
+// wav is a second of a tone as the phone records it.
 func wav() []byte {
 	var b bytes.Buffer
 	b.WriteString("RIFF")
@@ -40,7 +41,10 @@ func wav() []byte {
 	}
 	b.WriteString("data")
 	binary.Write(&b, binary.LittleEndian, uint32(32000))
-	b.Write(make([]byte, 32000))
+	// A tone, not silence, which is written down as nothing.
+	for i := range 16000 {
+		binary.Write(&b, binary.LittleEndian, int16(3000*math.Sin(2*math.Pi*440*float64(i)/16000)))
+	}
 	return b.Bytes()
 }
 
@@ -164,5 +168,29 @@ func TestVoiceTranscribes(t *testing.T) {
 	}
 	if !limited {
 		t.Fatal("no limit on recordings")
+	}
+}
+
+// As the phone starts recording, it has the model loaded: on, the warm
+// call answers at once; off, it is not there.
+func TestVoiceWarm(t *testing.T) {
+	f := newFixture(t, func(o *daemon.Options) { o.Voice = &fakeVoice{} })
+	c := f.paired(t)
+	post := func() int {
+		req, _ := http.NewRequest("POST", f.base+"/api/voice/warm", nil)
+		req.Header.Set("Origin", f.base)
+		res, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if code := post(); code != http.StatusNotFound {
+		t.Fatalf("warm with voice off: %d", code)
+	}
+	os.WriteFile(filepath.Join(f.dir, "settings.json"), []byte(`{"voice":{"enabled":true}}`), 0o600)
+	if code := post(); code != http.StatusNoContent {
+		t.Fatalf("warm with voice on: %d", code)
 	}
 }

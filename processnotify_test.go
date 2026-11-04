@@ -35,7 +35,7 @@ func TestProcessFailureNotifies(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("a failed process did not notify: %v", *sent)
 	}
-	want := procs.SessionID("p1", "web") + "|Process failed: web|exit 1"
+	want := procs.SessionID("p1", "web") + "|Process failed: web|Exited with code 1"
 	if (*sent)[0] != want {
 		t.Fatalf("notification: %q, want %q", (*sent)[0], want)
 	}
@@ -45,7 +45,7 @@ func TestProcessFailureNotifies(t *testing.T) {
 	if len(*sent) != 2 {
 		t.Fatalf("paused restarts did not notify: %v", *sent)
 	}
-	if got, want := (*sent)[1], procs.SessionID("p1", "worker")+"|Restart paused: worker|restarted too often"; got != want {
+	if got, want := (*sent)[1], procs.SessionID("p1", "worker")+"|Restart paused: worker|Stopped restarting: it failed too often"; got != want {
 		t.Fatalf("notification: %q, want %q", got, want)
 	}
 }
@@ -145,5 +145,20 @@ func TestProcessPortPillOpensThePage(t *testing.T) {
 	// process's tab as well.
 	if a.activeView == tabProcess {
 		t.Fatal("clicking the port also opened the process tab")
+	}
+}
+
+// A process's notification shows the process, its tab opened if it
+// wasn't: clicking "Process failed" once opened nothing.
+func TestProcessNotificationShowsIt(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	projectID := a.projects[a.active].ID
+	a.procList = map[string][]procs.Proc{projectID: {
+		{Def: procs.Def{Name: "web", Command: "serve"}, Status: procs.Failed, Session: procs.SessionID(projectID, "web"), Trusted: true},
+	}}
+	a.showSession(procs.SessionID(projectID, "web"))
+	if a.activeView != tabProcess || a.tabs[a.activeTab].Process != "web" {
+		t.Fatalf("the notification showed %v, not web's tab", a.activeView)
 	}
 }

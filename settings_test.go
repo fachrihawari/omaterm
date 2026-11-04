@@ -597,3 +597,29 @@ func TestSettingsWithBOM(t *testing.T) {
 		t.Errorf("the merged file says theme %q, font size %v, want light and 16", saved.Theme, saved.Terminal.FontSize)
 	}
 }
+
+// A setting that applies at start asks for a restart while it differs
+// from what omaterm started with, and no longer once changed back.
+func TestRestartBannerFollowsTheSetting(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	var def settingDef
+	for _, d := range settingDefs {
+		if d.Restart && d.On != nil && d.Set != nil {
+			def = d
+			break
+		}
+	}
+	if def.ID == "" {
+		t.Skip("no setting applies at start")
+	}
+	on := def.On(&a.settings)
+	def.Set(&a.settings, !on)
+	if !a.restartNeeded() {
+		t.Fatalf("changing %s asks for no restart", def.ID)
+	}
+	def.Set(&a.settings, on)
+	if a.restartNeeded() {
+		t.Errorf("%s changed back still asks for a restart", def.ID)
+	}
+}

@@ -10,11 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/agent"
+	"omaterm/internal/notice"
 	"omaterm/internal/ospath"
 	"omaterm/internal/procs"
 	"omaterm/internal/session"
@@ -95,7 +97,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				title = proc.Name
 			}
 			name := ui.Text(c, title).FontSize(12.5).FontWeight(600).TextColor(pal.Text).SingleLine().Ellipsis("…").
-				Shrink(0.5).MinWidth(min(90, float32(len(title))*7)).MaxWidth(260)
+				Shrink(0.5).MinWidth(min(90, float32(len(title))*7)).MaxWidth(260).Tooltip(title)
 			if narrow {
 				// Its whole title would draw over the chips and controls
 				// beside it: it ellipsizes too.
@@ -111,17 +113,27 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 				sub = proc.Command
 			}
 			if sub != "" && sub != title {
-				ui.Text(c, sub).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0)
-			}
-			if isProc && proc.Link != "" && !narrow {
-				// Where the process is served, after what it runs.
-				ui.Text(c, procLinkHost(proc.Link)).FontSize(12).TextColor(pal.TextFaint).SingleLine().
-					Shrink(0).Tooltip("Served at " + proc.Link)
-			}
-			if isProc && proc.Share != "" {
-				pillShare(c, proc, func() { a.openURL(proc.Share) })
+				ui.Text(c, sub).FontSize(12).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Shrink(2).MinWidth(0).Tooltip(sub)
 			}
 		})
+		// Where the process is served, after what it runs: a link, as in
+		// its tab, out of the grip, which a press would drag.
+		if isProc && proc.Link != "" && !narrow {
+			host := ui.ButtonBase(c.Key("host")).Shrink(0).Tooltip("Open " + proc.Link).Label("Open " + proc.Link)
+			ink := pal.TextFaint
+			if host.Hovered() {
+				ink = pal.TextMuted
+			}
+			host.Children(func() {
+				ui.Text(c, procLinkHost(proc.Link)).FontSize(12).TextColor(ink).SingleLine()
+			})
+			if host.Clicked() {
+				a.openURL(proc.Link)
+			}
+		}
+		if isProc && proc.Share != "" {
+			pillShare(c, proc, func() { a.openURL(proc.Share) })
+		}
 		if g, ok := a.git.of(info.WorkDir()); ok && g.Branch != "" {
 			a.gitChip(c, g.Branch, g.Added, g.Removed)
 		}
@@ -129,7 +141,7 @@ func (a *appState) paneHeader(c *ui.Context, tab *topTab, id string, t *terminal
 		a.dictationChip(c, id)
 		if w == 0 || w >= 300 {
 			// Narrower, the status icon by the title tells the state.
-			a.statusChip(c, info)
+			a.statusChip(c, info, w == 0 || w >= 420)
 		}
 		a.paneControls(c, tab, id, (hovered || focused && multi) && !dragging, multi)
 	})
@@ -216,7 +228,12 @@ func firstNonEmpty(s ...string) string {
 // gitChip is a pane's branch and the lines changed under it.
 func (a *appState) gitChip(c *ui.Context, branch string, added, removed int) {
 	chip := ui.Row(c.Key("git")).Height(20).Radius(6).Padding(0, 7).Gap(5).AlignItems(ui.Center).
-		Background(pal.Chip).Shrink(2).MinWidth(64).MaxWidth(220)
+		Background(pal.Chip).Shrink(2).MinWidth(64).MaxWidth(220).Cursor(ui.CursorPointer).
+		Tooltip(branch + "\n" + withKeys("Show Source Control", "view.git")).Label("Show Source Control")
+	if chip.Hovered() {
+		chip.Background(pal.Chip.Mix(pal.Text, 0.08))
+	}
+	a.fadeColors(chip)
 	chip.Children(func() {
 		ui.Icon(c, iconGitBranch).Size(11, 11).TextColor(pal.TextFaint)
 		ui.Text(c, branch).FontSize(11.5).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
@@ -235,15 +252,21 @@ func (a *appState) gitChip(c *ui.Context, branch string, added, removed int) {
 
 // statusChip words a pane's status: what it waits for, how long it has
 // worked, how it failed.
-func (a *appState) statusChip(c *ui.Context, i session.Info) {
+func (a *appState) statusChip(c *ui.Context, i session.Info, roomy bool) {
 	text, bg, fg := statusWords(i, nowFunc())
 	if text == "" {
 		return
 	}
 	// The chips give way before the controls: a long message once pushed
-	// Zoom and Close off the card.
+	// Zoom and Close off the card. With room, the folder beside the title
+	// gives way first: the chip keeps a short status whole ("Needs
+	// permission"), as it says what needs the user. Its tip says it all.
+	minW := float32(72)
+	if roomy {
+		minW = min(150, float32(utf8.RuneCountInString(text))*6.6+14)
+	}
 	chip := ui.Row(c.Key("status")).Height(20).Radius(6).Padding(0, 7).AlignItems(ui.Center).Background(bg).
-		Shrink(1).MinWidth(72).MaxWidth(280)
+		Shrink(1).MinWidth(minW).MaxWidth(280).Tooltip(chipTip(i, text))
 	a.transition(chip, motionFade) // and its color fades as the status changes
 	chip.Children(func() {
 		word := ui.Text(c, text).FontSize(11.5).FontWeight(500).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
@@ -254,22 +277,22 @@ func (a *appState) statusChip(c *ui.Context, i session.Info) {
 	}
 }
 
+// chipTip is a status chip's tip: its words, a working timer's said in
+// full, as the chip alone ("2m 0s") doesn't say what it times.
+func chipTip(i session.Info, text string) string {
+	if i.Status == session.Working && i.Progress < 0 {
+		return "Working for " + text
+	}
+	return text
+}
+
 // statusWords is a status chip's text and colors, "" for none.
 func statusWords(i session.Info, now time.Time) (string, ui.Color, ui.Color) {
 	switch i.Status {
 	case session.Waiting:
 		text := i.Message
 		if text == "" {
-			switch i.Kind {
-			case "permission":
-				text = "Needs permission"
-			case "question":
-				text = "Has a question"
-			case "auth":
-				text = "Needs sign-in"
-			default:
-				text = "Needs you"
-			}
+			text = notice.WaitingWords(i.Kind)
 		}
 		return text, pal.AttentionSoft, pal.Attention
 	case session.Working:
@@ -329,24 +352,32 @@ func (a *appState) paneControls(c *ui.Context, tab *topTab, id string, show, mul
 			a.micButton(c, id)
 		}
 		if splits {
-			if a.cmdButton(c, iconColumns2, 13, false).Tooltip("Split right (" + keyLabels("terminal.splitRight") + ")").Clicked() {
+			if a.cmdButton(c, iconColumns2, 13, false).Tooltip(withKeys("Split Right", "terminal.splitRight")).Label("Split Right").Clicked() {
 				a.splitActivePaneAt(c, id, splitVertical)
 			}
-			if a.cmdButton(c, iconRows2, 13, false).Tooltip("Split down (" + keyLabels("terminal.splitDown") + ")").Clicked() {
+			if a.cmdButton(c, iconRows2, 13, false).Tooltip(withKeys("Split Down", "terminal.splitDown")).Label("Split Down").Clicked() {
 				a.splitActivePaneAt(c, id, splitHorizontal)
 			}
 		}
 		if multi || tab.Zoomed != "" {
-			zoomIcon, tip := iconMaximize, "Zoom pane"
+			zoomIcon, tip := iconMaximize, "Zoom Pane"
 			if tab.Zoomed == id {
-				zoomIcon, tip = iconMinimize, "Show all panes"
+				zoomIcon, tip = iconMinimize, "Show All Panes"
 			}
-			if a.cmdButton(c, zoomIcon, 13, false).Tooltip(tip + " (" + keyLabels("pane.zoom") + ")").Clicked() {
+			if a.cmdButton(c, zoomIcon, 13, false).Tooltip(withKeys(tip, "pane.zoom")).Label(tip).Clicked() {
 				a.activePaneTermID = id
 				a.toggleZoom()
 			}
 		}
-		if a.cmdButton(c, iconX, 13, false).Tooltip("Close pane").Clicked() {
+		if tab.Kind == tabProcess {
+			a.processButtons(c, *tab)
+		}
+		// One pane of several closes alone; the last closes its session.
+		closeLabel := "Close Session"
+		if multi {
+			closeLabel = "Close Pane"
+		}
+		if a.cmdButton(c, iconX, 13, false).Tooltip(withKeys(closeLabel, "tab.close")).Label(closeLabel).Clicked() {
 			if multi {
 				a.confirmCloseRunning([]string{id}, "Close Pane", func() { a.removePane(id) })
 			} else {

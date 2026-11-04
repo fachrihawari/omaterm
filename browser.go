@@ -271,10 +271,11 @@ func (a *appState) browserCard(c *ui.Context, tab *topTab, id string, multi, foc
 			a.post(func() {}) // the page shows again next frame
 		default:
 			ref := a.handle("web-" + id)
-			web := ui.WebView(c.Key("web"), e.view).Grow(1).Bind(ref)
-			if web.Hovered() && !focused && a.settings.FocusFollowsMouse {
-				a.activePaneTermID = id
-			}
+			// A browser pane takes the keyboard on a click only, focus
+			// following the mouse or not: the pointer resting on the page
+			// moved its ring there while the keys still went to the
+			// terminal.
+			ui.WebView(c.Key("web"), e.view).Grow(1).Bind(ref)
 			switch {
 			case ref.Focused(c) && !e.focused:
 				e.focused = true
@@ -300,7 +301,9 @@ func (a *appState) browserCard(c *ui.Context, tab *topTab, id string, multi, foc
 // browserBar is a browser pane's header: back, forward, reload and the
 // address bar, whose globe drags the pane, then the pane's buttons.
 func (a *appState) browserBar(c *ui.Context, tab *topTab, id string, e *webEntry, multi, focused, hovered bool) (dragging bool) {
-	h := ui.Row(c.Key("hdr")).Height(a.headerH()+4).Shrink(0).AlignItems(ui.Center).Padding(0, 6, 0, 6).Gap(2)
+	// As tall as a terminal pane's header, so that panes side by side
+	// start their content at one height.
+	h := ui.Row(c.Key("hdr")).Height(a.headerH()).Shrink(0).AlignItems(ui.Center).Padding(0, 6, 0, 6).Gap(2)
 	if h.Pressed() && !focused {
 		a.activePaneTermID = id
 	}
@@ -331,7 +334,7 @@ func (a *appState) browserBar(c *ui.Context, tab *topTab, id string, e *webEntry
 
 // navButton is a toolbar's button, faint while it can do nothing.
 func (a *appState) navButton(c *ui.Context, key string, svg *ui.SVG, label string, enabled bool, fn func()) {
-	b := ui.ButtonBase(c.Key(key)).Size(26, 24).Radius(6).Center().TextColor(pal.TextMuted).Label(label).Tooltip(label).Disabled(!enabled).Shrink(0)
+	b := ui.ButtonBase(c.Key(key)).Size(26, 22).Radius(6).Center().TextColor(pal.TextMuted).Label(label).Tooltip(label).Disabled(!enabled).Shrink(0)
 	switch {
 	case !enabled:
 		// Disabled, it paints at half opacity: dim enough.
@@ -349,7 +352,7 @@ func (a *appState) navButton(c *ui.Context, key string, svg *ui.SVG, label strin
 // words to search for. Its globe is the pane's handle with several panes.
 func (a *appState) addressBar(c *ui.Context, tab *topTab, id string, e *webEntry, multi bool) (dragging bool) {
 	blank := e.url == proto.BlankURL
-	frame := ui.Row(c.Key("address")).Grow(1).MinWidth(120).Height(26).Padding(0, 10, 0, 3).Gap(3).Radius(8).
+	frame := ui.Row(c.Key("address")).Grow(1).MinWidth(120).Height(a.headerH()-6).Padding(0, 10, 0, 3).Gap(3).Radius(8).
 		AlignItems(ui.Center).Background(pal.Input).Border(1, pal.Border).Cursor(ui.CursorText)
 	var in ui.Element
 	frame.Children(func() {

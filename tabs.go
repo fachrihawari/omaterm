@@ -49,9 +49,11 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 			a.closingTab = 0
 			a.closeTabAsking(i)
 		}
-		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Children(func() {
+		// The + keeps its room: the tabs before it scroll instead, rather
+		// than it drawing over the buttons after it.
+		ui.Row(c).Grow(1).MinWidth(26).AlignItems(ui.Center).Children(func() {
 			plus := ui.ButtonBase(c.Key("plus")).Size(26, 26).Radius(13).Shrink(0).Center().
-				Tooltip("New Terminal (" + keyLabels("terminal.new") + ")")
+				Tooltip("New Session (" + keyLabels("terminal.new") + ")").Label("New Session")
 			if plus.Hovered() {
 				plus.Background(pal.Hover)
 			}
@@ -70,11 +72,15 @@ func (a *appState) tabBar(c *ui.Context) ui.Element {
 				a.openOverlay(overlayShortcuts)
 			}
 			if a.cmdButton(c, iconSearch, 15, false).
-				Tooltip("Search in files (" + keyLabels("search.global") + ")").Clicked() {
+				Tooltip(withKeys("Search in Files", "search.global")).Label("Search in Files").Clicked() {
 				a.openOverlay(overlayGlobalSearch)
 			}
+			inspector := "Show Inspector"
+			if a.inspectorShown {
+				inspector = "Hide Inspector"
+			}
 			if a.cmdButton(c, iconPanelRight, 15, a.inspectorShown).
-				Tooltip("Toggle Inspector (" + keyLabels("view.toggleInspector") + ")").Clicked() {
+				Tooltip(withKeys(inspector, "view.toggleInspector")).Label(inspector).Clicked() {
 				a.setInspector(!a.inspectorShown)
 			}
 		})
@@ -121,11 +127,8 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 				ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process))).Size(13, 13).TextColor(pal.TextFaint)
 			}
 		case tabEditor:
-			if isImagePath(t.Path) {
-				ui.Icon(c, iconImage).Size(13, 13).TextColor(pal.Ok)
-			} else {
-				ui.Icon(c, iconFileCode).Size(13, 13).TextColor(pal.Syn.FileTS)
-			}
+			// The file's type, as the Files tab and quick open show it.
+			fileBadge(c, t.Path)
 		case tabDiff:
 			ui.Icon(c, iconGitCompare).Size(13, 13).TextColor(pal.Ok)
 		case tabGraph:
@@ -148,7 +151,12 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 		if active {
 			col = pal.Text
 		}
-		ui.Text(c, label).FontSize(12).TextColor(col).SingleLine().Ellipsis("…").MaxWidth(180)
+		// Cut at 180 px; its tip says it whole, a file's by its path.
+		tip := label
+		if t.Kind == tabEditor || t.Kind == tabDiff {
+			tip = firstNonEmpty(t.Path, label)
+		}
+		ui.Text(c, label).FontSize(12).TextColor(col).SingleLine().Ellipsis("…").MaxWidth(180).Tooltip(tip)
 		if t.Detail != "" {
 			ui.Text(c, t.Detail).FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
@@ -182,9 +190,13 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 			}
 		}
 		// The close button keeps its room, so pills keep their width, but
-		// shows only on the active or hovered pill.
-		show := len(a.tabs) > 1 && (active || e.Hovered())
-		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Disabled(!show)
+		// shows only on the active or hovered pill; a lone tab has none.
+		if len(a.tabs) < 2 {
+			return
+		}
+		show := active || e.Hovered()
+		x := ui.ButtonBase(c.Key("x")).Size(18, 18).Radius(9).Shrink(0).Center().Disabled(!show).
+			Tooltip(withKeys("Close Tab", "tab.close")).Label("Close Tab")
 		x.Opacity(a.animate(x, "show", b2f(show), motionFast))
 		if x.Hovered() {
 			x.Background(pal.Hover)
@@ -199,6 +211,19 @@ func (a *appState) topTab(c *ui.Context, i int, seen map[string]bool) ui.Element
 	})
 	if e.Clicked() && !linkClicked {
 		a.activateTab(i)
+	}
+	// Its menu is its sidebar row's.
+	tab := *t
+	if pi, ok := a.projectIndexForTab(tab.ID); ok {
+		switch tab.Kind {
+		case tabTerminal:
+			info, _ := a.sessionInfo(tab)
+			e.ContextMenu(func(m *ui.Menu) { a.sessionMenu(c, m, pi, tab, info, false, nil) })
+		case tabProcess:
+			if proc, ok := a.procOfTab(tab); ok {
+				e.ContextMenu(func(m *ui.Menu) { a.processMenu(m, pi, proc) })
+			}
+		}
 	}
 	return e
 }
@@ -478,7 +503,7 @@ func (a *appState) closeTabAsking(i int) {
 		// Its tab goes; the process does not: Stop is what ends it.
 		a.closeTab(i)
 		if proc, ok := a.procOfTab(t); ok && (proc.Status == procs.Starting || proc.Status == procs.Running) {
-			a.toast(nil, proc.Name+" keeps running. Stop it from the sidebar.")
+			a.toast(nil, proc.Name+" keeps running. Stop it from its tab or the sidebar.")
 		}
 		return
 	}

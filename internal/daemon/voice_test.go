@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,8 +49,13 @@ func TestVoiceOffStopsWhisper(t *testing.T) {
 	model := filepath.Join(dir, "ggml-small.bin")
 	os.WriteFile(model, []byte("x"), 0o600)
 	os.WriteFile(settings, []byte(`{"voice":{"enabled":true}}`), 0o600)
-	if text, err := d.Transcribe(context.Background(), nil, ""); err != nil || text != "ok" {
+	if text, err := d.Transcribe(context.Background(), testWAV(time.Second), ""); err != nil || text != "ok" {
 		t.Fatalf("on: %q %v", text, err)
+	}
+	// Silence is written down as nothing, whisper not asked to make text
+	// up from it.
+	if text, err := d.Transcribe(context.Background(), silentWAV(time.Second), ""); err != nil || text != "" {
+		t.Fatalf("silence: %q %v", text, err)
 	}
 	res, _ := d.Handle(context.Background(), "voice.status", nil)
 	if st := res.(voice.Status); !st.Ready || !st.Running || st.Model != voice.DefaultModel {
@@ -65,7 +71,15 @@ func TestVoiceOffStopsWhisper(t *testing.T) {
 	}
 }
 
-// testWAV is d of silence as the app records it: 16 kHz mono 16-bit.
+// silentWAV is d of silence, as a recording nothing was said into.
+func silentWAV(d time.Duration) []byte {
+	b := testWAV(d)
+	clear(b[44:])
+	return b
+}
+
+// testWAV is d of a tone as the app records it: 16 kHz mono 16-bit. Not
+// silence, which is written down as nothing.
 func testWAV(d time.Duration) []byte {
 	n := int(d * voice.SampleRate / time.Second)
 	b := make([]byte, 44+2*n)
@@ -81,6 +95,10 @@ func testWAV(d time.Duration) []byte {
 	binary.LittleEndian.PutUint16(b[34:], 16)
 	copy(b[36:], "data")
 	binary.LittleEndian.PutUint32(b[40:], uint32(2*n))
+	for i := range n {
+		v := int16(3000 * math.Sin(2*math.Pi*440*float64(i)/voice.SampleRate))
+		binary.LittleEndian.PutUint16(b[44+2*i:], uint16(v))
+	}
 	return b
 }
 
@@ -136,7 +154,7 @@ func TestVoiceTranscribeMethod(t *testing.T) {
 		t.Fatalf("a 2-minute WAV is only %d bytes", len(long))
 	}
 	got, err := call(VoiceParams{WAV: long})
-	if err != nil || got.Text != " hello there\n" {
+	if err != nil || got.Text != "hello there" {
 		t.Fatalf("on: %q %v", got.Text, err)
 	}
 	if !bytes.Equal(fv.got, long) || fv.lang != "id" {
@@ -153,5 +171,40 @@ func TestVoiceTranscribeMethod(t *testing.T) {
 		if _, err := call(p); proto.CodeOf(err) != proto.CodeUsage {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// warmedVoice records that it was warmed.
+type warmedVoice struct {
+	runningVoice
+	warmed chan string
+}
+
+func (v *warmedVoice) Warm(_ context.Context, _, model string) error {
+	v.warmed <- model
+	return nil
+}
+
+// voice.warm, as a recording begins, starts whisper-server with the
+// model, voice being on and ready, and answers at once.
+func TestVoiceWarm(t *testing.T) {
+	d, _ := startDaemon(t, time.Minute)
+	fv := &warmedVoice{warmed: make(chan string, 1)}
+	d.voice = fv
+	dir := voice.Dir(d.opts.StateDir)
+	os.MkdirAll(filepath.Dir(voice.EnginePath(dir)), 0o700)
+	os.WriteFile(voice.EnginePath(dir), []byte("x"), 0o700)
+	os.WriteFile(filepath.Join(dir, "ggml-small.bin"), []byte("x"), 0o600)
+	os.WriteFile(filepath.Join(filepath.Dir(d.stateFile()), "settings.json"), []byte(`{"voice":{"enabled":true}}`), 0o600)
+	if _, err := d.Handle(context.Background(), "voice.warm", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case model := <-fv.warmed:
+		if !strings.HasSuffix(model, "ggml-small.bin") {
+			t.Errorf("warmed %s", model)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("voice.warm didn't warm whisper-server")
 	}
 }

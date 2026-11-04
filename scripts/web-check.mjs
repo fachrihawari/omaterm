@@ -12,7 +12,8 @@
 //
 // Voice input is checked too, with Chromium's fake microphone and a fake
 // whisper-server on the PATH: the mic records, the text lands in the
-// compose box and nothing is sent; turned off, the mic is gone.
+// compose box and nothing is sent; Send while recording waits for the
+// words and sends them; turned off, the mic is gone.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -244,6 +245,14 @@ try {
     await waitBox(/^hello from the phone \(id, 16000 Hz, sound\) hello from the phone \(en, 16000 Hz, sound\)$/);
   });
   await check("voice: Send then sends what was written down", hex("hello from the phone (id, 16000 Hz, sound) hello from the phone (en, 16000 Hz, sound)\r"), () => tap(".compose-send"));
+  await check("voice: Send while recording sends what was said, once written down", hex("hello from the phone (en, 16000 Hz, sound)\r"), async () => {
+    await tap(".btn-compose");
+    await sleep(800);
+    await tap(".compose-mic");
+    await sleep(1500);
+    await tap(".compose-send");
+    await sleep(1500);
+  });
   await check("voice: off on the computer, the mic and chip are gone", "", async () => {
     setVoice(false);
     await tap(".btn-compose");

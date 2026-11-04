@@ -42,8 +42,10 @@ func (a *appState) agentSetupBanner(c *ui.Context) {
 	name := agent.DisplayName(a.agentSetupOffer)
 	a.banner(c, "agent-setup-banner", iconBot, pal.Accent, false,
 		"Resume "+name+" in its own conversation after a restart: set up the agent integration.", func() {
+			// It isn't offered again: the toast says where it stays.
 			if a.bannerButton(c, "Not Now", false) {
 				a.answerAgentSetup()
+				a.toast(c, "Set it up any time from Settings › Agents")
 			}
 			if a.bannerButton(c, "Set Up", true) {
 				offered := a.agentSetupOffer

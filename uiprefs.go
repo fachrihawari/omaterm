@@ -49,13 +49,13 @@ func (a *appState) loadUIPrefs() {
 	if u.SidebarVisible != nil {
 		a.sidebarVisible = *u.SidebarVisible
 	}
-	if u.SidebarW >= 200 && u.SidebarW <= 360 {
+	if u.SidebarW >= sidebarMinW && u.SidebarW <= sidebarMaxW {
 		a.sidebarW = u.SidebarW
 	}
 	if u.InspectorVisible != nil {
 		a.inspectorVisible = *u.InspectorVisible
 	}
-	if u.InspectorW >= 240 && u.InspectorW <= 600 {
+	if u.InspectorW >= inspectorMinW && u.InspectorW <= inspectorMaxW {
 		a.inspectorW = u.InspectorW
 	}
 	if u.InspectorTab != nil && *u.InspectorTab >= 0 && *u.InspectorTab <= 2 {

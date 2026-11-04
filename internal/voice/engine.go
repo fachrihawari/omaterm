@@ -182,6 +182,17 @@ func (s *Server) Transcribe(ctx context.Context, bin, model string, wav []byte, 
 	return inference(ctx, addr, wav, lang)
 }
 
+// Warm starts whisper-server running model, if it doesn't run, so that a
+// recording begun now isn't kept waiting for the model to load when it
+// ends. Its idle countdown starts anew.
+func (s *Server) Warm(ctx context.Context, bin, model string) error {
+	if _, err := s.acquire(ctx, bin, model); err != nil {
+		return err
+	}
+	s.release()
+	return nil
+}
+
 // acquire starts whisper-server when needed and counts a use, which keeps
 // it from its idle stop.
 func (s *Server) acquire(ctx context.Context, bin, model string) (string, error) {

@@ -179,6 +179,8 @@ func (s keyScope) String() string {
 		return "Editor"
 	case scopeBrowser:
 		return "Browser"
+	case scopeNotEditor:
+		return "Not in Editor"
 	}
 	return "Anywhere"
 }
@@ -238,6 +240,11 @@ func keybindingsFor(mac bool) []keyBinding {
 		{"terminal.splitDown", combo(cmd|ui.Shift, ui.KeyD), scopeTerminal},
 		{"terminal.splitRight", combo(cmd|ui.Shift, ui.KeyR), scopeTerminal},
 		{"pane.zoom", combo(cmd|ui.Shift, ui.KeyEnter), scopeTerminal},
+		// To the pane beside, as iTerm2's ⌥⌘ and the arrows.
+		{"pane.focusLeft", combo(cmd|ui.Alt, ui.KeyLeft), scopeTerminal},
+		{"pane.focusRight", combo(cmd|ui.Alt, ui.KeyRight), scopeTerminal},
+		{"pane.focusUp", combo(cmd|ui.Alt, ui.KeyUp), scopeTerminal},
+		{"pane.focusDown", combo(cmd|ui.Alt, ui.KeyDown), scopeTerminal},
 		// Voice input, into the terminal pane with the keyboard: Space,
 		// as the push-to-talk keys are; ⇧⌘Space on macOS, where ⌘Space
 		// is Spotlight's and ⌃⌘Space the emoji picker's.

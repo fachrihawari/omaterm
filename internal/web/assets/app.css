@@ -53,8 +53,14 @@ a { color: inherit; text-decoration: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 [hidden] { display: none !important; }
 
+/* --kb is the on-screen keyboard's height where it lies over the page
+   (iOS), so that the page keeps clear of it (app.js). */
 #app {
+  /* Clear of a notch, in landscape. */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
   height: 100dvh;
+  height: calc(100dvh - var(--kb, 0px));
   display: flex;
   flex-direction: column;
   background:
@@ -126,8 +132,8 @@ a { color: inherit; text-decoration: none; }
   overscroll-behavior: contain; padding-bottom: 8px;
 }
 .side-f {
-  height: 44px; display: flex; align-items: center; gap: 6px;
-  padding: 0 4px 6px; flex: none; border-top: 1px solid var(--border);
+  min-height: 44px; display: flex; align-items: center; gap: 6px;
+  padding: 0 4px calc(6px + env(safe-area-inset-bottom)); flex: none; border-top: 1px solid var(--border);
 }
 .chipc {
   height: 24px; border-radius: 12px; padding: 0 8px 0 6px; display: flex; align-items: center; gap: 5px;
@@ -144,25 +150,19 @@ a { color: inherit; text-decoration: none; }
 .side-f .link:hover { color: var(--text); background: var(--hover); }
 .offline { color: var(--warn); font-size: 11.5px; }
 
-/* Project group */
+/* Project group: a heading, as on the desktop, not a button. */
 .proj {
   height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 8px;
   color: var(--text-muted); font-size: 12.5px; font-weight: 600; margin-top: 6px;
-  border-radius: 7px; cursor: pointer; user-select: none;
+  border-radius: 7px; user-select: none;
 }
-.proj:hover { background: var(--hover); }
-.proj .chev {
-  width: 12px; height: 12px; color: var(--text-faint); flex: none;
-  display: grid; place-items: center; transition: transform 0.15s ease;
-}
-.proj.collapsed .chev { transform: rotate(-90deg); }
 .proj .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj .add { opacity: 0.6; width: 22px; height: 22px; }
 .proj:hover .add { opacity: 1; }
 
 .proj-sect {
   font-size: 11px; font-weight: 600; color: var(--text-faint); letter-spacing: .03em;
-  text-transform: uppercase; padding: 6px 8px 2px 24px; margin-top: 2px;
+  text-transform: uppercase; padding: 6px 8px 2px 8px; margin-top: 2px;
   display: flex; align-items: center; gap: 6px;
 }
 
@@ -251,7 +251,7 @@ a { color: inherit; text-decoration: none; }
   display: flex; align-items: center; gap: 7px; flex: 0 1 auto; min-width: 60px; overflow: hidden;
 }
 .grip .logo { width: 14px; height: 14px; color: var(--text-faint); flex: none; display: grid; place-items: center; }
-.grip .t { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.grip .t { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .grip .cwd { font-size: 12px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .gchip {
@@ -262,9 +262,13 @@ a { color: inherit; text-decoration: none; }
 
 .ph .sp { flex: 1; }
 
+/* A long message ellipsizes, rather than pushing Compose off a phone's
+   screen; a block, as text-overflow leaves a flex box's text whole. */
+.schip-wrap { display: flex; min-width: 0; flex: 0 1 auto; }
 .schip {
-  height: 20px; border-radius: 6px; padding: 0 7px; display: flex; align-items: center; gap: 5px;
-  font-size: 11.5px; white-space: nowrap; background: var(--chip); color: var(--text-muted); flex: none;
+  height: 20px; line-height: 20px; border-radius: 6px; padding: 0 7px; display: block;
+  font-size: 11.5px; white-space: nowrap; background: var(--chip); color: var(--text-muted);
+  flex: 0 1 auto; min-width: 0; max-width: 60vw; overflow: hidden; text-overflow: ellipsis;
 }
 .schip.att { background: var(--attention-soft); color: var(--attention); font-weight: 500; }
 .schip.bad { background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
@@ -286,6 +290,9 @@ a { color: inherit; text-decoration: none; }
 }
 .term-host { position: absolute; inset: 6px 4px 4px 10px; }
 .term-host .xterm { height: 100%; }
+/* The text box xterm types through: under 16px, iOS zooms in as it
+   takes the keyboard. Unseen either way. */
+.term-host .xterm .xterm-helper-textarea { font-size: 16px; }
 .term-host .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .term-note {
   padding: 6px 12px; font-size: 12.5px; color: var(--text-muted);
@@ -359,18 +366,25 @@ a { color: inherit; text-decoration: none; }
   .pane { border: 0; border-radius: 0; box-shadow: none; }
   
   .side-h {
-    height: 52px;
+    min-height: 52px;
     padding: max(env(safe-area-inset-top), 10px) 12px 10px;
     border-bottom: 1px solid var(--border);
   }
   .row { min-height: 44px; padding: 8px 12px; }
   .proj { height: 36px; padding: 0 12px; font-size: 13px; }
   .proj-sect { padding: 8px 12px 4px 12px; }
+  /* Thumb-sized: 36 px and more, as a phone wants. */
+  .btn-compose { width: 36px; height: 36px; border-radius: 8px; }
+  .btn-compose svg { width: 18px; height: 18px; }
+  .proj .add { width: 36px; height: 36px; opacity: 1; }
+  .side-f .chipc { height: 32px; padding: 0 10px; }
+  .side-f .link { padding: 8px 10px; }
 
   .ph {
-    height: 48px;
+    min-height: 48px;
     padding: max(env(safe-area-inset-top), 8px) 10px 8px;
   }
+  .grip .cwd { display: none; }
   .back-btn {
     width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--border);
     background: var(--raised); color: var(--text); display: grid; place-items: center;
@@ -395,11 +409,11 @@ a.pill.link:hover { text-decoration: underline; }
 
 /* Motion: presses sink, the phone's list and terminal slide, what comes in
    fades. Nothing waits on it. */
-.row, .ib, .chipc, .proj, .primary, .back-btn, .pill-tab, .card-tab, .side-f .link, .keys button {
+.row, .ib, .chipc, .primary, .back-btn, .pill-tab, .card-tab, .side-f .link, .keys button {
   transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast),
     transform var(--dur-fast) var(--ease-out);
 }
-.row:active, .ib:active, .chipc:active, .proj:active, .primary:active:not(:disabled),
+.row:active, .ib:active, .chipc:active, .primary:active:not(:disabled),
 .back-btn:active, .pill-tab:active, .card-tab:active, .side-f .link:active, .keys button:active {
   transform: scale(0.97);
 }
@@ -429,7 +443,7 @@ a.pill.link:hover { text-decoration: underline; }
     transition-duration: 0s !important;
     animation-duration: 0s !important;
   }
-  .row:active, .ib:active, .chipc:active, .proj:active, .primary:active:not(:disabled),
+  .row:active, .ib:active, .chipc:active, .primary:active:not(:disabled),
   .back-btn:active, .pill-tab:active, .card-tab:active, .side-f .link:active, .keys button:active {
     transform: none;
   }

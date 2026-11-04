@@ -137,29 +137,43 @@ func (a *appState) settingsVoice(c *ui.Context) {
 	}
 	v := &a.settings.Voice
 	d := &a.settingsUI.data.voice
+	// It is written down in the session daemon: off, nothing records.
+	if !voiceDaemon(a) {
+		a.settingsNeedsDaemon(c, "voiceDaemon", "Voice input")
+	}
 	if d.have == nil {
 		a.refreshVoice()
 	}
 	a.settingsGroup(c, "voice", "", a.voiceNote(), func() {
 		on := v.Enabled
 		a.settingDefRow(c, "voice", func() {
-			if d.running {
-				settingsPill(c, "Running", pillOk)
+			// Steady: whether it can work, not whether whisper-server
+			// happens to run, which comes and goes with use.
+			switch {
+			case v.Enabled && d.status.Ready:
+				settingsPill(c, "Ready", pillOk)
+			case v.Enabled:
+				settingsPill(c, "Needs downloads", pillWarn)
 			}
 			if a.settingsSwitch(c, "voice", &on, false) {
-				a.setVoice(on)
+				if !on && len(d.downloads) > 0 {
+					a.settingsUI.sheet = &settingsSheet{
+						title: "Stop the downloads?", danger: true,
+						text:    "Turning voice input off stops what is downloading; what is done stays.",
+						confirm: "Turn Off",
+						run:     func(*ui.Context) { a.setVoice(false) },
+					}
+				} else {
+					a.setVoice(on)
+				}
 			}
 		})
 	})
 	if v.Enabled {
-		a.settingsGroup(c, "voiceEngine", "Engine", "", func() { a.voiceEngineRow(c) })
-		a.settingsGroup(c, "voiceModels", "Model", "Every model knows about 99 languages: the bigger, the better it hears, and the slower.", func() {
-			for _, m := range voice.Models {
-				a.voiceModelRow(c, m)
-			}
-		})
+		// What you speak first: a wrong language garbles more than a
+		// small model does.
 		a.settingsGroup(c, "voiceLanguage", "", "", func() {
-			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "What you speak, here and on the phone: tick two, as Indonesian and English, for it to tell which. Detect Each Time can hear another one."}, func() {
+			a.settingsRow(c, "Language", settingsRowOpts{id: "voiceLanguage", sub: "The language you speak, here and on the phone. Pick two, such as Indonesian and English, and it tells which; Detect Each Time hears any."}, func() {
 				// A menu, not a popup: it takes several languages.
 				name := voice.LanguageName(d.status.Language)
 				b := ui.ButtonBase(c.Key("voiceLanguage")).Height(26).MaxWidth(260).Shrink(1).MinWidth(0).
@@ -171,6 +185,12 @@ func (a *appState) settingsVoice(c *ui.Context) {
 				})
 				b.Menu(func(m *ui.Menu) { a.voiceLanguageMenu(m) })
 			})
+		})
+		a.settingsGroup(c, "voiceEngine", "Engine", "", func() { a.voiceEngineRow(c) })
+		a.settingsGroup(c, "voiceModels", "Model", "Every model knows about 99 languages: the bigger, the better it hears, and the slower.", func() {
+			for _, m := range voice.Models {
+				a.voiceModelRow(c, m)
+			}
 		})
 	}
 	if d.disk > 0 {
@@ -190,7 +210,8 @@ func (a *appState) voiceNote() string {
 	if startRecording == nil {
 		return phone
 	}
-	return "Here, press " + keyPrimary("voice.dictate") + " or the mic in a terminal pane’s header to start and again to stop (Esc drops it): the text is pasted into the pane, without Enter. " + phone
+	return "Here, press " + keyPrimary("voice.dictate") + " or the mic in a terminal pane’s header and speak. Enter sends what you said; " +
+		keyPrimary("voice.dictate") + " again, or letting go of it after holding it, pastes it to read first; Esc drops it. " + phone
 }
 
 // voiceEngineRow says which whisper-server runs, or downloads one.
@@ -202,7 +223,7 @@ func (a *appState) voiceEngineRow(c *ui.Context) {
 	sub := ""
 	switch {
 	case dl != nil:
-		sub = "Downloading whisper.cpp " + voice.EngineVersion + "…"
+		sub = "Downloading whisper.cpp " + voice.EngineVersion + "…" + downloadedOf(dl)
 	case st.EngineOnPATH:
 		sub = "Using whisper-server from your PATH: " + st.Engine
 	case st.Engine != "":
@@ -235,7 +256,11 @@ func (a *appState) voiceModelRow(c *ui.Context, m voice.Model) {
 	v := &a.settings.Voice
 	dl := d.downloads[m.Name]
 	inUse := d.status.Model == m.Name
-	a.settingsRow(c, m.Title, settingsRowOpts{id: "voiceModel-" + m.Name, sub: service.FormatBytes(uint64(m.Size)) + " · " + m.Note}, func() {
+	sub := service.FormatBytes(uint64(m.Size)) + " · " + m.Note
+	if dl != nil {
+		sub = "Downloading…" + downloadedOf(dl)
+	}
+	a.settingsRow(c, m.Title, settingsRowOpts{id: "voiceModel-" + m.Name, sub: sub}, func() {
 		switch {
 		case dl != nil:
 			a.voiceProgress(c, m.Name, dl)
@@ -246,11 +271,20 @@ func (a *appState) voiceModelRow(c *ui.Context, m voice.Model) {
 				v.Model = m.Name
 				a.voiceChanged()
 			}
-			if a.settingsButton(c, "Delete##"+m.Name, false, true, false) {
-				os.Remove(voice.ModelPath(voiceDir(), m))
-				a.refreshVoice()
-				// A whisper-server running it holds it until told.
-				go daemon.ReloadVoice()
+			if a.settingsButton(c, "Delete…##"+m.Name, false, true, false) {
+				what := "It downloads again from here."
+				if inUse {
+					what = "Voice input stops until a model is downloaded again."
+				}
+				a.settingsUI.sheet = &settingsSheet{
+					title: "Delete the " + m.Title + " model?", danger: true, text: what, confirm: "Delete",
+					run: func(c *ui.Context) {
+						os.Remove(voice.ModelPath(voiceDir(), m))
+						a.refreshVoice()
+						// A whisper-server running it holds it until told.
+						go daemon.ReloadVoice()
+					},
+				}
 			}
 		default:
 			if a.settingsButton(c, "Download##"+m.Name, inUse, false, false) {
@@ -270,6 +304,15 @@ func (a *appState) voiceModelRow(c *ui.Context, m voice.Model) {
 }
 
 // voiceProgress is a download's bar and its Cancel.
+// downloadedOf says how far a download is, " 120 MB of 466 MB", "" before
+// its size is known.
+func downloadedOf(dl *voiceDownload) string {
+	if dl.total <= 0 {
+		return ""
+	}
+	return " " + service.FormatBytes(uint64(dl.done)) + " of " + service.FormatBytes(uint64(dl.total))
+}
+
 func (a *appState) voiceProgress(c *ui.Context, key string, dl *voiceDownload) {
 	frac := -1.0
 	if dl.total > 0 {

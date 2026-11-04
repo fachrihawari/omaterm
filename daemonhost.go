@@ -173,6 +173,11 @@ func (a *appState) daemonDialog(c *ui.Context) {
 		false, "Run Without It", "Restart Sessions") {
 	case -1:
 		return
+	case ui.AlertDismissed:
+		// Only its buttons answer it: Esc or a stray click left the
+		// sessions as they were, unasked.
+		*a.daemonRefusedOpen = true
+		return
 	case 1:
 		a.replaceRefusedDaemon()
 	default:
@@ -215,28 +220,78 @@ func (a *appState) daemonBanner(c *ui.Context) {
 				a.daemonStale = ""
 			}
 			if a.bannerButton(c, "Restart Sessions", true) {
-				a.daemonStale = ""
-				a.restartDaemon()
+				a.restartDaemonAsking(c, func() { a.daemonStale = "" })
 			}
 		})
+}
+
+// restartDaemonAsking restarts the session daemon, first asking when a
+// program or a process still runs, which the restart stops: after runs
+// once it goes ahead.
+func (a *appState) restartDaemonAsking(c *ui.Context, after func()) {
+	run := func() {
+		after()
+		if a.restartDaemon() {
+			a.toast(nil, "Restarting the session daemon…")
+		} else {
+			a.toast(nil, "Sessions run in the app: the session daemon is off")
+		}
+	}
+	what := ""
+	for _, p := range a.projects {
+		if what == "" {
+			what = a.runningProgram(a.projectPaneIDs(p.ID))
+		}
+		for _, proc := range a.procList[p.ID] {
+			if what == "" && procActive(proc) {
+				what = proc.Name
+			}
+		}
+	}
+	if what == "" || !a.settings.ConfirmClose {
+		run()
+		return
+	}
+	a.askDanger("Restart Sessions", what+" is still running: restarting stops it. Sessions come back with their scrollback, and agents go on with their conversation; processes start again only if they start by themselves.",
+		"Restart", run)
 }
 
 // banner is a notice above the panes: an icon, what it says, two lines at
 // most with the rest in its tooltip, and its buttons. danger tints it red.
 func (a *appState) banner(c *ui.Context, key string, icon *ui.SVG, iconColor ui.Color, danger bool, msg string, buttons func()) {
-	row := ui.Row(c.Key(key)).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Gap(10).AlignItems(ui.Center).Radius(8)
-	a.transition(row, motionDrop)
-	if danger {
-		row.Background(pal.Bad.Alpha(0.10)).Border(1, pal.Bad.Alpha(0.35))
+	// Narrow, the buttons go under the message, which keeps the width: in
+	// one row it was cut to a few words beside them.
+	w := a.handle(key).Bounds(c).W
+	narrow := w > 0 && w < 520
+	var box ui.Element
+	if narrow {
+		box = ui.Column(c.Key(key)).Gap(8)
 	} else {
-		row.Background(pal.Raised).Border(1, pal.Border)
+		box = ui.Row(c.Key(key)).Gap(10).AlignItems(ui.Center)
 	}
-	row.Children(func() {
+	box.Bind(a.handle(key)).Margin(0, 0, a.paneGap(), 0).Padding(8, 12).Radius(8)
+	a.transition(box, motionDrop)
+	if danger {
+		box.Background(pal.Bad.Alpha(0.10)).Border(1, pal.Bad.Alpha(0.35))
+	} else {
+		box.Background(pal.Raised).Border(1, pal.Border)
+	}
+	message := func(lines int) {
 		ui.Icon(c, icon).Width(14).Height(14).TextColor(iconColor)
 		ui.Text(c, msg).Tooltip(msg).
-			FontSize(12).TextColor(pal.TextSoft).MaxLines(2).Ellipsis("…").Grow(1).MinWidth(0)
+			FontSize(12).TextColor(pal.TextSoft).MaxLines(lines).Ellipsis("…").Grow(1).MinWidth(0)
+	}
+	box.Children(func() {
+		if !narrow {
+			message(2)
+			if buttons != nil {
+				buttons()
+			}
+			return
+		}
+		ui.Row(c).Gap(10).AlignItems(ui.Center).FillWidth().Children(func() { message(3) })
 		if buttons != nil {
-			buttons()
+			ui.Row(c).Gap(8).Justify(ui.End).AlignItems(ui.Center).FillWidth().Children(buttons)
 		}
 	})
 }
@@ -253,7 +308,7 @@ func (a *appState) bannerButton(c *ui.Context, label string, primary bool) bool 
 	}
 	a.press(a.fadeColors(b))
 	return b.Children(func() {
-		ui.Text(c, label).FontSize(12).TextColor(pal.TextMuted)
+		ui.Text(c, label).FontSize(12).TextColor(pal.TextSoft)
 	}).Clicked()
 }
 

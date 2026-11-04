@@ -45,6 +45,10 @@ func (a *appState) view(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.queuedToasts = nil
+	for _, t := range a.queuedRich {
+		c.AddToast(t)
+	}
+	a.queuedRich = nil
 
 	root := ui.Column(c).Fill()
 	a.wash(root)
@@ -89,12 +93,22 @@ func (a *appState) view(c *ui.Context) {
 	// Close-tab confirmation dialog.
 	if a.closeTabConfirmOpen != nil {
 		result := a.confirmDialog(c, a.closeTabConfirmOpen,
-			"Close Tab",
-			"This file has unsaved changes. Close anyway?",
-			true, "Cancel", "Close")
+			"Save changes to "+pathBase(a.pendingClosePath)+"?",
+			"Your changes are lost if you don’t save them.",
+			false, "Cancel", "Don’t Save", "Save")
 		if result != -1 {
-			if result == 1 {
+			switch result {
+			case 1:
 				a.closePendingEditor()
+			case 2:
+				// Saved, it closes; asked to overwrite a change on disk
+				// first, it stays, with the question.
+				if doc := a.editors[a.pendingClosePath]; doc != nil && doc.State != nil {
+					a.saveEditor(doc, c)
+					if !doc.State.Buffer.Modified() {
+						a.closePendingEditor()
+					}
+				}
 			}
 			a.closeTabConfirmOpen = nil
 		}
@@ -104,11 +118,14 @@ func (a *appState) view(c *ui.Context) {
 	if a.overwriteAsk != nil {
 		doc := a.overwriteDoc
 		result := a.confirmDialog(c, a.overwriteAsk, "Overwrite "+pathBase(doc.Path)+"?",
-			doc.Path+" changed on disk since you opened it, perhaps by an agent. Saving replaces those changes with yours.",
-			true, "Cancel", "Overwrite")
+			doc.Path+" changed on disk since you opened it, perhaps by an agent. Saving replaces those changes with yours; Reload takes theirs, dropping yours.",
+			true, "Cancel", "Reload from Disk", "Overwrite")
 		if result != -1 {
 			a.overwriteAsk, a.overwriteDoc = nil, nil
-			if result == 1 && doc.State != nil {
+			switch {
+			case result == 1 && doc.State != nil:
+				a.reloadEditor(doc)
+			case result == 2 && doc.State != nil:
 				a.writeEditor(doc, c)
 			}
 		}
@@ -215,13 +232,17 @@ const (
 // opened last stays, the inspector going first.
 func (a *appState) fitPanels(w float32) {
 	side, insp := a.sidebarVisible, a.inspectorVisible
+	gap := a.paneGap()
+	// A panel fits at its least width: one that didn't fit at its own was
+	// once hidden, though it fit narrower, and widened by its edge it
+	// went.
 	for side || insp {
 		need := float32(minPanesWidth)
 		if side {
-			need += a.sidebarWidth()
+			need += sidebarMinW
 		}
 		if insp {
-			need += a.inspectorWidth() + a.paneGap()
+			need += inspectorMinW + gap
 		}
 		if need <= w {
 			break
@@ -233,6 +254,21 @@ func (a *appState) fitPanels(w float32) {
 		}
 	}
 	a.sidebarShown, a.inspectorShown = side, insp
+	// Shown, each takes its width, or the room there is.
+	room := w - minPanesWidth
+	a.sidebarFit, a.inspectorFit = 0, 0
+	if side {
+		a.sidebarFit = room
+		if insp {
+			a.sidebarFit -= inspectorMinW + gap
+		}
+	}
+	if insp {
+		a.inspectorFit = room - gap
+		if side {
+			a.inspectorFit -= a.sidebarWidth()
+		}
+	}
 }
 
 // setSidebar and setInspector show or hide a side panel; one shown is the
@@ -326,7 +362,7 @@ func (a *appState) dialogFrame(c *ui.Context, backdrop, panel ui.Element) {
 	// DialogBase centers the panel; starting the column at its top and
 	// offsetting the panel puts it where the pickers are.
 	backdrop.Justify(ui.Start).Background(pal.Scrim)
-	floating(panel.Top(winH * dialogTopFraction).Width(w).Padding(18).Gap(10).
+	floating(panel.Top(dialogTop(winH)).Width(w).Padding(18).Gap(10).
 		Radius(10).Background(pal.Popover))
 	a.arriveDialog(c, backdrop, panel)
 }
@@ -344,25 +380,45 @@ func dialogTitle(c *ui.Context, title string, danger bool) {
 // dialogButton is a dialog's button: primary filled with the accent, red
 // with danger, else bordered. It reports a click.
 func (a *appState) dialogButton(c *ui.Context, label string, primary, danger bool) bool {
+	return a.dialogButtonEl(c, label, primary, danger).Clicked()
+}
+
+// dialogButtonOn is dialogButton that may be disabled, as while what the
+// dialog does is under way: faded, it neither reacts nor reports a click.
+func (a *appState) dialogButtonOn(c *ui.Context, label string, primary, danger, enabled bool) bool {
+	return a.dialogButtonBase(c, label, primary, danger, enabled).Clicked() && enabled
+}
+
+// dialogButtonEl is dialogButton, the button itself: the dialog that
+// makes it the default, which Enter presses, focuses it.
+func (a *appState) dialogButtonEl(c *ui.Context, label string, primary, danger bool) ui.Element {
+	return a.dialogButtonBase(c, label, primary, danger, true)
+}
+
+func (a *appState) dialogButtonBase(c *ui.Context, label string, primary, danger, enabled bool) ui.Element {
 	b := ui.ButtonBase(c.Key("dlg-"+label)).Height(dialogButtonHeight).Padding(0, 14).Radius(6).
-		AlignItems(ui.Center).Shrink(0).Label(label)
+		AlignItems(ui.Center).Shrink(0).Label(label).Disabled(!enabled)
+	if !enabled {
+		b.Opacity(0.55)
+	}
+	hovered := enabled && b.Hovered()
 	fg, weight := pal.Text, 500
 	switch {
 	case primary && danger:
 		b.Background(pal.Bad)
-		if b.Hovered() {
+		if hovered {
 			b.Background(pal.Bad.Alpha(0.85))
 		}
 		fg, weight = pal.OnBad, 600
 	case primary:
 		b.Background(pal.Accent)
-		if b.Hovered() {
+		if hovered {
 			b.Background(pal.AccentHover)
 		}
 		fg, weight = pal.AccentText, 600
 	default:
 		bg := pal.Raised
-		if b.Hovered() {
+		if hovered {
 			bg = pal.Raised.Mix(pal.Text, 0.08)
 		}
 		face(b, bg).Border(1, pal.BorderStrong)
@@ -371,11 +427,13 @@ func (a *appState) dialogButton(c *ui.Context, label string, primary, danger boo
 	b.Children(func() {
 		ui.Text(c, label).FontSize(12).FontWeight(weight).TextColor(fg).SingleLine()
 	})
-	return b.Clicked()
+	return b
 }
 
 // confirmDialog asks to confirm with a dialog: the last of buttons
-// confirms, red when danger, for actions that destroy something. Returns
+// confirms, red when danger, for actions that destroy something. Enter
+// confirms, unless it destroys something: then the first, as Cancel, has
+// the keyboard, as a destructive alert keeps it on macOS. Returns
 // the chosen button index, or ui.AlertDismissed when dismissed.
 func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message string, danger bool, buttons ...string) int {
 	if !*open {
@@ -391,7 +449,11 @@ func (a *appState) confirmDialog(c *ui.Context, open *bool, title, message strin
 		ui.Row(c).FillWidth().Gap(8).Justify(ui.End).Margin(8, 0, 0, 0).Children(func() {
 			for i, label := range buttons {
 				last := i == len(buttons)-1
-				if a.dialogButton(c, label, last, last && danger) {
+				b := a.dialogButtonEl(c, label, last, last && danger)
+				if last && !danger {
+					b.AutoFocus()
+				}
+				if b.Clicked() {
 					result = i
 				}
 			}

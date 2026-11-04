@@ -18,7 +18,8 @@ func TestLimiter(t *testing.T) {
 }
 
 func TestBody(t *testing.T) {
-	if Body(Waiting, "") != "Needs your input" || Body(Done, "Tests pass") != "Tests pass" {
+	if Body(Waiting, "", "") != "Needs you" || Body(Waiting, "", "permission") != "Needs permission" ||
+		Body(Done, "Tests pass", "") != "Tests pass" {
 		t.Fatal("body")
 	}
 }

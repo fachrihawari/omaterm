@@ -468,7 +468,7 @@ func (a *appState) writeState() {
 	st := a.state()
 	if err := model.Save(stateFilePath(), st); err != nil {
 		if !a.saveFailed {
-			a.toast(nil, "Could not save your sessions: "+err.Error())
+			a.errorToast(nil, "Could not save your sessions: "+err.Error())
 		}
 		a.saveFailed = true
 		return

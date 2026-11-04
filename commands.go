@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
@@ -65,21 +66,15 @@ var commandRegistry = append([]Command{
 		}},
 	{ID: "agents.setup", Title: "Set Up Agent Integration", Category: "App",
 		Run: func(a *appState, c *ui.Context) { a.setupAgents(c, a.status[a.activeSplitLeaf()].Agent) }},
-	{ID: "web.pair", Title: "Web Access: Pair a Device…", Category: "App",
+	{ID: "web.pair", Title: "Pair a Device…", Category: "Web",
 		Run: func(a *appState, c *ui.Context) { a.pairDevice(c) }},
 	{ID: "daemon.restart", Title: "Restart Session Daemon", Category: "App",
-		Run: func(a *appState, c *ui.Context) {
-			if a.restartDaemon() {
-				toast(c, "Restarting the session daemon…")
-			} else {
-				toast(c, "Sessions run in the app: the session daemon is off")
-			}
-		}},
-	{ID: "theme.omarchy", Title: "Theme: Follow Omarchy", Category: "View",
+		Run: func(a *appState, c *ui.Context) { a.restartDaemonAsking(c, func() {}) }},
+	{ID: "theme.omarchy", Title: "Follow Omarchy", Category: "Theme",
 		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeOmarchy) }},
-	{ID: "theme.dark", Title: "Theme: Dark", Category: "View",
+	{ID: "theme.dark", Title: "Dark", Category: "Theme",
 		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeDark) }},
-	{ID: "theme.light", Title: "Theme: Light", Category: "View",
+	{ID: "theme.light", Title: "Light", Category: "Theme",
 		Run: func(a *appState, c *ui.Context) { a.setThemeMode(themeLight) }},
 
 	{ID: "view.toggleSidebar", Title: "Toggle Sidebar", Category: "View",
@@ -127,7 +122,7 @@ var commandRegistry = append([]Command{
 				a.saveEditor(doc, c)
 			}
 		}},
-	{ID: "markdown.togglePreview", Title: "Markdown: Toggle Preview", Category: "File",
+	{ID: "markdown.togglePreview", Title: "Toggle Preview", Category: "Markdown",
 		Enabled: func(a *appState) bool {
 			doc := a.activeEditor()
 			return doc != nil && (hasSuffix(doc.Path, ".md") || hasSuffix(doc.Path, ".mdx"))
@@ -138,7 +133,7 @@ var commandRegistry = append([]Command{
 			}
 		}},
 
-	{ID: "terminal.new", Title: "New Terminal Tab", Category: "Terminal",
+	{ID: "terminal.new", Title: "New Session", Category: "Terminal",
 		Run: func(a *appState, c *ui.Context) { a.newTerminalTab() }},
 	// Its ID is the one it had as New Agent in Worktree…, which keybinding
 	// files may name.
@@ -149,21 +144,32 @@ var commandRegistry = append([]Command{
 		Enabled: func(a *appState) bool { return a.project() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.openProcessDialog(a.active, nil) }},
 	{ID: "process.edit", Title: "Edit Process…", Category: "Process",
-		Enabled: func(a *appState) bool {
-			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
-		},
+		Enabled: func(a *appState) bool { _, _, ok := a.activeProcess(); return ok },
 		Run: func(a *appState, c *ui.Context) {
-			if a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess {
-				tab := &a.tabs[a.activeTab]
-				if pi, ok := a.projectIndexForTab(tab.ID); ok {
-					for _, proc := range a.procList[a.projects[pi].ID] {
-						if proc.Name == tab.Process {
-							def := proc.Def
-							a.openProcessDialog(pi, &def)
-							return
-						}
-					}
-				}
+			if pi, proc, ok := a.activeProcess(); ok {
+				def := proc.Def
+				a.openProcessDialog(pi, &def)
+			}
+		}},
+	{ID: "process.start", Title: "Start Process", Category: "Process",
+		Enabled: func(a *appState) bool { _, proc, ok := a.activeProcess(); return ok && !procActive(proc) },
+		Run: func(a *appState, c *ui.Context) {
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.startProcess(pi, proc.Name)
+			}
+		}},
+	{ID: "process.stop", Title: "Stop Process", Category: "Process",
+		Enabled: func(a *appState) bool { _, proc, ok := a.activeProcess(); return ok && procActive(proc) },
+		Run: func(a *appState, c *ui.Context) {
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.stopProcess(pi, proc.Name)
+			}
+		}},
+	{ID: "process.restart", Title: "Restart Process", Category: "Process",
+		Enabled: func(a *appState) bool { _, proc, ok := a.activeProcess(); return ok && procActive(proc) },
+		Run: func(a *appState, c *ui.Context) {
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.restartProcess(pi, proc.Name)
 			}
 		}},
 	{ID: "process.startAll", Title: "Start All Processes", Category: "Process",
@@ -177,24 +183,48 @@ var commandRegistry = append([]Command{
 		},
 		Run: func(a *appState, c *ui.Context) { a.stopAllProcesses(a.active) }},
 	{ID: "process.remove", Title: "Remove Process…", Category: "Process",
-		Enabled: func(a *appState) bool {
-			return a.activeTab >= 0 && a.activeTab < len(a.tabs) && a.tabs[a.activeTab].Kind == tabProcess
-		},
+		Enabled: func(a *appState) bool { _, _, ok := a.activeProcess(); return ok },
 		Run: func(a *appState, c *ui.Context) {
-			if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabProcess {
-				return
+			if pi, proc, ok := a.activeProcess(); ok {
+				a.askRemoveProcess(pi, proc)
 			}
-			tab := a.tabs[a.activeTab]
-			pi, ok := a.projectIndexForTab(tab.ID)
-			if !ok {
-				return
+		}},
+	// A worktree agent's session, from the palette as from its menu.
+	{ID: "worktree.merge", Title: "Merge into Base…", Category: "Worktree",
+		Enabled: func(a *appState) bool { return a.activeWorktreeTab() != nil },
+		Run: func(a *appState, c *ui.Context) {
+			if t := a.activeWorktreeTab(); t != nil {
+				a.openMergeDialog(*t)
 			}
-			for _, proc := range a.procList[a.projects[pi].ID] {
-				if proc.Name == tab.Process {
-					a.askRemoveProcess(pi, proc)
-					return
-				}
+		}},
+	{ID: "worktree.update", Title: "Update from Base", Category: "Worktree",
+		Enabled: func(a *appState) bool { return a.activeWorktreeTab() != nil },
+		Run: func(a *appState, c *ui.Context) {
+			if t := a.activeWorktreeTab(); t != nil {
+				a.updateWorktree(*t)
 			}
+		}},
+	{ID: "worktree.push", Title: "Push & Create PR", Category: "Worktree",
+		Enabled: func(a *appState) bool { return a.activeWorktreeTab() != nil },
+		Run: func(a *appState, c *ui.Context) {
+			if t := a.activeWorktreeTab(); t != nil {
+				a.pushWorktree(*t)
+			}
+		}},
+	{ID: "worktree.discard", Title: "Discard Worktree…", Category: "Worktree",
+		Enabled: func(a *appState) bool { return a.activeWorktreeTab() != nil },
+		Run: func(a *appState, c *ui.Context) {
+			if t := a.activeWorktreeTab(); t != nil {
+				a.discardWorktreeAsking(*t)
+			}
+		}},
+	{ID: "project.remove", Title: "Remove Project…", Category: "Project",
+		Enabled: func(a *appState) bool { return a.project() != nil },
+		Run: func(a *appState, c *ui.Context) {
+			p := a.project()
+			a.pendingRemoveProjectID, a.pendingRemoveProjectName = p.ID, p.Name
+			open := true
+			a.removeProjectConfirmOpen = &open
 		}},
 	{ID: "session.askReview", Title: "Ask for Review…", Category: "Session",
 		Enabled: func(a *appState) bool {
@@ -219,7 +249,16 @@ var commandRegistry = append([]Command{
 	{ID: "session.prev", Title: "Previous Session", Category: "Session",
 		Run: func(a *appState, c *ui.Context) { a.cycleSession(-1) }},
 	{ID: "browser.open", Title: "Open Browser Pane", Category: "Browser",
-		Run: func(a *appState, c *ui.Context) { a.openBrowser("") }},
+		Run: func(a *appState, c *ui.Context) {
+			// It opens beside a terminal: from an editor or a process,
+			// beside the last session shown.
+			a.activateKind(tabTerminal)
+			if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabTerminal {
+				a.toast(c, "Open a session first: a browser pane opens beside one")
+				return
+			}
+			a.openBrowser("")
+		}},
 	{ID: "browser.focusAddress", Title: "Go to Address Bar", Category: "Browser",
 		Enabled: func(a *appState) bool { return a.focusedWeb() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.focusedWeb().focusAddress = true }},
@@ -243,22 +282,34 @@ var commandRegistry = append([]Command{
 	{ID: "pane.zoom", Title: "Zoom Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.toggleZoom() }},
+	{ID: "pane.focusLeft", Title: "Focus Pane Left", Category: "Terminal",
+		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
+		Run:     func(a *appState, c *ui.Context) { a.focusPaneToward(c, -1, 0) }},
+	{ID: "pane.focusRight", Title: "Focus Pane Right", Category: "Terminal",
+		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
+		Run:     func(a *appState, c *ui.Context) { a.focusPaneToward(c, 1, 0) }},
+	{ID: "pane.focusUp", Title: "Focus Pane Above", Category: "Terminal",
+		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
+		Run:     func(a *appState, c *ui.Context) { a.focusPaneToward(c, 0, -1) }},
+	{ID: "pane.focusDown", Title: "Focus Pane Below", Category: "Terminal",
+		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
+		Run:     func(a *appState, c *ui.Context) { a.focusPaneToward(c, 0, 1) }},
 	{ID: "voice.dictate", Title: "Dictate", Category: "Terminal",
 		Run: func(a *appState, c *ui.Context) { a.toggleDictation(c) }},
 	{ID: "terminal.closePane", Title: "Close Terminal Pane", Category: "Terminal",
 		Enabled: func(a *appState) bool { return a.activeView == tabTerminal },
 		Run:     func(a *appState, c *ui.Context) { a.closeActivePane(c) }},
 
-	{ID: "git.refresh", Title: "Git: Refresh", Category: "Git",
+	{ID: "git.refresh", Title: "Refresh", Category: "Git",
 		Enabled: func(a *appState) bool { return a.activeRepoRef() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.refreshActiveRepo(); c.Toast("Git status refreshed") }},
-	{ID: "git.stageAll", Title: "Git: Stage All Changes", Category: "Git",
+	{ID: "git.stageAll", Title: "Stage All Changes", Category: "Git",
 		Enabled: func(a *appState) bool { r := a.activeRepoRef(); return r != nil && len(r.Changes) > 0 },
 		Run:     func(a *appState, c *ui.Context) { a.gitStageAll(c) }},
-	{ID: "git.unstageAll", Title: "Git: Unstage All Changes", Category: "Git",
+	{ID: "git.unstageAll", Title: "Unstage All Changes", Category: "Git",
 		Enabled: func(a *appState) bool { r := a.activeRepoRef(); return r != nil && len(r.Staged) > 0 },
 		Run:     func(a *appState, c *ui.Context) { a.gitUnstageAll(c) }},
-	{ID: "git.commit", Title: "Git: Commit Staged", Category: "Git",
+	{ID: "git.commit", Title: "Commit Staged", Category: "Git",
 		Enabled: func(a *appState) bool { r := a.activeRepoRef(); return r != nil && len(r.Staged) > 0 },
 		Run: func(a *appState, c *ui.Context) {
 			a.showInspectorTab(2)
@@ -266,13 +317,13 @@ var commandRegistry = append([]Command{
 				a.gitCommit(c)
 			}
 		}},
-	{ID: "git.stashPush", Title: "Git: Stash Changes…", Category: "Git",
+	{ID: "git.stashPush", Title: "Stash Changes", Category: "Git",
 		Enabled: func(a *appState) bool { r := a.activeRepoRef(); return r != nil && len(r.Changes)+len(r.Staged) > 0 },
-		Run:     func(a *appState, c *ui.Context) { a.showInspectorTab(2) }},
-	{ID: "git.stashPop", Title: "Git: Pop Latest Stash", Category: "Git",
+		Run:     func(a *appState, c *ui.Context) { a.gitStashPushUntracked(c) }},
+	{ID: "git.stashPop", Title: "Pop Latest Stash", Category: "Git",
 		Enabled: func(a *appState) bool { r := a.activeRepoRef(); return r != nil && len(r.Stashes) > 0 },
 		Run:     func(a *appState, c *ui.Context) { a.gitStashPop(c, 0) }},
-	{ID: "git.switchBranch", Title: "Git: Switch Branch…", Category: "Git",
+	{ID: "git.switchBranch", Title: "Switch Branch…", Category: "Git",
 		Enabled: func(a *appState) bool { return a.activeRepoRef() != nil },
 		Run:     func(a *appState, c *ui.Context) { a.openBranchOverlay() }},
 }, digitCommands()...)
@@ -284,7 +335,7 @@ func (a *appState) gitStageAll(c *ui.Context) {
 		return
 	}
 	if err := service.StageAll(r.Root); err != nil {
-		c.Toast("Git error: " + err.Error())
+		a.errorToast(c, "Git error: "+err.Error())
 		return
 	}
 	a.refreshActiveRepo()
@@ -297,7 +348,7 @@ func (a *appState) gitUnstageAll(c *ui.Context) {
 		return
 	}
 	if err := service.UnstageAll(r.Root); err != nil {
-		c.Toast("Git error: " + err.Error())
+		a.errorToast(c, "Git error: "+err.Error())
 		return
 	}
 	a.refreshActiveRepo()
@@ -462,4 +513,25 @@ func (a *appState) toast(c *ui.Context, msg string) {
 		return
 	}
 	a.queuedToasts = append(a.queuedToasts, msg)
+}
+
+// errorToast tells of something that failed: it looks an error, stays a
+// while longer than a plain toast, and its button copies what it says.
+func (a *appState) errorToast(c *ui.Context, msg string) {
+	a.richToast(c, ui.Toast{Title: msg, Type: "error", Timeout: 12 * time.Second, Action: "Copy", OnAction: func() { copyText(msg) }})
+}
+
+// actionToast is a toast with a button, label, that runs fn: the way to
+// what it tells of.
+func (a *appState) actionToast(c *ui.Context, msg, label string, fn func()) {
+	a.richToast(c, ui.Toast{Title: msg, Timeout: 8 * time.Second, Action: label, OnAction: fn})
+}
+
+// richToast shows t, now or, with no frame at hand (c nil), in the next.
+func (a *appState) richToast(c *ui.Context, t ui.Toast) {
+	if c != nil {
+		c.AddToast(t)
+		return
+	}
+	a.queuedRich = append(a.queuedRich, t)
 }

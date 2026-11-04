@@ -198,7 +198,7 @@ function showPair(message = "") {
   },
     h("img", { src: "icon.svg", alt: "omaterm" }),
     h("h2", {}, "Pair this browser"),
-    h("p", {}, "On your computer, run ", h("code", {}, "omaterm web pair"), " or choose ", h("b", {}, "Web Access: Pair a Device"), " in omaterm, then enter the code."),
+    h("p", {}, "On your computer, run ", h("code", {}, "omaterm web pair"), " or choose ", h("b", {}, "Web: Pair a Device"), " in omaterm, then enter the code."),
     input, button, error,
   );
   app.replaceChildren(h("div", { class: "pair" }, form));
@@ -289,8 +289,11 @@ function programType(p) {
   const str = (p.agent || p.process || p.runtime || p.shell || "").toLowerCase();
   if (str.includes("claude")) return "claude";
   if (str.includes("codex")) return "codex";
-  if (str.includes("bun") || str.includes("vite")) return "bun";
-  if (str.includes("go")) return "go";
+  // The program's own name, as the desktop reads it: "go" in cargo or
+  // django, or a bun face for vite, was a wrong guess.
+  const name = str.split(/[\s/]/).filter(Boolean)[0]?.split("/").pop() || "";
+  if (name === "bun" || name === "bunx") return "bun";
+  if (name === "go" || name === "gopls") return "go";
   return "term";
 }
 
@@ -410,13 +413,19 @@ function renderPills() {
     const panes = terminals(s);
     const lead = (s.lead && s.lead.id) ? s.lead : panes[0];
     const here = panes.some((p) => p.id === open);
-    const st = statusState(lead);
+    // A process's tab shows its state as its row does, a running one a
+    // green dot.
+    let mark = statusIcon(statusState(lead), "s11");
+    if (s.process) {
+      const pst = processState(s.proc ? { status: s.proc.status } : lead);
+      mark = pst === "running" ? h("span", { class: "dotg" }) : statusIcon(pst, "s11");
+    }
 
     tabs.push(h("a", {
       class: "pill-tab" + (here ? " on" : ""),
       href: "#/pane/" + encodeURIComponent(here ? open : lead.id),
     },
-      statusIcon(st, "s11"),
+      mark,
       s.name || label(lead),
     ));
   }
@@ -458,7 +467,6 @@ function renderSidebar() {
     const processSessions = allSessions.filter((s) => Boolean(s.process));
 
     const projHead = h("div", { class: "proj", title: proj.dir },
-      h("span", { class: "chev" }, icon("chev")),
       h("span", { class: "name" }, proj.name),
       h("button", {
         class: "ib add", title: `New session in ${proj.name}`, "aria-label": `New session in ${proj.name}`,
@@ -601,7 +609,8 @@ function processRow(s, proj, open) {
     class: "row" + (here ? " sel" : "") + fresh(s),
     onclick: () => { location.hash = "#/pane/" + encodeURIComponent(here ? open : lead.id); },
   },
-    statusEl,
+    // In the icon column, so its name lines up with the sessions'.
+    h("span", { class: "pi" }, statusEl),
     h("div", { class: "mid" },
       h("div", { class: "top" },
         h("span", { class: "nm" }, s.name || s.process),
@@ -1000,7 +1009,7 @@ function showTerm(id) {
   composePromise.then((mod) => {
     if (mod?.mountCompose && composeSlot.isConnected) {
       composeSlot.replaceChildren();
-      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey });
+      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey, id });
       composeBtn.hidden = false;
     }
   });
@@ -1095,10 +1104,22 @@ function route() {
 }
 
 async function start() {
+  // Something to see while it connects, which a slow phone link makes a
+  // while, and a way on when it fails.
+  if (!paired) {
+    app.replaceChildren(h("div", { class: "pick" }, h("img", { src: "icon.svg", alt: "" }), h("p", {}, "Connecting to omaterm…")));
+  }
   try {
     state = await api("/api/state");
   } catch (err) {
-    if (err.message !== "not paired") app.replaceChildren(h("p", { class: "empty" }, "omaterm did not answer: " + err.message));
+    if (err.message !== "not paired") {
+      app.replaceChildren(h("div", { class: "pick" },
+        h("img", { src: "icon.svg", alt: "" }),
+        h("h2", {}, "omaterm did not answer"),
+        h("p", {}, err.message),
+        h("button", { class: "primary", onclick: start }, "Try Again"),
+      ));
+    }
     return;
   }
   paired = true;
@@ -1111,6 +1132,19 @@ async function start() {
 }
 
 addEventListener("hashchange", route);
+
+// The on-screen keyboard: where it lies over the page (iOS), --kb is its
+// height, which the page and the compose sheet keep clear of. Where it
+// shrinks the page instead (Android), it comes to 0.
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const fitKeyboard = () => {
+    const kb = Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop));
+    document.documentElement.style.setProperty("--kb", kb + "px");
+  };
+  vv.addEventListener("resize", fitKeyboard);
+  vv.addEventListener("scroll", fitKeyboard);
+}
 
 (async () => {
   const m = location.hash.match(/^#code=([0-9A-Za-z-]+)$/);

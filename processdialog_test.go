@@ -154,3 +154,64 @@ func runProcessCommand(t *testing.T, a *appState, id string) {
 	}
 	t.Fatalf("command %q is missing", id)
 }
+
+// The Restart choice is saved as chosen: the segmented control keeps its
+// labels lowercase, which once saved every choice as never.
+func TestProcessDialogSavesRestart(t *testing.T) {
+	setConfigHome(t, t.TempDir())
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.useLocalProcHost()
+	defer a.procHost.Close()
+
+	tr := ui.NewTester(a.view, 1440, 900)
+	for i, c := range []struct{ label, want string }{{"On failure", "on-failure"}, {"Always", "always"}, {"Never", "never"}} {
+		runProcessCommand(t, a, "process.add")
+		tr.Frame()
+		name := "p" + itoa(i)
+		fillProcessDialog(t, tr, name, "echo "+name)
+		if err := tr.Click(c.label); err != nil {
+			t.Fatal(err)
+		}
+		tr.Frame()
+		if err := tr.Click("Save"); err != nil {
+			t.Fatal(err)
+		}
+		tr.Frame()
+		defs, err := procs.LoadFile(a.workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got string
+		for _, d := range defs {
+			if d.Name == name {
+				got = d.Restart
+			}
+		}
+		if got != c.want && !(c.want == "never" && got == "") {
+			t.Errorf("Restart %q saved as %q, not %q", c.label, got, c.want)
+		}
+	}
+}
+
+// Enter in a line of the form saves it, as Save does.
+func TestProcessDialogEnterSaves(t *testing.T) {
+	setConfigHome(t, t.TempDir())
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.useLocalProcHost()
+	defer a.procHost.Close()
+
+	tr := ui.NewTester(a.view, 1440, 900)
+	runProcessCommand(t, a, "process.add")
+	tr.Frame()
+	fillProcessDialog(t, tr, "web", "echo up")
+	tr.Key(0, ui.KeyEnter)
+	tr.Frame()
+	if a.procDialog != nil {
+		t.Fatal("Enter in the Command field didn't save the form")
+	}
+	if defs, err := procs.LoadFile(a.workspace); err != nil || len(defs) != 1 || defs[0].Name != "web" {
+		t.Fatalf("saved %+v, err=%v", defs, err)
+	}
+}

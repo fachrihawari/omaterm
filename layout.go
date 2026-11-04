@@ -293,6 +293,53 @@ func (a *appState) focusPane(id string) {
 	a.handle("term-" + id).Focus()
 }
 
+// focusPaneToward gives the keyboard to the nearest pane of the shown tab
+// in the direction (dx, dy) from the one that has it, as the panes were
+// last laid out: the one whose middle is furthest that way, nearest
+// across. None that way, it stays.
+func (a *appState) focusPaneToward(c *ui.Context, dx, dy float32) {
+	split := a.activeSplit()
+	if c == nil || split == nil {
+		return
+	}
+	from := a.activeSplitLeaf()
+	fr := a.handle("card-" + from).Bounds(c)
+	fx, fy := fr.X+fr.W/2, fr.Y+fr.H/2
+	best, bestD := "", float32(0)
+	for _, id := range split.termIDs() {
+		r := a.handle("card-" + id).Bounds(c)
+		if id == from || r.W == 0 {
+			continue
+		}
+		x, y := r.X+r.W/2-fx, r.Y+r.H/2-fy
+		along, across := x*dx+y*dy, x*dy+y*dx
+		if along <= 0 {
+			continue
+		}
+		if d := along + 2*max(across, -across); best == "" || d < bestD {
+			best, bestD = id, d
+		}
+	}
+	if best != "" {
+		a.focusPane(best)
+	}
+}
+
+// revealPane shows the session pane id is in, in whichever project, and
+// gives the pane the keyboard.
+func (a *appState) revealPane(id string) {
+	if sid := a.status[id].Session; sid != "" {
+		for pi, p := range a.projects {
+			for _, t := range a.projectTabs(p.ID) {
+				if t.ID == sid {
+					a.focusSession(pi, sid)
+				}
+			}
+		}
+	}
+	a.focusPane(id)
+}
+
 // paneDrag is a pane dragged by its header to another place in its tab.
 type paneDrag struct{ tab, pane string }
 

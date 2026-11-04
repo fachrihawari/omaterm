@@ -286,6 +286,36 @@ func TestWebModulesServed(t *testing.T) {
 	}
 }
 
+// The page's files come with an ETag: one the browser has is a 304, and
+// text goes gzipped to a browser that takes it, still checked each time.
+func TestWebFilesCached(t *testing.T) {
+	f := newFixture(t)
+	c := f.client(t)
+	req, _ := http.NewRequest("GET", f.base+"/app.js", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	res, err := c.Do(req) // asked for gzip itself, the client leaves it gzipped
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	etag := res.Header.Get("ETag")
+	if res.StatusCode != 200 || etag == "" || res.Header.Get("Content-Encoding") != "gzip" ||
+		res.Header.Get("Cache-Control") != "no-cache" || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/javascript") {
+		t.Fatalf("app.js: %s, etag %q, encoding %q, cache %q, type %q", res.Status, etag,
+			res.Header.Get("Content-Encoding"), res.Header.Get("Cache-Control"), res.Header.Get("Content-Type"))
+	}
+	req, _ = http.NewRequest("GET", f.base+"/app.js", nil)
+	req.Header.Set("If-None-Match", etag)
+	res, err = c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotModified {
+		t.Fatalf("app.js with its ETag: %s, not 304", res.Status)
+	}
+}
+
 func TestWebUnknownPane(t *testing.T) {
 	f := newFixture(t)
 	c := f.paired(t)

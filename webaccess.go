@@ -201,6 +201,11 @@ func (a *appState) webPairDialog(c *ui.Context) {
 		a.webPairOpen, a.webPair = nil, nil
 		return
 	}
+	// A code that ran out gives way to a new one, as on the settings
+	// page: one left open showed a code no device could use.
+	if p := a.webPair; p.ready && p.err == "" && time.Now().After(p.expires) {
+		a.webPair = a.startPairing()
+	}
 	p := a.webPair
 	ui.DialogBase(c, a.webPairOpen, func(backdrop, panel ui.Element) {
 		a.dialogFrame(c, backdrop, panel)
@@ -223,26 +228,34 @@ func (a *appState) webPairBody(c *ui.Context, p *webPairing) {
 	case p.err != "":
 		ui.Text(c, p.err).FontSize(12).TextColor(pal.Bad)
 	default:
+		if p.local {
+			// Said before the code, which no other device can use yet.
+			pairLocalWarning(c)
+			if a.dialogButton(c, "Open Web Access Settings", false, false) {
+				*a.webPairOpen = false
+				a.openSettings("web")
+			}
+		}
 		qrView(c, p.qr, 4)
 		ui.Text(c, "Scan with the device's camera, or open the link and enter the code.").
 			FontSize(12).TextColor(pal.TextMuted).TextAlign(ui.Center)
 		ui.Text(c, p.code).FontSize(22).FontWeight(700).Font(monoFont).TextColor(pal.Text)
 		ui.Row(c).Gap(8).AlignItems(ui.Center).FillWidth().Children(func() {
 			ui.Text(c, p.link).FontSize(11).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).Grow(1).Tooltip(p.link)
-			copyBtn := ui.ButtonBase(c).Padding(4, 10).Radius(6).Border(1, pal.BorderStrong).Shrink(0).Children(func() {
-				ui.Text(c, "Copy").FontSize(11).TextColor(pal.TextSoft)
-			})
-			if copyBtn.Clicked() {
+			if a.dialogButton(c, "Copy", false, false) {
 				mygo.Clipboard.WriteText(p.link)
 				c.Toast("Copied the link")
 			}
 		})
-		note := "Works once, until " + p.expires.Format("15:04") + "."
-		if p.local {
-			note += " Only this computer can open it: turn on Web Access on Your Network, or pick a tunnel under Reach It from Elsewhere."
-		}
-		ui.Text(c, note).FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
+		ui.Text(c, "Works once, until "+p.expires.Format("15:04")+".").FontSize(11).TextColor(pal.TextFaint).TextAlign(ui.Center)
 	}
+}
+
+// pairLocalWarning says that a pairing link only this computer can open
+// can't pair another device yet, and what makes it reachable.
+func pairLocalWarning(c *ui.Context) {
+	ui.Text(c, "Only this computer can open this link. Turn on On your network, or pick a tunnel under Reach it from elsewhere: a tunnel is HTTPS, which the phone’s microphone needs.").
+		FontSize(12).TextColor(pal.Warn).Wrap().TextAlign(ui.Center)
 }
 
 // qrView draws a QR code as modules of cell points, dark on white.

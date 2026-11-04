@@ -13,6 +13,10 @@ import (
 // it on).
 func TestMain(m *testing.M) {
 	motionOff = true
+	// No test writes the clipboard: the real one is the user's, and with
+	// no window it can wait for ever. A test that reads what was copied
+	// sets its own.
+	copyText = func(string) {}
 	os.Setenv("OMATERM_OMARCHY_DIR", os.DevNull+"-omarchy")
 	cfg, err := os.MkdirTemp("", "omaterm-test-config-")
 	if err != nil {

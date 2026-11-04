@@ -42,7 +42,7 @@ func (d *Daemon) notifyStatus(info session.Info, prevStatus session.Status) {
 	if kind == notice.None || !d.limit.Allow(info.Session) {
 		return
 	}
-	d.notifier()(d.sessionLabel(info.Session), notice.Body(kind, info.Message), info.Session)
+	d.notifier()(d.sessionLabel(info.Session), notice.Body(kind, info.Message, info.Kind), info.Session)
 }
 
 // notifyProgram passes on a program's own notification (OSC 9, 777).

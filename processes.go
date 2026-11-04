@@ -445,6 +445,11 @@ func (a *appState) restartProcess(pi int, name string) {
 	if a.procHost == nil || pi < 0 || pi >= len(a.projects) {
 		return
 	}
+	// One not trusted yet is reviewed first, as Start does.
+	if proc, ok := a.procNamed(a.projects[pi].ID, name); ok && !proc.Trusted {
+		a.askTrust(a.projects[pi].ID, proc)
+		return
+	}
 	if err := a.procHost.Restart(a.projects[pi].ID, name); err != nil {
 		a.toast(nil, err.Error())
 		return
@@ -457,26 +462,32 @@ func (a *appState) startAllProcesses(pi int) {
 		return
 	}
 	projectID := a.projects[pi].ID
-	started, untrusted := 0, 0
+	started := 0
+	var untrusted []procs.Proc
 	for _, proc := range a.procList[projectID] {
 		if !proc.Trusted {
-			untrusted++
+			untrusted = append(untrusted, proc)
 			continue
 		}
 		if proc.Status == procs.Starting || proc.Status == procs.Running {
 			continue
 		}
 		if err := a.procHost.Start(projectID, proc.Name); err != nil {
-			a.toast(nil, err.Error())
+			a.toast(nil, sentence(err.Error()))
 			continue
 		}
 		started++
 	}
 	a.refreshProcList()
-	if untrusted > 0 {
-		a.toast(nil, fmt.Sprintf("%d started, %d not trusted: start it to review it", started, untrusted))
-	} else {
+	switch {
+	case started > 0:
 		a.toast(nil, fmt.Sprintf("%d started", started))
+	case len(untrusted) == 0:
+		a.toast(nil, "They all run already")
+	}
+	// The ones not trusted yet, read on one sheet, start with a click.
+	if len(untrusted) > 0 {
+		a.askTrust(projectID, untrusted...)
 	}
 }
 
@@ -651,6 +662,25 @@ func processStatusText(status procs.Status) string {
 	}
 }
 
+// activeProcess is the process the shown tab is, with its project's index.
+func (a *appState) activeProcess() (int, procs.Proc, bool) {
+	if a.activeTab < 0 || a.activeTab >= len(a.tabs) || a.tabs[a.activeTab].Kind != tabProcess {
+		return 0, procs.Proc{}, false
+	}
+	t := a.tabs[a.activeTab]
+	pi, ok := a.projectIndexForTab(t.ID)
+	if !ok {
+		return 0, procs.Proc{}, false
+	}
+	proc, ok := a.procNamed(a.projects[pi].ID, t.Process)
+	return pi, proc, ok
+}
+
+// procActive tells whether a process runs, or is starting to.
+func procActive(proc procs.Proc) bool {
+	return proc.Status == procs.Starting || proc.Status == procs.Running
+}
+
 // procOfTab is the process a process tab shows, as last listed.
 func (a *appState) procOfTab(tab topTab) (procs.Proc, bool) {
 	if tab.Kind != tabProcess {
@@ -668,16 +698,31 @@ func (a *appState) procOfTab(tab topTab) (procs.Proc, bool) {
 
 func (a *appState) processPlaceholder(c *ui.Context, tab topTab) ui.Element {
 	proc, _ := a.procOfTab(tab)
-	return ui.Column(c).Fill().Center().Gap(8).Children(func() {
+	// On a card, as the pane it takes the place of: what the process is,
+	// how it ended and why, and the button that runs it again.
+	card := ui.Column(c.Key("proc-placeholder")).Grow(1).MinWidth(0).MinHeight(0).Radius(a.cardRadius()).Clip().
+		Background(pal.Card).Center().Gap(8)
+	return cardEdge(card).Children(func() {
 		ui.Text(c, tab.Process).FontSize(18).TextColor(pal.Text).Bold()
 		ui.Text(c, processStatusText(proc.Status)).FontSize(12).TextColor(pal.TextMuted)
+		if proc.Message != "" && proc.Status != procs.Untrusted {
+			ui.Text(c, proc.Message).FontSize(12).TextColor(pal.TextSoft).Wrap().MaxWidth(480).Center()
+		}
+		if proc.Command != "" {
+			ui.Text(c, proc.Command).FontSize(11.5).Font(monoFont).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").MaxWidth(480)
+		}
 		if proc.Status == procs.Stopped || proc.Status == procs.Untrusted || proc.Status == procs.Failed || proc.Status == procs.Exited || proc.Status == procs.Paused {
-			b := ui.ButtonBase(c).Radius(6).Border(1, pal.BorderStrong).Padding(7, 14).Background(pal.Raised)
+			b := ui.ButtonBase(c).Radius(6).Border(1, pal.BorderStrong).Padding(7, 14).Background(pal.Raised).Margin(6, 0, 0, 0)
 			if b.Hovered() {
 				b.Background(pal.Hover)
 			}
 			a.press(a.fadeColors(b))
-			b.Children(func() { ui.Text(c, "Start").FontSize(12).TextColor(pal.Text) })
+			b.Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, iconStart).Size(11, 11).TextColor(pal.Ok)
+					ui.Text(c, "Start").FontSize(12).TextColor(pal.Text)
+				})
+			})
 			if b.Clicked() {
 				if pi, ok := a.projectIndexForTab(tab.ID); ok {
 					a.startProcess(pi, tab.Process)
@@ -685,6 +730,33 @@ func (a *appState) processPlaceholder(c *ui.Context, tab topTab) ui.Element {
 			}
 		}
 	})
+}
+
+// processButtons are a process tab's Stop, or Start, and Restart, as its
+// sidebar row shows them under the pointer.
+func (a *appState) processButtons(c *ui.Context, tab topTab) {
+	proc, ok := a.procOfTab(tab)
+	pi, inProject := a.projectIndexForTab(tab.ID)
+	if !ok || !inProject {
+		return
+	}
+	active := proc.Status == procs.Starting || proc.Status == procs.Running
+	icon, label, tone := iconStart, "Start", pal.Ok
+	if active {
+		icon, label, tone = iconStop, "Stop", pal.Bad
+	}
+	if a.litButton(c.Key("run"), icon, 13, tone).Tooltip(label + " " + proc.Name).Label(label + " " + proc.Name).Clicked() {
+		if active {
+			a.stopProcess(pi, proc.Name)
+		} else {
+			a.startProcess(pi, proc.Name)
+		}
+	}
+	if active {
+		if a.cmdButton(c.Key("restart"), iconRotate, 13, false).Tooltip("Restart " + proc.Name).Label("Restart " + proc.Name).Clicked() {
+			a.restartProcess(pi, proc.Name)
+		}
+	}
 }
 
 // processOfRoot names the shown project's running process whose pane's
@@ -751,8 +823,17 @@ func (a *appState) processIcon(c *ui.Context, proc procs.Proc, size float32) {
 	case procs.Exited:
 		state = iconExited
 	case procs.Untrusted:
-		state = iconWaiting
+		// Amber, as what waits for you, but still: nothing runs yet.
+		mark := ui.Box(c).Size(size, size).Shrink(0)
+		mark.Draw(func(p *ui.Painter, r ui.Rect) { drawStatus(p, r, iconWaiting, 0, false, true) })
+		return
 	default:
+		// Stopped: a faint ring where the running dot would be, which
+		// keeps the name in line with the others.
+		ring := ui.Box(c).Size(size, size).Shrink(0)
+		ring.Draw(func(p *ui.Painter, r ui.Rect) {
+			p.StrokePath(new(ui.Path).Circle(r.X+r.W/2, r.Y+r.H/2, min(r.W, r.H)*0.28), 1.2, pal.TextFaint)
+		})
 		return
 	}
 	ai := session.Info{Progress: -1}
@@ -763,8 +844,6 @@ func (a *appState) processIcon(c *ui.Context, proc procs.Proc, size float32) {
 		ai.Status = session.Failed
 	case iconExited:
 		ai.Status = session.Exited
-	case iconWaiting:
-		ai.Status = session.Waiting
 	}
 	a.statusIcon(c, ai, size)
 }
@@ -889,12 +968,14 @@ func (a *appState) doShare(projectID string, proc procs.Proc, via tunnel.Provide
 		return a.procHost.Share(projectID, proc.Name, string(via))
 	}, func(err error) {
 		if err != nil {
-			a.toast(nil, "Sharing "+proc.Name+" failed: "+err.Error())
+			a.errorToast(nil, "Sharing "+proc.Name+" failed: "+err.Error())
 			return
 		}
 		a.refreshProcList()
 		if shared, ok := a.procNamed(projectID, proc.Name); ok && shared.Share != "" {
-			a.toast(nil, "Shared "+proc.Name+" at "+shared.Share)
+			// Copied, as it is shared to be sent somewhere.
+			copyText(shared.Share)
+			a.toast(nil, "Shared "+proc.Name+" at "+shared.Share+" · link copied")
 			return
 		}
 		a.toast(nil, "Shared "+proc.Name+" over "+shareProviderName(via))
@@ -910,7 +991,7 @@ func (a *appState) unshare(projectID string, proc procs.Proc) {
 		return a.procHost.Unshare(projectID, proc.Name)
 	}, func(err error) {
 		if err != nil {
-			a.toast(nil, "Stopping the share of "+proc.Name+" failed: "+err.Error())
+			a.errorToast(nil, "Stopping the share of "+proc.Name+" failed: "+err.Error())
 			return
 		}
 		a.refreshProcList()

@@ -81,6 +81,16 @@ func (a *appState) renderOverlays(c *ui.Context) {
 // in the middle of the window.
 const dialogTopFraction = 0.2
 
+// dialogTop is how far down a window of height winH a dialog's panel
+// starts: a fifth of the way, but in a short window a little way only, as
+// a fifth of it is room the panel needs.
+func dialogTop(winH float32) float32 {
+	if winH < 560 {
+		return max(dialogMinSide, winH*0.08)
+	}
+	return winH * dialogTopFraction
+}
+
 // dialogMinBottom keeps a panel off the window's bottom edge.
 const dialogMinBottom = 24
 
@@ -100,7 +110,7 @@ func (a *appState) dialog(c *ui.Context, w, h float32, body func()) {
 func (a *appState) dialogSized(c *ui.Context, w, h float32, fixed bool, body func()) {
 	open := true
 	winW, winH := c.Size()
-	top := winH * dialogTopFraction
+	top := dialogTop(winH)
 	// The panel sizes to its content, but its cap must leave room for the
 	// top offset, or a tall panel would hang off the bottom. The width is
 	// capped too: the shortcuts list is wider than the minimum window.
@@ -282,7 +292,8 @@ func (a *appState) overlayRow(c *ui.Context, path string, indices []int, selecte
 		a.highlightedSegment(c, base, offset, indices, selected)
 		if dir := pathDir(path); dir != "" {
 			ui.Spacer(c)
-			ui.Text(c, dir).FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).SingleLine().Shrink(0)
+			ui.Text(c, dir).FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).SingleLine().
+				Ellipsis("…").Shrink(1).MinWidth(0)
 		}
 	})
 	if e.Clicked() {
@@ -343,6 +354,16 @@ func (a *appState) overlayFooter(c *ui.Context, hints ...string) {
 }
 
 // --- Branch picker ---
+
+// switchCheckoutBranch opens the branch picker for the project's checkout,
+// whose branch the status bar and the project card show: not the worktree
+// of a session shown meanwhile.
+func (a *appState) switchCheckoutBranch() {
+	if r := a.activeRepoRef(); r != nil && a.isWorktreeRoot(r.Root) {
+		a.selectRepo(min(a.repoMain, len(a.repos)-1))
+	}
+	a.openBranchOverlay()
+}
 
 // openBranchOverlay shows the branch picker, like quick open.
 func (a *appState) openBranchOverlay() {
@@ -715,12 +736,42 @@ func (a *appState) paletteCommands() []paletteEntry {
 		out = out[:200]
 	}
 	if q == "" {
-		// Keep the pool's order: sessions, projects, settings, commands.
-		slices.SortStableFunc(out, func(x, y paletteEntry) int { return idx(pool, x.ID) - idx(pool, y.ID) })
+		// The pool's order, sessions and projects first, but commands
+		// before settings, and not the session already on screen: the
+		// palette opened on it and on settings, with no command in view.
+		shown := ""
+		if t := a.activeTabRef(); t != nil && a.activeView == tabTerminal {
+			shown = "session:" + t.ID
+		}
+		out = slices.DeleteFunc(out, func(e paletteEntry) bool { return e.ID == shown })
+		rank := func(e paletteEntry) int {
+			if e.Setting {
+				return 1
+			}
+			return 0
+		}
+		slices.SortStableFunc(out, func(x, y paletteEntry) int {
+			if d := rank(x) - rank(y); d != 0 {
+				return d
+			}
+			return idx(pool, x.ID) - idx(pool, y.ID)
+		})
 	} else {
 		slices.SortStableFunc(out, cmpScore)
+		// What can't run here goes under what can, so Enter on the top
+		// row does something.
+		slices.SortStableFunc(out, func(x, y paletteEntry) int {
+			return b2i(x.Enabled != nil && !x.Enabled(a)) - b2i(y.Enabled != nil && !y.Enabled(a))
+		})
 	}
 	return out
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // cmpScore orders entries by their score, best first.
@@ -864,6 +915,7 @@ func (a *appState) runPaletteSelection(c *ui.Context, cmds []paletteEntry) {
 	}
 	cmd := cmds[a.cmdSelected]
 	if cmd.Enabled != nil && !cmd.Enabled(a) {
+		a.toast(c, cmd.Title+" isn’t available here")
 		return
 	}
 	a.closeOverlay()
@@ -922,18 +974,25 @@ func (a *appState) runSearch() {
 		// and Enter opened one of its results.
 		a.searchJob.Cancel()
 		a.searchResults = nil
+		a.searching = false
 		return
 	}
 	win := a.win
+	a.searching = true
 	a.searchJob.Run(func(ctx context.Context) error {
 		matches, err := service.SearchContent(ctx, workspace, query)
-		if err != nil || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			win.Update(func() { a.searching = false })
 			return err
 		}
 		win.Update(func() {
 			if a.searchQuery != query || a.workspace != workspace {
 				return // asked for something else meanwhile
 			}
+			a.searching = false
 			a.searchResults = matches
 			if a.searchSelected >= len(matches) {
 				a.searchSelected = 0
@@ -1003,7 +1062,15 @@ func (a *appState) globalSearchBody(c *ui.Context) {
 				submit = true
 			}
 			ui.Spacer(c)
-			ui.Text(c, itoa(len(a.searchResults))+" results").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
+			// A capped search says so: there may be more.
+			count := plural(len(a.searchResults), "result")
+			switch {
+			case a.searching:
+				count = "Searching…"
+			case len(a.searchResults) >= service.MaxMatches:
+				count = itoa(service.MaxMatches) + "+ results"
+			}
+			ui.Text(c, count).FontSize(10).TextColor(pal.TextFaint).Shrink(0)
 		})
 	})
 
@@ -1071,7 +1138,10 @@ func (a *appState) searchResultsPane(c *ui.Context) bool {
 		if len(a.searchResults) == 0 {
 			ui.Box(c).Padding(20).Children(func() {
 				msg := "Type to search file contents"
-				if a.searchQuery != "" {
+				switch {
+				case a.searchQuery != "" && a.searching:
+					msg = "Searching…"
+				case a.searchQuery != "":
 					msg = "No results"
 				}
 				ui.Text(c, msg).FontSize(12).TextColor(pal.TextMuted)
@@ -1090,9 +1160,14 @@ func (a *appState) searchResultRow(c *ui.Context, m service.Match, selected bool
 	e.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				// The name and line first, whole; a long folder gives way.
 				fileBadgeOn(c, pathBase(m.Path), selected)
-				ui.Text(c, m.Path).FontSize(11).TextColor(ink(selected, pal.TextSoft, false)).SingleLine().Shrink(0)
+				ui.Text(c, pathBase(m.Path)).FontSize(11).TextColor(ink(selected, pal.TextSoft, false)).SingleLine().Shrink(0)
 				ui.Text(c, ":"+itoa(m.Line)).FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).SingleLine().Shrink(0)
+				if dir := pathDir(m.Path); dir != "" {
+					ui.Text(c, dir).FontSize(10).TextColor(ink(selected, pal.TextFaint, true)).SingleLine().
+						Ellipsis("…").Shrink(1).MinWidth(0)
+				}
 			})
 			// Line text with the match highlighted.
 			ui.Row(c).ClipX().Children(func() {
@@ -1274,7 +1349,7 @@ func (a *appState) keyboardShortcutsBody(c *ui.Context) {
 				submit = true
 			}
 			ui.Spacer(c)
-			ui.Text(c, itoa(len(items))+" commands").FontSize(10).TextColor(pal.TextFaint).Shrink(0)
+			ui.Text(c, plural(len(items), "command")).FontSize(10).TextColor(pal.TextFaint).Shrink(0)
 		})
 	})
 

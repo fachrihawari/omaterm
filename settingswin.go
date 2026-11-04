@@ -284,7 +284,12 @@ func (a *appState) settingsKeys(c *ui.Context) {
 		a.closeSettings()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyF) {
-		a.handle("settings-search").Focus(c)
+		// On the Keyboard page, its own filter.
+		if a.settingsCurrent() == "keyboard" {
+			a.handle("key-filter").Focus(c)
+		} else {
+			a.handle("settings-search").Focus(c)
+		}
 	}
 	if c.Shortcut(ui.Alt, ui.KeyLeft) {
 		a.settingsBack()
@@ -315,7 +320,13 @@ func (a *appState) settingsSidebar(c *ui.Context) {
 	bar := c.TitleBar()
 	ui.Column(c.Key("settings-side")).Width(settingsSideW).Shrink(0).FillHeight().Padding(0, 6, 8, 8).Children(func() {
 		// Room for the window's controls, which also moves the window.
-		ui.Box(c).Height(max(bar.Height, 38)).Shrink(0).FillWidth().DragWindow()
+		// Without them, as on a tiling desktop, the search field rises to
+		// the toolbar's line.
+		top := max(bar.Height, 38)
+		if bar == (ui.TitleBar{}) {
+			top = 15
+		}
+		ui.Box(c).Height(top).Shrink(0).FillWidth().DragWindow()
 
 		search := ui.Row(c.Key("search")).Height(30).Shrink(0).Margin(0, 2, 10, 2).Padding(0, 10).Gap(8).
 			AlignItems(ui.Center).Radius(6).Border(1, pal.Border).Background(pal.Input)
@@ -416,6 +427,20 @@ func (a *appState) settingsNavItems() []settingsNavItem {
 		out = append(out, hits...)
 	}
 	return out
+}
+
+// settingsNeedsDaemon is the row a page that needs the session daemon
+// shows while it is off, the same on every such page: it goes to the
+// setting that turns it on.
+func (a *appState) settingsNeedsDaemon(c *ui.Context, id, what string) {
+	a.settingsGroup(c, "needsDaemon", "", "", func() {
+		if a.settingsRow(c, "Needs the session daemon", settingsRowOpts{id: id, link: "general",
+			sub: what + " runs in the session daemon, which is off: turn on “Keep sessions running when the window closes” in General."}, nil) {
+			a.settingsGo("general")
+			u := &a.settingsUI
+			u.flash, u.flashAt, u.scrolled = "daemon", time.Now(), false
+		}
+	})
 }
 
 // settingsOpenHit shows the page of a sidebar row, lighting the setting
@@ -686,7 +711,12 @@ func (a *appState) settingsRow(c *ui.Context, title string, o settingsRowOpts, c
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(1).MinWidth(0).MaxWidth(320).Children(control)
 		}
 		if o.link != "" {
-			ui.Icon(c, iconChevronRight).Size(14, 14).TextColor(pal.TextFaint).Shrink(0)
+			// A page of Settings drills in; a web page opens outside.
+			ic := iconChevronRight
+			if strings.HasPrefix(o.link, "http") {
+				ic = iconExternalLink
+			}
+			ui.Icon(c, ic).Size(14, 14).TextColor(pal.TextFaint).Shrink(0)
 		}
 	})
 	return o.link != "" && row.Clicked()
@@ -771,17 +801,25 @@ func (a *appState) settingsSwitch(c *ui.Context, key string, on *bool, disabled 
 
 // settingSwitchRow is a row of a switch over a setting of settingDefs.
 func (a *appState) settingSwitchRow(c *ui.Context, id string, disabled bool) {
+	a.settingSwitchRowWhy(c, id, disabled, "")
+}
+
+// settingSwitchRowWhy is settingSwitchRow whose explanation, while it is
+// disabled, says why.
+func (a *appState) settingSwitchRowWhy(c *ui.Context, id string, disabled bool, why string) {
 	d, ok := settingDefByID(id)
 	if !ok || d.On == nil {
 		return
 	}
 	on := d.On(&a.settings)
-	a.settingsRow(c, d.Title, settingsRowOpts{id: d.ID, sub: d.Sub, restart: d.Restart}, func() {
+	sub := d.Sub
+	if disabled && why != "" {
+		sub = why
+	}
+	a.settingsRow(c, d.Title, settingsRowOpts{id: d.ID, sub: sub, restart: d.Restart}, func() {
 		if a.settingsSwitch(c, d.ID, &on, disabled) {
 			d.Set(&a.settings, on)
-			if d.Restart {
-				a.settingsUI.restart = true
-			}
+			a.settingsUI.restart = a.restartNeeded()
 			a.applySettings()
 		}
 	})
@@ -1030,14 +1068,8 @@ func (a *appState) settingsRestoreButton(c *ui.Context, p *settingsPageDef) {
 				text:    "Every setting on this page goes back to how omaterm ships.",
 				confirm: "Restore",
 				run: func(c *ui.Context) {
-					before := a.settings
 					p.Restore(&a.settings, defaultSettings())
-					// Settings that apply as omaterm starts ask for it.
-					for _, d := range settingDefs {
-						if d.Restart && d.On != nil && d.On(&before) != d.On(&a.settings) {
-							a.settingsUI.restart = true
-						}
-					}
+					a.settingsUI.restart = a.restartNeeded()
 					// What the page's fields held goes with the values.
 					d := &a.settingsUI.data
 					d.customFont, d.customSearch, d.searchCustom = "", "", false
@@ -1055,6 +1087,18 @@ func (a *appState) settingsRestoreButton(c *ui.Context, p *settingsPageDef) {
 			}
 		}
 	})
+}
+
+// restartNeeded tells whether a setting that applies as omaterm starts
+// differs from what it started with: one changed and changed back needs
+// no restart, and its banner goes.
+func (a *appState) restartNeeded() bool {
+	for _, d := range settingDefs {
+		if d.Restart && d.On != nil && d.On(&a.launchSettings) != d.On(&a.settings) {
+			return true
+		}
+	}
+	return false
 }
 
 // settingsRestartBanner offers to restart omaterm, for settings that

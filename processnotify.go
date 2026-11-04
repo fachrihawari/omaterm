@@ -31,10 +31,10 @@ func (a *appState) processEvent(event procs.Event) {
 	switch event.Kind {
 	case procs.EventFailed:
 		title = "Process failed: " + event.Name
-		body = "exit " + strconv.Itoa(event.Code)
+		body = "Exited with code " + strconv.Itoa(event.Code)
 	case procs.EventPaused:
 		title = "Restart paused: " + event.Name
-		body = "restarted too often"
+		body = "Stopped restarting: it failed too often"
 	default:
 		return
 	}

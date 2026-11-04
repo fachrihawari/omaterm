@@ -598,6 +598,9 @@ func TestEditorFollowsDisk(t *testing.T) {
 	if doc.State.Buffer.String() != "mine\n" {
 		t.Fatal("a modified editor lost its edits to the file's change")
 	}
+	if !doc.DiskChanged {
+		t.Error("a modified editor doesn't say its file changed on disk")
+	}
 	tr := ui.NewTester(func(c *ui.Context) { a.saveEditor(doc, c) }, 400, 300)
 	tr.Frame()
 	if data, _ := os.ReadFile(path); string(data) != "agent again\n" {
@@ -616,6 +619,15 @@ func TestEditorFollowsDisk(t *testing.T) {
 	}
 	if st, _ := os.Stat(path); st.Mode().Perm() != 0o755 {
 		t.Errorf("the save changed the file's mode to %v", st.Mode().Perm())
+	}
+
+	// Reload takes the file's text, dropping the edits.
+	doc.State.Buffer.Set("mine again\n")
+	os.WriteFile(path, []byte("agent's last\n"), 0o644)
+	a.checkDisk(doc)
+	a.reloadEditor(doc)
+	if doc.State.Buffer.String() != "agent's last\n" || doc.DiskChanged {
+		t.Errorf("Reload left %q, changed=%v", doc.State.Buffer.String(), doc.DiskChanged)
 	}
 }
 
@@ -716,6 +728,13 @@ func TestRunWithoutDaemonNoResume(t *testing.T) {
 	a.daemonRefusedOpen = &open
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
+	// Esc doesn't answer it: only its buttons do.
+	tr.Key(0, ui.KeyEscape)
+	tr.Frame()
+	tr.Frame()
+	if a.daemonRefusedOpen == nil || !*a.daemonRefusedOpen || a.daemonIgnored {
+		t.Fatal("Esc answered the daemon question")
+	}
 	if err := tr.Click("Run Without It"); err != nil {
 		t.Fatal(err)
 	}
@@ -735,7 +754,8 @@ func TestRunWithoutDaemonNoResume(t *testing.T) {
 // omaterm or lets a device in: an agent with remote control ran
 // daemon.restart, ending every session.
 func TestRemoteActionsSafe(t *testing.T) {
-	for _, id := range []string{"daemon.restart", "agents.setup", "cli.install", "web.pair", "app.quit", "git.commit"} {
+	for _, id := range []string{"daemon.restart", "agents.setup", "cli.install", "web.pair", "app.quit", "git.commit",
+		"worktree.merge", "worktree.discard", "worktree.push", "project.remove"} {
 		if remoteAction(id) {
 			t.Errorf("omaterm do may run %s", id)
 		}

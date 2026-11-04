@@ -240,18 +240,26 @@ func (a *appState) diffFileStrip(c *ui.Context) {
 		if a.cmdButton(c, iconChevronLeft, 13, false).Tooltip("Previous file").Clicked() && i > 0 {
 			a.diffFileShow(i - 1)
 		}
-		label := ui.Text(c, itoa(i+1)+"/"+itoa(n)).FontSize(11.5).TextColor(pal.TextMuted).SingleLine().Cursor(ui.CursorPointer)
-		label.ContextMenu(func(m *ui.Menu) {
+		// A click lists the files to go to, as its pointer said it would.
+		files := func(m *ui.Menu) {
 			for k, f := range a.diffFiles {
 				name := f.NewName
 				if name == "" {
 					name = f.OldName
 				}
-				if m.Item(name).Chosen() {
+				if m.Item(name).Checked(k == i).Chosen() {
 					a.diffFileShow(k)
 				}
 			}
+		}
+		label := ui.ButtonBase(c.Key("file-list")).Padding(2, 6).Radius(5).Tooltip("Go to file").Label("Go to file")
+		if label.Hovered() {
+			label.Background(pal.Hover)
+		}
+		label.Children(func() {
+			ui.Text(c, itoa(i+1)+"/"+itoa(n)).FontSize(11.5).TextColor(pal.TextMuted).SingleLine()
 		})
+		label.Menu(files).ContextMenu(files)
 		if a.cmdButton(c, iconChevronRight, 13, false).Tooltip("Next file").Clicked() && i < n-1 {
 			a.diffFileShow(i + 1)
 		}
@@ -446,12 +454,17 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 		// Toolbar.
 		a.viewHeader(c, func() {
 			title, scope, _ := strings.Cut(a.diffTitle, " · ")
+			// A file's name in bold and its folder faint, as an editor's
+			// header has them.
+			if d := pathDir(title); d != "" {
+				title, scope = pathBase(title), d+" · "+scope
+			}
 			headerTitle(c, iconGitCompare, pal.Ok, title, scope)
 
 			// Per-file line stats, next to the title they belong to.
 			if !a.diffBinary && (a.diffAdd > 0 || a.diffDel > 0) {
 				ui.Text(c, "+"+itoa(a.diffAdd)).FontSize(10).TextColor(pal.Ok).SingleLine().Shrink(0)
-				ui.Text(c, "-"+itoa(a.diffDel)).FontSize(10).TextColor(pal.Bad).SingleLine().Shrink(0)
+				ui.Text(c, "−"+itoa(a.diffDel)).FontSize(10).TextColor(pal.Bad).SingleLine().Shrink(0)
 			}
 
 			a.diffFileStrip(c)
@@ -464,7 +477,14 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 				if staged {
 					label = "Unstage File"
 				}
-				stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Background(pal.Chip).Children(func() {
+				// A button, bordered, not the chip fill that says chosen in
+				// the Split / Inline switch beside it.
+				stage := ui.ButtonBase(c).Radius(6).Padding(4, 10).Border(1, pal.BorderStrong)
+				if stage.Hovered() {
+					stage.Background(pal.Hover)
+				}
+				a.press(a.fadeColors(stage))
+				stage.Children(func() {
 					ui.Text(c, label).FontSize(10).TextColor(pal.TextSoft)
 				})
 				if stage.Clicked() {
@@ -475,14 +495,19 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 						err = service.Stage(a.diffSrc.Repo, a.diffSrc.Path)
 					}
 					if err != nil {
-						c.Toast("Git error: " + err.Error())
+						a.errorToast(c, "Git error: "+err.Error())
 					} else {
 						a.refreshActiveRepo()
 					}
 				}
 
 				if !staged {
-					discard := ui.ButtonBase(c).Radius(6).Padding(4, 10).Children(func() {
+					discard := ui.ButtonBase(c).Radius(6).Padding(4, 10)
+					if discard.Hovered() {
+						discard.Background(pal.Bad.Alpha(0.12))
+					}
+					a.press(a.fadeColors(discard))
+					discard.Children(func() {
 						ui.Text(c, "Discard").FontSize(10).TextColor(pal.Bad)
 					})
 					if discard.Clicked() {
@@ -516,9 +541,15 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 						t.TextColor(pal.TextMuted)
 					}
 				})
-				if a.diffSplit {
+				// The chosen one has the chip's fill; the other reacts
+				// to the pointer.
+				switch {
+				case a.diffSplit:
 					split.Background(pal.Chip)
+				case split.Hovered():
+					split.Background(pal.Hover)
 				}
+				a.press(a.fadeColors(split))
 				if split.Clicked() {
 					a.diffSplit = true
 					a.saveSettings()
@@ -532,9 +563,13 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 						t.TextColor(pal.TextMuted)
 					}
 				})
-				if !a.diffSplit {
+				switch {
+				case !a.diffSplit:
 					inline.Background(pal.Chip)
+				case inline.Hovered():
+					inline.Background(pal.Hover)
 				}
+				a.press(a.fadeColors(inline))
 				if inline.Clicked() {
 					a.diffSplit = false
 					a.saveSettings()
@@ -598,6 +633,10 @@ func (a *appState) diffView(c *ui.Context) ui.Element {
 			} else if a.diffOld != nil && a.diffNew != nil {
 				ds.Old = a.diffOld
 				ds.New = a.diffNew
+				// Its counts, for the header drawn before it: the next
+				// frame shows them.
+				a.diffAdd, a.diffDel = ds.Stats()
+				a.post(func() {})
 			} else {
 				ui.Column(c).Grow(1).Center().Children(func() {
 					ui.Text(c, "Select a changed file to view its diff").FontSize(12).TextColor(pal.TextMuted)

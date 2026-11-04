@@ -67,7 +67,7 @@ func settingsPageList() []settingsPageDef {
 			Hero:     "A process with a URL is served at https://<name>.localhost, with no port and no certificate warning. omaterm’s own certificate authority signs for .localhost names only.",
 			HeroLink: "https://fachrihawari.github.io/omaterm/#dev-urls"},
 		{ID: "voice", Title: "Voice", Icon: iconMic, Group: 1, Body: (*appState).settingsVoice,
-			Hero:     "Speak a prompt on your phone in web access. whisper.cpp writes it down here, on this computer, so no speech service hears it, and the text waits in the compose box for you to check.",
+			Hero:     "Speak a prompt instead of typing it: in a terminal pane here, or on your phone in web access. whisper.cpp writes it down on this computer, so no speech service hears it.",
 			HeroLink: "https://fachrihawari.github.io/omaterm/#web"},
 		{ID: "browser", Title: "Browser", Icon: iconGlobe, Group: 1, Body: (*appState).settingsBrowser,
 			Restore: func(s *Settings, d Settings) { s.SearchEngine = d.SearchEngine }},
@@ -252,7 +252,8 @@ func (a *appState) openSettingsFile() {
 func (a *appState) settingsGeneral(c *ui.Context) {
 	d := &a.settingsUI.data
 	if !onWindows {
-		a.settingsGroup(c, "daemon", "", "Changing the daemon applies after you restart omaterm.", func() {
+		// Its row says it applies at restart.
+		a.settingsGroup(c, "daemon", "", "", func() {
 			a.settingSwitchRow(c, "daemon", false)
 			if runtime.GOOS == "linux" {
 				on := d.service
@@ -266,7 +267,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 	}
 	a.settingsGroup(c, "sessions", "Sessions", "", func() {
 		a.settingSwitchRow(c, "restore", false)
-		a.settingSwitchRow(c, "resume", !a.settings.RestoreSessions)
+		a.settingSwitchRowWhy(c, "resume", !a.settings.RestoreSessions, "Turn on Restore sessions at launch first.")
 		a.settingSwitchRow(c, "snapshot", false)
 		a.settingSwitchRow(c, "confirmClose", false)
 	})
@@ -301,7 +302,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 			sub = plural(d.scrollCount, "session") + ", " + service.FormatBytes(uint64(d.scrollBytes))
 		}
 		a.settingsRow(c, "Saved scrollback", settingsRowOpts{id: "scrollback", sub: sub}, func() {
-			if a.settingsButton(c, "Clear…", false, false, d.scrollCount == 0) {
+			if a.settingsButton(c, "Clear…", false, true, d.scrollCount == 0) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear saved scrollback?",
 					danger:  true,
@@ -322,7 +323,7 @@ func (a *appState) settingsGeneral(c *ui.Context) {
 // run. It switched at once.
 func (a *appState) askService(on bool) {
 	sh := &settingsSheet{
-		title:   "Start the Session Daemon at Login?",
+		title:   "Start the session daemon at login?",
 		danger:  true,
 		confirm: "Restart Daemon",
 		items: [][2]string{
@@ -775,7 +776,7 @@ func (a *appState) settingsAgent(c *ui.Context) {
 	})
 	settingsActions(c, func() {
 		installed := it.Installed()
-		if installed && a.settingsButton(c, "Remove Integration", false, true, false) {
+		if installed && a.settingsButton(c, "Remove Integration…", false, true, false) {
 			a.settingsUI.sheet = &settingsSheet{
 				title:   "Remove the " + agent.DisplayName(name) + " integration?",
 				danger:  true,
@@ -823,6 +824,11 @@ func (a *appState) settingsWeb(c *ui.Context) {
 		return
 	}
 	d := &a.settingsUI.data
+	// Its settings show, and are kept, but it serves nothing until the
+	// daemon runs.
+	if !a.webAvailable() {
+		a.settingsNeedsDaemon(c, "webDaemon", "Web access")
+	}
 	foot := "Tunnels carry web access beyond this computer: Tailscale to your own devices, Cloudflare as a public link. Either way, only devices you pair get in."
 	if a.webOn && a.webNetwork && d.web.URL == "" {
 		foot = "Plain HTTP on your network: use it on networks you trust, or a tunnel from elsewhere."
@@ -835,7 +841,8 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				a.settingsUI.dataAt = time.Time{}
 			}
 		})
-		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: true}, func() {
+		// The link, in code's font; an error, in prose's.
+		a.settingsRow(c, "Reach it from elsewhere", settingsRowOpts{id: "webTunnel", sub: a.webTunnelNote(), mono: d.webTunnelURL != ""}, func() {
 			v := d.web.Tunnel
 			if settingsPopup(c, "webTunnel", &v, [][2]string{
 				{"", "Off"},
@@ -854,7 +861,8 @@ func (a *appState) settingsWeb(c *ui.Context) {
 		})
 		net := a.webOn && a.webNetwork
 		a.settingsRow(c, "On your network", settingsRowOpts{id: "webNetwork", sub: "Listens on every address, not only this computer’s."}, func() {
-			if a.settingsSwitch(c, "webNetwork", &net, !a.webOn) {
+			// On, it turns web access on too.
+			if a.settingsSwitch(c, "webNetwork", &net, false) {
 				a.setWebNetwork(c, net)
 				a.settingsUI.dataAt = time.Time{}
 			}
@@ -868,8 +876,9 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			if link == "" {
 				link = "…"
 			}
-			ui.Text(c, link).Font(monoFont).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").MaxWidth(240)
-			if a.settingsButton(c, "Copy", false, false, d.webLink == "") {
+			ui.Text(c, link).Font(monoFont).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").MaxWidth(240).Tooltip(link)
+			// The tunnel's row copies the same link already.
+			if d.webLink != d.webTunnelURL && a.settingsButton(c, "Copy", false, false, d.webLink == "") {
 				mygo.Clipboard.WriteText(d.webLink)
 				toast(c, "Copied the link")
 			}
@@ -883,7 +892,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 			dev := dev
 			seen := "never"
 			if dev.LastSeen > 0 {
-				seen = ago(time.Since(time.UnixMilli(dev.LastSeen))) + " ago"
+				seen = agoPhrase(time.Since(time.UnixMilli(dev.LastSeen)))
 			}
 			until := time.UnixMilli(max(dev.LastSeen, dev.Created)).Add(web.DeviceTTL).Format("Jan 2")
 			name := dev.Name
@@ -891,7 +900,7 @@ func (a *appState) settingsWeb(c *ui.Context) {
 				name = "A browser"
 			}
 			a.settingsRow(c, name, settingsRowOpts{id: "dev-" + dev.ID, sub: "Last seen " + seen + " · signed in until " + until}, func() {
-				if a.settingsButton(c, "Revoke##"+dev.ID, false, false, false) {
+				if a.settingsButton(c, "Revoke…##"+dev.ID, false, true, false) {
 					a.revokeSheet(dev.ID, name)
 				}
 			})
@@ -1013,9 +1022,6 @@ func (a *appState) settingsPair(c *ui.Context) {
 	foot := "Scan with the phone’s camera, or open the link and type the code."
 	if p.ready && p.err == "" {
 		foot += " It works once, until " + p.expires.Format("15:04") + "."
-		if p.local {
-			foot += " Only this computer can open it: turn on On your network, or pick a tunnel under Reach It from Elsewhere."
-		}
 	}
 	a.settingsGroup(c, "pair", "", foot, func() {
 		a.settingsUI.rowN++
@@ -1026,6 +1032,13 @@ func (a *appState) settingsPair(c *ui.Context) {
 			case p.err != "":
 				ui.Text(c, p.err).FontSize(12).TextColor(pal.Bad)
 			default:
+				if p.local {
+					pairLocalWarning(c)
+					if a.settingsButton(c, "Use My Network", false, false, false) {
+						a.setWebNetwork(c, true)
+						d.pair = nil // a new code, for the network's address
+					}
+				}
 				qrView(c, p.qr, 4)
 				ui.Text(c, p.code).FontSize(20).FontWeight(600).Font(monoFont).TextColor(pal.TextStrong)
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -1093,7 +1106,7 @@ func (a *appState) settingsBrowser(c *ui.Context) {
 			})
 		}
 		a.settingsRow(c, "Browsing data", settingsRowOpts{id: "clearData", sub: "Cookies, storage and cache of every browser pane."}, func() {
-			if a.settingsButton(c, "Clear…", false, false, false) {
+			if a.settingsButton(c, "Clear…", false, true, false) {
 				a.settingsUI.sheet = &settingsSheet{
 					title:   "Clear browsing data?",
 					danger:  true,
@@ -1129,8 +1142,10 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 	filter.Children(func() {
 		ui.Icon(c, iconSearch).Size(14, 14).TextColor(pal.TextFaint)
 		ui.TextInputBase(c, &u.keyQuery).Placeholder("Filter by name or keys, as “split” or “" + keyNames(combo(ui.Cmd, 0), onMac)[0] + "+shift”").
-			FontSize(12.5).Grow(1).MinWidth(0).Label("Filter shortcuts")
+			FontSize(12.5).Grow(1).MinWidth(0).Label("Filter shortcuts").Bind(a.handle("key-filter"))
 	})
+	// Said first, where it is read: at the end, after every key, it wasn't.
+	ui.Text(c, "Shortcuts can’t be changed yet.").FontSize(11.5).TextColor(pal.TextFaint).Margin(8, 2, 0, 2)
 	u.blocks++
 	items := keymapFilter(u.keyQuery)
 	if len(items) == 0 {
@@ -1150,12 +1165,12 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 					// A run of keys (Alt+1 to Alt+9) as its ends: cut at
 					// two, it read as if those were all.
 					if n := len(e.Keys); n > 2 {
-						keyChip(c, e.Keys[0].Combo.Label())
+						settingsKeyChip(c, e.Keys[0].Combo.Label())
 						ui.Text(c, "to").FontSize(11).TextColor(pal.TextFaint)
-						keyChip(c, e.Keys[n-1].Combo.Label())
+						settingsKeyChip(c, e.Keys[n-1].Combo.Label())
 					} else {
 						for _, b := range e.Keys {
-							keyChip(c, b.Combo.Label())
+							settingsKeyChip(c, b.Combo.Label())
 						}
 					}
 				})
@@ -1163,7 +1178,14 @@ func (a *appState) settingsKeyboard(c *ui.Context) {
 		})
 		start = end
 	}
-	ui.Text(c, "Shortcuts can’t be changed yet.").FontSize(11.5).TextColor(pal.TextFaint).Margin(12, 2, 0, 2)
+}
+
+// settingsKeyChip is a key as the Keyboard page shows it: larger than the
+// palette's, as the page is about them.
+func settingsKeyChip(c *ui.Context, label string) ui.Element {
+	return ui.Row(c).Radius(4).Border(1, pal.KbdBorder).Background(pal.Kbd).Padding(2, 7).Shrink(0).Children(func() {
+		ui.Text(c, label).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+	})
 }
 
 // --- About ---
@@ -1174,7 +1196,7 @@ func (a *appState) settingsAbout(c *ui.Context) {
 		if updatesReady && mygo.Updater.Enabled() {
 			sub = "Checks for updates daily"
 			if t := updater.LastCheck(); !t.IsZero() {
-				sub = "Last checked " + ago(time.Since(t)) + " ago"
+				sub = "Last checked " + agoPhrase(time.Since(t))
 			}
 		}
 		a.settingsRow(c, "omaterm "+appVersion(), settingsRowOpts{id: "updates", sub: sub}, func() {

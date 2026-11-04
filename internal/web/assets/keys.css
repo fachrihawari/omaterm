@@ -30,6 +30,13 @@
   display: none;
 }
 
+/* Keys past the edge fade out, which says the row scrolls; at its end,
+   or with all in sight, they don't. */
+.keybar-row.more {
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+
 .keybar-key {
   flex: 0 0 auto;
   min-width: 40px;
@@ -70,8 +77,7 @@
 }
 
 .keybar-edit {
-  border-style: dashed;
-  color: var(--text-muted, #8b949e);
+  color: var(--text, #e6edf3);
 }
 
 /* Edit stays in reach while the keys scroll under it. */
@@ -234,6 +240,7 @@
   background: var(--input, #0d1117);
   color: var(--text, #e6edf3);
   font: inherit;
+  font-size: 16px; /* iOS zooms into a smaller one */
 }
 
 .keybar-text input:focus {
@@ -275,7 +282,7 @@
 /* The compose box, a sheet from the bottom of the page. */
 .compose {
   position: fixed;
-  inset: 0;
+  inset: 0 0 var(--kb, 0px) 0; /* clear of the on-screen keyboard (app.js) */
   z-index: 70;
   display: flex;
   align-items: flex-end;
@@ -344,7 +351,7 @@
   border-radius: 10px;
   background: var(--input, #0d1117);
   color: var(--text, #e6edf3);
-  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; /* iOS zooms into a smaller one */
   resize: vertical;
 }
 
@@ -390,6 +397,13 @@
   color: var(--accent-text, #fff);
   font-weight: 600;
   cursor: pointer;
+}
+
+/* Waiting for what the mic heard to be written down. */
+.compose-insert:disabled,
+.compose-send:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .compose-insert:focus-visible,
@@ -464,7 +478,7 @@
   display: inline-flex;
   align-items: center;
   align-self: center;
-  min-height: 30px;
+  min-height: 42px; /* a thumb's, as the mic beside it */
   padding: 0 10px;
   border-radius: 999px;
   background: var(--chip, rgba(215, 221, 229, 0.07));

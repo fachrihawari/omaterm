@@ -3,19 +3,22 @@
 // sending it as a paste.
 //
 //   import { mountCompose } from "./compose.js";
-//   const compose = mountCompose(el, { sendPaste, sendKey });
+//   const compose = mountCompose(el, { sendPaste, sendKey, id });
 //   compose.open(); compose.close(); compose.destroy();
 //
 // sendPaste and sendKey return false when they could not send; the text then
 // stays in the box, with a note. Send pastes the text (sendPaste) and then presses Enter (sendKey), so a
 // prompt is submitted once; Insert pastes it without Enter, to edit it in
-// the terminal. An unsent draft is kept in localStorage under
-// omaterm.compose; without storage the box works and forgets.
+// the terminal. An unsent draft is kept in localStorage, one per pane (id)
+// under omaterm.compose:<id>, so a prompt is not sent to another session;
+// without storage the box works and forgets.
 //
 // With voice input on (Settings › Voice on the computer), a mic records a
-// prompt and the computer writes it down into the box, to fix before Send:
-// it is never sent by itself. The language chip beside it picks the
-// language, kept under omaterm.voice.lang. Off, neither shows.
+// prompt and the computer writes it down into the box, to fix before Send.
+// Send (or Insert) while it records, or writes it down, waits for the words
+// and sends them with the rest: it is never sent by itself. The language
+// chip beside it picks the language, kept under omaterm.voice.lang. Off,
+// neither shows.
 
 const STORE = "omaterm.compose";
 const LANG_STORE = "omaterm.voice.lang";
@@ -43,17 +46,18 @@ function store(key, value) {
   }
 }
 
-function load() {
+function loadDraft(key) {
   try {
-    return localStorage.getItem(STORE) || "";
+    return localStorage.getItem(key) || "";
   } catch {
     return "";
   }
 }
 
-function save(text) {
+function saveDraft(key, text) {
   try {
-    localStorage.setItem(STORE, text);
+    if (text) localStorage.setItem(key, text);
+    else localStorage.removeItem(key);
   } catch {
     // A private window, or no storage: the draft lives this time only.
   }
@@ -61,6 +65,9 @@ function save(text) {
 
 export function mountCompose(el, options = {}) {
   const { sendPaste, sendKey } = options;
+  // The draft is the pane's: another session's box starts empty.
+  const draftKey = STORE + ":" + (options.id || "");
+  const save = (text) => saveDraft(draftKey, text);
   const ac = new AbortController();
   const on = (target, type, fn, opts) => target.addEventListener(type, fn, { ...opts, signal: ac.signal });
 
@@ -93,7 +100,7 @@ export function mountCompose(el, options = {}) {
   box.className = "compose-box";
   box.rows = 4;
   box.placeholder = "Write a prompt…";
-  box.value = load();
+  box.value = loadDraft(draftKey);
 
   const foot = document.createElement("div");
   foot.className = "compose-foot";
@@ -145,6 +152,8 @@ export function mountCompose(el, options = {}) {
   let voiceMod = null;
   let cannot = "";
   let rec = null;
+  // pending is the recording being written down, which Send waits for.
+  let pending = null;
   let ticking = 0;
   let busy = false;
   let starting = false;
@@ -199,8 +208,14 @@ export function mountCompose(el, options = {}) {
   async function startRecording() {
     say("");
     starting = true;
+    voiceMod.warm?.();
     try {
-      rec = await voiceMod.record({ onLimit: () => stopRecording(true) });
+      rec = await voiceMod.record({
+        onLimit: () => {
+          say("Stopped at 2 minutes: writing it down");
+          stopRecording(true);
+        },
+      });
     } catch (err) {
       rec = null;
       say(err?.name === "NotAllowedError" ? "Microphone access was refused" : "The microphone didn't start");
@@ -218,34 +233,38 @@ export function mountCompose(el, options = {}) {
   }
 
   // stopRecording ends the recording; keep sends it to be written down,
-  // and the text joins what the box has.
-  async function stopRecording(keep) {
-    if (!rec) return;
+  // and the text joins what the box has. It resolves once it has.
+  function stopRecording(keep) {
+    if (!rec) return pending || Promise.resolve();
     const r = rec;
     rec = null;
     clearInterval(ticking);
     if (!keep) {
       r.cancel();
       showMic();
-      return;
+      return Promise.resolve();
     }
     busy = true;
     showMic();
-    try {
-      const text = (await voiceMod.transcribe(await r.stop(), langPick.value)).trim();
-      if (text) {
-        const v = box.value;
-        box.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
-        save(box.value);
-      } else {
-        say("Nothing was heard");
+    pending = (async () => {
+      try {
+        const text = (await voiceMod.transcribe(await r.stop(), langPick.value)).trim();
+        if (text) {
+          const v = box.value;
+          box.value = v + (v && !/\s$/.test(v) ? " " : "") + text;
+          save(box.value);
+        } else {
+          say("Nothing was heard");
+        }
+      } catch (err) {
+        say(err?.message || "Not written down");
+      } finally {
+        busy = false;
+        pending = null;
+        showMic();
       }
-    } catch (err) {
-      say(err?.message || "Not written down");
-    } finally {
-      busy = false;
-      showMic();
-    }
+    })();
+    return pending;
   }
 
   function open() {
@@ -292,10 +311,21 @@ export function mountCompose(el, options = {}) {
     save("");
   }
 
-  // submit sends the text, and Enter after it. A send that reports it did
-  // not go (false: the terminal's socket is down) keeps the text and the box,
-  // so nothing the user wrote is lost.
-  function submit(withEnter) {
+  // submit sends the text, and Enter after it. While the mic records, or
+  // its words are being written down, it waits for them first: with
+  // nothing heard and nothing written, nothing is sent. A send that
+  // reports it did not go (false: the terminal's socket is down) keeps the
+  // text and the box, so nothing the user wrote is lost.
+  async function submit(withEnter) {
+    if (rec || pending) {
+      send.disabled = insert.disabled = true;
+      try {
+        await stopRecording(true);
+      } finally {
+        send.disabled = insert.disabled = false;
+      }
+      if (root.hidden || box.value.trim() === "") return;
+    }
     const text = box.value;
     let sent = true;
     if (text.trim() !== "" && typeof sendPaste === "function") sent = sendPaste(text) !== false;

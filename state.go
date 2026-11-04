@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"omaterm/internal/cli"
 	"omaterm/internal/crash"
 	"omaterm/internal/ctl"
+	"omaterm/internal/gitsnap"
 	"omaterm/internal/model"
 	"omaterm/internal/notice"
 	"omaterm/internal/paths"
@@ -136,6 +139,7 @@ type openFile struct {
 	release   func()
 	mtime     time.Time
 	webErr    string
+	noWebView bool // the system's web view didn't start, not the file
 	crashed   bool // its page crashed, and is not loaded again
 	focused   bool
 	yieldKeys bool
@@ -144,6 +148,9 @@ type openFile struct {
 	// overwritten unasked. checked is when the file was last looked at.
 	Disk    [32]byte
 	checked time.Time
+	// DiskChanged is a file changed on disk while its edits are unsaved:
+	// the status line says so, with Reload.
+	DiskChanged bool
 }
 
 type appState struct {
@@ -192,10 +199,13 @@ type appState struct {
 	// (fitPanels): too narrow for both beside the panes, one gives way.
 	// lastPanel is the one the user opened last, which stays.
 	sidebarShown, inspectorShown bool
-	lastPanel                    string
-	sidebarW                     float32
-	inspectorW                   float32
-	activePaneTermID             string // TermID of the focused terminal pane
+	// sidebarFit and inspectorFit are the most room the window leaves
+	// each, 0 for no limit (fitPanels).
+	sidebarFit, inspectorFit float32
+	lastPanel                string
+	sidebarW                 float32
+	inspectorW               float32
+	activePaneTermID         string // TermID of the focused terminal pane
 
 	inspectorTab int // 0 info, 1 files, 2 git
 
@@ -223,7 +233,9 @@ type appState struct {
 	repos      []service.Repo
 	activeRepo int
 	repoJob    service.Job
-	repoErr    string
+	// repoAt is when the shown repo was last refreshed (refreshActiveRepo).
+	repoAt  time.Time
+	repoErr string
 	// repoFollow is the session the Git panel last followed, repoMain the
 	// repo it showed before following one into its worktree, and
 	// repoAsked the worktree last searched for.
@@ -303,9 +315,11 @@ type appState struct {
 	searchSelected int
 	searchList     ui.ListState
 	searchResults  []service.Match
-	searchJob      service.Job
-	searchSplit    float32
-	searchPreview  *editor.State // read-only preview editor
+	// searching is while a search runs: its count and "No results" wait.
+	searching     bool
+	searchJob     service.Job
+	searchSplit   float32
+	searchPreview *editor.State // read-only preview editor
 
 	// Branch picker (modal)
 	branchQuery    string
@@ -373,6 +387,9 @@ type appState struct {
 	// queuedToasts are messages for the next frame, from where there is
 	// no ui.Context.
 	queuedToasts []string
+	// queuedRich are toasts with a button or a look of their own, as
+	// errors, likewise for the next frame.
+	queuedRich []ui.Toast
 	// daemonStale is the version of the session daemon the sessions run
 	// in, when not this one's; daemonRefused* ask to restart a daemon of
 	// another protocol.
@@ -448,6 +465,9 @@ type appState struct {
 	// settings.Theme as shown, themeStamp the Omarchy theme.name mtime it
 	// last loaded, themeWatchStop ends the theme watch.
 	settings Settings
+	// launchSettings are the settings omaterm started with: one that
+	// applies at start asks for a restart while it differs from them.
+	launchSettings Settings
 	// iconPops is what popOnChange keeps of the status icons.
 	iconPops map[uint64]iconPop
 	// osStill is the desktop's Reduce Motion, as the last frame read it.
@@ -631,6 +651,7 @@ func newApp() *appState {
 		cloudflareAsked:  map[string]bool{},
 		settings:         loadSettings(),
 	}
+	a.launchSettings = a.settings
 	a.hookPanes()
 	if cfg, err := webStore().Config(); err == nil {
 		a.webOn, a.webNetwork = cfg.Enabled, cfg.OnNetwork()
@@ -754,9 +775,7 @@ func (a *appState) start() {
 	}
 	a.startSystemStats()
 	a.startProcListRefresh()
-	if a.inspectorTab == 0 && a.inspectorShown {
-		a.startProcessRefresh()
-	}
+	a.startProcessRefresh()
 }
 
 // loadProjectData starts the loads of the active project's repos, files
@@ -770,7 +789,8 @@ func (a *appState) loadProjectData() {
 	a.refreshRepos()
 	a.rebuildFileIndex()
 	a.rebuildFileTree()
-	a.refreshProcesses()
+	// Started anew, as no project had stopped it.
+	a.startProcessRefresh()
 }
 
 // switchProject shows project i, as clicking it in the sidebar does, and
@@ -843,8 +863,24 @@ func (a *appState) refreshRepos() {
 				repos = append(repos, *r)
 			}
 		}
+		// None found because there is no git, the Git tab says so, not
+		// that the folder isn't a repository.
+		why := ""
+		if len(repos) == 0 {
+			if err := gitsnap.Command(ctx, "version").Run(); errors.Is(err, gitsnap.ErrNoGit) {
+				why = "git isn’t installed: install it to see changes here"
+				if runtime.GOOS == "darwin" {
+					why += " (xcode-select --install)"
+				}
+			}
+		}
 		if win != nil && ctx.Err() == nil {
-			win.Update(func() { a.applyRepos(workspace, repos) })
+			win.Update(func() {
+				a.applyRepos(workspace, repos)
+				if a.workspace == workspace {
+					a.repoErr = why
+				}
+			})
 		}
 		return nil
 	}, nil)
@@ -881,6 +917,7 @@ func (a *appState) applyRepos(workspace string, repos []service.Repo) {
 
 // refreshActiveRepo reloads status of the active repo only.
 func (a *appState) refreshActiveRepo() {
+	a.repoAt = time.Now()
 	r := a.activeRepoRef()
 	if r == nil || a.win == nil {
 		return
@@ -1036,8 +1073,8 @@ func (a *appState) stopSystemStats() {
 	}
 }
 
-// startProcessRefresh begins periodic process/port refresh (5s) while the
-// info panel is visible.
+// startProcessRefresh begins the periodic process/port refresh (5s): the
+// status bar counts them whatever the inspector shows.
 func (a *appState) startProcessRefresh() {
 	a.stopProcessRefresh()
 	a.refreshProcesses()
@@ -1051,7 +1088,7 @@ func (a *appState) startProcessRefresh() {
 }
 
 // processTick refreshes again, unless the refresh was stopped meanwhile
-// (the Info tab hidden): it stays stopped. It says whether it went on.
+// (no project left): it stays stopped. It says whether it went on.
 func (a *appState) processTick(gen int) bool {
 	if a.processGen != gen {
 		return false
@@ -1185,7 +1222,8 @@ func (s fileScan) node(parent, name string, isDir bool, depth int, muted bool) *
 		rel, _ := filepath.Rel(s.root, path)
 		muted = name == "node_modules" || s.ignored[filepath.ToSlash(rel)]
 	}
-	n := &fileNode{Name: name, Path: path, Dir: isDir, Open: depth < 1 && !muted, Muted: muted}
+	// Folders start closed, so the files at the top stay in sight.
+	n := &fileNode{Name: name, Path: path, Dir: isDir, Muted: muted}
 	if !isDir {
 		n.Action = "editor"
 		return n

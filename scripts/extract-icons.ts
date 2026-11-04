@@ -28,20 +28,19 @@ const icons: Record<string, string> = {
   "panel-left": "panel-left",
   "panel-left-close": "panel-left-close",
   "panel-right": "panel-right",
-  play: "play",
   plus: "plus",
   radio: "radio",
   "refresh-cw": "refresh-cw",
   "rotate-cw": "rotate-cw",
   "rows-2": "rows-2",
   search: "search",
-  square: "square",
   "split-square-vertical": "split",
   "trash-2": "trash",
   "undo-2": "undo-2",
   x: "x",
   terminal: "terminal",
   "folder-search": "folder-search",
+  "archive-restore": "archive-restore",
 };
 const names = Object.entries(icons);
 

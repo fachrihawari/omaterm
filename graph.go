@@ -244,11 +244,18 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane, g
 	e.Children(func() {
 		a.graphCanvas(c, lane, gutter, graphRowH)
 		ui.Text(c, cm.Short).Font(monoFont).FontSize(11).TextColor(pal.TextFaint).Width(58).SingleLine().Shrink(0)
-		ui.Text(c, cm.Subject).FontSize(12).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
-		for _, ref := range cm.Refs {
-			pill(c, ref)
+		// Narrow, the subject keeps some words: the refs and the author
+		// give way.
+		ui.Text(c, cm.Subject).FontSize(12).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Grow(1).
+			MinWidth(min(120, float32(len(cm.Subject))*6)).Tooltip(cm.Subject)
+		if len(cm.Refs) > 0 {
+			ui.Row(c).Gap(4).Shrink(1).MinWidth(0).ClipX().Children(func() {
+				for _, ref := range cm.Refs {
+					pill(c, ref)
+				}
+			})
 		}
-		ui.Text(c, cm.Author).FontSize(10).TextColor(pal.TextMuted).Width(120).SingleLine().Shrink(0)
+		ui.Text(c, cm.Author).FontSize(10).TextColor(pal.TextMuted).Width(120).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
 		ui.Text(c, relativeTime(cm.Time)).FontSize(10).TextColor(pal.TextFaint).Width(56).SingleLine().Shrink(0)
 	})
 	if e.Clicked() {
@@ -258,6 +265,7 @@ func (a *appState) graphRow(c *ui.Context, cm *service.Commit, lane graphLane, g
 			a.expandedCommit = cm.Hash
 		}
 	}
+	e.ContextMenu(func(m *ui.Menu) { a.commitMenu(m, cm) })
 	// Show modified files when expanded.
 	if a.expandedCommit == cm.Hash {
 		a.commitFileList(c, cm)
@@ -274,7 +282,7 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 	a.fadeColors(e)
 	e.Children(func() {
 		a.graphCanvas(c, lane, gutter, 26)
-		ui.Text(c, cm.Subject).FontSize(11).TextColor(pal.TextSoft).SingleLine().Grow(1).MinWidth(0)
+		ui.Text(c, cm.Subject).FontSize(11).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Grow(1).MinWidth(0).Tooltip(cm.Subject)
 		ui.Text(c, relativeTime(cm.Time)).FontSize(9).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 	})
 	if e.Clicked() {
@@ -284,11 +292,24 @@ func (a *appState) graphRowCompact(c *ui.Context, cm *service.Commit, lane graph
 			a.expandedCommit = cm.Hash
 		}
 	}
+	e.ContextMenu(func(m *ui.Menu) { a.commitMenu(m, cm) })
 	// Show modified files when expanded.
 	if expanded {
 		a.commitFileList(c, cm)
 	}
 	return e
+}
+
+// commitMenu is a commit row's menu: the whole commit as a diff, and its
+// hash; a click shows its files.
+func (a *appState) commitMenu(m *ui.Menu, cm *service.Commit) {
+	if m.Item("Open Commit").Chosen() {
+		a.openCommitDiff(cm.Hash)
+	}
+	if m.Item("Copy Hash").Chosen() {
+		copyText(cm.Hash)
+		a.toast(nil, "Copied "+cm.Short)
+	}
 }
 
 // commitFileList renders the files of an expanded commit as a VS Code-like
@@ -325,7 +346,7 @@ func (a *appState) commitFileList(c *ui.Context, cm *service.Commit) {
 			if add > 0 || del > 0 {
 				ui.Spacer(c)
 				txt(c, "+"+itoa(add), 9, pal.Ok)
-				txt(c, "-"+itoa(del), 9, pal.Bad)
+				txt(c, "−"+itoa(del), 9, pal.Bad)
 			}
 		})
 		for _, f := range files {

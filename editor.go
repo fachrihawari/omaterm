@@ -202,14 +202,18 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 				if doc.Preview {
 					label = "Source"
 				}
-				if a.cmdButton(c, iconFileText, iconBtn, false).
+				// Shown on while the preview is, as a toggle.
+				if a.cmdButton(c, iconFileText, iconBtn, doc.Preview).
 					Tooltip(withKeys(label, "markdown.togglePreview")).Clicked() {
 					doc.Preview = !doc.Preview
 				}
 			}
-			if save := a.cmdButton(c, iconSave, iconBtn, false).
-				Tooltip("Save (" + keyLabels("file.save") + ")"); save.Clicked() {
-				a.saveEditor(doc, c)
+			// The preview has nothing to save: its source does.
+			if !(isMd && doc.Preview) {
+				if save := a.cmdButton(c, iconSave, iconBtn, false).
+					Tooltip("Save (" + keyLabels("file.save") + ")"); save.Clicked() {
+					a.saveEditor(doc, c)
+				}
 			}
 		})
 
@@ -242,6 +246,17 @@ func (a *appState) editorView(c *ui.Context) ui.Element {
 			}
 			ui.Text(c, "UTF-8").FontSize(10).TextColor(pal.TextMuted)
 			ui.Spacer(c)
+			if doc.DiskChanged {
+				ui.Text(c, "Changed on disk").FontSize(10).TextColor(pal.Warn)
+				reload := ui.ButtonBase(c.Key("reload")).Padding(1, 6).Radius(4).Tooltip("Read the file again, dropping your edits")
+				if reload.Hovered() {
+					reload.Background(pal.Hover)
+				}
+				reload.Children(func() { ui.Text(c, "Reload").FontSize(10).TextColor(pal.Accent) })
+				if reload.Clicked() {
+					a.reloadEditor(doc)
+				}
+			}
 			if doc.State.Buffer.Modified() {
 				ui.Text(c, "●").FontSize(10).TextColor(pal.Warn)
 			}
@@ -282,6 +297,7 @@ func (a *appState) writeEditor(doc *openFile, c *ui.Context) {
 	}
 	doc.State.Buffer.MarkSaved()
 	doc.Disk = sha256.Sum256(text.Bytes())
+	doc.DiskChanged = false
 	c.Toast("Saved " + doc.Path)
 	a.refreshActiveRepo()
 }
@@ -360,11 +376,27 @@ func (a *appState) checkDisk(doc *openFile) {
 		return
 	}
 	sum := sha256.Sum256(data)
-	if sum == doc.Disk || doc.State.Buffer.Modified() {
+	if sum == doc.Disk {
+		doc.DiskChanged = false
+		return
+	}
+	if doc.State.Buffer.Modified() {
+		// The edits stay; the status line tells, with Reload.
+		doc.DiskChanged = true
+		return
+	}
+	a.reloadEditor(doc)
+}
+
+// reloadEditor reads the file into its editor again, dropping its edits.
+func (a *appState) reloadEditor(doc *openFile) {
+	data, err := os.ReadFile(a.docPath(doc.Path))
+	if err != nil || doc.State == nil {
 		return
 	}
 	doc.State.Buffer.Reset(string(data))
-	doc.Disk = sum
+	doc.Disk = sha256.Sum256(data)
+	doc.DiskChanged = false
 }
 
 // imageView shows a picture the way an image viewer does: the file's path

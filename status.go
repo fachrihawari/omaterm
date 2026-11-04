@@ -153,10 +153,22 @@ func (a *appState) keepAgents(infos map[string]session.Info) {
 
 // statusChanged reacts to panes' changes: notifications (notify.go).
 func (a *appState) statusChanged(prev, next map[string]session.Info) {
+	turnEnded := false
 	for id, n := range next {
 		a.maybeNotify(prev[id], n)
 		if p, ok := prev[id]; ok && n.Bells > p.Bells {
 			a.ring(n)
+		}
+		if prev[id].Status == session.Working && n.Status != session.Working {
+			turnEnded = true
+		}
+	}
+	// What an agent changed in its turn shows as it ends: the Git tab
+	// and its count, and the files.
+	if turnEnded {
+		a.refreshActiveRepo()
+		if a.inspectorShown && a.inspectorTab == 1 {
+			a.rebuildFileTree()
 		}
 	}
 }

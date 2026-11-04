@@ -104,8 +104,8 @@ revert each hunk.
 
 The sidebar lists each project with its sessions, and switching projects
 keeps the other one's shells running. Split a pane right (`Ctrl+Shift+R`) or
-down (`Ctrl+Shift+D`), zoom one (`Ctrl+Shift+Enter`), and drag a pane's
-header to move it.
+down (`Ctrl+Shift+D`), zoom one (`Ctrl+Shift+Enter`), move between them with
+`Ctrl+Alt` and the arrows, and drag a pane's header to move it.
 
 ![Three split panes: an agent, a dev server and a test run](site/assets/split.png)
 
@@ -170,8 +170,10 @@ and share with your team, or locally in omaterm, which keeps it out of the
 repository. The Add or Edit dialog's **Save in omaterm.yml** switch chooses
 between them. It is on by default when the project is a git repository, and
 **Edit…** in a process's menu opens the dialog for either kind. The menu also
-moves a process between the two (**Move to omaterm.yml**, **Keep Local**),
-removes it, and a project's menu starts or stops all of them at once.
+moves a process between the two (**Move to omaterm.yml**, **Move Out of omaterm.yml**),
+removes it, and a project's menu starts or stops all of them at once. A
+process's tab has Stop or Start and Restart in its header, and once it ends
+it says how, with its exit code.
 
 ```yaml
 processes:
@@ -211,7 +213,8 @@ A command from `omaterm.yml` runs only after you trust that exact definition.
 Starting an untrusted process opens a sheet that shows its command, folder,
 environment, port, restart and watch settings. **Trust and Start** runs it,
 and omaterm keeps the trust for that definition, in that project folder, on
-this machine. Renaming a process, or turning autostart on or off, keeps the
+this machine. **Start All Processes** shows every one not trusted yet on one
+sheet, with **Trust and Start All**. Renaming a process, or turning autostart on or off, keeps the
 trust. Changing the command, folder, environment, port, restart or watch
 settings does not. A changed definition makes a stopped process untrusted
 again, and a running one shows a dot until you restart it.
@@ -396,8 +399,9 @@ in agents that take them.
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) writes it down on your
 computer into the box, to check before you send it. On the desktop, on Linux
 and macOS, `Ctrl+Shift+Space` (`⇧⌘Space`) or the mic in a terminal pane's
-header starts recording, and again stops it: the text is pasted into the
-pane, never with Enter, and `Esc` drops it. It is off until you turn it on in
+header starts recording. `Enter` ends it and sends what you said; the key
+again, or letting go of it after holding it down, pastes the text into the
+pane to read first; `Esc` drops it. It is off until you turn it on in
 **Settings → Voice** and download a model there; the phone needs web access
 over HTTPS (Tailscale or Cloudflare) for its microphone.
 
@@ -466,6 +470,7 @@ Code, Codex, Pi, OpenCode and Antigravity to use it. Every pane knows where it r
 | Close the pane, or the tab | `Ctrl+W` | `⌘W` |
 | Split right / down | `Ctrl+Shift+R` / `Ctrl+Shift+D` | `⇧⌘R` / `⇧⌘D` |
 | Zoom pane | `Ctrl+Shift+Enter` | `⇧⌘↩` |
+| Pane to the left / right / above / below | `Ctrl+Alt+←` `→` `↑` `↓` | `⌥⌘←` `→` `↑` `↓` |
 | Dictate into the pane (voice input on; not on Windows) | `Ctrl+Shift+Space` | `⇧⌘Space` |
 | Go to tab 1–9 | `Alt+1` … `Alt+9` | `⌘1` … `⌘9` |
 | Go to project 1–9 | `Alt+Shift+1` … `Alt+Shift+9` | `⌥⌘1` … `⌥⌘9` |

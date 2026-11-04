@@ -121,7 +121,7 @@ func TestProcessSidebarAndTab(t *testing.T) {
 	if len(a.visibleTabIndices()) != before || a.procList[projectID][0].Status != procs.Running {
 		t.Fatalf("closing the process tab: tabs=%v status=%v", a.visibleTabIndices(), a.procList[projectID][0].Status)
 	}
-	if !slices.Contains(a.queuedToasts, "web keeps running. Stop it from the sidebar.") {
+	if !slices.Contains(a.queuedToasts, "web keeps running. Stop it from its tab or the sidebar.") {
 		t.Fatalf("closing the process tab said %q", a.queuedToasts)
 	}
 	tr.Frame()
@@ -231,8 +231,9 @@ func TestLocalProcessesCannotShare(t *testing.T) {
 	}
 }
 
-// A process's Start is a play glyph that turns green under the pointer,
-// and its Stop a square that turns red, in a dark and a light theme.
+// A process's Start is a green play glyph and its Stop a red square as
+// soon as its row is under the pointer, and each is a chip of its color
+// under the pointer itself, in a dark and a light theme.
 func TestProcessButtonTones(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
@@ -272,13 +273,16 @@ func TestProcessButtonTones(t *testing.T) {
 				}
 				return false
 			}
-			if toned() {
-				t.Errorf("dark=%v: %s is tinted before the pointer is on it", pal.Dark, c.label)
+			if !toned() {
+				t.Errorf("dark=%v: %s is not %v while its row is hovered", pal.Dark, c.label, want)
 			}
+			// The button's face, inside its border, beside the glyph.
+			face := func() color.RGBA { return at(tr.Image(), b.X+3, b.Y+b.H/2) }
+			rest := face()
 			tr.Move(b.X+b.W/2, b.Y+b.H/2)
 			tr.Frame()
-			if !toned() {
-				t.Errorf("dark=%v: %s under the pointer is not tinted %v", pal.Dark, c.label, want)
+			if hover := face(); dist(hover, want) >= dist(rest, want) {
+				t.Errorf("dark=%v: %s under the pointer is no chip of %v: %v, as at rest %v", pal.Dark, c.label, want, hover, rest)
 			}
 		}
 	}

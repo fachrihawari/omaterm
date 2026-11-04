@@ -1,16 +1,23 @@
 package web
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -183,7 +190,7 @@ func (s *Server) sweep() {
 func (s *Server) Handler() http.Handler {
 	static, _ := fs.Sub(assets, "assets")
 	mux := http.NewServeMux()
-	mux.Handle("GET /", http.FileServerFS(static))
+	mux.Handle("GET /", staticFiles(static))
 	mux.HandleFunc("POST /api/pair", s.pair)
 	mux.HandleFunc("GET /api/state", s.auth(s.state))
 	mux.HandleFunc("GET /api/theme", s.auth(s.theme))
@@ -193,7 +200,71 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logout", s.auth(s.logout))
 	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))
 	mux.HandleFunc("POST /api/voice", s.auth(s.transcribe))
+	mux.HandleFunc("POST /api/voice/warm", s.auth(s.warmVoice))
 	return secure(mux)
+}
+
+// staticFiles serves the page's own files, each with an ETag of what it
+// holds and no-cache: the browser asks every time, so an update shows at
+// once, but a file it has comes back as a 304, not some 400 KB again over
+// a phone's link. Text goes gzipped to a browser that takes it.
+func staticFiles(static fs.FS) http.Handler {
+	files := http.FileServerFS(static)
+	type file struct {
+		etag string
+		gz   []byte
+	}
+	byPath := map[string]file{}
+	fs.WalkDir(static, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		data, err := fs.ReadFile(static, p)
+		if err != nil {
+			return nil
+		}
+		sum := sha256.Sum256(data)
+		f := file{etag: `"` + hex.EncodeToString(sum[:8]) + `"`}
+		switch path.Ext(p) {
+		case ".js", ".css", ".html", ".svg", ".json":
+			var b bytes.Buffer
+			zw, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
+			zw.Write(data)
+			zw.Close()
+			f.gz = b.Bytes()
+		}
+		byPath["/"+p] = f
+		return nil
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Path
+		if strings.HasSuffix(name, "/") {
+			name += "index.html"
+		}
+		f, ok := byPath[name]
+		if !ok {
+			files.ServeHTTP(w, r)
+			return
+		}
+		h := w.Header()
+		h.Set("Cache-Control", "no-cache")
+		h.Set("ETag", f.etag)
+		h.Add("Vary", "Accept-Encoding")
+		if r.Header.Get("If-None-Match") == f.etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		if f.gz != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			h.Set("Content-Type", mime.TypeByExtension(path.Ext(name)))
+			h.Set("Content-Encoding", "gzip")
+			h.Set("Content-Length", strconv.Itoa(len(f.gz)))
+			if r.Method != http.MethodHead {
+				w.Write(f.gz)
+			}
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
 }
 
 // secure sets the headers every answer carries, and refuses a request
@@ -561,6 +632,17 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, map[string]string{"text": text})
 	}
+}
+
+// warmVoice has whisper-server load its model as the phone starts
+// recording, so the words come soon after it stops; it answers at once.
+func (s *Server) warmVoice(w http.ResponseWriter, r *http.Request) {
+	if _, on := s.voiceOn(r.Context()); !on {
+		http.NotFound(w, r)
+		return
+	}
+	s.d.Handle(r.Context(), "voice.warm", nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

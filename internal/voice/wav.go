@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -59,4 +62,66 @@ func CheckWAV(b []byte) (time.Duration, error) {
 		at = body + size + size%2
 	}
 	return 0, ErrBadWAV
+}
+
+// pcm is the samples of a WAV CheckWAV took: its data chunk, nil for none.
+func pcm(b []byte) []byte {
+	if len(b) < 12 || string(b[:4]) != "RIFF" || string(b[8:12]) != "WAVE" {
+		return nil
+	}
+	for at := 12; at+8 <= len(b); {
+		id, size := string(b[at:at+4]), int(binary.LittleEndian.Uint32(b[at+4:at+8]))
+		body := at + 8
+		if size < 0 || size > len(b)-body {
+			return nil
+		}
+		if id == "data" {
+			return b[body : body+size]
+		}
+		at = body + size + size%2
+	}
+	return nil
+}
+
+// silentDBFS is the loudness under which a recording holds nothing to
+// write down: a quiet room's, well under speech's -20 to -30 dBFS.
+const silentDBFS = -50
+
+// Silent tells a recording with nothing to write down: under 0.3 s of
+// sound, or no tenth of a second louder than silentDBFS. Given silence,
+// whisper makes text up, which was then pasted.
+func Silent(b []byte) bool {
+	data := pcm(b)
+	n := len(data) / 2
+	if n < SampleRate*3/10 {
+		return true
+	}
+	floor := 32768 * math.Pow(10, silentDBFS/20.0)
+	const window = SampleRate / 10
+	for start := 0; start < n; start += window {
+		end := min(start+window, n)
+		var sum float64
+		for i := start; i < end; i++ {
+			v := float64(int16(binary.LittleEndian.Uint16(data[2*i:])))
+			sum += v * v
+		}
+		if math.Sqrt(sum/float64(end-start)) >= floor {
+			return false
+		}
+	}
+	return true
+}
+
+// tagOnly is a transcription that is only whisper's note on the sound, as
+// [BLANK_AUDIO], [Music] or (silence): nothing was said.
+var tagOnly = regexp.MustCompile(`^\s*([\[(][^\])]*[\])]\s*)+$`)
+
+// CleanText is what whisper wrote down, as it goes into a prompt: on one
+// line, without its [BLANK_AUDIO] notes, "" when that is all there is.
+func CleanText(s string) string {
+	s = strings.ReplaceAll(s, "[BLANK_AUDIO]", "")
+	if tagOnly.MatchString(s) {
+		return ""
+	}
+	return strings.Join(strings.Fields(s), " ")
 }

@@ -8,6 +8,7 @@ import (
 	"omaterm/internal/shellcmd"
 	"omaterm/internal/tunnel"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,12 +29,21 @@ const (
 )
 
 func (a *appState) sidebarWidth() float32 {
-	return max(sidebarMinW, min(a.sidebarW, sidebarMaxW))
+	w := max(sidebarMinW, min(a.sidebarW, sidebarMaxW))
+	if a.sidebarFit > 0 {
+		w = min(w, a.sidebarFit)
+	}
+	return w
 }
 
-// inspectorWidth is the inspector's width, within its bounds.
+// inspectorWidth is the inspector's width, within its bounds and the room
+// the window gives it.
 func (a *appState) inspectorWidth() float32 {
-	return max(inspectorMinW, min(a.inspectorW, inspectorMaxW))
+	w := max(inspectorMinW, min(a.inspectorW, inspectorMaxW))
+	if a.inspectorFit > 0 {
+		w = min(w, a.inspectorFit)
+	}
+	return w
 }
 
 // panelEdge is the edge of a side panel, a few pixels wide: dragged, it
@@ -41,8 +51,8 @@ func (a *appState) inspectorWidth() float32 {
 // to def. A grip shows while the pointer is on it, as the divider between
 // panes has one, so the edge can be found. sign is 1 for a panel that grows
 // as the pointer moves right, -1 for one on the right side.
-func (a *appState) panelEdge(c *ui.Context, key string, w *float32, lo, hi, def, sign float32) {
-	e := ui.Box(c.Key(key)).Width(6).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
+func (a *appState) panelEdge(c *ui.Context, key string, width float32, w *float32, lo, hi, def, sign float32) {
+	e := ui.Box(c.Key(key)).Width(width).FillHeight().Shrink(0).Cursor(ui.CursorResizeColumn).KeepFocus()
 	if e.Hovered() || e.Pressed() {
 		e.Draw(func(p *ui.Painter, r ui.Rect) {
 			p.Fill(ui.Rect{X: r.X + r.W/2 - 1.5, Y: r.Y + r.H/2 - 18, W: 3, H: 36}, pal.TextFaint.Alpha(0.7), 1.5)
@@ -88,7 +98,7 @@ func (a *appState) sidebar(c *ui.Context) {
 			})
 			a.sidebarFooter(c)
 		})
-		a.panelEdge(c, "edge", &a.sidebarW, sidebarMinW, sidebarMaxW, sidebarDefaultW, 1)
+		a.panelEdge(c, "edge", 6, &a.sidebarW, sidebarMinW, sidebarMaxW, sidebarDefaultW, 1)
 	})
 }
 
@@ -131,19 +141,24 @@ func (a *appState) sidebarEmpty(c *ui.Context) {
 func (a *appState) unavailableProject(c *ui.Context, i int) {
 	p := a.unavailable[i]
 	n := len(a.saved[p.ID])
-	tip := "Folder missing: " + p.Dir + ". Its " + plural(n, "session") + " are kept and come back with it."
-	h := ui.Row(c.Key("missing-"+p.ID)).Height(28).Padding(0, 6).Gap(6).AlignItems(ui.Center).Radius(7).
-		Margin(6, 0, 0, 0).Tooltip(tip)
+	tip := "Folder missing: " + p.Dir + ". Its " + plural(n, "session") + " are kept and come back with it. Click to find it, or remove it."
+	// In line with the other projects' names; a click offers what its
+	// menu does.
+	h := ui.Row(c.Key("missing-"+p.ID)).Height(28).Padding(0, 8, 0, 6).Gap(6).AlignItems(ui.Center).Radius(7).
+		Margin(6, 0, 0, 0).Tooltip(tip).Cursor(ui.CursorPointer)
 	if h.Hovered() {
 		h.Background(pal.Hover)
 	}
 	a.fadeColors(h)
 	h.Children(func() {
-		ui.Icon(c, iconFolder).Size(12, 12).TextColor(pal.TextFaint)
 		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextFaint).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		ui.Text(c, "folder missing").FontSize(11).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 	})
-	h.ContextMenu(func(m *ui.Menu) {
+	menu := func(m *ui.Menu) {
+		if m.Item("Locate Folder…").Chosen() {
+			a.locateUnavailable(p.ID)
+		}
+		m.Separator()
 		if m.Item("Remove Project…").Chosen() {
 			var panes []string
 			for _, s := range a.saved[p.ID] {
@@ -155,7 +170,54 @@ func (a *appState) unavailableProject(c *ui.Context, i int) {
 			a.askDanger("Remove Project", "Remove "+p.Name+" from the list?"+a.endingText(panes, 0), "Remove",
 				func() { a.removeUnavailable(id) })
 		}
-	})
+	}
+	h.Menu(menu).ContextMenu(menu)
+}
+
+// moveProject swaps project i with project j beside it, the shown one
+// staying shown.
+func (a *appState) moveProject(i, j int) {
+	if i < 0 || j < 0 || i >= len(a.projects) || j >= len(a.projects) {
+		return
+	}
+	a.projects[i], a.projects[j] = a.projects[j], a.projects[i]
+	switch a.active {
+	case i:
+		a.active = j
+	case j:
+		a.active = i
+	}
+	a.saveSoon()
+}
+
+// locateUnavailable asks where a missing project's folder went, moved or
+// renamed, and brings the project back there, with its sessions.
+func (a *appState) locateUnavailable(id string) {
+	if a.win == nil {
+		return
+	}
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: "Locate Folder", Directory: true})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.win.Update(func() { a.relocateUnavailable(id, paths[0]) })
+	}()
+}
+
+// relocateUnavailable brings the missing project id back at dir.
+func (a *appState) relocateUnavailable(id, dir string) {
+	for i, p := range a.unavailable {
+		if p.ID != id {
+			continue
+		}
+		a.unavailable = slices.Delete(a.unavailable, i, i+1)
+		a.projects = append(a.projects, project{ID: p.ID, Name: p.Name, Path: dir, Collapsed: p.Collapsed,
+			ActiveSession: p.ActiveSession, Processes: append([]procs.Def(nil), p.Processes...)})
+		a.setProject(len(a.projects) - 1)
+		a.saveSoon()
+		return
+	}
 }
 
 // removeUnavailable forgets a project whose folder is missing, and ends
@@ -192,10 +254,17 @@ func (a *appState) projectGroup(c *ui.Context, i int) {
 func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	p := &a.projects[i]
 	tabs := a.projectTabs(p.ID)
-	h := ui.Row(c.Key("head")).Height(28).Padding(0, 6).Gap(6).AlignItems(ui.Center).Radius(7).Margin(6, 0, 0, 0).Cursor(ui.CursorPointer)
+	// Another project's header shows it; the shown one's has nothing to
+	// do on a click, so it doesn't look like it would. Its tip tells
+	// same-named projects apart.
+	h := ui.Row(c.Key("head")).Height(28).Padding(0, 8, 0, 6).Gap(6).AlignItems(ui.Center).Radius(7).Margin(6, 0, 0, 0).
+		Tooltip(shortDir(p.Path))
 	hovered := h.Hovered()
-	if hovered {
-		h.Background(pal.Hover)
+	if i != a.active {
+		h.Cursor(ui.CursorPointer)
+		if hovered {
+			h.Background(pal.Hover)
+		}
 	}
 	a.fadeColors(h)
 	empty := a.projectEmpty(p.ID, tabs)
@@ -203,9 +272,13 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 	// which shows the project.
 	inner := false
 	h.Children(func() {
-		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(pal.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+		ink := pal.TextMuted
+		if i == a.active {
+			ink = pal.Text
+		}
+		ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).TextColor(ink).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 		if hovered {
-			plus := a.cmdButton(c, iconPlus, 13, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
+			plus := a.cmdButton(c, iconPlus, 12, false).Tooltip("New in " + p.Name + "…").Label("New in " + p.Name).Menu(func(m *ui.Menu) {
 				a.addItems(m, i, false)
 			})
 			a.transition(plus, motionFade)
@@ -225,7 +298,20 @@ func (a *appState) projectGroupBody(c *ui.Context, i int) {
 			if m.Item("Stop All Processes").Chosen() {
 				a.stopAllProcesses(i)
 			}
+			m.Separator()
 		}
+		if m.Item("Copy Path").Chosen() {
+			copyText(p.Path)
+			a.toast(nil, "Copied "+p.Path)
+		}
+		// The order is the sidebar's and Alt+Shift+N's.
+		if i > 0 && m.Item("Move Up").Chosen() {
+			a.moveProject(i, i-1)
+		}
+		if i < len(a.projects)-1 && m.Item("Move Down").Chosen() {
+			a.moveProject(i, i+1)
+		}
+		m.Separator()
 		if m.Item("Remove Project…").Chosen() {
 			a.pendingRemoveProjectID = p.ID
 			a.pendingRemoveProjectName = p.Name
@@ -296,10 +382,11 @@ func (a *appState) projectEmpty(id string, tabs []topTab) bool {
 }
 
 func (a *appState) processGroup(c *ui.Context, pi int) {
-	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 4, 0, 6).AlignItems(ui.Center).Children(func() {
-		sectionLabel(c, "Processes")
+	ui.Row(c.Key("processes-label")).Height(25).Padding(0, 8, 0, 6).AlignItems(ui.Center).Children(func() {
+		// Spaced as the inspector's capitals are, mixed case read loose.
+		sectionLabel(c, "Processes").LetterSpacing(0)
 		ui.Spacer(c)
-		if a.cmdButton(c, iconPlus, 11, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
+		if a.cmdButton(c, iconPlus, 12, false).Tooltip("Add Process…").Label("Add Process").Clicked() {
 			a.switchProject(pi)
 			a.openProcessDialog(pi, nil)
 		}
@@ -315,21 +402,38 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 	// A click on the port or the URL opens its page, and does not also
 	// open the tab.
 	linkClicked := false
-	row := ui.Row(c.Key("p-"+proc.Name)).Height(28).Radius(8).Padding(0, 8, 0, 6).Gap(7).AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	// The transparent border is the selected row's ring in dark themes,
+	// there all along so that nothing in the row moves when it shows; the
+	// padding and gap put the name where a session row's is.
+	rowH := float32(28)
+	if a.settings.Density == "compact" {
+		rowH = 24
+	}
+	row := ui.Row(c.Key("p-"+proc.Name)).Height(rowH).Radius(8).Padding(0, 7, 0, 5).Border(1, ui.Color{}).Gap(8).
+		AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	bg := ui.Color{}
+	hovered := row.Hovered()
 	if selected {
 		bg = pal.RowSelected
-	} else if row.Hovered() {
+	} else if hovered {
 		bg = pal.Hover
 	}
 	row.Background(a.animColor(row, "bg", bg, motionFast))
 	a.transition(row, motionFold)
+	if selected {
+		chosen(row)
+	}
+	active := proc.Status == procs.Starting || proc.Status == procs.Running
 	row.Children(func() {
-		a.processIcon(c, proc, 13)
+		a.processIcon(c, proc, 14)
 		// The name stays readable: its pills give way first, their text
-		// ellipsized, rather than the name going to "…".
-		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(0.2).
-			MinWidth(min(72, float32(len(proc.Name))*9+2))
+		// ellipsized, rather than the name going to "…". Under the pointer
+		// it gives way to the buttons, as the tooltip names it.
+		minW := min(72, float32(len(proc.Name))*9+2)
+		if hovered {
+			minW = min(minW, 32)
+		}
+		name := ui.Text(c, proc.Name).FontSize(12.5).TextColor(pal.Text).SingleLine().Ellipsis("…").Shrink(0.2).MinWidth(minW)
 		if proc.Status == procs.Exited || proc.Status == procs.Stopped {
 			name.TextColor(pal.TextMuted)
 		}
@@ -339,26 +443,55 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 				p.FillPath(new(ui.Path).Circle(r.X+r.W/2, r.Y+r.H/2, min(r.W, r.H)/2), pal.Warn)
 			})
 		}
-		if proc.Status == procs.Untrusted {
-			pill(c, "untrusted")
+		if proc.Status == procs.Untrusted && !hovered {
+			pill(c, "not trusted")
 		}
-		active := proc.Status == procs.Starting || proc.Status == procs.Running
+		ui.Spacer(c)
+		// The buttons come in where the room was, beside the address, so
+		// that nothing moves under the pointer.
+		if hovered {
+			icon, label, tone := iconStart, "Start", pal.Ok
+			if active {
+				icon, label, tone = iconStop, "Stop", pal.Bad
+			}
+			if a.transition(a.litButton(c.Key("run"), icon, 12, tone), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
+				if active {
+					a.stopProcess(pi, proc.Name)
+				} else {
+					a.startProcess(pi, proc.Name)
+				}
+			}
+			if active {
+				if a.transition(a.cmdButton(c.Key("restart"), iconRotate, 12, false), motionFade).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
+					a.restartProcess(pi, proc.Name)
+				}
+			}
+		}
+		// The address, at the row's end as a session's time is. Keyed, as
+		// the buttons come and go before it.
 		switch {
 		case proc.Link != "":
 			// Served at its Dev URL: a link glyph in place of the port, as
 			// the host took the name's room. Its tip is the address.
 			if active {
-				if a.cmdButton(c, iconLink, 12, false).Tooltip(proc.Link).Label("Open " + proc.Link).Clicked() {
+				if a.cmdButton(c.Key("link"), iconLink, 12, false).Tooltip(proc.Link).Label("Open " + proc.Link).Clicked() {
 					linkClicked = true
 					a.openURL(proc.Link)
 				}
 			} else {
-				ui.Icon(c, iconLink).Size(12, 12).Margin(0, 6).Shrink(0).TextColor(pal.TextFaint).Tooltip(proc.Link)
+				// The button's box, so the glyph keeps its place as the
+				// process starts and stops.
+				ui.Box(c.Key("link")).Size(26, 26).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Tooltip(proc.Link).Children(func() {
+					ui.Icon(c, iconLink).Size(12, 12).TextColor(pal.TextFaint)
+				})
 			}
 		case proc.Port > 0:
-			port := pill(c, ":"+itoa(proc.Port))
+			port := pill(c.Key("port"), ":"+itoa(proc.Port))
 			if active {
 				url := "http://localhost:" + itoa(proc.Port)
+				if port.Hovered() {
+					port.Background(pal.Chip.Mix(pal.Text, 0.1))
+				}
 				port.Cursor(ui.CursorPointer).Tooltip(processPortTip(proc, url))
 				if port.Clicked() {
 					linkClicked = true
@@ -374,82 +507,71 @@ func (a *appState) processRow(c *ui.Context, pi int, proc procs.Proc) {
 				a.openURL(proc.Share)
 			})
 		}
-		ui.Spacer(c)
-		if row.Hovered() {
-			active := proc.Status == procs.Starting || proc.Status == procs.Running
-			icon, label, tone := iconPlay, "Start", pal.Ok
-			if active {
-				icon, label, tone = iconSquare, "Stop", pal.Bad
-			}
-			if a.transition(a.toneButton(c, icon, 12, false, tone), motionFade).Tooltip(label + " " + proc.Name).Label(label).Clicked() {
-				if active {
-					a.stopProcess(pi, proc.Name)
-				} else {
-					a.startProcess(pi, proc.Name)
-				}
-			}
-			if a.transition(a.cmdButton(c, iconRotate, 12, false), motionFade).Tooltip("Restart " + proc.Name).Label("Restart").Clicked() {
-				a.restartProcess(pi, proc.Name)
-			}
-		}
 	})
 	tooltip := processStatusText(proc.Status)
 	if proc.Status == procs.Untrusted {
-		tooltip = "not trusted yet: Start to review it"
+		tooltip = "Not trusted yet: Start to review it"
 	} else if proc.Message != "" {
 		tooltip = proc.Message
 	}
 	if proc.Changed {
 		tooltip += "\nDefinition changed: restart to apply"
 	}
-	row.Tooltip(tooltip)
+	row.Tooltip(proc.Name + " · " + tooltip)
 	if row.Clicked() && !linkClicked {
 		a.showProcess(pi, proc.Name)
 	}
-	row.ContextMenu(func(m *ui.Menu) {
-		if proc.Status == procs.Starting || proc.Status == procs.Running {
-			if m.Item("Stop").Chosen() {
-				a.stopProcess(pi, proc.Name)
-			}
-		} else if m.Item("Start").Chosen() {
-			a.startProcess(pi, proc.Name)
+	row.ContextMenu(func(m *ui.Menu) { a.processMenu(m, pi, proc) })
+}
+
+// processMenu is a process's menu, its row's and its tab's.
+func (a *appState) processMenu(m *ui.Menu, pi int, proc procs.Proc) {
+	active := procActive(proc)
+	if active {
+		if m.Item("Stop").Chosen() {
+			a.stopProcess(pi, proc.Name)
 		}
 		if m.Item("Restart").Chosen() {
 			a.restartProcess(pi, proc.Name)
 		}
-		a.shareMenu(m, a.projects[pi].ID, proc)
-		if proc.Link != "" {
-			if m.Item("Open " + procLinkHost(proc.Link)).Chosen() {
-				a.openURL(proc.Link)
-			}
+	} else if m.Item("Start").Chosen() {
+		a.startProcess(pi, proc.Name)
+	}
+	m.Separator()
+	a.shareMenu(m, a.projects[pi].ID, proc)
+	if proc.Link != "" {
+		if m.Item("Open " + procLinkHost(proc.Link)).Chosen() {
+			a.openURL(proc.Link)
 		}
-		if addr := processAddress(proc); addr != "" {
-			if m.Item("Copy URL").Chosen() {
-				copyText(addr)
-				a.toast(nil, "Copied "+addr)
-			}
+	}
+	if addr := processAddress(proc); addr != "" {
+		if m.Item("Copy URL").Chosen() {
+			copyText(addr)
+			a.toast(nil, "Copied "+addr)
 		}
-		if proc.Share != "" {
-			if m.Item("Copy Share Link").Chosen() {
-				copyText(proc.Share)
-				a.toast(nil, "Copied "+proc.Share)
-			}
+	}
+	if proc.Share != "" {
+		if m.Item("Copy Share Link").Chosen() {
+			copyText(proc.Share)
+			a.toast(nil, "Copied "+proc.Share)
 		}
-		if m.Item("Edit…").Chosen() {
-			def := proc.Def
-			a.openProcessDialog(pi, &def)
-		}
-		moveLabel := "Move to omaterm.yml"
-		if !proc.Local {
-			moveLabel = "Keep Local"
-		}
-		if m.Item(moveLabel).Chosen() {
-			a.moveProcess(pi, proc)
-		}
-		if m.Item("Remove Process…").Chosen() {
-			a.askRemoveProcess(pi, proc)
-		}
-	})
+	}
+	m.Separator()
+	if m.Item("Edit…").Chosen() {
+		def := proc.Def
+		a.openProcessDialog(pi, &def)
+	}
+	moveLabel := "Move to omaterm.yml"
+	if !proc.Local {
+		moveLabel = "Move Out of omaterm.yml"
+	}
+	if m.Item(moveLabel).Chosen() {
+		a.moveProcess(pi, proc)
+	}
+	m.Separator()
+	if m.Item("Remove Process…").Chosen() {
+		a.askRemoveProcess(pi, proc)
+	}
 }
 
 // procLinkHost is a Dev URL without its scheme: the host the row's menu
@@ -542,13 +664,19 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 	// The agent's last word on its turn, under the name, unless the
 	// sidebar is kept compact.
 	sub, height := info.Summary, float32(32)
-	if sub != "" && a.settings.Density != "compact" {
+	switch {
+	case sub != "" && a.settings.Density != "compact":
 		height = 44
-	} else {
+	case a.settings.Density == "compact":
+		// Compact packs the rows too, not only the summaries.
+		sub, height = "", 28
+	default:
 		sub = ""
 	}
-	row := ui.Row(c.Key("s-"+t.ID)).Height(height).Radius(8).Padding(0, 8, 0, left).Gap(8).AlignItems(ui.Center).
-		Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
+	// The transparent border is the selected row's ring in dark themes,
+	// there all along so that nothing in the row moves when it shows.
+	row := ui.Row(c.Key("s-"+t.ID)).Height(height).Radius(8).Padding(0, 7, 0, left-1).Border(1, ui.Color{}).Gap(8).
+		AlignItems(ui.Center).Margin(0, 0, 1, 0).Cursor(ui.CursorPointer)
 	bg := ui.Color{}
 	switch {
 	case selected:
@@ -585,7 +713,12 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			ui.Icon(c, programIcon(firstNonEmpty(info.Agent, info.Process, info.Runtime))).Size(14, 14).TextColor(pal.TextFaint)
 		}
 		if a.renaming == t.ID {
-			in := ui.TextInputBase(c.Key("rename"), &a.renameText).FontSize(13).Grow(1).MinWidth(0).AutoFocus()
+			// Framed, as a field is, starting from the name the row showed.
+			var in ui.Element
+			ui.Row(c.Key("rename-box")).Grow(1).MinWidth(0).Height(22).Padding(0, 5).Radius(5).AlignItems(ui.Center).
+				Background(pal.Input).Border(1, pal.Accent).Children(func() {
+				in = ui.TextInputBase(c.Key("rename"), &a.renameText).FontSize(13).Grow(1).MinWidth(0).AutoFocus()
+			})
 			focused := in.Focused()
 			// Enter, or a click away within the window, takes the name;
 			// Escape, or nothing typed, leaves it. A click away dropped
@@ -594,7 +727,10 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 			case c.Shortcut(0, ui.KeyEscape):
 				a.renaming, a.renameFocused = "", false
 			case in.Submitted(), a.renameFocused && !focused && (a.win == nil || a.win.IsFocused()):
-				a.renameSession(pi, t.ID, a.renameText)
+				// Left as shown, the name it follows stays its own.
+				if strings.TrimSpace(a.renameText) != a.sessionName(t, info) {
+					a.renameSession(pi, t.ID, a.renameText)
+				}
 				a.renaming, a.renameFocused = "", false
 			case focused:
 				a.renameFocused = true
@@ -661,56 +797,62 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 		row.Tooltip(tip)
 	}
 	if row.DoubleClicked() {
-		a.renaming, a.renameText = t.ID, t.Label
+		a.renaming, a.renameText = t.ID, a.sessionName(t, info)
 	} else if row.Clicked() && !toggled {
 		a.focusSession(pi, t.ID)
 	}
-	row.ContextMenu(func(m *ui.Menu) {
-		if m.Item("Rename").Chosen() {
+	row.ContextMenu(func(m *ui.Menu) { a.sessionMenu(c, m, pi, t, info, len(node.kids) > 0, collapse) })
+}
+
+// sessionMenu is a session's menu, its row's and its tab's: kids tells it
+// started sessions, which collapse folds.
+func (a *appState) sessionMenu(c *ui.Context, m *ui.Menu, pi int, t topTab, info session.Info, kids bool, collapse func()) {
+	if m.Item("Rename").Chosen() {
+		// In its row, which the sidebar shows.
+		a.setSidebar(true)
+		a.focusSession(pi, t.ID)
+		a.renaming, a.renameText = t.ID, a.sessionName(t, info)
+	}
+	if m.Item("Copy Working Directory").Chosen() {
+		mygo.Clipboard.WriteText(info.WorkDir())
+		c.Toast("Copied")
+	}
+	if _, _, ok := a.agentOf(t); ok && m.Item("Ask for Review…").Chosen() {
+		a.openReviewDialog(t)
+	}
+	if kids {
+		label := "Collapse the Sessions It Started"
+		if t.Collapsed {
+			label = "Show the Sessions It Started"
+		}
+		if m.Item(label).Chosen() {
+			collapse()
+		}
+	}
+	if w := t.Worktree; w != nil {
+		m.Separator()
+		if m.Item("Merge into " + w.Base + "…").Chosen() {
 			a.focusSession(pi, t.ID)
-			a.renaming, a.renameText = t.ID, t.Label
+			a.openMergeDialog(t)
 		}
-		if m.Item("Copy Working Directory").Chosen() {
-			mygo.Clipboard.WriteText(info.WorkDir())
-			c.Toast("Copied")
-		}
-		if _, _, ok := a.agentOf(t); ok && m.Item("Ask for Review…").Chosen() {
-			a.openReviewDialog(t)
-		}
-		if len(node.kids) > 0 {
-			label := "Collapse the Sessions It Started"
-			if t.Collapsed {
-				label = "Show the Sessions It Started"
-			}
-			if m.Item(label).Chosen() {
-				collapse()
-			}
-		}
-		if w := t.Worktree; w != nil {
-			m.Separator()
-			if m.Item("Merge into " + w.Base + "…").Chosen() {
-				a.focusSession(pi, t.ID)
-				a.openMergeDialog(t)
-			}
-			if m.Item("Update from " + w.Base).Chosen() {
-				a.focusSession(pi, t.ID)
-				a.updateWorktree(t)
-			}
-			if m.Item("Push & Create PR").Chosen() {
-				a.focusSession(pi, t.ID)
-				a.pushWorktree(t)
-			}
-			if m.Item("Discard Worktree…").Chosen() {
-				a.focusSession(pi, t.ID)
-				a.discardWorktreeAsking(t)
-			}
-			m.Separator()
-		}
-		if m.Item("Close Session").Chosen() {
+		if m.Item("Update from " + w.Base).Chosen() {
 			a.focusSession(pi, t.ID)
-			a.closeTabAsking(a.activeTab)
+			a.updateWorktree(t)
 		}
-	})
+		if m.Item("Push & Create PR").Chosen() {
+			a.focusSession(pi, t.ID)
+			a.pushWorktree(t)
+		}
+		if m.Item("Discard Worktree…").Chosen() {
+			a.focusSession(pi, t.ID)
+			a.discardWorktreeAsking(t)
+		}
+	}
+	m.Separator()
+	if m.Item("Close Session").Chosen() {
+		a.focusSession(pi, t.ID)
+		a.closeTabAsking(a.activeTab)
+	}
 }
 
 // tabName is what a session is called, as its row shows it.
@@ -781,6 +923,14 @@ func (a *appState) sessionTooltip(i session.Info) string {
 }
 
 // ago writes how long ago, as a sidebar does: now, 3m, 2h, 4d, 1w.
+// agoPhrase is ago in a sentence: "just now", or "3m ago".
+func agoPhrase(d time.Duration) string {
+	if s := ago(d); s != "now" {
+		return s + " ago"
+	}
+	return "just now"
+}
+
 func ago(d time.Duration) string {
 	switch {
 	case d < time.Minute:
@@ -837,7 +987,8 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 		if a.cmdButton(c, iconFolderPlus, 15, false).Tooltip("Open Project (" + keyLabels("app.openProject") + ")").Clicked() {
 			a.openProjectDialog()
 		}
-		if a.cmdButton(c, iconSearch, 15, false).Tooltip("Command Palette (" + keyLabels("app.commandPalette") + ")").Clicked() {
+		// Not the magnifier, which is Search in Files in the tab bar.
+		if a.cmdButton(c, iconSquareTerminal, 15, false).Tooltip("Command Palette (" + keyLabels("app.commandPalette") + ")").Label("Command Palette").Clicked() {
 			a.openOverlay(overlayCommandPalette)
 		}
 		ui.Spacer(c)
@@ -845,7 +996,7 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 		// the sidebar, cutting the last one. A chip is about 34 px and 7 a
 		// digit; the three buttons and the padding take about 124.
 		room := a.sidebarWidth() - 124
-		chip := func(key string, n int, st session.Info, attention bool, next func() bool) {
+		chip := func(key string, n int, st session.Info, attention bool, tip string, next func() bool) {
 			if n == 0 {
 				return
 			}
@@ -854,11 +1005,16 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 				return
 			}
 			room -= need
-			e := ui.Row(c.Key(key)).Height(24).Radius(12).Padding(0, 8, 0, 6).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+			e := ui.Row(c.Key(key)).Height(24).Radius(12).Padding(0, 8, 0, 6).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer).
+				Tooltip(tip).Label(tip)
 			fg, bg := pal.TextMuted, pal.Chip
 			if attention {
 				fg, bg = pal.Attention, pal.AttentionSoft
 			}
+			if e.Hovered() {
+				bg = bg.Mix(pal.Text, 0.08)
+			}
+			a.press(a.fadeColors(e))
 			a.transition(e, motionPop)
 			e.Background(bg).Children(func() {
 				a.statusIcon(c, st, 12)
@@ -868,9 +1024,12 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 				next()
 			}
 		}
-		chip("needs", waiting, session.Info{Status: session.Waiting, Progress: -1}, true, func() bool { return a.jumpTo(iconWaiting) })
-		chip("working", working, session.Info{Status: session.Working, Progress: -1}, false, func() bool { return a.jumpTo(iconWorking) })
-		chip("done", done, session.Info{Status: session.Idle, Unread: true, Progress: -1}, false, func() bool { return a.jumpTo(iconDone) })
+		chip("needs", waiting, session.Info{Status: session.Waiting, Progress: -1}, true,
+			withKeys(plural(waiting, "session")+" waiting for you: click for the next", "session.attention"), func() bool { return a.jumpTo(iconWaiting) })
+		chip("working", working, session.Info{Status: session.Working, Progress: -1}, false,
+			plural(working, "session")+" working: click for the next", func() bool { return a.jumpTo(iconWorking) })
+		chip("done", done, session.Info{Status: session.Idle, Unread: true, Progress: -1}, false,
+			plural(done, "session")+" done, not seen yet: click for the next", func() bool { return a.jumpTo(iconDone) })
 	})
 }
 
@@ -879,6 +1038,11 @@ func (a *appState) sidebarFooter(c *ui.Context) {
 func (a *appState) statusCounts() (waiting, working, done int) {
 	for _, p := range a.projects {
 		for _, t := range a.projectTabs(p.ID) {
+			// Sessions only, as the chips' clicks jump to and the rows
+			// show: a process's tab isn't one.
+			if t.Kind != tabTerminal {
+				continue
+			}
 			info, ok := a.sessionInfo(t)
 			if !ok {
 				continue

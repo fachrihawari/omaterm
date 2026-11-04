@@ -389,7 +389,8 @@ func (h *localHost) changed() {
 func remoteAction(id string) bool {
 	switch {
 	case id == "app.quit", id == "app.openProject", strings.HasPrefix(id, "git."), id == "file.save",
-		id == "daemon.restart", id == "agents.setup", id == "cli.install", id == "web.pair":
+		id == "daemon.restart", id == "agents.setup", id == "cli.install", id == "web.pair",
+		strings.HasPrefix(id, "worktree."), id == "project.remove":
 		return false
 	}
 	for _, c := range commandRegistry {

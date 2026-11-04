@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"omaterm/internal/procs"
+	"omaterm/internal/session"
 	"omaterm/internal/theme"
 	"omaterm/service"
 )
@@ -74,6 +75,141 @@ func TestStatusBarShowsProject(t *testing.T) {
 	// The hidden-sidebar toggle must be reachable, not just implied.
 	if _, ok := tr.Find("Show Sidebar"); !ok {
 		t.Error("no show-sidebar control while the sidebar is hidden")
+	}
+}
+
+// The status bar's project name brings the hidden sidebar back, and its
+// branch opens the branch picker; with the sidebar shown, the name is
+// plain text, with nothing to click.
+func TestStatusBarProjectAndBranchAct(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	// The inspector's project card names both too.
+	a.sidebarVisible, a.inspectorVisible = false, false
+	if p := a.project(); p != nil {
+		p.Name = "probe-project"
+		p.Branch = "probe-branch"
+	}
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	if err := tr.Click("probe-project"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if !a.sidebarVisible {
+		t.Error("clicking the project in the status bar left the sidebar hidden")
+	}
+	if err := tr.Click("probe-branch"); err != nil {
+		t.Fatal(err)
+	}
+	tr.Frame()
+	if a.overlay != overlayBranch {
+		t.Errorf("clicking the branch in the status bar opened %v, not the branch picker", a.overlay)
+	}
+}
+
+// Enter confirms a dialog, unless what it confirms destroys something:
+// then Cancel has the keyboard.
+func TestDialogEnterDefault(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	for _, c := range []struct {
+		danger bool
+		want   int
+	}{{false, 1}, {true, 0}} {
+		open, result := true, -1
+		view := func(ctx *ui.Context) {
+			if r := a.confirmDialog(ctx, &open, "Restart it?", "", c.danger, "Cancel", "Restart"); r >= 0 {
+				result = r
+			}
+		}
+		tr := ui.NewTester(view, 900, 600)
+		tr.Frame()
+		tr.Frame()
+		tr.Key(0, ui.KeyEnter)
+		tr.Frame()
+		if result != c.want {
+			t.Errorf("danger=%v: Enter chose %d, not %d", c.danger, result, c.want)
+		}
+	}
+}
+
+// In the smallest window, with the tab strip full, the + keeps its room
+// beside the tabs instead of drawing over the buttons after it.
+func TestNewTabButtonKeepsItsRoom(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.newTerminalTab()
+	a.newTerminalTab()
+	tr := ui.NewTester(a.view, 600, 400)
+	tr.Frame()
+	tr.Frame()
+	plus, ok := tr.Find("New Session")
+	keys, ok2 := tr.Find("Keyboard Shortcuts")
+	if !ok || !ok2 {
+		t.Fatalf("missing the + or the shortcuts button: %v", tr.Texts())
+	}
+	if plus.X+plus.W > keys.X {
+		t.Errorf("the + (%v) runs into the shortcuts button (%v)", plus, keys)
+	}
+}
+
+// A turn's end refreshes the Git tab, which an agent's edits made stale.
+func TestTurnEndRefreshesGit(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	a.repoAt = time.Time{}
+	a.statusChanged(map[string]session.Info{"p": {Status: session.Working}}, map[string]session.Info{"p": {Status: session.Idle}})
+	if a.repoAt.IsZero() {
+		t.Error("the end of a turn didn't refresh the repo")
+	}
+}
+
+// Ctrl+Alt and the arrows (⌥⌘ on macOS) move the keyboard between the
+// panes of a split, by where they are.
+func TestPaneFocusByArrows(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	first := a.activeSplitLeaf()
+	a.splitPane(first, splitVertical)
+	ids := a.activeSplit().termIDs()
+	right := ids[1]
+	a.splitPane(right, splitHorizontal)
+	ids = a.activeSplit().termIDs()
+	below := ids[2]
+	a.focusPane(first)
+	tr := ui.NewTester(a.view, 1440, 900)
+	tr.Frame()
+	tr.Frame()
+	step := func(key ui.Key, want string) {
+		t.Helper()
+		tr.Key(ui.Cmd|ui.Alt, key)
+		tr.Frame()
+		if got := a.activeSplitLeaf(); got != want {
+			t.Fatalf("after %v the keyboard is in %s, not %s (panes %v)", key, got, want, ids)
+		}
+	}
+	step(ui.KeyLeft, first) // nothing that way: it stays
+	step(ui.KeyRight, right)
+	step(ui.KeyDown, below)
+	step(ui.KeyUp, right)
+	step(ui.KeyLeft, first)
+}
+
+// In the smallest window the inspector opens, narrower, rather than not
+// at all, and the sidebar gives way to it.
+func TestPanelsFitTheWindow(t *testing.T) {
+	a := newTestApp(t)
+	defer stopTermPanes(a)
+	tr := ui.NewTester(a.view, 600, 400)
+	a.setInspector(true)
+	tr.Frame()
+	tr.Frame()
+	if !a.inspectorShown || a.sidebarShown {
+		t.Fatalf("at 600 px: inspector shown %v, sidebar %v", a.inspectorShown, a.sidebarShown)
+	}
+	if w := a.inspectorWidth(); w < inspectorMinW || w > 600-minPanesWidth {
+		t.Errorf("the inspector is %v wide in a 600 px window", w)
 	}
 }
 
@@ -659,6 +795,10 @@ func TestGraphColumnsAligned(t *testing.T) {
 func TestPaletteTitlesAligned(t *testing.T) {
 	a := newTestApp(t)
 	defer stopTermPanes(a)
+	// Sessions besides the one shown, which the palette leaves out.
+	a.newTerminalTabReal()
+	a.newTerminalTabReal()
+	a.activateTab(0)
 	a.openOverlay(overlayCommandPalette)
 	tr := ui.NewTester(a.view, 1440, 900)
 	tr.Frame()
@@ -966,7 +1106,8 @@ func TestInspectorSlides(t *testing.T) {
 	}
 	tr.Advance(time.Second)
 	tr.Frame()
-	if tr.HasText("Files") {
+	// Its tab exactly: "Search in Files" in the tab bar stays.
+	if _, ok := tr.Find("Files"); ok {
 		t.Fatal("the inspector stays once hidden")
 	}
 }

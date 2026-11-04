@@ -696,6 +696,9 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		return d.reloadVoice(), nil
 	case "voice.transcribe":
 		return d.transcribeCall(ctx, raw)
+	case "voice.warm":
+		go d.warmVoice()
+		return true, nil
 	case "web.setTheme":
 		var t web.Theme
 		if err := json.Unmarshal(raw, &t); err != nil || len(t.Tokens) == 0 {

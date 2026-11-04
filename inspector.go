@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -27,8 +28,11 @@ func (a *appState) inspectorPanel(c *ui.Context, gap float32) {
 	if w < 1 {
 		return
 	}
-	box.Padding(0, 0, 0, min(gap, w)).Children(func() {
-		a.panelEdge(c, "inspector-edge", &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
+	// The edge is the gap itself, so the card is a gap from the panes, as
+	// the panes are from each other: an edge in the card's room put it
+	// 6 px further.
+	box.Children(func() {
+		a.panelEdge(c, "inspector-edge", min(gap, w), &a.inspectorW, inspectorMinW, inspectorMaxW, inspectorDefaultW, -1)
 		card := ui.Column(c).Grow(1).MinWidth(0).FillHeight().Radius(a.cardRadius()).Clip().Background(pal.Card)
 		cardEdge(card).Children(func() {
 			a.inspector(c)
@@ -37,6 +41,7 @@ func (a *appState) inspectorPanel(c *ui.Context, gap float32) {
 }
 
 func (a *appState) inspector(c *ui.Context) ui.Element {
+	a.followRepo(c)
 	return ui.Column(c).Fill().Children(func() {
 		ui.Row(c).Height(40).AlignItems(ui.End).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(pal.Border).Children(func() {
 			a.inspectorTabButton(c, 0, iconInfo, "Info", 0)
@@ -63,7 +68,8 @@ func (a *appState) inspector(c *ui.Context) ui.Element {
 
 func (a *appState) inspectorTabButton(c *ui.Context, idx int, icon *ui.SVG, label string, badge int) ui.Element {
 	active := a.inspectorTab == idx
-	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0).Label(label)
+	e := ui.ButtonBase(c).Height(32).Padding(0, 12).Gap(6).Shrink(0).Label(label).
+		Tooltip(withKeys(label, [...]string{"view.info", "view.files", "view.git"}[idx]))
 	e.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 			// The tab shown reads as chosen: its text in full and bold,
@@ -103,6 +109,23 @@ type gitFileMatch struct{ path string }
 // moves from tab to tab.
 type inspectorLine struct{}
 
+// followRepo keeps the Git tab, and the count on it, up with what the
+// agents change while the inspector shows: every few seconds while one
+// works, now and then otherwise. A turn's end refreshes it at once
+// (statusChanged).
+func (a *appState) followRepo(c *ui.Context) {
+	every := 30 * time.Second
+	if _, working, _ := a.statusCounts(); working > 0 {
+		every = 4 * time.Second
+	}
+	if since := time.Since(a.repoAt); since < every {
+		c.After(every - since)
+		return
+	}
+	a.refreshActiveRepo()
+	c.After(every)
+}
+
 // showInspectorTab switches the inspector to Info (0), Files (1) or Git
 // (2), loading what that tab shows.
 func (a *appState) showInspectorTab(idx int) {
@@ -112,9 +135,7 @@ func (a *appState) showInspectorTab(idx int) {
 	wasTab := a.inspectorTab
 	a.inspectorTab = idx
 	if idx == 0 {
-		a.startProcessRefresh()
-	} else {
-		a.stopProcessRefresh()
+		a.startProcessRefresh() // at once, not in up to 5 s
 	}
 	// The files as they are now: one an agent made was missing until a
 	// restart.
@@ -159,7 +180,20 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 									SingleLine().Ellipsis("…").Shrink(0.25).MinWidth(min(96, float32(len(p.Name))*8))
 								ui.Spacer(c)
 								if p.Branch != "" {
-									pillShrink(c, p.Branch).Shrink(1).MinWidth(0).MaxWidthPercent(100)
+									// The branch switches branches, as the
+									// status bar's does.
+									b := ui.ButtonBase(c.Key("branch")).Radius(9).Padding(1, 6).Background(pal.Chip).
+										Shrink(1).MinWidth(0).MaxWidthPercent(100).Tooltip(p.Branch + "\n" + withKeys("Switch Branch…", "git.switchBranch"))
+									if b.Hovered() {
+										b.Background(pal.Chip.Mix(pal.Text, 0.1))
+									}
+									a.fadeColors(b)
+									b.Children(func() {
+										ui.Text(c, p.Branch).FontSize(10).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+									})
+									if b.Clicked() {
+										a.switchCheckoutBranch()
+									}
 								}
 							})
 							ui.Text(c, p.Path).FontSize(10).TextColor(pal.TextMuted).
@@ -181,15 +215,15 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 					ui.Row(c).AlignItems(ui.Center).Children(func() {
 						sectionLabel(c, "RUNNING")
 						ui.Spacer(c)
+						// No Refresh: the list follows every 5 s, and as the
+						// tab shows.
 						countBadge(c, len(a.processes))
-						if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
-							a.refreshProcesses()
-						}
 					})
 					if a.processErr != "" {
 						ui.Text(c, a.processErr).FontSize(10).TextColor(pal.Bad).Padding(4, 0)
 					}
-					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+					// One fill for the four cards, the project's and Updates' too.
+					ui.Column(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Children(func() {
 						if a.processes == nil {
 							ui.Box(c).Padding(16).Children(func() {
 								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
@@ -210,7 +244,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							})
 						}
 						for i, p := range a.processes {
-							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							row := ui.Row(c).Height(fileRowH+6).Padding(0, 8, 0, 12).Gap(8).AlignItems(ui.Center).ClipX()
 							if i > 0 {
 								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
 							}
@@ -230,7 +264,9 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 								ui.Spacer(c)
 								mutedTxt2(c, strings.Trim(proc.CPU+" · "+proc.Mem, " ·"), 11)
 								if proc.Pid != 1 && proc.Pid != os.Getpid() {
-									if a.cmdButton(c, iconTrash, iconBtn, false).Tooltip("Kill process").Clicked() {
+									// The sidebar's Stop: a polite SIGTERM, not a
+									// deletion.
+									if a.toneButton(c, iconStop, iconBtn-2, pal.Bad).Tooltip("Kill process").Clicked() {
 										a.pendingKillPid = proc.Pid
 										a.pendingKillName = proc.Name
 										open := true
@@ -248,11 +284,8 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 						sectionLabel(c, "PORTS")
 						ui.Spacer(c)
 						countBadge(c, len(a.ports))
-						if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Clicked() {
-							a.refreshProcesses()
-						}
 					})
-					ui.Column(c).Radius(8).Border(1, pal.Border).Children(func() {
+					ui.Column(c).Radius(8).Border(1, pal.Border).Background(pal.Raised).Children(func() {
 						if a.processes == nil {
 							ui.Box(c).Padding(16).Children(func() {
 								ui.Text(c, "Loading…").FontSize(11).TextColor(pal.TextMuted)
@@ -267,7 +300,7 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 							})
 						}
 						for i, p := range a.ports {
-							row := ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).ClipX()
+							row := ui.Row(c).Height(fileRowH+6).Padding(0, 8, 0, 12).Gap(8).AlignItems(ui.Center).ClipX()
 							if i > 0 {
 								row = row.BorderWidth(1, 0, 0, 0).BorderColor(pal.Border)
 							}
@@ -307,7 +340,12 @@ func (a *appState) infoPanel(c *ui.Context) ui.Element {
 				})
 			}
 
-			a.updateSection(c)
+			// A build that updates itself has its card here, where Linux
+			// has no menu bar to check from; one that can't says so in
+			// Settings › About, not under every project.
+			if updatesReady && mygo.Updater.Enabled() {
+				a.updateSection(c)
+			}
 		})
 	})
 }
@@ -358,6 +396,11 @@ func (a *appState) filesPanel(c *ui.Context) ui.Element {
 			ui.Row(c).Height(36).Shrink(0).AlignItems(ui.Center).Padding(0, 8, 0, 12).Gap(2).Children(func() {
 				sectionLabel(c, "FILES")
 				ui.Spacer(c)
+				// What changed outside the app since the tab was shown; a
+				// turn's end refreshes it too.
+				if a.cmdButton(c, iconRefresh, iconBtn, false).Tooltip("Refresh").Label("Refresh Files").Clicked() {
+					a.rebuildFileTree()
+				}
 				if a.cmdButton(c, iconFilePlus, iconBtn, false).Tooltip("New File").Label("New File").Clicked() {
 					a.startNewEntry(a.workspace, false)
 				}
@@ -388,7 +431,7 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 	}
 	a.transition(e, motionRow)
 	e.Children(func() {
-		row := ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4)
+		row := ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(4)
 		if n.Muted {
 			row.Opacity(0.5)
 		}
@@ -409,10 +452,11 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 			} else {
 				fileBadge(c, n.Name)
 			}
-			ui.Text(c, n.Name).FontSize(11).TextColor(pal.TextSoft).SingleLine()
+			// A long name ellipsizes, keeping its git letter in sight.
+			ui.Text(c, n.Name).FontSize(11).TextColor(pal.TextSoft).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0).Tooltip(n.Name)
 			ui.Spacer(c)
 			if n.Status != "" {
-				ui.Text(c, n.Status).FontSize(10).TextColor(statusColor(n.Status))
+				ui.Text(c, n.Status).FontSize(10).TextColor(statusColor(n.Status)).Shrink(0)
 			}
 		})
 	})
@@ -437,6 +481,18 @@ func (a *appState) fileNodeView(c *ui.Context, n *fileNode, depth int) {
 		}
 		if m.Item("New Folder…").Chosen() {
 			a.startNewEntry(dir, true)
+		}
+		m.Separator()
+		if m.Item("Copy Relative Path").Chosen() {
+			rel, err := filepath.Rel(a.workspace, n.Path)
+			if err != nil {
+				rel = n.Path
+			}
+			copyText(rel)
+			a.toast(nil, "Copied "+rel)
+		}
+		if m.Item("Reveal in File Manager").Chosen() {
+			mygo.Shell.ShowItemInFolder(n.Path)
 		}
 	})
 	if n.Dir && n.Open {
@@ -519,7 +575,7 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 		// worktree, a switch shows the turn's changes alone, or the
 		// branch's.
 		if info, ok := a.changesPane(); ok && (info.Turn != nil || a.focusedWorktree() != nil) {
-			ui.Box(c).Padding(10, 10, 8, 10).Shrink(0).Children(func() {
+			ui.Box(c).Padding(10, 12, 8, 12).Shrink(0).Children(func() {
 				a.turnSwitch(c, info)
 			})
 			if a.changesView(info) != changesAll {
@@ -564,35 +620,50 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				// The branch trigger is the only child allowed to give up
 				// width: a long name ellipsizes instead of pushing the
 				// remote actions past the panel's edge.
+				// Its arrows say it opens a list, as a select's do.
 				trigger := ui.ButtonBase(c).Radius(4).Padding(2, 6).Border(1, pal.BorderStrong).Shrink(1).MinWidth(0).Children(func() {
-					ui.Text(c, a.currentBranch).FontSize(11).TextColor(pal.Text).
-						SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+					ui.Row(c).Gap(4).AlignItems(ui.Center).MinWidth(0).Children(func() {
+						ui.Text(c, a.currentBranch).FontSize(11).TextColor(pal.Text).
+							SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+						ui.Icon(c, iconChevronsUpDown).Size(10, 10).TextColor(pal.TextFaint).Shrink(0)
+					})
 				})
 				trigger.Tooltip(a.currentBranch)
 				if trigger.Clicked() {
 					a.openBranchOverlay()
 				}
-				pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
+				// How far from its remote, when it has one and is apart.
+				if r.HasRemote && r.Ahead+r.Behind > 0 {
+					pill(c, "↑"+itoa(r.Ahead)+" ↓"+itoa(r.Behind))
+				}
 				ui.Spacer(c)
 				remote := r.HasRemote
-				if b := a.cmdButton(c, iconDownload, iconBtn, false).Tooltip("Fetch").Label("Fetch"); !remote {
-					b.Disabled(true) // painted at half opacity
-				} else if b.Clicked() {
+				// Disabled (at half opacity) with no remote, and so with no
+				// hover either.
+				// Fetch refreshes what the remote has; only Pull points down.
+				if a.cmdButtonOn(c, iconRefresh, iconBtn, false, remote).Tooltip("Fetch").Label("Fetch").Clicked() {
 					a.gitFetch(c)
 				}
-				if b := a.cmdButton(c, iconArrowDown, iconBtn, false).Tooltip("Pull").Label("Pull"); !remote {
-					b.Disabled(true) // painted at half opacity
-				} else if b.Clicked() {
+				if a.cmdButtonOn(c, iconArrowDown, iconBtn, false, remote).Tooltip("Pull").Label("Pull").Clicked() {
 					a.gitPull(c)
 				}
-				if b := a.cmdButton(c, iconArrowUp, iconBtn, false).Tooltip("Push").Label("Push"); !remote {
-					b.Disabled(true) // painted at half opacity
-				} else if b.Clicked() {
+				if a.cmdButtonOn(c, iconArrowUp, iconBtn, false, remote).Tooltip("Push").Label("Push").Clicked() {
 					a.gitPush(c)
 				}
 			})
 			ui.Box(c).Radius(6).Border(1, pal.Border).Background(pal.Input).Children(func() {
-				ui.TextAreaBase(c, &a.commitMsg).Placeholder("Commit message…").FontSize(11).Padding(8).MinHeight(56).FillWidth()
+				// Ctrl+Enter in the message commits, as Enter does in a
+				// form's line: the field's key, not a second one for a
+				// command.
+				msg := ui.TextAreaBase(c, &a.commitMsg).Placeholder("Commit message… (" + combo(ui.Cmd, ui.KeyEnter).Label() + " commits)").
+					FontSize(11).Padding(8).MinHeight(56).FillWidth()
+				if msg.Focused() {
+					c.OnShortcut(ui.Cmd, ui.KeyEnter, func() {
+						if a.commitReady() {
+							a.gitCommit(c)
+						}
+					})
+				}
 			})
 			ui.Row(c).Gap(8).Children(func() {
 				commit := ui.PrimaryButton(c, "Commit").Grow(1).Height(32).FontSize(11)
@@ -600,8 +671,9 @@ func (a *appState) gitPanel(c *ui.Context) ui.Element {
 				if !ready {
 					// Muted, not faded out (a disabled element paints at half
 					// opacity, which left its label unreadable): it still
-					// says what it is for, and does nothing until ready.
-					commit.Background(pal.Chip).TextColor(pal.TextMuted).Cursor(ui.CursorDefault)
+					// says what it is for, does nothing until ready, and
+					// says why.
+					commit.Background(pal.Chip).TextColor(pal.TextMuted).Cursor(ui.CursorDefault).Tooltip(a.commitBlocked())
 				}
 				if commit.Clicked() && ready {
 					a.gitCommit(c)
@@ -703,6 +775,22 @@ func (a *appState) commitReady() bool {
 		strings.TrimSpace(a.commitMsg) != ""
 }
 
+// commitBlocked says why Commit can't run yet.
+func (a *appState) commitBlocked() string {
+	r := a.activeRepoRef()
+	switch {
+	case r == nil:
+		return "No repository"
+	case a.gitBusy != "":
+		return a.gitBusy + "…"
+	case len(r.Staged) == 0:
+		return "Stage changes to commit"
+	case strings.TrimSpace(a.commitMsg) == "":
+		return "Write a commit message"
+	}
+	return ""
+}
+
 func (a *appState) gitCommit(c *ui.Context) {
 	r := a.activeRepoRef()
 	if r == nil {
@@ -745,7 +833,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 			all := a.cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage all")
 			if all.Clicked() && r != nil {
 				if err := service.UnstageAll(r.Root); err != nil {
-					c.Toast("Git error: " + err.Error())
+					a.errorToast(c, "Git error: "+err.Error())
 				} else {
 					a.refreshActiveRepo()
 				}
@@ -754,7 +842,7 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 			stageAll := a.cmdButton(c, iconPlus, iconBtn, false).Tooltip("Stage all")
 			if stageAll.Clicked() && r != nil {
 				if err := service.StageAll(r.Root); err != nil {
-					c.Toast("Git error: " + err.Error())
+					a.errorToast(c, "Git error: "+err.Error())
 				} else {
 					a.refreshActiveRepo()
 				}
@@ -769,13 +857,10 @@ func (a *appState) gitSection(c *ui.Context, label string, count int, staged boo
 
 // gitGraphSection renders the commit graph as a collapsible section.
 func (a *appState) gitGraphSection(c *ui.Context) {
-	icon := iconChevronRight
-	if a.gitGraphOpen {
-		icon = iconChevronDown
-	}
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		// Turning, as the other sections' do.
+		a.disclosure(ui.Icon(c, iconChevronRight).Width(14).Height(14).TextColor(pal.TextMuted), a.gitGraphOpen)
 		txt(c, "GIT GRAPH", 10, pal.TextMuted).LetterSpacing(1.0)
 		// No count until the history is in: a dash read as a broken badge.
 		if a.graphLoaded {
@@ -839,15 +924,21 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 	a.transition(e, t)
 	e.Children(func() {
 		fileLabel(c, f.Path)
-		actions := ui.Row(c.Key("actions")).Gap(2).Shrink(0)
+		// Over the row's end, before the status letter, not in the flow:
+		// hidden, they kept their room and the names were cut early.
+		actions := ui.Row(c.Key("actions")).Gap(2).Absolute().Right(12+12+8).Top(0).Bottom(0).
+			AlignItems(ui.Center).Padding(0, 4).Background(pal.Hover)
 		actions.Opacity(a.animate(actions, "show", b2f(hover), motionFast))
+		if !hover {
+			actions.PassThrough()
+		}
 		actions.Children(func() {
 			r := a.activeRepoRef()
 			if staged {
 				un := a.cmdButton(c, iconMinus, iconBtn, false).Tooltip("Unstage")
 				if un.Clicked() && r != nil {
 					if err := service.Unstage(r.Root, f.Path); err != nil {
-						c.Toast("Git error: " + err.Error())
+						a.errorToast(c, "Git error: "+err.Error())
 					} else {
 						a.refreshActiveRepo()
 					}
@@ -860,7 +951,7 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 				st := a.cmdButton(c, iconPlus, iconBtn, false).Tooltip(stageTip)
 				if st.Clicked() && r != nil {
 					if err := service.Stage(r.Root, f.Path); err != nil {
-						c.Toast("Git error: " + err.Error())
+						a.errorToast(c, "Git error: "+err.Error())
 					} else {
 						a.refreshActiveRepo()
 					}
@@ -889,13 +980,9 @@ func (a *appState) gitFileRow(c *ui.Context, f *service.GitFile, staged bool) ui
 // stashSection renders the STASHES section, collapsible like the others,
 // with its create form and list in the panel's normal scroll.
 func (a *appState) stashSection(c *ui.Context, r *service.Repo) {
-	icon := iconChevronRight
-	if !a.stashCollapsed {
-		icon = iconChevronDown
-	}
 	e := ui.Row(c).Height(32).Padding(0, 8).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).BorderWidth(1, 0, 0, 0).BorderColor(pal.Border).Margin(4, 0, 0, 0)
 	e.Children(func() {
-		ui.Icon(c, icon).Width(14).Height(14).TextColor(pal.TextMuted)
+		a.disclosure(ui.Icon(c, iconChevronRight).Width(14).Height(14).TextColor(pal.TextMuted), !a.stashCollapsed)
 		txt(c, "STASHES", 10, pal.TextMuted).LetterSpacing(1.0)
 		countBadge(c, len(r.Stashes))
 		ui.Spacer(c)
@@ -941,8 +1028,13 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 			meta += " · " + relativeTime(s.When)
 			txt(c, meta, 9, pal.TextMuted)
 		})
-		actions := ui.Row(c.Key("actions")).Gap(2).Shrink(0)
+		// Over the row's end, as a changed file's are.
+		actions := ui.Row(c.Key("actions")).Gap(2).Absolute().Right(12).Top(0).Bottom(0).
+			AlignItems(ui.Center).Padding(0, 4).Background(pal.Hover)
 		actions.Opacity(a.animate(actions, "show", b2f(hover), motionFast))
+		if !hover {
+			actions.PassThrough()
+		}
 		actions.Children(func() {
 			// Each acts on the stash by its commit, not where the list
 			// showed it: a drop or pop since moved the others up, and a
@@ -954,7 +1046,7 @@ func (a *appState) stashRow(c *ui.Context, r *service.Repo, s *service.Stash) {
 					a.gitStashApply(c, i)
 				}
 			}
-			pop := a.cmdButton(c, iconExternalLink, iconBtn, false).Tooltip("Pop")
+			pop := a.cmdButton(c, iconArchiveRestore, iconBtn, false).Tooltip("Pop")
 			if pop.Clicked() {
 				if i, ok := a.stashIndex(c, hash); ok {
 					a.gitStashPop(c, i)
@@ -985,7 +1077,7 @@ func (a *appState) askDiscard(root, path string, untracked bool) {
 	}
 	a.askDanger("Discard Changes?", text, "Discard", func() {
 		if err := service.Discard(root, path, untracked); err != nil {
-			a.toast(nil, "Git error: "+err.Error())
+			a.errorToast(nil, "Git error: "+err.Error())
 			return
 		}
 		a.refreshActiveRepo()
@@ -1022,7 +1114,7 @@ func (a *appState) gitStashPushOpt(c *ui.Context, untracked bool) {
 		return
 	}
 	if err := service.StashPush(r.Root, a.stashMsg, untracked); err != nil {
-		c.Toast("Stash failed: " + err.Error())
+		a.errorToast(c, "Stash failed: "+err.Error())
 		return
 	}
 	a.stashMsg = ""
@@ -1062,7 +1154,7 @@ func (a *appState) gitStashDrop(c *ui.Context, index int) {
 		return
 	}
 	if err := service.StashDrop(r.Root, index); err != nil {
-		a.toast(c, "Drop failed: "+err.Error())
+		a.errorToast(c, "Drop failed: "+err.Error())
 		return
 	}
 	a.refreshActiveRepo()

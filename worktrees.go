@@ -215,8 +215,15 @@ func (a *appState) mergeAskBanner(c *ui.Context) {
 	}
 	ask := a.mergeAsks[0]
 	msg := ask.who + " asks to merge " + ask.w.Branch + " into " + ask.w.Base
+	// From another project, it says which; one of several, how many.
+	if pi, _ := a.worktreeSession(ask.w.Dir); pi >= 0 && pi < len(a.projects) && pi != a.active {
+		msg = a.projects[pi].Name + ": " + msg
+	}
 	if ask.summary != "" {
 		msg += ": " + strings.TrimSuffix(ask.summary, ".")
+	}
+	if n := len(a.mergeAsks); n > 1 {
+		msg += " (1 of " + itoa(n) + ")"
 	}
 	a.banner(c, "merge-ask-banner", iconGitBranch, pal.Accent, false, msg, func() {
 		if a.bannerButton(c, "Show "+ask.name, false) {
