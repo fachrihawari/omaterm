@@ -8,7 +8,9 @@
 //   el.replaceChildren(...out.view(await api(base + "/text")));
 //
 // Its text is set as text, never as HTML. Only http and https addresses
-// become links, which show the whole address and open in a new tab.
+// become links, which show the whole address and open in a new tab; not
+// the computer's own (localhost, 127.x, [::1]), which on a phone would
+// open the phone.
 
 const SEARCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>';
 const COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
@@ -18,8 +20,17 @@ const DOWN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-
 // maxHits caps the hits marked: past it, the count says so.
 const maxHits = 1000;
 
+// loopback tells a host of the computer itself: localhost and its
+// subdomains (Dev URLs among them), 127.x, ::1 and the unspecified ones.
+function loopback(host) {
+  host = host.replace(/\.$/, "");
+  return host === "localhost" || host.endsWith(".localhost") || /^127\./.test(host) ||
+    host === "0.0.0.0" || host === "[::1]" || host === "[::]" || host.startsWith("[::ffff:7f");
+}
+
 // links finds the http and https addresses in text, without the
-// punctuation a sentence puts after one, nor a bracket it doesn't open.
+// punctuation a sentence puts after one, nor a bracket it doesn't open,
+// and not the loopback ones.
 export function links(text) {
   const out = [];
   const count = (s, c) => s.split(c).length - 1;
@@ -33,7 +44,7 @@ export function links(text) {
     }
     try {
       const u = new URL(url);
-      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      if ((u.protocol !== "http:" && u.protocol !== "https:") || loopback(u.hostname)) continue;
     } catch {
       continue;
     }

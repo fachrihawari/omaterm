@@ -342,12 +342,13 @@ try {
   writeFileSync(join(procDir, "omaterm.yml"), `processes:\n  crash:\n    command: ${JSON.stringify(crash)}\n`);
   const variant = createHash("sha256").update(JSON.stringify({ command: crash, dir: "", env: null, port: 0, restart: "never", watch: null })).digest("hex");
   writeFileSync(join(env.XDG_CONFIG_HOME, name, "trust.json"), JSON.stringify({ version: 1, projects: { [procDir]: { [variant]: new Date().toISOString() } } }));
-  const printed = "build started\nsee https://example.com/docs?a=1. for more, not file:///etc/passwd\nerror: one\nerror: two\nerror: three\n";
+  const printed = "build started\nsee https://example.com/docs?a=1. for more, not file:///etc/passwd\n" +
+    "local http://localhost:3000/ http://127.0.0.1:8080 http://[::1]:5173 https://shop.localhost\nerror: one\nerror: two\nerror: three\n";
   const outSid = omaterm("new", "-n", "build-logs", "-d", procDir, "--", "sh", "-c", `printf '${printed}'; exec sleep 600`);
   const outPane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === outSid).focus;
   const marked = `[...document.querySelectorAll(".bv-out mark.on")].map((m) => m.textContent).join("")`;
 
-  await check("output: a session's text, its web links, and nothing else linked", "", async () => {
+  await check("output: a session's text, its web links, and nothing else linked, the loopback ones neither", "", async () => {
     // Its terminal opened first starts it, as the list's row does.
     await evaluate(`location.hash = "#/pane/${outPane}"`);
     await waitFor("its terminal did not open", `document.querySelector(".xterm-rows")?.textContent.includes("error: three")`);
