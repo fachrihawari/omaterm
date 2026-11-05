@@ -32,6 +32,15 @@
 // which starts a shell session and opens it; and the compose box's 📎
 // sends a picture, whose path on the computer is pasted on its own.
 //
+// So is the connection: the phone's keyboard, opening, keeps the pane's
+// size and lifts the cursor into sight; a socket that died without a word
+// (a proxy in front of the page stops passing anything on) is dropped as
+// the page comes back, and the terminal reconnects; Send tapped right
+// after waits for the socket's pong, and keeps its text when none comes;
+// and signing out wipes the drafts and Recent. And Compose's Recent puts
+// a sent prompt back, and When free lines one up for a fake agent that
+// works on and on, and takes it back.
+//
 // And what makes it a phone's app: the manifest, the service worker and
 // the icons are served as their types, the worker runs, and the list's
 // bell opens the notifications sheet, which can turn them on (a real
@@ -40,7 +49,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, connect as dial } from "node:net";
 import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -176,7 +185,14 @@ try {
   writeFileSync(join(dir, "src", "main.go"), "package main\n\nfunc main() {\n\tprintln(\"hello from the phone\")\n}\n");
   writeFileSync(join(dir, "notes.txt"), "new\n");
   const sid = omaterm("new", "-n", "probe", "-d", dir, "--", process.execPath, probe);
-  const pane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === sid).focus;
+  // A fake agent, a script named claude as omaterm knows the agent by its
+  // process, which works on and on: what is lined up for it waits. And a
+  // shell's screen full of lines, its cursor at the foot.
+  writeFileSync(join(fakeBin, "claude"), "#!/bin/sh\nprintf '\\033]7501;state=working\\007working on it…\\n'\nwhile read -r l; do :; done\n", { mode: 0o755 });
+  const aid = omaterm("new", "-n", "agent", "-d", dir, "--", "/bin/sh", "-c", "set -m; claude; :");
+  const lid = omaterm("new", "-n", "lines", "-d", dir, "--", "/bin/sh", "-c", "seq 1 200; exec cat");
+  const sessions = JSON.parse(omaterm("ls", "--json"));
+  const [pane, agentPane, linesPane] = [sid, aid, lid].map((id) => sessions.find((s) => s.id === id).focus);
   await sleep(1000);
 
   const code = omaterm("web", "pair").match(/code=([A-Z0-9-]+)/)[1];
@@ -197,8 +213,30 @@ try {
   const cdp = (method, params = {}) => new Promise((r) => { waits[++id] = r; ws.send(JSON.stringify({ id, method, params })); }).then((m) => m.result);
   const evaluate = async (expression) => (await cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result.value;
 
-  await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  const phone = (height = 844) => cdp("Emulation.setDeviceMetricsOverride", { width: 390, height, deviceScaleFactor: 2, mobile: true });
+  await phone();
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  // The sizes the page asks its pane for, from its resize frames, and the
+  // terminal sockets it opens.
+  await cdp("Page.enable");
+  await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `
+    window.sizes = [];
+    window.attached = 0;
+    const WS = WebSocket;
+    window.WebSocket = class extends WS {
+      constructor(url, protocols) {
+        super(url, protocols);
+        if (String(url).endsWith("/attach")) window.attached++;
+      }
+    };
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (d) {
+      if (d instanceof Uint8Array && d[0] === 0x72) {
+        const v = new DataView(d.buffer, d.byteOffset);
+        window.sizes.push(v.getUint16(5) + "x" + v.getUint16(7));
+      }
+      return send.call(this, d);
+    };` });
   await cdp("Page.navigate", { url: `${base}/#code=${code}` });
   await sleep(2000);
   await cdp("Page.navigate", { url: `${base}/#/pane/${pane}` });
@@ -708,6 +746,177 @@ setInterval(() => {}, 1 << 30);
     await tap(".push-close");
     await waitFor("the sheet stayed", `!document.querySelector(".push-sheet")`);
   });
+
+  const typeInBox = async (text) => {
+    await tap(".btn-compose");
+    await sleep(400);
+    await evaluate(`document.querySelector(".compose-box").focus()`);
+    await cdp("Input.insertText", { text });
+  };
+  await check("compose: Recent puts back a prompt sent before", hex("recover me\r"), async () => {
+    await evaluate(`location.hash = "#/pane/${pane}"`);
+    await waitFor("the terminal did not open", `Boolean(document.querySelector(".btn-compose:not([hidden])"))`);
+    await sleep(500);
+    await typeInBox("recover me");
+    if (!(await evaluate(`document.querySelector(".compose-later").hidden`))) throw new Error("When free is offered for a program that is no agent");
+    await tap(".compose-send");
+    await sleep(300);
+    await tap(".btn-compose");
+    await sleep(400);
+    await tap(".compose-recent-btn");
+    await sleep(300);
+    const first = await evaluate(`document.querySelector(".compose-recent-item .t")?.textContent`);
+    if (first !== "recover me") throw new Error(`Recent starts with ${JSON.stringify(first)}`);
+    await shot("recent");
+    await tap(".compose-recent-item");
+    await waitBox(/^recover me$/);
+    await evaluate(`(() => { const b = document.querySelector(".compose-box"); b.value = ""; b.dispatchEvent(new Event("input")); })()`);
+    await tap(".compose-close");
+  });
+
+  const queuedText = "run the tests once you're done";
+  await check("compose: When free lines a prompt up for a working agent", "", async () => {
+    await evaluate(`location.hash = "#/pane/${agentPane}"`);
+    await waitFor("the agent's Compose didn't show", `!document.querySelector(".btn-compose")?.hidden`);
+    await sleep(500);
+    await typeInBox(queuedText);
+    if (await evaluate(`document.querySelector(".compose-later").hidden`)) throw new Error("no When free for the agent");
+    await tap(".compose-later");
+    const label = await evaluate(`document.querySelector(".compose-send").textContent`);
+    if (label !== "Send later" || !(await evaluate(`document.querySelector(".compose-insert").hidden`))) throw new Error(`Send says ${label}, Insert shows`);
+    await shot("when-free");
+    await tap(".compose-send");
+    await waitFor("the header doesn't count it", `document.querySelector(".btn-compose .badge")?.textContent === "1"`);
+    await sleep(400);
+    await shot("queued-badge");
+    await tap(".btn-compose");
+    await waitFor("Compose doesn't list it", `document.querySelector(".compose-queued-item .t")?.textContent === ${JSON.stringify(queuedText)}`);
+    if (await evaluate(`document.querySelector(".compose-later").getAttribute("aria-pressed")`) !== "false") throw new Error("When free stays on");
+    await sleep(400);
+    await shot("queued");
+    const m = JSON.parse(omaterm("inbox", "--json")).find((m) => m.text === queuedText);
+    if (!m || m.state !== "queued" || m.from || !m.note) throw new Error(`the mailbox has ${JSON.stringify(m)}`);
+  });
+  await check("compose: Cancel takes it back", "", async () => {
+    await tap(".compose-queued-item button");
+    await waitFor("it is still listed", `document.querySelector(".compose-queued").hidden`);
+    await waitFor("the header still counts it", `document.querySelector(".btn-compose .badge").hidden`);
+    const m = JSON.parse(omaterm("inbox", "--json")).find((m) => m.text === queuedText);
+    if (m?.state !== "failed" || m.why !== "it was cancelled") throw new Error(`the mailbox has ${JSON.stringify(m)}`);
+    await tap(".compose-close");
+  });
+
+  // rowShown tells whether the terminal's row holding text shows whole.
+  const rowShown = (text) => `(() => {
+    const row = [...document.querySelectorAll(".xterm-rows > div")].find((r) => r.textContent.trim() === ${JSON.stringify(text)});
+    const box = document.querySelector(".term-wrap").getBoundingClientRect(), r = row?.getBoundingClientRect();
+    return Boolean(r) && r.top >= box.top && r.bottom <= box.bottom;
+  })()`;
+  await check("keyboard: opening it keeps the pane's size, and lifts the cursor into sight", "", async () => {
+    await evaluate(`location.hash = "#/pane/${linesPane}"`);
+    await waitFor("the lines don't show", rowShown("200"));
+    await sleep(500);
+    await evaluate(`document.querySelector(".xterm-helper-textarea").focus()`);
+    const was = await evaluate(`window.sizes.at(-1)`);
+    const n = await evaluate(`window.sizes.length`);
+    await phone(480); // the keyboard takes the rest, as Android shrinks the page
+    await sleep(800);
+    const asked = await evaluate(`window.sizes.slice(${n})`);
+    if (asked.some((s) => s !== was)) throw new Error(`the pane was resized from ${was} to ${asked}`);
+    if (!(await evaluate(rowShown("200")))) throw new Error("the last line is under the keyboard");
+    await shot("keyboard");
+    await phone();
+    await sleep(800);
+    const after = await evaluate(`window.sizes.slice(${n})`);
+    if (after.some((s) => s !== was)) throw new Error(`the pane was resized from ${was} to ${after}, the keyboard gone`);
+    if (await evaluate(`Boolean(document.querySelector(".term-host[data-lift]"))`)) throw new Error("the screen stays lifted");
+  });
+
+  // A proxy in front of the page, as a tunnel is, which can stop passing
+  // anything on, the connections it has still open: what a phone's dead
+  // link looks like to it. Down, it takes no new ones either; back up, the
+  // dead ones reset, as a network's do. With lag, what comes back to the
+  // page comes that much later, in order, as over a slow phone link.
+  const links = new Set();
+  let passing = true, lag = 0;
+  const proxy = createServer((c) => {
+    if (!passing) { c.destroy(); return; }
+    const s = dial(port, "127.0.0.1");
+    const l = { dead: false, back: Promise.resolve(), end: () => { c.destroy(); s.destroy(); links.delete(l); } };
+    links.add(l);
+    c.on("data", (b) => { if (!l.dead) s.write(b); });
+    s.on("data", (b) => {
+      const due = Date.now() + lag;
+      l.back = l.back.then(() => sleep(due - Date.now())).then(() => { if (!l.dead) c.write(b); });
+    });
+    for (const x of [c, s]) { x.on("close", l.end); x.on("error", l.end); }
+  });
+  const proxyPort = await new Promise((r) => proxy.listen(0, "127.0.0.1", () => r(proxy.address().port)));
+  const header = `document.querySelector(".ph .schip-wrap")?.textContent`;
+  try {
+    await check("connection: through a proxy, keys reach the terminal", hex("a"), async () => {
+      await cdp("Page.navigate", { url: `http://127.0.0.1:${proxyPort}/#/pane/${pane}` });
+      await sleep(2500);
+      await key("a", "KeyA", "a");
+    });
+    await check("connection: Send tapped as the page comes back waits for the pong, then sends", hex("after unlock\r"), async () => {
+      await typeInBox("after unlock");
+      lag = 1000;
+      await evaluate(`dispatchEvent(new Event("online"))`);
+      await tap(".compose-send");
+      await sleep(300);
+      if (!(await evaluate(`document.querySelector(".compose-send").disabled`))) throw new Error("Send didn't wait for the pong");
+      lag = 0;
+    });
+    await check("connection: a socket that died without a word is dropped on return, and the terminal comes back", hex("b"), async () => {
+      await sleep(1000); // what lagged is in
+      for (const l of links) l.dead = true;
+      passing = false;
+      const opened = await evaluate(`window.attached`);
+      await typeInBox("lost words");
+      await evaluate(`dispatchEvent(new Event("online"))`);
+      await tap(".compose-send");
+      // No pong in 3 s: the text stays, and the terminal opens a new socket.
+      await waitFor("Send didn't give up", `document.querySelector(".compose-note").textContent === "Not connected: not sent"`);
+      const kept = await evaluate(`document.querySelector(".compose-box").value`);
+      if (kept !== "lost words") throw new Error(`the box has ${JSON.stringify(kept)}`);
+      await evaluate(`(() => { const b = document.querySelector(".compose-box"); b.value = ""; b.dispatchEvent(new Event("input")); })()`);
+      await tap(".compose-close");
+      await sleep(400);
+      await waitFor("the header doesn't say it reconnects", `${header} === "Reconnecting…"`);
+      if (await evaluate(`window.attached`) === opened) throw new Error("the terminal kept its dead socket");
+      const says = await evaluate(header);
+      if (says !== "Reconnecting…") throw new Error(`the header says ${says}, the terminal's socket dropped`);
+      await shot("reconnecting");
+      passing = true;
+      for (const l of links) if (l.dead) l.end();
+      await evaluate(`dispatchEvent(new Event("online"))`);
+      await waitFor("the header still says it reconnects", `${header} !== "Reconnecting…"`);
+      await sleep(500);
+      await key("b", "KeyB", "b");
+    });
+    await check("sign out wipes the drafts and Recent, and keeps the look and the views' choices", hex("bye\r"), async () => {
+      await typeInBox("bye");
+      await tap(".compose-send");
+      await sleep(300);
+      await typeInBox("a draft");
+      await tap(".compose-close");
+      const keys = `Object.keys(localStorage).filter((k) => k.startsWith("omaterm.")).sort().join(" ")`;
+      const before = await evaluate(keys);
+      if (!before.includes("omaterm.compose.recent") || !before.includes(`omaterm.compose:${pane}`)) throw new Error(`the phone keeps ${before}`);
+      await evaluate(`localStorage.setItem("omaterm.diff.wrap", "1"); localStorage.setItem("omaterm.newagent", "{}")`);
+      await evaluate(`window.confirm = () => true; location.hash = ""`);
+      await waitFor("the list doesn't show", `document.querySelector(".shell")?.dataset.view === "list"`);
+      await sleep(500);
+      await tap(".side-f .link", "Sign out");
+      await waitFor("no pairing page", `Boolean(document.querySelector(".pair"))`);
+      const after = await evaluate(keys);
+      if (after !== "omaterm.diff.wrap omaterm.newagent omaterm.theme") throw new Error(`signed out, the phone keeps ${after}`);
+    });
+  } finally {
+    proxy.close();
+    for (const l of links) l.end();
+  }
 } catch (err) {
   failed++;
   console.log("FAIL " + (err?.stack || err));

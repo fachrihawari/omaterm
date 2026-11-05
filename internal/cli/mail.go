@@ -191,8 +191,9 @@ func inboxCmd(c *client.Client, args []string) error {
 	}
 	fmt.Printf("%-5s %-14s %-14s %-9s %s\n", "ID", "FROM", "TO", "STATE", "TEXT")
 	for _, m := range list {
+		// omaterm's own, but for a prompt the phone lined up (web access).
 		from := m.FromName
-		if m.From == "" {
+		if m.From == "" && from == "" {
 			from = "omaterm"
 		}
 		text, _, _ := strings.Cut(strings.TrimSpace(m.Text), "\n")

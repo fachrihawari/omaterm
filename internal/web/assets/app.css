@@ -277,6 +277,7 @@ a { color: inherit; text-decoration: none; }
 }
 .schip.att { background: var(--attention-soft); color: var(--attention); font-weight: 500; }
 .schip.bad { background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
+.schip.offline { color: var(--warn); }
 
 /* Pane tabs in header (when session has multiple panes) */
 .card-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
@@ -295,6 +296,9 @@ a { color: inherit; text-decoration: none; }
 }
 .term-host { position: absolute; inset: 6px 4px 4px 10px; }
 .term-host .xterm { height: 100%; }
+/* The phone's keyboard over the screen's foot: the pane keeps its rows,
+   and the screen lifts as far as the cursor needs (app.js). */
+.term-host[data-lift] .xterm { height: auto; translate: 0 var(--lift, 0px); }
 /* The text box xterm types through: under 16px, iOS zooms in as it
    takes the keyboard. Unseen either way. */
 .term-host .xterm .xterm-helper-textarea { font-size: 16px; }
@@ -534,6 +538,12 @@ a.bv-crumb:hover { color: var(--text); }
   :root:not(.touch) .term-bottom { display: none !important; }
 }
 .btn-compose[hidden] { display: none !important; }
+/* How many prompts wait for the agent to be free, which Compose lists. */
+.btn-compose { position: relative; }
+.btn-compose .badge {
+  position: absolute; top: 1px; right: 1px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-text); font-size: 10px; font-weight: 600; line-height: 15px; text-align: center;
+}
 
 a.pill.link { color: var(--accent); text-decoration: none; }
 a.pill.link:hover { text-decoration: underline; }

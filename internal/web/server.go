@@ -216,6 +216,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/panes/{id}/diff", s.auth(s.diff))
 	mux.HandleFunc("GET /api/panes/{id}/text", s.auth(s.text))
 	mux.HandleFunc("POST /api/panes/{id}/seen", s.auth(s.seen))
+	// Prompts for an agent once it is free (queue.go).
+	mux.HandleFunc("GET /api/panes/{id}/queue", s.auth(s.queue))
+	mux.HandleFunc("POST /api/panes/{id}/queue", s.auth(s.enqueue))
+	mux.HandleFunc("DELETE /api/panes/{id}/queue/{msg}", s.auth(s.unqueue))
 	mux.HandleFunc("POST /api/logout", s.auth(s.logout))
 	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))
 	mux.HandleFunc("POST /api/voice", s.auth(s.transcribe))
@@ -500,6 +504,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	defer s.track(c, r)()
 	ctx := c.CloseRead(r.Context())
+	go keepAlive(ctx, c)
 	kick := make(chan struct{}, 1)
 	stop := s.d.Watch(func() {
 		select {

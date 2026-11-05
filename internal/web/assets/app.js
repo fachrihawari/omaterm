@@ -187,6 +187,8 @@ function showPair(message = "") {
   shell = null;
   closeTerm();
   if (events) { events.onclose = null; events.close(); events = null; }
+  clearTimeout(eventsTimer);
+  forget(); // after the terminal, whose compose box keeps its draft as it goes
   document.title = "omaterm";
 
   const input = h("input", {
@@ -227,7 +229,10 @@ async function pair(code) {
 
 // --- state & events --------------------------------------------------------
 
+let eventsTimer = 0;
+
 function connectEvents() {
+  clearTimeout(eventsTimer);
   const ws = new WebSocket(wsURL("/api/events"));
   events = ws;
   ws.onopen = () => { eventsRetry = 500; };
@@ -247,15 +252,46 @@ function connectEvents() {
     if (e.code === 4401) { showPair("This browser was signed out."); return; }
     offline = true;
     render();
-    setTimeout(async () => {
-      try { state = await api("/api/state"); offline = false; connectEvents(); render(); } catch { if (paired) connectEventsLater(); }
+    eventsTimer = setTimeout(async () => {
+      try { state = await api("/api/state"); offline = false; if (!events) connectEvents(); render(); } catch { if (paired) connectEventsLater(); }
     }, eventsRetry);
     eventsRetry = Math.min(eventsRetry * 2, 8000);
   };
 }
 
 function connectEventsLater() {
-  setTimeout(() => { if (!events && paired) connectEvents(); }, eventsRetry);
+  eventsTimer = setTimeout(() => { if (!events && paired) connectEvents(); }, eventsRetry);
+}
+
+// wake runs as the page comes back to the front, or the phone back on a
+// network. A socket that died meanwhile may still say it is open, so the
+// open terminal checks its own at once, for a Send tapped right after,
+// and the events open again, which costs one state.
+let woke = 0;
+function wake() {
+  if (!paired || document.visibilityState !== "visible") return;
+  term?.check();
+  clearTimeout(woke);
+  woke = setTimeout(() => {
+    if (!paired) return;
+    if (events) { const old = events; events = null; old.onclose = old.onmessage = null; old.close(); }
+    eventsRetry = 500;
+    connectEvents();
+  }, 100);
+}
+document.addEventListener("visibilitychange", wake);
+addEventListener("online", wake);
+addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
+
+// forget wipes what the phone keeps of omaterm as it is signed out: the
+// compose drafts and Recent prompts. Its look stays, and the views'
+// choices: the key bar, a diff's wrap, New Agent's.
+function forget() {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith("omaterm.") && !/^omaterm\.(theme|keybar|diff\.wrap|newagent)$/.test(k)) localStorage.removeItem(k);
+    }
+  } catch {}
 }
 
 function wsURL(path) {
@@ -916,12 +952,14 @@ function showTerm(id) {
   const modChip = h("div", { class: "schip mods", hidden: true });
 
   let composeBox = null;
+  // How many prompts wait for the agent to be free, which Compose lists.
+  const queuedBadge = h("span", { class: "badge", hidden: true });
   const composeBtn = h("button", {
     class: "ib btn-compose", hidden: true, title: "Compose prompt", "aria-label": "Compose prompt",
     onclick: () => {
       composeBox?.open();
     },
-  }, icon("compose", "s14"));
+  }, icon("compose", "s14"), queuedBadge);
 
   // The pane's output as text, and the session's files and changes, read
   // in the card in the terminal's place. One button opens them, as last
@@ -975,38 +1013,117 @@ function showTerm(id) {
   const fit = new FitAddon.FitAddon();
   xt.loadAddon(fit);
 
-  let ws = null, closed = false, retry = 500, gone = false, sized = false;
+  let ws = null, closed = false, retry = 500, gone = false, sized = false, retryTimer = 0;
+  // pinged is the wait for the socket's pong (check); link, the header's
+  // note while the socket is down; welcomed, that the pane showed once.
+  let pinged = 0, link = "", welcomed = false;
 
   const send = (bytes) => { if (ws && ws.readyState === 1) ws.send(frame("i", bytes)); };
   const sendText = (s) => send(enc.encode(s));
   // sendKey and sendPaste tell whether the frame went: the compose box
-  // keeps its text when it did not.
+  // keeps its text when it did not. While the socket is being checked it
+  // may be dead, which would take the text and say nothing.
   const sendFrame = (kind, s) => {
-    if (!ws || ws.readyState !== 1) return false;
+    if (!ws || ws.readyState !== 1 || pinged) return false;
     ws.send(frame(kind, enc.encode(s)));
     return true;
   };
   const sendKey = (k) => sendFrame("k", k);
   const sendPaste = (p) => sendFrame("p", p);
+
+  // ready resolves to whether the socket carries, once its check is over
+  // (a pong, or none in 3 s) or a new one is in: Compose waits for it, as
+  // people tap Send right after unlocking.
+  let readyWaits = [];
+  const settle = (ok) => { const waits = readyWaits; readyWaits = []; for (const done of waits) done(ok); };
+  const ready = () => {
+    if (ws?.readyState === 1 && !pinged) return Promise.resolve(true);
+    if (!ws || closed) return Promise.resolve(false);
+    return new Promise((done) => {
+      const t = setTimeout(() => done(false), 3000);
+      readyWaits.push((ok) => { clearTimeout(t); done(ok); });
+    });
+  };
   const appCursor = () => Boolean(xt.modes?.applicationCursorKeysMode);
 
   const setNote = (text) => { note.hidden = !text; note.textContent = text || ""; };
+  const setLink = (text) => { link = text; refresh(); };
 
+  // typing tells that the phone's keyboard may be up: the terminal or the
+  // compose box takes text.
+  const typing = () => touch && /^(TEXTAREA|INPUT)$/.test(document.activeElement?.tagName || "");
+  let kept = false, liftFrame = 0;
+
+  // fill sizes the pane to the card. The phone's keyboard, coming and
+  // going, changes only the height: the pane keeps its rows, and the
+  // screen lifts to keep the cursor in sight. Fewer rows would have the
+  // agent redraw, and the whole scrollback come again over the phone's
+  // link, each time the keyboard opens.
   const fill = () => {
     const dims = fit.proposeDimensions();
     if (!dims || !dims.cols || !dims.rows) return;
-    if (dims.cols !== xt.cols || dims.rows !== xt.rows) xt.resize(dims.cols, dims.rows);
+    const rows = typing() && dims.cols === xt.cols && dims.rows < xt.rows ? xt.rows : dims.rows;
+    kept = rows > dims.rows;
+    if (dims.cols !== xt.cols || rows !== xt.rows) xt.resize(dims.cols, rows);
+    lift();
     if (!ws || ws.readyState !== 1) return;
     const cell = xt._core?._renderService?.dimensions?.css?.cell;
-    ws.send(frame("r", uint16s(dims.cols, dims.rows, cell?.width ?? 0, cell?.height ?? 0)));
+    ws.send(frame("r", uint16s(dims.cols, rows, cell?.width ?? 0, cell?.height ?? 0)));
+  };
+
+  // lift raises the screen over a keyboard that covers its foot, as far
+  // as the cursor's row needs, while the pane keeps its rows.
+  const lift = () => {
+    const screen = host.querySelector(".xterm-screen");
+    let y = 0;
+    if (kept && screen) {
+      const over = screen.offsetHeight - host.clientHeight;
+      const row = screen.offsetHeight / xt.rows;
+      y = Math.max(0, Math.min(over, (xt.buffer.active.cursorY + 1) * row - host.clientHeight));
+    }
+    host.toggleAttribute("data-lift", kept);
+    host.style.setProperty("--lift", `${-Math.round(y)}px`);
+  };
+  const liftSoon = () => {
+    if (kept && !liftFrame) liftFrame = requestAnimationFrame(() => { liftFrame = 0; lift(); });
+  };
+
+  // check asks the socket for a pong, as the page comes back: one that
+  // died meanwhile may still say it is open, and takes what is typed
+  // into it without a word. With no answer in 3 s, it makes way for a
+  // new one.
+  const check = () => {
+    if (closed || gone) return;
+    if (!ws) { connect(); return; }
+    if (ws.readyState !== 1 || pinged) return;
+    const sock = ws;
+    sock.send("ping");
+    pinged = setTimeout(() => {
+      pinged = 0;
+      if (ws !== sock || closed) return;
+      settle(false);
+      sock.onclose = sock.onmessage = null;
+      sock.close();
+      ws = null;
+      setLink("Reconnecting…");
+      connect();
+    }, 3000);
   };
 
   const connect = () => {
+    clearTimeout(retryTimer);
+    clearTimeout(pinged);
+    pinged = 0;
     const sock = new WebSocket(wsURL(`/api/panes/${encodeURIComponent(id)}/attach`));
     sock.binaryType = "arraybuffer";
     ws = sock;
-    let welcomed = false;
     sock.onmessage = (e) => {
+      if (e.data === "pong") {
+        clearTimeout(pinged);
+        pinged = 0;
+        settle(true);
+        return;
+      }
       if (typeof e.data === "string") {
         const w = JSON.parse(e.data);
         xt.reset();
@@ -1015,6 +1132,8 @@ function showTerm(id) {
         sized = false;
         retry = 500;
         setNote("");
+        setLink("");
+        settle(true);
         return;
       }
       const b = new Uint8Array(e.data);
@@ -1033,19 +1152,25 @@ function showTerm(id) {
     sock.onclose = (e) => {
       if (ws !== sock || closed) return;
       ws = null;
+      clearTimeout(pinged);
+      pinged = 0;
+      settle(false);
       if (e.code === 4401) { showPair("This browser was signed out."); return; }
       // A stopped process has no terminal: its last output shows instead.
       if (e.code === 4410) {
+        setLink("");
         setNote(e.reason);
         if (!card.dataset.view) location.replace(paneHash + "/output");
         return;
       }
-      if (e.code === 4404 || gone) { setNote(gone ? "This session has ended." : "This session is gone."); return; }
-      setNote(welcomed ? "Reconnecting…" : "Connecting…");
-      setTimeout(async () => {
+      if (e.code === 4404 || gone) { setLink(""); setNote(gone ? "This session has ended." : "This session is gone."); return; }
+      // In the header, not under the terminal: a note there would shrink
+      // it, and resize the pane.
+      setLink(welcomed ? "Reconnecting…" : "Connecting…");
+      retryTimer = setTimeout(async () => {
         if (closed) return;
         try { await api("/api/state"); } catch (err) { if (err.message === "not paired") return; }
-        connect();
+        if (!closed && !ws) connect();
       }, retry);
       retry = Math.min(retry * 2, 8000);
     };
@@ -1125,7 +1250,12 @@ function showTerm(id) {
   composePromise.then((mod) => {
     if (mod?.mountCompose && composeSlot.isConnected) {
       composeSlot.replaceChildren();
-      composeBox = mod.mountCompose(composeSlot, { sendPaste, sendKey, id });
+      composeBox = mod.mountCompose(composeSlot, {
+        sendPaste, sendKey, ready, id, h,
+        signedOut: () => showPair("This browser was signed out."),
+        onQueued: (n) => { queuedBadge.hidden = !n; queuedBadge.textContent = n ? String(n) : ""; },
+      });
+      composeBox.update?.(paneByID(id)?.pane);
       composeBtn.hidden = false;
     }
   });
@@ -1152,10 +1282,11 @@ function showTerm(id) {
     resizeTimer = setTimeout(fill, 100);
   });
   observer.observe(host);
+  xt.onCursorMove(liftSoon);
 
   // The phone showing the pane sees its session: its unread marks go,
   // here and on the desktop. Only while the page is in sight, as a tab in
-  // the background reconnects too.
+  // the background reconnects too. (Coming back, wake checks the socket.)
   let seeing = false;
   const markSeen = () => {
     const cur = paneByID(id);
@@ -1163,13 +1294,7 @@ function showTerm(id) {
     seeing = true;
     api(`/api/panes/${encodeURIComponent(id)}/seen`, {}).catch(() => {}).finally(() => { seeing = false; });
   };
-
-  const onVisible = () => {
-    if (document.visibilityState !== "visible") return;
-    if (!ws && !closed && !gone) connect();
-    markSeen();
-  };
-  document.addEventListener("visibilitychange", onVisible);
+  document.addEventListener("visibilitychange", markSeen);
 
   const refresh = () => {
     const cur = paneByID(id);
@@ -1204,10 +1329,12 @@ function showTerm(id) {
       tabsRow.hidden = true;
     }
 
-    const sc = statusChip(cur.pane);
+    // While a socket is down, what the header said may be old news.
+    const sc = link || offline ? h("div", { class: "schip offline" }, link || "Reconnecting…") : statusChip(cur.pane);
     statusChipEl.replaceChildren(sc ? sc : "");
     answer?.update(cur.pane, cur.session);
     markSeen();
+    composeBox?.update?.(cur.pane);
 
     // A turn that ended may have changed files the changes view shows.
     if (lastStatus === "working" && cur.pane.status !== "working") browse?.turnEnded();
@@ -1254,11 +1381,16 @@ function showTerm(id) {
     xt,
     refresh,
     showView,
+    check,
     close() {
       closed = true;
       observer.disconnect();
       clearTimeout(resizeTimer);
-      document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("visibilitychange", markSeen);
+      clearTimeout(retryTimer);
+      clearTimeout(pinged);
+      settle(false);
+      cancelAnimationFrame(liftFrame);
       keyBar?.destroy();
       composeBox?.destroy();
       answer?.destroy();

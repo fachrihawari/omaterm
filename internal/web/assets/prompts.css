@@ -1,0 +1,116 @@
+/* The compose box's Recent prompts, and those waiting for the agent to be
+   free (prompts.js), beside the box's own look in keys.css. */
+
+.compose-head .compose-recent-btn {
+  margin-left: auto;
+  margin-right: 4px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--chip, #21262d);
+  color: var(--text-soft, #c9d1d9);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.compose-recent-btn[aria-expanded="true"] {
+  border-color: var(--border, #30363d);
+  background: var(--raised, #1c2128);
+  color: var(--text, #e6edf3);
+}
+
+.compose-recent {
+  display: flex;
+  flex-direction: column;
+  max-height: 34vh;
+  max-height: 34dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  background: var(--input, #0d1117);
+}
+
+.compose-recent-item {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border, #30363d);
+  color: var(--text, #e6edf3);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.compose-recent-item:last-child { border-bottom: 0; }
+.compose-recent-item:hover, .compose-recent-item:active { background: var(--hover, #1f262e); }
+.compose-recent-item .t,
+.compose-queued-item .t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compose-recent-item .ago { flex: none; color: var(--text-faint, #6e7681); font-size: 12px; }
+
+/* What waits for the agent, each with Cancel. */
+.compose-queued {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px 4px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #2f81f7) 30%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #2f81f7) 8%, transparent);
+}
+
+.compose-queued .lbl { color: var(--text-muted, #8b949e); font-size: 12px; font-weight: 500; }
+
+.compose-queued-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--text, #e6edf3);
+  font-size: 14px;
+}
+
+.compose-queued-item button {
+  flex: none;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: var(--accent, #2f81f7);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.compose-queued-item button:hover { background: var(--hover, #1f262e); }
+
+/* When free, at the start of the buttons: pressed, Send lines it up. */
+.compose-later {
+  margin-left: auto;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted, #8b949e);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.compose-later[aria-pressed="true"] {
+  border-color: var(--accent, #2f81f7);
+  background: color-mix(in srgb, var(--accent, #2f81f7) 12%, transparent);
+  color: var(--accent, #2f81f7);
+}
+
+.compose-later:not([hidden]) ~ .compose-insert { margin-left: 0; }

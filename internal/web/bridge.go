@@ -22,7 +22,7 @@ const closeStopped = 4410
 // first gets the welcome, as text: the pane's size. Then every binary
 // message is one frame, as the attach socket has them. The page may type,
 // send keys and pastes, and resize: a theme frame would recolor every
-// pane.
+// pane. A text "ping" from the page is answered "pong".
 func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true}) // secure checked the origin
 	if err != nil {
@@ -57,6 +57,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	go keepAlive(ctx, c)
 	hello, _ := json.Marshal(map[string]int{"cols": welcome.Cols, "rows": welcome.Rows})
 	if c.Write(ctx, websocket.MessageText, hello) != nil {
 		return
@@ -91,6 +92,16 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if typ != websocket.MessageBinary {
+			// The page, back from the background, asks whether the socket
+			// still carries: a dead one may still say it is open there.
+			if string(msg) == "ping" {
+				wctx, done := context.WithTimeout(ctx, 10*time.Second)
+				err := c.Write(wctx, websocket.MessageText, []byte("pong"))
+				done()
+				if err != nil {
+					return
+				}
+			}
 			continue
 		}
 		kind, payload, err := proto.ReadFrame(bytes.NewReader(msg))
@@ -99,6 +110,35 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 		}
 		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		if _, err := conn.Write(proto.AppendFrame(nil, kind, payload)); err != nil {
+			return
+		}
+	}
+}
+
+// pingEvery is how often an open WebSocket is pinged, and how long its
+// page has to answer: one gone without a word, as a phone locked or off
+// the network, is ended within two, and its pane gets its size back; and
+// a tunnel that cuts quiet connections sees something go by.
+var pingEvery = 25 * time.Second
+
+// keepAlive pings c until ctx ends, and drops it when a ping goes
+// unanswered. c's reader takes the pongs.
+func keepAlive(ctx context.Context, c *websocket.Conn) {
+	t := time.NewTicker(pingEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		pctx, cancel := context.WithTimeout(ctx, pingEvery)
+		err := c.Ping(pctx)
+		cancel()
+		if err != nil {
+			if ctx.Err() == nil {
+				c.CloseNow()
+			}
 			return
 		}
 	}

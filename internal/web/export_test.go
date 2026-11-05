@@ -32,3 +32,10 @@ func SetMaxText(n int) (undo func()) {
 	maxText = n
 	return func() { maxText = was }
 }
+
+// SetPingEvery pings open WebSockets every d, until undone.
+func SetPingEvery(d time.Duration) (undo func()) {
+	was := pingEvery
+	pingEvery = d
+	return func() { pingEvery = was }
+}
