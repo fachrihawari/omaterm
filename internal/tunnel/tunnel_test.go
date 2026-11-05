@@ -35,6 +35,17 @@ const fakeCloudflared = `echo $$ > "$CF_PID"
 echo "INF |  https://some-words-here.trycloudflare.com |" >&2
 exec /bin/sleep 300`
 
+// fakeNamedCloudflared is cloudflared running a named tunnel: it wants
+// the token in its environment and nowhere in its arguments, notes those
+// and its pid for the test, says the connection is up, and stays up.
+const fakeNamedCloudflared = `if [ -z "$TUNNEL_TOKEN" ]; then echo "ERR no TUNNEL_TOKEN" >&2; exit 1; fi
+case "$*" in *"$TUNNEL_TOKEN"*) echo "ERR the token is in the arguments" >&2; exit 1;; esac
+echo $$ > "$CF_PID"
+printf '%s\n' "$*" > "$CF_ARGS"
+echo "2026-11-05T10:00:00Z INF Starting tunnel tunnelID=abc" >&2
+echo "2026-11-05T10:00:01Z INF Registered tunnel connection connIndex=0 location=sin01 protocol=quic" >&2
+exec /bin/sleep 300`
+
 // fakeTailscale answers status from a file and logs what it is told to
 // serve, exiting 0 as --bg does.
 const fakeTailscale = `if [ "$1" = status ]; then
@@ -60,6 +71,7 @@ func tunnelTest(t *testing.T) (dir string) {
 	t.Helper()
 	dir = t.TempDir()
 	t.Setenv("CF_PID", filepath.Join(dir, "cf.pid"))
+	t.Setenv("CF_ARGS", filepath.Join(dir, "cf.args"))
 	t.Setenv("TS_LOG", filepath.Join(dir, "tailscale.log"))
 	t.Setenv("TS_STATUS", serveStatus("Running"))
 	return dir
@@ -333,5 +345,82 @@ func TestTailscaleTunnelEndsWhenItsServeIsGone(t *testing.T) {
 	}
 	if tun.Err() == nil || !strings.Contains(tun.Err().Error(), "no longer serves") {
 		t.Fatalf("Err: %v", tun.Err())
+	}
+}
+
+// testToken stands for a named tunnel's token, which is a secret.
+const testToken = "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0="
+
+// A named tunnel runs with its token in cloudflared's environment, not its
+// arguments, is up once cloudflared registers its connection, is reached
+// at the user's hostname, and ends with its process group when stopped.
+func TestCloudflareNamedTunnel(t *testing.T) {
+	dir := tunnelTest(t)
+	fakePATH(t, map[string]string{"cloudflared": fakeNamedCloudflared})
+	tun, err := Start(context.Background(), Spec{Provider: Cloudflare, Target: "http://127.0.0.1:7370", Name: "web access",
+		Token: testToken, Hostname: "term.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tun.URL(); got != "https://term.example.com" {
+		t.Fatalf("URL %q", got)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "cf.args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(args); got != "tunnel --no-autoupdate run\n" {
+		t.Fatalf("cloudflared ran with %q", got)
+	}
+	select {
+	case <-tun.Done():
+		t.Fatal("the tunnel ended before it was stopped")
+	default:
+	}
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if tun.Err() != nil {
+		t.Fatalf("a stopped tunnel is no failure: %v", tun.Err())
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "cf.pid"))
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pid == 0 || syscall.Kill(pid, 0) == nil {
+		t.Fatalf("cloudflared (pid %d) still runs after Stop", pid)
+	}
+}
+
+// A token without the hostname it serves is refused before cloudflared
+// runs: there would be no URL to give.
+func TestCloudflareTokenWithoutHostname(t *testing.T) {
+	dir := tunnelTest(t)
+	fakePATH(t, map[string]string{"cloudflared": fakeNamedCloudflared})
+	_, err := Start(context.Background(), Spec{Provider: Cloudflare, Target: "http://127.0.0.1:7370", Token: testToken})
+	if err == nil || !strings.Contains(err.Error(), "hostname") {
+		t.Fatalf("a token alone: %v", err)
+	}
+	if strings.Contains(err.Error(), testToken) {
+		t.Fatalf("the error says the token: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cf.pid")); err == nil {
+		t.Fatal("cloudflared ran")
+	}
+}
+
+// A named tunnel that fails says cloudflared's first error, and never the
+// token, even when cloudflared's log does.
+func TestCloudflareNamedTunnelFailsWithoutTheToken(t *testing.T) {
+	tunnelTest(t)
+	fakePATH(t, map[string]string{"cloudflared": `echo "2026-11-05T10:00:00Z INF Starting tunnel" >&2
+echo "2026-11-05T10:00:00Z ERR Provided Tunnel token is not valid: $TUNNEL_TOKEN" >&2
+echo "2026-11-05T10:00:00Z ERR a later error" >&2
+exit 1`})
+	_, err := Start(context.Background(), Spec{Provider: Cloudflare, Target: "http://127.0.0.1:7370",
+		Token: testToken, Hostname: "term.example.com"})
+	if err == nil || !strings.Contains(err.Error(), "cloudflared: Provided Tunnel token is not valid") {
+		t.Fatalf("no failure, or not cloudflared's: %v", err)
+	}
+	if strings.Contains(err.Error(), testToken) {
+		t.Fatalf("the error says the token: %v", err)
 	}
 }

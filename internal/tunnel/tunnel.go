@@ -1,6 +1,7 @@
 // Package tunnel reaches a local address from elsewhere through a tunnel
 // the user already has: Tailscale (their own devices, on their tailnet) or
-// a Cloudflare quick tunnel (a public https URL anyone can open). omaterm
+// Cloudflare (a public https URL: a quick tunnel's, new each time it
+// starts, or the user's own domain through a tunnel they made). omaterm
 // runs the tunnel's command itself, reads the URL it gets, and stops it.
 // Web access uses it for its page, and Dev URLs to share a process.
 package tunnel
@@ -17,7 +18,7 @@ type Provider string
 
 const (
 	Tailscale  Provider = "tailscale"  // tailscale serve: the tailnet only
-	Cloudflare Provider = "cloudflare" // cloudflared quick tunnel: public
+	Cloudflare Provider = "cloudflare" // cloudflared: public
 )
 
 // Spec is a tunnel to make.
@@ -31,12 +32,19 @@ type Spec struct {
 	// Port is the https port Tailscale serves it on: 0 is 443. A share
 	// takes another (8443, 10000…), as web access may hold 443.
 	Port int
+	// Token is a Cloudflare named tunnel's, which the user made in
+	// Cloudflare's dashboard to reach Target at Hostname: empty for a
+	// quick tunnel. It is a secret: cloudflared gets it in its
+	// environment, and nothing says it.
+	Token string
+	// Hostname is the named tunnel's public name, as term.example.com.
+	Hostname string
 }
 
 // Tunnel is a running tunnel.
 type Tunnel interface {
 	// URL is where the target is reached: https://box.tailnet.ts.net,
-	// https://some-words.trycloudflare.com.
+	// https://some-words.trycloudflare.com, https://term.example.com.
 	URL() string
 	// Err is why the tunnel ended, once Done is closed; nil before.
 	Err() error
