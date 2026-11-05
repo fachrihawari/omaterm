@@ -63,6 +63,8 @@ jobs:
           - { name: Windows, os: ubuntu-latest, platform: windows/amd64 }
           # Both Linux apps carry install.sh: one build uploads it once,
           # where two jobs at once both upload it and one of them fails.
+          # The macOS build uploads the same script too; if that upload
+          # clashes with this one, re-run the failed job.
           - { name: Linux, os: ubuntu-latest, platform: 'linux/amd64,linux/arm64' }
     steps:
       - uses: actions/checkout@v7
@@ -77,8 +79,8 @@ jobs:
 
       - name: Build
         env:
-          # Signs each platform's update archive and manifest. Without it the
-          # build still runs, but produces nothing apps can update to.
+          # Signs each platform's update archive and manifest. Without it a
+          # dry run still builds, but -upload stops before building.
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -95,7 +97,7 @@ jobs:
           name: ${{ matrix.name }}
           path: |
             build/*/*.dmg
-            build/*/*Setup*.exe
+            build/*/*-setup-*.exe
             build/*/*.deb
             build/*/*.tar.gz
 
@@ -104,6 +106,24 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
+      # Each build merges its lines into the draft's SHA256SUMS and uploads
+      # it again, at the same time as the others, so one can drop another's
+      # lines; install.ps1 checks the Windows installer against it. Once
+      # every build is in, write it again from GitHub's own digests.
+      - name: Write SHA256SUMS from every asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | select(.name != "SHA256SUMS" and (.name | startswith("update-") | not))
+              | "\(.digest // "" | ltrimstr("sha256:"))  \(.name)"' | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+          if grep -qvE '^[0-9a-f]{64}  ' SHA256SUMS; then
+            echo "an asset has no SHA-256 digest" >&2
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+
       # The draft waits for a person: publish it from the Releases page when
       # the build looks right, since publishing is what offers the update to
       # every installed app.
