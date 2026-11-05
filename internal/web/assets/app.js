@@ -1253,12 +1253,11 @@ function showTerm(id) {
     }
   });
 
-  // While the agent waits, its question and answers over the key bar;
-  // while it works, a Stop over the terminal.
+  // While the agent waits, its question and answers over the key bar.
   let answer = null;
   loadAnswer().then((mod) => {
     if (!mod?.mountAnswer || closed) return;
-    answer = mod.mountAnswer(answerSlot, wrap, { h, xt, sendText: (s) => sendFrame("i", s), sendKey });
+    answer = mod.mountAnswer(answerSlot, { h, xt, sendText: (s) => sendFrame("i", s), sendKey });
     refresh();
   });
 
@@ -1325,7 +1324,7 @@ function showTerm(id) {
     // While a socket is down, what the header said may be old news.
     const sc = link || offline ? h("div", { class: "schip offline" }, link || "Reconnecting…") : statusChip(cur.pane);
     statusChipEl.replaceChildren(sc ? sc : "");
-    answer?.update(cur.pane, cur.session);
+    answer?.update(cur.pane);
     markSeen();
     composeBox?.update?.(cur.pane);
 

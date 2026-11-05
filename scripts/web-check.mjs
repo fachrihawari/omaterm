@@ -26,7 +26,8 @@
 //
 // So is the answer bar: a fake agent asks permission as Claude Code does,
 // the bar offers its options, a tap types the digit, a tap on a screen
-// that changed since is refused, and Stop sends Esc while it works.
+// that changed since is refused, and nothing covers the terminal while
+// the agent works.
 //
 // So are starting work from the phone: '+' opens the New Agent sheet,
 // which starts a shell session and opens it; and the compose box's 📎
@@ -540,14 +541,14 @@ setInterval(() => {}, 1 << 30);
     await sleep(700);
     await tap(".answer-opt");
   });
-  await check("answer bar: gone while the agent works, and Stop sends Esc", hex("\x1b"), async () => {
-    await waitFor("no Stop", `!document.querySelector(".answer-stop").hidden && !document.querySelector(".answer:not([hidden])")`);
-    await sleep(600);
+  await check("answer bar: gone while the agent works, with nothing over the terminal, and the key bar's Esc stops it", hex("\x1b"), async () => {
+    await waitFor("the bar stays", `${lead("asker")}.then((l) => l?.status === "working" && !document.querySelector(".answer:not([hidden])"))`);
+    if (await evaluate(`Boolean(document.querySelector(".answer-stop"))`)) throw new Error("a Stop is over the terminal");
     await shot("stop");
-    await tap(".answer-stop");
+    await tapKey("Esc");
   });
   await check("answer bar: none once the agent is done", "", async () => {
-    await waitFor("the Stop stays", `document.querySelector(".answer-stop").hidden`);
+    await waitFor("the agent is not done", `${lead("asker")}.then((l) => l?.status === "idle" && !document.querySelector(".answer:not([hidden])"))`);
   });
   await evaluate(`location.hash = "#/pane/${pane}"`);
   await sleep(1500);

@@ -437,9 +437,9 @@ in agents that take them.
 
 **When an agent asks**, its whole question shows over the key bar with its
 choices as buttons (Yes, Yes and don't ask again, No): one tap answers. While
-an agent works, **Stop** interrupts it. **Needs you**, at the top of the
-list, holds the sessions waiting for you or failed, across projects, and a
-session you open on the phone counts as seen on the computer too.
+an agent works, the key bar's **Esc** interrupts it. **Needs you**, at the top
+of the list, holds the sessions waiting for you or failed, across projects,
+and a session you open on the phone counts as seen on the computer too.
 
 The **folder** button in a session's header shows what its agent works on,
 to read: **Output**, the session's text to read whole, copy and search, with

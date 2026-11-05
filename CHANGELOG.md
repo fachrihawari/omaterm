@@ -35,6 +35,8 @@ a row opens where you tap it, and a link that stays the same.
 
 ### Fixed
 
+- **No more Stop over the terminal** while an agent works. It covered the
+  agent's own prompt; the key bar's **Esc** interrupts it, as Stop did.
 - A tap on a session's row opens it wherever you tap. It used to open
   only from the name, and a tap on the line under it showed that line
   whole. A question in **Needs you** now shows on two lines.
