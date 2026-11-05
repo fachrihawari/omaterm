@@ -67,6 +67,9 @@ type Server struct {
 	// does not do for a connection it has handed over.
 	conns map[*websocket.Conn]string
 	done  chan struct{}
+	// push sends the phones' notifications (push.go).
+	push     *pusher
+	pushOnce sync.Once
 }
 
 // sweepEvery is how often the open WebSockets' devices are checked, to
@@ -206,6 +209,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))
 	mux.HandleFunc("POST /api/voice", s.auth(s.transcribe))
 	mux.HandleFunc("POST /api/voice/warm", s.auth(s.warmVoice))
+	// Notifications on this device (push.go).
+	mux.HandleFunc("GET /api/push/key", s.auth(s.pushStatus))
+	mux.HandleFunc("POST /api/push", s.auth(s.subscribe))
+	mux.HandleFunc("DELETE /api/push", s.auth(s.unsubscribe))
 	return secure(mux)
 }
 
