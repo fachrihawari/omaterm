@@ -179,6 +179,7 @@ function showPair(message = "") {
   shell = null;
   closeTerm();
   if (events) { events.onclose = null; events.close(); events = null; }
+  clearTimeout(eventsTimer);
   document.title = "omaterm";
 
   const input = h("input", {
@@ -219,7 +220,10 @@ async function pair(code) {
 
 // --- state & events --------------------------------------------------------
 
+let eventsTimer = 0;
+
 function connectEvents() {
+  clearTimeout(eventsTimer);
   const ws = new WebSocket(wsURL("/api/events"));
   events = ws;
   ws.onopen = () => { eventsRetry = 500; };
@@ -239,16 +243,36 @@ function connectEvents() {
     if (e.code === 4401) { showPair("This browser was signed out."); return; }
     offline = true;
     render();
-    setTimeout(async () => {
-      try { state = await api("/api/state"); offline = false; connectEvents(); render(); } catch { if (paired) connectEventsLater(); }
+    eventsTimer = setTimeout(async () => {
+      try { state = await api("/api/state"); offline = false; if (!events) connectEvents(); render(); } catch { if (paired) connectEventsLater(); }
     }, eventsRetry);
     eventsRetry = Math.min(eventsRetry * 2, 8000);
   };
 }
 
 function connectEventsLater() {
-  setTimeout(() => { if (!events && paired) connectEvents(); }, eventsRetry);
+  eventsTimer = setTimeout(() => { if (!events && paired) connectEvents(); }, eventsRetry);
 }
+
+// wake runs as the page comes back to the front, or the phone back on a
+// network. A socket that died meanwhile may still say it is open, so the
+// events open again, which costs one state, and the open terminal checks
+// its own.
+let woke = 0;
+function wake() {
+  if (!paired || document.visibilityState !== "visible") return;
+  clearTimeout(woke);
+  woke = setTimeout(() => {
+    if (!paired) return;
+    if (events) { const old = events; events = null; old.onclose = old.onmessage = null; old.close(); }
+    eventsRetry = 500;
+    connectEvents();
+    term?.check();
+  }, 100);
+}
+document.addEventListener("visibilitychange", wake);
+addEventListener("online", wake);
+addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
 
 function wsURL(path) {
   return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + path;
@@ -888,14 +912,18 @@ function showTerm(id) {
   const fit = new FitAddon.FitAddon();
   xt.loadAddon(fit);
 
-  let ws = null, closed = false, retry = 500, gone = false, sized = false;
+  let ws = null, closed = false, retry = 500, gone = false, sized = false, retryTimer = 0;
+  // pinged is the wait for the socket's pong (check); link, the header's
+  // note while the socket is down; welcomed, that the pane showed once.
+  let pinged = 0, link = "", welcomed = false;
 
   const send = (bytes) => { if (ws && ws.readyState === 1) ws.send(frame("i", bytes)); };
   const sendText = (s) => send(enc.encode(s));
   // sendKey and sendPaste tell whether the frame went: the compose box
-  // keeps its text when it did not.
+  // keeps its text when it did not. While the socket is being checked it
+  // may be dead, which would take the text and say nothing.
   const sendFrame = (kind, s) => {
-    if (!ws || ws.readyState !== 1) return false;
+    if (!ws || ws.readyState !== 1 || pinged) return false;
     ws.send(frame(kind, enc.encode(s)));
     return true;
   };
@@ -904,22 +932,81 @@ function showTerm(id) {
   const appCursor = () => Boolean(xt.modes?.applicationCursorKeysMode);
 
   const setNote = (text) => { note.hidden = !text; note.textContent = text || ""; };
+  const setLink = (text) => { link = text; refresh(); };
 
+  // typing tells that the phone's keyboard may be up: the terminal or the
+  // compose box takes text.
+  const typing = () => touch && /^(TEXTAREA|INPUT)$/.test(document.activeElement?.tagName || "");
+  let kept = false, liftFrame = 0;
+
+  // fill sizes the pane to the card. The phone's keyboard, coming and
+  // going, changes only the height: the pane keeps its rows, and the
+  // screen lifts to keep the cursor in sight. Fewer rows would have the
+  // agent redraw, and the whole scrollback come again over the phone's
+  // link, each time the keyboard opens.
   const fill = () => {
     const dims = fit.proposeDimensions();
     if (!dims || !dims.cols || !dims.rows) return;
-    if (dims.cols !== xt.cols || dims.rows !== xt.rows) xt.resize(dims.cols, dims.rows);
+    const rows = typing() && dims.cols === xt.cols && dims.rows < xt.rows ? xt.rows : dims.rows;
+    kept = rows > dims.rows;
+    if (dims.cols !== xt.cols || rows !== xt.rows) xt.resize(dims.cols, rows);
+    lift();
     if (!ws || ws.readyState !== 1) return;
     const cell = xt._core?._renderService?.dimensions?.css?.cell;
-    ws.send(frame("r", uint16s(dims.cols, dims.rows, cell?.width ?? 0, cell?.height ?? 0)));
+    ws.send(frame("r", uint16s(dims.cols, rows, cell?.width ?? 0, cell?.height ?? 0)));
+  };
+
+  // lift raises the screen over a keyboard that covers its foot, as far
+  // as the cursor's row needs, while the pane keeps its rows.
+  const lift = () => {
+    const screen = host.querySelector(".xterm-screen");
+    let y = 0;
+    if (kept && screen) {
+      const over = screen.offsetHeight - host.clientHeight;
+      const row = screen.offsetHeight / xt.rows;
+      y = Math.max(0, Math.min(over, (xt.buffer.active.cursorY + 1) * row - host.clientHeight));
+    }
+    host.toggleAttribute("data-lift", kept);
+    host.style.setProperty("--lift", `${-Math.round(y)}px`);
+  };
+  const liftSoon = () => {
+    if (kept && !liftFrame) liftFrame = requestAnimationFrame(() => { liftFrame = 0; lift(); });
+  };
+
+  // check asks the socket for a pong, as the page comes back: one that
+  // died meanwhile may still say it is open, and takes what is typed
+  // into it without a word. With no answer in 3 s, it makes way for a
+  // new one.
+  const check = () => {
+    if (closed || gone) return;
+    if (!ws) { connect(); return; }
+    if (ws.readyState !== 1 || pinged) return;
+    const sock = ws;
+    sock.send("ping");
+    pinged = setTimeout(() => {
+      pinged = 0;
+      if (ws !== sock || closed) return;
+      sock.onclose = sock.onmessage = null;
+      sock.close();
+      ws = null;
+      setLink("Reconnecting…");
+      connect();
+    }, 3000);
   };
 
   const connect = () => {
+    clearTimeout(retryTimer);
+    clearTimeout(pinged);
+    pinged = 0;
     const sock = new WebSocket(wsURL(`/api/panes/${encodeURIComponent(id)}/attach`));
     sock.binaryType = "arraybuffer";
     ws = sock;
-    let welcomed = false;
     sock.onmessage = (e) => {
+      if (e.data === "pong") {
+        clearTimeout(pinged);
+        pinged = 0;
+        return;
+      }
       if (typeof e.data === "string") {
         const w = JSON.parse(e.data);
         xt.reset();
@@ -928,6 +1015,7 @@ function showTerm(id) {
         sized = false;
         retry = 500;
         setNote("");
+        setLink("");
         return;
       }
       const b = new Uint8Array(e.data);
@@ -946,14 +1034,18 @@ function showTerm(id) {
     sock.onclose = (e) => {
       if (ws !== sock || closed) return;
       ws = null;
+      clearTimeout(pinged);
+      pinged = 0;
       if (e.code === 4401) { showPair("This browser was signed out."); return; }
-      if (e.code === 4410) { setNote(e.reason); return; }
-      if (e.code === 4404 || gone) { setNote(gone ? "This session has ended." : "This session is gone."); return; }
-      setNote(welcomed ? "Reconnecting…" : "Connecting…");
-      setTimeout(async () => {
+      if (e.code === 4410) { setLink(""); setNote(e.reason); return; }
+      if (e.code === 4404 || gone) { setLink(""); setNote(gone ? "This session has ended." : "This session is gone."); return; }
+      // In the header, not under the terminal: a note there would shrink
+      // it, and resize the pane.
+      setLink(welcomed ? "Reconnecting…" : "Connecting…");
+      retryTimer = setTimeout(async () => {
         if (closed) return;
         try { await api("/api/state"); } catch (err) { if (err.message === "not paired") return; }
-        connect();
+        if (!closed && !ws) connect();
       }, retry);
       retry = Math.min(retry * 2, 8000);
     };
@@ -1051,9 +1143,7 @@ function showTerm(id) {
     resizeTimer = setTimeout(fill, 100);
   });
   observer.observe(host);
-
-  const onVisible = () => { if (document.visibilityState === "visible" && !ws && !closed && !gone) connect(); };
-  document.addEventListener("visibilitychange", onVisible);
+  xt.onCursorMove(liftSoon);
 
   const refresh = () => {
     const cur = paneByID(id);
@@ -1088,7 +1178,8 @@ function showTerm(id) {
       tabsRow.hidden = true;
     }
 
-    const sc = statusChip(cur.pane);
+    // While a socket is down, what the header said may be old news.
+    const sc = link || offline ? h("div", { class: "schip offline" }, link || "Reconnecting…") : statusChip(cur.pane);
     statusChipEl.replaceChildren(sc ? sc : "");
 
     // A turn that ended may have changed files the changes view shows.
@@ -1127,11 +1218,14 @@ function showTerm(id) {
     xt,
     refresh,
     showView,
+    check,
     close() {
       closed = true;
       observer.disconnect();
       clearTimeout(resizeTimer);
-      document.removeEventListener("visibilitychange", onVisible);
+      clearTimeout(retryTimer);
+      clearTimeout(pinged);
+      cancelAnimationFrame(liftFrame);
       keyBar?.destroy();
       composeBox?.destroy();
       if (ws) { ws.onclose = null; ws.close(); }

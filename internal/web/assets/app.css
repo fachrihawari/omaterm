@@ -272,6 +272,7 @@ a { color: inherit; text-decoration: none; }
 }
 .schip.att { background: var(--attention-soft); color: var(--attention); font-weight: 500; }
 .schip.bad { background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); }
+.schip.offline { color: var(--warn); }
 
 /* Pane tabs in header (when session has multiple panes) */
 .card-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
@@ -290,6 +291,9 @@ a { color: inherit; text-decoration: none; }
 }
 .term-host { position: absolute; inset: 6px 4px 4px 10px; }
 .term-host .xterm { height: 100%; }
+/* The phone's keyboard over the screen's foot: the pane keeps its rows,
+   and the screen lifts as far as the cursor needs (app.js). */
+.term-host[data-lift] .xterm { height: auto; translate: 0 var(--lift, 0px); }
 /* The text box xterm types through: under 16px, iOS zooms in as it
    takes the keyboard. Unseen either way. */
 .term-host .xterm .xterm-helper-textarea { font-size: 16px; }
