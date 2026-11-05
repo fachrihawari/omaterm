@@ -284,11 +284,12 @@ addEventListener("online", wake);
 addEventListener("pageshow", (e) => { if (e.persisted) wake(); });
 
 // forget wipes what the phone keeps of omaterm as it is signed out: the
-// compose drafts and Recent prompts. Its look and key bar stay.
+// compose drafts and Recent prompts. Its look stays, and the views'
+// choices: the key bar, a diff's wrap, New Agent's.
 function forget() {
   try {
     for (const k of Object.keys(localStorage)) {
-      if (k.startsWith("omaterm.") && !/^omaterm\.(theme|keybar)$/.test(k)) localStorage.removeItem(k);
+      if (k.startsWith("omaterm.") && !/^omaterm\.(theme|keybar|diff\.wrap|newagent)$/.test(k)) localStorage.removeItem(k);
     }
   } catch {}
 }

@@ -895,7 +895,7 @@ setInterval(() => {}, 1 << 30);
       await sleep(500);
       await key("b", "KeyB", "b");
     });
-    await check("sign out wipes the drafts and Recent, and keeps the look", hex("bye\r"), async () => {
+    await check("sign out wipes the drafts and Recent, and keeps the look and the views' choices", hex("bye\r"), async () => {
       await typeInBox("bye");
       await tap(".compose-send");
       await sleep(300);
@@ -904,13 +904,14 @@ setInterval(() => {}, 1 << 30);
       const keys = `Object.keys(localStorage).filter((k) => k.startsWith("omaterm.")).sort().join(" ")`;
       const before = await evaluate(keys);
       if (!before.includes("omaterm.compose.recent") || !before.includes(`omaterm.compose:${pane}`)) throw new Error(`the phone keeps ${before}`);
+      await evaluate(`localStorage.setItem("omaterm.diff.wrap", "1"); localStorage.setItem("omaterm.newagent", "{}")`);
       await evaluate(`window.confirm = () => true; location.hash = ""`);
       await waitFor("the list doesn't show", `document.querySelector(".shell")?.dataset.view === "list"`);
       await sleep(500);
       await tap(".side-f .link", "Sign out");
       await waitFor("no pairing page", `Boolean(document.querySelector(".pair"))`);
       const after = await evaluate(keys);
-      if (after !== "omaterm.theme") throw new Error(`signed out, the phone keeps ${after}`);
+      if (after !== "omaterm.diff.wrap omaterm.newagent omaterm.theme") throw new Error(`signed out, the phone keeps ${after}`);
     });
   } finally {
     proxy.close();
