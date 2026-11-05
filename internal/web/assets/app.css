@@ -348,6 +348,71 @@ a { color: inherit; text-decoration: none; }
 .keys button:active { background: var(--hover); }
 .keys button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
+/* Files and changes (browse.js): in the card, in the terminal's place,
+   which keeps running hidden. */
+.pane-view { display: none; flex: 1; min-height: 0; overflow: auto; background: var(--card); overscroll-behavior: contain; }
+.pane[data-view] .pane-view { display: block; }
+.pane[data-view] .term-wrap, .pane[data-view] .term-bottom, .pane[data-view] .term-note { display: none; }
+.btn-view.on { background: var(--raised); color: var(--text); border-color: var(--border); }
+.bv-bar {
+  position: sticky; top: 0; left: 0; z-index: 2; display: flex; align-items: center; gap: 8px;
+  min-height: 36px; padding: 4px 8px 4px 14px; background: var(--card); border-bottom: 1px solid var(--border);
+}
+.bv-bar .sp { flex: 1; }
+.bv-crumbs {
+  display: flex; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; scrollbar-width: none;
+  font-size: 12.5px; white-space: nowrap;
+}
+.bv-crumbs::-webkit-scrollbar { display: none; }
+.bv-crumb { color: var(--text-muted); text-decoration: none; }
+a.bv-crumb:hover { color: var(--text); }
+.bv-crumb.here, .bv-crumb .here { color: var(--text); font-weight: 600; }
+.bv-sep { color: var(--text-faint); }
+.bv-meta, .bv-sum { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.bv-add { color: var(--ok); }
+.bv-del { color: var(--bad); }
+.bv-list { padding: 4px 6px 16px; }
+.pane-view .row { padding: 6px 10px; color: inherit; text-decoration: none; }
+.bv-row.muted { opacity: 0.55; }
+.bv-row .pi .dir { color: var(--text-muted); }
+.bv-row .tm { font-family: var(--mono); font-size: 11px; }
+.bv-st { width: 14px; flex: none; text-align: center; font: 600 11px var(--mono); color: var(--info); }
+.bv-st.added { color: var(--ok); }
+.bv-st.modified { color: var(--warn); }
+.bv-st.deleted { color: var(--bad); }
+.bv-note { margin: 0; padding: 16px 14px; font-size: 12.5px; color: var(--text-faint); }
+.bv-image { padding: 16px; display: grid; place-items: center; }
+.bv-image img {
+  max-width: 100%; height: auto; border-radius: 6px;
+  background: repeating-conic-gradient(var(--chip) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+/* Code and diffs keep their lines, and scroll sideways: their numbers
+   stay put. */
+.bv-code { display: flex; min-width: max-content; font: 12px/1.6 var(--mono); padding: 8px 0 16px; }
+.bv-code pre { margin: 0; font: inherit; }
+.bv-code .gut {
+  position: sticky; left: 0; padding: 0 10px 0 14px; text-align: right;
+  color: var(--text-faint); background: var(--card); user-select: none;
+}
+.bv-code .txt { padding: 0 16px 0 4px; color: var(--text); tab-size: 4; }
+.bv-diff { min-width: max-content; font: 12px/1.6 var(--mono); padding-bottom: 16px; }
+.dl { display: flex; background: var(--card); color: var(--text); }
+.dl .o, .dl .n {
+  position: sticky; width: 38px; flex: none; padding-right: 6px; text-align: right;
+  color: var(--text-faint); background: inherit; user-select: none;
+}
+.dl .o { left: 0; }
+.dl .n { left: 38px; }
+.dl .t { white-space: pre; padding: 0 16px 0 6px; tab-size: 4; }
+.dl .t::before { display: inline-block; width: 1.4ch; color: var(--text-faint); content: " "; }
+.dl.add { background: color-mix(in srgb, var(--ok) 14%, var(--card)); }
+.dl.add .t::before { content: "+"; color: var(--ok); }
+.dl.del { background: color-mix(in srgb, var(--bad) 14%, var(--card)); }
+.dl.del .t::before { content: "−"; color: var(--bad); }
+.dl.hunk { color: var(--text-faint); background: color-mix(in srgb, var(--info) 8%, var(--card)); margin-top: 6px; }
+.dl.hunk:first-child { margin-top: 0; }
+.dl.note .t { color: var(--text-faint); font-style: italic; }
+
 /* Phone bottom container slots (for keys.js and compose.js) */
 .term-bottom {
   display: flex; flex-direction: column; flex: none;
@@ -374,8 +439,9 @@ a { color: inherit; text-decoration: none; }
   .proj { height: 36px; padding: 0 12px; font-size: 13px; }
   .proj-sect { padding: 8px 12px 4px 12px; }
   /* Thumb-sized: 36 px and more, as a phone wants. */
-  .btn-compose { width: 36px; height: 36px; border-radius: 8px; }
-  .btn-compose svg { width: 18px; height: 18px; }
+  .btn-compose, .btn-view { width: 36px; height: 36px; border-radius: 8px; }
+  .btn-compose svg, .btn-view svg { width: 18px; height: 18px; }
+  .pane-view .row { min-height: 44px; padding: 8px 12px; }
   .proj .add { width: 36px; height: 36px; opacity: 1; }
   .side-f .chipc { height: 32px; padding: 0 10px; }
   .side-f .link { padding: 8px 10px; }

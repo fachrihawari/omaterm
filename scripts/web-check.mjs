@@ -14,6 +14,11 @@
 // whisper-server on the PATH: the mic records, the text lands in the
 // compose box and nothing is sent; Send while recording waits for the
 // words and sends them; turned off, the mic is gone.
+//
+// So are the session's Files and Changes views: the project is a git
+// repository with a change, which the page lists and shows, and the
+// terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
+// view is saved there as a PNG.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -103,7 +108,17 @@ try {
   omaterm("web", "on", "--port", String(port));
 
   const dir = join(tmp, "Projects", "check");
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(join(dir, "src"), { recursive: true });
+  const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main",
+    "-c", "commit.gpgsign=false", ...args], { cwd: dir, stdio: "ignore" });
+  writeFileSync(join(dir, "README.md"), "# check\n\nA project for the web check.\n");
+  writeFileSync(join(dir, "src", "main.go"), "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n");
+  writeFileSync(join(dir, "logo.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><circle cx="32" cy="32" r="28" fill="#2f81f7"/></svg>');
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-q", "-m", "first");
+  writeFileSync(join(dir, "src", "main.go"), "package main\n\nfunc main() {\n\tprintln(\"hello from the phone\")\n}\n");
+  writeFileSync(join(dir, "notes.txt"), "new\n");
   const sid = omaterm("new", "-n", "probe", "-d", dir, "--", process.execPath, probe);
   const pane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === sid).focus;
   await sleep(1000);
@@ -144,7 +159,7 @@ try {
       const r = el.getBoundingClientRect();
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     })()`);
-    if (!at) throw new Error(`nothing to tap: ${selector} ${text}`);
+    if (!at) throw new Error(`nothing to tap: ${selector} ${text} (at ${await evaluate("location.hash")})`);
     await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
     await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   };
@@ -230,6 +245,55 @@ try {
     }
     await tap(".compose-mic");
   };
+
+  // waitFor waits for an expression in the page to be true.
+  const waitFor = async (what, expression) => {
+    for (let i = 0; i < 50; i++) {
+      if (await evaluate(expression)) return;
+      await sleep(100);
+    }
+    throw new Error(what);
+  };
+  const shotDir = process.env.WEB_CHECK_SHOTS;
+  const shot = async (name) => {
+    if (!shotDir) return;
+    mkdirSync(shotDir, { recursive: true });
+    const { data } = await cdp("Page.captureScreenshot", { format: "png" });
+    writeFileSync(join(shotDir, `web-${name}.png`), Buffer.from(data, "base64"));
+  };
+  const viewText = `(document.querySelector(".pane-view")?.textContent || "")`;
+
+  await check("files: the session's folder lists, folders first", "", async () => {
+    await tap('.btn-view[data-view="files"]');
+    await waitFor("no files listed", `${viewText}.includes("README.md")`);
+    const first = await evaluate(`document.querySelector(".pane-view .bv-row .nm").textContent`);
+    if (first !== "src") throw new Error(`the first entry is ${first}, not src`);
+    await shot("files");
+  });
+  await check("files: a folder opens, then a file shows its text", "", async () => {
+    await tap(".pane-view .bv-row", "src");
+    await waitFor("src did not open", `${viewText}.includes("main.go")`);
+    await tap(".pane-view .bv-row .nm", "main.go");
+    await waitFor("main.go's text did not show", `document.querySelector(".bv-code .txt")?.textContent.includes("hello from the phone")`);
+    await shot("file");
+  });
+  await check("changes: the changed and new files, with their counts", "", async () => {
+    await tap('.btn-view[data-view="changes"]');
+    await waitFor("no changes listed", `${viewText}.includes("main.go") && ${viewText}.includes("notes.txt")`);
+    const sum = await evaluate(`document.querySelector(".bv-sum").textContent`);
+    if (!/^2 files · \+2 −1 · not committed$/.test(sum)) throw new Error(`the summary says ${sum}`);
+    await shot("changes");
+  });
+  await check("changes: a file's diff", "", async () => {
+    await tap(".pane-view .bv-row .nm", "main.go");
+    await waitFor("the diff did not show", `[...document.querySelectorAll(".dl.add .t")].some((e) => e.textContent.includes("hello from the phone"))`);
+    await shot("diff");
+  });
+  await check("back to the terminal, keys still reach it", hex("z"), async () => {
+    await tap('.btn-view[data-view="changes"]');
+    await waitFor("the terminal did not come back", `!document.querySelector(".pane").dataset.view`);
+    await key("z", "KeyZ", "z");
+  });
 
   await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {
     await tap(".btn-compose");

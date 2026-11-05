@@ -46,6 +46,9 @@ const touch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in windo
 // Dynamic modules loaded asynchronously
 const keysPromise = import("./keys.js").catch(() => null);
 const composePromise = import("./compose.js").catch(() => null);
+// The files and changes views load the first time one opens.
+let browsePromise = null;
+const loadBrowse = () => (browsePromise ??= import("./browse.js").catch(() => null));
 
 // SVG dictionary
 const S = (d, extra = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
@@ -57,6 +60,8 @@ const IC = {
   compose: S('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>'),
   signout: S('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
   term: S('<path d="M4 17l6-5-6-5M12 19h8"/>'),
+  files: S('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+  changes: S('<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9"/>'),
   claude: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 6.2L19 5l-3.2 5.4L22 12l-6.2 1.6L19 19l-5.4-3.2L12 22l-1.6-6.2L5 19l3.2-5.4L2 12l6.2-1.6L5 5l5.4 3.2z"/></svg>`,
   codex: S('<path d="M12 2l8.5 5v10L12 22l-8.5-5V7z"/><path d="M8 10l3 2-3 2M13 15h3"/>'),
   bun: S('<path d="M3 14c0-4.5 4-8 9-8s9 3.5 9 8c0 2.8-4 5-9 5s-9-2.2-9-5z"/><path d="M9 13h.01M15 13h.01M10.5 15.5c.8.6 2.2.6 3 0"/>'),
@@ -833,11 +838,22 @@ function showTerm(id) {
     },
   }, icon("compose", "s14"));
 
+  // The session's files and changes, read in the card in the terminal's
+  // place; each button, lit, goes back to the terminal.
+  const viewBtn = (kind, name, title) => h("a", {
+    class: "ib btn-view", href: `#/pane/${encodeURIComponent(id)}/${kind}`, "data-view": kind,
+    title, "aria-label": title,
+  }, icon(name, "s14"));
+  const filesBtn = viewBtn("files", "files", "Files");
+  const changesBtn = viewBtn("changes", "changes", "Changes");
+
   const header = h("header", { class: "ph" },
     backBtn, grip, branchChip, tabsRow,
     h("span", { class: "sp" }),
     modChip,
     statusChipEl,
+    filesBtn,
+    changesBtn,
     composeBtn,
   );
 
@@ -849,7 +865,8 @@ function showTerm(id) {
   const keybarSlot = h("div", { class: "keybar-slot" });
   const bottomBar = h("div", { class: "term-bottom" }, composeSlot, keybarSlot);
 
-  const card = h("div", { class: "pane" }, header, wrap, note, bottomBar);
+  const view = h("div", { class: "pane-view" });
+  const card = h("div", { class: "pane" }, header, wrap, view, note, bottomBar);
   shell.content.replaceChildren(card);
 
   const xt = new Terminal({
@@ -1067,14 +1084,43 @@ function showTerm(id) {
     const sc = statusChip(cur.pane);
     statusChipEl.replaceChildren(sc ? sc : "");
 
+    // A turn that ended may have changed files the changes view shows.
+    if (lastStatus === "working" && cur.pane.status !== "working") browse?.turnEnded();
+    lastStatus = cur.pane.status;
+
     const waiting = waitingCount();
     document.title = (waiting ? `(${waiting}) ` : "") + gripTitle.textContent + " · omaterm";
+  };
+
+  // showView shows the files or changes view kind at path, or, with no
+  // kind, the terminal again.
+  let browse = null;
+  let lastStatus = "";
+  const showView = (kind, path) => {
+    const views = { files: "files", file: "files", changes: "changes", diff: "changes" };
+    filesBtn.classList.toggle("on", views[kind] === "files");
+    changesBtn.classList.toggle("on", views[kind] === "changes");
+    filesBtn.href = `#/pane/${encodeURIComponent(id)}` + (views[kind] === "files" ? "" : "/files");
+    changesBtn.href = `#/pane/${encodeURIComponent(id)}` + (views[kind] === "changes" ? "" : "/changes");
+    if (!kind) {
+      delete card.dataset.view;
+      if (!touch) xt.focus();
+      return;
+    }
+    card.dataset.view = kind;
+    xt.blur(); // the phone's keyboard goes away with the terminal
+    loadBrowse().then((mod) => {
+      if (!mod || closed || card.dataset.view !== kind) return;
+      browse ??= mod.mountBrowse(view, { id, api, h });
+      browse.show(kind, path);
+    });
   };
 
   term = {
     id,
     xt,
     refresh,
+    showView,
     close() {
       closed = true;
       observer.disconnect();
@@ -1096,11 +1142,17 @@ function showTerm(id) {
 
 // --- routes & start --------------------------------------------------------
 
+// route shows what the hash names: a pane, #/pane/<id>, or one of its
+// views, #/pane/<id>/files/<dir>, …/file/<path>, …/changes and
+// …/changes/<path> (a file's diff); else the list.
 function route() {
   if (!paired) return;
-  const m = location.hash.match(/^#\/pane\/(.+)$/);
-  if (m) showTerm(decodeURIComponent(m[1]));
-  else { showEmpty(); renderSidebar(); }
+  const m = location.hash.match(/^#\/pane\/([^/]+)(?:\/(files|file|changes)(?:\/(.+))?)?$/);
+  if (!m) { showEmpty(); renderSidebar(); return; }
+  showTerm(decodeURIComponent(m[1]));
+  const path = m[3] ? decodeURIComponent(m[3]) : "";
+  const kind = m[2] === "changes" && path ? "diff" : m[2] || "";
+  term?.showView(kind, path);
 }
 
 async function start() {
