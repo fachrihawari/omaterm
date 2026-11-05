@@ -482,6 +482,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	defer s.track(c, r)()
 	ctx := c.CloseRead(r.Context())
+	go keepAlive(ctx, c)
 	kick := make(chan struct{}, 1)
 	stop := s.d.Watch(func() {
 		select {
