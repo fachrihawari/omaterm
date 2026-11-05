@@ -27,6 +27,11 @@
 // So are starting work from the phone: '+' opens the New Agent sheet,
 // which starts a shell session and opens it; and the compose box's 📎
 // sends a picture, whose path on the computer is pasted on its own.
+//
+// And what makes it a phone's app: the manifest, the service worker and
+// the icons are served as their types, the worker runs, and the list's
+// bell opens the notifications sheet, which can turn them on (a real
+// subscription needs a push service, so none is made).
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -500,6 +505,7 @@ setInterval(() => {}, 1 << 30);
   // New Agent: '+' opens the sheet, which starts a shell in the project
   // and opens it. No agent is started: a real one would run.
   await check("new agent: the sheet starts a shell session, and opens it", "", async () => {
+    const before = JSON.parse(omaterm("ls", "--json")).length;
     await evaluate(`location.hash = "#/"`);
     await waitFor("the list did not show", `Boolean(document.querySelector(".proj .add"))`);
     await tap(".proj .add");
@@ -511,7 +517,7 @@ setInterval(() => {}, 1 << 30);
     await tap(".na-start");
     await waitFor("no new session opened", `/^#\\/pane\\//.test(location.hash) && !location.hash.endsWith(${JSON.stringify(pane)})`);
     const n = JSON.parse(omaterm("ls", "--json")).length;
-    if (n !== 2) throw new Error(`${n} sessions`);
+    if (n !== before + 1) throw new Error(`${n} sessions, after ${before}`);
   });
   await check("new agent: an agent in a worktree of its own, with a first task, as the sheet shows it", "", async () => {
     await evaluate(`location.hash = "#/"`);
@@ -559,6 +565,34 @@ setInterval(() => {}, 1 << 30);
   await check("photo: Send presses Enter, and the thumbnail goes", hex("\r"), async () => {
     await tap(".compose-send");
     await waitFor("the thumbnail stays", `!document.querySelector(".compose-shots img")`);
+  });
+
+  await check("notifications: the manifest, worker and icons are served as their types", "", async () => {
+    for (const [path, type] of [["/manifest.json", "application/json"], ["/sw.js", "text/javascript"],
+      ["/icon-180.png", "image/png"], ["/icon-192.png", "image/png"], ["/icon-512.png", "image/png"]]) {
+      const res = await fetch(base + path);
+      const got = res.headers.get("content-type") || "";
+      if (!res.ok || !got.startsWith(type)) throw new Error(`${path} is ${res.status} ${got}`);
+    }
+    const linked = await evaluate(`[...document.querySelectorAll('link[rel="manifest"], link[rel="apple-touch-icon"]')].length`);
+    if (linked !== 2) throw new Error(`the page links ${linked} of the manifest and the touch icon`);
+  });
+  await check("notifications: the worker runs, and the list's bell opens its sheet", "", async () => {
+    await waitFor("the service worker isn't running", `navigator.serviceWorker.getRegistration().then((r) => Boolean(r?.active))`);
+    await evaluate(`location.hash = ""`);
+    await waitFor("no bell in the list's footer", `Boolean(document.querySelector(".side-f .bell")?.getClientRects().length)`);
+    await shot("push-list");
+    await tap(".side-f .bell");
+    await waitFor("the bell opened no sheet", `Boolean(document.querySelector(".push-sheet .push-on"))`);
+    const st = await evaluate(`[".push-on", ".push-words", ".push-programs"].map((s) => document.querySelector(s))
+      .map((e) => e.disabled + "/" + e.checked).concat(document.querySelector(".push-note").hidden)`);
+    if (st.join() !== "false/false,true/false,true/false,true") {
+      throw new Error(`notify, words and programs disabled/checked, then the note hidden: ${st}`);
+    }
+    await sleep(300);
+    await shot("push-sheet");
+    await tap(".push-close");
+    await waitFor("the sheet stayed", `!document.querySelector(".push-sheet")`);
   });
 } catch (err) {
   failed++;

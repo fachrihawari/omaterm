@@ -24,6 +24,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -73,6 +74,9 @@ type Options struct {
 	// Voice writes down the phone's recordings: a voice.Server running
 	// whisper-server when nil (tests give a fake).
 	Voice Transcriber
+	// Push takes the phones' notifications in place of web access
+	// (tests).
+	Push func(web.Notice)
 }
 
 // Daemon is the running daemon.
@@ -88,6 +92,8 @@ type Daemon struct {
 	lock    *os.File
 	started time.Time
 	limit   notice.Limiter
+	// deskAt is when the desktop app last sent input, unix ms (push.go).
+	deskAt atomic.Int64
 	// stateMu orders the changes to state.json the daemon makes while no
 	// app runs.
 	stateMu      sync.Mutex
@@ -243,10 +249,12 @@ func Start(opts Options) (*Daemon, error) {
 	d.reg.OnExit = func(id string, code int) { d.changed() }
 	d.reg.OnStatus = func(info session.Info, prev session.Status) {
 		d.changed()
+		d.pushStatus(info, prev)
 		d.notifyStatus(info, prev)
 	}
 	d.reg.OnNotice = func(id, title, body string) {
 		d.broadcast(proto.Message{Event: "notice", Result: mustJSON(map[string]string{"pane": id, "title": title, "body": body})})
+		d.pushProgram(id, title, body)
 		d.notifyProgram(id, title, body)
 	}
 	os.MkdirAll(filepath.Dir(opts.Socket), 0o700)
@@ -651,6 +659,9 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 	case "viewed":
 		var p proto.IDParams
 		json.Unmarshal(raw, &p)
+		if p.ID != d.reg.Viewed() {
+			d.deskInput()
+		}
 		d.reg.SetViewed(p.ID)
 		return true, nil
 	case "seen":
@@ -948,6 +959,9 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 		kind, payload, err := proto.ReadFrame(r)
 		if err != nil {
 			return
+		}
+		if !web && (kind == proto.FrameInput || kind == proto.FrameKey || kind == proto.FramePaste) {
+			d.deskInput()
 		}
 		switch kind {
 		case proto.FrameInput:

@@ -204,6 +204,7 @@ func (d *Daemon) processList(project string) []proto.Process {
 // to show it, notifies the desktop of a failure or a paused restart.
 func (d *Daemon) processEvent(event procs.Event) {
 	d.broadcast(proto.Message{Event: "process", Result: mustJSON(event)})
+	d.pushProcess(event)
 	if d.appAttached() || !d.notifyPrefs().Error {
 		return
 	}
