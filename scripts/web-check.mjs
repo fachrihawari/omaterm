@@ -473,11 +473,17 @@ setInterval(() => {}, 1 << 30);
     const n = await evaluate(chip);
     if (n !== "1") throw new Error(`the done chip says ${n}`);
   });
-  await check("inbox: a row's line, tapped, shows whole, and opens nothing", "", async () => {
-    await tap(".needs .row .sub", failText);
-    await waitFor("the line is still cut", `document.querySelector(".needs .row .sub.whole")?.textContent === ${JSON.stringify(failText)}`);
-    if (await evaluate("location.hash")) throw new Error("the tap opened the session");
+  await check("inbox: a question shows on two lines, and a tap on it opens its session", "", async () => {
+    const lines = await evaluate(`(() => {
+      const el = [...document.querySelectorAll(".needs .row .sub")].find((e) => e.textContent === ${JSON.stringify(failText)});
+      return el ? Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) : 0;
+    })()`);
+    if (lines !== 2) throw new Error(`the question shows on ${lines} lines`);
     await shot("inbox");
+    await tap(".needs .row .sub", failText);
+    await waitFor("the tap did not open the session", `location.hash.startsWith("#/pane/")`);
+    await evaluate(`location.hash = "#"`);
+    await waitFor("the list did not come back", `Boolean(document.querySelector(".needs .row"))`);
   });
   await check("inbox: the done chip opens the finished session, which it then sees", "", async () => {
     await tap('.side-f .chipc[title="Done sessions"]');

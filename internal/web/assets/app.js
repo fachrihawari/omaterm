@@ -41,7 +41,6 @@ let term = null;        // open terminal: its pane id, refresh and teardown
 let shell = null;       // shell DOM elements
 let rowsShown = null;   // the sessions the list showed, so a new one rises in; null before the first list
 let rowsNow = new Set();
-let linesOpen = new Set(); // the sessions whose row's line shows whole
 const touch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
 // A touch screen of any width has the key bar, Compose and the answer bar.
 document.documentElement.classList.toggle("touch", touch);
@@ -643,7 +642,6 @@ function sessionRow(s, proj, open, where = false) {
   let branch = s.worktree?.branch || (lead.dir && lead.dir !== proj?.dir ? shortDir(lead.dir, proj?.dir) : "");
   if (where) branch = [proj?.name, branch].filter(Boolean).join(" · ");
   const sub = rowLine(lead);
-  const whole = linesOpen.has(s.id);
 
   return h("div", {
     class: "row" + (here ? " sel" : "") + (lead.unread ? " unread" : "") + (lead.status === "exited" ? " exited" : "") + fresh(s),
@@ -655,7 +653,7 @@ function sessionRow(s, proj, open, where = false) {
         h("span", { class: "nm" }, s.name || label(lead)),
         branch ? h("span", { class: "br" }, branch) : null,
       ),
-      sub ? h("span", { class: "sub" + (whole ? " whole" : ""), onclick: (e) => openLine(e, s.id) }, sub) : null,
+      sub ? h("span", { class: "sub" }, sub) : null,
     ),
     lead.since ? h("span", { class: "tm" }, ago(lead.since)) : null,
     statusIcon(st, "s14"),
@@ -673,16 +671,6 @@ function rowLine(p) {
   }
   if (p.inbox > 0) return `${p.inbox} message${p.inbox === 1 ? " waits" : "s wait"}` + (p.held ? `: ${p.held}` : "");
   return p.summary || p.message || "";
-}
-
-// openLine shows a row's line whole, in place, or cut to one again; a
-// line that fits opens the session, as the rest of the row does.
-function openLine(e, id) {
-  const el = e.currentTarget;
-  if (!linesOpen.has(id) && el.scrollWidth <= el.clientWidth) return;
-  e.stopPropagation();
-  if (!linesOpen.delete(id)) linesOpen.add(id);
-  renderSidebar();
 }
 
 // linkHost is the host of a process's link, as the pill shows it.
