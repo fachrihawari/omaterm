@@ -328,11 +328,49 @@ process.stdin.on("data", (b) => {
 ask("build");
 setInterval(() => {}, 1 << 30);
 `);
-  const askSid = omaterm("new", "-n", "asker", "-d", dir, "--", process.execPath, asker);
-  const askPane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === askSid).focus;
+  // Beside it, one session that failed after it began to wait, and one
+  // that finished: the inbox's.
+  const failText = "The tests failed: 3 of 120 in internal/web, as the fixture's daemon did not start on a free port in time";
+  const b64 = (s) => Buffer.from(s).toString("base64");
+  const paneOf = (sid) => JSON.parse(omaterm("ls", "--json")).find((s) => s.id === sid).focus;
+  const askPane = paneOf(omaterm("new", "-n", "asker", "-d", dir, "--", process.execPath, asker));
+  await sleep(1200);
+  omaterm("new", "-n", "failer", "-d", dir, "--", "sh", "-c", `printf '\\033]7501;state=error:msg=${b64(failText)}\\033\\\\'; exec cat`);
+  const finPane = paneOf(omaterm("new", "-n", "finisher", "-d", dir, "--", "sh", "-c",
+    `printf '\\033]7501;state=working\\033\\\\'; sleep 0.3; printf '\\033]7501;state=done:msg=${b64("Tests pass")}\\033\\\\'; exec cat`));
+  const lead = (name) => `fetch("/api/state").then((r) => r.json()).then((st) => st.sessions.find((s) => s.name === ${JSON.stringify(name)})?.lead)`;
+
+  await check("inbox: Needs you holds the waiting and failed sessions, longest waiting first", "", async () => {
+    await evaluate(`location.hash = "#"`);
+    await waitFor("no Needs you", `document.querySelectorAll(".needs .row").length === 2`);
+    const names = await evaluate(`[...document.querySelectorAll(".needs .row .nm")].map((e) => e.textContent).join()`);
+    if (names !== "asker,failer") throw new Error(`Needs you holds ${names}`);
+  });
+  await check("inbox: the done count is the finished session only", "", async () => {
+    await waitFor("finisher is not done", `${lead("finisher")}.then((l) => l?.status === "idle" && l.unread)`);
+    const chip = `document.querySelector('.side-f .chipc[title="Done sessions"]')?.textContent.trim()`;
+    await waitFor("no done chip", `Boolean(${chip})`);
+    const n = await evaluate(chip);
+    if (n !== "1") throw new Error(`the done chip says ${n}`);
+  });
+  await check("inbox: a row's line, tapped, shows whole, and opens nothing", "", async () => {
+    await tap(".needs .row .sub", failText);
+    await waitFor("the line is still cut", `document.querySelector(".needs .row .sub.whole")?.textContent === ${JSON.stringify(failText)}`);
+    if (await evaluate("location.hash")) throw new Error("the tap opened the session");
+    await shot("inbox");
+  });
+  await check("inbox: the done chip opens the finished session, which it then sees", "", async () => {
+    await tap('.side-f .chipc[title="Done sessions"]');
+    await waitFor("it opened another", `location.hash === "#/pane/${finPane}"`);
+    await waitFor("still unread", `${lead("finisher")}.then((l) => !l.unread)`);
+    await evaluate(`location.hash = "#"`);
+    await waitFor("the done chip stays", `!document.querySelector('.side-f .chipc[title="Done sessions"]')`);
+  });
+
   const answerText = `[...document.querySelectorAll(".answer:not([hidden]) .answer-opt")].map((b) => b.textContent)`;
   await check("answer bar: the whole question and the screen's options", "", async () => {
-    await evaluate(`location.hash = "#/pane/${askPane}"`);
+    if (!(await evaluate(`${lead("asker")}.then((l) => l.unread)`))) throw new Error("asker is not unread");
+    await tap(".needs .row .nm", "asker");
     await waitFor("no answer bar", `${answerText}.length === 3`);
     const q = await evaluate(`document.querySelector(".answer-q").textContent`);
     if (q !== "Claude needs your permission to use Bash") throw new Error(`the question is ${JSON.stringify(q)}`);
@@ -342,6 +380,9 @@ setInterval(() => {}, 1 << 30);
     }
     await sleep(600);
     await shot("answer");
+  });
+  await check("inbox: opening a session on the phone sees it", "", async () => {
+    await waitFor("asker is still unread", `${lead("asker")}.then((l) => !l.unread)`);
   });
   await check("answer bar: a tap on a screen that changed since is refused", hex("r"), async () => {
     await key("r", "KeyR", "r");
