@@ -18,9 +18,13 @@
 // So are the session's Files and Changes views: the project is a git
 // repository with a change, which the page lists and shows, and the
 // terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
-// view is saved there as a PNG.
+// view is saved there as a PNG. Output shows a session's text, its links
+// and finds in it, and a process that crashed opens its last lines. With
+// WEB_CHECK_THEME=<file>, a theme as the app sends it (web.setTheme; a
+// light one, say), the page takes that look.
 
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -72,6 +76,7 @@ const setVoice = (enabled) => {
   writeFileSync(settingsFile, JSON.stringify({ voice: { enabled, model: "tiny", language: "id" } }));
 };
 setVoice(true);
+if (process.env.WEB_CHECK_THEME) writeFileSync(join(env.XDG_CONFIG_HOME, name, "web-theme.json"), readFileSync(process.env.WEB_CHECK_THEME));
 mkdirSync(join(env.XDG_STATE_HOME, name, "voice"), { recursive: true });
 writeFileSync(join(env.XDG_STATE_HOME, name, "voice", "ggml-tiny.bin"), "not a model");
 const fakeBin = join(tmp, "fakebin");
@@ -297,6 +302,72 @@ try {
   await check("the button opens the view last seen", "", async () => {
     const to = await evaluate(`document.querySelector(".btn-browse").getAttribute("href")`);
     if (!to.endsWith("/changes")) throw new Error(`it opens ${to}`);
+  });
+
+  // Output reads a session of a project of its own that printed lines,
+  // and a process of it that crashed: its definition trusted as omaterm
+  // trusts one, by the hash of what it runs (procs.Def.Variant).
+  const procDir = join(tmp, "Projects", "procs");
+  mkdirSync(procDir, { recursive: true });
+  const crash = "echo listening on http://localhost:3999; echo Error: boom; exit 1";
+  writeFileSync(join(procDir, "omaterm.yml"), `processes:\n  crash:\n    command: ${JSON.stringify(crash)}\n`);
+  const variant = createHash("sha256").update(JSON.stringify({ command: crash, dir: "", env: null, port: 0, restart: "never", watch: null })).digest("hex");
+  writeFileSync(join(env.XDG_CONFIG_HOME, name, "trust.json"), JSON.stringify({ version: 1, projects: { [procDir]: { [variant]: new Date().toISOString() } } }));
+  const printed = "build started\nsee https://example.com/docs?a=1. for more, not file:///etc/passwd\nerror: one\nerror: two\nerror: three\n";
+  const outSid = omaterm("new", "-n", "out", "-d", procDir, "--", "sh", "-c", `printf '${printed}'; exec sleep 600`);
+  const outPane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === outSid).focus;
+  const marked = `[...document.querySelectorAll(".bv-out mark.on")].map((m) => m.textContent).join("")`;
+
+  await check("output: a session's text, its web links, and nothing else linked", "", async () => {
+    // Its terminal opened first starts it, as the list's row does.
+    await evaluate(`location.hash = "#/pane/${outPane}"`);
+    await waitFor("its terminal did not open", `document.querySelector(".xterm-rows")?.textContent.includes("error: three")`);
+    await evaluate(`location.hash = "#/pane/${outPane}/output"`);
+    await waitFor("the output did not show", `document.querySelector(".bv-out")?.textContent.includes("error: three")`);
+    const links = await evaluate(`JSON.stringify([...document.querySelectorAll(".bv-out a")].map((a) => [a.getAttribute("href"), a.textContent, a.target, a.rel]))`);
+    if (links !== JSON.stringify([["https://example.com/docs?a=1", "https://example.com/docs?a=1", "_blank", "noopener noreferrer"]])) throw new Error(`the links are ${links}`);
+    await shot("output");
+  });
+  await check("output: Find counts the hits, its case ignored, and jumps between them", "", async () => {
+    await tap('.bv-btn[aria-label="Find"]');
+    await evaluate(`document.querySelector(".bv-find").focus()`);
+    await cdp("Input.insertText", { text: "ERROR" });
+    const at = (n) => waitFor(`not at hit ${n}`, `document.querySelector(".bv-count").textContent === "${n}/3" && document.querySelector('.bv-out mark.on[data-hit="${n - 1}"]') && ${marked} === "error"`);
+    await at(1);
+    await tap('.bv-btn[aria-label="Next"]');
+    await at(2);
+    await shot("output-find");
+    await tap('.bv-btn[aria-label="Previous"]');
+    await at(1);
+    await tap('.bv-btn[aria-label="Previous"]');
+    await at(3);
+    await tap(".bv-done");
+    await waitFor("the hits stayed marked", `!document.querySelector(".bv-out mark") && document.querySelector(".bv-findbar").hidden`);
+  });
+  await check("output: a process that crashed opens its last lines, and starts nothing", "", async () => {
+    const inProcs = (...args) => execFileSync(bin, args, { env, cwd: procDir, encoding: "utf8" }).trim();
+    for (let i = 0; ; i++) {
+      try { inProcs("start", "crash"); break; } catch (err) { if (i > 50) throw err; await sleep(200); }
+    }
+    let crashPane = "";
+    for (let i = 0; i < 50 && !crashPane; i++) {
+      crashPane = await evaluate(`fetch("/api/state").then((r) => r.json()).then((st) => {
+        const s = st.sessions.find((s) => s.process === "crash");
+        return s?.proc?.status === "failed" ? s.panes[0].id : "";
+      })`);
+      if (!crashPane) await sleep(200);
+    }
+    if (!crashPane) throw new Error("the process did not crash: " + inProcs("ps"));
+    await evaluate(`location.hash = "#/pane/${crashPane}"`);
+    await waitFor("its output did not open", `location.hash.endsWith("/output") && document.querySelector(".bv-out")?.textContent.includes("Error: boom")`);
+    const sum = await evaluate(`document.querySelector(".bv-sum").textContent`);
+    if (!sum.startsWith("crash isn't running")) throw new Error(`the bar says ${sum}`);
+    await shot("output-stopped");
+    if (!/crash\s+failed/.test(inProcs("ps"))) throw new Error("reading it started it: " + inProcs("ps"));
+  });
+  await check("back to the first session's terminal", "", async () => {
+    await evaluate(`location.hash = "#/pane/${pane}"`);
+    await waitFor("its terminal did not come back", `!document.querySelector(".pane").dataset.view && !document.querySelector(".btn-compose").hidden`);
   });
 
   await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {

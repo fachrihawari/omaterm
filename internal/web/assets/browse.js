@@ -1,14 +1,17 @@
-// A session's files and git changes, to read in its card in place of the
-// terminal, which keeps running behind them. Nothing here changes a
-// file: the desktop app, or the shell in the pane, does that.
+// A pane's output as text, and its session's files and git changes, to
+// read in its card in place of the terminal, which keeps running behind
+// them. Nothing here changes a file: the desktop app, or the shell in the
+// pane, does that.
 //
 //   import { mountBrowse } from "./browse.js";
 //   const b = mountBrowse(el, { id, api, h });
-//   b.show("files" | "file" | "changes" | "diff", path);
+//   b.show("output" | "files" | "file" | "changes" | "diff", path);
 //   b.turnEnded();   // the session stopped working: changes may be new
 //
-// Its views are links (#/pane/<id>/files/<dir>, …/file/<path>,
+// Its views are links (#/pane/<id>/output, …/files/<dir>, …/file/<path>,
 // …/changes, …/changes/<path>), so the phone's back goes back a view.
+
+import { mountOutput } from "./output.js";
 
 const FOLDER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
 const FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>';
@@ -60,6 +63,7 @@ export function mountBrowse(el, { id, api, h }) {
   let shown = { kind: "", path: "" };
   let ticket = 0;
   let rootName = "Files"; // the folder's name, once a listing told it
+  let fresh = false; // the output shows for the first time: at its end
 
   // crumbs are the way up from path: the view's name, then each folder.
   const crumbs = (first, kind, path, last = true) => {
@@ -101,6 +105,7 @@ export function mountBrowse(el, { id, api, h }) {
     onclick: () => load(shown.kind, shown.path),
   }, svg(REFRESH));
   const note = (text) => h("p", { class: "bv-note" }, text);
+  const output = mountOutput({ h, svg, bar, refreshBtn, note });
 
   // load fetches the view's data and draws it, unless another view was
   // asked for meanwhile.
@@ -115,10 +120,19 @@ export function mountBrowse(el, { id, api, h }) {
         case "file": return draw(...file(await api(base + "/file" + q(path)), path));
         case "changes": return draw(...changes(await api(base + "/changes")));
         case "diff": return draw(...diff(await api(base + "/diff" + q(path)), path));
+        case "output": {
+          const t = await api(base + "/text");
+          const end = fresh || el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          draw(...output.view(t));
+          if (mine === ticket && end) el.scrollTop = el.scrollHeight;
+          fresh = false;
+          return;
+        }
       }
     } catch (err) {
       if (err.message === "not paired") return;
-      const [name, to] = kind === "files" || kind === "file" ? [rootName, "files"] : ["Changes", "changes"];
+      const [name, to] = kind === "files" || kind === "file" ? [rootName, "files"]
+        : kind === "output" ? ["Output", "output"] : ["Changes", "changes"];
       draw(bar(crumbs(name, to, "", false), refreshBtn()), note(err.message));
     }
   }
@@ -206,12 +220,16 @@ export function mountBrowse(el, { id, api, h }) {
     // show draws a view, fetched again each time it shows: what it was
     // stays until the new one comes, and where it was scrolled with it.
     show(kind, path = "") {
-      if (shown.kind !== kind || shown.path !== path) el.scrollTop = 0;
+      if (shown.kind !== kind || shown.path !== path) {
+        el.scrollTop = 0;
+        fresh = kind === "output";
+      }
       shown = { kind, path };
       load(kind, path);
     },
     turnEnded() {
-      if (shown.kind === "changes" || shown.kind === "diff") load(shown.kind, shown.path);
+      if (shown.kind === "output" && output.busy()) return;
+      if (shown.kind === "changes" || shown.kind === "diff" || shown.kind === "output") load(shown.kind, shown.path);
     },
   };
 }

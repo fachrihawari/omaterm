@@ -423,6 +423,39 @@ a.bv-crumb:hover { color: var(--text); }
 .dl.hunk { color: var(--text-faint); background: color-mix(in srgb, var(--info) 8%, var(--card)); margin-top: 6px; }
 .dl.hunk:first-child { margin-top: 0; }
 .dl.note .t { color: var(--text-faint); font-style: italic; }
+.bv-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+/* Output (output.js): the pane's text at a reading size, wrapped, to
+   select, copy and find in; its bar and find stay on top. */
+.bv-head { position: sticky; top: 0; z-index: 2; }
+.bv-head .bv-bar { position: static; }
+.bv-findbar { gap: 4px; padding: 4px 8px; }
+.bv-find {
+  flex: 1; min-width: 0; height: 28px; padding: 0 10px; border: 1px solid var(--border-strong);
+  border-radius: 7px; background: var(--input); font-size: 13px; outline: none;
+}
+.bv-find:focus { border-color: var(--accent); }
+.bv-count { min-width: 4ch; text-align: right; font-family: var(--mono); }
+.bv-done { flex: none; height: 28px; padding: 0 6px; font-size: 13px; color: var(--accent); }
+.bv-copy {
+  display: flex; flex: none; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
+  border-radius: 7px; font-size: 12px; color: var(--text-muted);
+}
+.bv-copy:hover { background: var(--hover); color: var(--text); }
+.bv-copy.done { color: var(--ok); }
+.bv-out {
+  margin: 0; padding: 10px 14px 24px; font: 14px/1.5 var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; user-select: text; -webkit-user-select: text;
+}
+.bv-out a { color: var(--accent); text-underline-offset: 2px; }
+.bv-hit { background: var(--attention-soft); color: inherit; border-radius: 2px; }
+.bv-hit.on { background: color-mix(in srgb, var(--attention) 55%, transparent); outline: 1px solid var(--attention); }
+@media (max-width: 859px) {
+  .bv-bar .bv-btn, .bv-bar .bv-refresh { width: 36px; height: 36px; border-radius: 8px; }
+  .bv-bar .bv-btn svg, .bv-bar .bv-refresh svg { width: 18px; height: 18px; }
+  .bv-copy, .bv-done { height: 36px; font-size: 13px; }
+  /* 16 px, or iOS zooms the page as it focuses. */
+  .bv-find { height: 36px; font-size: 16px; }
+}
 
 /* Phone bottom container slots (for keys.js and compose.js) */
 .term-bottom {
