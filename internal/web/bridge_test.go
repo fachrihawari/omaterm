@@ -3,12 +3,16 @@
 package web_test
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"omaterm/internal/proto"
 	"omaterm/internal/web"
 )
 
@@ -37,6 +41,47 @@ func TestWebPong(t *testing.T) {
 			return
 		}
 	}
+}
+
+// A page out of sight gives the pane's size back through the bridge: the
+// window's size comes back, and the page is told so.
+func TestWebReleaseGivesSizeBack(t *testing.T) {
+	f := newFixture(t)
+	ours, theirs := net.Pipe()
+	go func() {
+		defer ours.Close()
+		f.d.Attach(ours, bufio.NewReader(ours), proto.Hello{Kind: "attach", Version: proto.Version, Pane: "p1"}, proto.Welcome{Version: proto.Version})
+	}()
+	t.Cleanup(func() { theirs.Close() })
+	br := bufio.NewReader(theirs)
+	if _, err := br.ReadBytes('\n'); err != nil {
+		t.Fatal(err)
+	}
+	go io.Copy(io.Discard, br)
+	theirs.Write(proto.AppendFrame(nil, proto.FrameResize, proto.Uint16s(100, 30, 9, 18)))
+
+	c := f.paired(t)
+	ws := f.dial(t, c, "/api/panes/p1/attach")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resized := func(cols, rows int) {
+		t.Helper()
+		for {
+			typ, msg, err := ws.Read(ctx)
+			if err != nil {
+				t.Fatalf("never resized to %dx%d: %v", cols, rows, err)
+			}
+			if typ == websocket.MessageBinary && msg[0] == proto.FrameResized {
+				if v, ok := proto.ParseUint16s(msg[5:], 2); ok && v[0] == cols && v[1] == rows {
+					return
+				}
+			}
+		}
+	}
+	ws.Write(ctx, websocket.MessageBinary, proto.AppendFrame(nil, proto.FrameResize, proto.Uint16s(40, 20, 9, 18)))
+	resized(40, 20)
+	ws.Write(ctx, websocket.MessageBinary, proto.AppendFrame(nil, proto.FrameRelease, nil))
+	resized(100, 30)
 }
 
 // A socket whose page stopped answering pings, as a phone locked or off

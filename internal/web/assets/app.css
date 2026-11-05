@@ -193,8 +193,12 @@ a { color: inherit; text-decoration: none; }
   font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .row .tm { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; margin-left: auto; flex: none; }
-/* A row's line, tapped, shows whole. */
-.row .sub.whole { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* In Needs you, a question shows on two lines; a tap anywhere on a row
+   opens its session, where the answer bar has it whole. */
+.needs .row .sub {
+  white-space: normal; overflow-wrap: anywhere; line-height: 1.35;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+}
 /* Needs you, over the projects: its rows name their project. */
 .needs .proj { color: var(--attention); }
 .needs .row .br { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }

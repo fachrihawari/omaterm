@@ -548,7 +548,11 @@
           <p>omaterm serves it on your machine only. It can carry it through a tunnel itself, and the pairing QR code follows the tunnel&rsquo;s address:</p>
 <pre class="cli"><span class="c"># your own devices, on your tailnet</span>
 <span class="p">$</span> omaterm web on --tunnel tailscale
-<span class="c"># a public https URL</span>
+<span class="c"># a public https URL that stays the same</span>
+<span class="p">$</span> omaterm web on --tunnel funnel
+<span class="c"># a public https URL on your own Cloudflare domain</span>
+<span class="p">$</span> omaterm web on --hostname term.example.com --token -
+<span class="c"># a quick public URL, new each time it starts</span>
 <span class="p">$</span> omaterm web on --tunnel cloudflare
 <span class="c"># devices on the same Wi-Fi (plain HTTP)</span>
 <span class="p">$</span> omaterm web on --network</pre>

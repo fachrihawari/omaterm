@@ -968,8 +968,11 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 		if err != nil {
 			return
 		}
-		if !web && (kind == proto.FrameInput || kind == proto.FrameKey || kind == proto.FramePaste) {
-			d.deskInput()
+		if kind == proto.FrameInput || kind == proto.FrameKey || kind == proto.FramePaste {
+			if !web {
+				d.deskInput()
+			}
+			d.takeSize(hello.Pane, p, at)
 		}
 		switch kind {
 		case proto.FrameInput:
@@ -987,6 +990,14 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 				d.mu.Unlock()
 				d.resize(hello.Pane, p, v[0], v[1], v[2], v[3])
 			}
+		case proto.FrameRelease:
+			d.mu.Lock()
+			back := d.appSize(hello.Pane, at)
+			at.size = nil
+			d.mu.Unlock()
+			if back != nil {
+				d.resize(hello.Pane, p, back[0], back[1], back[2], back[3])
+			}
 		case proto.FrameTheme:
 			if th, ok := ParseTheme(payload); ok {
 				d.mu.Lock()
@@ -998,18 +1009,18 @@ func (d *Daemon) attach(conn net.Conn, r *bufio.Reader, hello proto.Hello, welco
 	}
 }
 
-// appSize is the size a pane goes back to as a web page that sized it,
-// gone, leaves it: the size the app's window last asked for, unless
-// another page sized it since. The app asks again only when its view
-// changes size, so without it the window would keep the page's size.
-// d.mu is held.
+// appSize is the size a pane goes back to as a web page that sized it
+// leaves it, gone or out of sight: the size the app's window last asked
+// for, unless another page sized it since. The app asks again only when
+// its view changes size, so without it the window would keep the page's
+// size. d.mu is held.
 func (d *Daemon) appSize(pane string, gone *attachment) []int {
 	if !gone.web || gone.size == nil {
 		return nil
 	}
 	var last *attachment
 	for at := range d.attached[pane] {
-		if at.size != nil && (last == nil || at.sized.After(last.sized)) {
+		if at != gone && at.size != nil && (last == nil || at.sized.After(last.sized)) {
 			last = at
 		}
 	}
@@ -1019,8 +1030,24 @@ func (d *Daemon) appSize(pane string, gone *attachment) []int {
 	return last.size
 }
 
+// takeSize gives a pane the size of the client typing into it, when
+// another client's size holds it: whoever types wins. The computer takes
+// its width back from a phone by typing, and the phone the same way; one
+// that never sized the pane, or gave its size back, takes nothing.
+func (d *Daemon) takeSize(id string, p *session.Pane, at *attachment) {
+	d.mu.Lock()
+	v := at.size
+	if v != nil {
+		at.sized = time.Now()
+	}
+	d.mu.Unlock()
+	if v != nil {
+		d.resize(id, p, v[0], v[1], v[2], v[3])
+	}
+}
+
 // resize gives a pane the size its client fits: the client that resized
-// last wins. The clients are told where the screen took it, between the
+// or typed last wins. The clients are told where the screen took it, between the
 // frames of the old size and those of the new.
 // maxCols and maxRows bound a size a client asks for: a web page is a
 // paired device, and a screen of 65535² cells would take the daemon's

@@ -1,24 +1,22 @@
 // The answer bar for the web terminal: while the open pane's agent waits
 // for the user, a strip over the key bar shows its whole question and a
-// button for each answer its screen offers (prompt.js reads them); while
-// the agent works, a Stop floats over the terminal's corner.
+// button for each answer its screen offers (prompt.js reads them). While
+// it works there is nothing over the terminal: the key bar's Esc
+// interrupts it.
 //
 //   import { mountAnswer } from "./answer.js";
-//   const bar = mountAnswer(el, over, { h, xt, sendText, sendKey });
-//   bar.update(pane, session);   // the open pane's info, at each state
+//   const bar = mountAnswer(el, { h, xt, sendText, sendKey });
+//   bar.update(pane);   // the open pane's info, at each state
 //   bar.destroy();
 //
-// el holds the strip, over (the terminal's box) the Stop. sendText(text)
+// el holds the strip. sendText(text)
 // types text and sendKey(name) presses a key ("esc", "enter", "left");
 // each returns false when it could not send. A button types what the user
 // would: an option's digit, or a key. Nothing is sent by itself. A tap
 // reads the screen again first, and refuses when the prompt it was drawn
 // from changed or went: a late tap must not answer a newer question. For
 // the same reason buttons that just came take no tap for SETTLE ms, and
-// none do for REST ms after one was taken. Stop is Esc, which interrupts
-// Claude Code and Codex; it too rests after a tap, as a second Esc opens
-// Claude Code's rewind. It floats, rather than taking a strip of its own,
-// so that a turn starting and ending does not resize the agent's screen.
+// none do for REST ms after one was taken.
 //
 // The question and the labels are the agent's words, and the screen's:
 // they go in as text, never as markup.
@@ -33,47 +31,29 @@ const SCAN_AFTER = 150;
 
 const WAITING = { permission: "Needs permission", question: "Has a question", auth: "Needs sign-in" };
 
-export function mountAnswer(el, over, { h, xt, sendText, sendKey }) {
+export function mountAnswer(el, { h, xt, sendText, sendKey }) {
   const root = h("div", { class: "answer", role: "group", "aria-label": "Answer the agent", hidden: true });
-  const stopNote = h("span", { class: "answer-stop-note", role: "status" });
-  const stop = h("button", {
-    class: "answer-stop", type: "button", hidden: true, title: "Interrupt the agent (Esc)", "aria-label": "Stop: interrupt the agent",
-    onclick: () => {
-      if (held) return;
-      if (!sendKey("esc")) { stopNote.textContent = "Not connected"; return; }
-      stopNote.textContent = "Esc sent";
-      hold(REST);
-    },
-  }, h("span", { class: "answer-sq" }), "Stop", stopNote);
   el.append(root);
-  over.append(stop);
   // Tapping a button must not take the focus, or bring up the keyboard.
-  for (const b of [root, stop]) b.addEventListener("pointerdown", (e) => e.preventDefault());
+  root.addEventListener("pointerdown", (e) => e.preventDefault());
 
-  let pane = null, session = null;
+  let pane = null;
   let shown = null; // the prompt the strip shows: its key and message
   let held = false; // the buttons take no tap: settling or resting
   let holdTimer = 0, scanTimer = 0;
   let note = null;
 
-  const mode = () => {
-    if (pane?.status === "waiting") return "waiting";
-    if (pane?.status === "working" && pane.agent && !session?.process) return "working";
-    return "";
-  };
+  const mode = () => (pane?.status === "waiting" ? "waiting" : "");
   const read = () => parsePrompt(screenLines(xt.buffer.active, xt.rows));
   const keyOf = (p) => `${pane?.since}\n${p.kind}\n${p.key}`;
 
   const hold = (ms) => {
     held = true;
     root.classList.add("held");
-    stop.classList.add("held");
     clearTimeout(holdTimer);
     holdTimer = setTimeout(() => {
       held = false;
       root.classList.remove("held");
-      stop.classList.remove("held");
-      stopNote.textContent = "";
     }, ms);
   };
   const say = (text) => { if (note) { note.textContent = text; note.hidden = !text; } };
@@ -96,12 +76,10 @@ export function mountAnswer(el, over, { h, xt, sendText, sendKey }) {
     class: "answer-key" + cls, type: "button", "aria-label": aria, onclick: answer(send),
   }, label);
 
-  // draw shows the strip, or the Stop, for the pane as it is; force draws
-  // the strip even when the prompt looks the same.
+  // draw shows the strip for the pane as it is; force draws it even when
+  // the prompt looks the same.
   function draw(force = false) {
     const m = mode();
-    if (m === "working" && stop.hidden) hold(SETTLE);
-    stop.hidden = m !== "working";
     if (m !== "waiting") {
       shown = null;
       root.hidden = true;
@@ -146,9 +124,8 @@ export function mountAnswer(el, over, { h, xt, sendText, sendKey }) {
   });
 
   return {
-    update(p, s) {
+    update(p) {
       pane = p;
-      session = s;
       draw();
     },
     destroy() {
@@ -156,7 +133,6 @@ export function mountAnswer(el, over, { h, xt, sendText, sendKey }) {
       clearTimeout(scanTimer);
       written.dispose();
       root.remove();
-      stop.remove();
     },
   };
 }

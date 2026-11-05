@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
@@ -31,7 +33,8 @@ func webCmd(args []string) error {
 		if runtime.GOOS == "windows" {
 			return daemon.ErrNoDaemon
 		}
-		f, err := parse(args, map[string]string{"port": "port", "p": "port", "url": "url", "host": "host", "tunnel": "tunnel"},
+		f, err := parse(args, map[string]string{"port": "port", "p": "port", "url": "url", "host": "host", "tunnel": "tunnel",
+			"hostname": "hostname", "token": "token"},
 			map[string]string{"network": "network", "local": "local"})
 		if err != nil {
 			return err
@@ -39,6 +42,20 @@ func webCmd(args []string) error {
 		via, err := tunnelOf(f)
 		if err != nil {
 			return err
+		}
+		_, viaSet := f.vals["tunnel"]
+		cf, err := cloudflareOf(f, os.Stdin)
+		if err != nil {
+			return err
+		}
+		// A domain or token of one's own is Cloudflare's: it picks
+		// Cloudflare, and goes with no other tunnel.
+		ownDomain := cf.host != "" || cf.tokenSet
+		if ownDomain && viaSet && via != string(tunnel.Cloudflare) {
+			return usageErr("--hostname and --token are for --tunnel cloudflare")
+		}
+		if cur, _ := store.Config(); cf.tokenSet && !cf.hostSet && cur.CloudflareHost == "" {
+			return usageErr("--token needs --hostname, the public hostname the tunnel has in Cloudflare")
 		}
 		port := 0
 		if v, ok := f.vals["port"]; ok {
@@ -62,8 +79,19 @@ func webCmd(args []string) error {
 			if u, ok := f.vals["url"]; ok {
 				c.URL = u
 			}
-			if _, ok := f.vals["tunnel"]; ok {
+			if viaSet {
 				c.Tunnel = via
+			} else if ownDomain {
+				c.Tunnel = string(tunnel.Cloudflare)
+			}
+			if cf.hostSet {
+				c.CloudflareHost = cf.host
+				if cf.host == "" {
+					c.CloudflareToken = "" // back to a quick tunnel
+				}
+			}
+			if cf.tokenSet {
+				c.CloudflareToken = cf.token
 			}
 		})
 		if err != nil {
@@ -75,6 +103,7 @@ func webCmd(args []string) error {
 		}
 		fmt.Printf("web access on: %s (listening on %s)\n", web.BaseURL(cfg, st.TunnelURL), st.Addr)
 		sayTunnel(cfg.Tunnel, st)
+		sayLinkKept(cfg)
 		if cfg.OnNetwork() {
 			fmt.Println(networkWarning)
 		}
@@ -82,7 +111,7 @@ func webCmd(args []string) error {
 			fmt.Println("pair a browser: omaterm web pair")
 		}
 		if cfg.URL == "" && cfg.Tunnel == "" && !cfg.OnNetwork() {
-			fmt.Println("reach it from other devices: omaterm web on --tunnel tailscale|cloudflare, or omaterm web on --network")
+			fmt.Println("reach it from other devices: omaterm web on --tunnel tailscale|funnel|cloudflare, or omaterm web on --network")
 		}
 		return nil
 	case "off":
@@ -113,6 +142,7 @@ func webCmd(args []string) error {
 			fmt.Printf("web access on, listening on %s\n", st.Addr)
 		}
 		sayTunnel(cfg.Tunnel, st)
+		sayLinkKept(cfg)
 		if cfg.OnNetwork() {
 			fmt.Println(networkWarning)
 		}
@@ -178,23 +208,37 @@ func webCmd(args []string) error {
 		avail := tunnel.Available()
 		fmt.Printf(`omaterm carries web access, served on 127.0.0.1:%d, through a tunnel it runs itself:
 
-  Tailscale, to your own devices on your tailnet:
+  Tailscale, to your own devices on your tailnet; its link stays the same:
     omaterm web on --tunnel tailscale
     then pair from https://<this machine>.<tailnet>.ts.net%s
 
-  Cloudflare, a public https URL anyone can open:
+  Tailscale Funnel, a public link that stays the same, with no app on the phone:
+    omaterm web on --tunnel funnel
+    turn Funnel on for your tailnet once: the first try gives the link for it
+
+  Cloudflare with your own domain, a public link that stays the same. In the
+  Cloudflare dashboard: Zero Trust › Networks › Tunnels › Create a tunnel
+  (cloudflared). Add a public hostname, as term.example.com, whose service is
+  http://localhost:%d, and copy the tunnel's token. Then:
+    omaterm web on --tunnel cloudflare --hostname term.example.com --token -
+    and paste the token: - reads it from stdin, out of your shell's history
+
+  Cloudflare quick tunnel, a public link that changes each time it starts:
     omaterm web on --tunnel cloudflare
-    the page still asks a paired browser for its code
+    omaterm web on --hostname "" goes back to it from your own domain
+
+  Only a paired browser gets in, by any link. A link that changes means
+  pairing the phone again; one that stays the same, pairing once.
 
   Or run a tunnel yourself (tailscale serve, cloudflared), or keep web
   access to this machine:
     omaterm web on --url https://<the URL it prints>
     omaterm web on --local
 
-`, cfg.ListenPort(), offTunnel(avail))
+`, cfg.ListenPort(), offTunnel(avail), cfg.ListenPort())
 		return nil
 	}
-	return usageErr("omaterm web on [--network|--local|--host addr] [--port N] [--url U] [--tunnel tailscale|cloudflare|none]|off|status|pair|devices|revoke|tunnel")
+	return usageErr("omaterm web on [--network|--local|--host addr] [--port N] [--url U] [--tunnel tailscale|funnel|cloudflare|none] [--hostname H --token T|-]|off|status|pair|devices|revoke|tunnel")
 }
 
 // offTunnel says why a tunnel can't be run here, when one can't.
@@ -208,20 +252,58 @@ func offTunnel(avail map[tunnel.Provider]string) string {
 	return strings.Join(why, "")
 }
 
-// tunnelOf reads --tunnel's choice: tailscale, cloudflare, or none for
-// no tunnel at all.
+// tunnelOf reads --tunnel's choice: tailscale, funnel, cloudflare, or
+// none for no tunnel at all.
 func tunnelOf(f *flags) (string, error) {
 	v, ok := f.vals["tunnel"]
 	if !ok {
 		return "", nil
 	}
 	switch v {
-	case "tailscale", "cloudflare":
+	case "tailscale", "funnel", "cloudflare":
 		return v, nil
 	case "none", "":
 		return "", nil
 	}
-	return "", usageErr("--tunnel takes tailscale, cloudflare or none")
+	return "", usageErr("--tunnel takes tailscale, funnel, cloudflare or none")
+}
+
+// cloudflareFlags is what --hostname and --token ask of the user's own
+// Cloudflare tunnel; set tells a flag given.
+type cloudflareFlags struct {
+	host, token       string
+	hostSet, tokenSet bool
+}
+
+// cloudflareOf reads --hostname and --token: the hostname bare or from its
+// URL, "" to go back to a quick tunnel; the token as given, or - to read
+// it from stdin (one line), which keeps it out of the shell's history.
+func cloudflareOf(f *flags, stdin io.Reader) (cloudflareFlags, error) {
+	var cf cloudflareFlags
+	if v, ok := f.vals["hostname"]; ok {
+		h, err := tunnel.ParseHostname(v)
+		if err != nil {
+			return cf, usageErr("--hostname takes the tunnel's public hostname, as term.example.com, with no path or port")
+		}
+		cf.host, cf.hostSet = h, true
+	}
+	if v, ok := f.vals["token"]; ok {
+		if cf.hostSet && cf.host == "" {
+			return cf, usageErr(`--hostname "" goes back to a quick tunnel, forgetting the token: leave --token out`)
+		}
+		if v == "-" {
+			line, err := bufio.NewReader(stdin).ReadString('\n')
+			if err != nil && err != io.EOF {
+				return cf, fmt.Errorf("reading the token from stdin: %w", err)
+			}
+			v = line
+		}
+		if v = strings.TrimSpace(v); v == "" {
+			return cf, usageErr("--token takes the tunnel's token, or - to read it from stdin")
+		}
+		cf.token, cf.tokenSet = v, true
+	}
+	return cf, nil
 }
 
 // sayTunnel reports the tunnel web access runs, or why it doesn't.
@@ -237,6 +319,19 @@ func sayTunnel(provider string, st web.Status) {
 	default:
 		fmt.Printf("tunnel (%s): still starting — omaterm web status\n", provider)
 	}
+}
+
+// sayLinkKept tells a Cloudflare tunnel whose link changes each time it
+// starts how to keep one: a link that changes means pairing again.
+func sayLinkKept(cfg web.Config) {
+	if cfg.Tunnel != string(tunnel.Cloudflare) || cfg.URL != "" || cfg.CloudflareToken != "" {
+		return // kept, or the tunnel's error says what it lacks
+	}
+	if cfg.CloudflareHost != "" {
+		fmt.Printf("a quick tunnel runs until %s has its token: omaterm web on --token -\n", cfg.CloudflareHost)
+		return
+	}
+	fmt.Println("a quick tunnel's link changes each time it starts: omaterm web tunnel says how to keep one")
 }
 
 // networkWarning goes with web access on the network, which is plain HTTP.

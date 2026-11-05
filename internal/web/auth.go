@@ -75,9 +75,16 @@ type Config struct {
 	// live one, then Tailscale, else the loopback address.
 	URL string `json:"url,omitempty"`
 	// Tunnel is the tunnel omaterm runs to carry web access beyond this
-	// machine: "tailscale" to its own devices, "cloudflare" as a public
-	// link, "" for none. Anything else is none.
+	// machine: "tailscale" to its own devices, "funnel" or "cloudflare" as
+	// a public link, "" for none. Anything else is none.
 	Tunnel string `json:"tunnel,omitempty"`
+	// CloudflareToken and CloudflareHost are the user's own Cloudflare
+	// tunnel, which keeps its link at their domain (term.example.com);
+	// without them, Cloudflare is a quick tunnel, whose link changes each
+	// time it starts. The token is a secret, kept in this file alone
+	// (0600): nothing shows it.
+	CloudflareToken string `json:"cloudflareToken,omitempty"`
+	CloudflareHost  string `json:"cloudflareHost,omitempty"`
 }
 
 // ListenAddr is the address to serve.

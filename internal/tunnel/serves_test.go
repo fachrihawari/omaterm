@@ -102,17 +102,42 @@ func TestServedPortsAreKeptAndForgotten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := readServeLog(file); !reflect.DeepEqual(got, []int{443, 8443}) {
+	if got := readServeLog(file).Ports; !reflect.DeepEqual(got, []int{443, 8443}) {
 		t.Fatalf("kept %v", got)
 	}
 	a.Stop()
-	if got := readServeLog(file); !reflect.DeepEqual(got, []int{8443}) {
+	if got := readServeLog(file).Ports; !reflect.DeepEqual(got, []int{8443}) {
 		t.Fatalf("after one stops: %v", got)
 	}
 	b.Stop()
-	if got := readServeLog(file); len(got) != 0 {
+	if got := readServeLog(file).Ports; len(got) != 0 {
 		t.Fatalf("after both: %v", got)
 	}
+}
+
+// A funnel is kept as one, so a crash's cleanup turns it off as one.
+func TestFunnelIsKeptAsAFunnel(t *testing.T) {
+	tunnelTest(t)
+	fakePATH(t, map[string]string{"tailscale": fakeTailscale})
+	file := filepath.Join(t.TempDir(), "tailscale-serves.json")
+	TrackServes(file)
+	defer TrackServes("")
+	f, err := Start(context.Background(), Spec{Provider: Funnel, Target: "http://127.0.0.1:7370"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Start(context.Background(), Spec{Provider: Tailscale, Target: "http://127.0.0.1:3001", Port: 8443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readServeLog(file); !reflect.DeepEqual(got, served{Ports: []int{443, 8443}, Funnels: []int{443}}) {
+		t.Fatalf("kept %+v", got)
+	}
+	f.Stop()
+	if got := readServeLog(file); !reflect.DeepEqual(got, served{Ports: []int{8443}}) {
+		t.Fatalf("after the funnel stops: %+v", got)
+	}
+	s.Stop()
 }
 
 func TestCleanupTurnsOffWhatACrashLeft(t *testing.T) {
@@ -122,8 +147,8 @@ func TestCleanupTurnsOffWhatACrashLeft(t *testing.T) {
 	TrackServes(file)
 	defer TrackServes("")
 	// Listed: 443 and 8443 still serve omaterm's addresses, 10000 the user's own,
-	// and 10001 nothing at all.
-	if err := writeServeLog(file, []int{443, 8443, 10000, 10001}); err != nil {
+	// and 10001 nothing at all. 443 is a funnel, turned off as one.
+	if err := writeServeLog(file, served{Ports: []int{443, 8443, 10000, 10001}, Funnels: []int{443}}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("TS_SERVE", `{"TCP":{"443":{},"8443":{},"10000":{},"9999":{}},"Web":{
@@ -140,10 +165,10 @@ func TestCleanupTurnsOffWhatACrashLeft(t *testing.T) {
 		t.Fatalf("turned off %v", off)
 	}
 	served, _ := os.ReadFile(filepath.Join(dir, "tailscale.log"))
-	if got := string(served); got != "serve --https=443 off\nserve --https=8443 off\n" {
+	if got := string(served); got != "funnel --https=443 off\nserve --https=8443 off\n" {
 		t.Fatalf("tailscale ran %q", got)
 	}
-	if got := readServeLog(file); len(got) != 0 {
+	if got := readServeLog(file).Ports; len(got) != 0 {
 		t.Fatalf("the list wasn't emptied: %v", got)
 	}
 	// Nothing listed: tailscale isn't asked anything.
@@ -162,11 +187,11 @@ func TestCleanupWithTailscaleGoneJustEmptiesTheList(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "tailscale-serves.json")
 	TrackServes(file)
 	defer TrackServes("")
-	writeServeLog(file, []int{443})
+	writeServeLog(file, served{Ports: []int{443}})
 	if _, err := CleanupServes(); err == nil {
 		t.Log("an error is allowed here: tailscale is missing")
 	}
-	if got := readServeLog(file); len(got) != 0 {
+	if got := readServeLog(file).Ports; len(got) != 0 {
 		t.Fatalf("the list stayed: %v", got)
 	}
 }

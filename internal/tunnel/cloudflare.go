@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,28 +33,61 @@ func quickURL(line string) string {
 // helper it started may hold the log open for good.
 const logGrace = 500 * time.Millisecond
 
-// cloudflaredBin is the command that makes a quick tunnel.
+// cloudflaredBin is the command that makes a Cloudflare tunnel.
 const cloudflaredBin = "cloudflared"
 
-// cloudflare is a running Cloudflare quick tunnel.
+// registered is what cloudflared logs once a named tunnel's connection
+// to Cloudflare is up: from then on the hostname reaches it.
+const registered = "Registered tunnel connection"
+
+// cloudflare is a running Cloudflare tunnel, quick or named.
 type cloudflare struct {
 	cmd *exec.Cmd
 	url string
+	// ready is the tunnel's URL once a line of cloudflared's log says it
+	// is up, "" for any other line.
+	ready func(line string) string
+	// token is the named tunnel's, kept out of the errors said.
+	token string
 	// done is closed once the command has ended and been waited for.
 	done chan struct{}
 
 	mu      sync.Mutex
 	stopped bool // Stop or a failed Start ended it
 	err     error
+	// errLine is the first error cloudflared logged, which says better
+	// than its exit status why it ended.
+	errLine string
 }
 
-// startCloudflare runs a quick tunnel to s's target and returns it once
-// cloudflared logs its URL.
+// startCloudflare runs a tunnel to s's target and returns it once
+// cloudflared says it is up: a quick tunnel when s has no token, at the
+// URL cloudflared logs; else the user's named tunnel, at its hostname.
 func startCloudflare(ctx context.Context, s Spec) (Tunnel, error) {
+	if s.Token != "" && s.Hostname == "" {
+		return nil, errors.New("a Cloudflare tunnel token needs the tunnel's public hostname, as term.example.com")
+	}
 	if _, err := exec.LookPath(cloudflaredBin); err != nil {
 		return nil, fmt.Errorf("%w: cloudflared is not installed", ErrUnavailable)
 	}
-	cmd := exec.Command(cloudflaredBin, "tunnel", "--no-autoupdate", "--url", s.Target)
+	t := &cloudflare{ready: quickURL, token: s.Token, done: make(chan struct{})}
+	var cmd *exec.Cmd
+	if s.Token == "" {
+		cmd = exec.Command(cloudflaredBin, "tunnel", "--no-autoupdate", "--url", s.Target)
+	} else {
+		// The token goes in the environment, where cloudflared reads it
+		// too: in the arguments, ps would show it to anyone.
+		cmd = exec.Command(cloudflaredBin, "tunnel", "--no-autoupdate", "run")
+		cmd.Env = append(os.Environ(), "TUNNEL_TOKEN="+s.Token)
+		url := "https://" + s.Hostname
+		t.ready = func(line string) string {
+			if strings.Contains(line, registered) {
+				return url
+			}
+			return ""
+		}
+	}
+	t.cmd = cmd
 	hide(cmd)
 	inGroup(cmd) // stopped as a group: cloudflared runs helpers of its own
 	// The log goes to a pipe of our own, so that waiting for the command
@@ -69,7 +103,6 @@ func startCloudflare(ctx context.Context, s Spec) (Tunnel, error) {
 		stderr.Close()
 		return nil, fmt.Errorf("cloudflared: %w", err)
 	}
-	t := &cloudflare{cmd: cmd, done: make(chan struct{})}
 	found := make(chan string, 1)
 	go t.watch(stderr, found)
 	select {
@@ -84,7 +117,7 @@ func startCloudflare(ctx context.Context, s Spec) (Tunnel, error) {
 		default:
 		}
 		if err := t.Err(); err != nil {
-			return nil, fmt.Errorf("cloudflared: %w", err)
+			return nil, err
 		}
 		return nil, errors.New("cloudflared ended before its URL")
 	case <-ctx.Done():
@@ -92,12 +125,15 @@ func startCloudflare(ctx context.Context, s Spec) (Tunnel, error) {
 		return nil, ctx.Err()
 	case <-time.After(startTimeout):
 		t.Stop()
+		if s.Token != "" {
+			return nil, fmt.Errorf("cloudflared did not connect the tunnel in %s", startTimeout)
+		}
 		return nil, fmt.Errorf("cloudflared gave no URL in %s", startTimeout)
 	}
 }
 
-// watch reads cloudflared's log for the tunnel's URL, and after its end
-// closes done and keeps why it ended, if it wasn't stopped. The log is
+// watch reads cloudflared's log for the tunnel being up, and after its
+// end closes done and keeps why it ended, if it wasn't stopped. The log is
 // read on for logGrace after the command ended, and then dropped.
 func (t *cloudflare) watch(r *os.File, found chan<- string) {
 	read := make(chan struct{})
@@ -106,11 +142,18 @@ func (t *cloudflare) watch(r *os.File, found chan<- string) {
 		br := bufio.NewReader(r)
 		for {
 			line, err := br.ReadString('\n')
-			if u := quickURL(line); u != "" {
+			if u := t.ready(line); u != "" {
 				select {
 				case found <- u:
 				default:
 				}
+			}
+			if msg := errLine(line); msg != "" {
+				t.mu.Lock()
+				if t.errLine == "" {
+					t.errLine = msg
+				}
+				t.mu.Unlock()
 			}
 			if err != nil {
 				return
@@ -125,10 +168,27 @@ func (t *cloudflare) watch(r *os.File, found chan<- string) {
 	r.Close()
 	t.mu.Lock()
 	if !t.stopped && werr != nil {
-		t.err = fmt.Errorf("cloudflared: %w", werr)
+		why := werr.Error()
+		if t.errLine != "" {
+			why = t.errLine
+		}
+		if t.token != "" {
+			why = strings.ReplaceAll(why, t.token, "…")
+		}
+		t.err = fmt.Errorf("cloudflared: %s", why)
 	}
 	t.mu.Unlock()
 	close(t.done)
+}
+
+// errLine is what an error line of cloudflared's log says, past its time
+// and level: "" for a line of another level.
+func errLine(line string) string {
+	_, msg, ok := strings.Cut(line, "ERR ")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(msg)
 }
 
 func (t *cloudflare) URL() string { return t.url }
@@ -170,7 +230,43 @@ func (t *cloudflare) Stop() error {
 	return nil
 }
 
-// whyNotCloudflare says what keeps a quick tunnel from being made here.
+// hostLabel is a label of a DNS name, lowercased.
+var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// ErrHostname is a Cloudflare tunnel's hostname that isn't one.
+var ErrHostname = errors.New("a hostname is a bare name, as term.example.com, with no path or port")
+
+// ParseHostname reads a Cloudflare tunnel's public hostname as the user
+// gives it: a bare name, as term.example.com, or its URL pasted whole,
+// https://term.example.com/, which gives its name. A path or a port is
+// refused: the tunnel serves its hostname alone, on https's port. "" is
+// none.
+func ParseHostname(v string) (string, error) {
+	h := strings.ToLower(strings.TrimSpace(v))
+	if scheme, rest, ok := strings.Cut(h, "://"); ok {
+		if scheme != "https" && scheme != "http" {
+			return "", ErrHostname
+		}
+		h = rest
+	}
+	h = strings.TrimSuffix(h, "/")
+	if h == "" {
+		return "", nil
+	}
+	labels := strings.Split(h, ".")
+	if len(h) > 253 || len(labels) < 2 {
+		return "", ErrHostname
+	}
+	for _, l := range labels {
+		if len(l) > 63 || !hostLabel.MatchString(l) {
+			return "", ErrHostname
+		}
+	}
+	return h, nil
+}
+
+// whyNotCloudflare says what keeps a Cloudflare tunnel from being made
+// here.
 func whyNotCloudflare() string {
 	if _, err := exec.LookPath(cloudflaredBin); err != nil {
 		return "cloudflared is not installed"

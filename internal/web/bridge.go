@@ -105,7 +105,7 @@ func (s *Server) attach(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		kind, payload, err := proto.ReadFrame(bytes.NewReader(msg))
-		if err != nil || (kind != proto.FrameInput && kind != proto.FrameKey && kind != proto.FramePaste && kind != proto.FrameResize) {
+		if err != nil || (kind != proto.FrameInput && kind != proto.FrameKey && kind != proto.FramePaste && kind != proto.FrameResize && kind != proto.FrameRelease) {
 			continue
 		}
 		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))

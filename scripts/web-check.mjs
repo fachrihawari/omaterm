@@ -26,7 +26,8 @@
 //
 // So is the answer bar: a fake agent asks permission as Claude Code does,
 // the bar offers its options, a tap types the digit, a tap on a screen
-// that changed since is refused, and Stop sends Esc while it works.
+// that changed since is refused, and nothing covers the terminal while
+// the agent works.
 //
 // So are starting work from the phone: '+' opens the New Agent sheet,
 // which starts a shell session and opens it; and the compose box's 📎
@@ -216,11 +217,12 @@ try {
   const phone = (height = 844) => cdp("Emulation.setDeviceMetricsOverride", { width: 390, height, deviceScaleFactor: 2, mobile: true });
   await phone();
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  // The sizes the page asks its pane for, from its resize frames, and the
-  // terminal sockets it opens.
+  // The sizes the page asks its pane for, from its resize frames, the
+  // times it gives the size back, and the terminal sockets it opens.
   await cdp("Page.enable");
   await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `
     window.sizes = [];
+    window.released = 0;
     window.attached = 0;
     const WS = WebSocket;
     window.WebSocket = class extends WS {
@@ -235,6 +237,7 @@ try {
         const v = new DataView(d.buffer, d.byteOffset);
         window.sizes.push(v.getUint16(5) + "x" + v.getUint16(7));
       }
+      if (d instanceof Uint8Array && d[0] === 0x75) window.released++;
       return send.call(this, d);
     };` });
   await cdp("Page.navigate", { url: `${base}/#code=${code}` });
@@ -418,6 +421,18 @@ try {
     await waitFor("the terminal did not come back", `!document.querySelector(".pane").dataset.view`);
     await key("z", "KeyZ", "z");
   });
+  await check("out of sight, the page gives its pane's size back, and asks for it again as it comes back", "", async () => {
+    const seen = (state) => evaluate(`(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => ${JSON.stringify(state)} });
+      document.dispatchEvent(new Event("visibilitychange"));
+      if (${JSON.stringify(state)} === "visible") delete document.visibilityState;
+    })()`);
+    const n = await evaluate("window.sizes.length");
+    await seen("hidden");
+    await waitFor("the size was not given back", "window.released === 1");
+    await seen("visible");
+    await waitFor("the size was not asked for again", `window.sizes.length > ${n}`);
+  });
   await check("the button opens the view last seen", "", async () => {
     const to = await evaluate(`document.querySelector(".btn-browse").getAttribute("href")`);
     if (!to.endsWith("/changes")) throw new Error(`it opens ${to}`);
@@ -473,11 +488,17 @@ setInterval(() => {}, 1 << 30);
     const n = await evaluate(chip);
     if (n !== "1") throw new Error(`the done chip says ${n}`);
   });
-  await check("inbox: a row's line, tapped, shows whole, and opens nothing", "", async () => {
-    await tap(".needs .row .sub", failText);
-    await waitFor("the line is still cut", `document.querySelector(".needs .row .sub.whole")?.textContent === ${JSON.stringify(failText)}`);
-    if (await evaluate("location.hash")) throw new Error("the tap opened the session");
+  await check("inbox: a question shows on two lines, and a tap on it opens its session", "", async () => {
+    const lines = await evaluate(`(() => {
+      const el = [...document.querySelectorAll(".needs .row .sub")].find((e) => e.textContent === ${JSON.stringify(failText)});
+      return el ? Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)) : 0;
+    })()`);
+    if (lines !== 2) throw new Error(`the question shows on ${lines} lines`);
     await shot("inbox");
+    await tap(".needs .row .sub", failText);
+    await waitFor("the tap did not open the session", `location.hash.startsWith("#/pane/")`);
+    await evaluate(`location.hash = "#"`);
+    await waitFor("the list did not come back", `Boolean(document.querySelector(".needs .row"))`);
   });
   await check("inbox: the done chip opens the finished session, which it then sees", "", async () => {
     await tap('.side-f .chipc[title="Done sessions"]');
@@ -520,14 +541,14 @@ setInterval(() => {}, 1 << 30);
     await sleep(700);
     await tap(".answer-opt");
   });
-  await check("answer bar: gone while the agent works, and Stop sends Esc", hex("\x1b"), async () => {
-    await waitFor("no Stop", `!document.querySelector(".answer-stop").hidden && !document.querySelector(".answer:not([hidden])")`);
-    await sleep(600);
+  await check("answer bar: gone while the agent works, with nothing over the terminal, and the key bar's Esc stops it", hex("\x1b"), async () => {
+    await waitFor("the bar stays", `${lead("asker")}.then((l) => l?.status === "working" && !document.querySelector(".answer:not([hidden])"))`);
+    if (await evaluate(`Boolean(document.querySelector(".answer-stop"))`)) throw new Error("a Stop is over the terminal");
     await shot("stop");
-    await tap(".answer-stop");
+    await tapKey("Esc");
   });
   await check("answer bar: none once the agent is done", "", async () => {
-    await waitFor("the Stop stays", `document.querySelector(".answer-stop").hidden`);
+    await waitFor("the agent is not done", `${lead("asker")}.then((l) => l?.status === "idle" && !document.querySelector(".answer:not([hidden])"))`);
   });
   await evaluate(`location.hash = "#/pane/${pane}"`);
   await sleep(1500);
