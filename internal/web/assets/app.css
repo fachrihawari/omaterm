@@ -192,6 +192,11 @@ a { color: inherit; text-decoration: none; }
   font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .row .tm { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; margin-left: auto; flex: none; }
+/* A row's line, tapped, shows whole. */
+.row .sub.whole { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Needs you, over the projects: its rows name their project. */
+.needs .proj { color: var(--attention); }
+.needs .row .br { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 
 /* Process pill */
 .pill {
@@ -469,10 +474,13 @@ a.bv-crumb:hover { color: var(--text); }
     flex: none;
   }
 }
+/* Wide, the list is beside the terminal: no back. A mouse and a keyboard
+   need no key bar or Compose, but a touch screen does, a tablet's too
+   (the touch class, app.js). */
 @media (min-width: 860px) {
   .back-btn { display: none !important; }
-  .btn-compose { display: none !important; }
-  .term-bottom { display: none !important; }
+  :root:not(.touch) .btn-compose { display: none !important; }
+  :root:not(.touch) .term-bottom { display: none !important; }
 }
 .btn-compose[hidden] { display: none !important; }
 

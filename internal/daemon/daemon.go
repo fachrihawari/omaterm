@@ -653,6 +653,17 @@ func (d *Daemon) handle(ctx context.Context, method string, raw json.RawMessage)
 		json.Unmarshal(raw, &p)
 		d.reg.SetViewed(p.ID)
 		return true, nil
+	case "seen":
+		// Web access shows a pane: its session's unread marks go, the
+		// desktop's viewed session stays.
+		var p proto.IDParams
+		json.Unmarshal(raw, &p)
+		pn, err := pane(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		d.reg.Seen(pn.Info().Session)
+		return true, nil
 	case "shutdown":
 		// Who asked, should the user wonder why their sessions restarted.
 		log.Printf("stopping: shutdown asked")

@@ -19,6 +19,10 @@
 // repository with a change, which the page lists and shows, and the
 // terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
 // view is saved there as a PNG.
+//
+// So is the answer bar: a fake agent asks permission as Claude Code does,
+// the bar offers its options, a tap types the digit, a tap on a screen
+// that changed since is refused, and Stop sends Esc while it works.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -297,6 +301,126 @@ try {
   await check("the button opens the view last seen", "", async () => {
     const to = await evaluate(`document.querySelector(".btn-browse").getAttribute("href")`);
     if (!to.endsWith("/changes")) throw new Error(`it opens ${to}`);
+  });
+
+  // Answering: an agent (goose, by its script's name, which omaterm reads
+  // no screen of) asks permission as Claude Code draws it, and logs what
+  // it reads as the probe does. "r" redraws the prompt for another
+  // command, "1" answers it and starts work, Esc ends that.
+  const asker = join(tmp, "goose.mjs");
+  writeFileSync(asker, `
+import { appendFileSync } from "node:fs";
+const osc = (s) => process.stdout.write("\\x1b]7501;" + s + "\\x1b\\\\");
+const ask = (dir) => {
+  process.stdout.write("\\x1b[2J\\x1b[H⏺ I'll clean up.\\r\\n\\r\\n Bash command\\r\\n\\r\\n   rm -rf " + dir + "\\r\\n   Remove the " + dir +
+    " folder\\r\\n\\r\\n Do you want to proceed?\\r\\n ❯ 1. Yes\\r\\n   2. Yes, and don't ask again for rm commands\\r\\n" +
+    "   3. No, and tell Claude what to do differently (esc)\\r\\n");
+  osc("state=blocked:kind=permission:msg=" + Buffer.from("Claude needs your permission to use Bash").toString("base64"));
+};
+process.stdin.setRawMode(true);
+process.stdin.on("data", (b) => {
+  appendFileSync(${JSON.stringify(logFile)}, b.toString("hex"));
+  const s = b.toString();
+  if (s === "r") ask("dist");
+  if (s === "1") { process.stdout.write("\\x1b[2J\\x1b[H⏺ Removing build…\\r\\n"); osc("state=working"); }
+  if (s === "\\x1b") { process.stdout.write("Interrupted\\r\\n"); osc("state=done"); }
+});
+ask("build");
+setInterval(() => {}, 1 << 30);
+`);
+  // Beside it, one session that failed after it began to wait, and one
+  // that finished: the inbox's.
+  const failText = "The tests failed: 3 of 120 in internal/web, as the fixture's daemon did not start on a free port in time";
+  const b64 = (s) => Buffer.from(s).toString("base64");
+  const paneOf = (sid) => JSON.parse(omaterm("ls", "--json")).find((s) => s.id === sid).focus;
+  const askPane = paneOf(omaterm("new", "-n", "asker", "-d", dir, "--", process.execPath, asker));
+  await sleep(1200);
+  omaterm("new", "-n", "failer", "-d", dir, "--", "sh", "-c", `printf '\\033]7501;state=error:msg=${b64(failText)}\\033\\\\'; exec cat`);
+  const finPane = paneOf(omaterm("new", "-n", "finisher", "-d", dir, "--", "sh", "-c",
+    `printf '\\033]7501;state=working\\033\\\\'; sleep 0.3; printf '\\033]7501;state=done:msg=${b64("Tests pass")}\\033\\\\'; exec cat`));
+  const lead = (name) => `fetch("/api/state").then((r) => r.json()).then((st) => st.sessions.find((s) => s.name === ${JSON.stringify(name)})?.lead)`;
+
+  await check("inbox: Needs you holds the waiting and failed sessions, longest waiting first", "", async () => {
+    await evaluate(`location.hash = "#"`);
+    await waitFor("no Needs you", `document.querySelectorAll(".needs .row").length === 2`);
+    const names = await evaluate(`[...document.querySelectorAll(".needs .row .nm")].map((e) => e.textContent).join()`);
+    if (names !== "asker,failer") throw new Error(`Needs you holds ${names}`);
+  });
+  await check("inbox: the done count is the finished session only", "", async () => {
+    await waitFor("finisher is not done", `${lead("finisher")}.then((l) => l?.status === "idle" && l.unread)`);
+    const chip = `document.querySelector('.side-f .chipc[title="Done sessions"]')?.textContent.trim()`;
+    await waitFor("no done chip", `Boolean(${chip})`);
+    const n = await evaluate(chip);
+    if (n !== "1") throw new Error(`the done chip says ${n}`);
+  });
+  await check("inbox: a row's line, tapped, shows whole, and opens nothing", "", async () => {
+    await tap(".needs .row .sub", failText);
+    await waitFor("the line is still cut", `document.querySelector(".needs .row .sub.whole")?.textContent === ${JSON.stringify(failText)}`);
+    if (await evaluate("location.hash")) throw new Error("the tap opened the session");
+    await shot("inbox");
+  });
+  await check("inbox: the done chip opens the finished session, which it then sees", "", async () => {
+    await tap('.side-f .chipc[title="Done sessions"]');
+    await waitFor("it opened another", `location.hash === "#/pane/${finPane}"`);
+    await waitFor("still unread", `${lead("finisher")}.then((l) => !l.unread)`);
+    await evaluate(`location.hash = "#"`);
+    await waitFor("the done chip stays", `!document.querySelector('.side-f .chipc[title="Done sessions"]')`);
+  });
+
+  const answerText = `[...document.querySelectorAll(".answer:not([hidden]) .answer-opt")].map((b) => b.textContent)`;
+  await check("answer bar: the whole question and the screen's options", "", async () => {
+    if (!(await evaluate(`${lead("asker")}.then((l) => l.unread)`))) throw new Error("asker is not unread");
+    await tap(".needs .row .nm", "asker");
+    await waitFor("no answer bar", `${answerText}.length === 3`);
+    const q = await evaluate(`document.querySelector(".answer-q").textContent`);
+    if (q !== "Claude needs your permission to use Bash") throw new Error(`the question is ${JSON.stringify(q)}`);
+    const opts = await evaluate(`JSON.stringify(${answerText})`);
+    if (opts !== JSON.stringify(["1Yes", "2Yes, and don't ask again for rm commands", "3No, and tell Claude what to do differently"])) {
+      throw new Error(`the options are ${opts}`);
+    }
+    await sleep(600);
+    await shot("answer");
+  });
+  await check("inbox: opening a session on the phone sees it", "", async () => {
+    await waitFor("asker is still unread", `${lead("asker")}.then((l) => !l.unread)`);
+  });
+  await check("answer bar: a tap on a screen that changed since is refused", hex("r"), async () => {
+    await key("r", "KeyR", "r");
+    // Tapped as the new prompt shows, before the bar reads it again.
+    const said = await evaluate(`(async () => {
+      for (let i = 0; i < 300 && !document.querySelector(".xterm-rows").textContent.includes("rm -rf dist"); i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      document.querySelector(".answer-opt").click();
+      return document.querySelector(".answer-note").textContent;
+    })()`);
+    if (!said.startsWith("The screen changed")) throw new Error(`the bar says ${JSON.stringify(said)}`);
+  });
+  await check("answer bar: a tap types the option's digit", hex("1"), async () => {
+    await sleep(700);
+    await tap(".answer-opt");
+  });
+  await check("answer bar: gone while the agent works, and Stop sends Esc", hex("\x1b"), async () => {
+    await waitFor("no Stop", `!document.querySelector(".answer-stop").hidden && !document.querySelector(".answer:not([hidden])")`);
+    await sleep(600);
+    await shot("stop");
+    await tap(".answer-stop");
+  });
+  await check("answer bar: none once the agent is done", "", async () => {
+    await waitFor("the Stop stays", `document.querySelector(".answer-stop").hidden`);
+  });
+  await evaluate(`location.hash = "#/pane/${pane}"`);
+  await sleep(1500);
+
+  await check("a touch screen 860 px wide or more keeps the key bar and Compose, but no back", "", async () => {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 2, mobile: false });
+    await sleep(600);
+    const shown = (sel) => `getComputedStyle(document.querySelector(${JSON.stringify(sel)})).display !== "none"`;
+    const got = await evaluate(`[${shown(".term-bottom")}, ${shown(".btn-compose")}, ${shown(".back-btn")}].join()`);
+    await shot("tablet");
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await sleep(600);
+    if (got !== "true,true,false") throw new Error(`key bar, Compose, back: ${got}`);
   });
 
   await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {
