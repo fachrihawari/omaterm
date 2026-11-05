@@ -56,6 +56,10 @@ func (d *Daemon) reloadWeb() (web.Status, error) {
 	// on: it reaches this machine either way.
 	target := "http://127.0.0.1:" + strconv.Itoa(cfg.ListenPort())
 	want := wantTunnel(cfg)
+	spec := tunnel.Spec{Provider: want, Target: target, Name: "web access"}
+	if want == tunnel.Cloudflare {
+		spec.Token, spec.Hostname = cfg.CloudflareToken, cfg.CloudflareHost
+	}
 	d.webMu.Lock()
 	if d.web != nil && (!cfg.Enabled || d.webAddr != addr) {
 		d.web.Close()
@@ -63,12 +67,11 @@ func (d *Daemon) reloadWeb() (web.Status, error) {
 		log.Printf("web access: stopped")
 	}
 	// The tunnel follows the server: none while web access is off, and a
-	// new one when it moves or the setting changes. It is taken out under
-	// the lock and stopped after it: stopping can take seconds, and the
-	// daemon's loop waits for the lock.
+	// new one when it moves or the setting changes, the Cloudflare domain
+	// or token too. It is taken out under the lock and stopped after it:
+	// stopping can take seconds, and the daemon's loop waits for the lock.
 	var old *webTunnel
-	if d.webTunnel != nil && (!cfg.Enabled || want == "" ||
-		d.webTunnel.spec.Provider != want || d.webTunnel.spec.Target != target) {
+	if d.webTunnel != nil && (!cfg.Enabled || want == "" || d.webTunnel.spec != spec) {
 		old, d.webTunnel = d.webTunnel, nil
 	}
 	d.webMu.Unlock()
@@ -90,7 +93,7 @@ func (d *Daemon) reloadWeb() (web.Status, error) {
 	}
 	var fresh *webTunnel
 	if want != "" && d.webTunnel == nil {
-		fresh = startWebTunnel(tunnel.Spec{Provider: want, Target: target, Name: "web access"})
+		fresh = startWebTunnel(spec)
 		d.webTunnel = fresh
 	}
 	st := web.Status{On: true, Addr: d.webAddr}
@@ -107,11 +110,11 @@ func (d *Daemon) reloadWeb() (web.Status, error) {
 	return st, nil
 }
 
-// wantTunnel is the provider web.json asks a tunnel of: tailscale or
-// cloudflare, "" for none or a name it doesn't know.
+// wantTunnel is the provider web.json asks a tunnel of: tailscale,
+// funnel or cloudflare, "" for none or a name it doesn't know.
 func wantTunnel(cfg web.Config) tunnel.Provider {
 	switch p := tunnel.Provider(cfg.Tunnel); p {
-	case tunnel.Tailscale, tunnel.Cloudflare:
+	case tunnel.Tailscale, tunnel.Funnel, tunnel.Cloudflare:
 		return p
 	}
 	return ""
