@@ -157,10 +157,15 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// briefBoot is how long a first task waits for its agent to start: Codex,
+// or a cold Claude Code on a slow laptop, can take longer than the
+// mailbox's 30 s. One that doesn't start shows why in its terminal.
+const briefBoot = 2 * time.Minute
+
 // brief queues a new agent's first task, typed in once it is at its
 // prompt: a note, from omaterm, that wants no answer.
 func (s *Server) brief(ctx context.Context, pane, task string) error {
-	params, _ := json.Marshal(proto.MailAskParams{To: pane, Text: task, Note: true})
+	params, _ := json.Marshal(proto.MailAskParams{To: pane, Text: task, Note: true, BootMS: briefBoot.Milliseconds()})
 	_, err := s.d.Handle(ctx, "mail.ask", params)
 	return err
 }

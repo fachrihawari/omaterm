@@ -304,6 +304,10 @@ type MailAskParams struct {
 	Text     string `json:"text"`
 	Note     bool   `json:"note,omitempty"`
 	NoWait   bool   `json:"noWait,omitempty"`
+	// BootMS is how long, in milliseconds, it waits for an agent to start
+	// in a pane that runs none yet: 30 s when 0, 10 minutes at most. A new
+	// agent's first task gives it longer: a cold one can take a while.
+	BootMS int64 `json:"bootMs,omitempty"`
 }
 
 // MailAwaitParams wait for a message's answer (mail.await).
