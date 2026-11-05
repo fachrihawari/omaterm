@@ -353,7 +353,18 @@ a { color: inherit; text-decoration: none; }
 .pane-view { display: none; flex: 1; min-height: 0; overflow: auto; background: var(--card); overscroll-behavior: contain; }
 .pane[data-view] .pane-view { display: block; }
 .pane[data-view] .term-wrap, .pane[data-view] .term-bottom, .pane[data-view] .term-note { display: none; }
-.btn-view.on { background: var(--raised); color: var(--text); border-color: var(--border); }
+/* In a view, the header switches between them and closes them, in place
+   of the terminal's status, its keys' chip and Compose. */
+.pane[data-view] .ph .schip-wrap, .pane[data-view] .ph .mods, .pane[data-view] .ph .gchip,
+.pane[data-view] .ph .card-tabs, .pane[data-view] .btn-compose, .pane[data-view] .btn-browse { display: none !important; }
+.pane:not([data-view]) .bv-seg, .pane:not([data-view]) .btn-close { display: none; }
+.bv-seg { display: flex; flex: none; gap: 2px; padding: 2px; border-radius: 8px; background: var(--chip); }
+.bv-seg a {
+  height: 22px; padding: 0 10px; border-radius: 6px; display: flex; align-items: center;
+  font-size: 12px; color: var(--text-muted); text-decoration: none; white-space: nowrap;
+}
+.bv-seg a:hover { color: var(--text); }
+.bv-seg a.on { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px var(--scrim); }
 .bv-bar {
   position: sticky; top: 0; left: 0; z-index: 2; display: flex; align-items: center; gap: 8px;
   min-height: 36px; padding: 4px 8px 4px 14px; background: var(--card); border-bottom: 1px solid var(--border);
@@ -442,6 +453,7 @@ a.bv-crumb:hover { color: var(--text); }
   .btn-compose, .btn-view { width: 36px; height: 36px; border-radius: 8px; }
   .btn-compose svg, .btn-view svg { width: 18px; height: 18px; }
   .pane-view .row { min-height: 44px; padding: 8px 12px; }
+  .bv-seg a { height: 32px; padding: 0 12px; font-size: 13px; }
   .proj .add { width: 36px; height: 36px; opacity: 1; }
   .side-f .chipc { height: 32px; padding: 0 10px; }
   .side-f .link { padding: 8px 10px; }

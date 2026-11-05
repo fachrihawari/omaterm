@@ -264,7 +264,7 @@ try {
   const viewText = `(document.querySelector(".pane-view")?.textContent || "")`;
 
   await check("files: the session's folder lists, folders first", "", async () => {
-    await tap('.btn-view[data-view="files"]');
+    await tap(".btn-browse");
     await waitFor("no files listed", `${viewText}.includes("README.md")`);
     const first = await evaluate(`document.querySelector(".pane-view .bv-row .nm").textContent`);
     if (first !== "src") throw new Error(`the first entry is ${first}, not src`);
@@ -278,7 +278,7 @@ try {
     await shot("file");
   });
   await check("changes: the changed and new files, with their counts", "", async () => {
-    await tap('.btn-view[data-view="changes"]');
+    await tap(".bv-seg a", "Changes");
     await waitFor("no changes listed", `${viewText}.includes("main.go") && ${viewText}.includes("notes.txt")`);
     const sum = await evaluate(`document.querySelector(".bv-sum").textContent`);
     if (!/^2 files · \+2 −1 · not committed$/.test(sum)) throw new Error(`the summary says ${sum}`);
@@ -290,9 +290,13 @@ try {
     await shot("diff");
   });
   await check("back to the terminal, keys still reach it", hex("z"), async () => {
-    await tap('.btn-view[data-view="changes"]');
+    await tap(".btn-close");
     await waitFor("the terminal did not come back", `!document.querySelector(".pane").dataset.view`);
     await key("z", "KeyZ", "z");
+  });
+  await check("the button opens the view last seen", "", async () => {
+    const to = await evaluate(`document.querySelector(".btn-browse").getAttribute("href")`);
+    if (!to.endsWith("/changes")) throw new Error(`it opens ${to}`);
   });
 
   await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {

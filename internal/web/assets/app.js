@@ -61,7 +61,7 @@ const IC = {
   signout: S('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
   term: S('<path d="M4 17l6-5-6-5M12 19h8"/>'),
   files: S('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
-  changes: S('<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9"/>'),
+  close: S('<path d="M18 6 6 18M6 6l12 12"/>'),
   claude: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 6.2L19 5l-3.2 5.4L22 12l-6.2 1.6L19 19l-5.4-3.2L12 22l-1.6-6.2L5 19l3.2-5.4L2 12l6.2-1.6L5 5l5.4 3.2z"/></svg>`,
   codex: S('<path d="M12 2l8.5 5v10L12 22l-8.5-5V7z"/><path d="M8 10l3 2-3 2M13 15h3"/>'),
   bun: S('<path d="M3 14c0-4.5 4-8 9-8s9 3.5 9 8c0 2.8-4 5-9 5s-9-2.2-9-5z"/><path d="M9 13h.01M15 13h.01M10.5 15.5c.8.6 2.2.6 3 0"/>'),
@@ -839,21 +839,28 @@ function showTerm(id) {
   }, icon("compose", "s14"));
 
   // The session's files and changes, read in the card in the terminal's
-  // place; each button, lit, goes back to the terminal.
-  const viewBtn = (kind, name, title) => h("a", {
-    class: "ib btn-view", href: `#/pane/${encodeURIComponent(id)}/${kind}`, "data-view": kind,
-    title, "aria-label": title,
-  }, icon(name, "s14"));
-  const filesBtn = viewBtn("files", "files", "Files");
-  const changesBtn = viewBtn("changes", "changes", "Changes");
+  // place. One button opens them, as last seen; there, the header trades
+  // the terminal's status and Compose for a switch between the two, and a
+  // close that goes back to the terminal.
+  const paneHash = `#/pane/${encodeURIComponent(id)}`;
+  const browseBtn = h("a", {
+    class: "ib btn-view btn-browse", href: paneHash + "/files", title: "Files and Changes", "aria-label": "Files and Changes",
+  }, icon("files", "s14"));
+  const segFiles = h("a", { href: paneHash + "/files" }, "Files");
+  const segChanges = h("a", { href: paneHash + "/changes" }, "Changes");
+  const seg = h("nav", { class: "bv-seg", "aria-label": "Files or Changes" }, segFiles, segChanges);
+  const closeBtn = h("a", {
+    class: "ib btn-view btn-close", href: paneHash, title: "Back to the terminal", "aria-label": "Back to the terminal",
+  }, icon("close", "s14"));
 
   const header = h("header", { class: "ph" },
     backBtn, grip, branchChip, tabsRow,
     h("span", { class: "sp" }),
     modChip,
     statusChipEl,
-    filesBtn,
-    changesBtn,
+    seg,
+    browseBtn,
+    closeBtn,
     composeBtn,
   );
 
@@ -1097,11 +1104,10 @@ function showTerm(id) {
   let browse = null;
   let lastStatus = "";
   const showView = (kind, path) => {
-    const views = { files: "files", file: "files", changes: "changes", diff: "changes" };
-    filesBtn.classList.toggle("on", views[kind] === "files");
-    changesBtn.classList.toggle("on", views[kind] === "changes");
-    filesBtn.href = `#/pane/${encodeURIComponent(id)}` + (views[kind] === "files" ? "" : "/files");
-    changesBtn.href = `#/pane/${encodeURIComponent(id)}` + (views[kind] === "changes" ? "" : "/changes");
+    const group = { files: "files", file: "files", changes: "changes", diff: "changes" }[kind];
+    if (group) browseBtn.href = paneHash + "/" + group;
+    segFiles.classList.toggle("on", group === "files");
+    segChanges.classList.toggle("on", group === "changes");
     if (!kind) {
       delete card.dataset.view;
       if (!touch) xt.focus();
