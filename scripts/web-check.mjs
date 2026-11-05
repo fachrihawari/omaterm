@@ -19,6 +19,10 @@
 // repository with a change, which the page lists and shows, and the
 // terminal still takes keys after them. With WEB_CHECK_SHOTS=<dir>, each
 // view is saved there as a PNG.
+//
+// So is the answer bar: a fake agent asks permission as Claude Code does,
+// the bar offers its options, a tap types the digit, a tap on a screen
+// that changed since is refused, and Stop sends Esc while it works.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -298,6 +302,74 @@ try {
     const to = await evaluate(`document.querySelector(".btn-browse").getAttribute("href")`);
     if (!to.endsWith("/changes")) throw new Error(`it opens ${to}`);
   });
+
+  // Answering: an agent (goose, by its script's name, which omaterm reads
+  // no screen of) asks permission as Claude Code draws it, and logs what
+  // it reads as the probe does. "r" redraws the prompt for another
+  // command, "1" answers it and starts work, Esc ends that.
+  const asker = join(tmp, "goose.mjs");
+  writeFileSync(asker, `
+import { appendFileSync } from "node:fs";
+const osc = (s) => process.stdout.write("\\x1b]7501;" + s + "\\x1b\\\\");
+const ask = (dir) => {
+  process.stdout.write("\\x1b[2J\\x1b[H⏺ I'll clean up.\\r\\n\\r\\n Bash command\\r\\n\\r\\n   rm -rf " + dir + "\\r\\n   Remove the " + dir +
+    " folder\\r\\n\\r\\n Do you want to proceed?\\r\\n ❯ 1. Yes\\r\\n   2. Yes, and don't ask again for rm commands\\r\\n" +
+    "   3. No, and tell Claude what to do differently (esc)\\r\\n");
+  osc("state=blocked:kind=permission:msg=" + Buffer.from("Claude needs your permission to use Bash").toString("base64"));
+};
+process.stdin.setRawMode(true);
+process.stdin.on("data", (b) => {
+  appendFileSync(${JSON.stringify(logFile)}, b.toString("hex"));
+  const s = b.toString();
+  if (s === "r") ask("dist");
+  if (s === "1") { process.stdout.write("\\x1b[2J\\x1b[H⏺ Removing build…\\r\\n"); osc("state=working"); }
+  if (s === "\\x1b") { process.stdout.write("Interrupted\\r\\n"); osc("state=done"); }
+});
+ask("build");
+setInterval(() => {}, 1 << 30);
+`);
+  const askSid = omaterm("new", "-n", "asker", "-d", dir, "--", process.execPath, asker);
+  const askPane = JSON.parse(omaterm("ls", "--json")).find((s) => s.id === askSid).focus;
+  const answerText = `[...document.querySelectorAll(".answer:not([hidden]) .answer-opt")].map((b) => b.textContent)`;
+  await check("answer bar: the whole question and the screen's options", "", async () => {
+    await evaluate(`location.hash = "#/pane/${askPane}"`);
+    await waitFor("no answer bar", `${answerText}.length === 3`);
+    const q = await evaluate(`document.querySelector(".answer-q").textContent`);
+    if (q !== "Claude needs your permission to use Bash") throw new Error(`the question is ${JSON.stringify(q)}`);
+    const opts = await evaluate(`JSON.stringify(${answerText})`);
+    if (opts !== JSON.stringify(["1Yes", "2Yes, and don't ask again for rm commands", "3No, and tell Claude what to do differently"])) {
+      throw new Error(`the options are ${opts}`);
+    }
+    await sleep(600);
+    await shot("answer");
+  });
+  await check("answer bar: a tap on a screen that changed since is refused", hex("r"), async () => {
+    await key("r", "KeyR", "r");
+    // Tapped as the new prompt shows, before the bar reads it again.
+    const said = await evaluate(`(async () => {
+      for (let i = 0; i < 300 && !document.querySelector(".xterm-rows").textContent.includes("rm -rf dist"); i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      document.querySelector(".answer-opt").click();
+      return document.querySelector(".answer-note").textContent;
+    })()`);
+    if (!said.startsWith("The screen changed")) throw new Error(`the bar says ${JSON.stringify(said)}`);
+  });
+  await check("answer bar: a tap types the option's digit", hex("1"), async () => {
+    await sleep(700);
+    await tap(".answer-opt");
+  });
+  await check("answer bar: gone while the agent works, and Stop sends Esc", hex("\x1b"), async () => {
+    await waitFor("no Stop", `!document.querySelector(".answer-stop").hidden && !document.querySelector(".answer:not([hidden])")`);
+    await sleep(600);
+    await shot("stop");
+    await tap(".answer-stop");
+  });
+  await check("answer bar: none once the agent is done", "", async () => {
+    await waitFor("the Stop stays", `document.querySelector(".answer-stop").hidden`);
+  });
+  await evaluate(`location.hash = "#/pane/${pane}"`);
+  await sleep(1500);
 
   await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {
     await tap(".btn-compose");

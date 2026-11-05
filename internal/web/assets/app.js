@@ -42,6 +42,8 @@ let shell = null;       // shell DOM elements
 let rowsShown = null;   // the sessions the list showed, so a new one rises in; null before the first list
 let rowsNow = new Set();
 const touch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+// A touch screen of any width has the key bar, Compose and the answer bar.
+document.documentElement.classList.toggle("touch", touch);
 
 // Dynamic modules loaded asynchronously
 const keysPromise = import("./keys.js").catch(() => null);
@@ -49,6 +51,9 @@ const composePromise = import("./compose.js").catch(() => null);
 // The files and changes views load the first time one opens.
 let browsePromise = null;
 const loadBrowse = () => (browsePromise ??= import("./browse.js").catch(() => null));
+// The answer bar loads the first time a terminal opens.
+let answerPromise = null;
+const loadAnswer = () => (answerPromise ??= import("./answer.js").catch(() => null));
 
 // SVG dictionary
 const S = (d, extra = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
@@ -869,8 +874,9 @@ function showTerm(id) {
   const note = h("div", { class: "term-note", hidden: true });
 
   const composeSlot = h("div", { class: "compose-slot" });
+  const answerSlot = h("div", { class: "answer-slot" });
   const keybarSlot = h("div", { class: "keybar-slot" });
-  const bottomBar = h("div", { class: "term-bottom" }, composeSlot, keybarSlot);
+  const bottomBar = h("div", { class: "term-bottom" }, composeSlot, answerSlot, keybarSlot);
 
   const view = h("div", { class: "pane-view" });
   const card = h("div", { class: "pane" }, header, wrap, view, note, bottomBar);
@@ -1038,6 +1044,15 @@ function showTerm(id) {
     }
   });
 
+  // While the agent waits, its question and answers over the key bar;
+  // while it works, a Stop over the terminal.
+  let answer = null;
+  loadAnswer().then((mod) => {
+    if (!mod?.mountAnswer || closed) return;
+    answer = mod.mountAnswer(answerSlot, wrap, { h, xt, sendText: (s) => sendFrame("i", s), sendKey });
+    refresh();
+  });
+
   xt.open(host);
 
   if (touch) {
@@ -1090,6 +1105,7 @@ function showTerm(id) {
 
     const sc = statusChip(cur.pane);
     statusChipEl.replaceChildren(sc ? sc : "");
+    answer?.update(cur.pane, cur.session);
 
     // A turn that ended may have changed files the changes view shows.
     if (lastStatus === "working" && cur.pane.status !== "working") browse?.turnEnded();
@@ -1134,6 +1150,7 @@ function showTerm(id) {
       document.removeEventListener("visibilitychange", onVisible);
       keyBar?.destroy();
       composeBox?.destroy();
+      answer?.destroy();
       if (ws) { ws.onclose = null; ws.close(); }
       xt.dispose();
     },
