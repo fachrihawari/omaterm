@@ -202,6 +202,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/panes/{id}/raw", s.auth(s.raw))
 	mux.HandleFunc("GET /api/panes/{id}/changes", s.auth(s.changes))
 	mux.HandleFunc("GET /api/panes/{id}/diff", s.auth(s.diff))
+	// Prompts for an agent once it is free (queue.go).
+	mux.HandleFunc("GET /api/panes/{id}/queue", s.auth(s.queue))
+	mux.HandleFunc("POST /api/panes/{id}/queue", s.auth(s.enqueue))
+	mux.HandleFunc("DELETE /api/panes/{id}/queue/{msg}", s.auth(s.unqueue))
 	mux.HandleFunc("POST /api/logout", s.auth(s.logout))
 	mux.HandleFunc("GET /api/voice", s.auth(s.voiceStatus))
 	mux.HandleFunc("POST /api/voice", s.auth(s.transcribe))
