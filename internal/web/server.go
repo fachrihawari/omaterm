@@ -195,7 +195,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/state", s.auth(s.state))
 	mux.HandleFunc("GET /api/theme", s.auth(s.theme))
 	mux.HandleFunc("GET /api/events", s.auth(s.events))
+	// Starting work from the phone: New Agent (newagent.go).
 	mux.HandleFunc("POST /api/sessions", s.auth(s.create))
+	mux.HandleFunc("GET /api/new", s.auth(s.newOptions))
 	mux.HandleFunc("GET /api/panes/{id}/attach", s.auth(s.attach))
 	mux.HandleFunc("GET /api/panes/{id}/files", s.auth(s.files))
 	mux.HandleFunc("GET /api/panes/{id}/file", s.auth(s.file))
@@ -524,23 +526,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-}
-
-func (s *Server) create(w http.ResponseWriter, r *http.Request) {
-	var p struct {
-		Project string `json:"project"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&p); err != nil || p.Project == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	params, _ := json.Marshal(map[string]string{"project": p.Project})
-	res, err := s.d.Handle(r.Context(), "create", params)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, res)
 }
 
 // maxVoiceBytes caps a recording, apart from the JSON calls' limit: two
