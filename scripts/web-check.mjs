@@ -412,6 +412,17 @@ setInterval(() => {}, 1 << 30);
   await evaluate(`location.hash = "#/pane/${pane}"`);
   await sleep(1500);
 
+  await check("a touch screen 860 px wide or more keeps the key bar and Compose, but no back", "", async () => {
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 2, mobile: false });
+    await sleep(600);
+    const shown = (sel) => `getComputedStyle(document.querySelector(${JSON.stringify(sel)})).display !== "none"`;
+    const got = await evaluate(`[${shown(".term-bottom")}, ${shown(".btn-compose")}, ${shown(".back-btn")}].join()`);
+    await shot("tablet");
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await sleep(600);
+    if (got !== "true,true,false") throw new Error(`key bar, Compose, back: ${got}`);
+  });
+
   await check("voice: the mic writes into the box in the default language, sending nothing", "", async () => {
     await tap(".btn-compose");
     await sleep(800);

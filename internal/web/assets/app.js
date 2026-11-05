@@ -398,6 +398,12 @@ function terminals(s) {
   return (s.panes ?? []).filter((p) => !p.url);
 }
 
+// leadOf is the pane a session opens at: its lead, unless that is a
+// browser pane, which the page can't show; then its first terminal.
+function leadOf(s) {
+  return (s.lead && s.lead.id && !s.lead.url) ? s.lead : terminals(s)[0];
+}
+
 // --- shell layout ----------------------------------------------------------
 
 function showShell() {
@@ -434,7 +440,7 @@ function renderPills() {
   const tabs = [];
   for (const s of projSessions) {
     const panes = terminals(s);
-    const lead = (s.lead && s.lead.id) ? s.lead : panes[0];
+    const lead = leadOf(s);
     const here = panes.some((p) => p.id === open);
     // A process's tab shows its state as its row does, a running one a
     // green dot.
@@ -565,7 +571,7 @@ function jumpToSession(filterFn) {
   if (!state) return;
   const target = state.sessions.find(filterFn);
   if (target) {
-    const pane = target.lead?.id || terminals(target)[0]?.id;
+    const pane = leadOf(target)?.id;
     if (pane) location.hash = "#/pane/" + encodeURIComponent(pane);
   }
 }
@@ -582,7 +588,7 @@ function fresh(s) {
 // project.
 function sessionRow(s, proj, open, where = false) {
   const panes = terminals(s);
-  const lead = (s.lead && s.lead.id && !s.lead.url) ? s.lead : panes[0];
+  const lead = leadOf(s);
   const st = statusState(lead);
   const prog = programType(lead);
   const here = panes.some((p) => p.id === open);
@@ -639,23 +645,25 @@ function linkHost(link) {
 
 function processRow(s, proj, open) {
   const panes = terminals(s);
-  const lead = (s.lead && s.lead.id) ? s.lead : panes[0];
+  const lead = leadOf(s);
   const here = panes.some((p) => p.id === open);
   const proc = s.proc;
   const pst = processState(proc ? { status: proc.status } : lead);
 
-  // Only a web address is a link: the state is data, not trusted markup.
+  // Only a share link is a link: a Dev URL (https://shop.localhost) and a
+  // port are the computer's own, which on a phone is the phone's. The
+  // state is data, not trusted markup, so a link must be a web address.
   const web = (u) => (typeof u === "string" && /^https?:\/\//.test(u) ? u : "");
-  const link = web(proc?.share) || web(proc?.link);
-  const port = proc?.port || lead.port;
+  const link = web(proc?.share);
+  const local = proc?.port ? `:${proc.port}` : web(proc?.link) ? linkHost(proc.link) : "";
   let pill = null;
   if (link) {
     pill = h("a", {
       class: "pill mono link", href: link, target: "_blank", rel: "noopener noreferrer",
       title: link, onclick: (e) => e.stopPropagation(),
     }, linkHost(link));
-  } else if (port) {
-    pill = h("span", { class: "pill mono" }, `:${port}`);
+  } else if (local) {
+    pill = h("span", { class: "pill mono", title: "Opens on the computer only" }, `${local} · on the computer`);
   }
 
   let statusEl = null;
@@ -1273,6 +1281,10 @@ async function start() {
 }
 
 addEventListener("hashchange", route);
+
+// The rows' "3m" and the header's age move on with the clock, not only
+// as a new state comes.
+setInterval(() => { if (document.visibilityState === "visible") render(); }, 60_000);
 
 // The on-screen keyboard: where it lies over the page (iOS), --kb is its
 // height, which the page and the compose sheet keep clear of. Where it

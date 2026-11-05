@@ -474,10 +474,13 @@ a.bv-crumb:hover { color: var(--text); }
     flex: none;
   }
 }
+/* Wide, the list is beside the terminal: no back. A mouse and a keyboard
+   need no key bar or Compose, but a touch screen does, a tablet's too
+   (the touch class, app.js). */
 @media (min-width: 860px) {
   .back-btn { display: none !important; }
-  .btn-compose { display: none !important; }
-  .term-bottom { display: none !important; }
+  :root:not(.touch) .btn-compose { display: none !important; }
+  :root:not(.touch) .term-bottom { display: none !important; }
 }
 .btn-compose[hidden] { display: none !important; }
 
