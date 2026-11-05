@@ -345,20 +345,23 @@ function processState(p) {
   return "none";
 }
 
+// waitingText words what a waiting pane waits for: its message, else its
+// kind.
+function waitingText(p) {
+  if (p.message) return p.message;
+  switch (p.kind) {
+    case "permission": return "Needs permission";
+    case "question": return "Has a question";
+    case "auth": return "Needs sign-in";
+  }
+  return "Needs you";
+}
+
 function statusChip(p) {
   if (!p) return null;
   switch (p.status) {
     case "waiting": {
-      let text = p.message;
-      if (!text) {
-        switch (p.kind) {
-          case "permission": text = "Needs permission"; break;
-          case "question": text = "Has a question"; break;
-          case "auth": text = "Needs sign-in"; break;
-          default: text = "Needs you"; break;
-        }
-      }
-      return h("div", { class: "schip att" }, text);
+      return h("div", { class: "schip att" }, waitingText(p));
     }
     case "working": {
       let text = p.progress >= 0 ? `${p.progress}%` : (p.message || (p.since ? ago(p.since) : "Working"));
@@ -619,7 +622,7 @@ function sessionRow(s, proj, open, where = false) {
 // waits on; else whose answer it waits for, or the messages that wait
 // for it; else its last word.
 function rowLine(p) {
-  if (p.status === "waiting") return p.message || p.summary || "";
+  if (p.status === "waiting") return waitingText(p);
   if (p.asking) {
     const to = paneByID(p.asking);
     return `Waiting for ${to ? to.session.name || label(to.pane) : "another agent"}'s answer`;

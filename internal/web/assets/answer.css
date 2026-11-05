@@ -37,6 +37,13 @@
   font: 500 13px/1 var(--mono); touch-action: manipulation; -webkit-user-select: none; user-select: none;
 }
 .answer-note { flex: 1; min-width: 0; font-size: 12px; color: var(--warn); }
+/* The strip says the question whole, so the header's chip, which cuts
+   it short, gives its room to the session's name; wide, with a mouse,
+   there is no strip. */
+.pane:has(.answer:not([hidden])) .ph .schip-wrap { display: none; }
+@media (min-width: 860px) {
+  :root:not(.touch) .pane .ph .schip-wrap { display: flex; }
+}
 
 /* Stop, over the terminal's corner while the agent works. */
 .answer-stop {
