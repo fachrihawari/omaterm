@@ -1,12 +1,15 @@
 {
   "name": "omaterm",
   "identifier": "id.my.fhwr.omaterm",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "out": "build",
   "resources": [
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
+  "linux": {
+    "command": "omaterm"
+  },
   "macos": {
     "minimumSystemVersion": "13.0",
     "infoPlist": {

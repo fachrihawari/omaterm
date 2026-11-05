@@ -61,13 +61,20 @@ an editor and a browser sit next to your shells.
 curl -fsSL https://github.com/fachrihawari/omaterm/releases/latest/download/install.sh | sh
 ```
 
-This installs the app in `~/.local/omaterm.app` and adds it to your app
-launcher. It needs no root.
+This installs the app in `~/.local/omaterm.app`, adds it to your app
+launcher and links the `omaterm` command into `~/.local/bin`. It needs no
+root.
 
-**macOS** (Universal) and **Windows** (x64): download the `.dmg` or the
-`Setup.exe` from the
+**Windows** (x64), in PowerShell:
+
+```powershell
+irm https://github.com/fachrihawari/omaterm/releases/latest/download/install.ps1 | iex
+```
+
+**macOS** (Universal): download `omaterm-<version>.dmg` from the
 [latest release](https://github.com/fachrihawari/omaterm/releases/latest).
-A `.deb` and `.tar.gz` for Linux are there too.
+The Windows installer (`omaterm-setup-<version>-amd64.exe`) and a `.deb`
+and `.tar.gz` for Linux are there too.
 
 omaterm updates itself: a new release shows up as an update in the app.
 

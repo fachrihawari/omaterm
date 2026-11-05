@@ -3,6 +3,31 @@
 The section of a version becomes the release notes of its update, so each
 one is written for the user: what changed, and why it matters.
 
+## 0.13.2
+
+omaterm moves to mygo 0.7, with new installers and a sidebar row that
+lines up.
+
+### Installing
+
+- **Windows installs from PowerShell:**
+  `irm https://github.com/fachrihawari/omaterm/releases/latest/download/install.ps1 | iex`.
+  It checks the installer against the release's new `SHA256SUMS`.
+- **On Linux, the `omaterm` command stays.** install.sh links
+  `~/.local/bin/omaterm` on every install and update, where it used to
+  remove it, and the .deb adds `/usr/bin/omaterm`.
+- The installers have new names: `omaterm-<version>.dmg` and
+  `omaterm-setup-<version>-amd64.exe`. Updating from the app is
+  unchanged.
+
+### In the window
+
+- **A session with no status keeps its time at the row's edge,** rather
+  than beside an empty space where a check or a waiting icon would be.
+- The editor's and the terminal's scroll bars show while the pointer is
+  over them.
+- On macOS, the Edit menu acts on whatever has the focus.
+
 ## 0.13.1
 
 A pass over the whole app for what looked broken or felt awkward: things

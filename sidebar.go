@@ -780,7 +780,11 @@ func (a *appState) sessionRow(c *ui.Context, pi int, tabs []topTab, node session
 		if info.Since > 0 {
 			ui.Text(c, ago(nowFunc().Sub(time.UnixMilli(info.Since)))).FontSize(11.5).TextColor(pal.TextFaint).SingleLine().Shrink(0)
 		}
-		a.statusIcon(c, info, 14)
+		// With nothing to show, its time takes the edge, rather than sit
+		// beside an empty slot.
+		if statusState(info) != iconNone {
+			a.statusIcon(c, info, 14)
+		}
 	})
 	tip := a.sessionTooltip(info)
 	if w := t.Worktree; w != nil {
