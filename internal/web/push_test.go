@@ -266,11 +266,14 @@ func TestPushStore(t *testing.T) {
 	if got, _ := s.pushes(); len(got) != 1 || got[0].Push.Endpoint != "https://web.push.apple.com/b" {
 		t.Fatalf("an old endpoint's 410 dropped the new one: %+v", got)
 	}
-	k1, err := s.vapidKey()
+	if _, err := s.vapidKey(false); err != errNoVAPID {
+		t.Fatalf("a key from nowhere: %v", err)
+	}
+	k1, err := s.vapidKey(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k2, _ := s.vapidKey(); !k1.Equal(k2) {
+	if k2, _ := s.vapidKey(false); !k1.Equal(k2) {
 		t.Fatal("the VAPID key changed")
 	}
 	s.Revoke(d.ID)

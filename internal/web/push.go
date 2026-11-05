@@ -302,9 +302,12 @@ func payloadFor(n Notice, words bool, tag string) ([]byte, error) {
 
 // --- the store's part --------------------------------------------------------
 
-// vapidKey is this omaterm's key for signing its pushes, made the first
-// time it is asked for and kept in web.json.
-func (s *Store) vapidKey() (*ecdsa.PrivateKey, error) {
+// errNoVAPID is a store with no key for signing pushes yet.
+var errNoVAPID = errors.New("notifications aren't set up yet: turn web access off and on")
+
+// vapidKey is this omaterm's key for signing its pushes, kept in
+// web.json; create makes it when there is none, as web access starts.
+func (s *Store) vapidKey(create bool) (*ecdsa.PrivateKey, error) {
 	defer s.lock()()
 	f, err := s.load()
 	if err != nil {
@@ -316,6 +319,9 @@ func (s *Store) vapidKey() (*ecdsa.PrivateKey, error) {
 			return nil, err
 		}
 		return ecdsa.ParseRawPrivateKey(elliptic.P256(), raw)
+	}
+	if !create {
+		return nil, errNoVAPID
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -444,7 +450,7 @@ func (p *pusher) fanOut(job pushJob) {
 	if err != nil || len(devices) == 0 {
 		return
 	}
-	key, err := p.store.vapidKey()
+	key, err := p.store.vapidKey(false)
 	if err != nil {
 		log.Printf("web: push key: %v", err)
 		return
@@ -565,11 +571,12 @@ func (s *Server) pusher() *pusher {
 // --- routes ------------------------------------------------------------------
 
 // pushStatus is this device's notifications: the key its browser
-// subscribes with, whether they are on, and where to.
+// subscribes with, whether they are on, and where to. It only reads:
+// Listen made the key.
 func (s *Server) pushStatus(w http.ResponseWriter, r *http.Request) {
-	key, err := s.store.vapidKey()
+	key, err := s.store.vapidKey(false)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	pub, _ := key.PublicKey.Bytes()

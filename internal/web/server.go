@@ -95,6 +95,9 @@ func Listen(addr string, d Daemon, store *Store) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{d: d, store: store, ln: ln, conns: map[*websocket.Conn]string{}, done: make(chan struct{})}
+	if _, err := store.vapidKey(true); err != nil { // the key pushes are signed with (push.go)
+		log.Printf("web: push key: %v", err)
+	}
 	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go s.sweep()
 	go func() {
