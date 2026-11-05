@@ -8,7 +8,9 @@
 //   compose.prefill(text);   // opens it with text after the draft, a line of its own
 //
 // sendPaste and sendKey return false when they could not send; the text then
-// stays in the box, with a note. Send pastes the text (sendPaste) and then presses Enter (sendKey), so a
+// stays in the box, with a note. ready, given, resolves to whether they
+// can, once the terminal has checked its socket: Send waits for it. Send
+// pastes the text (sendPaste) and then presses Enter (sendKey), so a
 // prompt is submitted once; Insert pastes it without Enter, to edit it in
 // the terminal. An unsent draft is kept in localStorage, one per pane (id)
 // under omaterm.compose:<id>, so a prompt is not sent to another session;
@@ -362,6 +364,17 @@ export function mountCompose(el, options = {}) {
       clear();
       close();
       return;
+    }
+    // Back from the background, the terminal checks its socket, which may
+    // have died: the text goes once it answers, and stays if it doesn't.
+    if (typeof options.ready === "function") {
+      send.disabled = insert.disabled = true;
+      const ok = await options.ready();
+      send.disabled = insert.disabled = false;
+      if (!ok) {
+        say("Not connected: not sent");
+        return;
+      }
     }
     let sent = true;
     if (text.trim() !== "" && typeof sendPaste === "function") sent = sendPaste(text) !== false;

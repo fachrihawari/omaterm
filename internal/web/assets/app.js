@@ -265,18 +265,18 @@ function connectEventsLater() {
 
 // wake runs as the page comes back to the front, or the phone back on a
 // network. A socket that died meanwhile may still say it is open, so the
-// events open again, which costs one state, and the open terminal checks
-// its own.
+// open terminal checks its own at once, for a Send tapped right after,
+// and the events open again, which costs one state.
 let woke = 0;
 function wake() {
   if (!paired || document.visibilityState !== "visible") return;
+  term?.check();
   clearTimeout(woke);
   woke = setTimeout(() => {
     if (!paired) return;
     if (events) { const old = events; events = null; old.onclose = old.onmessage = null; old.close(); }
     eventsRetry = 500;
     connectEvents();
-    term?.check();
   }, 100);
 }
 document.addEventListener("visibilitychange", wake);
@@ -1029,6 +1029,20 @@ function showTerm(id) {
   };
   const sendKey = (k) => sendFrame("k", k);
   const sendPaste = (p) => sendFrame("p", p);
+
+  // ready resolves to whether the socket carries, once its check is over
+  // (a pong, or none in 3 s) or a new one is in: Compose waits for it, as
+  // people tap Send right after unlocking.
+  let readyWaits = [];
+  const settle = (ok) => { const waits = readyWaits; readyWaits = []; for (const done of waits) done(ok); };
+  const ready = () => {
+    if (ws?.readyState === 1 && !pinged) return Promise.resolve(true);
+    if (!ws || closed) return Promise.resolve(false);
+    return new Promise((done) => {
+      const t = setTimeout(() => done(false), 3000);
+      readyWaits.push((ok) => { clearTimeout(t); done(ok); });
+    });
+  };
   const appCursor = () => Boolean(xt.modes?.applicationCursorKeysMode);
 
   const setNote = (text) => { note.hidden = !text; note.textContent = text || ""; };
@@ -1086,6 +1100,7 @@ function showTerm(id) {
     pinged = setTimeout(() => {
       pinged = 0;
       if (ws !== sock || closed) return;
+      settle(false);
       sock.onclose = sock.onmessage = null;
       sock.close();
       ws = null;
@@ -1105,6 +1120,7 @@ function showTerm(id) {
       if (e.data === "pong") {
         clearTimeout(pinged);
         pinged = 0;
+        settle(true);
         return;
       }
       if (typeof e.data === "string") {
@@ -1116,6 +1132,7 @@ function showTerm(id) {
         retry = 500;
         setNote("");
         setLink("");
+        settle(true);
         return;
       }
       const b = new Uint8Array(e.data);
@@ -1136,6 +1153,7 @@ function showTerm(id) {
       ws = null;
       clearTimeout(pinged);
       pinged = 0;
+      settle(false);
       if (e.code === 4401) { showPair("This browser was signed out."); return; }
       // A stopped process has no terminal: its last output shows instead.
       if (e.code === 4410) {
@@ -1232,7 +1250,7 @@ function showTerm(id) {
     if (mod?.mountCompose && composeSlot.isConnected) {
       composeSlot.replaceChildren();
       composeBox = mod.mountCompose(composeSlot, {
-        sendPaste, sendKey, id, h,
+        sendPaste, sendKey, ready, id, h,
         signedOut: () => showPair("This browser was signed out."),
         onQueued: (n) => { queuedBadge.hidden = !n; queuedBadge.textContent = n ? String(n) : ""; },
       });
@@ -1370,6 +1388,7 @@ function showTerm(id) {
       document.removeEventListener("visibilitychange", markSeen);
       clearTimeout(retryTimer);
       clearTimeout(pinged);
+      settle(false);
       cancelAnimationFrame(liftFrame);
       keyBar?.destroy();
       composeBox?.destroy();

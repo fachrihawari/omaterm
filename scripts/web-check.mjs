@@ -35,10 +35,11 @@
 // So is the connection: the phone's keyboard, opening, keeps the pane's
 // size and lifts the cursor into sight; a socket that died without a word
 // (a proxy in front of the page stops passing anything on) is dropped as
-// the page comes back, and the terminal reconnects; and signing out wipes
-// the drafts and Recent. And Compose's Recent puts a sent prompt back,
-// and When free lines one up for a fake agent that works on and on, and
-// takes it back.
+// the page comes back, and the terminal reconnects; Send tapped right
+// after waits for the socket's pong, and keeps its text when none comes;
+// and signing out wipes the drafts and Recent. And Compose's Recent puts
+// a sent prompt back, and When free lines one up for a fake agent that
+// works on and on, and takes it back.
 //
 // And what makes it a phone's app: the manifest, the service worker and
 // the icons are served as their types, the worker runs, and the list's
@@ -834,16 +835,20 @@ setInterval(() => {}, 1 << 30);
   // A proxy in front of the page, as a tunnel is, which can stop passing
   // anything on, the connections it has still open: what a phone's dead
   // link looks like to it. Down, it takes no new ones either; back up, the
-  // dead ones reset, as a network's do.
+  // dead ones reset, as a network's do. With lag, what comes back to the
+  // page comes that much later, in order, as over a slow phone link.
   const links = new Set();
-  let passing = true;
+  let passing = true, lag = 0;
   const proxy = createServer((c) => {
     if (!passing) { c.destroy(); return; }
     const s = dial(port, "127.0.0.1");
-    const l = { dead: false, end: () => { c.destroy(); s.destroy(); links.delete(l); } };
+    const l = { dead: false, back: Promise.resolve(), end: () => { c.destroy(); s.destroy(); links.delete(l); } };
     links.add(l);
     c.on("data", (b) => { if (!l.dead) s.write(b); });
-    s.on("data", (b) => { if (!l.dead) c.write(b); });
+    s.on("data", (b) => {
+      const due = Date.now() + lag;
+      l.back = l.back.then(() => sleep(due - Date.now())).then(() => { if (!l.dead) c.write(b); });
+    });
     for (const x of [c, s]) { x.on("close", l.end); x.on("error", l.end); }
   });
   const proxyPort = await new Promise((r) => proxy.listen(0, "127.0.0.1", () => r(proxy.address().port)));
@@ -854,13 +859,31 @@ setInterval(() => {}, 1 << 30);
       await sleep(2500);
       await key("a", "KeyA", "a");
     });
+    await check("connection: Send tapped as the page comes back waits for the pong, then sends", hex("after unlock\r"), async () => {
+      await typeInBox("after unlock");
+      lag = 1000;
+      await evaluate(`dispatchEvent(new Event("online"))`);
+      await tap(".compose-send");
+      await sleep(300);
+      if (!(await evaluate(`document.querySelector(".compose-send").disabled`))) throw new Error("Send didn't wait for the pong");
+      lag = 0;
+    });
     await check("connection: a socket that died without a word is dropped on return, and the terminal comes back", hex("b"), async () => {
+      await sleep(1000); // what lagged is in
       for (const l of links) l.dead = true;
       passing = false;
       const opened = await evaluate(`window.attached`);
+      await typeInBox("lost words");
       await evaluate(`dispatchEvent(new Event("online"))`);
+      await tap(".compose-send");
+      // No pong in 3 s: the text stays, and the terminal opens a new socket.
+      await waitFor("Send didn't give up", `document.querySelector(".compose-note").textContent === "Not connected: not sent"`);
+      const kept = await evaluate(`document.querySelector(".compose-box").value`);
+      if (kept !== "lost words") throw new Error(`the box has ${JSON.stringify(kept)}`);
+      await evaluate(`(() => { const b = document.querySelector(".compose-box"); b.value = ""; b.dispatchEvent(new Event("input")); })()`);
+      await tap(".compose-close");
+      await sleep(400);
       await waitFor("the header doesn't say it reconnects", `${header} === "Reconnecting…"`);
-      await sleep(3500); // the terminal's ping goes unanswered
       if (await evaluate(`window.attached`) === opened) throw new Error("the terminal kept its dead socket");
       const says = await evaluate(header);
       if (says !== "Reconnecting…") throw new Error(`the header says ${says}, the terminal's socket dropped`);
