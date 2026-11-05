@@ -170,7 +170,7 @@ export function mountPush({ api, h }) {
   function open() {
     if (sheet) return;
     const notify = toggle("Notify this phone",
-      "When a session needs you, fails or finishes. Not for the one you're using on the computer.", "push-on");
+      "When a session needs you, fails or finishes. Not while you're using the computer.", "push-on");
     const words = toggle("Show what the agent says",
       "Off, only the session and what happened show, as “Needs permission”. On, the agent's words show too, lock screen included.", "push-words");
     notify.input.addEventListener("change", () => (notify.input.checked ? turnOn() : turnOff()));

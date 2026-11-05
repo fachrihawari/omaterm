@@ -79,18 +79,22 @@ func TestDaemonPushesWithApp(t *testing.T) {
 	}
 }
 
-// The session on the desktop's screen is passed over while someone is at
-// the desktop; with no input there for a while, it is told, and its work
-// done counts as unseen.
-func TestDaemonPushHere(t *testing.T) {
+// While someone uses the desktop nothing goes to the phones, for the
+// session it shows or any other: the desktop tells them itself. With no
+// input there for a while, the session it shows is told too, and its
+// work done counts as unseen.
+func TestDaemonPushAtDesk(t *testing.T) {
 	d, _, _, pushes := pushDaemon(t)
-	d.reg.SetViewed("s1")
+	d.reg.SetViewed("s2")
 	d.deskInput()
 	startScript(t, d, "a1", blockedScript())
 	waitFor(t, "waiting", func() bool { return d.reg.Get("a1").Info().Status == session.Waiting })
+	startScript(t, d, "a3", `printf '\033]9;Build finished\007'; sleep 30`)
+	d.processEvent(procs.Event{Kind: procs.EventFailed, Project: "p1", Name: "api", Code: 2})
 	noPush(t, pushes)
 
 	d.deskAt.Store(time.Now().Add(-3 * time.Minute).UnixMilli())
+	d.reg.SetViewed("s1")
 	startScript(t, d, "a2", `printf '\033]7501;state=working\007'; sleep 0.3; printf '\033]7501;state=done\007'; sleep 30`)
 	if n := nextPush(t, pushes); n.State != "Done" || n.Pane != "a2" || n.Urgent || n.Waiting != 1 {
 		t.Fatalf("pushed %+v", n)

@@ -13,8 +13,8 @@ import (
 // The phones that asked to be notified (web access's push) are told of a
 // session that needs the user, failed or finished, and of a process that
 // failed: with the app open too, which on a laptop left at home it
-// usually is. Only the session on the desktop's screen while someone is
-// at it goes untold.
+// usually is. While someone uses the desktop, nothing goes: the desktop
+// tells them itself.
 
 // deskIdle is how long after the desktop's last input its user is taken
 // to have left it.
@@ -30,8 +30,12 @@ func (d *Daemon) atDesk() bool {
 	return time.Since(time.UnixMilli(d.deskAt.Load())) < deskIdle
 }
 
-// pushing tells whether a notice would go anywhere: web access serves.
+// pushing tells whether a notice would go anywhere: web access serves,
+// and no one is at the desktop.
 func (d *Daemon) pushing() bool {
+	if d.atDesk() {
+		return false
+	}
 	if d.opts.Push != nil {
 		return true
 	}
@@ -78,15 +82,13 @@ func (d *Daemon) pushStatus(info session.Info, prevStatus session.Status) {
 			info = now
 		}
 	}
-	shown := d.reg.Viewed() == info.Session
-	here := shown && d.atDesk()
-	if shown && !here {
+	if d.reg.Viewed() == info.Session {
 		// On the screen of a desktop no one uses: its work is unseen.
 		info.Unread = true
 	}
 	prev := info
 	prev.Status = prevStatus
-	kind := notice.For(prev, info, here, d.notifyPrefs().Prefs)
+	kind := notice.For(prev, info, false, d.notifyPrefs().Prefs)
 	state := map[notice.Kind]string{notice.Waiting: notice.WaitingWords(info.Kind), notice.Failed: "Failed", notice.Done: "Done"}[kind]
 	if state == "" {
 		return
@@ -96,8 +98,8 @@ func (d *Daemon) pushStatus(info session.Info, prevStatus session.Status) {
 }
 
 // pushProgram passes on a program's own notification (OSC 9, 777) when
-// the settings let programs notify. Any program in a pane can send one, so
-// it comes under its session's name, and never in omaterm's place.
+// the settings let programs notify. Any program in a pane can send one,
+// so it comes under its session's name, and never in omaterm's place.
 func (d *Daemon) pushProgram(paneID, title, body string) {
 	if !d.pushing() || !d.notifyPrefs().Programs {
 		return
@@ -107,9 +109,6 @@ func (d *Daemon) pushProgram(paneID, title, body string) {
 		return
 	}
 	sid := p.Info().Session
-	if d.reg.Viewed() == sid && d.atDesk() {
-		return
-	}
 	words := body
 	if title != "" && body != "" {
 		words = title + ": " + body
