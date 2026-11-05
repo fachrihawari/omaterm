@@ -68,8 +68,10 @@ func (a *appState) ensureWeb(id string) *webEntry {
 		return e
 	}
 	secret := newID() + newID()
+	// A pinch zooms the page, as in a browser: mygo leaves it off unless
+	// asked.
 	v, err := a.win.NewWebView(mygo.WebViewOptions{
-		Page: mygo.PageOptions{DevTools: mygo.DevToolsEnabled, PreloadScript: pageKeysScript(secret)},
+		Page: mygo.PageOptions{DevTools: mygo.DevToolsEnabled, PreloadScript: pageKeysScript(secret), PinchZoom: true},
 	})
 	if err != nil {
 		e.err = err.Error()
